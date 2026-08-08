@@ -11,11 +11,70 @@ fn default_jsonrpc() -> String {
     "2.0".to_string()
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+/// A JSON-RPC 2.0 request identifier.
+///
+/// The spec allows a string, a number, or (discouraged but legal) null. The
+/// daemon historically accepted only `u64`, which made every well-formed
+/// string-id request fail deserialization and get answered with
+/// `-32700 PARSE_ERROR`. Parsing the id as an untagged enum keeps the numeric
+/// wire form byte-identical for existing callers while accepting the other two
+/// legal shapes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RequestId {
+    Number(serde_json::Number),
+    String(String),
+    Null,
+}
+
+impl RequestId {
+    /// The numeric value of this id, when it has one.
+    ///
+    /// Internal dispatch is keyed on `u64`; non-numeric ids are dispatched with
+    /// a placeholder and the original id is restored on the wire.
+    pub fn as_u64(&self) -> Option<u64> {
+        match self {
+            RequestId::Number(number) => number.as_u64(),
+            _ => None,
+        }
+    }
+
+    /// The JSON value for this id, suitable for echoing into a response frame.
+    pub fn to_json(&self) -> serde_json::Value {
+        match self {
+            RequestId::Number(number) => serde_json::Value::Number(number.clone()),
+            RequestId::String(text) => serde_json::Value::String(text.clone()),
+            RequestId::Null => serde_json::Value::Null,
+        }
+    }
+}
+
+impl From<u64> for RequestId {
+    fn from(value: u64) -> Self {
+        RequestId::Number(serde_json::Number::from(value))
+    }
+}
+
+/// Deserialize a *present* `id` member, including an explicit `null`.
+///
+/// `#[serde(default)]` only fires when the key is absent, so this keeps
+/// "no id" (a notification) distinguishable from `"id": null` (a request whose
+/// response must echo `null`).
+fn deserialize_present_id<'de, D>(deserializer: D) -> Result<Option<RequestId>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    RequestId::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     #[serde(default = "default_jsonrpc")]
     pub jsonrpc: String,
-    pub id: u64,
+    /// `None` means the message is a notification and MUST NOT be answered.
+    #[serde(default, deserialize_with = "deserialize_present_id")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<RequestId>,
     pub method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
@@ -26,7 +85,7 @@ impl Default for Request {
     fn default() -> Self {
         Self {
             jsonrpc: default_jsonrpc(),
-            id: 0,
+            id: Some(RequestId::from(0)),
             method: String::new(),
             params: None,
         }
@@ -37,10 +96,31 @@ impl Request {
     pub fn new(id: u64, method: impl Into<String>, params: Option<serde_json::Value>) -> Self {
         Self {
             jsonrpc: default_jsonrpc(),
-            id,
+            id: Some(RequestId::from(id)),
             method: method.into(),
             params,
         }
+    }
+
+    /// A JSON-RPC 2.0 notification — no `id`, and therefore no response.
+    pub fn notification(method: impl Into<String>, params: Option<serde_json::Value>) -> Self {
+        Self {
+            jsonrpc: default_jsonrpc(),
+            id: None,
+            method: method.into(),
+            params,
+        }
+    }
+
+    /// True when this message is a notification (no `id` member at all).
+    pub fn is_notification(&self) -> bool {
+        self.id.is_none()
+    }
+
+    /// The numeric id used for internal dispatch. String/null ids dispatch
+    /// under `0`; the caller restores the original id on the wire.
+    pub fn dispatch_id(&self) -> u64 {
+        self.id.as_ref().and_then(RequestId::as_u64).unwrap_or(0)
     }
 }
 
@@ -101,6 +181,27 @@ impl Response {
             result: Some(serde_json::Value::Null),
             error: None,
         }
+    }
+
+    /// Serialize this response, substituting the originating request's id.
+    ///
+    /// Dispatch is keyed on `u64`, but a request may legally carry a string or
+    /// null id. The response frame must echo the id exactly as received, so the
+    /// wire form is produced here rather than by serializing `self` directly.
+    pub fn to_json_with_id(&self, id: &RequestId) -> serde_json::Value {
+        let mut value = serde_json::to_value(self).unwrap_or_else(|_| {
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": error_codes::INTERNAL_ERROR,
+                    "message": "response could not be serialized",
+                },
+            })
+        });
+        if let Some(object) = value.as_object_mut() {
+            object.insert("id".to_string(), id.to_json());
+        }
+        value
     }
 }
 
@@ -213,6 +314,55 @@ mod tests {
             s.contains("\"error\""),
             "Response::error must include error; got {s}"
         );
+    }
+
+    #[test]
+    fn request_accepts_string_number_and_null_ids() {
+        let numeric: Request = serde_json::from_str(r#"{"id":7,"method":"ping"}"#).unwrap();
+        assert_eq!(numeric.id, Some(RequestId::from(7)));
+        assert_eq!(numeric.dispatch_id(), 7);
+        assert!(!numeric.is_notification());
+
+        let string: Request = serde_json::from_str(r#"{"id":"abc","method":"ping"}"#).unwrap();
+        assert_eq!(string.id, Some(RequestId::String("abc".to_string())));
+        assert_eq!(string.dispatch_id(), 0);
+        assert!(!string.is_notification());
+
+        let null: Request = serde_json::from_str(r#"{"id":null,"method":"ping"}"#).unwrap();
+        assert_eq!(null.id, Some(RequestId::Null));
+        assert!(
+            !null.is_notification(),
+            "an explicit null id is a request, not a notification"
+        );
+    }
+
+    #[test]
+    fn request_without_id_is_a_notification() {
+        let notification: Request =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","method":"ping"}"#).unwrap();
+        assert!(notification.is_notification());
+        let json = serde_json::to_string(&Request::notification("ping", None)).unwrap();
+        assert!(
+            !json.contains("\"id\""),
+            "notifications must not serialize an id; got {json}"
+        );
+    }
+
+    #[test]
+    fn numeric_request_wire_form_is_unchanged() {
+        let json = serde_json::to_string(&Request::new(3, "ping", None)).unwrap();
+        assert_eq!(json, r#"{"jsonrpc":"2.0","id":3,"method":"ping"}"#);
+    }
+
+    #[test]
+    fn response_echoes_non_numeric_request_ids() {
+        let response = Response::ok(0, serde_json::json!("pong"));
+        let json = response.to_json_with_id(&RequestId::String("call-1".to_string()));
+        assert_eq!(json["id"], serde_json::json!("call-1"));
+        assert_eq!(json["result"], serde_json::json!("pong"));
+
+        let json = response.to_json_with_id(&RequestId::Null);
+        assert!(json["id"].is_null());
     }
 
     #[test]

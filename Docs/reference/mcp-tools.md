@@ -40,6 +40,13 @@ dispatcher used by `al-explorer` and checkout-local contributor tasks.
 `tools/call` → `{ content, structuredContent, isError }`. `structuredContent` preserves the daemon
 JSON and may add agent diagnostics or blocked-test routing context.
 
+`tools/call` runs concurrently with the reader loop, so `ping` and the other lifecycle methods stay
+responsive during a long call, and `notifications/cancelled` aborts the matching call by
+`requestId` (in-flight work already delegated to an external process — a build, a live BC test run —
+still finishes). Requests without an `id` are notifications and are never answered; `"id": null` is
+answered as a request. Input lines are capped at 64 MB during read, and arguments are validated
+against the published `inputSchema`, `minItems` included.
+
 ## Notes
 
 - `al_debug` retains its session inside the MCP server workspace across calls. See

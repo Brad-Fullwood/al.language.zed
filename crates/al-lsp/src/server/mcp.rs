@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use al_protocol::jsonrpc::Request;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::sync::Notify;
 
 use al_workspace::Workspace;
@@ -379,12 +379,27 @@ fn validate_schema_value(
             }
         }
     }
-    if let (Some(array), Some(item_schema)) = (
-        value.as_array(),
-        schema.get("items").filter(|schema| schema.is_object()),
-    ) {
-        for (index, item) in array.iter().enumerate() {
-            validate_schema_value(item, item_schema, &format!("{path}[{index}]"))?;
+    if let Some(array) = value.as_array() {
+        // `minItems` is part of the published input schema (e.g.
+        // `al_testsnapshot.breakpoints`), so an empty array must be rejected
+        // here rather than reaching the daemon dispatcher.
+        if let Some(minimum) = schema.get("minItems").and_then(serde_json::Value::as_u64) {
+            if (array.len() as u64) < minimum {
+                return Err(format!(
+                    "{path} must contain at least {minimum} item{}",
+                    if minimum == 1 { "" } else { "s" }
+                ));
+            }
+        }
+        if let Some(maximum) = schema.get("maxItems").and_then(serde_json::Value::as_u64) {
+            if (array.len() as u64) > maximum {
+                return Err(format!("{path} must contain at most {maximum} items"));
+            }
+        }
+        if let Some(item_schema) = schema.get("items").filter(|schema| schema.is_object()) {
+            for (index, item) in array.iter().enumerate() {
+                validate_schema_value(item, item_schema, &format!("{path}[{index}]"))?;
+            }
         }
     }
 
@@ -1009,14 +1024,13 @@ pub(crate) async fn handle_mcp_message(
     msg: serde_json::Value,
 ) -> Option<serde_json::Value> {
     let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
-    let id = msg.get("id").cloned();
-    // Notifications (no id) get no response per JSON-RPC.
-    let id = match id {
-        Some(v) if !v.is_null() => v,
-        _ => {
-            tracing::debug!(method, "mcp: notification");
-            return None;
-        }
+    // Only a *missing* id makes the message a notification. `"id": null` is a
+    // legal (if discouraged) request id, and the session layer already treats it
+    // as one — answering it here keeps both paths consistent instead of leaving
+    // the client waiting forever for a reply that never comes.
+    let Some(id) = msg.get("id").cloned() else {
+        tracing::debug!(method, "mcp: notification");
+        return None;
     };
 
     let respond = |result: serde_json::Value| {
@@ -1280,6 +1294,33 @@ async fn handle_mcp_session_message(
     handle_mcp_message(workspace, shutdown, msg).await
 }
 
+/// Hard cap on one MCP stdio line, mirroring the daemon transport.
+const MAX_MCP_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
+
+/// Stable key for an in-flight request id, so `notifications/cancelled` can
+/// match string and numeric ids alike.
+fn cancellation_key(id: &serde_json::Value) -> String {
+    id.to_string()
+}
+
+/// Whether a message is a well-formed `tools/call` request — the only method
+/// that can run long enough to justify concurrent dispatch.
+fn is_long_running_call(msg: &serde_json::Value) -> bool {
+    msg.get("jsonrpc").and_then(serde_json::Value::as_str) == Some("2.0")
+        && msg.get("method").and_then(serde_json::Value::as_str) == Some("tools/call")
+        && msg.get("id").is_some()
+}
+
+async fn write_mcp_frame(
+    stdout: &Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
+    frame: &serde_json::Value,
+) -> std::io::Result<()> {
+    let mut guard = stdout.lock().await;
+    guard.write_all(frame.to_string().as_bytes()).await?;
+    guard.write_all(b"\n").await?;
+    guard.flush().await
+}
+
 /// Run the MCP server on stdio: newline-delimited JSON-RPC 2.0.
 pub async fn run_mcp(project_root: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let workspace = Arc::new(Workspace::new());
@@ -1293,19 +1334,25 @@ pub async fn run_mcp(project_root: PathBuf) -> Result<(), Box<dyn std::error::Er
     // Never triggered in MCP mode — exists because the shared dispatcher's
     // "shutdown" route signals it (an agent calling it just ends our loop
     // via stdin EOF anyway).
-    let shutdown = Notify::new();
+    let shutdown = Arc::new(Notify::new());
 
     let mut reader = BufReader::new(tokio::io::stdin());
-    let mut stdout = tokio::io::stdout();
-    let mut line = String::new();
+    // stdout is shared with the concurrently dispatched `tools/call` tasks, so
+    // every frame is written under one lock — MCP frames must not interleave.
+    let stdout = Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
     let mut lifecycle = McpLifecycle::default();
+    let mut in_flight: std::collections::HashMap<String, tokio::task::JoinHandle<()>> =
+        std::collections::HashMap::new();
     loop {
-        line.clear();
-        let n = reader.read_line(&mut line).await?;
-        if n == 0 {
+        // Bounded read: an unbounded `read_line` lets one huge client line
+        // allocate without limit before it is even parsed. Same 64 MB cap the
+        // daemon transport enforces.
+        let Some(line) =
+            super::daemon::read_bounded_line(&mut reader, MAX_MCP_MESSAGE_SIZE).await?
+        else {
             tracing::info!("mcp: stdin closed, exiting");
             return Ok(());
-        }
+        };
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -1314,22 +1361,66 @@ pub async fn run_mcp(project_root: PathBuf) -> Result<(), Box<dyn std::error::Er
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(error = %e, "mcp: malformed JSON line");
-                let err = serde_json::json!({
-                    "jsonrpc": "2.0", "id": null,
-                    "error": {"code": -32700, "message": format!("Parse error: {e}")}
-                });
-                stdout.write_all(err.to_string().as_bytes()).await?;
-                stdout.write_all(b"\n").await?;
-                stdout.flush().await?;
+                write_mcp_frame(
+                    &stdout,
+                    &serde_json::json!({
+                        "jsonrpc": "2.0", "id": null,
+                        "error": {"code": -32700, "message": format!("Parse error: {e}")}
+                    }),
+                )
+                .await?;
                 continue;
             }
         };
+
+        in_flight.retain(|_, handle| !handle.is_finished());
+
+        // `notifications/cancelled` aborts the matching in-flight tool call.
+        if msg.get("method").and_then(serde_json::Value::as_str) == Some("notifications/cancelled")
+        {
+            if let Some(request_id) = msg.pointer("/params/requestId") {
+                match in_flight.remove(&cancellation_key(request_id)) {
+                    Some(handle) => {
+                        handle.abort();
+                        tracing::info!(request = %request_id, "mcp: cancelled in-flight tool call");
+                    }
+                    None => {
+                        tracing::debug!(request = %request_id, "mcp: cancellation for an unknown or finished request");
+                    }
+                }
+            }
+            continue;
+        }
+
+        // A `tools/call` can run for minutes (live-BC test snapshot, build).
+        // Dispatch it concurrently so cheap lifecycle traffic — `ping` above
+        // all — keeps being answered while it runs, instead of the client
+        // concluding the server is dead.
+        if lifecycle == McpLifecycle::Ready && is_long_running_call(&msg) {
+            let key = msg
+                .get("id")
+                .map(cancellation_key)
+                .unwrap_or_else(|| "null".to_string());
+            let task_workspace = Arc::clone(&workspace);
+            let task_shutdown = Arc::clone(&shutdown);
+            let task_stdout = Arc::clone(&stdout);
+            let handle = tokio::spawn(async move {
+                if let Some(response) =
+                    handle_mcp_message(&task_workspace, &task_shutdown, msg).await
+                {
+                    if let Err(error) = write_mcp_frame(&task_stdout, &response).await {
+                        tracing::warn!(%error, "mcp: failed to write tools/call response");
+                    }
+                }
+            });
+            in_flight.insert(key, handle);
+            continue;
+        }
+
         if let Some(resp) =
             handle_mcp_session_message(&workspace, &shutdown, &mut lifecycle, msg).await
         {
-            stdout.write_all(resp.to_string().as_bytes()).await?;
-            stdout.write_all(b"\n").await?;
-            stdout.flush().await?;
+            write_mcp_frame(&stdout, &resp).await?;
         }
     }
 }
@@ -1883,6 +1974,90 @@ mod tests {
         ] {
             assert!(names.contains(&expected), "missing {expected}: {names:?}");
         }
+    }
+
+    #[test]
+    fn min_items_is_enforced_for_array_arguments() {
+        let tool = tools()
+            .iter()
+            .find(|tool| tool.name == "al_testsnapshot")
+            .expect("al_testsnapshot is registered");
+        let error = validate_tool_arguments(
+            tool,
+            &serde_json::json!({
+                "codeunitId": 50100,
+                "codeunitName": "Tests",
+                "methodName": "Run",
+                "bcVersion": "26.0",
+                "outputPath": "snapshots/base.json",
+                "breakpoints": [],
+            }),
+        )
+        .expect_err("an empty breakpoints array violates the published minItems: 1");
+        assert!(
+            error.contains("at least 1 item"),
+            "unexpected message: {error}"
+        );
+
+        validate_tool_arguments(
+            tool,
+            &serde_json::json!({
+                "codeunitId": 50100,
+                "codeunitName": "Tests",
+                "methodName": "Run",
+                "bcVersion": "26.0",
+                "outputPath": "snapshots/base.json",
+                "breakpoints": [{"file": "T.al", "line": 12}],
+            }),
+        )
+        .expect("one breakpoint satisfies the schema");
+    }
+
+    /// `handle_mcp_message` treated `"id": null` as a notification while the
+    /// session layer treated it as a request, so such a call silently hung.
+    #[tokio::test]
+    async fn a_null_id_is_answered_on_both_paths() {
+        let response = handle_mcp_message(
+            &ws(),
+            &Notify::new(),
+            serde_json::json!({"jsonrpc":"2.0","id":null,"method":"ping"}),
+        )
+        .await
+        .expect("a request with a null id must receive a response");
+        assert!(response["id"].is_null());
+        assert_eq!(response["result"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn only_tools_call_requests_are_dispatched_concurrently() {
+        assert!(is_long_running_call(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "al_build", "arguments": {}}
+        })));
+        // Lifecycle traffic stays on the reader loop so ordering is preserved.
+        assert!(!is_long_running_call(
+            &serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "ping"})
+        ));
+        // A notification has no response to write.
+        assert!(!is_long_running_call(
+            &serde_json::json!({"jsonrpc": "2.0", "method": "tools/call"})
+        ));
+        // A malformed envelope is rejected by the session layer, not spawned.
+        assert!(!is_long_running_call(
+            &serde_json::json!({"id": 3, "method": "tools/call"})
+        ));
+    }
+
+    #[test]
+    fn cancellation_keys_distinguish_string_and_numeric_ids() {
+        assert_eq!(
+            cancellation_key(&serde_json::json!(7)),
+            cancellation_key(&serde_json::json!(7))
+        );
+        assert_ne!(
+            cancellation_key(&serde_json::json!(7)),
+            cancellation_key(&serde_json::json!("7"))
+        );
     }
 
     #[tokio::test]

@@ -519,7 +519,7 @@ pub(super) async fn apply_recommended_settings(server: &AlServer) {
 /// reference search as `textDocument/references`. Always returns a JSON array
 /// (empty when nothing is found) so the client can present the results — and so
 /// the click is never the silent no-op the catch-all dispatch arm produced.
-pub(super) fn find_references(
+pub(super) async fn find_references(
     server: &AlServer,
     arguments: &[serde_json::Value],
 ) -> Result<serde_json::Value, String> {
@@ -533,13 +533,16 @@ pub(super) fn find_references(
     let (Some(uri), Some(position)) = (uri, position) else {
         return Err("al.findReferences requires { uri, position } arguments".to_string());
     };
-    let locations = al_analysis::queries::references::references(
-        &server.workspace,
-        &uri,
-        position.into(),
-        false,
-    )
-    .map_err(|error| error.to_string())?;
+    // Same workspace-wide walk as `textDocument/references`, so it gets the
+    // same treatment: run it on the blocking pool instead of stalling the async
+    // executor that drives every other request.
+    let workspace = std::sync::Arc::clone(&server.workspace);
+    let locations = tokio::task::spawn_blocking(move || {
+        al_analysis::queries::references::references(&workspace, &uri, position.into(), false)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("al.findReferences worker failed: {error}"))??;
     let lsp_locations: Vec<Location> = locations.into_iter().map(Into::into).collect();
     serde_json::to_value(lsp_locations)
         .map_err(|error| format!("serializing al.findReferences result failed: {error}"))

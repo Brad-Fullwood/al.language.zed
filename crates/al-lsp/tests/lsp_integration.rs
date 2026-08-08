@@ -1637,3 +1637,103 @@ fn suggest_event_real_workspace_files() {
 
     println!("\n✓ All real-world suggest_event tests passed");
 }
+
+// ---------------------------------------------------------------------------
+// Non-ASCII / UTF-16 position conversion
+//
+// LSP columns are UTF-16 code units; tree-sitter reports byte columns. Nothing
+// in this crate exercised that boundary with multi-byte content, so a
+// byte-vs-UTF-16 mix-up in the al-lsp glue would have gone unnoticed.
+// ---------------------------------------------------------------------------
+
+/// Locate the first node of `kind` in the tree.
+fn find_node<'tree>(
+    node: tree_sitter::Node<'tree>,
+    kind: &str,
+    name: &str,
+    source: &str,
+) -> Option<tree_sitter::Node<'tree>> {
+    if node.kind() == kind && node.utf8_text(source.as_bytes()).is_ok_and(|t| t == name) {
+        return Some(node);
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(found) = find_node(child, kind, name, source) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+#[test]
+fn ts_range_to_lsp_converts_byte_columns_to_utf16_units() {
+    // "Ærø" is 5 UTF-8 bytes but 3 UTF-16 units; "𝄞" is 4 bytes / 2 units.
+    let source = "codeunit 50100 Test\n{\n    // Ærø 𝄞\n    procedure Målsætning()\n    begin\n    end;\n}\n";
+    let parsed = al_syntax::AlParser::parse_quick(source);
+    let node = find_node(parsed.tree.root_node(), "identifier", "Målsætning", source)
+        .expect("the procedure name must be in the tree");
+
+    let range = al_lsp::syntax_lsp::ts_range_to_lsp(&node.range(), source.as_bytes());
+
+    let line = source.lines().nth(3).expect("procedure line");
+    let expected_start = line
+        .find("Målsætning")
+        .map(|byte| line[..byte].encode_utf16().count())
+        .expect("name on the procedure line") as u32;
+    assert_eq!(range.start.line, 3);
+    assert_eq!(
+        range.start.character, expected_start,
+        "start column must be UTF-16 units, not bytes"
+    );
+    assert_eq!(
+        range.end.character,
+        expected_start + "Målsætning".encode_utf16().count() as u32,
+        "end column must be UTF-16 units, not bytes"
+    );
+    assert!(
+        u32::try_from(node.range().end_point.column).unwrap() > range.end.character,
+        "the byte column must exceed the UTF-16 column here, or the fixture lost its multi-byte characters"
+    );
+}
+
+#[test]
+fn ts_range_to_lsp_handles_astral_plane_characters() {
+    // A single astral-plane character occupies two UTF-16 units.
+    let source =
+        "codeunit 50100 T\n{\n    // 𝄞𝄞 marker\n    procedure After()\n    begin\n    end;\n}\n";
+    let parsed = al_syntax::AlParser::parse_quick(source);
+    let node = find_node(parsed.tree.root_node(), "identifier", "After", source)
+        .expect("the procedure name must be in the tree");
+    let range = al_lsp::syntax_lsp::ts_range_to_lsp(&node.range(), source.as_bytes());
+    assert_eq!(range.start.line, 3);
+    assert_eq!(
+        range.start.character,
+        "    procedure ".encode_utf16().count() as u32
+    );
+}
+
+#[test]
+fn diagnostic_ranges_on_multi_byte_lines_are_utf16_columns() {
+    // An unterminated string on a line that starts with multi-byte text: the
+    // reported column must be UTF-16 units so the squiggle lands correctly.
+    let source = "codeunit 50100 T\n{\n    procedure P()\n    var\n        Lbl: Label 'Ærø 𝄞';\n    begin\n    end;\n}\n";
+    let parsed = al_syntax::AlParser::parse_quick(source);
+    let diagnostics = al_syntax::lint(&parsed.tree, source);
+    for diagnostic in &diagnostics {
+        let line_index = diagnostic.range.start_point.row;
+        let Some(line) = source.lines().nth(line_index) else {
+            continue;
+        };
+        let lsp = al_lsp::syntax_lsp::ts_range_to_lsp(&diagnostic.range, source.as_bytes());
+        assert!(
+            lsp.start.character as usize <= line.encode_utf16().count(),
+            "column {} is past the {}-unit line {line:?}",
+            lsp.start.character,
+            line.encode_utf16().count()
+        );
+        assert!(
+            lsp.start.character as usize <= diagnostic.range.start_point.column,
+            "a UTF-16 column can never exceed the byte column"
+        );
+    }
+}

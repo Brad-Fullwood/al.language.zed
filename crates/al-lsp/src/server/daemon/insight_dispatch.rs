@@ -47,7 +47,15 @@ pub(super) fn dispatch_trace(
         Ok(graph) => graph,
         Err(error) => return graph_build_error(id, "trace", error),
     };
-    let steps = al_insight::search::trace_event(&graph, event_name, max_depth);
+    // Supply the call graph so the trace can follow the events a subscriber's
+    // body actually raises instead of fabricating hops from its object's
+    // unrelated publishers.
+    let steps = al_insight::search::trace_event_with_calls(
+        &graph,
+        _cg_guard.as_ref(),
+        event_name,
+        max_depth,
+    );
     serialized_response(id, &steps, "trace")
 }
 
@@ -56,7 +64,10 @@ pub(super) fn dispatch_entrypoints(workspace: &Workspace, id: u64) -> Response {
         Ok(graph) => graph,
         Err(error) => return graph_build_error(id, "entrypoints", error),
     };
-    let entry_points = al_insight::search::find_entry_points(&graph);
+    // Call edges live in the CallGraph, not the InsightGraph — pass it, or the
+    // filter has nothing to exclude and every procedure looks like an entry
+    // point.
+    let entry_points = al_insight::search::find_entry_points_with_calls(&graph, _cg_guard.as_ref());
     serialized_response(id, &entry_points, "entrypoints")
 }
 
@@ -407,19 +418,39 @@ mod tests {
         assert_invalid_params(&resp);
     }
 
+    /// One unparsable file no longer takes the whole query down: it is skipped
+    /// per file (see `al_analysis::workspace_sources`), and the remaining files
+    /// still produce a report.
     #[test]
-    fn dispatch_impact_rejects_malformed_workspace_instead_of_returning_partial_results() {
+    fn dispatch_impact_degrades_per_file_on_a_malformed_workspace_source() {
         let ws = Workspace::new();
         ws.file_index.add_file(
             std::path::PathBuf::from("/project/Broken.al"),
             "codeunit 50100 Broken { procedure Incomplete(".to_string(),
         );
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/project/Uses.Codeunit.al"),
+            "codeunit 50101 Uses\n{\n    procedure P()\n    var\n        C: Record Customer;\n    begin\n    end;\n}\n"
+                .to_string(),
+        );
 
         let resp = dispatch_impact(&ws, 4, &serde_json::json!({ "symbol": "Customer" }));
-        assert!(resp.result.is_none());
-        let error = resp.error.expect("incomplete impact input must fail");
-        assert_eq!(error.code, error_codes::INTERNAL_ERROR);
-        assert!(error.message.contains("incomplete workspace snapshot"));
+        assert!(
+            resp.error.is_none(),
+            "one broken file must not fail the whole query: {:?}",
+            resp.error
+        );
+        let value = resp.result.expect("must carry a result");
+        let impacted = value
+            .get("impacted")
+            .and_then(|value| value.as_array())
+            .expect("impact result carries an 'impacted' array");
+        assert!(
+            impacted
+                .iter()
+                .any(|entry| entry.get("n").and_then(|v| v.as_str()) == Some("Uses")),
+            "the parsable file must still be reported: {value}"
+        );
     }
 
     #[test]

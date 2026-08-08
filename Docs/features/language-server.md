@@ -11,11 +11,17 @@ etc.) are in [analysis-and-insight](./analysis-and-insight.md), and refactorings
 
 ## Advertised capabilities
 
-From `server/lsp.rs` `initialize`, the server advertises: full text sync, save (no text), hover,
-completion (trigger chars `.` `:`), definition, references, document symbols, document & range
-formatting, folding ranges, rename (with prepare), semantic tokens (full + legend), CodeLens,
-inlay hints, signature help (trigger chars `(` `,`), workspace symbols, code actions, pull
-diagnostics (`identifier: "al-lsp"`, inter-file dependencies), and execute commands.
+From `server/lsp.rs` `initialize`, the server advertises: **incremental** text sync, save (no text),
+hover, completion (trigger chars `.` `:`), definition, **implementation**, references, document
+symbols, document & range formatting, folding ranges, rename (with prepare), semantic tokens
+(full + legend), CodeLens, inlay hints, signature help (trigger chars `(` `,`), workspace symbols,
+code actions, pull diagnostics (`identifier: "al-lsp"`, inter-file dependencies), and execute
+commands. Beyond the standard methods it also serves the custom `experimental/runnables` request
+used by Zed's runnables UI.
+
+Text sync is `TextDocumentSyncKind::INCREMENTAL`: `did_change` applies ranged edits (with UTF-16
+column handling) through `al-source`'s document store. A change notification without a range — a
+full replacement — is applied by the same path, so clients that only send full text keep working.
 
 ### Client capability gating
 
@@ -23,7 +29,8 @@ The server adapts its responses to the client (negotiated at `initialize`):
 
 - `textDocument.definition.linkSupport` → returns `LocationLink[]` vs `Location[]`.
 - `textDocument.documentSymbol.hierarchicalDocumentSymbolSupport` → nested `DocumentSymbol[]` vs flat
-  `SymbolInformation[]` (flattened by `server/conversions.rs`).
+  `SymbolInformation[]` (flattened by `al_analysis::lsp::flatten_document_symbols`, called from
+  `server/lsp.rs`).
 
 ## Feature reference
 
@@ -51,11 +58,16 @@ Each feature below names the query module that implements the (transport-agnosti
 `server/diagnostics.rs` runs diagnostics in two phases:
 
 1. **Phase 1 (instant):** tree-sitter parse errors, published immediately on open and on a **400 ms
-   debounce** after edits. Debouncing exists so the slow semantic bridge can never block
+   debounce** after edits. The debounce is **per document**, so an edit in one file never cancels
+   another file's pending run. Debouncing exists so the slow semantic bridge can never block
    hover/completion.
 2. **Phase 2 (async):** the .NET CodeAnalysis bridge (`analyze`) for compiler-grade diagnostics,
    gated by `al.enableCodeAnalysis` / `al.backgroundCodeAnalysis` / `al.diagnosticsTrigger` /
    `al.diagnosticsScope`. Results are merged and published when ready.
+
+With `al.diagnosticsScope: "project"`, a keystroke refreshes only the edited file on the 400 ms
+debounce; the whole-workspace republish runs on a longer (5 s) debounce after a typing burst and on
+every save, so typing no longer costs O(workspace) per pause.
 
 Both push (`publishDiagnostics`) and pull (`textDocument/diagnostic`) flows are supported; pull
 computes both phases synchronously. Diagnostic messages are enriched with descriptions from the
@@ -64,7 +76,10 @@ bridge's error-code catalog. Virtual symbol-cache files are skipped.
 ### Document lifecycle correctness
 
 `did_change` applies edits and reads text under a single write lock, warns on out-of-order versions
-rather than erroring, and cancels stale debounced diagnostics.
+rather than erroring, and cancels only *that document's* stale debounced diagnostics. Requests that
+call the semantic bridge (hover, completion, inlay hints) take the workspace generation read guard
+only long enough to capture a document snapshot and release it before awaiting the bridge, so a slow
+bridge call cannot queue a `did_change` writer — and every reader behind it — for seconds.
 `did_close` aborts pending diagnostics and clears state. `did_save` always re-publishes.
 
 ## LSP execute commands
@@ -115,8 +130,9 @@ implementation, no drift.
 
 In Zed, these features work automatically once `al-lsp` is resolved. The terminal exposes the listed
 CLI query subset through `al-explorer hover|definition|references|signature|completions|symbols|
-folding|tokens|rename|hints <file> [pos...]`; daemon-only operations such as `implementations` and
-`codeActions` remain reachable through MCP `al_call`. See [cli-and-tui](./cli-and-tui.md) and the
+folding|tokens|rename|hints <file> [pos...]`. `textDocument/implementation` is served by the LSP as
+well (and advertised as a capability); `codeActions` is additionally reachable through MCP
+`al_call`. See [cli-and-tui](./cli-and-tui.md) and the
 [LSP command reference](../reference/lsp-commands.md).
 
 From MCP, `al_call` exposes the daemon equivalents (`hover`, `definition`, `references`,

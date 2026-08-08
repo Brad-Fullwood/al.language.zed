@@ -39,6 +39,15 @@ fn content_modified_error() -> tower_lsp::jsonrpc::Error {
 /// prevents bridge calls (up to 5s) from blocking hover/completion.
 const DIAGNOSTICS_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
 
+/// Debounce delay for the whole-workspace republish used by
+/// `diagnosticsScope: "project"`.
+///
+/// That pass recomputes syntax diagnostics for *every* indexed file, so running
+/// it on the per-keystroke debounce made each typing pause O(workspace). The
+/// changed file is still refreshed on the 400 ms debounce; the project-wide
+/// generation follows a typing burst (and every save).
+const WORKSPACE_DIAGNOSTICS_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Every `al.*` command the server advertises in `executeCommandProvider` and
 /// handles in [`AlServer::execute_command`]. Single source of truth: the
 /// capability list and the dispatch both derive from this slice, and the
@@ -156,10 +165,18 @@ pub struct AlServer {
     pub(crate) session: LspSessionState,
     /// Root URI from initialize params, used in initialized().
     pub(crate) root_uri: RwLock<Option<Url>>,
-    /// Handle to the currently-pending debounced diagnostics task.
-    /// Replaced (and thus cancelled) on every new keystroke.
-    /// diagnostics run async, not inline in did_change.
-    pub(crate) diag_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Pending debounced diagnostics tasks, keyed by document URI.
+    ///
+    /// The debounce is per document: a keystroke in file B must not cancel the
+    /// pending diagnostics run for file A. A single shared slot did exactly
+    /// that, leaving A with stale squiggles until its next edit or save.
+    pub(crate) diag_tasks: Mutex<std::collections::HashMap<Url, tokio::task::JoinHandle<()>>>,
+    /// Pending workspace-wide (`diagnosticsScope: "project"`) republish.
+    ///
+    /// The whole-workspace pass is inherently global, so it keeps a single slot
+    /// — but on a much longer debounce than the per-file pass, so a typing
+    /// burst no longer recomputes every indexed file per keystroke.
+    pub(crate) workspace_diag_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Handle to the background workspace initialisation task.
     /// workspace init runs async so initialized() returns promptly.
     pub(crate) init_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -401,7 +418,11 @@ mod document_close_generation_tests {
 }
 
 impl AlServer {
-    pub(crate) fn new(client: Client) -> Self {
+    /// Construct a server bound to `client`.
+    ///
+    /// Public so black-box transport tests can build a real
+    /// `LspService`/`Server` pair (see `tests/lsp_transport.rs`).
+    pub fn new(client: Client) -> Self {
         let workspace = Arc::new(Workspace::new());
         let (workspace_init_state, _initial_receiver) =
             watch::channel(WorkspaceInitState::Initializing);
@@ -432,7 +453,8 @@ impl AlServer {
             workspace,
             session,
             root_uri: RwLock::new(None),
-            diag_task: Mutex::new(None),
+            diag_tasks: Mutex::new(std::collections::HashMap::new()),
+            workspace_diag_task: Mutex::new(None),
             init_task: Mutex::new(None),
             reindex_task: Mutex::new(None),
             init_done: AtomicBool::new(false),
@@ -592,6 +614,35 @@ impl AlServer {
             .map(|v| v.value().clone())
     }
 
+    /// Wait for a usable workspace generation, then release the read guard and
+    /// return the document snapshot the request will be served from.
+    ///
+    /// Holding the generation read guard across an awaited semantic-bridge call
+    /// (up to the 5 s bridge timeout) queues a `did_change` writer behind it on
+    /// tokio's fair `RwLock`, which in turn blocks every later reader — one slow
+    /// bridge hover stalled typing and every other request. The snapshot lets
+    /// the caller detect a document that moved on under it instead.
+    async fn snapshot_after_ready(&self, uri: &Url) -> Result<Option<(Arc<String>, i32)>> {
+        let generation = self.await_ready().await?;
+        let snapshot = self.workspace.documents.get_text_and_client_version(uri);
+        drop(generation);
+        Ok(snapshot)
+    }
+
+    /// Whether `uri` still holds the exact snapshot a request started from.
+    fn snapshot_is_current(&self, uri: &Url, snapshot: &Option<(Arc<String>, i32)>) -> bool {
+        let Some((text, version)) = snapshot else {
+            // Nothing was open when the request started; nothing to invalidate.
+            return true;
+        };
+        self.workspace
+            .documents
+            .get_text_and_client_version(uri)
+            .is_some_and(|(current_text, current_version)| {
+                current_version == *version && Arc::ptr_eq(&current_text, text)
+            })
+    }
+
     async fn runnables(&self, params: RunnablesParams) -> Result<Vec<Runnable>> {
         let _generation = self.await_ready().await?;
         let file_path = params.text_document.uri.to_file_path().map_err(|()| {
@@ -694,23 +745,25 @@ impl AlServer {
             return;
         }
 
-        // Hold the `diag_task` lock across abort → spawn → store as one
+        // Hold the `diag_tasks` lock across abort → spawn → store as one
         // critical section. Releasing it between the abort and the store let two
         // interleaved did_change handlers both observe "no pending task", spawn
         // two debounce tasks, and race two publishes for the same URI — the
         // second store overwrote the first handle without aborting it. Holding
         // the guard serializes scheduling so only the most recent keystroke's
-        // task survives.
-        let mut guard = self.diag_task.lock().await;
-        if let Some(old) = guard.take() {
+        // task survives — *for this URI*; other documents keep their pending
+        // runs.
+        let mut guard = self.diag_tasks.lock().await;
+        guard.retain(|_, handle| !handle.is_finished());
+        if let Some(old) = guard.remove(&uri) {
             old.abort();
         }
 
         let workspace = Arc::clone(&self.workspace);
         let client = self.client.clone();
-        let semantic_diagnostic_cache = Arc::clone(&self.semantic_diagnostic_cache);
         let workspace_diagnostic_uris = Arc::clone(&self.workspace_diagnostic_uris);
         let session = self.session.clone();
+        let uri_key = uri.clone();
         let handle = tokio::spawn(async move {
             tokio::time::sleep(DIAGNOSTICS_DEBOUNCE).await;
             if session.is_cancelled() {
@@ -734,25 +787,16 @@ impl AlServer {
                 tracing::debug!(uri = %uri, "debounced diagnostics: document no longer open, skipping publish");
                 return;
             };
-            if workspace.config.read().await.diagnostics_scope
-                == al_project::config::DiagnosticsScope::Project
-            {
-                crate::server::diagnostics::publish_workspace_diagnostics_parts(
-                    workspace,
-                    client,
-                    semantic_diagnostic_cache,
-                    workspace_diagnostic_uris,
-                    Some(uri),
-                    &session,
-                )
-                .await;
-                return;
-            }
             // Read config here (not at schedule time) so only the task that
             // survives the debounce pays the clone — keystrokes that abort the
             // previous task before its sleep elapses never clone AlConfig. The
             // clone is needed so per-rule lint filtering works in spawn_blocking.
             let config = workspace.config.read().await.clone();
+            // Project scope recomputes only the file that changed here; the
+            // whole-workspace generation is republished on its own (much
+            // longer) debounce and on save.
+            let project_scope =
+                config.diagnostics_scope == al_project::config::DiagnosticsScope::Project;
             let project_root = workspace
                 .project
                 .read()
@@ -807,12 +851,63 @@ impl AlServer {
             if session.is_cancelled() {
                 return;
             }
+            if project_scope {
+                // Keep the project-scope bookkeeping consistent: the next
+                // whole-workspace pass clears only URIs it previously
+                // published, so record (or drop) this one accordingly.
+                let mut published = workspace_diagnostic_uris.lock().await;
+                if lsp_diags.is_empty() {
+                    published.remove(&uri);
+                } else {
+                    published.insert(uri.clone());
+                }
+            }
             client
                 .publish_diagnostics(uri, lsp_diags, Some(document_version))
                 .await;
         });
 
-        *guard = Some(handle);
+        guard.insert(uri_key, handle);
+    }
+
+    /// Schedule the debounced whole-workspace diagnostics republish used by
+    /// `diagnosticsScope: "project"`.
+    ///
+    /// Only one is ever pending: the pass is global, and re-arming it on each
+    /// keystroke is exactly what keeps a typing burst from paying O(workspace)
+    /// per pause.
+    async fn schedule_workspace_diagnostics(&self) {
+        let mut guard = self.workspace_diag_task.lock().await;
+        if let Some(old) = guard.take() {
+            old.abort();
+        }
+        let workspace = Arc::clone(&self.workspace);
+        let client = self.client.clone();
+        let semantic_diagnostic_cache = Arc::clone(&self.semantic_diagnostic_cache);
+        let workspace_diagnostic_uris = Arc::clone(&self.workspace_diagnostic_uris);
+        let session = self.session.clone();
+        *guard = Some(tokio::spawn(async move {
+            tokio::time::sleep(WORKSPACE_DIAGNOSTICS_DEBOUNCE).await;
+            if session.is_cancelled() {
+                return;
+            }
+            crate::server::diagnostics::publish_workspace_diagnostics_parts(
+                workspace,
+                client,
+                semantic_diagnostic_cache,
+                workspace_diagnostic_uris,
+                None,
+                &session,
+            )
+            .await;
+        }));
+    }
+
+    /// Cancel a pending project-scope republish (a save or close supersedes it).
+    async fn cancel_workspace_diagnostics(&self) {
+        if let Some(task) = self.workspace_diag_task.lock().await.take() {
+            task.abort();
+        }
     }
 }
 
@@ -888,7 +983,14 @@ impl LanguageServer for AlServer {
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
                         open_close: Some(true),
-                        change: Some(TextDocumentSyncKind::FULL),
+                        // INCREMENTAL: `did_change` applies ranged edits through
+                        // `al_source::documents` with UTF-16 column handling, so
+                        // there is no reason to make every keystroke re-send and
+                        // re-ingest the whole document. A change notification
+                        // without a range (full replacement) is still accepted by
+                        // the same path, so clients that send full text keep
+                        // working.
+                        change: Some(TextDocumentSyncKind::INCREMENTAL),
                         // Request save notifications so did_save can refresh diagnostics.
                         // `include_text: false` — we already have the latest text in the
                         // document store from did_change, so there's no need to re-send it.
@@ -1023,7 +1125,14 @@ impl LanguageServer for AlServer {
             .send_replace(WorkspaceInitState::Failed(
                 "language server is shutting down".to_string(),
             ));
-        if let Some(task) = self.diag_task.lock().await.take() {
+        let pending_diagnostics: Vec<tokio::task::JoinHandle<()>> = {
+            let mut guard = self.diag_tasks.lock().await;
+            guard.drain().map(|(_, task)| task).collect()
+        };
+        for task in pending_diagnostics
+            .into_iter()
+            .chain(self.workspace_diag_task.lock().await.take())
+        {
             task.abort();
             if let Err(error) = task.await {
                 if !error.is_cancelled() {
@@ -1140,15 +1249,24 @@ impl LanguageServer for AlServer {
                 al_workspace::on_document_change(&self.workspace, &uri, &text_arc);
                 // Only schedule per-keystroke diagnostics when trigger is Continuous.
                 // In OnSave mode, diagnostics are deferred to did_save to avoid per-keystroke work.
-                let trigger = self.workspace.config.read().await.diagnostics_trigger;
+                let (trigger, scope) = {
+                    let config = self.workspace.config.read().await;
+                    (config.diagnostics_trigger, config.diagnostics_scope)
+                };
                 drop(generation);
                 if trigger == al_project::config::DiagnosticsTrigger::Continuous {
-                    self.schedule_diagnostics(uri).await;
+                    self.schedule_diagnostics(uri.clone()).await;
+                    if scope == al_project::config::DiagnosticsScope::Project {
+                        self.schedule_workspace_diagnostics().await;
+                    }
                 } else {
-                    // Cancel any lingering debounced task from a previous Continuous session.
-                    if let Some(old) = self.diag_task.lock().await.take() {
+                    // Cancel any lingering debounced task for THIS document from
+                    // a previous Continuous session. Other documents' pending
+                    // runs are untouched.
+                    if let Some(old) = self.diag_tasks.lock().await.remove(&uri) {
                         old.abort();
                     }
+                    self.cancel_workspace_diagnostics().await;
                 }
             }
             Err(error) => {
@@ -1193,11 +1311,12 @@ impl LanguageServer for AlServer {
         }
         self.semantic_diagnostic_cache.lock().await.remove(&uri);
 
-        // Cancel any pending debounced diagnostics task. Without this, a task
-        // armed by the last keystroke can wake after the close and publish
-        // ghost squiggles. The in-task `contains` check is the primary guard;
-        // aborting here also prevents unnecessary work.
-        if let Some(old) = self.diag_task.lock().await.take() {
+        // Cancel this document's pending debounced diagnostics task. Without
+        // this, a task armed by the last keystroke can wake after the close and
+        // publish ghost squiggles. The in-task `contains` check is the primary
+        // guard; aborting here also prevents unnecessary work. Other documents
+        // keep their pending runs.
+        if let Some(old) = self.diag_tasks.lock().await.remove(&uri) {
             old.abort();
         }
 
@@ -1288,6 +1407,17 @@ impl LanguageServer for AlServer {
             diagnostics::publish_diagnostics(self, &uri, text, version).await;
         } else {
             tracing::warn!(uri = %uri, "did_save: document not in store, skipping diagnostics");
+        }
+
+        // Project scope republishes the whole workspace generation on save.
+        // Per-keystroke edits only refresh the changed file (see
+        // `schedule_diagnostics`), so save is the point where cross-file
+        // consequences of the edit become visible.
+        if self.workspace.config.read().await.diagnostics_scope
+            == al_project::config::DiagnosticsScope::Project
+        {
+            self.cancel_workspace_diagnostics().await;
+            diagnostics::publish_workspace_diagnostics(self).await;
         }
     }
 
@@ -1474,28 +1604,39 @@ impl LanguageServer for AlServer {
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
-        let _generation = self.await_ready().await?;
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
+        // The generation read guard is released here, before the awaited bridge
+        // calls below, so a concurrent edit is never queued behind this request.
+        let snapshot = self.snapshot_after_ready(uri).await?;
         self.ensure_builtins_loaded().await?;
         let start = std::time::Instant::now();
         let result = hover::handle_hover(self, uri, position)
             .await
             .map_err(internal_error)?;
+        if !self.snapshot_is_current(uri, &snapshot) {
+            tracing::debug!(uri = %uri, "hover: document changed during analysis, discarding stale result");
+            return Ok(None);
+        }
         let elapsed = start.elapsed();
         tracing::debug!(uri = %uri, line = position.line, col = position.character, found = result.is_some(), elapsed_us = elapsed.as_micros() as u64, "hover");
         Ok(result)
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-        let _generation = self.await_ready().await?;
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
+        // See `snapshot_after_ready`: the guard must not span the bridge await.
+        let snapshot = self.snapshot_after_ready(uri).await?;
         self.ensure_builtins_loaded().await?;
         let start = std::time::Instant::now();
         let result = completions::handle_completion(self, uri, position)
             .await
             .map_err(internal_error)?;
+        if !self.snapshot_is_current(uri, &snapshot) {
+            tracing::debug!(uri = %uri, "completion: document changed during analysis, discarding stale result");
+            return Ok(None);
+        }
         let elapsed = start.elapsed();
         let count = result
             .as_ref()
@@ -1740,8 +1881,11 @@ impl LanguageServer for AlServer {
         let uri = &params.text_document.uri;
         let range = params.range;
         let diagnostics = &params.context.diagnostics;
+        // Honour the client's `only` filter: a request for `quickfix` must not
+        // come back with the `source` actions.
+        let only = params.context.only.as_ref();
         let start = std::time::Instant::now();
-        let result = handlers::handle_code_action(self, uri, range, diagnostics);
+        let result = handlers::handle_code_action(self, uri, range, diagnostics, only);
         let elapsed = start.elapsed();
         let count = result.as_ref().map(|v| v.len()).unwrap_or(0);
         tracing::debug!(uri = %uri, actions = count, elapsed_us = elapsed.as_micros() as u64, "code_action");
@@ -1870,7 +2014,16 @@ impl LanguageServer for AlServer {
     ) -> Result<Option<Vec<SymbolInformation>>> {
         let _generation = self.await_ready().await?;
         let start = std::time::Instant::now();
-        let result = workspace::handle_workspace_symbol(self, &params.query);
+        // Up to 10 000 results from a workspace-wide scan: run it on the
+        // blocking pool like `references`/`documentSymbol` already do, so a
+        // broad query cannot stall the executor driving every other request.
+        let workspace_handle = Arc::clone(&self.workspace);
+        let query = params.query.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            workspace::handle_workspace_symbol(&workspace_handle, &query)
+        })
+        .await
+        .map_err(|error| internal_error(format!("workspace-symbol worker failed: {error}")))?;
         let elapsed = start.elapsed();
         let count = result.as_ref().map(|v| v.len()).unwrap_or(0);
         tracing::debug!(query = %params.query, count, elapsed_us = elapsed.as_micros() as u64, "workspace_symbol");
@@ -1878,9 +2031,11 @@ impl LanguageServer for AlServer {
     }
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
-        let _generation = self.await_ready().await?;
         let uri = &params.text_document.uri;
         let range = params.range;
+        // `ensure_builtins_loaded` awaits the semantic bridge; the generation
+        // guard is released before that await (see `snapshot_after_ready`).
+        let _snapshot = self.snapshot_after_ready(uri).await?;
         self.ensure_builtins_loaded().await?;
         let start = std::time::Instant::now();
         let result = handlers::handle_inlay_hint(self, uri, range).map_err(internal_error)?;
@@ -2004,7 +2159,9 @@ impl LanguageServer for AlServer {
             // Each CodeLens-backed command returns `Some(..)` so a click
             // performs the action instead of silently hitting the catch-all.
             "al.findReferences" => Ok(Some(
-                commands::find_references(self, &params.arguments).map_err(internal_error)?,
+                commands::find_references(self, &params.arguments)
+                    .await
+                    .map_err(internal_error)?,
             )),
             "al.showProfiler" => Ok(Some(
                 commands::show_profiler(self, &params.arguments).map_err(internal_error)?,
@@ -2081,7 +2238,7 @@ fn build_runnables(
     explorer: &std::path::Path,
     has_project: bool,
     test_codeunits: &[al_analysis::queries::tests::TestCodeunit],
-    _position: Option<Position>,
+    position: Option<Position>,
 ) -> Vec<Runnable> {
     let program = explorer.to_string_lossy().into_owned();
     let shell = |label: String, args: Vec<String>, location: Option<LocationLink>| Runnable {
@@ -2114,6 +2271,29 @@ fn build_runnables(
         None,
     ));
 
+    // "Runnable at cursor": when the client sends a position, only the test
+    // whose declaration the cursor sits on (or inside, up to the next test)
+    // is returned. Without a position the whole file's tests are listed.
+    let cursor_line = position.map(|position| position.line);
+    let file_tests: Vec<(&al_analysis::queries::tests::TestCodeunit, u32)> = test_codeunits
+        .iter()
+        .filter(|codeunit| paths_equivalent(std::path::Path::new(&codeunit.file), file_path))
+        .flat_map(|codeunit| {
+            codeunit
+                .tests
+                .iter()
+                .map(move |test| (codeunit, test.line.saturating_sub(1)))
+        })
+        .collect();
+    // The innermost test declaration at or above the cursor.
+    let selected_line = cursor_line.and_then(|cursor| {
+        file_tests
+            .iter()
+            .map(|(_, line)| *line)
+            .filter(|line| *line <= cursor)
+            .max()
+    });
+
     for codeunit in test_codeunits
         .iter()
         .filter(|codeunit| paths_equivalent(std::path::Path::new(&codeunit.file), file_path))
@@ -2122,6 +2302,9 @@ fn build_runnables(
             // Test discovery reports human-readable 1-based lines. LSP ranges
             // are zero-based, including the custom Zed runnable location.
             let line = test.line.saturating_sub(1);
+            if cursor_line.is_some() && selected_line != Some(line) {
+                continue;
+            }
             let range = Range {
                 start: Position { line, character: 0 },
                 end: Position { line, character: 0 },
@@ -2247,6 +2430,107 @@ mod runnables_tests {
     }
 
     #[test]
+    fn position_selects_only_the_test_under_the_cursor() {
+        let root = tempfile::tempdir().expect("temporary project");
+        let file = root.path().join("CustomerTests.Codeunit.al");
+        std::fs::write(&file, "codeunit 50100 CustomerTests {}").expect("test file");
+        let explorer = root.path().join("al-explorer");
+        let uri = Url::from_file_path(&file).expect("file URI");
+        let tests = vec![TestCodeunit {
+            name: "Customer Tests".to_string(),
+            id: 50100,
+            file: file.to_string_lossy().into_owned(),
+            tests: vec![
+                TestProcedure {
+                    name: "First".to_string(),
+                    line: 5,
+                    handler_functions: Vec::new(),
+                },
+                TestProcedure {
+                    name: "Second".to_string(),
+                    line: 20,
+                    handler_functions: Vec::new(),
+                },
+            ],
+            test_initializers: Vec::new(),
+            test_cleanups: Vec::new(),
+        }];
+
+        // Cursor inside the body of the second test (0-based line 25).
+        let at_second = build_runnables(
+            &uri,
+            &file,
+            root.path(),
+            &explorer,
+            false,
+            &tests,
+            Some(Position {
+                line: 25,
+                character: 4,
+            }),
+        );
+        let labels: Vec<&str> = at_second.iter().map(|r| r.label.as_str()).collect();
+        assert!(
+            labels.contains(&"AL: Test Customer Tests.Second"),
+            "cursor in the second test must offer it: {labels:?}"
+        );
+        assert!(
+            !labels.contains(&"AL: Test Customer Tests.First"),
+            "a positioned request must not return every test in the file: {labels:?}"
+        );
+
+        // Without a position the whole file's tests are listed.
+        let all = build_runnables(&uri, &file, root.path(), &explorer, false, &tests, None);
+        let labels: Vec<&str> = all.iter().map(|r| r.label.as_str()).collect();
+        assert!(
+            labels.contains(&"AL: Test Customer Tests.First"),
+            "{labels:?}"
+        );
+        assert!(
+            labels.contains(&"AL: Test Customer Tests.Second"),
+            "{labels:?}"
+        );
+    }
+
+    #[test]
+    fn cursor_above_every_test_offers_no_test_runnable() {
+        let root = tempfile::tempdir().expect("temporary project");
+        let file = root.path().join("T.Codeunit.al");
+        std::fs::write(&file, "codeunit 50100 T {}").expect("test file");
+        let uri = Url::from_file_path(&file).expect("file URI");
+        let tests = vec![TestCodeunit {
+            name: "T".to_string(),
+            id: 50100,
+            file: file.to_string_lossy().into_owned(),
+            tests: vec![TestProcedure {
+                name: "Only".to_string(),
+                line: 10,
+                handler_functions: Vec::new(),
+            }],
+            test_initializers: Vec::new(),
+            test_cleanups: Vec::new(),
+        }];
+        let runnables = build_runnables(
+            &uri,
+            &file,
+            root.path(),
+            std::path::Path::new("/tools/al-explorer"),
+            false,
+            &tests,
+            Some(Position {
+                line: 1,
+                character: 0,
+            }),
+        );
+        assert_eq!(
+            runnables.len(),
+            1,
+            "only the file-level lint runnable remains: {runnables:?}"
+        );
+        assert_eq!(runnables[0].label, "AL: Lint current file");
+    }
+
+    #[test]
     fn omits_project_compile_runnable_without_a_project() {
         let runnables = build_runnables(
             &Url::parse("file:///tmp/Standalone.al").unwrap(),
@@ -2259,6 +2543,172 @@ mod runnables_tests {
         );
         assert_eq!(runnables.len(), 1);
         assert_eq!(runnables[0].label, "AL: Lint current file");
+    }
+}
+
+#[cfg(test)]
+mod diagnostics_debounce_tests {
+    //! The debounce machinery is per document. A single shared slot let an
+    //! edit in file B abort file A's pending run, leaving A with stale
+    //! squiggles until its next change or save.
+
+    use super::*;
+
+    async fn server_with_documents(sources: &[(&str, &str)]) -> (LspService<AlServer>, Vec<Url>) {
+        let (service, _socket) = LspService::new(AlServer::new);
+        let server = service.inner();
+        server
+            .workspace_init_state
+            .send_replace(WorkspaceInitState::Ready);
+        let mut uris = Vec::new();
+        for (path, text) in sources {
+            let uri = Url::parse(path).expect("valid uri");
+            server
+                .workspace
+                .documents
+                .open_with_client_version(uri.clone(), (*text).to_string(), 1)
+                .expect("document opens");
+            uris.push(uri);
+        }
+        (service, uris)
+    }
+
+    #[tokio::test]
+    async fn scheduling_one_document_does_not_cancel_another() {
+        let (service, uris) = server_with_documents(&[
+            (
+                "file:///proj/A.Codeunit.al",
+                "codeunit 50100 A
+{
+    procedure P()
+    begin
+    end;
+}
+",
+            ),
+            (
+                "file:///proj/B.Codeunit.al",
+                "codeunit 50101 B
+{
+    procedure Q()
+    begin
+    end;
+}
+",
+            ),
+        ])
+        .await;
+        let server = service.inner();
+
+        // Edit A, then edit B within A's debounce window.
+        server.schedule_diagnostics(uris[0].clone()).await;
+        server.schedule_diagnostics(uris[1].clone()).await;
+
+        let (a_task, b_task) = {
+            let mut tasks = server.diag_tasks.lock().await;
+            assert_eq!(
+                tasks.len(),
+                2,
+                "each document must own its own pending debounce task"
+            );
+            (
+                tasks.remove(&uris[0]).expect("A has a pending task"),
+                tasks.remove(&uris[1]).expect("B has a pending task"),
+            )
+        };
+
+        let a_result = a_task.await;
+        let b_result = b_task.await;
+        assert!(
+            a_result.is_ok(),
+            "editing B must not cancel A's pending diagnostics: {a_result:?}"
+        );
+        assert!(b_result.is_ok(), "{b_result:?}");
+    }
+
+    #[tokio::test]
+    async fn rescheduling_the_same_document_keeps_exactly_one_task() {
+        let (service, uris) = server_with_documents(&[(
+            "file:///proj/A.Codeunit.al",
+            "codeunit 50100 A
+{
+}
+",
+        )])
+        .await;
+        let server = service.inner();
+
+        for _ in 0..3 {
+            server.schedule_diagnostics(uris[0].clone()).await;
+        }
+        let tasks = server.diag_tasks.lock().await;
+        assert_eq!(
+            tasks.len(),
+            1,
+            "repeated keystrokes on one document must collapse to one task"
+        );
+    }
+
+    #[tokio::test]
+    async fn closing_a_document_cancels_only_its_own_task() {
+        let (service, uris) = server_with_documents(&[
+            (
+                "file:///proj/A.Codeunit.al",
+                "codeunit 50100 A
+{
+}
+",
+            ),
+            (
+                "file:///proj/B.Codeunit.al",
+                "codeunit 50101 B
+{
+}
+",
+            ),
+        ])
+        .await;
+        let server = service.inner();
+        server.schedule_diagnostics(uris[0].clone()).await;
+        server.schedule_diagnostics(uris[1].clone()).await;
+
+        server
+            .did_close(DidCloseTextDocumentParams {
+                text_document: TextDocumentIdentifier {
+                    uri: uris[1].clone(),
+                },
+            })
+            .await;
+
+        let mut tasks = server.diag_tasks.lock().await;
+        assert!(
+            tasks.contains_key(&uris[0]),
+            "the other document's pending run must survive a close"
+        );
+        assert!(
+            !tasks.contains_key(&uris[1]),
+            "the closed document's pending run must be cancelled"
+        );
+        let a_task = tasks.remove(&uris[0]).expect("A still pending");
+        drop(tasks);
+        assert!(
+            a_task.await.is_ok(),
+            "closing B must not abort A's diagnostics"
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_uris_are_never_scheduled() {
+        let (service, _uris) = server_with_documents(&[]).await;
+        let server = service.inner();
+        let cache_uri =
+            Url::from_file_path(al_symbols::virtual_file::cache_dir().join("Base.Application.al"))
+                .expect("cache uri");
+        server.schedule_diagnostics(cache_uri).await;
+        assert!(
+            server.diag_tasks.lock().await.is_empty(),
+            "virtual symbol-cache files must not get debounced diagnostics"
+        );
     }
 }
 

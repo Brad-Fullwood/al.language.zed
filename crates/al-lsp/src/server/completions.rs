@@ -2,6 +2,20 @@ use tower_lsp::lsp_types::*;
 
 use super::AlServer;
 
+/// Whether an insert text uses LSP snippet syntax (`$0`, `$1`, `${1:name}`).
+///
+/// Only snippet-kind items are treated as snippets: a plain identifier that
+/// happens to contain a `$` must still be inserted verbatim.
+fn contains_snippet_placeholder(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.iter().enumerate().any(|(index, byte)| {
+        *byte == b'$'
+            && bytes
+                .get(index + 1)
+                .is_some_and(|next| next.is_ascii_digit() || *next == b'{')
+    })
+}
+
 pub(crate) async fn handle_completion(
     server: &AlServer,
     uri: &Url,
@@ -61,16 +75,46 @@ pub(crate) async fn handle_completion(
                 al_analysis::queries::completions::CompletionKind::Text => CompletionItemKind::TEXT,
             };
             let documentation = e.documentation.map(Documentation::String);
+            // Snippet-kind items (and any insert text carrying `$1`/`${…}`
+            // placeholders) must declare the snippet format, or the client
+            // inserts the placeholder syntax literally.
+            let insert_text_format = e
+                .insert_text
+                .as_deref()
+                .filter(|text| {
+                    kind == CompletionItemKind::SNIPPET && contains_snippet_placeholder(text)
+                })
+                .map(|_| InsertTextFormat::SNIPPET);
             CompletionItem {
                 label: e.label,
                 kind: Some(kind),
                 detail: e.detail,
                 documentation,
                 insert_text: e.insert_text,
+                insert_text_format,
                 sort_text: e.sort_text,
                 ..Default::default()
             }
         })
         .collect();
     Ok(Some(CompletionResponse::Array(items)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snippet_placeholders_are_detected() {
+        assert!(contains_snippet_placeholder("begin\n\t$0\nend"));
+        assert!(contains_snippet_placeholder("Message(${1:text})"));
+        assert!(contains_snippet_placeholder("$1"));
+    }
+
+    #[test]
+    fn plain_text_is_not_a_snippet() {
+        assert!(!contains_snippet_placeholder("MyProcedure()"));
+        assert!(!contains_snippet_placeholder("cost$"));
+        assert!(!contains_snippet_placeholder("a $ b"));
+    }
 }

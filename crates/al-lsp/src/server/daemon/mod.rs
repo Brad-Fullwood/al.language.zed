@@ -139,9 +139,13 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
     // the hot per-connection-accept + per-dispatch update is lock-free.
     // Previous `Arc<Mutex<Instant>>` serialised every connection at the lock.
     let last_activity = Arc::new(AtomicU64::new(now_activity_ms()));
+    // Requests currently being dispatched. The idle reaper never fires while
+    // this is non-zero.
+    let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let shutdown_signal = Arc::new(Notify::new());
 
     let activity_clone = Arc::clone(&last_activity);
+    let in_flight_reaper = Arc::clone(&in_flight);
     let ws_clone = Arc::clone(&workspace);
     let shutdown_idle = Arc::clone(&shutdown_signal);
     let idle_timeout_handle = tokio::spawn(async move {
@@ -151,6 +155,16 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
                 now_activity_ms().saturating_sub(activity_clone.load(Ordering::Relaxed)),
             );
             if elapsed >= IDLE_TIMEOUT {
+                // Don't shut down while a request is still being served. The
+                // activity timestamp is bumped when a request starts and again
+                // when it finishes, but a single operation can legitimately run
+                // longer than the whole idle window (a large symbol download, a
+                // live-BC snapshot with a long `timeoutMs`), and reaping it
+                // mid-flight cut the operation off after only the 10 s drain.
+                if in_flight_reaper.load(Ordering::Acquire) > 0 {
+                    tracing::info!("daemon: idle timeout skipped (requests in flight)");
+                    continue;
+                }
                 // Don't shut down if a debug session is active.
                 //
                 // the `try_lock` here is intentional — if the
@@ -225,18 +239,25 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
                         let permit = match connection_limit.clone().try_acquire_owned() {
                             Ok(p) => p,
                             Err(_) => {
-                                tracing::warn!("daemon: connection limit ({MAX_CONNECTIONS}) reached, dropping new connection");
-                                drop(stream);
+                                tracing::warn!("daemon: connection limit ({MAX_CONNECTIONS}) reached, rejecting new connection");
+                                // Send an actionable JSON-RPC error before
+                                // hanging up. Dropping the stream silently left
+                                // the client blocked until its own timeout with
+                                // no indication of why.
+                                tokio::spawn(async move {
+                                    reject_connection_over_limit(stream).await;
+                                });
                                 continue;
                             }
                         };
 
                         let ws = Arc::clone(&workspace);
                         let activity = Arc::clone(&last_activity);
+                        let in_flight_conn = Arc::clone(&in_flight);
                         let shutdown_conn = Arc::clone(&shutdown_signal);
                         tokio::spawn(async move {
                             let _permit = permit;
-                            if let Err(e) = handle_connection(stream, ws, activity, shutdown_conn).await {
+                            if let Err(e) = handle_connection(stream, ws, activity, in_flight_conn, shutdown_conn).await {
                                 tracing::warn!(error = %e, "daemon: connection error");
                             }
                         });
@@ -293,9 +314,36 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
+/// Tell a client that the daemon is at its connection limit, then hang up.
+///
+/// The frame uses `id: null` because no request has been read yet; JSON-RPC 2.0
+/// §5 requires a null id when the request id is unknown.
+async fn reject_connection_over_limit(stream: LocalSocketStream) {
+    let (_reader, mut writer) = stream.split();
+    let frame = format!(
+        "{}\n",
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": null,
+            "error": {
+                "code": error_codes::INTERNAL_ERROR,
+                "message": format!(
+                    "al-lsp daemon is busy: the {MAX_CONNECTIONS}-connection limit is \
+                     reached. Retry shortly, or stop unused al-explorer/editor clients."
+                ),
+            }
+        })
+    );
+    if let Err(error) = writer.write_all(frame.as_bytes()).await {
+        tracing::debug!(%error, "daemon: could not send connection-limit rejection");
+        return;
+    }
+    let _ = writer.flush().await;
+}
+
 /// Read a single newline-delimited line, enforcing a byte limit during reading.
 /// Returns `Ok(None)` on EOF, `Err` if the line exceeds `max_bytes`.
-async fn read_bounded_line<R: tokio::io::AsyncBufRead + Unpin>(
+pub(crate) async fn read_bounded_line<R: tokio::io::AsyncBufRead + Unpin>(
     reader: &mut R,
     max_bytes: usize,
 ) -> Result<Option<String>, std::io::Error> {
@@ -340,10 +388,30 @@ async fn read_bounded_line<R: tokio::io::AsyncBufRead + Unpin>(
     }
 }
 
+/// Increments an in-flight counter for as long as it is alive.
+///
+/// A guard (rather than a manual decrement) so the count is restored even if
+/// the connection task is dropped mid-dispatch.
+struct InFlightGuard(Arc<std::sync::atomic::AtomicUsize>);
+
+impl InFlightGuard {
+    fn new(counter: &Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::AcqRel);
+        Self(Arc::clone(counter))
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 async fn handle_connection(
     stream: LocalSocketStream,
     workspace: Arc<Workspace>,
     last_activity: Arc<AtomicU64>,
+    in_flight: Arc<std::sync::atomic::AtomicUsize>,
     shutdown: Arc<Notify>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (reader, mut writer) = stream.split();
@@ -364,16 +432,12 @@ async fn handle_connection(
             continue;
         }
 
-        // (idle-timer update is deferred until after dispatch_request returns
-        // so a long-running query keeps the daemon alive — otherwise the timer
-        // updates only at request-arrival, and a 35s build can be killed by
-        // the 30s idle reaper.)
-
-        // JSON-RPC 2.0 §5: on parse error the response id MUST be null because
-        // the request id is unknown. The typed Response struct uses u64, so we
-        // write the parse-error case directly as raw JSON.
-        let req = match serde_json::from_str::<Request>(line) {
-            Ok(r) => r,
+        // JSON-RPC 2.0 §5 separates the two failure modes: text that is not
+        // valid JSON is a PARSE_ERROR, while valid JSON that is not a valid
+        // request object is an INVALID_REQUEST. Both answer with a null id when
+        // the id cannot be recovered.
+        let raw_message = match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(value) => value,
             Err(e) => {
                 // Record the parse-error context here. If the write below fails
                 // (broken pipe / client gone), `?` would propagate a bare I/O
@@ -381,57 +445,135 @@ async fn handle_connection(
                 // reason would be lost — only a generic "connection error" would
                 // surface. Logging first preserves the diagnostic either way.
                 tracing::warn!(error = %e, "daemon: malformed JSON-RPC request");
-                let error_obj = serde_json::json!({
-                    "id": null,
-                    "error": {
-                        "code": error_codes::PARSE_ERROR,
-                        "message": format!("Invalid JSON-RPC: {}", e),
-                    }
-                });
-                let mut raw = serde_json::to_string(&error_obj).unwrap_or_else(|_| {
-                    // Extremely unlikely: the json! macro produces valid JSON.
-                    // Fall back to a minimal static error string.
-                    format!(
-                        r#"{{"id":null,"error":{{"code":{},"message":"Parse error"}}}}"#,
-                        error_codes::PARSE_ERROR
-                    )
-                });
-                raw.push('\n');
-                // Handle write failure explicitly rather than via `?` so a dead
-                // client connection ends this loop cleanly without masking the
-                // parse-error context already logged above.
-                if let Err(io_err) = writer.write_all(raw.as_bytes()).await {
-                    tracing::warn!(error = %io_err, "daemon: failed to send parse-error response");
-                    break;
-                }
-                if let Err(io_err) = writer.flush().await {
-                    tracing::warn!(error = %io_err, "daemon: failed to flush parse-error response");
+                if !write_frame(
+                    &mut writer,
+                    &error_frame(
+                        serde_json::Value::Null,
+                        error_codes::PARSE_ERROR,
+                        &format!("Invalid JSON: {e}"),
+                    ),
+                )
+                .await
+                {
                     break;
                 }
                 continue;
             }
         };
-        let response = {
-            let method = req.method.clone();
-            let req_id = req.id;
-            let start = Instant::now();
-            let resp = dispatch_request(&workspace, req, &shutdown).await;
-            let elapsed = start.elapsed();
-            tracing::debug!(method = %method, id = req_id, elapsed_us = elapsed.as_micros() as u64, "daemon: request");
-            // Mark activity AFTER dispatch returns so the idle reaper can't
-            // kill the daemon mid-request — a long-running build / download
-            // keeps the timer fresh until completion.
-            last_activity.store(now_activity_ms(), Ordering::Relaxed);
-            resp
+        // Echo whatever id the client sent, even a string or null one.
+        let echo_id = raw_message
+            .get("id")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let req = match serde_json::from_value::<Request>(raw_message) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "daemon: invalid JSON-RPC request object");
+                if !write_frame(
+                    &mut writer,
+                    &error_frame(
+                        echo_id,
+                        error_codes::INVALID_REQUEST,
+                        &format!("Invalid JSON-RPC request: {e}"),
+                    ),
+                )
+                .await
+                {
+                    break;
+                }
+                continue;
+            }
         };
 
-        let mut json = serde_json::to_string(&response)?;
-        json.push('\n');
-        writer.write_all(json.as_bytes()).await?;
-        writer.flush().await?;
+        // Mark activity when the request STARTS, and again when it finishes.
+        // The start bump is what keeps the idle reaper from firing mid-request
+        // (a 40-minute symbol download or live-BC capture would otherwise look
+        // idle for its whole duration); the completion bump keeps the daemon
+        // alive for the idle window measured from the end of the work.
+        last_activity.store(now_activity_ms(), Ordering::Relaxed);
+
+        let is_notification = req.is_notification();
+        let request_id = req.id.clone();
+        let method = req.method.clone();
+        let start = Instant::now();
+        let response = {
+            // Held for the whole dispatch so the idle reaper cannot fire
+            // mid-request, however long the operation takes.
+            let _in_flight = InFlightGuard::new(&in_flight);
+            dispatch_request(&workspace, req, &shutdown).await
+        };
+        let elapsed = start.elapsed();
+        tracing::debug!(method = %method, id = ?request_id, elapsed_us = elapsed.as_micros() as u64, "daemon: request");
+        last_activity.store(now_activity_ms(), Ordering::Relaxed);
+
+        if is_notification {
+            // JSON-RPC 2.0 §4.1: a notification is processed but MUST NOT be
+            // answered.
+            continue;
+        }
+
+        let frame = match request_id {
+            // The common case — an id that round-trips through the dispatcher's
+            // `u64` — serializes the typed response directly. Anything else
+            // (string, null, negative, or fractional) is echoed verbatim.
+            Some(ref id) if id.as_u64().is_some() => serde_json::to_value(&response)?,
+            Some(ref id) => response.to_json_with_id(id),
+            None => serde_json::to_value(&response)?,
+        };
+        if !write_frame(&mut writer, &frame).await {
+            break;
+        }
     }
 
     Ok(())
+}
+
+fn error_frame(id: serde_json::Value, code: i32, message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": { "code": code, "message": message },
+    })
+}
+
+/// Write one newline-delimited JSON frame. Returns `false` when the client
+/// connection is gone, so callers can end the loop cleanly instead of masking
+/// the reason already logged.
+async fn write_frame<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
+    frame: &serde_json::Value,
+) -> bool {
+    let mut raw = frame.to_string();
+    raw.push('\n');
+    if let Err(error) = writer.write_all(raw.as_bytes()).await {
+        tracing::warn!(%error, "daemon: failed to send response");
+        return false;
+    }
+    if let Err(error) = writer.flush().await {
+        tracing::warn!(%error, "daemon: failed to flush response");
+        return false;
+    }
+    true
+}
+
+/// Run a synchronous, workspace-scale dispatcher on the blocking pool.
+///
+/// Insight queries walk the whole workspace-enriched call graph. Running them
+/// inline on the async connection task stalls the tokio worker that drives I/O
+/// for *every* connection, so they get the same treatment `deadCode` already
+/// had.
+async fn offload<F>(id: u64, method: &'static str, work: F) -> Response
+where
+    F: FnOnce() -> Response + Send + 'static,
+{
+    match tokio::task::spawn_blocking(work).await {
+        Ok(response) => response,
+        Err(error) => rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("{method} query worker failed: {error}"),
+        ),
+    }
 }
 
 pub(crate) async fn dispatch_request(
@@ -439,7 +581,9 @@ pub(crate) async fn dispatch_request(
     req: Request,
     shutdown: &Notify,
 ) -> Response {
-    let id = req.id;
+    // Dispatch is keyed on u64; string/null ids dispatch under 0 and the
+    // connection loop restores the original id on the wire.
+    let id = req.dispatch_id();
     let params = req.params.unwrap_or(serde_json::Value::Null);
 
     match req.method.as_str() {
@@ -482,32 +626,51 @@ pub(crate) async fn dispatch_request(
         "source" => build_dispatch::dispatch_source(workspace, id, &params),
         "eventSource" => build_dispatch::dispatch_event_source(workspace, id, &params),
         "location" => build_dispatch::dispatch_location(workspace, id, &params),
-        "trace" => insight_dispatch::dispatch_trace(workspace, id, &params),
-        "entrypoints" => insight_dispatch::dispatch_entrypoints(workspace, id),
-        "graphExport" => insight_dispatch::dispatch_graph_export(workspace, id, &params),
-        "insightStats" => insight_dispatch::dispatch_insight_stats(workspace, id),
-        "deadCode" => {
-            // This whole-workspace graph walk is synchronous CPU work. Keep it
-            // off the async connection worker so the same runtime can continue
-            // driving named-pipe I/O while the result is computed.
-            let workspace = Arc::clone(workspace);
-            match tokio::task::spawn_blocking(move || {
-                insight_dispatch::dispatch_dead_code(&workspace, id)
+        "trace" => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "trace", move || {
+                insight_dispatch::dispatch_trace(&ws, id, &args)
             })
             .await
-            {
-                Ok(response) => response,
-                Err(error) => rpc_error(
-                    id,
-                    error_codes::INTERNAL_ERROR,
-                    &format!("dead-code query worker failed: {error}"),
-                ),
-            }
+        }
+        "entrypoints" => {
+            let ws = Arc::clone(workspace);
+            offload(id, "entrypoints", move || {
+                insight_dispatch::dispatch_entrypoints(&ws, id)
+            })
+            .await
+        }
+        "graphExport" => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "graphExport", move || {
+                insight_dispatch::dispatch_graph_export(&ws, id, &args)
+            })
+            .await
+        }
+        "insightStats" => insight_dispatch::dispatch_insight_stats(workspace, id),
+        "deadCode" => {
+            let ws = Arc::clone(workspace);
+            offload(id, "deadCode", move || {
+                insight_dispatch::dispatch_dead_code(&ws, id)
+            })
+            .await
         }
         "nativeCheck" => insight_dispatch::dispatch_native_check(workspace, id).await,
-        "impact" => insight_dispatch::dispatch_impact(workspace, id, &params),
+        "impact" => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "impact", move || {
+                insight_dispatch::dispatch_impact(&ws, id, &args)
+            })
+            .await
+        }
         "tableImpact" => insight_dispatch::dispatch_table_impact(workspace, id, &params),
-        "suggestEvent" => insight_dispatch::dispatch_suggest_event(workspace, id, &params),
+        "suggestEvent" => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "suggestEvent", move || {
+                insight_dispatch::dispatch_suggest_event(&ws, id, &args)
+            })
+            .await
+        }
         "traceChain" => insight_dispatch::dispatch_trace_chain(workspace, id, &params),
         "eventMap" => insight_dispatch::dispatch_event_map(workspace, id),
         "permissions" => build_dispatch::dispatch_permissions(workspace, id, &params),
@@ -807,14 +970,65 @@ pub(crate) fn serialized_response<T: serde::Serialize>(
 // Err is a ready-to-send JSON-RPC `Response` by design (callers just return it
 // on a cold error path); boxing it would scatter `*` derefs across every
 // dispatcher for no real benefit.
+/// How long a lock-taking helper waits for a transiently held workspace lock
+/// before reporting the state as unavailable. Project-state writers
+/// (`did_change_configuration`, reindex publication) hold the lock for a
+/// handful of milliseconds; a `try_read` raced against one of those turned a
+/// perfectly healthy workspace into "No project loaded".
+pub(crate) const LOCK_WAIT: Duration = Duration::from_millis(500);
+
 #[allow(clippy::result_large_err)]
 pub(crate) fn require_project_root(workspace: &Workspace, id: u64) -> Result<PathBuf, Response> {
-    workspace
-        .project
-        .try_read()
-        .ok()
-        .and_then(|g| g.as_ref().map(|p| p.root.clone()))
-        .ok_or_else(|| rpc_error(id, error_codes::INTERNAL_ERROR, "No project loaded"))
+    match project_root_with_wait(workspace) {
+        Ok(Some(root)) => Ok(root),
+        Ok(None) => Err(rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            "No project loaded",
+        )),
+        Err(error) => Err(rpc_error(id, error_codes::INTERNAL_ERROR, &error)),
+    }
+}
+
+/// Read the loaded project root, briefly awaiting a transiently held lock.
+///
+/// Returns `Ok(None)` when no project is loaded and `Err` only when the lock
+/// stayed held for the whole [`LOCK_WAIT`] window — the two cases the caller
+/// must distinguish, and which `try_read` collapsed into one.
+pub(crate) fn project_root_with_wait(workspace: &Workspace) -> Result<Option<PathBuf>, String> {
+    project_state_with_wait(workspace, |project| project.map(|p| p.root.clone()))
+}
+
+/// Await the project lock briefly and project the guarded state with `map`.
+pub(crate) fn project_state_with_wait<T>(
+    workspace: &Workspace,
+    map: impl FnOnce(Option<&al_project::project::AlProject>) -> T,
+) -> Result<T, String> {
+    const BUSY: &str =
+        "Project state is busy (configuration reload or reindex in progress); retry the request";
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle)
+            if matches!(
+                handle.runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            ) =>
+        {
+            tokio::task::block_in_place(|| {
+                handle.block_on(async {
+                    match tokio::time::timeout(LOCK_WAIT, workspace.project.read()).await {
+                        Ok(guard) => Ok(map(guard.as_ref())),
+                        Err(_) => Err(BUSY.to_string()),
+                    }
+                })
+            })
+        }
+        // Synchronous callers and current-thread runtimes cannot block on the
+        // runtime from inside it; fall back to the non-blocking attempt.
+        _ => match workspace.project.try_read() {
+            Ok(guard) => Ok(map(guard.as_ref())),
+            Err(_) => Err(BUSY.to_string()),
+        },
+    }
 }
 
 /// Get document text without blocking the async runtime, loading it from disk
@@ -967,14 +1181,13 @@ pub(crate) fn file_uri_from_params(params: &serde_json::Value) -> Result<Option<
     Ok(Some(uri))
 }
 
+/// Only failures that leave the daemon without a usable workspace abort
+/// startup. Per-file ingestion problems (oversized, unreadable, no file URI)
+/// are reported as warnings and skipped — see `initialize_daemon_workspace`.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum DaemonWorkspaceInitError {
     #[error(transparent)]
     Core(#[from] al_workspace::CoreInitError),
-    #[error("indexed workspace path cannot be represented as a file URI: {}", .0.display())]
-    InvalidFilePath(PathBuf),
-    #[error(transparent)]
-    Document(#[from] al_source::documents::DocumentMutationError),
 }
 
 pub(crate) async fn initialize_daemon_workspace(
@@ -995,11 +1208,48 @@ pub(crate) async fn initialize_daemon_workspace(
     );
 
     // Daemon-specific: open all scanned files in DocumentStore for query access.
+    //
+    // A single rejected file (most commonly one above `maxDocumentSizeBytes`)
+    // used to abort daemon *and* MCP startup entirely. Degrade per file
+    // instead: skip it with a warning and keep the rest of the workspace
+    // queryable. The file stays in the file index, so syntax-level queries that
+    // read from there are unaffected.
+    let mut skipped = Vec::new();
     for entry in workspace.file_index.files.iter() {
         let path = entry.key().clone();
-        let uri = url::Url::from_file_path(&path)
-            .map_err(|()| DaemonWorkspaceInitError::InvalidFilePath(path))?;
-        workspace.documents.open(uri, entry.value().clone())?;
+        let Ok(uri) = url::Url::from_file_path(&path) else {
+            tracing::warn!(
+                path = %path.display(),
+                "daemon: skipping workspace file that has no file URI"
+            );
+            skipped.push(path.display().to_string());
+            continue;
+        };
+        if let Err(error) = workspace.documents.open(uri, entry.value().clone()) {
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "daemon: skipping workspace file rejected by the document store"
+            );
+            skipped.push(format!("{}: {error}", path.display()));
+        }
+    }
+    if !skipped.is_empty() {
+        let sample = skipped
+            .iter()
+            .take(5)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("; ");
+        let message = format!(
+            "{} workspace file(s) were skipped during daemon startup: {sample}{}",
+            skipped.len(),
+            if skipped.len() > 5 { " …" } else { "" }
+        );
+        tracing::warn!("{message}");
+        if let Some(sink) = workspace.notify_sink.get() {
+            sink(&message);
+        }
     }
     Ok(())
 }
@@ -1427,6 +1677,151 @@ mod tests {
         assert_eq!(err.id, 4);
         let rpc = err.error.expect("must carry an RpcError");
         assert_eq!(rpc.code, error_codes::INTERNAL_ERROR);
+    }
+
+    /// JSON-RPC 2.0 ids may be strings; the daemon must dispatch them and echo
+    /// the id back unchanged instead of answering `-32700`.
+    #[tokio::test]
+    async fn string_and_null_request_ids_are_dispatched_and_echoed() {
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+        let shutdown = Notify::new();
+
+        let request: Request =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":"call-7","method":"ping"}"#)
+                .expect("a string id must deserialize");
+        let id = request.id.clone().expect("id present");
+        let response = dispatch_request(&ws, request, &shutdown).await;
+        let frame = response.to_json_with_id(&id);
+        assert_eq!(frame["id"], serde_json::json!("call-7"));
+        assert_eq!(frame["result"], serde_json::json!("pong"));
+
+        // A negative id is legal JSON-RPC but does not fit the dispatcher's
+        // u64, so it must be echoed verbatim rather than answered with 0.
+        let request: Request = serde_json::from_str(r#"{"jsonrpc":"2.0","id":-3,"method":"ping"}"#)
+            .expect("a negative id must deserialize");
+        let id = request.id.clone().expect("id present");
+        assert!(id.as_u64().is_none());
+        let response = dispatch_request(&ws, request, &shutdown).await;
+        assert_eq!(response.to_json_with_id(&id)["id"], serde_json::json!(-3));
+
+        let request: Request =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":null,"method":"ping"}"#)
+                .expect("a null id must deserialize");
+        assert!(
+            !request.is_notification(),
+            "an explicit null id is a request, not a notification"
+        );
+        let id = request.id.clone().expect("id present");
+        let response = dispatch_request(&ws, request, &shutdown).await;
+        assert!(response.to_json_with_id(&id)["id"].is_null());
+    }
+
+    #[test]
+    fn in_flight_guard_tracks_dispatch_and_restores_on_drop() {
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        {
+            let _first = super::InFlightGuard::new(&counter);
+            assert_eq!(counter.load(std::sync::atomic::Ordering::Acquire), 1);
+            {
+                let _second = super::InFlightGuard::new(&counter);
+                assert_eq!(counter.load(std::sync::atomic::Ordering::Acquire), 2);
+            }
+            assert_eq!(
+                counter.load(std::sync::atomic::Ordering::Acquire),
+                1,
+                "a finished request must release its in-flight slot"
+            );
+        }
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::Acquire),
+            0,
+            "the idle reaper must see zero once every request completes"
+        );
+    }
+
+    #[test]
+    fn a_message_without_an_id_is_a_notification() {
+        let notification: Request =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","method":"ping"}"#).expect("valid request");
+        assert!(notification.is_notification());
+    }
+
+    /// Valid JSON that is not a valid request object is `-32600`, not `-32700`.
+    #[test]
+    fn malformed_request_objects_are_invalid_request_not_parse_error() {
+        // Valid JSON, but `method` is missing.
+        let value: serde_json::Value =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":4}"#).expect("valid JSON");
+        assert!(serde_json::from_value::<Request>(value).is_err());
+        // Whereas this is not JSON at all.
+        assert!(serde_json::from_str::<serde_json::Value>("{not json").is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn project_root_wait_reports_busy_instead_of_no_project() {
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+        // Hold the project write lock for longer than the wait window.
+        let holder = std::sync::Arc::clone(&ws);
+        let guard = holder.project.write().await;
+        let ws_for_task = std::sync::Arc::clone(&ws);
+        let probe =
+            tokio::task::spawn_blocking(move || super::project_root_with_wait(&ws_for_task));
+        let error = probe.await.expect("probe joins").expect_err("lock held");
+        assert!(error.contains("busy"), "unexpected error: {error}");
+        drop(guard);
+
+        // Once released, the same call reports "no project loaded" (Ok(None)),
+        // which is a different condition from "busy".
+        let ws_for_task = std::sync::Arc::clone(&ws);
+        let resolved =
+            tokio::task::spawn_blocking(move || super::project_root_with_wait(&ws_for_task))
+                .await
+                .expect("probe joins")
+                .expect("lock is free");
+        assert!(resolved.is_none());
+    }
+
+    // al-workspace's core initializer uses `block_in_place`, so this needs the
+    // multi-threaded flavor (the daemon itself always runs multi-threaded).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oversized_workspace_files_are_skipped_instead_of_aborting_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            serde_json::json!({
+                "id": "00000000-0000-0000-0000-0000000000aa",
+                "name": "Skip test",
+                "publisher": "Tests",
+                "version": "1.0.0.0",
+                "dependencies": [],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("Small.Codeunit.al"),
+            "codeunit 50100 Small\n{\n}\n",
+        )
+        .unwrap();
+        let big = "codeunit 50101 Big\n{\n}\n".to_string() + &" ".repeat(4096);
+        std::fs::write(dir.path().join("Big.Codeunit.al"), &big).unwrap();
+
+        let ws = al_workspace::Workspace::new();
+        ws.config.write().await.max_document_size_bytes = Some(128);
+        super::initialize_daemon_workspace(&ws, dir.path())
+            .await
+            .expect("one oversized file must not abort daemon startup");
+
+        let small = url::Url::from_file_path(dir.path().join("Small.Codeunit.al")).unwrap();
+        assert!(
+            ws.documents.contains(&small),
+            "the rest of the workspace must still be queryable"
+        );
+        let oversized = url::Url::from_file_path(dir.path().join("Big.Codeunit.al")).unwrap();
+        assert!(
+            !ws.documents.contains(&oversized),
+            "the oversized file must be skipped, not opened"
+        );
     }
 
     #[test]
