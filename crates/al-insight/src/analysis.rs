@@ -111,13 +111,16 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
             for field in &entry.fields {
                 for prop in &field.properties {
                     if prop.name.eq_ignore_ascii_case("TableRelation") {
-                        if let Some(table_part) = extract_table_relation_table(&prop.value) {
-                            if table_part.eq_ignore_ascii_case(table_name) {
-                                impacts.push(TableImpact {
-                                    operation: TableOperationKind::Relation,
-                                    location_hint: Some(format!("field {}", field.name)),
-                                });
-                            }
+                        // The conditional form names one table per branch;
+                        // every branch is a relation to that table.
+                        if extract_table_relation_tables(&prop.value)
+                            .iter()
+                            .any(|table_part| table_part.eq_ignore_ascii_case(table_name))
+                        {
+                            impacts.push(TableImpact {
+                                operation: TableOperationKind::Relation,
+                                location_hint: Some(format!("field {}", field.name)),
+                            });
                         }
                     }
                 }
@@ -195,33 +198,132 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
 /// `String` on the happy path; returns a borrowed `&str` of the table-name
 /// slice. Used by `table_impact` to detect cross-table relations.
 pub fn extract_table_relation_table(value: &str) -> Option<&str> {
+    extract_table_relation_tables(value).into_iter().next()
+}
+
+/// Every table referenced by a `TableRelation` value, in declaration order.
+///
+/// AL's conditional form names one table per branch:
+///
+/// ```text
+/// TableRelation = IF (Type = CONST(Item)) Item."No."
+///                 ELSE IF (Type = CONST(Resource)) Resource."No."
+///                 ELSE "G/L Account";
+/// ```
+///
+/// The single-table helper used to feed the bare-identifier path the whole
+/// value, so it returned the token `if` and *both* branch tables were missed by
+/// table-impact and `RelatesTo` edges.
+pub fn extract_table_relation_tables(value: &str) -> Vec<&str> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    if find_keyword(trimmed, "if") != Some(0) {
+        return take_table_name(trimmed).0.into_iter().collect();
+    }
+
+    let mut tables = Vec::new();
+    let mut rest = trimmed;
+    // Each iteration consumes one `[IF (cond)] <Table>` branch. The bound is
+    // the number of branches; a malformed value breaks out early.
+    loop {
+        rest = rest.trim_start();
+        if find_keyword(rest, "if") == Some(0) {
+            rest = rest["if".len()..].trim_start();
+            let Some(close) = matching_paren(rest) else {
+                break;
+            };
+            rest = &rest[close + 1..];
+        }
+        let (name, remainder) = take_table_name(rest);
+        if let Some(name) = name {
+            tables.push(name);
+        }
+        match find_keyword(remainder, "else") {
+            Some(position) => rest = &remainder[position + "else".len()..],
+            None => break,
+        }
+    }
+
+    tables.sort_unstable();
+    tables.dedup();
+    tables
+}
+
+/// Byte offset of the first whole-word, case-insensitive occurrence of `keyword`.
+fn find_keyword(text: &str, keyword: &str) -> Option<usize> {
+    let lower = text.to_ascii_lowercase();
+    debug_assert_eq!(lower.len(), text.len());
+    let mut from = 0usize;
+    while let Some(relative) = lower[from..].find(keyword) {
+        let position = from + relative;
+        let prev_ok = position == 0
+            || !text[..position]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        let after = position + keyword.len();
+        let next_ok = !text[after..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        if prev_ok && next_ok {
+            return Some(position);
+        }
+        from = after;
+    }
+    None
+}
+
+/// Byte offset of the `)` matching the `(` that `text` starts with.
+fn matching_paren(text: &str) -> Option<usize> {
+    if !text.starts_with('(') {
         return None;
     }
-    // Quoted form: `"Table Name"` — body is everything inside the first
-    // matching pair of `"`. Multi-word and embedded-special-char identifiers
-    // require quotes in AL.
-    if let Some(after_open) = trimmed.strip_prefix('"') {
-        let end = after_open.find('"')?;
-        let name = &after_open[..end];
-        if name.is_empty() {
-            return None;
+    let mut depth = 0i32;
+    for (index, byte) in text.bytes().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
         }
-        return Some(name);
     }
-    // Bare form: identifier terminates at the first whitespace, dot, or
-    // opening paren (start of a `WHERE` / `IF` / `FIELD` clause). Trim any
-    // residual single-quote wrapping (AL accepts `'Customer'` rarely).
-    let end = trimmed
+    None
+}
+
+/// Split a leading table reference off `text`, returning `(name, remainder)`.
+///
+/// Quoted form `"Table Name"` takes everything inside the first matching pair
+/// of `"`. Bare form terminates at the first whitespace, dot, or opening paren
+/// (start of a `WHERE` / `FIELD` clause). Residual single-quote wrapping is
+/// trimmed (AL accepts `'Customer'` rarely).
+fn take_table_name(text: &str) -> (Option<&str>, &str) {
+    let text = text.trim_start();
+    if let Some(after_open) = text.strip_prefix('"') {
+        let Some(end) = after_open.find('"') else {
+            return (None, "");
+        };
+        let name = &after_open[..end];
+        return (
+            if name.is_empty() { None } else { Some(name) },
+            &after_open[end + 1..],
+        );
+    }
+    let end = text
         .find(|c: char| c.is_whitespace() || c == '.' || c == '(')
-        .unwrap_or(trimmed.len());
-    let bare = trimmed[..end].trim_matches('\'');
-    if bare.is_empty() {
-        None
-    } else {
-        Some(bare)
-    }
+        .unwrap_or(text.len());
+    let bare = text[..end].trim_matches('\'');
+    (
+        if bare.is_empty() { None } else { Some(bare) },
+        &text[end..],
+    )
 }
 
 /// Returns true if `type_name` is a Record reference to `table_lower`.
@@ -614,5 +716,44 @@ mod tests {
 
         let result = table_impact(&index, "Customer");
         assert!(result.objects.is_empty());
+    }
+
+    /// AL's conditional form names one table per branch; the bare-identifier
+    /// path used to return the token `if` and miss both branch tables.
+    #[test]
+    fn extract_table_relation_tables_handles_the_conditional_form() {
+        let value =
+            r#"IF (Type=CONST(Item)) Item."No." ELSE IF (Type=CONST(Resource)) Resource."No.""#;
+        assert_eq!(
+            extract_table_relation_tables(value),
+            vec!["Item", "Resource"]
+        );
+        assert_ne!(extract_table_relation_table(value), Some("if"));
+    }
+
+    #[test]
+    fn extract_table_relation_tables_handles_a_trailing_else_branch() {
+        let value = r#"IF (Type=CONST(Item)) Item ELSE "G/L Account""#;
+        let mut tables = extract_table_relation_tables(value);
+        tables.sort_unstable();
+        assert_eq!(tables, vec!["G/L Account", "Item"]);
+    }
+
+    #[test]
+    fn extract_table_relation_tables_handles_conditional_branches_with_where() {
+        let value = r#"IF (Type=CONST(Item)) Item WHERE("Blocked"=CONST(false)) ELSE Resource"#;
+        let mut tables = extract_table_relation_tables(value);
+        tables.sort_unstable();
+        assert_eq!(tables, vec!["Item", "Resource"]);
+    }
+
+    #[test]
+    fn extract_table_relation_tables_keeps_the_simple_form_intact() {
+        assert_eq!(extract_table_relation_tables("Customer"), vec!["Customer"]);
+        assert_eq!(
+            extract_table_relation_tables(r#""Sales Header" WHERE("Document Type"=CONST(Order))"#),
+            vec!["Sales Header"]
+        );
+        assert!(extract_table_relation_tables("").is_empty());
     }
 }

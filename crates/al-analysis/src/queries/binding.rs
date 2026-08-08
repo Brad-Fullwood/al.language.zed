@@ -47,6 +47,126 @@ pub(crate) fn decl_loc(
     Ok((uri.to_string(), pos.line, pos.character))
 }
 
+/// Per-query memo for [`decl_loc`].
+///
+/// `rename` and `references` run the full go-to-definition binder once per
+/// candidate occurrence in every workspace file, which makes them
+/// O(occurrences × definition-query) on a common identifier. Within one file,
+/// two occurrences that share (enclosing declaration, syntactic role,
+/// qualifier, spelling) necessarily bind to the same declaration — AL has no
+/// shadowing inside a procedure body — so the binder only has to run once per
+/// distinct group.
+///
+/// The *role* component (parent node kind + field name) keeps a declaration's
+/// own name distinct from a usage that happens to be spelled the same, e.g.
+/// `procedure Foo(Customer: Record Customer)`, where the parameter name and the
+/// type name are both `Customer` in the same scope but bind differently.
+#[derive(Default)]
+pub(crate) struct DeclLocCache {
+    entries: std::collections::HashMap<CacheKey, BindKey>,
+}
+
+/// `(uri, enclosing declaration start byte, syntactic role, qualifier, name)`.
+type CacheKey = (String, usize, String, String, String);
+
+impl DeclLocCache {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// [`decl_loc`] for the occurrence spanning `reference`, memoized.
+    pub(crate) fn decl_loc_for_reference(
+        &mut self,
+        workspace: &Workspace,
+        uri: &Url,
+        text: &str,
+        tree: &tree_sitter::Tree,
+        reference: &tree_sitter::Range,
+    ) -> Result<BindKey, WorkspaceStateError> {
+        let range: Range = al_syntax::ts_range_to_syntax(reference, text.as_bytes()).into();
+        let position: Position = range.start;
+        let key = (
+            uri.to_string(),
+            enclosing_declaration_start(tree, reference.start_byte),
+            occurrence_role(tree, reference.start_byte, reference.end_byte),
+            qualifier_before(text, reference.start_byte),
+            text.get(reference.start_byte..reference.end_byte)
+                .unwrap_or_default()
+                .to_lowercase(),
+        );
+        if let Some(cached) = self.entries.get(&key) {
+            return Ok(cached.clone());
+        }
+        let resolved = decl_loc(workspace, uri, position)?;
+        self.entries.insert(key, resolved.clone());
+        Ok(resolved)
+    }
+}
+
+/// Start byte of the procedure/trigger that contains `byte`, or `usize::MAX`
+/// for object-level positions.
+fn enclosing_declaration_start(tree: &tree_sitter::Tree, byte: usize) -> usize {
+    let mut node = tree.root_node().descendant_for_byte_range(byte, byte);
+    while let Some(current) = node {
+        if matches!(
+            current.kind(),
+            "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration"
+        ) {
+            return current.start_byte();
+        }
+        node = current.parent();
+    }
+    usize::MAX
+}
+
+/// `parent_kind/field_name` for the node spanning `start..end`.
+fn occurrence_role(tree: &tree_sitter::Tree, start: usize, end: usize) -> String {
+    let Some(node) = tree.root_node().descendant_for_byte_range(start, end) else {
+        return String::new();
+    };
+    let Some(parent) = node.parent() else {
+        return node.kind().to_string();
+    };
+    let mut cursor = parent.walk();
+    let mut field = "";
+    if cursor.goto_first_child() {
+        loop {
+            if cursor.node().id() == node.id() {
+                field = cursor.field_name().unwrap_or("");
+                break;
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+    format!("{}/{}/{}", parent.kind(), field, node.kind())
+}
+
+/// Lower-cased receiver of a `Receiver.Member` occurrence starting at `byte`,
+/// or the empty string when the occurrence is unqualified.
+fn qualifier_before(text: &str, byte: usize) -> String {
+    let Some(before) = text.get(..byte) else {
+        return String::new();
+    };
+    let before = before.trim_end();
+    let Some(before) = before.strip_suffix('.') else {
+        return String::new();
+    };
+    let before = before.trim_end();
+    if let Some(stripped) = before.strip_suffix('"') {
+        return match stripped.rfind('"') {
+            Some(open) => stripped[open + 1..].to_lowercase(),
+            None => String::new(),
+        };
+    }
+    let start = before
+        .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    before[start..].to_lowercase()
+}
+
 /// If `pos` falls on the *name* of a declaration (procedure, trigger, field, or
 /// variable), return that name's location as a `BindKey`. Returns `None` when
 /// `pos` is inside a declaration but not on its name (i.e. a usage in the body),
@@ -154,5 +274,90 @@ mod tests {
 
         assert_eq!(first_use, declaration);
         assert_eq!(second_use, declaration);
+    }
+
+    /// The memo must not merge two occurrences that only *look* alike: a
+    /// parameter named after its own type binds to the parameter, the type
+    /// reference binds to the table.
+    #[test]
+    fn decl_loc_cache_keeps_same_spelled_declaration_and_type_apart() {
+        let uri = Url::parse("file:///test/binder_cache.al").unwrap();
+        let source = r#"codeunit 50100 "Cache"
+{
+    procedure Process(Customer: Record Customer)
+    begin
+        Customer.Get('10000');
+    end;
+}"#;
+        let workspace = Workspace::new();
+        workspace
+            .documents
+            .open(uri.clone(), source.to_string())
+            .unwrap();
+        let (text, tree) = al_source::parsing::get_or_parse(&workspace.documents, &uri).unwrap();
+
+        let refs = al_syntax::find_variable_references(&tree, &text, "Customer");
+        assert!(
+            refs.len() >= 3,
+            "expected parameter name, type name and usage: {refs:?}"
+        );
+
+        let mut cache = super::DeclLocCache::new();
+        let cached: Vec<BindKey> = refs
+            .iter()
+            .map(|r| {
+                cache
+                    .decl_loc_for_reference(&workspace, &uri, &text, &tree, r)
+                    .unwrap()
+            })
+            .collect();
+        let uncached: Vec<BindKey> = refs
+            .iter()
+            .map(|r| {
+                let range: Range = al_syntax::ts_range_to_syntax(r, text.as_bytes()).into();
+                super::decl_loc(&workspace, &uri, range.start).unwrap()
+            })
+            .collect();
+
+        assert_eq!(
+            cached, uncached,
+            "memoized binder must agree with the uncached binder"
+        );
+    }
+
+    /// Repeated occurrences in the same scope resolve identically whether or
+    /// not the memo is used.
+    #[test]
+    fn decl_loc_cache_matches_the_uncached_binder_for_repeated_uses() {
+        let uri = Url::parse("file:///test/binder_repeat.al").unwrap();
+        let source = r#"codeunit 50100 "Repeat"
+{
+    procedure Run()
+    var
+        Total: Integer;
+    begin
+        Total := 1;
+        Total := Total + 1;
+        Total := Total + Total;
+    end;
+}"#;
+        let workspace = Workspace::new();
+        workspace
+            .documents
+            .open(uri.clone(), source.to_string())
+            .unwrap();
+        let (text, tree) = al_source::parsing::get_or_parse(&workspace.documents, &uri).unwrap();
+
+        let refs = al_syntax::find_variable_references(&tree, &text, "Total");
+        let mut cache = super::DeclLocCache::new();
+        for r in &refs {
+            let range: Range = al_syntax::ts_range_to_syntax(r, text.as_bytes()).into();
+            assert_eq!(
+                cache
+                    .decl_loc_for_reference(&workspace, &uri, &text, &tree, r)
+                    .unwrap(),
+                super::decl_loc(&workspace, &uri, range.start).unwrap()
+            );
+        }
     }
 }

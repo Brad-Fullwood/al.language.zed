@@ -81,10 +81,26 @@ pub(super) fn source_action_make_local(
 
     let proc_line = node.start_position().row;
     let line_text = text.lines().nth(proc_line)?;
-    let lower = line_text.to_lowercase();
-    if lower.contains("local ") {
+    let lower = line_text.to_ascii_lowercase();
+
+    // Only the modifiers that precede the `procedure` keyword decide whether
+    // the action applies. A plain `line.contains("local ")` also matched a
+    // trailing comment (`procedure Foo() // local helper`) and, worse, treated
+    // `internal procedure` as "not local" and emitted the invalid modifier
+    // combination `internal local procedure`.
+    let declaration_col = node.start_position().column.min(lower.len());
+    let procedure_offset = lower[declaration_col..].find("procedure")? + declaration_col;
+    let modifiers = &lower[declaration_col..procedure_offset];
+    if modifiers.split_whitespace().any(|word| word == "local") {
         return None;
     }
+    // `internal`/`protected` are access modifiers that cannot coexist with
+    // `local`; replace them rather than prepending.
+    let replace_from = modifiers
+        .split_whitespace()
+        .find(|word| matches!(*word, "internal" | "protected"))
+        .and_then(|word| modifiers.find(word).map(|offset| declaration_col + offset))
+        .unwrap_or(procedure_offset);
 
     // Conservatively suppress the action on any same-name call in another file.
     let proc_name = node
@@ -95,12 +111,11 @@ pub(super) fn source_action_make_local(
         return None;
     }
 
-    // `find` returns a byte offset; LSP `Position.character` is a UTF-16 code
-    // unit count. Convert before using, otherwise a multi-byte character earlier on
-    // the line shifts the edit to the wrong column.
-    let proc_col_bytes = lower.find("procedure")?;
-    let proc_end_col_bytes = proc_col_bytes + "procedure".len();
-    let proc_col_utf16 = al_syntax::byte_col_to_utf16_col(line_text, proc_col_bytes);
+    // Byte offsets above; LSP `Position.character` is a UTF-16 code unit count.
+    // Convert before using, otherwise a multi-byte character earlier on the
+    // line shifts the edit to the wrong column.
+    let proc_end_col_bytes = procedure_offset + "procedure".len();
+    let proc_col_utf16 = al_syntax::byte_col_to_utf16_col(line_text, replace_from);
     let proc_end_col_utf16 = al_syntax::byte_col_to_utf16_col(line_text, proc_end_col_bytes);
 
     let edit = TextEdit {
@@ -295,5 +310,90 @@ mod tests {
             !actions.iter().any(|a| a.title == "Make procedure local"),
             "external caller in another file must suppress the action"
         );
+    }
+
+    fn make_local_action(al_code: &str, uri_str: &str, line: u32) -> Option<CodeActionEntry> {
+        let ws = Workspace::new();
+        let uri = Url::parse(uri_str).unwrap();
+        open_doc(&ws, &uri, al_code);
+        ws.file_index
+            .add_file(uri.to_file_path().unwrap(), al_code.to_string());
+        let range = Range {
+            start: super::super::Position { line, character: 4 },
+            end: super::super::Position { line, character: 4 },
+        };
+        source_action_make_local(&ws, &uri, al_code, range)
+    }
+
+    /// `internal local procedure` is not a valid modifier combination.
+    #[test]
+    fn make_local_replaces_internal_instead_of_producing_internal_local() {
+        let al_code = r#"codeunit 50100 "My Codeunit"
+{
+    internal procedure UniquelyNamedInternalHelperQ()
+    begin
+        Message('helper');
+    end;
+}
+"#;
+        let action =
+            make_local_action(al_code, "file:///test/MakeLocalInternal.al", 2).expect("offered");
+        let updated = super::super::test_support::assert_action_applies_cleanly(
+            al_code,
+            &action,
+            "make_local internal",
+        );
+        assert!(
+            !updated.contains("internal local"),
+            "must not emit an invalid modifier combination: {updated}"
+        );
+        assert!(
+            updated.contains("    local procedure UniquelyNamedInternalHelperQ()"),
+            "{updated}"
+        );
+    }
+
+    /// A trailing comment mentioning "local " used to falsely suppress the action.
+    #[test]
+    fn make_local_offered_when_a_comment_mentions_local() {
+        let al_code = r#"codeunit 50100 "My Codeunit"
+{
+    procedure UniquelyNamedCommentHelperQ() // local helper, not yet local
+    begin
+        Message('helper');
+    end;
+}
+"#;
+        let action = make_local_action(al_code, "file:///test/MakeLocalComment.al", 2)
+            .expect("a comment must not suppress the action");
+        let updated = super::super::test_support::assert_action_applies_cleanly(
+            al_code,
+            &action,
+            "make_local comment",
+        );
+        assert!(
+            updated.contains("local procedure UniquelyNamedCommentHelperQ()"),
+            "{updated}"
+        );
+    }
+
+    #[test]
+    fn make_local_edit_reparses_cleanly() {
+        let al_code = r#"codeunit 50100 "My Codeunit"
+{
+    procedure UniquelyNamedPlainHelperQ()
+    begin
+        Message('helper');
+    end;
+}
+"#;
+        let action =
+            make_local_action(al_code, "file:///test/MakeLocalApply.al", 2).expect("offered");
+        let updated = super::super::test_support::assert_action_applies_cleanly(
+            al_code,
+            &action,
+            "make_local",
+        );
+        assert!(updated.contains("local procedure"), "{updated}");
     }
 }

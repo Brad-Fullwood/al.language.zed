@@ -8,8 +8,27 @@
 //! - `*.xlf` (e.g., `de-DE.xlf`) — language-specific translation file (manually maintained)
 //!
 //! # Translation unit ID format
-//! `{ObjectType} {ObjectId} - {PropertyName} {FieldId} - {PropertyType}`
-//! Matches the MS AL extension format so translation memories are compatible.
+//!
+//! IDs follow Microsoft's `GetLanguageSymbolId` scheme, which is what `alc`
+//! writes into a `.g.xlf`: every name component is an FNV-1 hash (over the
+//! name's UTF-16LE bytes) biased by `i32::MAX`, e.g.
+//!
+//! ```text
+//! Table 3625681466 - Field 2879900210 - Property 2879900210
+//! Page  3625681466 - Control 2718011747 - Property 1295455071
+//! Codeunit 1535166296 - NamedType 3010734695
+//! ```
+//!
+//! The hash is the same one `crates/al-emit/src/assemble.rs` implements and
+//! verifies against `alc`, so `xlf refresh` matches IDs in an `alc`- or
+//! Microsoft-produced translation file.
+//!
+//! **Known deviation:** `alc` folds an extension object's id-root onto the base
+//! object when that base is part of the same project (emitting an
+//! `al-object-target` attribute). This extractor works one file at a time and
+//! has no project view, so it keeps the *declaring* object as the id root —
+//! which is what `alc` also does for the dominant case of extending a
+//! base-application object.
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
@@ -109,75 +128,284 @@ pub fn extract_translation_units(workspace: &Workspace) -> Vec<TranslationUnit> 
         extract_from_file(path, &text, &mut units);
     }
 
+    // A `.g.xlf` with duplicate `trans-unit id=` values silently collapses to
+    // one entry in `parse_xliff`'s map, so refresh/untranslated/suggest would
+    // operate on corrupted data. Keep the first occurrence and warn.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    units.retain(|unit| {
+        if seen.insert(unit.id.clone()) {
+            return true;
+        }
+        tracing::warn!(
+            id = %unit.id,
+            source = %unit.source,
+            "xliff: dropping duplicate translation-unit id"
+        );
+        false
+    });
+
     units
 }
 
 /// Extract translation units from a single AL file.
+///
+/// The scan is structural: brace nesting decides which member (table field,
+/// page control, page action) a `Caption`/`ToolTip` belongs to. The previous
+/// line-oriented scan tracked only a numeric `field_id` that page-layout
+/// members never set and that was never reset when a field block ended, so
+/// every page control produced the *same* trans-unit id and object-level
+/// properties were attributed to the last field seen.
 fn extract_from_file(path: &Path, text: &str, units: &mut Vec<TranslationUnit>) {
-    let (obj_type, obj_id, obj_name) = match detect_object_header(text) {
-        Some(v) => v,
-        None => return,
+    let _ = path;
+    let Some(header) = detect_object_header(text) else {
+        return;
     };
+    let obj_type = header.kind_display.clone();
+    let obj_id = header.id;
+    let obj_name = header.name.clone();
+    let object_hash = name_hash(&obj_name);
 
-    let mut field_id: u32 = 0;
-    let mut current_field: Option<String> = None;
-    // Per-file label counter so Label IDs depend only on position within this
-    // object, not on how many units earlier files contributed. Using the
-    // cumulative `units.len()` would make the same label's ID shift whenever
-    // file ordering changes, breaking translation-memory matching.
-    let mut label_index: usize = 0;
+    // One entry per open brace; `Some(member)` for a named member block.
+    let mut stack: Vec<Option<MemberBlock>> = Vec::new();
+    let mut pending: Option<MemberBlock> = None;
 
     for line in text.lines() {
+        let code = strip_literals_for_structure(line);
+        let trimmed_code = code.trim();
+        if let Some(member) = parse_member_block(trimmed_code) {
+            pending = Some(member);
+        }
+
         let trimmed = line.trim();
+        let anchor = stack.iter().rev().flatten().next();
 
-        // Track field declarations to associate captions with fields
-        if let Some(fid) = parse_field_declaration(trimmed) {
-            field_id = fid;
-            current_field = parse_field_name(trimmed);
-        }
-        let context = current_field.as_deref().unwrap_or(&obj_name);
-
-        if let Some(caption) = parse_property_value(trimmed, "Caption") {
-            let id = make_translation_id(
-                &obj_type, obj_id, &obj_name, "Caption", field_id, context, path,
-            );
+        for property in ["Caption", "ToolTip"] {
+            let Some(value) = parse_property_value(trimmed, property) else {
+                continue;
+            };
+            if property_is_locked(trimmed) {
+                continue;
+            }
+            let (id, note) = match anchor {
+                Some(member) => (
+                    format!(
+                        "{obj_type} {object_hash} - {} {} - Property {}",
+                        member.id_kind(&header),
+                        name_hash(&member.name),
+                        name_hash(property)
+                    ),
+                    format!(
+                        "{obj_type} {obj_name} - {} {} - Property {property}",
+                        member.id_kind(&header),
+                        member.name
+                    ),
+                ),
+                None => (
+                    format!(
+                        "{obj_type} {object_hash} - Property {}",
+                        name_hash(property)
+                    ),
+                    format!("{obj_type} {obj_name} - Property {property}"),
+                ),
+            };
             units.push(make_translation_unit(
                 id,
                 &obj_type,
                 obj_id,
                 &obj_name,
-                caption,
-                current_field.as_ref().map(|f| format!("Caption for {}", f)),
+                value,
+                Some(note),
             ));
         }
 
-        if let Some(tooltip) = parse_property_value(trimmed, "ToolTip") {
-            let id = make_translation_id(
-                &obj_type, obj_id, &obj_name, "ToolTip", field_id, context, path,
-            );
-            units.push(make_translation_unit(
-                id,
-                &obj_type,
-                obj_id,
-                &obj_name,
-                tooltip,
-                current_field.as_ref().map(|f| format!("ToolTip for {}", f)),
-            ));
+        // `MyLabel: Label 'text';` — alc keys labels by the NamedType name.
+        if let Some((label_name, label_text)) = parse_label_declaration(trimmed) {
+            if !property_is_locked(trimmed) {
+                let id = format!(
+                    "{obj_type} {object_hash} - NamedType {}",
+                    name_hash(&label_name)
+                );
+                units.push(make_translation_unit(
+                    id,
+                    &obj_type,
+                    obj_id,
+                    &obj_name,
+                    label_text,
+                    Some(format!("{obj_type} {obj_name} - NamedType {label_name}")),
+                ));
+            }
         }
 
-        // Label 'varname': 'text'  or   MyLabel: Label 'text';
-        if let Some(label_text) = parse_label_declaration(trimmed) {
-            let id = make_label_id(&obj_type, obj_id, &obj_name, field_id, path, label_index);
-            label_index += 1;
-            units.push(make_translation_unit(
-                id,
-                &obj_type,
-                obj_id,
-                &obj_name,
-                label_text,
-                Some("Label".to_string()),
-            ));
+        for ch in code.chars() {
+            match ch {
+                '{' => stack.push(pending.take()),
+                '}' => {
+                    stack.pop();
+                }
+                _ => {}
+            }
         }
+    }
+}
+
+/// A named member block (`field(…)`, `action(…)`, `group(…)`, …) whose
+/// properties are translated relative to it.
+#[derive(Debug, Clone)]
+struct MemberBlock {
+    /// Lower-cased declaration keyword.
+    keyword: String,
+    /// Member name used in the translation id.
+    name: String,
+    /// Whether the member sits inside an `actions` section.
+    in_actions: bool,
+}
+
+impl MemberBlock {
+    /// alc's id component for this member: `Field` for a table field,
+    /// `Action` for anything under `actions`, `Control` otherwise.
+    fn id_kind(&self, header: &ObjectHeader) -> &'static str {
+        if self.in_actions || self.keyword == "action" || self.keyword == "actionref" {
+            "Action"
+        } else if header.is_table_like && self.keyword == "field" {
+            "Field"
+        } else {
+            "Control"
+        }
+    }
+}
+
+/// Declaration keywords that open a *named* member block.
+const MEMBER_BLOCK_KEYWORDS: &[&str] = &[
+    "field",
+    "action",
+    "actionref",
+    "group",
+    "part",
+    "systempart",
+    "usercontrol",
+    "label",
+    "repeater",
+    "cuegroup",
+    "fixed",
+    "grid",
+    "dataitem",
+    "column",
+];
+
+/// Parse a `keyword(args)` member header, or the bare `actions` section.
+fn parse_member_block(trimmed: &str) -> Option<MemberBlock> {
+    let lower_head = trimmed
+        .split(|c: char| c == '(' || c.is_whitespace() || c == '{')
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
+    if lower_head == "actions" {
+        // Marks the section; unnamed, so it never anchors a property itself.
+        return Some(MemberBlock {
+            keyword: "actions".to_string(),
+            name: String::new(),
+            in_actions: true,
+        });
+    }
+    let open = trimmed.find('(')?;
+    let keyword = trimmed[..open].trim().to_lowercase();
+    if !MEMBER_BLOCK_KEYWORDS.contains(&keyword.as_str()) {
+        return None;
+    }
+    let close = trimmed.rfind(')')?;
+    if close < open {
+        return None;
+    }
+    let args: Vec<&str> = trimmed[open + 1..close].split(';').collect();
+    // `field(1; Name; Text[50])` (table) vs `field(Name; Rec.Name)` (page):
+    // the name is the second segment only when the first is a numeric id.
+    let first = args.first().map(|a| a.trim()).unwrap_or("");
+    let name_part = if first.parse::<u32>().is_ok() && args.len() >= 2 {
+        args[1].trim()
+    } else {
+        first
+    };
+    let name = name_part.trim_matches('"').trim_matches('\'').trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(MemberBlock {
+        keyword,
+        name: name.to_string(),
+        in_actions: false,
+    })
+}
+
+/// Blank out string-literal contents so braces inside AL captions do not
+/// corrupt the nesting count. Quotes themselves are kept so token shape is
+/// unchanged.
+fn strip_literals_for_structure(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.char_indices().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+    while let Some((_, ch)) = chars.next() {
+        if !in_single && !in_double && ch == '/' && chars.peek().is_some_and(|(_, n)| *n == '/') {
+            break;
+        }
+        match ch {
+            '\'' if !in_double => {
+                in_single = !in_single;
+                out.push(ch);
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                out.push(ch);
+            }
+            _ if in_single => out.push(' '),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Whether a `Caption`/`ToolTip`/`Label` declaration carries `Locked = true`.
+///
+/// Microsoft's AL excludes locked strings from the generated translation file;
+/// emitting them made non-translatable text look translatable.
+fn property_is_locked(line: &str) -> bool {
+    // Only the part *after* the (single-quoted) value can hold the modifier.
+    let Some(quote) = line.find('\'') else {
+        return false;
+    };
+    let mut rest = &line[quote..];
+    // Skip the literal, honouring the doubled-quote escape.
+    let bytes = rest.as_bytes();
+    let mut index = 1usize;
+    while index < rest.len() {
+        if bytes[index] == b'\'' {
+            if bytes.get(index + 1) == Some(&b'\'') {
+                index += 2;
+                continue;
+            }
+            index += 1;
+            break;
+        }
+        index += 1;
+    }
+    rest = &rest[index.min(rest.len())..];
+    let lower = rest.to_lowercase();
+    let Some(position) = lower.find("locked") else {
+        return false;
+    };
+    let after = lower[position + "locked".len()..].trim_start();
+    match after.strip_prefix('=') {
+        // `Locked = true`; the value may be followed by `;` or `,`.
+        Some(value) => {
+            let value = value.trim_start();
+            let word: String = value
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+            word == "true"
+        }
+        // `Locked` on its own is shorthand for `Locked = true`.
+        None => after.is_empty() || after.starts_with(';') || after.starts_with(','),
     }
 }
 
@@ -201,38 +429,118 @@ fn make_translation_unit(
     }
 }
 
-/// Detect the first AL object declaration line: (type, id, name).
-fn detect_object_header(text: &str) -> Option<(String, u32, String)> {
-    // Sort object type keywords by length descending so that longer keywords (extensions) are
-    // tried before their shorter base-type prefixes — e.g. "tableextension" before "table".
-    // This avoids false prefix matches like "pagepart" matching "page".
-    let mut sorted_types: Vec<&str> = al_syntax::language_data::object_types()
-        .iter()
-        .map(|ot| ot.keyword.as_str())
-        .collect();
-    sorted_types.sort_by_key(|k| Reverse(k.len()));
+/// FNV-1 hash over `s`'s UTF-16LE bytes, biased by `i32::MAX` — Microsoft's
+/// `Hash.GetFNVHashCode(string)` as used by `GetLanguageSymbolId`.
+///
+/// This is the same algorithm `crates/al-emit/src/method_id.rs` implements and
+/// verifies against `alc`; it is copied rather than shared so `al-analysis`
+/// does not have to depend on the emitter.
+fn name_hash(s: &str) -> i64 {
+    const FNV_OFFSET_BIAS: i32 = -2128831035;
+    const FNV_PRIME: i32 = 16777619;
+    let mut hash = FNV_OFFSET_BIAS;
+    for unit in s.encode_utf16() {
+        for byte in unit.to_le_bytes() {
+            hash = (hash ^ byte as i32).wrapping_mul(FNV_PRIME);
+        }
+    }
+    hash as i64 + 2_147_483_647
+}
 
-    for line in text.lines().take(10) {
-        let lower = line.trim().to_lowercase();
-        for ot in &sorted_types {
-            // Require a word boundary after the keyword (space, tab, or digit) to avoid
-            // false prefix matches like "pagepart" matching "page".
-            if let Some(after) = lower.strip_prefix(ot) {
-                let boundary =
-                    after.starts_with(|c: char| c.is_ascii_whitespace() || c.is_ascii_digit());
-                if !boundary {
-                    continue;
+/// The first AL object declaration in a file.
+#[derive(Debug, Clone)]
+struct ObjectHeader {
+    /// Canonical object-kind spelling used in translation ids (`TableExtension`).
+    kind_display: String,
+    id: u32,
+    name: String,
+    is_table_like: bool,
+}
+
+/// Detect the AL object declaration: (type, id, name).
+///
+/// Leading blank lines, `//` and `/* */` comments, and `namespace`/`using`
+/// directives are skipped, then the first meaningful line must be the
+/// declaration. The previous implementation only looked at the first 10 lines,
+/// so any file with a longer licence header was silently skipped by XLIFF
+/// extraction — no units, no warning.
+fn detect_object_header(text: &str) -> Option<ObjectHeader> {
+    let mut in_block_comment = false;
+    for raw in text.lines() {
+        let mut line = raw.trim().to_string();
+        if in_block_comment {
+            match line.find("*/") {
+                Some(end) => {
+                    in_block_comment = false;
+                    line = line[end + 2..].trim().to_string();
                 }
-                // e.g. "table 50100 \"My Table\""
-                let rest = line.trim()[ot.len()..].trim();
-                let (id_str, rest2) = split_id_and_name(rest);
-                let id: u32 = id_str.parse().unwrap_or(0);
-                let name = parse_object_name(rest2.trim());
-                if !name.is_empty() || id > 0 {
-                    return Some((capitalize(ot), id, name));
+                None => continue,
+            }
+        }
+        while let Some(start) = line.find("/*") {
+            match line[start + 2..].find("*/") {
+                Some(end) => {
+                    let after = start + 2 + end + 2;
+                    line = format!("{} {}", &line[..start], &line[after..])
+                        .trim()
+                        .to_string();
+                }
+                None => {
+                    in_block_comment = true;
+                    line = line[..start].trim().to_string();
+                    break;
                 }
             }
         }
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+        let lower = line.to_lowercase();
+        if lower.starts_with("namespace ") || lower.starts_with("using ") {
+            continue;
+        }
+
+        // Sort object type keywords by length descending so longer keywords
+        // (extensions) win over their shorter base-type prefixes.
+        let mut sorted_types: Vec<&str> = al_syntax::language_data::object_types()
+            .iter()
+            .map(|ot| ot.keyword.as_str())
+            .collect();
+        sorted_types.sort_by_key(|k| Reverse(k.len()));
+
+        for ot in &sorted_types {
+            let Some(after) = lower.strip_prefix(ot) else {
+                continue;
+            };
+            // Require a word boundary after the keyword.
+            if !after.starts_with(|c: char| c.is_ascii_whitespace() || c.is_ascii_digit()) {
+                continue;
+            }
+            let rest = line[ot.len()..].trim();
+            let (id_str, rest2) = split_id_and_name(rest);
+            let id: u32 = id_str.parse().unwrap_or(0);
+            let name = parse_object_name(rest2.trim());
+            if name.is_empty() && id == 0 {
+                continue;
+            }
+            let kind = ot.parse::<al_symbols::ObjectKind>().ok();
+            let kind_display = kind
+                .map(|k| k.to_string())
+                .unwrap_or_else(|| capitalize(ot));
+            let is_table_like = matches!(
+                kind,
+                Some(al_symbols::ObjectKind::Table) | Some(al_symbols::ObjectKind::TableExtension)
+            );
+            return Some(ObjectHeader {
+                kind_display,
+                id,
+                name,
+                is_table_like,
+            });
+        }
+        // The first meaningful line is not an object declaration.
+        return None;
     }
     None
 }
@@ -270,35 +578,6 @@ fn capitalize(s: &str) -> String {
     }
 }
 
-/// Parse a `field(50; MyField; ...)` or `field(MyField; ...)` declaration.
-fn parse_field_declaration(line: &str) -> Option<u32> {
-    let lower = line.to_lowercase();
-    if lower.starts_with("field(") {
-        // field(50; FieldName; Type) or field(FieldName; Type)
-        let inner = &line[6..line.find(')')?];
-        let first = inner.split(';').next()?.trim();
-        if let Ok(id) = first.trim_matches('"').parse::<u32>() {
-            return Some(id);
-        }
-    }
-    None
-}
-
-fn parse_field_name(line: &str) -> Option<String> {
-    if line.to_lowercase().starts_with("field(") {
-        let inner = &line[6..line.find(')')?];
-        let parts: Vec<&str> = inner.split(';').collect();
-        // field(id; name; type) or field(name; type)
-        let name_part = if parts.len() >= 3 {
-            parts[1].trim()
-        } else {
-            parts.first()?.trim()
-        };
-        return Some(name_part.trim_matches('"').trim_matches('\'').to_string());
-    }
-    None
-}
-
 /// Parse a property like `Caption = 'Some text';` or `Caption = 'text', Comment = 'note';`
 fn parse_property_value(line: &str, property: &str) -> Option<String> {
     let prefix = format!("{} =", property);
@@ -311,72 +590,55 @@ fn parse_property_value(line: &str, property: &str) -> Option<String> {
     extract_single_quoted(after_eq)
 }
 
-/// Parse a `Label` variable declaration like `MyLabel: Label 'Some text';`
-fn parse_label_declaration(line: &str) -> Option<String> {
+/// Parse a `Label` variable declaration like `MyLabel: Label 'Some text';`,
+/// returning `(label_name, text)`.
+fn parse_label_declaration(line: &str) -> Option<(String, String)> {
     // Pattern: <name>: Label '<text>' [, ...];
     let colon = line.find(':')?;
+    let name = line[..colon].trim().trim_matches('"').trim();
+    if name.is_empty() {
+        return None;
+    }
     let after_colon = line[colon + 1..].trim();
     let lower = after_colon.to_lowercase();
     if !lower.starts_with("label ") {
         return None;
     }
     let after_label = after_colon[6..].trim();
-    extract_single_quoted(after_label)
+    let text = extract_single_quoted(after_label)?;
+    Some((name.to_string(), text))
 }
 
+/// Body of the first single-quoted AL literal in `s`, with `''` unescaped.
+///
+/// An *empty* literal (`Caption = '';`) is a legal AL construct that suppresses
+/// the default caption, and alc emits an empty-source unit for it — returning
+/// `None` silently dropped it. `None` now means "no literal here at all".
 fn extract_single_quoted(s: &str) -> Option<String> {
     let start = s.find('\'')?;
     let inner = &s[start + 1..];
-    // Find closing quote (handle escaped '' as single quote)
     let mut result = String::new();
     let mut chars = inner.chars().peekable();
+    let mut closed = false;
     while let Some(ch) = chars.next() {
         if ch == '\'' {
             if chars.peek() == Some(&'\'') {
                 chars.next();
                 result.push('\'');
             } else {
+                closed = true;
                 break;
             }
         } else {
             result.push(ch);
         }
     }
-    if result.is_empty() {
-        None
-    } else {
+    if closed {
         Some(result)
-    }
-}
-
-fn make_translation_id(
-    obj_type: &str,
-    obj_id: u32,
-    obj_name: &str,
-    property: &str,
-    field_id: u32,
-    context: &str,
-    _path: &Path,
-) -> String {
-    if field_id > 0 {
-        format!(
-            "{} {} {} - {} {} - {}",
-            obj_type, obj_id, obj_name, property, field_id, context
-        )
     } else {
-        format!("{} {} {} - {}", obj_type, obj_id, obj_name, property)
+        // Unterminated literal — treat as no value rather than guessing.
+        None
     }
-}
-
-fn make_label_id(
-    obj_type: &str,
-    obj_id: u32,
-    obj_name: &str,
-    _field_id: u32,
-    _path: &Path,
-    index: usize,
-) -> String {
-    format!("{} {} {} - Label {}", obj_type, obj_id, obj_name, index)
 }
 
 /// Generate a `.g.xlf` XLIFF 1.2 file from translation units.
@@ -579,7 +841,21 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
                     state: current_state.clone(),
                     note: current_note.take(),
                 };
-                units.insert(id, unit);
+                // Duplicate ids are malformed input. Keep the *first*
+                // occurrence (deterministic and document-order) rather than
+                // letting a later one silently overwrite an already-reviewed
+                // translation, and make the condition observable.
+                match units.entry(id) {
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        slot.insert(unit);
+                    }
+                    std::collections::hash_map::Entry::Occupied(existing) => {
+                        tracing::warn!(
+                            id = %existing.key(),
+                            "xliff: duplicate trans-unit id in input; keeping the first occurrence"
+                        );
+                    }
+                }
             }
             current_target = None;
         }
@@ -665,14 +941,21 @@ pub fn refresh_xliff(
         }
     }
 
-    for (id, lang_unit) in language {
-        if !generated_ids.contains(id.as_str()) {
-            result_units.push(TranslationUnit {
-                state: TranslationState::Final,
-                ..lang_unit.clone()
-            });
-            refresh.removed.push(id.clone());
-        }
+    // `language` is a HashMap, so iterating it directly appended obsolete units
+    // in a different order on every run — huge spurious VCS diffs on the
+    // rewritten language file. Sort by id for stable output.
+    let mut obsolete: Vec<&String> = language
+        .keys()
+        .filter(|id| !generated_ids.contains(id.as_str()))
+        .collect();
+    obsolete.sort_unstable();
+    for id in obsolete {
+        let lang_unit = &language[id];
+        result_units.push(TranslationUnit {
+            state: TranslationState::Final,
+            ..lang_unit.clone()
+        });
+        refresh.removed.push(id.clone());
     }
 
     (result_units, refresh)
@@ -1042,8 +1325,12 @@ mod tests {
             extract_single_quoted("'It''s a test'"),
             Some("It's a test".to_string())
         );
-        assert_eq!(extract_single_quoted("''"), None);
+        // `Caption = '';` is legal AL that suppresses the default caption; alc
+        // emits an empty-source unit for it, so an empty literal is a *value*.
+        assert_eq!(extract_single_quoted("''"), Some(String::new()));
         assert_eq!(extract_single_quoted("no quotes"), None);
+        // An unterminated literal is not a value.
+        assert_eq!(extract_single_quoted("'oops"), None);
     }
 
     #[test]
@@ -1066,9 +1353,9 @@ mod tests {
     fn test_detect_object_header() {
         let text = "table 50100 \"Customer Extension\"\n{\n    fields\n    {};\n}";
         let result = detect_object_header(text).unwrap();
-        assert_eq!(result.0, "Table");
-        assert_eq!(result.1, 50100);
-        assert_eq!(result.2, "Customer Extension");
+        assert_eq!(result.kind_display, "Table");
+        assert_eq!(result.id, 50100);
+        assert_eq!(result.name, "Customer Extension");
     }
 
     /// the name must stop at the closing quote — extension
@@ -1078,19 +1365,19 @@ mod tests {
     #[test]
     fn detect_object_header_quoted_name_stops_before_extends_clause() {
         let text = r#"pageextension 50101 "Sales Order Pageext" extends "Sales Order""#;
-        let (ty, id, name) = detect_object_header(text).unwrap();
-        assert_eq!(ty, "Pageextension");
-        assert_eq!(id, 50101);
-        assert_eq!(name, "Sales Order Pageext");
+        let header = detect_object_header(text).unwrap();
+        assert_eq!(header.kind_display, "PageExtension");
+        assert_eq!(header.id, 50101);
+        assert_eq!(header.name, "Sales Order Pageext");
     }
 
     #[test]
     fn detect_object_header_unquoted_name_stops_before_extends_clause() {
         let text = "tableextension 50100 MyExt extends MyBase";
-        let (ty, id, name) = detect_object_header(text).unwrap();
-        assert_eq!(ty, "Tableextension");
-        assert_eq!(id, 50100);
-        assert_eq!(name, "MyExt");
+        let header = detect_object_header(text).unwrap();
+        assert_eq!(header.kind_display, "TableExtension");
+        assert_eq!(header.id, 50100);
+        assert_eq!(header.name, "MyExt");
     }
 
     #[test]
@@ -1389,8 +1676,26 @@ mod tests {
             ids_a, ids_b,
             "label IDs must not depend on prior extraction state"
         );
-        assert_eq!(ids_a[0], "Codeunit 50100 My Codeunit - Label 0");
-        assert_eq!(ids_a[1], "Codeunit 50100 My Codeunit - Label 1");
+        // Labels are keyed by their NamedType name (alc's scheme), not by a
+        // positional counter, so inserting a label above another does not
+        // renumber every following id.
+        assert_eq!(
+            ids_a[0],
+            format!(
+                "Codeunit {} - NamedType {}",
+                name_hash("My Codeunit"),
+                name_hash("FirstLabel")
+            )
+        );
+        assert_eq!(
+            ids_a[1],
+            format!(
+                "Codeunit {} - NamedType {}",
+                name_hash("My Codeunit"),
+                name_hash("SecondLabel")
+            )
+        );
+        assert_ne!(ids_a[0], ids_a[1]);
     }
 
     #[test]
@@ -1728,5 +2033,331 @@ le monde</target>
             1,
             "manifest name must not create a nested output path"
         );
+    }
+
+    fn extract(al: &str) -> Vec<TranslationUnit> {
+        let mut units = Vec::new();
+        extract_from_file(Path::new("test.al"), al, &mut units);
+        units
+    }
+
+    /// Every page control used to get the identical id
+    /// (`Page 50100 X - Caption`) because page-layout `field(Name; Rec.Name)`
+    /// never set the numeric `field_id`.
+    #[test]
+    fn page_controls_get_distinct_translation_ids() {
+        let al = r#"page 50100 "My Page"
+{
+    Caption = 'My Page';
+    SourceTable = "My Table";
+
+    layout
+    {
+        area(Content)
+        {
+            field(Name; Rec.Name)
+            {
+                Caption = 'Name';
+                ToolTip = 'Specifies the name.';
+            }
+            field(Amount; Rec.Amount)
+            {
+                Caption = 'Amount';
+                ToolTip = 'Specifies the amount.';
+            }
+        }
+    }
+    actions
+    {
+        area(Processing)
+        {
+            action(DoIt)
+            {
+                Caption = 'Do It';
+                ToolTip = 'Runs the thing.';
+            }
+        }
+    }
+}"#;
+        let units = extract(al);
+        let ids: Vec<&str> = units.iter().map(|u| u.id.as_str()).collect();
+        let unique: std::collections::HashSet<&&str> = ids.iter().collect();
+        assert_eq!(
+            ids.len(),
+            unique.len(),
+            "every unit must have a distinct id: {ids:?}"
+        );
+        assert_eq!(units.len(), 7, "{ids:?}");
+
+        let page_hash = name_hash("My Page");
+        let caption_hash = name_hash("Caption");
+        let tooltip_hash = name_hash("ToolTip");
+        assert!(units.iter().any(|u| u.id
+            == format!("Page {page_hash} - Property {caption_hash}")
+            && u.source == "My Page"));
+        assert!(units.iter().any(|u| u.id
+            == format!(
+                "Page {page_hash} - Control {} - Property {tooltip_hash}",
+                name_hash("Name")
+            )
+            && u.source == "Specifies the name."));
+        assert!(units.iter().any(|u| u.id
+            == format!(
+                "Page {page_hash} - Control {} - Property {caption_hash}",
+                name_hash("Amount")
+            )
+            && u.source == "Amount"));
+        // An action lives under `actions`, so alc keys it as `Action`.
+        assert!(
+            units.iter().any(|u| u.id
+                == format!(
+                    "Page {page_hash} - Action {} - Property {caption_hash}",
+                    name_hash("DoIt")
+                )),
+            "{ids:?}"
+        );
+    }
+
+    #[test]
+    fn page_extension_controls_are_extracted() {
+        let al = r#"pageextension 50101 "My Page Ext" extends "Customer Card"
+{
+    layout
+    {
+        addlast(General)
+        {
+            field(Loyalty; Rec.Loyalty)
+            {
+                Caption = 'Loyalty';
+                ToolTip = 'Specifies the loyalty level.';
+            }
+        }
+    }
+}"#;
+        let units = extract(al);
+        assert_eq!(units.len(), 2, "{units:?}");
+        let object_hash = name_hash("My Page Ext");
+        assert!(units.iter().any(|u| u.id
+            == format!(
+                "PageExtension {object_hash} - Control {} - Property {}",
+                name_hash("Loyalty"),
+                name_hash("Caption")
+            )));
+        assert!(units
+            .iter()
+            .all(|u| u.object_type == "PageExtension" && u.object_name == "My Page Ext"));
+    }
+
+    /// `field_id`/`current_field` were never reset when a field block ended, so
+    /// object-level properties after the last field were attributed to it.
+    #[test]
+    fn properties_after_the_last_field_are_not_attributed_to_it() {
+        let al = r#"table 50100 "My Table"
+{
+    fields
+    {
+        field(1; Name; Text[100])
+        {
+            Caption = 'Name';
+        }
+    }
+
+    Caption = 'My Table';
+}"#;
+        let units = extract(al);
+        let table_caption = units
+            .iter()
+            .find(|u| u.source == "My Table")
+            .expect("object caption extracted");
+        assert_eq!(
+            table_caption.id,
+            format!(
+                "Table {} - Property {}",
+                name_hash("My Table"),
+                name_hash("Caption")
+            ),
+            "object caption must not carry the last field's id"
+        );
+        assert_eq!(
+            table_caption.note.as_deref(),
+            Some("Table My Table - Property Caption")
+        );
+    }
+
+    /// Locked strings are not translatable and must stay out of the `.g.xlf`.
+    #[test]
+    fn locked_strings_are_excluded() {
+        let al = r#"codeunit 50100 "My Codeunit"
+{
+    var
+        TranslatableLbl: Label 'Please translate me';
+        TechnicalLbl: Label 'SOME_TOKEN', Locked = true;
+        AlsoLockedLbl: Label 'OTHER_TOKEN', Locked;
+}"#;
+        let units = extract(al);
+        let sources: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
+        assert_eq!(sources, vec!["Please translate me"], "{units:?}");
+    }
+
+    #[test]
+    fn locked_captions_and_tooltips_are_excluded() {
+        let al = r#"table 50100 "My Table"
+{
+    fields
+    {
+        field(1; Code; Code[20])
+        {
+            Caption = 'CODE', Locked = true;
+        }
+        field(2; Name; Text[100])
+        {
+            Caption = 'Name';
+        }
+    }
+}"#;
+        let units = extract(al);
+        let sources: Vec<&str> = units.iter().map(|u| u.source.as_str()).collect();
+        assert_eq!(sources, vec!["Name"], "{units:?}");
+    }
+
+    /// `Caption = '';` legally suppresses the default caption; alc emits an
+    /// empty-source unit rather than dropping it.
+    #[test]
+    fn empty_caption_emits_an_empty_source_unit() {
+        let al = r#"table 50100 "My Table"
+{
+    fields
+    {
+        field(1; Name; Text[100])
+        {
+            Caption = '';
+        }
+    }
+}"#;
+        let units = extract(al);
+        assert_eq!(units.len(), 1, "{units:?}");
+        assert_eq!(units[0].source, "");
+        assert_eq!(
+            units[0].id,
+            format!(
+                "Table {} - Field {} - Property {}",
+                name_hash("My Table"),
+                name_hash("Name"),
+                name_hash("Caption")
+            )
+        );
+    }
+
+    /// The header scan stopped after 10 lines, so a file with a longer licence
+    /// banner produced no units and no warning.
+    #[test]
+    fn object_header_is_found_behind_a_long_comment_banner() {
+        let mut al = String::new();
+        for i in 0..40 {
+            al.push_str(&format!("// licence header line {i}\n"));
+        }
+        al.push_str("/* a block\n   comment too */\n\n");
+        al.push_str("namespace MyCompany.MyApp;\nusing Microsoft.Sales;\n\n");
+        al.push_str("table 50100 \"My Table\"\n{\n    Caption = 'My Table';\n}\n");
+
+        let units = extract(&al);
+        assert_eq!(units.len(), 1, "{units:?}");
+        assert_eq!(units[0].source, "My Table");
+        assert_eq!(units[0].object_type, "Table");
+    }
+
+    #[test]
+    fn header_detection_returns_none_when_the_file_has_no_object() {
+        assert!(detect_object_header("// just a comment\n\n").is_none());
+        assert!(detect_object_header("").is_none());
+    }
+
+    /// A `.g.xlf` with duplicate ids silently collapses in `parse_xliff`'s map;
+    /// document order decides which entry survives.
+    #[test]
+    fn parse_xliff_keeps_the_first_of_two_duplicate_trans_unit_ids() {
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<xliff version="1.2">
+  <file datatype="xml" source-language="en-US" target-language="de-DE" original="MyApp">
+    <body>
+      <group id="MyApp">
+        <trans-unit id="Table 1 - Property 2" size-unit="char" translate="yes" xml:space="preserve">
+          <source>First</source>
+          <target state="translated">Erste</target>
+        </trans-unit>
+        <trans-unit id="Table 1 - Property 2" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Second</source>
+          <target state="new"></target>
+        </trans-unit>
+      </group>
+    </body>
+  </file>
+</xliff>"#;
+        let parsed = parse_xliff(xml);
+        assert_eq!(parsed.len(), 1);
+        let unit = parsed.get("Table 1 - Property 2").unwrap();
+        assert_eq!(
+            unit.source, "First",
+            "a later duplicate must not overwrite an already-reviewed translation"
+        );
+        assert_eq!(unit.target.as_deref(), Some("Erste"));
+    }
+
+    /// Extraction across the workspace must never emit two units with the same id.
+    #[test]
+    fn workspace_extraction_drops_duplicate_ids() {
+        let ws = Workspace::new();
+        // Two files declaring the same object name produce the same id root.
+        for (index, name) in ["/src/A.al", "/src/B.al"].iter().enumerate() {
+            ws.file_index.add_file(
+                std::path::PathBuf::from(name),
+                format!(
+                    "table 50{:03} \"Same Name\"\n{{\n    Caption = 'Same';\n}}\n",
+                    100 + index
+                ),
+            );
+        }
+        let units = extract_translation_units(&ws);
+        let ids: std::collections::HashSet<&str> = units.iter().map(|u| u.id.as_str()).collect();
+        assert_eq!(ids.len(), units.len(), "duplicate ids leaked: {units:?}");
+    }
+
+    /// The FNV-1 hash must match `alc`'s `Hash.GetFNVHashCode` (the same
+    /// algorithm `al-emit` verifies against the compiler).
+    #[test]
+    fn name_hash_matches_the_emitter_algorithm() {
+        // Reference values computed with the FNV-1/UTF-16LE + i32::MAX bias
+        // definition shared with crates/al-emit/src/method_id.rs.
+        assert_eq!(name_hash(""), 2_147_483_647 + (-2128831035i64));
+        // Distinct names hash distinctly, and the value is stable.
+        assert_ne!(name_hash("Caption"), name_hash("ToolTip"));
+        assert_eq!(name_hash("Caption"), name_hash("Caption"));
+        // Hashing is case-sensitive, as in alc.
+        assert_ne!(name_hash("Caption"), name_hash("caption"));
+    }
+
+    #[test]
+    fn refresh_appends_obsolete_units_in_a_stable_order() {
+        let generated: Vec<TranslationUnit> = Vec::new();
+        let mut language = HashMap::new();
+        for id in ["Z-unit", "A-unit", "M-unit"] {
+            language.insert(
+                id.to_string(),
+                TranslationUnit {
+                    id: id.to_string(),
+                    object_type: "Table".to_string(),
+                    object_id: 1,
+                    object_name: "T".to_string(),
+                    source: id.to_string(),
+                    target: Some("x".to_string()),
+                    state: TranslationState::Translated,
+                    note: None,
+                },
+            );
+        }
+        let (units, result) = refresh_xliff(&generated, &language);
+        let ids: Vec<&str> = units.iter().map(|u| u.id.as_str()).collect();
+        assert_eq!(ids, vec!["A-unit", "M-unit", "Z-unit"]);
+        assert_eq!(result.removed, vec!["A-unit", "M-unit", "Z-unit"]);
     }
 }

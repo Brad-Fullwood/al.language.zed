@@ -23,6 +23,9 @@ pub enum UnusedReason {
     ZeroReferences,
     /// Event subscriber targets a publisher that no longer exists.
     PublisherRemoved,
+    /// The publisher object still exists but no longer declares the event the
+    /// subscriber names (removed or renamed).
+    EventRemoved,
 }
 
 /// How certain the analysis is that the symbol is genuinely dead.
@@ -389,7 +392,7 @@ fn find_orphaned_subscribers(
 
     collect_event_subscribers(root, source, &mut subscribers);
 
-    for (proc_name, target_object, _target_event, line) in &subscribers {
+    for (proc_name, target_object, target_event, line) in &subscribers {
         // Skip entries where attribute parsing failed to extract a target object name.
         // An empty target would cause false positives (nothing in the index matches "").
         if target_object.is_empty() {
@@ -418,8 +421,111 @@ fn find_orphaned_subscribers(
                 confidence: Confidence::High,
                 note: None,
             });
+            continue;
+        }
+
+        // The publisher object exists — but does it still declare the event the
+        // subscriber names? Comparing only the object name (as this used to)
+        // never reported a subscriber to a removed or renamed event, despite
+        // "orphaned subscribers" being the documented purpose of this check.
+        if target_event.is_empty() {
+            continue;
+        }
+        let Some(published) = publisher_event_names(workspace, &target_lower) else {
+            // Cannot enumerate the publisher's events with confidence (e.g. a
+            // table/page whose platform events are not declared in source):
+            // stay silent rather than emit a false positive.
+            continue;
+        };
+        if !published.contains(&target_event.to_lowercase()) {
+            results.push(UnusedSymbol {
+                kind: UnusedKind::Subscriber,
+                name: proc_name.clone(),
+                object: object_name.to_string(),
+                file: Some(file_path.to_string()),
+                line: Some(*line),
+                reason: UnusedReason::EventRemoved,
+                confidence: Confidence::High,
+                note: Some(format!(
+                    "'{target_object}' no longer publishes '{target_event}'"
+                )),
+            });
         }
     }
+}
+
+/// Event names published by `object_lower`, or `None` when they cannot be
+/// enumerated reliably.
+///
+/// Only **codeunits** are answered. Tables, pages, reports and xmlports also
+/// receive platform-generated events (`OnAfterInsertEvent`, `OnOpenPageEvent`,
+/// …) that appear nowhere in source or symbol data, so an "event not found"
+/// verdict there would be a false positive.
+fn publisher_event_names(
+    workspace: &Workspace,
+    object_lower: &str,
+) -> Option<std::collections::HashSet<String>> {
+    if let Some(entry) = workspace.symbols.find_by_name(object_lower) {
+        if entry.kind != al_symbols::ObjectKind::Codeunit {
+            return None;
+        }
+        return Some(
+            entry
+                .methods
+                .iter()
+                .filter(|method| {
+                    method.attributes.iter().any(|attr| {
+                        attr.name
+                            .eq_ignore_ascii_case(al_insight::attr_names::INTEGRATION_EVENT)
+                            || attr
+                                .name
+                                .eq_ignore_ascii_case(al_insight::attr_names::BUSINESS_EVENT)
+                    })
+                })
+                .map(|method| method.name.to_lowercase())
+                .collect(),
+        );
+    }
+
+    let path = workspace.file_index.find_by_object_name(object_lower)?;
+    let (text, tree) = workspace.file_index.get_cached_parse(&path)?;
+    let info = al_syntax::find_object_declaration(&tree, &text)?;
+    if !info.kind.eq_ignore_ascii_case("codeunit") {
+        return None;
+    }
+    Some(collect_declared_event_names(&tree, &text))
+}
+
+/// Names of procedures carrying an `[IntegrationEvent]` / `[BusinessEvent]`
+/// attribute, lower-cased.
+fn collect_declared_event_names(
+    tree: &tree_sitter::Tree,
+    text: &str,
+) -> std::collections::HashSet<String> {
+    let source = text.as_bytes();
+    let mut names = std::collections::HashSet::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if matches!(
+            node.kind(),
+            "procedure_declaration" | "event_procedure_declaration" | "event_declaration"
+        ) {
+            let attributes = get_preceding_attribute(node, source).unwrap_or_default();
+            let lower = attributes.to_lowercase();
+            if lower.contains("integrationevent") || lower.contains("businessevent") {
+                if let Some(name) = node
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(source).ok())
+                {
+                    names.insert(name.trim().trim_matches('"').to_lowercase());
+                }
+            }
+            continue;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
+    }
+    names
 }
 
 /// Collect event subscriber procedures iteratively: (proc_name, target_object, target_event, line_1based).
@@ -1076,5 +1182,95 @@ mod tests {
         let (obj, _) =
             parse_subscriber_args("[EventSubscriber(ObjectType::Table, Table::\"Item\", 'OnX')]");
         assert_eq!(obj, "Item");
+    }
+
+    /// `_target_event` was bound but never used, so a subscriber to a removed
+    /// or renamed event on a still-existing publisher was never reported.
+    #[test]
+    fn orphaned_subscriber_to_a_removed_event_is_reported() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/src/Publisher.al"),
+            r#"codeunit 50100 "Sales Publisher"
+{
+    [IntegrationEvent(false, false)]
+    local procedure OnAfterPost()
+    begin
+    end;
+}"#
+            .to_string(),
+        );
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/src/Subscriber.al"),
+            r#"codeunit 50101 "Sales Subscriber"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Sales Publisher", 'OnBeforePost', '', false, false)]
+    local procedure HandleBeforePost()
+    begin
+    end;
+
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Sales Publisher", 'OnAfterPost', '', false, false)]
+    local procedure HandleAfterPost()
+    begin
+    end;
+}"#
+            .to_string(),
+        );
+
+        let results = dead_code(&ws).unwrap();
+        let orphans: Vec<_> = results
+            .iter()
+            .filter(|r| r.kind == UnusedKind::Subscriber)
+            .collect();
+        assert!(
+            orphans
+                .iter()
+                .any(|r| r.name == "HandleBeforePost" && r.reason == UnusedReason::EventRemoved),
+            "subscriber to the removed 'OnBeforePost' must be reported: {orphans:?}"
+        );
+        assert!(
+            !orphans.iter().any(|r| r.name == "HandleAfterPost"),
+            "subscriber to a live event must not be reported: {orphans:?}"
+        );
+    }
+
+    /// Table/page platform events are declared nowhere, so they must never be
+    /// reported as removed.
+    #[test]
+    fn platform_table_events_are_not_reported_as_removed() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/src/MyTable.al"),
+            r#"table 50100 "My Table"
+{
+    fields
+    {
+        field(1; Name; Text[50])
+        {
+            DataClassification = CustomerContent;
+        }
+    }
+}"#
+            .to_string(),
+        );
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/src/TableSubscriber.al"),
+            r#"codeunit 50101 "Table Subscriber"
+{
+    [EventSubscriber(ObjectType::Table, Database::"My Table", 'OnAfterInsertEvent', '', false, false)]
+    local procedure HandleInsert()
+    begin
+    end;
+}"#
+            .to_string(),
+        );
+
+        let results = dead_code(&ws).unwrap();
+        assert!(
+            !results
+                .iter()
+                .any(|r| r.kind == UnusedKind::Subscriber && r.name == "HandleInsert"),
+            "platform table events must not be flagged: {results:?}"
+        );
     }
 }

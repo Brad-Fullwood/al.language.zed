@@ -108,7 +108,7 @@ pub(super) fn source_action_add_region(
                 character: 0,
             },
         },
-        new_text: format!("{}//region MyRegion\n", indent),
+        new_text: format!("{}#region MyRegion\n", indent),
     };
     let end_line = range.end.line.saturating_add(1);
     let region_end = TextEdit {
@@ -122,7 +122,7 @@ pub(super) fn source_action_add_region(
                 character: 0,
             },
         },
-        new_text: format!("{}//endregion\n", indent),
+        new_text: format!("{}#endregion\n", indent),
     };
     Some(CodeActionEntry {
         title: "AL: Wrap in region".to_string(),
@@ -164,5 +164,36 @@ mod tests {
         };
         let action = source_action_add_region(&uri, al_code, range);
         assert!(action.is_some(), "Region action should still be produced");
+    }
+
+    /// The action used to emit `//region` / `//endregion`, which is a plain
+    /// comment rather than AL's `#region` directive — it does not fold and does
+    /// not match the documented behavior.
+    #[test]
+    fn wrap_in_region_emits_al_region_directives() {
+        let al_code = "codeunit 50100 T\n{\n    procedure A()\n    begin\n    end;\n}\n";
+        let uri = Url::parse("file:///test/Region2.al").unwrap();
+        let range = Range {
+            start: super::super::Position {
+                line: 2,
+                character: 0,
+            },
+            end: super::super::Position {
+                line: 4,
+                character: 0,
+            },
+        };
+        let action = source_action_add_region(&uri, al_code, range).expect("region action");
+        let updated = super::super::test_support::assert_action_applies_cleanly(
+            al_code,
+            &action,
+            "wrap_in_region",
+        );
+        assert!(updated.contains("#region MyRegion"), "{updated}");
+        assert!(updated.contains("#endregion"), "{updated}");
+        assert!(
+            !updated.contains("//region"),
+            "must not emit a plain comment: {updated}"
+        );
     }
 }

@@ -89,6 +89,20 @@ fn scan_procedures(
     }
 }
 
+/// One entry of the block-nesting stack used to decide whether a line sits
+/// inside a loop.
+#[derive(Debug, PartialEq, Eq)]
+enum Frame {
+    /// An open `begin … end` (or `repeat … until`). `is_loop_body` marks the
+    /// block as the body of a `for`/`foreach`/`while`/`repeat`.
+    Block { is_loop_body: bool },
+    /// A `for … do` / `while … do` whose body is a *single* statement rather
+    /// than a `begin … end` block. It stays on the stack for exactly one
+    /// statement; the old implementation pushed these and never popped them,
+    /// so everything after such a loop was reported as "in loop".
+    PendingSingleStatementLoop,
+}
+
 fn analyze_proc_text(
     proc_text: &str,
     start_line: u32,
@@ -97,15 +111,11 @@ fn analyze_proc_text(
     proc_name: &str,
     violations: &mut Vec<SqlPatternViolation>,
 ) {
-    // fix: track a per-loop begin..end nesting depth to prevent an
-    // inner "end;" from prematurely decrementing the loop counter.
-    //
-    // `loop_begin_depth` is a stack — one entry per active loop level.
-    // Each entry counts the number of nested begin..end blocks currently open
-    // inside that loop.  An `end;` only pops the loop itself when the top entry
-    // reaches 0; otherwise it closes a nested block.
-    let mut loop_begin_depth: Vec<u32> = Vec::new();
-    let mut has_filter_before_findset = false;
+    let mut stack: Vec<Frame> = Vec::new();
+    // Filters are tracked *per record variable*: a single procedure-wide flag
+    // meant `Customer.SetRange(...); Vendor.FindSet();` suppressed the warning
+    // for the unrelated `Vendor`.
+    let mut filtered_records: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for (offset, line) in proc_text.lines().enumerate() {
         let line_num = start_line + offset as u32;
@@ -115,35 +125,73 @@ fn analyze_proc_text(
         }
         let cleaned = strip_string_literals(line);
         let lower = cleaned.trim().to_lowercase();
-
-        if is_loop_start(&lower) {
-            let opens_body =
-                lower.ends_with(" begin") || lower.ends_with("\tbegin") || lower == "begin";
-            loop_begin_depth.push(if opens_body { 1 } else { 0 });
-        } else if lower == "begin" {
-            if let Some(top) = loop_begin_depth.last_mut() {
-                *top += 1;
-            }
-        } else if lower == "end;" || lower == "end" {
-            if let Some(top) = loop_begin_depth.last_mut() {
-                if *top > 0 {
-                    *top -= 1;
-                } else {
-                    loop_begin_depth.pop();
-                }
-            }
-        } else if lower.starts_with("until ") {
-            loop_begin_depth.pop();
+        if lower.is_empty() {
+            continue;
         }
 
-        let in_loop = !loop_begin_depth.is_empty();
+        let loop_head = is_loop_start(&lower);
+        let is_repeat = lower == "repeat" || lower.starts_with("repeat ");
+        let opens_block = lower == "begin"
+            || lower.ends_with(" begin")
+            || lower.ends_with("\tbegin")
+            || lower.ends_with("do begin");
+        let closes_block = lower == "end"
+            || lower.starts_with("end;")
+            || lower.starts_with("end ")
+            || lower.starts_with("end)");
+        let closes_repeat = lower.starts_with("until ") || lower == "until";
 
-        if lower.contains(".setrange(") || lower.contains(".setfilter(") {
-            has_filter_before_findset = true;
+        // A closing token first: `end else begin` both closes and opens.
+        if closes_block {
+            pop_block(&mut stack);
+        }
+        if closes_repeat {
+            pop_block(&mut stack);
+        }
+
+        if loop_head {
+            if is_repeat || opens_block {
+                stack.push(Frame::Block { is_loop_body: true });
+            } else {
+                stack.push(Frame::PendingSingleStatementLoop);
+            }
+        } else if opens_block {
+            // `for … do` on one line and `begin` on the next: the block *is*
+            // the loop body.
+            if matches!(stack.last(), Some(Frame::PendingSingleStatementLoop)) {
+                stack.pop();
+                stack.push(Frame::Block { is_loop_body: true });
+            } else {
+                stack.push(Frame::Block {
+                    is_loop_body: false,
+                });
+            }
+        }
+
+        let in_loop = stack.iter().any(|frame| {
+            matches!(
+                frame,
+                Frame::Block { is_loop_body: true } | Frame::PendingSingleStatementLoop
+            )
+        });
+
+        for (receiver, method) in record_method_calls(&lower) {
+            match method {
+                "setrange" | "setfilter" => {
+                    filtered_records.insert(receiver.to_string());
+                }
+                // `Reset` clears every filter on the record variable.
+                "reset" => {
+                    filtered_records.remove(receiver);
+                }
+                _ => {}
+            }
         }
 
         if in_loop {
-            if lower.contains(".findfirst()") || lower.contains(".findlast()") {
+            if contains_record_method(&lower, "findfirst")
+                || contains_record_method(&lower, "findlast")
+            {
                 violations.push(make_violation(
                     SqlAntiPattern::FindInLoop,
                     "FindFirst/FindLast inside loop causes N+1 queries",
@@ -163,7 +211,7 @@ fn analyze_proc_text(
                     line_num,
                 ));
             }
-            if lower.contains(".calcfields(") {
+            if contains_record_method(&lower, "calcfields") {
                 violations.push(make_violation(
                     SqlAntiPattern::CalcFieldsInLoop,
                     "CalcFields() in loop is expensive — use SetAutoCalcFields() instead",
@@ -175,8 +223,11 @@ fn analyze_proc_text(
             }
         }
 
-        if lower.contains(".findset(") || lower.contains(".findset ()") {
-            if !has_filter_before_findset {
+        for (receiver, method) in record_method_calls(&lower) {
+            if method != "findset" {
+                continue;
+            }
+            if !filtered_records.contains(receiver) {
                 violations.push(make_violation(
                     SqlAntiPattern::FindSetWithoutFilters,
                     "FindSet() without filters causes full table scan",
@@ -186,9 +237,75 @@ fn analyze_proc_text(
                     line_num,
                 ));
             }
-            has_filter_before_findset = false;
+            filtered_records.remove(receiver);
+        }
+
+        // A statement consumed the pending single-statement loop body.
+        let is_statement = !loop_head && !opens_block && !closes_block && !closes_repeat;
+        if is_statement && matches!(stack.last(), Some(Frame::PendingSingleStatementLoop)) {
+            stack.pop();
         }
     }
+}
+
+/// Pop the innermost real block, discarding any unresolved single-statement
+/// loop markers that sit above it.
+fn pop_block(stack: &mut Vec<Frame>) {
+    while matches!(stack.last(), Some(Frame::PendingSingleStatementLoop)) {
+        stack.pop();
+    }
+    stack.pop();
+}
+
+/// Whether `lower` calls the record method `method` on some receiver, in either
+/// the parenthesised (`Item.FindFirst()`) or the bare (`Item.FindFirst;`,
+/// `if Item.FindFirst then`) form — both are legal AL.
+fn contains_record_method(lower: &str, method: &str) -> bool {
+    record_method_calls(lower).any(|(_, name)| name == method)
+}
+
+/// Iterate `(receiver, method)` pairs for every `<receiver>.<method>` in
+/// `lower`, where `lower` is an already-lowercased, literal-stripped line.
+fn record_method_calls(lower: &str) -> impl Iterator<Item = (&str, &str)> + '_ {
+    let bytes = lower.as_bytes();
+    let mut index = 0usize;
+    std::iter::from_fn(move || {
+        while index < lower.len() {
+            let dot = lower[index..].find('.')? + index;
+            index = dot + 1;
+            let method_start = dot + 1;
+            let mut method_end = method_start;
+            while method_end < lower.len()
+                && (bytes[method_end].is_ascii_alphanumeric() || bytes[method_end] == b'_')
+            {
+                method_end += 1;
+            }
+            if method_end == method_start {
+                continue;
+            }
+            let receiver = receiver_before(lower, dot);
+            if receiver.is_empty() {
+                continue;
+            }
+            return Some((receiver, &lower[method_start..method_end]));
+        }
+        None
+    })
+}
+
+/// The identifier chain immediately preceding the `.` at `dot`.
+fn receiver_before(lower: &str, dot: usize) -> &str {
+    let before = &lower[..dot];
+    if let Some(stripped) = before.strip_suffix('"') {
+        if let Some(open) = stripped.rfind('"') {
+            return &before[open..];
+        }
+    }
+    let start = before
+        .rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.' || c == '"'))
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    before[start..].trim_end_matches('.')
 }
 
 fn contains_get_call(lower: &str) -> bool {
@@ -414,5 +531,147 @@ mod tests {
             "FindFirst inside string literal/comment must not be flagged. Got: {:?}",
             v
         );
+    }
+
+    /// The `end;` that closes a loop only decremented the begin counter, so
+    /// everything after the loop stayed "in loop" until the next `end;`.
+    #[test]
+    fn statements_after_a_loop_are_not_reported_as_in_loop() {
+        let ws = workspace_with(vec![(
+            "/src/AfterLoop.al",
+            r#"codeunit 50100 "After Loop"
+{
+    procedure Run()
+    var
+        i: Integer;
+        Item: Record Item;
+    begin
+        for i := 1 to 10 do begin
+            Message('x');
+        end;
+        if Item.FindFirst() then
+            Message('after the loop');
+    end;
+}"#,
+        )]);
+
+        let v = detect_sql_patterns(&ws).unwrap();
+        assert!(
+            !v.iter().any(|x| x.kind == SqlAntiPattern::FindInLoop),
+            "FindFirst after the loop must not be flagged: {:?}",
+            v
+        );
+    }
+
+    /// A single-statement loop body was pushed but never popped.
+    #[test]
+    fn single_statement_loop_is_tracked_and_then_popped() {
+        let ws = workspace_with(vec![(
+            "/src/SingleStatement.al",
+            r#"codeunit 50100 "Single Statement"
+{
+    procedure Run()
+    var
+        i: Integer;
+        Item: Record Item;
+        Other: Record Item;
+    begin
+        for i := 1 to 10 do
+            Item.CalcFields(Inventory);
+        Other.CalcFields(Inventory);
+    end;
+}"#,
+        )]);
+
+        let v = detect_sql_patterns(&ws).unwrap();
+        let calc: Vec<_> = v
+            .iter()
+            .filter(|x| x.kind == SqlAntiPattern::CalcFieldsInLoop)
+            .collect();
+        assert_eq!(
+            calc.len(),
+            1,
+            "exactly the loop body must be flagged, not the statement after it: {:?}",
+            v
+        );
+    }
+
+    /// `Item.FindFirst;` / `if Item.FindFirst then` are legal AL and were missed.
+    #[test]
+    fn detects_bare_findfirst_without_parentheses() {
+        let ws = workspace_with(vec![(
+            "/src/Bare.al",
+            r#"codeunit 50100 "Bare Find"
+{
+    procedure Run()
+    var
+        Item: Record Item;
+        Line: Record "Sales Line";
+    begin
+        repeat
+            if Item.FindFirst then
+                Item.FindLast;
+        until Line.Next() = 0;
+    end;
+}"#,
+        )]);
+
+        let v = detect_sql_patterns(&ws).unwrap();
+        let finds: Vec<_> = v
+            .iter()
+            .filter(|x| x.kind == SqlAntiPattern::FindInLoop)
+            .collect();
+        assert_eq!(
+            finds.len(),
+            2,
+            "both bare FindFirst and bare FindLast must be flagged: {:?}",
+            v
+        );
+    }
+
+    /// A filter on one record variable must not suppress the warning for another.
+    #[test]
+    fn findset_filter_tracking_is_per_record_variable() {
+        let ws = workspace_with(vec![(
+            "/src/PerVar.al",
+            r#"codeunit 50100 "Per Var"
+{
+    procedure Run()
+    var
+        Customer: Record Customer;
+        Vendor: Record Vendor;
+    begin
+        Customer.SetRange(Blocked, false);
+        if Customer.FindSet() then
+            Message('customers');
+        if Vendor.FindSet() then
+            Message('vendors');
+    end;
+}"#,
+        )]);
+
+        let v = detect_sql_patterns(&ws).unwrap();
+        let unfiltered: Vec<_> = v
+            .iter()
+            .filter(|x| x.kind == SqlAntiPattern::FindSetWithoutFilters)
+            .collect();
+        assert_eq!(
+            unfiltered.len(),
+            1,
+            "only the unfiltered Vendor.FindSet must be flagged: {:?}",
+            v
+        );
+    }
+
+    #[test]
+    fn receiver_before_reads_the_identifier_chain() {
+        assert_eq!(
+            receiver_before("if customer.findset() then", 11),
+            "customer"
+        );
+        // A quoted receiver keeps its quotes so two different quoted names stay
+        // distinct in the per-variable filter set.
+        assert_eq!(receiver_before("\"my rec\".setrange(", 8), "\"my rec\"");
+        assert_eq!(receiver_before("salesline.findset()", 9), "salesline");
     }
 }

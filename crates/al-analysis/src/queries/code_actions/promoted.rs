@@ -93,18 +93,34 @@ fn collect_promoted_actions(text: &str) -> Vec<PromotedActionInfo> {
 
             for &il in &inner_lines {
                 let lt = lines[il].trim().to_lowercase();
-                if lt.starts_with("promoted") && lt.contains('=') {
-                    if !lt.contains("category") && !lt.contains("actiontype") {
-                        if lt.contains("true") {
+                let Some((property, _)) = lt.split_once('=') else {
+                    continue;
+                };
+                match property.trim() {
+                    "promoted" => {
+                        if extract_property_value(lines[il]).eq_ignore_ascii_case("true") {
                             has_promoted = true;
                             remove_lines.push(il);
                         }
-                    } else if lt.contains("promotedcategory") {
-                        let val = extract_property_value(lines[il]);
-                        category = Some(val);
+                    }
+                    "promotedcategory" => {
+                        category = Some(extract_property_value(lines[il]));
                         remove_lines.push(il);
                     }
+                    // These legacy companions have no per-action equivalent in
+                    // the `area(Promoted)` syntax. Leaving them behind (as this
+                    // used to) orphans properties on an action that is no
+                    // longer promoted.
+                    "promotedonly" | "promotedisbig" | "promotedbydefault" => {
+                        remove_lines.push(il);
+                    }
+                    _ => {}
                 }
+            }
+            if !has_promoted {
+                // Only `PromotedOnly`/`PromotedIsBig` without `Promoted = true`
+                // is not a promoted action; keep those lines untouched.
+                remove_lines.clear();
             }
 
             if has_promoted && !name.is_empty() {
@@ -178,13 +194,48 @@ fn extract_property_value(line: &str) -> String {
     }
 }
 
+/// A `{ … }` block located by its header line.
+struct BlockSpan {
+    header: usize,
+    /// 0-based line holding the block's closing `}`.
+    close: usize,
+}
+
+fn indent_of(line: &str) -> String {
+    line[..line.len() - line.trim_start().len()].to_string()
+}
+
+fn find_block_in(
+    lines: &[&str],
+    from: usize,
+    to: usize,
+    predicate: impl Fn(&str) -> bool,
+) -> Option<BlockSpan> {
+    for i in from..to.min(lines.len()) {
+        let normalized = lines[i].trim().to_lowercase().replace(' ', "");
+        if predicate(&normalized) {
+            let (close, _) = find_block_extent(lines, i);
+            return Some(BlockSpan { header: i, close });
+        }
+    }
+    None
+}
+
 fn build_promoted_action_conversion(
     uri: &Url,
     text: &str,
     pa: &PromotedActionInfo,
 ) -> Option<CodeActionEntry> {
-    let mut edits: Vec<TextEdit> = Vec::new();
+    let lines: Vec<&str> = text.lines().collect();
 
+    // Every promoted action lives inside an `actions { }` block; without one
+    // there is nowhere valid to put the `area(Promoted)` section, so refuse
+    // rather than appending stray text at end of file.
+    let actions_block = find_block_in(&lines, 0, lines.len(), |t| {
+        t == "actions" || t.starts_with("actions{")
+    })?;
+
+    let mut edits: Vec<TextEdit> = Vec::new();
     for &line_no in &pa.remove_lines {
         edits.push(TextEdit {
             range: Range {
@@ -201,28 +252,63 @@ fn build_promoted_action_conversion(
         });
     }
 
-    // Find where to insert the actionRef — before the closing `}` of `actions { }` block.
-    let actions_end_line = find_actions_block_end(text);
-    let category = pa.category.as_deref().unwrap_or("Process");
+    let ref_name = super::quote_al_identifier(&format!("{}_Promoted", pa.name));
+    let target_name = super::quote_al_identifier(&pa.name);
 
-    let decl_line_text = text.lines().nth(pa.decl_line).unwrap_or("        ");
-    let action_indent_len = decl_line_text.len() - decl_line_text.trim_start().len();
-    let action_indent = &decl_line_text[..action_indent_len];
-    // The area indent is one level up (remove 4 spaces)
-    let area_indent = if action_indent_len >= 4 {
-        &action_indent[..action_indent_len - 4]
-    } else {
-        action_indent
+    // Reuse an existing `area(Promoted)` (and, for a categorised action, its
+    // category group) instead of emitting a fresh one on every conversion —
+    // repeated use used to stack duplicate `area(Promoted)` blocks.
+    let promoted_area = find_block_in(&lines, actions_block.header, actions_block.close + 1, |t| {
+        t.starts_with("area(promoted)")
+    });
+
+    let category_group_name = pa
+        .category
+        .as_deref()
+        .map(|category| format!("Category_{}", category));
+    let category_group = match (&promoted_area, &category_group_name) {
+        (Some(area), Some(group_name)) => {
+            let needle = format!("group({})", group_name.to_lowercase());
+            find_block_in(&lines, area.header, area.close + 1, |t| {
+                t.starts_with(&needle)
+            })
+        }
+        _ => None,
     };
 
-    let insert_line = actions_end_line.unwrap_or_else(|| text.lines().count() as u32);
-
-    let action_ref_text = format!(
-        "{ind}area(Promoted)\n{ind}{{\n{ind}    actionref({name}_Promoted; {name})\n{ind}    {{\n{ind}        Caption = '{cat}';\n{ind}    }}\n{ind}}}\n",
-        ind = area_indent,
-        name = pa.name,
-        cat = category
-    );
+    let (insert_line, new_text) = if let Some(group) = category_group {
+        let indent = format!("{}    ", indent_of(lines[group.header]));
+        (
+            group.close as u32,
+            format!("{indent}actionref({ref_name}; {target_name})\n{indent}{{\n{indent}}}\n"),
+        )
+    } else if let Some(area) = &promoted_area {
+        let indent = format!("{}    ", indent_of(lines[area.header]));
+        (
+            area.close as u32,
+            render_promoted_body(
+                &indent,
+                category_group_name.as_deref(),
+                pa.category.as_deref(),
+                &ref_name,
+                &target_name,
+            ),
+        )
+    } else {
+        let area_indent = format!("{}    ", indent_of(lines[actions_block.header]));
+        let inner_indent = format!("{area_indent}    ");
+        let body = render_promoted_body(
+            &inner_indent,
+            category_group_name.as_deref(),
+            pa.category.as_deref(),
+            &ref_name,
+            &target_name,
+        );
+        (
+            actions_block.close as u32,
+            format!("{area_indent}area(Promoted)\n{area_indent}{{\n{body}{area_indent}}}\n"),
+        )
+    };
 
     edits.push(TextEdit {
         range: Range {
@@ -235,7 +321,7 @@ fn build_promoted_action_conversion(
                 character: 0,
             },
         },
-        new_text: action_ref_text,
+        new_text,
     });
 
     edits.sort_by_key(|e| e.range.start.line);
@@ -248,34 +334,32 @@ fn build_promoted_action_conversion(
     })
 }
 
-fn find_actions_block_end(text: &str) -> Option<u32> {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut depth = 0i32;
-    let mut in_actions = false;
-
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim().to_lowercase();
-        if !in_actions
-            && (trimmed == "actions"
-                || trimmed.starts_with("actions ")
-                || trimmed.starts_with("actions{"))
-        {
-            in_actions = true;
+/// Render the `actionref` (wrapped in its category group when the legacy
+/// action declared a `PromotedCategory`).
+///
+/// `PromotedCategory = Process` maps to a `group(Category_Process)` inside
+/// `area(Promoted)` — it is *not* the action's caption, which is what the
+/// previous implementation emitted.
+fn render_promoted_body(
+    indent: &str,
+    category_group_name: Option<&str>,
+    category: Option<&str>,
+    ref_name: &str,
+    target_name: &str,
+) -> String {
+    match (category_group_name, category) {
+        (Some(group_name), Some(category)) => {
+            let inner = format!("{indent}    ");
+            format!(
+                "{indent}group({group_name})\n{indent}{{\n\
+                 {inner}Caption = '{caption}';\n\
+                 {inner}actionref({ref_name}; {target_name})\n{inner}{{\n{inner}}}\n\
+                 {indent}}}\n",
+                caption = category.replace('\'', "''")
+            )
         }
-        if in_actions {
-            for ch in line.chars() {
-                match ch {
-                    '{' => depth += 1,
-                    '}' => depth -= 1,
-                    _ => {}
-                }
-            }
-            if in_actions && depth == 0 && i > 0 {
-                return Some(i as u32);
-            }
-        }
+        _ => format!("{indent}actionref({ref_name}; {target_name})\n{indent}{{\n{indent}}}\n"),
     }
-    None
 }
 
 /// Offer to add an object-level `ApplicationArea` property to a page or report
@@ -1247,6 +1331,195 @@ mod tests {
             combined.contains("./layouts/MyReport.rdlc"),
             "Must not drop the layout path, got: {:?}",
             combined
+        );
+    }
+
+    fn promoted_cursor(line: u32) -> Range {
+        Range {
+            start: super::super::Position {
+                line,
+                character: 16,
+            },
+            end: super::super::Position {
+                line,
+                character: 16,
+            },
+        }
+    }
+
+    fn convert_promoted(al_code: &str, uri_str: &str, line: u32) -> (CodeActionEntry, String) {
+        let ws = Workspace::new();
+        let uri = Url::parse(uri_str).unwrap();
+        open_doc(&ws, &uri, al_code);
+        let actions = source_action_convert_promoted_actions(&uri, al_code, promoted_cursor(line));
+        let action = actions
+            .into_iter()
+            .next()
+            .expect("promoted conversion should be offered");
+        let updated = super::super::test_support::assert_action_applies_cleanly(
+            al_code,
+            &action,
+            "promoted conversion",
+        );
+        (action, updated)
+    }
+
+    /// `actionref(My Action_Promoted; My Action)` is not valid AL.
+    #[test]
+    fn promoted_conversion_quotes_action_names_that_need_quoting() {
+        let al_code = r#"page 50100 "My Page"
+{
+    actions
+    {
+        area(processing)
+        {
+            action("My Action")
+            {
+                Caption = 'Do Something';
+                ApplicationArea = All;
+                Promoted = true;
+            }
+        }
+    }
+}
+"#;
+        let (_, updated) = convert_promoted(al_code, "file:///test/PromotedQuoted.al", 9);
+        assert!(
+            updated.contains("actionref(\"My Action_Promoted\"; \"My Action\")"),
+            "quoted action names must stay quoted: {updated}"
+        );
+    }
+
+    /// `PromotedCategory` maps to a `group(Category_X)` inside `area(Promoted)`,
+    /// not to the actionref's `Caption`.
+    #[test]
+    fn promoted_conversion_maps_category_to_a_group_not_a_caption() {
+        let al_code = r#"page 50100 "My Page"
+{
+    actions
+    {
+        area(processing)
+        {
+            action(PostAction)
+            {
+                Caption = 'Post';
+                ApplicationArea = All;
+                Promoted = true;
+                PromotedCategory = Process;
+            }
+        }
+    }
+}
+"#;
+        let (action, updated) = convert_promoted(al_code, "file:///test/PromotedCat.al", 10);
+        let generated: String = action.edit.as_ref().unwrap().changes[0]
+            .1
+            .iter()
+            .map(|e| e.new_text.as_str())
+            .collect();
+        assert!(
+            generated.contains("group(Category_Process)"),
+            "category must become a group: {generated}"
+        );
+        assert!(
+            !generated.contains("Caption = 'Process';\n")
+                || generated.contains("group(Category_Process)"),
+            "category caption belongs to the group: {generated}"
+        );
+        assert!(updated.contains("area(Promoted)"), "{updated}");
+        assert!(
+            !updated.contains("PromotedCategory"),
+            "legacy property must be removed: {updated}"
+        );
+    }
+
+    /// `PromotedOnly` / `PromotedIsBig` have no equivalent and used to be left
+    /// behind on an action that is no longer promoted.
+    #[test]
+    fn promoted_conversion_removes_orphaned_companion_properties() {
+        let al_code = r#"page 50100 "My Page"
+{
+    actions
+    {
+        area(processing)
+        {
+            action(MyAction)
+            {
+                ApplicationArea = All;
+                Promoted = true;
+                PromotedOnly = true;
+                PromotedIsBig = true;
+            }
+        }
+    }
+}
+"#;
+        let (_, updated) = convert_promoted(al_code, "file:///test/PromotedOnly.al", 9);
+        assert!(!updated.contains("PromotedOnly"), "{updated}");
+        assert!(!updated.contains("PromotedIsBig"), "{updated}");
+        assert!(!updated.contains("Promoted = true"), "{updated}");
+    }
+
+    /// Converting a second action must reuse the `area(Promoted)` the first one
+    /// created instead of stacking a duplicate.
+    #[test]
+    fn promoted_conversion_reuses_an_existing_promoted_area() {
+        let al_code = r#"page 50100 "My Page"
+{
+    actions
+    {
+        area(processing)
+        {
+            action(Second)
+            {
+                ApplicationArea = All;
+                Promoted = true;
+            }
+        }
+        area(Promoted)
+        {
+            actionref(First_Promoted; First)
+            {
+            }
+        }
+    }
+}
+"#;
+        let (_, updated) = convert_promoted(al_code, "file:///test/PromotedReuse.al", 9);
+        assert_eq!(
+            updated.matches("area(Promoted)").count(),
+            1,
+            "must not add a second area(Promoted): {updated}"
+        );
+        assert!(
+            updated.contains("actionref(Second_Promoted; Second)"),
+            "{updated}"
+        );
+    }
+
+    /// Without an `actions { }` block there is nowhere valid to put the area.
+    #[test]
+    fn promoted_conversion_not_offered_without_an_actions_block() {
+        let al_code = r#"page 50100 "My Page"
+{
+    layout
+    {
+        area(Content)
+        {
+            field(Name; Rec.Name)
+            {
+                ApplicationArea = All;
+                Promoted = true;
+            }
+        }
+    }
+}
+"#;
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/PromotedNoActions.al").unwrap();
+        open_doc(&ws, &uri, al_code);
+        assert!(
+            source_action_convert_promoted_actions(&uri, al_code, promoted_cursor(9)).is_empty()
         );
     }
 }

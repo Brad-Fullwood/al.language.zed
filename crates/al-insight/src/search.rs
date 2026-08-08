@@ -44,26 +44,32 @@ pub struct TraceStep {
     pub object: String,
 }
 
+/// Flattened event trace using only the insight graph.
+///
+/// Without a call graph the analysis cannot know which events a subscriber's
+/// *body* raises, so no `publishes` hops are emitted. Pass a call graph to
+/// [`trace_event_with_calls`] for the full chain.
 pub fn trace_event(graph: &InsightGraph, event_name: &str, max_depth: usize) -> Vec<TraceStep> {
+    trace_event_with_calls(graph, None, event_name, max_depth)
+}
+
+/// Flattened event trace, optionally following the events a subscriber's body
+/// actually raises (via `call_graph`).
+///
+/// The previous implementation pushed *every* event published by a subscriber's
+/// **object** as a depth+1 "publishes" step, without checking that the
+/// subscriber raises it — fabricating chain hops for any publisher object that
+/// happened to also contain subscribers. It also shared one `visited` set
+/// across all same-named root events, which truncated every root's chain after
+/// the first.
+pub fn trace_event_with_calls(
+    graph: &InsightGraph,
+    call_graph: Option<&CallGraph>,
+    event_name: &str,
+    max_depth: usize,
+) -> Vec<TraceStep> {
     let event_lower = event_name.to_lowercase();
     let mut steps = Vec::new();
-    let mut visited = std::collections::HashSet::new();
-
-    // Index events by object once so recursive fanout lookup is constant-time.
-    let mut events_by_object: std::collections::HashMap<String, Vec<petgraph::graph::NodeIndex>> =
-        std::collections::HashMap::new();
-    for (key, indices) in &graph.index {
-        if let NodeKey::Event(_, obj, _) = key {
-            events_by_object
-                .entry(obj.clone())
-                .or_default()
-                .extend(indices.iter().copied());
-        }
-    }
-    // Sort each bucket once for stable trace output across rebuilds.
-    for v in events_by_object.values_mut() {
-        v.sort_by_key(|idx| idx.index());
-    }
 
     // Find all Event nodes matching the name. Sort by NodeIndex so the
     // emitted trace order is deterministic across runs — `graph.index`
@@ -97,12 +103,16 @@ pub fn trace_event(graph: &InsightGraph, event_name: &str, max_depth: usize) -> 
             object: obj_name,
         });
 
+        // A fresh visited set per root: two objects publishing a same-named
+        // event are independent chains, and a shared set silently dropped all
+        // but the first.
+        let mut visited = HashSet::new();
         trace_from_node(
             graph,
+            call_graph,
             idx,
             1,
             max_depth,
-            &events_by_object,
             &mut visited,
             &mut steps,
         );
@@ -111,12 +121,46 @@ pub fn trace_event(graph: &InsightGraph, event_name: &str, max_depth: usize) -> 
     steps
 }
 
+/// Events that `subscriber` actually raises, according to the call graph.
+///
+/// Only outgoing call edges that land on an `Event` node count; an event merely
+/// declared by the same object is not a hop.
+fn events_raised_by(
+    graph: &InsightGraph,
+    call_graph: Option<&CallGraph>,
+    subscriber: petgraph::graph::NodeIndex,
+) -> Vec<petgraph::graph::NodeIndex> {
+    let Some(call_graph) = call_graph else {
+        return Vec::new();
+    };
+    let mut raised: Vec<petgraph::graph::NodeIndex> = call_graph
+        .callees_of(NodeId::from(subscriber))
+        .iter()
+        .filter(|edge| {
+            matches!(
+                edge.kind,
+                EdgeKind::DirectCall | EdgeKind::IndirectCall | EdgeKind::TriggerInvocation
+            )
+        })
+        .map(|edge| petgraph::graph::NodeIndex::new(edge.to.0))
+        .filter(|&idx| {
+            graph
+                .graph
+                .node_weight(idx)
+                .is_some_and(|node| matches!(node, InsightNode::Event { .. }))
+        })
+        .collect();
+    raised.sort_by_key(|idx| idx.index());
+    raised.dedup();
+    raised
+}
+
 fn trace_from_node(
     graph: &InsightGraph,
+    call_graph: Option<&CallGraph>,
     node_idx: petgraph::graph::NodeIndex,
     depth: usize,
     max_depth: usize,
-    events_by_object: &std::collections::HashMap<String, Vec<petgraph::graph::NodeIndex>>,
     visited: &mut std::collections::HashSet<petgraph::graph::NodeIndex>,
     steps: &mut Vec<TraceStep>,
 ) {
@@ -125,12 +169,17 @@ fn trace_from_node(
     }
     visited.insert(node_idx);
 
-    for edge_ref in graph.graph.edges_directed(node_idx, Direction::Incoming) {
-        if *edge_ref.weight() != InsightEdge::SubscribesTo {
-            continue;
-        }
+    // `edges_directed` yields most-recently-added first; sort so the emitted
+    // order is stable regardless of graph build order.
+    let mut subscribers: Vec<petgraph::graph::NodeIndex> = graph
+        .graph
+        .edges_directed(node_idx, Direction::Incoming)
+        .filter(|edge_ref| *edge_ref.weight() == InsightEdge::SubscribesTo)
+        .map(|edge_ref| edge_ref.source())
+        .collect();
+    subscribers.sort_by_key(|idx| idx.index());
 
-        let sub_idx = edge_ref.source();
+    for sub_idx in subscribers {
         let sub_node = &graph.graph[sub_idx];
 
         if let InsightNode::Subscriber {
@@ -145,29 +194,31 @@ fn trace_from_node(
                 object: object_name.clone(),
             });
 
-            let sub_obj_lower = object_name.to_lowercase();
-            let empty: Vec<petgraph::graph::NodeIndex> = Vec::new();
-            let event_indices = events_by_object.get(&sub_obj_lower).unwrap_or(&empty);
-            for &evt_idx in event_indices {
-                let evt_node = &graph.graph[evt_idx];
-                if let InsightNode::Event { name: ename, .. } = evt_node {
-                    steps.push(TraceStep {
-                        depth: depth + 1,
-                        edge_type: "publishes".to_string(),
-                        node_type: node_kind::EVENT.to_string(),
-                        name: ename.clone(),
-                        object: object_name.clone(),
-                    });
-                    trace_from_node(
-                        graph,
-                        evt_idx,
-                        depth + 2,
-                        max_depth,
-                        events_by_object,
-                        visited,
-                        steps,
-                    );
-                }
+            for evt_idx in events_raised_by(graph, call_graph, sub_idx) {
+                let InsightNode::Event {
+                    name: ename,
+                    object_name: eobject,
+                    ..
+                } = &graph.graph[evt_idx]
+                else {
+                    continue;
+                };
+                steps.push(TraceStep {
+                    depth: depth + 1,
+                    edge_type: "publishes".to_string(),
+                    node_type: node_kind::EVENT.to_string(),
+                    name: ename.clone(),
+                    object: eobject.clone(),
+                });
+                trace_from_node(
+                    graph,
+                    call_graph,
+                    evt_idx,
+                    depth + 2,
+                    max_depth,
+                    visited,
+                    steps,
+                );
             }
         }
     }
@@ -184,7 +235,10 @@ pub struct ChainNode {
     pub name: String,
     pub object: String,
     pub depth: usize,
-    /// If `true`, children are empty to prevent infinite recursion.
+    /// `true` when this node was already expanded elsewhere in the traversal,
+    /// so its children are omitted. This covers both genuine back-edges and
+    /// diamond fan-ins (a node reached again through a sibling branch); see
+    /// [`trace_event_chain`] — the two are **not** distinguished.
     pub cycle: bool,
     pub children: Vec<ChainNode>,
 }
@@ -209,10 +263,17 @@ pub struct EventChain {
 ///    - If the callee is an *event* node, recurses into it.
 ///    - If the callee is a *procedure* node, follows its outgoing calls one
 ///      level deeper to detect further event publications.
-/// 3. Tracks visited `NodeId`s to break cycles.
+/// 3. Tracks visited `NodeId`s so the traversal terminates.
 ///
-/// The result is a tree (`EventChain`) that faithfully represents the shape of
-/// propagation including diamond patterns and (marked) back-edges.
+/// The result is a tree (`EventChain`) that shows every reachable node once.
+///
+/// **`cycle` means "already expanded", not "back-edge".** The `visited` set is
+/// global to the traversal, so a node reached a second time through a *sibling*
+/// branch — a diamond fan-in, where two subscribers both call the same
+/// procedure — is emitted with `cycle: true` and no children, exactly like a
+/// genuine back-edge. Both shapes are therefore reported identically: the flag
+/// tells you the sub-tree is repeated elsewhere in the response, and does not
+/// distinguish a real recursion from a re-convergence.
 ///
 /// # Performance
 /// Single-pass BFS/DFS over the call graph.  For a typical BC app the graph
@@ -432,18 +493,48 @@ fn recurse_subscriber(
     children
 }
 
-/// Find entry points: procedures that have no incoming Calls/SubscribesTo edges.
+/// Find entry points using only the insight graph.
+///
+/// **Call edges do not live in the insight graph** — production code only ever
+/// records them in the separate [`CallGraph`] — so this variant can only see
+/// `SubscribesTo`/`Publishes`/`Triggers` relationships and consequently reports
+/// nearly every procedure. Prefer [`find_entry_points_with_calls`], which is
+/// what the `entrypoints` command uses.
 pub fn find_entry_points(graph: &InsightGraph) -> Vec<&InsightNode> {
+    find_entry_points_with_calls(graph, None)
+}
+
+/// Find entry points: procedures that nothing else calls, subscribes through,
+/// or triggers.
+///
+/// Incoming `Contains` edges (an object owning its procedure) are structural,
+/// not invocations, so they are ignored. When `call_graph` is supplied — which
+/// is where direct/indirect/trigger call edges actually live — a procedure with
+/// any incoming call edge is excluded. Without it the result degenerates to
+/// "every procedure", which is why the daemon passes its call graph.
+pub fn find_entry_points_with_calls<'g>(
+    graph: &'g InsightGraph,
+    call_graph: Option<&CallGraph>,
+) -> Vec<&'g InsightNode> {
     graph
         .graph
         .node_indices()
         .filter(|&idx| {
             let node = &graph.graph[idx];
-            matches!(node, InsightNode::Procedure { .. })
-                && graph
-                    .graph
-                    .edges_directed(idx, Direction::Incoming)
-                    .all(|e| *e.weight() == InsightEdge::Contains)
+            if !matches!(node, InsightNode::Procedure { .. }) {
+                return false;
+            }
+            let insight_clean = graph
+                .graph
+                .edges_directed(idx, Direction::Incoming)
+                .all(|e| *e.weight() == InsightEdge::Contains);
+            if !insight_clean {
+                return false;
+            }
+            match call_graph {
+                Some(call_graph) => call_graph.callers_of(NodeId::from(idx)).is_empty(),
+                None => true,
+            }
         })
         .map(|idx| &graph.graph[idx])
         .collect()
@@ -599,6 +690,22 @@ mod tests {
             permissions: Vec::new(),
             variables: Vec::new(),
         }
+    }
+
+    /// Codeunit with plain (non-event, non-subscriber) procedures.
+    fn make_codeunit_with_procs(id: i32, name: &str, procs: Vec<&str>) -> SymbolEntry {
+        let mut entry = make_codeunit_with_events(id, name, Vec::new(), Vec::new());
+        entry.methods = procs
+            .into_iter()
+            .map(|proc_name| MethodSymbol {
+                name: proc_name.to_string(),
+                return_type: None,
+                parameters: Vec::new(),
+                is_local: false,
+                attributes: Vec::new(),
+            })
+            .collect();
+        entry
     }
 
     #[test]
@@ -1149,5 +1256,165 @@ mod tests {
                 assert!(child.cycle, "re-entry into root EventA must be cycle=true");
             }
         }
+    }
+
+    /// `find_entry_points` filters on insight-graph `Calls` edges, but no
+    /// production code ever adds those — so without a call graph the result
+    /// degenerates to "every procedure". With the call graph, a called
+    /// procedure is correctly excluded.
+    #[test]
+    fn entry_points_use_the_call_graph_to_exclude_called_procedures() {
+        let index = SymbolIndex::new();
+        index.add_entries(&[make_codeunit_with_procs(1, "CU", vec!["Entry", "Helper"])]);
+
+        let mut insight = InsightGraph::new();
+        insight.build_from_index(&index);
+        let mut cg = CallGraph::build_from_insight(&insight);
+
+        let entry = insight
+            .get_node(&NodeKey::Procedure(
+                ObjectKind::Codeunit,
+                "cu".to_string(),
+                "entry".to_string(),
+            ))
+            .unwrap();
+        let helper = insight
+            .get_node(&NodeKey::Procedure(
+                ObjectKind::Codeunit,
+                "cu".to_string(),
+                "helper".to_string(),
+            ))
+            .unwrap();
+        cg.add_direct_call(NodeId::from(entry), NodeId::from(helper));
+
+        // Without a call graph both procedures look like entry points.
+        let names_without: Vec<String> = find_entry_points(&insight)
+            .into_iter()
+            .filter_map(|node| match node {
+                InsightNode::Procedure { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names_without.len(), 2);
+
+        let mut names: Vec<String> = find_entry_points_with_calls(&insight, Some(&cg))
+            .into_iter()
+            .filter_map(|node| match node {
+                InsightNode::Procedure { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["Entry".to_string()],
+            "a called procedure is not an entry point"
+        );
+    }
+
+    /// The flat trace pushed every event published by a subscriber's *object*
+    /// as a "publishes" hop without checking the subscriber ever raises it.
+    #[test]
+    fn trace_event_does_not_fabricate_publishes_hops() {
+        let index = SymbolIndex::new();
+        index.add_entries(&[
+            make_cu(1, "Pub", vec![("OnPost", "IntegrationEvent")], vec![]),
+            // The subscriber's object also publishes an unrelated event.
+            make_cu(
+                2,
+                "Sub",
+                vec![("OnUnrelated", "IntegrationEvent")],
+                vec![("Handle", "Codeunit", "Pub", "OnPost")],
+            ),
+        ]);
+
+        let mut insight = InsightGraph::new();
+        insight.build_from_index(&index);
+
+        let steps = trace_event(&insight, "OnPost", 10);
+        assert!(
+            steps.iter().any(|s| s.name == "Handle"),
+            "the subscriber must still be listed: {steps:?}"
+        );
+        assert!(
+            !steps.iter().any(|s| s.name == "OnUnrelated"),
+            "an event the subscriber never raises must not appear: {steps:?}"
+        );
+    }
+
+    /// A subscriber that really does raise another event still produces the hop
+    /// when a call graph is supplied.
+    #[test]
+    fn trace_event_follows_events_the_subscriber_actually_raises() {
+        let index = SymbolIndex::new();
+        index.add_entries(&[
+            make_cu(1, "Pub", vec![("OnPost", "IntegrationEvent")], vec![]),
+            make_cu(
+                2,
+                "Sub",
+                vec![("OnSecondary", "IntegrationEvent")],
+                vec![("Handle", "Codeunit", "Pub", "OnPost")],
+            ),
+        ]);
+
+        let mut insight = InsightGraph::new();
+        insight.build_from_index(&index);
+        let mut cg = CallGraph::build_from_insight(&insight);
+
+        let handler = insight
+            .get_node(&NodeKey::Subscriber(
+                ObjectKind::Codeunit,
+                "sub".to_string(),
+                "handle".to_string(),
+            ))
+            .unwrap();
+        let secondary = insight
+            .get_node(&NodeKey::Event(
+                ObjectKind::Codeunit,
+                "sub".to_string(),
+                "onsecondary".to_string(),
+            ))
+            .unwrap();
+        cg.add_direct_call(NodeId::from(handler), NodeId::from(secondary));
+
+        let steps = trace_event_with_calls(&insight, Some(&cg), "OnPost", 10);
+        assert!(
+            steps
+                .iter()
+                .any(|s| s.name == "OnSecondary" && s.edge_type == "publishes"),
+            "a genuinely raised event must appear: {steps:?}"
+        );
+    }
+
+    /// One `visited` set shared across same-named roots truncated every chain
+    /// after the first.
+    #[test]
+    fn trace_event_gives_each_root_its_own_visited_set() {
+        let index = SymbolIndex::new();
+        index.add_entries(&[
+            make_cu(1, "PubA", vec![("OnPost", "IntegrationEvent")], vec![]),
+            make_cu(2, "PubB", vec![("OnPost", "IntegrationEvent")], vec![]),
+            make_cu(
+                3,
+                "SubBoth",
+                vec![],
+                vec![
+                    ("HandleA", "Codeunit", "PubA", "OnPost"),
+                    ("HandleB", "Codeunit", "PubB", "OnPost"),
+                ],
+            ),
+        ]);
+
+        let mut insight = InsightGraph::new();
+        insight.build_from_index(&index);
+
+        let steps = trace_event(&insight, "OnPost", 10);
+        let origins = steps.iter().filter(|s| s.edge_type == "origin").count();
+        assert_eq!(origins, 2, "both publishers are roots: {steps:?}");
+        assert!(steps.iter().any(|s| s.name == "HandleA"), "{steps:?}");
+        assert!(
+            steps.iter().any(|s| s.name == "HandleB"),
+            "the second root's chain must not be truncated: {steps:?}"
+        );
     }
 }

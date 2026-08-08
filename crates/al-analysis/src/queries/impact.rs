@@ -29,6 +29,21 @@ pub enum ImpactType {
     Subscribe,
 }
 
+/// How sure the analysis is that the reported consumer really uses the queried
+/// symbol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ImpactConfidence {
+    /// The reference was bound to the queried symbol — through the symbol
+    /// index, a source-table/extends relationship, or a receiver in the source
+    /// that resolves to the queried object.
+    #[default]
+    High,
+    /// The name matches but no receiver could be bound to the queried object,
+    /// so the consumer may be an unrelated same-named identifier.
+    Low,
+}
+
 /// A single consumer of the queried symbol.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,6 +65,12 @@ pub struct ImpactEntry {
     /// Package the consumer belongs to.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package: Option<String>,
+    /// How sure the analysis is about this consumer.
+    #[serde(default)]
+    pub confidence: ImpactConfidence,
+    /// Why the confidence is not `high` (only set for low-confidence entries).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -117,7 +138,7 @@ pub fn impact(workspace: &Workspace, symbol: &str) -> Result<Vec<ImpactEntry>, I
     }
 
     if let Some(member) = &member_part {
-        search_workspace_files(&workspace_sources, member, &mut results);
+        search_workspace_files_for_member(&workspace_sources, &object_part, member, &mut results);
     } else {
         search_workspace_files(&workspace_sources, &object_part, &mut results);
     }
@@ -170,6 +191,8 @@ fn check_extends(entry: &Arc<SymbolEntry>, target_object: &str, results: &mut Ve
                 field: None,
                 impact_type: ImpactType::Extends,
                 package: Some(entry.package.clone()),
+                confidence: ImpactConfidence::High,
+                note: None,
             });
         }
     }
@@ -197,6 +220,8 @@ fn check_source_table(
                 field: None,
                 impact_type: ImpactType::Display,
                 package: Some(entry.package.clone()),
+                confidence: ImpactConfidence::High,
+                note: None,
             });
         }
     }
@@ -222,7 +247,14 @@ fn check_member_consumers(
         // so it must have at least 3 arguments; otherwise it cannot identify a
         // concrete event and is skipped.
         for attr in &method.attributes {
-            if attr.name != "EventSubscriber" || attr.arguments.len() < 3 {
+            // AL attribute names are case-insensitive and workspace-derived
+            // `SymbolEntry` attributes preserve the source casing, so a source
+            // `[eventsubscriber(...)]` must still match.
+            if !attr
+                .name
+                .eq_ignore_ascii_case(al_insight::attr_names::EVENT_SUBSCRIBER)
+                || attr.arguments.len() < 3
+            {
                 continue;
             }
             let target_obj_arg = attr.arguments.get(1).map(|s| {
@@ -252,6 +284,8 @@ fn check_member_consumers(
                     field: None,
                     impact_type: ImpactType::Subscribe,
                     package: Some(entry.package.clone()),
+                    confidence: ImpactConfidence::High,
+                    note: None,
                 });
             }
         }
@@ -282,6 +316,8 @@ fn check_object_consumers(
                     field: None,
                     impact_type: ImpactType::Read,
                     package: Some(entry.package.clone()),
+                    confidence: ImpactConfidence::High,
+                    note: None,
                 });
                 break;
             }
@@ -299,6 +335,8 @@ fn check_object_consumers(
                 field: None,
                 impact_type: ImpactType::Read,
                 package: Some(entry.package.clone()),
+                confidence: ImpactConfidence::High,
+                note: None,
             });
             break;
         }
@@ -318,6 +356,8 @@ fn check_object_consumers(
                     field: Some(field.name.clone()),
                     impact_type: ImpactType::Filter,
                     package: Some(entry.package.clone()),
+                    confidence: ImpactConfidence::High,
+                    note: None,
                 });
             }
         }
@@ -342,8 +382,167 @@ fn search_workspace_files(
                 field: None,
                 impact_type: ImpactType::Read,
                 package: None,
+                confidence: ImpactConfidence::High,
+                note: None,
             });
         }
+    }
+}
+
+/// Member-scoped workspace search: report a file as a *confident* consumer only
+/// when one of its occurrences of `member` is qualified by a receiver that
+/// resolves to `object_name`.
+///
+/// Searching the *member name alone* — as this used to — reported any
+/// same-named identifier of an unrelated object as a consumer. When no
+/// occurrence can be bound (an unqualified use outside the declaring object, or
+/// a receiver whose type is not declared in this file), the file is still
+/// reported but marked [`ImpactConfidence::Low`] rather than asserted.
+fn search_workspace_files_for_member(
+    workspace_sources: &[WorkspaceSource],
+    object_name: &str,
+    member: &str,
+    results: &mut Vec<ImpactEntry>,
+) {
+    let object_lower = object_name.to_lowercase();
+    for source in workspace_sources {
+        let refs = al_syntax::find_variable_references(&source.tree, &source.text, member);
+        if refs.is_empty() {
+            continue;
+        }
+
+        let receivers = receiver_bindings(&source.tree, &source.text, &object_lower);
+        let declares_target = source.object.info.name.to_lowercase() == object_lower
+            || extends_target(&source.text, &object_lower);
+
+        let bound = refs.iter().any(|reference| {
+            match receiver_before(&source.text, reference.start_byte) {
+                Some(receiver) => {
+                    let lower = receiver.to_lowercase();
+                    lower == object_lower
+                        || receivers.contains(&lower)
+                        // `Rec`/`xRec` inside the target object (or an
+                        // extension of it) refer to the target itself.
+                        || (declares_target && matches!(lower.as_str(), "rec" | "xrec"))
+                }
+                // Unqualified use binds to the enclosing object.
+                None => declares_target,
+            }
+        });
+
+        let object = &source.object;
+        results.push(ImpactEntry {
+            kind: object.kind,
+            id: object.normalized_id,
+            name: object.info.name.clone(),
+            proc: None,
+            field: None,
+            impact_type: ImpactType::Read,
+            package: None,
+            confidence: if bound {
+                ImpactConfidence::High
+            } else {
+                ImpactConfidence::Low
+            },
+            note: if bound {
+                None
+            } else {
+                Some(format!(
+                    "name match only — no receiver in this file resolves to '{object_name}'"
+                ))
+            },
+        });
+    }
+}
+
+/// Whether the object declared at the top of `text` is an extension of
+/// `object_lower` (`… extends "Customer"`).
+fn extends_target(text: &str, object_lower: &str) -> bool {
+    let Some(header) = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with("//"))
+    else {
+        return false;
+    };
+    let lower = header.to_lowercase();
+    let Some(position) = lower.find(" extends ") else {
+        return false;
+    };
+    let rest = header[position + " extends ".len()..].trim();
+    let name = rest
+        .strip_prefix('"')
+        .and_then(|inner| inner.split('"').next())
+        .unwrap_or_else(|| rest.split_whitespace().next().unwrap_or(""));
+    name.to_lowercase() == object_lower
+}
+
+/// Lower-cased names of variables/parameters in `text` whose declared type
+/// targets `object_lower` (e.g. `Cust: Record Customer` for `customer`).
+fn receiver_bindings(
+    tree: &tree_sitter::Tree,
+    text: &str,
+    object_lower: &str,
+) -> std::collections::HashSet<String> {
+    let source = text.as_bytes();
+    let mut names = std::collections::HashSet::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if matches!(node.kind(), "regular_variable_declaration" | "parameter") {
+            let targets = node
+                .child_by_field_name("type")
+                .and_then(|type_node| type_node.utf8_text(source).ok())
+                .map(|type_text| type_target_matches(type_text, object_lower))
+                .unwrap_or(false);
+            if targets {
+                let mut cursor = node.walk();
+                for name in node.children_by_field_name("name", &mut cursor) {
+                    if let Ok(text) = name.utf8_text(source) {
+                        names.insert(text.trim().trim_matches('"').to_lowercase());
+                    }
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
+    }
+    names
+}
+
+/// Whether an AL type string such as `Record "Sales Header"` or `Codeunit Foo`
+/// targets `object_lower`.
+fn type_target_matches(type_text: &str, object_lower: &str) -> bool {
+    let trimmed = type_text.trim();
+    let Some((_kind, rest)) = trimmed.split_once(char::is_whitespace) else {
+        return false;
+    };
+    let target = rest.trim();
+    let target = target
+        .strip_prefix('"')
+        .and_then(|inner| inner.split('"').next())
+        .unwrap_or_else(|| target.split_whitespace().next().unwrap_or(""));
+    target.to_lowercase() == object_lower
+}
+
+/// The receiver identifier immediately preceding the `.` before `offset`, if
+/// the occurrence at `offset` is a member access.
+fn receiver_before(text: &str, offset: usize) -> Option<String> {
+    let before = text.get(..offset)?.trim_end();
+    let before = before.strip_suffix('.')?;
+    let before = before.trim_end();
+    if let Some(stripped) = before.strip_suffix('"') {
+        let open = stripped.rfind('"')?;
+        return Some(stripped[open + 1..].to_string());
+    }
+    let start = before
+        .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let receiver = &before[start..];
+    if receiver.is_empty() {
+        None
+    } else {
+        Some(receiver.to_string())
     }
 }
 
@@ -507,16 +706,26 @@ mod tests {
         assert!(results.is_empty(), "Expected no results for unknown symbol");
     }
 
+    /// A broken scratch file is skipped; incoherence still fails the query.
     #[test]
-    fn impact_rejects_malformed_workspace_instead_of_returning_partial_results() {
+    fn impact_skips_malformed_files_but_rejects_an_incoherent_index() {
         let ws = workspace_with_files(vec![(
             "/src/Broken.al",
             "codeunit 50100 Broken { procedure Incomplete(",
         )]);
+        assert!(
+            impact(&ws, "Customer").is_ok(),
+            "one unparsable file must not block impact analysis"
+        );
 
+        let ws = Workspace::new();
+        ws.file_index.files.insert(
+            PathBuf::from("/src/Ghost.al"),
+            "codeunit 50100 Ghost { }".to_string(),
+        );
         let error = impact(&ws, "Customer").unwrap_err();
         assert!(error.to_string().contains("incomplete workspace snapshot"));
-        assert!(error.to_string().contains("Broken.al"));
+        assert!(error.to_string().contains("Ghost.al"));
     }
 
     #[test]

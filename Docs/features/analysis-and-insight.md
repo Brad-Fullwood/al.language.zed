@@ -19,10 +19,16 @@ both package symbols and your code contribute.
 | Helpers | `analysis.rs` | table-impact, TableRelation parsing, record-type matching |
 | Discovery | `discovery.rs` | full publisher/subscriber map + orphan subscribers |
 
-Record operations such as `Rec.Insert(true)` produce `OnBefore/OnAfterInsertEvent` trigger edges;
-non-literal trigger arguments are conservatively treated as firing the trigger. Member calls resolve
-the receiver's declared object type before lookup, and workspace subscribers are connected after the
-graph is built. Event traversal detects cycles and enforces a 10,000-node global bound.
+Record operations produce `OnBefore/OnAfterInsertEvent` trigger edges according to AL's `RunTrigger`
+semantics: `Rec.Insert(true)` fires the triggers, a bare `Rec.Insert()` does **not** (AL's documented
+default is `false`), and a non-literal argument is conservatively treated as firing. Member calls
+resolve the receiver's declared object type before lookup, and workspace subscribers are connected
+after the graph is built. Attribute names are matched case-insensitively, as AL defines them.
+Objects from different packages that share a `(kind, name)` each get their own graph node.
+Event traversal detects cycles and enforces a 10,000-node global bound.
+
+`TableRelation` values are parsed in both forms: a plain `Customer WHERE(…)` and the conditional
+`IF (…) TableA ELSE TableB`, which yields a relation to *every* branch table.
 
 ## Analysis catalog
 
@@ -30,10 +36,10 @@ graph is built. Event traversal detects cycles and enforces a 10,000-node global
 | --- | --- | --- |
 | **Impact** | `queries/impact.rs` | "If I change this object/member, what breaks?" — extensions, pages/reports sourced from a table, record variables/parameters, callers, TableRelation filters, event subscribers. `--table` groups all consumers of a table. |
 | **Table impact** | `insight/analysis.rs` | Record variables, parameters, relations, extensions touching a table, grouped by object. |
-| **Event tracing** | `insight/search.rs` | `trace` lists all subscribers of an event; `trace --tree` follows the full multi-hop publisher→subscriber→call chain (diamonds, cycles marked). |
+| **Event tracing** | `insight/search.rs` | `trace` lists all subscribers of an event and follows only the events a subscriber's body actually raises (each publisher of a same-named event is traced independently); `trace --tree` follows the full multi-hop publisher→subscriber→call chain. A node already expanded elsewhere in the traversal is marked `cycle` with its children omitted — that covers both real back-edges and diamond fan-ins, which the flag does not distinguish. |
 | **Subscriber/source resolution** | `symbols/events.rs`, `insight/discovery.rs` | Find subscribers of an event; resolve the publisher behind an `[EventSubscriber]`; full interception map incl. orphan subscribers. |
 | **Suggest event** | `queries/suggest_event.rs` | "What integration events can I subscribe to along this path?" with ready-to-paste `[EventSubscriber(...)]` examples; flags `partial` when source is unindexed. |
-| **Entry points** | `insight/search.rs` | Procedures with no incoming calls (test/root-cause candidates). |
+| **Entry points** | `insight/search.rs` | Procedures with no incoming call, subscription, or trigger edge in the **call graph** (test/root-cause candidates). |
 | **Dead code** | `queries/dead_code.rs` | Unused procedures, unreferenced fields, orphaned subscribers — with **confidence levels** (high for provably-unreachable locals; medium for public symbols extensions might call). |
 | **SQL anti-patterns** | `queries/sql_patterns.rs` | `FindFirst`/`Get`/`CalcFields` in loops, unfiltered `FindSet` — the classic N+1 and table-scan patterns. |
 | **Architecture lint** | `queries/arch_lint.rs` | Project rules from `.alarch.json`: naming conventions, forbidden patterns, required properties, max complexity. |
@@ -51,11 +57,28 @@ graph is built. Event traversal detects cycles and enforces a 10,000-node global
 ### How a few of these work (highlights)
 
 - **Dead code** builds workspace-global call-name and member-access sets once, then checks each file
-  in parallel. It is quote- and comment-aware so
+  **serially** on the calling thread (rayon worker startup made this small, latency-sensitive daemon
+  request hang indefinitely on Windows; the path-sorted input keeps output deterministic either way).
+  It is quote- and comment-aware so
   `Message('FindFirst()')` and fields inside `/* */` don't create false positives, and it excludes
-  event publishers (they're entry points).
-- **SQL scan** is a quote-aware text state machine tracking loop nesting and per-loop `begin..end`
-  depth. It clears the "unfiltered" flag on `SetRange`/`SetFilter` before a `FindSet`.
+  event publishers (they're entry points). Orphaned subscribers are reported both when the publisher
+  *object* is gone (`publisherRemoved`) and — for codeunit publishers, whose events are all declared
+  in source — when the named *event* is gone (`eventRemoved`). Platform events on tables/pages are
+  never flagged, since they are declared nowhere.
+- **SQL scan** is a quote-aware text state machine tracking loop nesting via a block stack, so a
+  loop's `end;` pops the loop and a single-statement loop body (`for … do stmt;`) is popped after
+  its one statement. Both the parenthesised (`Item.FindFirst()`) and bare (`Item.FindFirst;`) call
+  forms are matched. The "unfiltered" state is tracked **per record variable**, so
+  `Customer.SetRange(…)` does not suppress the warning for an unrelated `Vendor.FindSet()`.
+- **Whole-workspace queries** (dead code, SQL scan, impact, duplicates, complexity, both audits) take
+  a coherent snapshot of the indexed sources. A file with a syntax error or no object declaration is
+  skipped individually with a warning; only *incoherence* (an indexed path missing from the parse
+  cache, or the workspace changing mid-collection) fails the query, because a partial report there
+  would be indistinguishable from a complete one.
+- **Impact** on a member (`Object.Member`) binds each workspace occurrence by its receiver — the
+  object name itself, a variable declared of that type, or `Rec`/`xRec` inside the object. A file
+  where the name matches but nothing binds is still listed, marked `confidence: "low"` with a note,
+  rather than asserted as a consumer.
 - **Breaking changes** diffs `(kind, name)` maps of a baseline vs current `SymbolEntry` set, comparing
   public methods, fields, and enum values.
 - **Profiler analysis** parses Chrome profiles, skips synthetic nodes (`(root)`/`(idle)`/GC),
