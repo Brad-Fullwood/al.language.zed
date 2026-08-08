@@ -49,7 +49,6 @@ pub fn get_or_create_with_availability(
     let file_path = pkg_dir.join(cache_filename(entry, app_path));
 
     ensure_readonly_settings(&cache_root)?;
-    gc_cache_once(&cache_root);
 
     fs::create_dir_all(&pkg_dir)?;
 
@@ -110,6 +109,12 @@ pub fn get_or_create_with_availability(
 
     enforce_readonly(&file_path)?;
     let availability = materialized_availability(&file_path)?;
+
+    // Sweep the cache only after this request's file is safely in place, so the
+    // background GC can never race the create/write above (an empty, freshly
+    // created package dir being removed out from under the writer).
+    gc_cache_once(&cache_root);
+
     Ok(MaterializedSource {
         path: file_path,
         availability,
@@ -214,6 +219,7 @@ fn gc_cache(cache_root: &Path, max_age: std::time::Duration) {
             continue;
         };
         let mut remaining = 0usize;
+        let mut deleted_any = false;
         for entry in entries.flatten() {
             let path = entry.path();
             let name = entry.file_name();
@@ -237,11 +243,16 @@ fn gc_cache(cache_root: &Path, max_age: std::time::Duration) {
                 age > max_age
             };
             if expired && remove_readonly_file_if_exists(&path).is_ok() {
+                deleted_any = true;
                 continue;
             }
             remaining += 1;
         }
-        if remaining == 0 {
+        // Remove only a directory this pass just emptied. A dir another request
+        // freshly created (via `create_dir_all`) but not yet populated has zero
+        // entries and zero deletions, so it is left alone — removing it would
+        // break that concurrent writer.
+        if deleted_any && remaining == 0 {
             let _ = fs::remove_dir(&dir);
         }
     }
