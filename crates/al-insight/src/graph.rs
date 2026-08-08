@@ -378,15 +378,12 @@ impl InsightGraph {
     /// outgoing edge on every iteration keeps every index live at the moment it
     /// is used.
     pub fn remove_edges_from(&mut self, node: NodeIndex) {
-        loop {
-            let Some((edge_id, source, target, weight)) = self
-                .graph
-                .edges(node)
-                .next()
-                .map(|e| (e.id(), e.source(), e.target(), *e.weight()))
-            else {
-                break;
-            };
+        while let Some((edge_id, source, target, weight)) = self
+            .graph
+            .edges(node)
+            .next()
+            .map(|e| (e.id(), e.source(), e.target(), *e.weight()))
+        {
             self.graph.remove_edge(edge_id);
             self.edge_set.remove(&(source, target, weight));
         }
