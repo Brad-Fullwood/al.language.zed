@@ -174,11 +174,21 @@ only total wall-clock time, so its total is never presented as a phase-equivalen
 
 `publish.rs` resolves a `launch.json`/`.zed/debug.json` config, compiles (native by default), and
 uploads the `.app` to the BC dev API — optionally via **RAD** incremental deploy when `app.json` has
-an id. Each phase (Compile/Upload/Install/Rad) is tracked. `launch.rs` parses the debug configs and
-builds dev-endpoint URLs for on-prem vs cloud with tenant validation. `bc_client.rs` is the hardened
-REST client (size caps: 500 MB upload / 16 MB JSON / 500 MB binary; error-body redaction of bearer
-tokens/passwords/secrets). DAP deploy reuses the same package-selection logic so launch never
-publishes a stale `.app`.
+an id. Each phase (`PublishPhase::Compile`/`Upload`/`Rad`) is tracked. `launch.rs` parses the debug
+configs and builds dev-endpoint URLs for on-prem vs cloud with tenant validation, sent as the BC
+dev API's documented `?tenant=` query parameter. `bc_client.rs` is the hardened REST client (size
+caps: 500 MB upload / 16 MB JSON / 500 MB binary; error-body redaction of bearer
+tokens/passwords/secrets, case-insensitively). DAP deploy reuses the same package-selection logic so
+launch never publishes a stale `.app`.
+
+`bc_client.rs` implements only the two BC dev endpoints publish actually uses — `POST
+/dev/extensions` (full upload) and `PATCH /dev/applications/{appId}` (RAD delta deploy). It does
+**not** implement extension install/uninstall, an application-status query, or an AAD device-code
+sign-in flow; `AuthMethod::AAD` requires a pre-provisioned bearer token in `BC_ACCESS_TOKEN` (or the
+legacy `BC_TOKEN`) and otherwise fails fast with `MissingCredentials`. `AuthMethod::Windows`
+authenticates via plain HTTP Basic using `BC_USERNAME`/`BC_PASSWORD` — it is **not** a real
+NTLM/Negotiate handshake, so a BC server that requires genuine Windows-integrated auth (and rejects
+a Basic fallback) will not authenticate through this client.
 
 ## Benchmarks
 

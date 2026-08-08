@@ -37,6 +37,19 @@ pub fn kind_has_numeric_id(kind: &str) -> bool {
     )
 }
 
+/// Build the JSON-RPC params shared by the `snapshot`/`profile` subcommands.
+///
+/// `company` is required (BC's dev endpoints reject an empty `?company=`, and
+/// the daemon would otherwise fail after an already-established connection)
+/// — validated here so the CLI fails fast with a clear message instead of
+/// round-tripping to the daemon first.
+///
+/// `username`/`password` fall back to the `BC_USERNAME`/`BC_PASSWORD`
+/// environment variables when the corresponding `--username`/`--password`
+/// flag is omitted, matching what the `authenticate` command's help text
+/// already promises ("prefer reading credentials from a file or environment
+/// variable") — previously that alternative did not exist for these commands
+/// and `--password` was the only way to authenticate.
 pub fn bc_server_params(
     cmd: &str,
     server: &str,
@@ -45,6 +58,18 @@ pub fn bc_server_params(
     password: Option<&str>,
     output_dir: Option<&str>,
 ) -> Result<serde_json::Value, String> {
+    if company.trim().is_empty() {
+        return Err(
+            "--company is required (Business Central rejects an empty ?company= parameter)"
+                .to_string(),
+        );
+    }
+    let username = username
+        .map(str::to_string)
+        .or_else(|| std::env::var("BC_USERNAME").ok());
+    let password = password
+        .map(str::to_string)
+        .or_else(|| std::env::var("BC_PASSWORD").ok());
     let mut p = serde_json::json!({
         "cmd": cmd,
         "serverUrl": server,
@@ -62,8 +87,37 @@ pub fn bc_server_params(
     Ok(p)
 }
 
+/// Resolve `lint`'s positional file arguments (`#[arg(num_args = 0..)]`) into
+/// the list of files that should actually be linted.
+///
+/// The `Vec<String>` exists to work around Zed's `$ZED_FILE` expansion
+/// splitting a single path containing spaces across multiple argv entries —
+/// the original fix always joined every argument with `" "` to reconstruct
+/// that one path. That silently broke the equally legitimate multi-file
+/// invocation `al-explorer lint A.al B.al`, which resolved to the bogus
+/// single path `"A.al B.al"` and failed instead of linting two files.
+///
+/// Disambiguate by checking the filesystem: a single argument is always one
+/// file; for two or more, only treat them as fragments of one space-split
+/// path when that reconstructed path actually exists on disk, otherwise
+/// treat each argument as its own file.
+pub fn resolve_lint_targets(file: &[String]) -> Vec<String> {
+    match file.len() {
+        0 => Vec::new(),
+        1 => vec![file[0].clone()],
+        _ => {
+            let joined = file.join(" ");
+            if std::path::Path::new(&joined).is_file() {
+                vec![joined]
+            } else {
+                file.to_vec()
+            }
+        }
+    }
+}
+
 /// Make a user-supplied path absolute relative to the current working
-/// directory, without requiring the path to exist yet.
+/// directory, without requiring the target to exist yet.
 ///
 /// Daemon endpoints (`newProject`, `profiling analyze`, snapshot/profile
 /// `outputDir`, …) reject relative paths with `"… must be an absolute
@@ -828,6 +882,132 @@ pub fn print_lint_diag(file: Option<&str>, d: &serde_json::Value) {
     let col = d.get("column").and_then(|v| v.as_u64()).unwrap_or(0);
     let prefix = file.unwrap_or("?");
     eprintln!("{prefix}:{line}:{col}: {sev} [{code}] {msg}");
+}
+
+#[cfg(test)]
+mod bc_server_params_tests {
+    use super::bc_server_params;
+
+    #[test]
+    fn rejects_empty_company() {
+        let err = bc_server_params("start", "http://localhost:7049/BC", "", None, None, None)
+            .expect_err("empty --company must be rejected");
+        assert!(err.contains("--company"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_whitespace_only_company() {
+        let err = bc_server_params("start", "http://localhost:7049/BC", "   ", None, None, None)
+            .expect_err("whitespace-only --company must be rejected");
+        assert!(err.contains("--company"), "got: {err}");
+    }
+
+    #[test]
+    fn explicit_credentials_are_used_verbatim() {
+        let params = bc_server_params(
+            "start",
+            "http://localhost:7049/BC",
+            "CRONUS",
+            Some("explicit-user"),
+            Some("explicit-pass"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(params["username"], "explicit-user");
+        assert_eq!(params["password"], "explicit-pass");
+    }
+
+    #[test]
+    #[serial_test::serial(bc_creds_env)]
+    fn falls_back_to_env_vars_when_flags_are_absent() {
+        // SAFETY: serialised via #[serial_test::serial] on this test's lock key.
+        unsafe {
+            std::env::set_var("BC_USERNAME", "env-user");
+            std::env::set_var("BC_PASSWORD", "env-pass");
+        }
+        let result = bc_server_params(
+            "start",
+            "http://localhost:7049/BC",
+            "CRONUS",
+            None,
+            None,
+            None,
+        );
+        // SAFETY: serialised via #[serial_test::serial] on this test's lock key.
+        unsafe {
+            std::env::remove_var("BC_USERNAME");
+            std::env::remove_var("BC_PASSWORD");
+        }
+        let params = result.unwrap();
+        assert_eq!(params["username"], "env-user");
+        assert_eq!(params["password"], "env-pass");
+    }
+
+    #[test]
+    #[serial_test::serial(bc_creds_env)]
+    fn omits_credentials_when_neither_flag_nor_env_present() {
+        // SAFETY: serialised via #[serial_test::serial] on this test's lock key.
+        unsafe {
+            std::env::remove_var("BC_USERNAME");
+            std::env::remove_var("BC_PASSWORD");
+        }
+        let params = bc_server_params(
+            "start",
+            "http://localhost:7049/BC",
+            "CRONUS",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(params.get("username").is_none());
+        assert!(params.get("password").is_none());
+    }
+}
+
+#[cfg(test)]
+mod lint_target_tests {
+    use super::resolve_lint_targets;
+
+    #[test]
+    fn no_files_resolves_to_empty() {
+        assert!(resolve_lint_targets(&[]).is_empty());
+    }
+
+    #[test]
+    fn single_file_passes_through_unchanged() {
+        let targets = resolve_lint_targets(&["A.al".to_string()]);
+        assert_eq!(targets, vec!["A.al".to_string()]);
+    }
+
+    #[test]
+    fn multiple_nonexistent_paths_are_treated_as_separate_files() {
+        // Neither "A.al" nor "A.al B.al" exists on disk, so two argv entries
+        // must resolve to two separate lint targets — the regression this
+        // guards: `al-explorer lint A.al B.al` used to silently become the
+        // single bogus path "A.al B.al".
+        let targets = resolve_lint_targets(&["A.al".to_string(), "B.al".to_string()]);
+        assert_eq!(targets, vec!["A.al".to_string(), "B.al".to_string()]);
+    }
+
+    #[test]
+    fn multiple_args_reconstruct_one_path_containing_a_space_when_it_exists() {
+        // Zed's $ZED_FILE splitting produces multiple argv entries for a
+        // single path containing a literal space; when the joined
+        // reconstruction actually exists on disk, treat it as one file.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("My File.al");
+        std::fs::write(&path, "codeunit 1 X {}").unwrap();
+        let parts: Vec<String> = path
+            .to_string_lossy()
+            .split(' ')
+            .map(str::to_string)
+            .collect();
+        assert!(parts.len() >= 2, "fixture path must contain a space");
+
+        let targets = resolve_lint_targets(&parts);
+        assert_eq!(targets, vec![path.to_string_lossy().into_owned()]);
+    }
 }
 
 #[cfg(test)]

@@ -31,6 +31,15 @@ pub(crate) struct App {
     pub(crate) search_query: String,
     pub(crate) global_search: bool,
 
+    // The content-area `Rect` the object browser was last rendered into
+    // (set by `render_object_browser` every frame). Mouse hit-testing must
+    // use this instead of re-querying `crossterm::terminal::size()`: for the
+    // ~250ms between a terminal resize and the next redraw tick, the live
+    // terminal size and the pane rectangles actually on screen disagree, and
+    // hit-testing against the live size dispatches clicks/scrolls to the
+    // wrong pane or item. `None` until the first frame renders.
+    pub(crate) object_browser_area: Option<ratatui::layout::Rect>,
+
     pub(crate) packages: Vec<String>,
     pub(crate) package_list_state: ListState,
 
@@ -83,6 +92,7 @@ impl App {
             active_pane: ActivePane::Search,
             search_query: String::new(),
             global_search: false,
+            object_browser_area: None,
             packages: Vec::new(),
             package_list_state: ListState::default(),
             kinds: Vec::new(),

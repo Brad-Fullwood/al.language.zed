@@ -100,12 +100,23 @@ pub fn run(cli: Cli) -> ExitCode {
             all,
             analyzers,
         } => {
-            let joined = if file.is_empty() {
-                None
-            } else {
-                Some(file.join(" "))
-            };
-            lsp::cmd_lint(joined.as_deref(), all, analyzers.as_deref(), cli.json)
+            let targets = commands::resolve_lint_targets(&file);
+            match targets.as_slice() {
+                [] => lsp::cmd_lint(None, all, analyzers.as_deref(), cli.json),
+                [only] => lsp::cmd_lint(Some(only), all, analyzers.as_deref(), cli.json),
+                many => {
+                    // Multiple distinct files: lint each in turn and fail the
+                    // whole invocation if any file reports findings or errors.
+                    let mut overall = ExitCode::SUCCESS;
+                    for target in many {
+                        let code = lsp::cmd_lint(Some(target), all, analyzers.as_deref(), cli.json);
+                        if code != ExitCode::SUCCESS {
+                            overall = ExitCode::FAILURE;
+                        }
+                    }
+                    overall
+                }
+            }
         }
         Commands::Format {
             file,

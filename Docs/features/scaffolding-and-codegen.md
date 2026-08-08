@@ -49,10 +49,13 @@ profile…) are skipped. Output is **AL** (`permissionset <id> "Name" { Assignab
 = … }`) or **XML** (BC permission-set schema), with proper AL/XML escaping and deterministic ordering
 (sorted by type then name).
 
-## Completion data generation
+## Shell completion generation
 
-`al-explorer generate-completions` exports completion/symbol data (used to seed/inspect the built-in
-catalog). See the [CLI reference](../reference/cli-commands.md).
+`al-explorer generate-completions <shell>` generates a tab-completion script for the `al-explorer`
+CLI itself (bash, zsh, fish, elvish, or PowerShell) via `clap_complete` — it has nothing to do with
+symbol data. `--json` returns `{ shell, script }`; without it, the script is printed to stdout for
+sourcing/installing into the shell's completion directory. See the
+[CLI reference](../reference/cli-commands.md).
 
 ## Microsoft comparison
 

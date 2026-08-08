@@ -69,6 +69,25 @@ fn make_client(config: &SnapshotConfig) -> Result<reqwest::Client, SnapshotError
     )?)
 }
 
+/// Wrap a body-level failure from `bc_client`'s capped readers
+/// (`read_json_body_capped`/`read_binary_body_capped`), preserving the real
+/// HTTP status those readers already carry instead of discarding it as `0`.
+/// `bc_client::BcClientError` deliberately keeps the response status through
+/// a parse failure (see `read_json_body_capped_preserves_status_on_parse_failure`)
+/// — re-wrapping it here as `status: 0` threw that away and reported "Server
+/// returned 0" for what was actually e.g. a 503.
+fn server_error_from_body_failure(error: crate::bc_client::BcClientError) -> SnapshotError {
+    let status = match &error {
+        crate::bc_client::BcClientError::ServerError { status, .. }
+        | crate::bc_client::BcClientError::AuthenticationFailed { status, .. } => *status,
+        _ => 0,
+    };
+    SnapshotError::ServerError {
+        status,
+        message: error.to_string(),
+    }
+}
+
 /// Initiate a snapshot debugging session on the BC server.
 ///
 /// Returns the server-assigned snapshot ID on success.
@@ -112,10 +131,7 @@ pub async fn start_snapshot(
     // header or exceeding 16 MB.
     let json: serde_json::Value = crate::bc_client::read_json_body_capped(resp)
         .await
-        .map_err(|e| SnapshotError::ServerError {
-            status: 0,
-            message: e.to_string(),
-        })?;
+        .map_err(server_error_from_body_failure)?;
     let id = json
         .get("id")
         .or_else(|| json.get("snapshotId"))
@@ -154,10 +170,7 @@ pub async fn list_snapshots(config: &SnapshotConfig) -> Result<Vec<SnapshotInfo>
     // Content-Length-capped read.
     let json: serde_json::Value = crate::bc_client::read_json_body_capped(resp)
         .await
-        .map_err(|e| SnapshotError::ServerError {
-            status: 0,
-            message: e.to_string(),
-        })?;
+        .map_err(server_error_from_body_failure)?;
 
     // BC may return either an array or { "value": [...] } (OData envelope).
     let entries = if let Some(arr) = json.as_array() {
@@ -262,10 +275,7 @@ pub async fn download_snapshot(
     // the daemon's memory; the helper enforces a 500 MB cap pre- and post-read.
     let bytes = crate::bc_client::read_binary_body_capped(resp)
         .await
-        .map_err(|e| SnapshotError::ServerError {
-            status: 0,
-            message: e.to_string(),
-        })?;
+        .map_err(server_error_from_body_failure)?;
     tokio::fs::write(&dest, &bytes).await?;
 
     info!(
@@ -615,13 +625,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn start_snapshot_malformed_json_yields_server_error_status_zero() {
+    async fn download_snapshot_body_level_failure_preserves_real_http_status() {
+        // A 200 response whose *advertised* Content-Length lies past the
+        // binary-body cap fails inside `read_binary_body_capped`, not the
+        // earlier `!status.is_success()` check. That body-level failure must
+        // keep the real HTTP status (200) rather than reporting "Server
+        // returned 0", matching the same fix applied to the JSON-parsing path.
+        let oversize = (crate::bc_client::MAX_BC_BINARY_RESPONSE_BYTES + 1).to_string();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Length", oversize.as_str())
+                    .set_body_bytes(b"small".to_vec()),
+            )
+            .mount(&server)
+            .await;
+
+        let config = config_for(&server.uri());
+        let err = download_snapshot(&config, "snap-1").await;
+        match err {
+            Err(SnapshotError::ServerError { status, message }) => {
+                assert_eq!(
+                    status, 200,
+                    "the real HTTP status (200) must survive a body-level cap failure"
+                );
+                assert!(message.contains("exceeds"), "got: {message}");
+            }
+            other => {
+                // A transport-level abort on the length mismatch is also
+                // acceptable — the oversize check fired one layer below —
+                // but a bare success is not.
+                assert!(
+                    other.is_err(),
+                    "an oversize body must not be downloaded successfully"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn start_snapshot_malformed_json_preserves_real_http_status() {
         // A 200 whose body is not valid JSON must not panic or be silently
-        // swallowed: the capped-read parse failure is wrapped as a
-        // ServerError with status 0 (the "no HTTP status, body-level failure"
-        // sentinel used throughout this module). This exercises the map_err
-        // closure on the `read_json_body_capped` result, which is otherwise
-        // never hit by the well-formed mocks.
+        // swallowed, AND must not discard the real HTTP status the server
+        // returned (previously this path re-wrapped the error as `status: 0`,
+        // reporting "Server returned 0" instead of the actual status). This
+        // exercises the `server_error_from_body_failure` mapping on the
+        // `read_json_body_capped` result, which is otherwise never hit by the
+        // well-formed mocks.
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/dev/snapshot"))
@@ -635,7 +686,10 @@ mod tests {
             .expect_err("malformed JSON should error");
         match err {
             SnapshotError::ServerError { status, message } => {
-                assert_eq!(status, 0, "body-level failure uses the 0 sentinel");
+                assert_eq!(
+                    status, 200,
+                    "the real HTTP status (200) must survive the body-level parse failure"
+                );
                 assert!(
                     message.contains("parse") || message.contains("JSON"),
                     "message should mention the parse failure, got {message:?}"
@@ -646,14 +700,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_snapshots_malformed_json_yields_server_error_status_zero() {
+    async fn list_snapshots_malformed_json_preserves_real_http_status() {
         // Same body-level parse-failure path as start_snapshot, but on the
-        // list endpoint: the map_err on `read_json_body_capped` must surface a
-        // ServerError(status: 0) rather than an empty list or a panic.
+        // list endpoint, and on a distinct 2xx status (201, not 200) this
+        // time — proving the preserved status isn't just an accidental match
+        // on 200. (A non-2xx status is caught earlier by this function's own
+        // `!status.is_success()` branch and never reaches the JSON parser at
+        // all, so it can't exercise this particular mapping.)
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/dev/snapshots"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("<html>not json</html>"))
+            .respond_with(ResponseTemplate::new(201).set_body_string("<html>not json</html>"))
             .mount(&server)
             .await;
 
@@ -663,7 +720,10 @@ mod tests {
             .expect_err("malformed JSON should error");
         match err {
             SnapshotError::ServerError { status, message } => {
-                assert_eq!(status, 0, "body-level failure uses the 0 sentinel");
+                assert_eq!(
+                    status, 201,
+                    "the real HTTP status (201) must survive the body-level parse failure"
+                );
                 assert!(
                     message.contains("parse") || message.contains("JSON"),
                     "message should mention the parse failure, got {message:?}"

@@ -457,10 +457,28 @@ pub fn analyze_profile(
     })
 }
 
+/// Maximum size of an on-disk `.alcpuprofile` file `analyze_profile_file` will
+/// read into memory. A profile downloaded via `stop_profiling` is already
+/// bounded on the way in by `bc_client::MAX_BC_BINARY_RESPONSE_BYTES` (500
+/// MB); `analyze_profile_file` reads an arbitrary caller-supplied path
+/// directly off disk with no equivalent bound, unlike every other BC input
+/// path (`MAX_UPLOADABLE_APP_BYTES`, `MAX_BC_JSON_RESPONSE_BYTES`,
+/// `MAX_LAUNCH_FILE_BYTES`, …). Mirrors that same 500 MB cap so a hostile or
+/// mistakenly huge file can't be buffered wholesale into the daemon's address
+/// space before `serde_json` even starts parsing it.
+const MAX_PROFILE_FILE_BYTES: u64 = 500 * 1024 * 1024;
+
 pub async fn analyze_profile_file(
     path: &std::path::Path,
     top_n: usize,
 ) -> Result<ProfilingResult, ProfilingError> {
+    let size = tokio::fs::metadata(path).await?.len();
+    if size > MAX_PROFILE_FILE_BYTES {
+        return Err(ProfilingError::ParseError(format!(
+            "profile file {} is {size} bytes, exceeds {MAX_PROFILE_FILE_BYTES} byte limit",
+            path.display()
+        )));
+    }
     let data = tokio::fs::read(path).await?;
     let mut result = analyze_profile(&data, top_n)?;
     result.profile_path = Some(path.to_path_buf());
@@ -972,6 +990,34 @@ mod tests {
             matches!(err, Err(ProfilingError::Io(_))),
             "expected Io error, got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn analyze_profile_file_rejects_oversize_file_without_reading() {
+        // A `.alcpuprofile` past the 500 MB cap must be refused via its
+        // metadata size BEFORE the file is read into memory. A sparse file
+        // (via `set_len`) reports a huge size while using one disk block, so
+        // this test doesn't actually allocate 500+ MB.
+        let dir = std::env::temp_dir().join(format!(
+            "al-profiling-oversize-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("huge.alcpuprofile");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_PROFILE_FILE_BYTES + 1).unwrap();
+        drop(file);
+
+        let err = analyze_profile_file(&path, 10).await;
+        match err {
+            Err(ProfilingError::ParseError(message)) => {
+                assert!(message.contains("exceeds"), "got: {message}");
+            }
+            other => panic!("expected ParseError for oversize file, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

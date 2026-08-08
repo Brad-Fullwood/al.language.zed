@@ -746,6 +746,14 @@ fn control_addin_bundle(
         return Ok(Vec::new());
     }
     let mut out = Vec::new();
+    // Tracks every `addin/src/<rel>` archive path already pushed to `out`,
+    // across ALL add-ins — two control add-ins sharing one local script (or
+    // one add-in listing the same file in both `Scripts` and `Images`)
+    // previously produced two identical outer entries, which the
+    // whole-package duplicate-path check turned into a hard build failure
+    // for an otherwise valid project.
+    let mut addin_src_paths_seen: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     let mut docket = String::from("<ControlAddInDocket>\n");
     for o in &addins {
         let meta_name = super::symbol_reference::metadata_name(&o.entry.name);
@@ -767,14 +775,21 @@ fn control_addin_bundle(
 
         // Inner OPC zip: bundled local resource files (scripts, stylesheets,
         // images, in that order), then manifest.xml, then [Content_Types].xml
-        // (whose Defaults cover every extension present).
+        // (whose Defaults cover every extension present). De-duplicated per
+        // add-in — the same file listed in both `Scripts` and `Images` must
+        // still produce only one zip entry.
         let mut inner_entries: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut inner_paths_seen: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
         for rel in res
             .local_scripts
             .iter()
             .chain(&res.local_stylesheets)
             .chain(&res.images)
         {
+            if !inner_paths_seen.insert(rel.as_str()) {
+                continue;
+            }
             let content = match project_root {
                 Some(root) => std::fs::read(root.join(rel))?,
                 None => Vec::new(),
@@ -792,19 +807,26 @@ fn control_addin_bundle(
             super::package::write_zip(&inner_entries)?,
         ));
         // alc also places each local add-in asset in the outer package beneath
-        // `addin/src/`, in addition to bundling it in the add-in ZIP.  The
-        // duplicated outer copy is part of the package layout consumers see.
+        // `addin/src/`, in addition to bundling it in the add-in ZIP. The
+        // duplicated outer copy is part of the package layout consumers see —
+        // de-duplicated across every add-in via `addin_src_paths_seen` (first
+        // occurrence wins; the content at a given repo-relative path is the
+        // same file regardless of which add-in referenced it first).
         for rel in res
             .local_scripts
             .iter()
             .chain(&res.local_stylesheets)
             .chain(&res.images)
         {
+            let archive_path = format!("addin/src/{rel}");
+            if !addin_src_paths_seen.insert(archive_path.clone()) {
+                continue;
+            }
             let content = match project_root {
                 Some(root) => std::fs::read(root.join(rel))?,
                 None => Vec::new(),
             };
-            out.push((format!("addin/src/{rel}"), content));
+            out.push((archive_path, content));
         }
 
         let e = super::manifest::xml_escape_attr;
@@ -1438,6 +1460,55 @@ pageextension 50101 "Customer Card Ext" extends "Customer Card"
         assert!(bundle
             .iter()
             .any(|(path, bytes)| { path == "addin/src/src/main.js" && bytes == b"init();\n" }));
+    }
+
+    #[test]
+    fn control_addin_bundle_dedupes_shared_local_resource_across_addins() {
+        // Two control add-ins sharing one local script previously produced
+        // two identical "addin/src/…" archive paths, which the whole-package
+        // duplicate-path check (assemble_app) turned into a hard build
+        // failure for an otherwise valid project.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/shared.js"), "shared();\n").unwrap();
+        let src = "controladdin \"First\" { Scripts = 'src/shared.js'; } \
+                   controladdin \"Second\" { Scripts = 'src/shared.js'; }";
+        let objects = super::super::symbol_extract::extract_objects(src, "src/Lib.al");
+        assert_eq!(objects.len(), 2, "both control add-ins must parse");
+
+        let bundle = control_addin_bundle(&objects, "App", Some(dir.path())).unwrap();
+
+        let mut seen = std::collections::HashSet::new();
+        for (path, _) in &bundle {
+            assert!(seen.insert(path.clone()), "duplicate archive path: {path}");
+        }
+        let shared_src_entries: Vec<_> = bundle
+            .iter()
+            .filter(|(path, _)| path == "addin/src/src/shared.js")
+            .collect();
+        assert_eq!(
+            shared_src_entries.len(),
+            1,
+            "the shared script must appear exactly once under addin/src/"
+        );
+        assert_eq!(shared_src_entries[0].1, b"shared();\n");
+    }
+
+    #[test]
+    fn control_addin_bundle_dedupes_resource_listed_in_scripts_and_images() {
+        // The same local file referenced from both `Scripts` and `Images` on
+        // one add-in must still produce a single outer archive entry.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/dual.js"), "dual();\n").unwrap();
+        let src = "controladdin \"Dual\" { Scripts = 'src/dual.js'; Images = 'src/dual.js'; }";
+        let objects = super::super::symbol_extract::extract_objects(src, "src/Lib.al");
+
+        let bundle = control_addin_bundle(&objects, "App", Some(dir.path())).unwrap();
+        let mut seen = std::collections::HashSet::new();
+        for (path, _) in &bundle {
+            assert!(seen.insert(path.clone()), "duplicate archive path: {path}");
+        }
     }
 
     #[test]
