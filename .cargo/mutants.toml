@@ -8,7 +8,6 @@
 # Skip generated / boilerplate / un-runnable-in-headless surfaces.
 exclude_globs = [
     "**/build.rs",
-    "crates/al-zed-test/**",
 ]
 
 # Pure formatting / logging functions: mutating them is not a meaningful

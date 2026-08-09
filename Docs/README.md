@@ -16,6 +16,8 @@ limitations, and the maintained release contract in [ROADMAP.md](../ROADMAP.md).
 | [Current limitations](./current-limitations.md) | Deliberate compatibility and external-service boundaries |
 | [Completion roadmap](../ROADMAP.md) | Candidate scope, invariants, and release gates |
 | [Completion evidence ledger](./gaps-and-future-work.md) | Blocking implementation, release, and publication evidence |
+| [Benchmarks](./benchmarks.md) | Criterion micro-benchmark methodology, hot paths, and how to run them |
+| [Zed vs VS Code comparison](./comparison-zed-vs-vscode.md) | Workflow-by-workflow comparison with Microsoft's AL extension |
 
 ## Feature guides
 

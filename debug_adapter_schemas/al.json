@@ -1,4 +1,5 @@
 {
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "description": "AL Language debug adapter configuration for Business Central. Schema extracted from Microsoft AL Language extension v18.",
   "$comment": "Only fields consumed by the native adapter are exposed. Microsoft-only launch fields remain available by opting into al.useOfficialDap and using the Microsoft adapter's own configuration surface.",
   "type": "object",

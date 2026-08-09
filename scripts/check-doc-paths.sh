@@ -19,10 +19,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
+# Portable array population: `mapfile`/`readarray` (bash >= 4) are not
+# available on stock macOS's /bin/bash 3.2 (a supported dev platform per
+# CI/README — see the "supports stock macOS" claim below), so build arrays
+# with a plain read loop instead. Under `set -u`, expanding "${ARR[@]}" on a
+# still-empty array is also an unbound-variable error on bash < 4.4, so every
+# expansion below is guarded with a `${#ARR[@]}` count check first (safe even
+# when unset/empty, unlike a bare `[@]` expansion).
 ALLOWLIST=()
 
 is_allowlisted() {
     local path="$1"
+    [ "${#ALLOWLIST[@]}" -eq 0 ] && return 1
+    local prefix
     for prefix in "${ALLOWLIST[@]}"; do
         if [[ "${path}" == "${prefix}"* ]]; then
             return 0
@@ -35,10 +44,15 @@ is_allowlisted() {
 # correct as crates are added/removed/renamed. Uses `-exec basename` rather than
 # GNU-only `find -printf`, so it works with BSD find on stock macOS (the
 # release-dryrun path runs there without Homebrew coreutils).
-mapfile -t REAL_CRATES < <(find crates -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
+REAL_CRATES=()
+while IFS= read -r crate_dir; do
+    REAL_CRATES+=("${crate_dir}")
+done < <(find crates -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
 
 is_real_crate() {
     local name="$1"
+    [ "${#REAL_CRATES[@]}" -eq 0 ] && return 1
+    local c
     for c in "${REAL_CRATES[@]}"; do
         if [[ "${name}" == "${c}" ]]; then
             return 0
@@ -50,25 +64,30 @@ is_real_crate() {
 # Files to scan: tracked Markdown files plus Rust source (for doc-comment
 # drift like al-lsp/src/lib.rs's stale header). Excludes generated/vendor
 # trees and this script itself (which necessarily mentions the pattern).
-mapfile -t FILES < <(git ls-files '*.md' '*.rs' | grep -v '^tree-sitter-al/' | grep -v '^scripts/check-doc-paths.sh$')
+FILES=()
+while IFS= read -r tracked_file; do
+    FILES+=("${tracked_file}")
+done < <(git ls-files '*.md' '*.rs' | grep -v '^tree-sitter-al/' | grep -v '^scripts/check-doc-paths.sh$')
 
 failures=0
 
-for file in "${FILES[@]}"; do
-    if is_allowlisted "${file}"; then
-        continue
-    fi
-    [[ -f "${file}" ]] || continue
-
-    # Extract every `crates/<name>` occurrence with its line number.
-    while IFS=: read -r line_num crate_name; do
-        [[ -z "${crate_name}" ]] && continue
-        if ! is_real_crate "${crate_name}"; then
-            echo "ERROR: ${file}:${line_num}: references nonexistent crate 'crates/${crate_name}'" >&2
-            failures=$((failures + 1))
+if [ "${#FILES[@]}" -gt 0 ]; then
+    for file in "${FILES[@]}"; do
+        if is_allowlisted "${file}"; then
+            continue
         fi
-    done < <(grep -no 'crates/\(al-[a-zA-Z-]*\)' "${file}" | sed -E 's#:crates/#:#')
-done
+        [[ -f "${file}" ]] || continue
+
+        # Extract every `crates/<name>` occurrence with its line number.
+        while IFS=: read -r line_num crate_name; do
+            [[ -z "${crate_name}" ]] && continue
+            if ! is_real_crate "${crate_name}"; then
+                echo "ERROR: ${file}:${line_num}: references nonexistent crate 'crates/${crate_name}'" >&2
+                failures=$((failures + 1))
+            fi
+        done < <(grep -no 'crates/\(al-[a-zA-Z-]*\)' "${file}" | sed -E 's#:crates/#:#')
+    done
+fi
 
 if [[ "${failures}" -gt 0 ]]; then
     echo "" >&2

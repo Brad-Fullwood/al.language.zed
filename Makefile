@@ -21,7 +21,14 @@ ROOT := $(shell pwd)
 LSP_BIN := $(ROOT)/target/debug/al-lsp
 EXPLORER_BIN := $(ROOT)/target/debug/al-explorer
 INSTALL_DIR := $(HOME)/.local/bin
+UNAME_S := $(shell uname -s)
+# Zed's dev-extension directory is platform-specific: XDG data dir on Linux,
+# Application Support on macOS (a supported dev platform per CI/README).
+ifeq ($(UNAME_S),Darwin)
+ZED_EXT_DIR := $(HOME)/Library/Application Support/Zed/extensions/installed
+else
 ZED_EXT_DIR := $(HOME)/.local/share/zed/extensions/installed
+endif
 
 # .NET bridge projects (quoted for paths with spaces)
 ALSEMANTIC_PROJ := "$(ROOT)/crates/al-semantic/bridge/AlBridge.csproj"
@@ -312,6 +319,7 @@ release-dryrun:
 	@echo "--- 9/13 formatting + clippy + benchmark harness contracts ---"
 	cargo fmt --all -- --check
 	cargo clippy --workspace --exclude zed-al --all-targets -- -D warnings
+	cargo clippy -p zed-al --all-targets -- -D warnings
 	python3 -m unittest discover -s benchmarks/scripts -p 'test_*_bench.py'
 	@echo "--- 10/13 build workspace (excl zed-al) + real semantic al-lsp ---"
 	cargo build --workspace --exclude zed-al
@@ -364,5 +372,12 @@ crates-publish-dryrun:
 # ── Clean ────────────────────────────────────────────────────────
 clean:
 	cargo clean
-	@if [ -f $(ALSEMANTIC_PROJ) ]; then dotnet clean $(ALSEMANTIC_PROJ) --nologo -v quiet 2>/dev/null; fi
+	@# `dotnet clean` is best-effort: on a machine without a dotnet install,
+	@# invoking it at all fails with exit 127 (stderr suppression alone does
+	@# not change that), which would abort this target after `cargo clean`
+	@# already ran. Skip it outright when there's no `dotnet` on PATH, and
+	@# don't let a clean failure (bad project state, etc.) abort either.
+	@if [ -f $(ALSEMANTIC_PROJ) ] && command -v dotnet >/dev/null 2>&1; then \
+		dotnet clean $(ALSEMANTIC_PROJ) --nologo -v quiet 2>/dev/null || true; \
+	fi
 	@echo "Clean complete."

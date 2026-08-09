@@ -14,14 +14,11 @@ fn nested_al_wrapper_with_dotted_children() {
     let config = json!({});
     let user_settings = json!({
         "al": {
-            "compilationOptions.parallelBuild": true
+            "formatting.maxLineLength": 100
         }
     });
     let merged = apply_al_settings_to_config(&config, &user_settings);
-    assert_eq!(
-        merged,
-        json!({ "compilationOptions": { "parallelBuild": true } })
-    );
+    assert_eq!(merged, json!({ "formatting": { "maxLineLength": 100 } }));
 }
 
 #[test]
@@ -55,13 +52,10 @@ fn extension_only_settings_are_not_forwarded_to_al_lsp_config() {
 fn dotted_al_prefix_still_strips_and_nests() {
     let config = json!({});
     let user_settings = json!({
-        "al.compilationOptions.parallelBuild": true
+        "al.formatting.maxLineLength": 100
     });
     let merged = apply_al_settings_to_config(&config, &user_settings);
-    assert_eq!(
-        merged,
-        json!({ "compilationOptions": { "parallelBuild": true } })
-    );
+    assert_eq!(merged, json!({ "formatting": { "maxLineLength": 100 } }));
 }
 
 #[test]
@@ -231,6 +225,59 @@ fn resolve_dotnet_path_honors_all_settings_shapes() {
             "al.dotnetPath": 42
         }))),
         None
+    );
+}
+
+/// `set_nested_value_inner` used to bail out silently when an intermediate
+/// path element already held a non-object scalar, dropping the deeper
+/// setting with no error or fallback (e.g. `"al.formatting": "x"` alongside
+/// `"al.formatting.maxLineLength": 100`). It must now coerce the scalar into
+/// an object so the more specific nested key wins instead of vanishing.
+#[test]
+fn intermediate_scalar_is_coerced_not_dropped() {
+    let config = json!({ "formatting": "x" });
+    let user_settings = json!({ "al.formatting.maxLineLength": 100 });
+    let merged = apply_al_settings_to_config(&config, &user_settings);
+    assert_eq!(merged, json!({ "formatting": { "maxLineLength": 100 } }));
+}
+
+/// Same collision, but the scalar is an array rather than a string — any
+/// non-object intermediate value must be handled the same way.
+#[test]
+fn intermediate_array_is_coerced_not_dropped() {
+    let config = json!({ "formatting": ["x"] });
+    let user_settings = json!({ "al.formatting.braceStyle": "sameLine" });
+    let merged = apply_al_settings_to_config(&config, &user_settings);
+    assert_eq!(
+        merged,
+        json!({ "formatting": { "braceStyle": "sameLine" } })
+    );
+}
+
+/// `zed-al` builds `serde_json` WITHOUT the `preserve_order` feature (unlike
+/// the rest of the workspace), so `serde_json::Map` is a `BTreeMap` and
+/// `apply_al_settings_to_config` iterates user settings in ALPHABETICAL key
+/// order, not declaration order — the later (alphabetically greater) shape
+/// always wins the last write. This pins that precedence for the same
+/// setting supplied in all three accepted shapes at once, so a refactor that
+/// silently changes it (e.g. by adding `preserve_order`) is caught.
+///
+/// Top-level key order here is `"al"` < `"al.enableCodeAnalysis"` <
+/// `"enableCodeAnalysis"` (a shorter string sorts before a longer string it
+/// is a prefix of, and `'a' < 'e'` for the rest), so the flat key is applied
+/// last and wins.
+#[test]
+fn multi_shape_precedence_is_alphabetical_last_write_wins() {
+    let user_settings = json!({
+        "al": { "enableCodeAnalysis": "from-nested-al-wrapper" },
+        "al.enableCodeAnalysis": "from-dotted-al-prefix",
+        "enableCodeAnalysis": "from-flat-key",
+    });
+    let merged = apply_al_settings_to_config(&json!({}), &user_settings);
+    assert_eq!(
+        merged,
+        json!({ "enableCodeAnalysis": "from-flat-key" }),
+        "flat key sorts alphabetically after both `al`-prefixed shapes, so it must win"
     );
 }
 

@@ -214,10 +214,14 @@ The extension manifest registers:
 
 The Zed extension resolves `al-lsp` in this order:
 
-1. `lsp.al-lsp.binary.path` from user settings.
-2. A previously downloaded extension binary.
+1. `lsp.al-lsp.binary.path` from user settings (or the equivalent DAP/MCP-specific
+   override) — always scoped to the surface that configured it, never shared
+   with the others.
+2. An in-memory cache from an earlier resolution in the same Zed session.
 3. `al-lsp` on `PATH`.
-4. The latest GitHub release asset for the current platform.
+4. A previously downloaded extension binary already on disk, reused without any
+   network access — this is what lets a cached install start fully offline.
+5. The latest GitHub release asset for the current platform (requires network).
 
 ### LSP Features
 
@@ -419,7 +423,7 @@ This extension ships JSON Schemas for the AL project files you edit by hand: `ap
 `*.ruleset.json`, `.alarch.json`, `AppSourceCop.json`, and `migration.json`. Associate them with
 Zed's bundled JSON language server using the `json.schemas` block in
 [examples/zed-settings.jsonc](examples/zed-settings.jsonc). The mapping is documented in the
-[settings reference](Docs/reference/settings.md#project-file-schemas-appjson-rulesets-).
+[settings reference](Docs/reference/settings.md#project-file-schemas).
 
 ## Debugging
 
