@@ -45,16 +45,27 @@ fn dead_code_empty_workspace_returns_empty() {
 }
 
 #[test]
-fn dead_code_workspace_with_parse_error_is_explicit() {
-    // Negative: a file that fails to parse must reject the whole-project
-    // report, not disappear from a plausible partial result.
+fn dead_code_workspace_with_parse_error_degrades_per_file() {
+    // A file that fails to parse is skipped individually (it cannot contribute
+    // a usable AL object) while the rest of the workspace is still reported —
+    // one work-in-progress source must not make dead-code analysis unavailable.
     let ws = Workspace::new();
     ws.file_index.add_file(
         PathBuf::from("/src/broken.al"),
         // Missing closing paren — known parse-error trigger.
         "codeunit 50100 Broken\n{\n    procedure X(\n    begin\n    end;\n}\n".to_string(),
     );
-    assert!(dead_code(&ws).is_err());
+    ws.file_index.add_file(
+        PathBuf::from("/src/ok.al"),
+        "codeunit 50101 Ok\n{\n    local procedure Unused()\n    begin\n    end;\n}\n".to_string(),
+    );
+    let report = dead_code(&ws).expect("one unparsable file must not fail the whole report");
+    assert!(
+        report
+            .iter()
+            .any(|entry| format!("{entry:?}").contains("Unused")),
+        "the parsable file must still be analysed: {report:?}"
+    );
 }
 
 #[test]

@@ -649,10 +649,15 @@ fn extract_primary_expression_name(node: tree_sitter::Node, source: &[u8]) -> Op
 
 /// Parse the `RunTrigger` argument from a record-operation call suffix.
 ///
-/// - `Insert(RunTrigger)`: first arg is `true`/`false`; default = `true` if absent.
-/// - `Modify(RunTrigger)`: same as Insert.
-/// - `Delete(RunTrigger)`: same as Insert.
-/// - `Validate(...)`: always fires trigger (no RunTrigger param), returns `true`.
+/// - `Insert([RunTrigger])`: the optional first argument is `true`/`false`.
+///   **AL's documented default is `false`** — a bare `Rec.Insert()` does *not*
+///   fire OnInsert. Defaulting to `true` (as this used to) fabricated
+///   OnBefore/OnAfter trigger edges plus their subscriber edges for every plain
+///   `Insert()`/`Modify()`/`Delete()`, polluting impact, trace and
+///   affected-test results.
+/// - `Modify(RunTrigger)` / `Delete(RunTrigger)`: same as Insert.
+/// - `Validate(...)`: always fires the field's OnValidate (no RunTrigger
+///   parameter), so this returns `true`.
 fn parse_run_trigger_arg(
     member_call_suffix: tree_sitter::Node,
     source: &[u8],
@@ -664,7 +669,7 @@ fn parse_run_trigger_arg(
 
     let arg_list = match member_call_suffix.child_by_field_name("call") {
         Some(n) => n,
-        None => return true, // no arg list → default true
+        None => return false, // no arg list → RunTrigger defaults to false
     };
 
     let mut cursor = arg_list.walk();
@@ -681,23 +686,26 @@ fn parse_run_trigger_arg(
                 if trimmed == "true" {
                     return true;
                 }
-                // Complex expression — we can't evaluate it statically. AL's
-                // documented default is "trigger fires", so producing a
-                // trigger edge is the safe over-approximation: false-positive
-                // edges show up as extra entries in deadcode/impact, not
-                // missed dependencies. Logged at debug so the false-positive
+                // Complex expression — we cannot evaluate it statically. The
+                // developer wrote an explicit argument, so the trigger may
+                // fire; producing the edge is the safe over-approximation
+                // (false-positive edges show up as extra entries in
+                // deadcode/impact, not missed dependencies). This is
+                // deliberately *not* the no-argument case, whose documented
+                // default is `false`. Logged at debug so the false-positive
                 // rate is observable when investigating dead-code reports.
                 tracing::debug!(
                     expr = %text.trim(),
                     op = ?op,
-                    "parse_run_trigger_arg: non-literal RunTrigger expression — assuming true (default)"
+                    "parse_run_trigger_arg: non-literal RunTrigger expression — assuming true"
                 );
                 return true;
             }
         }
     }
 
-    true // default: no args → RunTrigger=true
+    // Empty argument list (`Insert()`): RunTrigger defaults to false.
+    false
 }
 
 /// True for the BC built-ins that launch a codeunit by reference: `Run` and

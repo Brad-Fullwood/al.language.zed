@@ -58,8 +58,15 @@ command-specific failure responses; they are never silently acknowledged. Events
 `stopped`, `output`, `al/openUri` (browser launch), `terminated`.
 
 Advertised capabilities include conditional breakpoints, evaluate-for-hovers, terminate, and delayed
-stack-trace loading. Function breakpoints, set-variable, completions, restart/restart-frame, and
-step-back remain explicitly `false`.
+stack-trace loading (`stackTrace`'s `startFrame`/`levels` are honored — the response pages the real
+stack instead of always returning every frame from 0). Function breakpoints, set-variable, completions,
+restart/restart-frame, and step-back remain explicitly `false`.
+
+`setBreakpoints` calls that arrive before `launch`/`attach` (Zed sends these during the DAP
+configuration phase, right after `initialized`) are queued per source rather than answered as
+permanently failed: the response reports `verified: false` with a "not started yet" message, and once
+the session starts each queued breakpoint is resolved/added on BC and a `breakpoint` event updates its
+verification (matched by `source.path` + `line`, since no BC id exists until then).
 
 That capability boundary is based on the installed Microsoft AL 17.0.2273547 EditorServices protocol
 assembly and its live `HubBasedDebuggerService` contract, not on DAP type names alone. Its protocol
@@ -93,7 +100,12 @@ and runs reader/writer tasks. Hub methods invoked include `Attach`,
 (0=continue, 1=step-over, 2=step-in, 3=step-out), `StopDebugging`/`TerminateSession`. Server
 callbacks handled: `Break` (→ `stopped`), `IsAlive` (→ ack), `OnAttachedToConnection`,
 `OnDetachedFromConnection` (→ `terminated`), `OnFatalDebuggerException` (→ `output`). All
-field access tolerates both PascalCase and camelCase from different BC versions.
+field access tolerates both PascalCase and camelCase from different BC versions. `Break`'s stop
+reason is derived rather than hard-coded: a non-empty message argument means BC broke on a runtime
+error (`stopped.reason = "exception"`, with the message surfaced in `stopped.text`); otherwise the
+reason is `"step"` when the last client action was step over/in/out, and `"breakpoint"` otherwise.
+Stack frames prefer `StatementSpan.From` over `SourcePosition` (current BC servers send the former)
+and convert BC's 0-based line/column to DAP's 1-based ones.
 
 ### Engineering details worth knowing
 
@@ -105,6 +117,11 @@ field access tolerates both PascalCase and camelCase from different BC versions.
 - **Lock discipline:** clone the session `Arc` inside the lock, drop the lock, then await.
 - **Bounded event channel** (1024) with a dedicated unbounded channel for `Break` events so a paused
   breakpoint is never dropped under back-pressure.
+- **`configurationDone` retry:** current BC online rejects `DebugAdapterConfigurationDone` until
+  `OnAttachedToConnection` fires — which for break-on-next web-client launches happens only after the
+  browser attaches, i.e. often after the client already sent `configurationDone` once. The handler
+  attempts immediately when already attached, and the background event-forwarding task retries on
+  every poll afterward until BC accepts it (mirrors the MCP path's `NativeDebugSession` retry).
 - **Security:** REST size caps (500 MB upload / 16 MB JSON / 500 MB binary), error-body redaction of
   bearer tokens/passwords/secrets, and a loud warning whenever TLS cert validation is disabled.
 
@@ -220,3 +237,5 @@ environment inputs; missing external inputs exit as `UNAVAILABLE`, never passed.
   behavior (`useMcpServerForDebugging`, `mcpServicePort`, `userId`,
   `useVsCodeAuthentication`, `primaryTenantDomain`, snapshot/profiling config) were **removed** from
   `debug_adapter_schemas/al.json` (with a `$comment` pointing to `al-explorer snapshot`/`profile`).
+  When a launch config omits `breakOnNext`, attach defaults to `WebServiceClient` — matching the
+  schema's documented default.

@@ -679,10 +679,32 @@ mod tests {
                 package.get(key).is_some(),
                 "package missing {key}: {package}"
             );
+            if key == "output" {
+                // The human-readable output embeds the produced artifact's byte
+                // size, and the `.app` carries a build timestamp whose digits
+                // compress differently from one second to the next — two builds
+                // of the same project can legitimately differ by a byte. Compare
+                // everything up to that size so the contract check stays stable.
+                assert_eq!(
+                    strip_artifact_size(&compile[key]),
+                    strip_artifact_size(&package[key]),
+                    "different {key}"
+                );
+                continue;
+            }
             assert_eq!(compile[key], package[key], "different {key}");
         }
         let app = compile["appPath"].as_str().expect("native app path");
         assert!(std::path::Path::new(app).is_file());
+    }
+
+    /// Drop a trailing `(N bytes)` from a build-output string.
+    fn strip_artifact_size(value: &serde_json::Value) -> String {
+        let text = value.as_str().unwrap_or_default();
+        match text.rfind(" (") {
+            Some(index) if text.ends_with(" bytes)") => text[..index].to_string(),
+            _ => text.to_string(),
+        }
     }
 
     #[tokio::test]

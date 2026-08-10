@@ -188,6 +188,12 @@ pub struct BcDebugSession {
     /// deferred until this callback for break-on-next web-client sessions.
     is_attached: Mutex<bool>,
     is_stopped: Mutex<bool>,
+    /// True when the most recent `SetBreakpointResponse` sent to BC carried a
+    /// step exit reason (over/in/out) rather than plain continue (0). Read by
+    /// `signalr_to_bc_event` to derive the next `Break`'s `stopped` reason
+    /// ("step" vs "breakpoint") — BC's own `Break` callback carries no such
+    /// distinction. Reset on every `continue_execution` call.
+    expecting_step: Mutex<bool>,
     /// Receives `true` when a Break event arrives and `false` when the session
     /// ends (Detached or FatalError). Populated by the WebSocket reader task,
     /// which sends without holding any lock — no deadlock risk. The channel is
@@ -412,6 +418,7 @@ impl BcDebugSession {
             connection_id,
             is_attached: Mutex::new(false),
             is_stopped: Mutex::new(false),
+            expecting_step: Mutex::new(false),
             break_event_rx: Mutex::new(break_event_rx),
         })
     }
@@ -555,6 +562,18 @@ impl BcDebugSession {
         }
     }
 
+    /// Convert one raw callback to a `BcEvent`, consulting (and, for `Break`,
+    /// resetting) `expecting_step` so a Break's reason reflects the most
+    /// recent client action exactly once.
+    async fn convert_event(&self, msg: &SignalRMessage) -> Option<BcEvent> {
+        let expecting_step = *self.expecting_step.lock().await;
+        let event = signalr_to_bc_event(msg, expecting_step);
+        if matches!(event, Some(BcEvent::Break { .. })) {
+            *self.expecting_step.lock().await = false;
+        }
+        event
+    }
+
     /// Process server-push events queued while an invocation or other operation
     /// was in progress.
     ///
@@ -571,7 +590,7 @@ impl BcDebugSession {
         let mut out = Vec::new();
         for event in &raw {
             self.handle_server_callback(event).await;
-            if let Some(bc_event) = signalr_to_bc_event(event) {
+            if let Some(bc_event) = self.convert_event(event).await {
                 out.push(bc_event);
             }
         }
@@ -594,7 +613,7 @@ impl BcDebugSession {
         while let Ok(msg) = rx.try_recv() {
             if msg.type_ == 1 {
                 self.handle_server_callback(&msg).await;
-                if let Some(bc_event) = signalr_to_bc_event(&msg) {
+                if let Some(bc_event) = self.convert_event(&msg).await {
                     out.push(bc_event);
                 }
             }
@@ -627,19 +646,24 @@ impl BcDebugSession {
         // This is EditorServices' AttachOptions wire type. Break flags belong
         // to DebugOptions/configurationDone, not AttachOptions. SignalR emits
         // enum values numerically and applies camelCase to the CLR properties.
+        // Default matches the documented schema default
+        // (`debug_adapter_schemas/al.json`'s `breakOnNext` property) —
+        // WebServiceClient — so a launch config that omits `breakOnNext`
+        // attaches to the session class the schema promises, not a
+        // different one.
         let break_on_next_client = match config
             .break_on_next
             .as_deref()
-            .unwrap_or("WebClient")
+            .unwrap_or("WebServiceClient")
             .replace([' ', '-', '_'], "")
             .to_ascii_lowercase()
             .as_str()
         {
-            "webserviceclient" => 0,
+            "webclient" => 1,
             "background" => 2,
             "clientservice" => 3,
             "agent" => 4,
-            _ => 1, // WebClient
+            _ => 0, // WebServiceClient
         };
         let session_id = config
             .session_id
@@ -757,6 +781,11 @@ impl BcDebugSession {
     /// BC hub method: `SetBreakpointResponse(breakpointResponse)`
     /// Note: BC uses "SetBreakpointResponse" for continue, not a "continue" method.
     pub async fn continue_execution(&self, breakpoint_response: serde_json::Value) -> Result<()> {
+        // Exit reason 0 is plain continue; 1/2/3 (over/in/out) are steps.
+        // Record which one this was *before* invoking so a Break that arrives
+        // while the invoke is in flight already sees the right expectation.
+        let is_step = breakpoint_response != serde_json::json!(0);
+        *self.expecting_step.lock().await = is_step;
         self.invoke("SetBreakpointResponse", vec![breakpoint_response])
             .await?;
         *self.is_stopped.lock().await = false;
@@ -952,6 +981,7 @@ impl BcDebugSession {
             connection_id,
             is_attached: Mutex::new(false),
             is_stopped: Mutex::new(false),
+            expecting_step: Mutex::new(false),
             break_event_rx: Mutex::new(break_event_rx),
         };
         (
@@ -1361,7 +1391,9 @@ mod tests {
         session.attach(&cfg).await.expect("attach ok");
         let frame = next_frame(&mut ws_rx);
         assert_eq!(frame["target"], "Attach");
-        assert_eq!(frame["arguments"][0]["breakOnNextClient"], 1);
+        // Default matches the schema-documented default (WebServiceClient,
+        // enum value 0) when the launch config omits breakOnNext.
+        assert_eq!(frame["arguments"][0]["breakOnNextClient"], 0);
         assert_eq!(frame["arguments"][0]["sessionId"], -1);
         assert!(frame["arguments"][0]["userId"].is_null());
         assert!(frame["arguments"][0].get("breakOnError").is_none());
@@ -1384,6 +1416,41 @@ mod tests {
         assert_eq!(frame["target"], "Attach");
         assert_eq!(frame["arguments"][0]["breakOnNextClient"], 2);
         assert_eq!(frame["arguments"][0]["sessionId"], 7);
+    }
+
+    #[tokio::test]
+    async fn attach_explicit_web_client_maps_to_one_not_the_default() {
+        // "WebClient" must still map to its own enum value (1), distinct
+        // from the WebServiceClient default (0), now that omitting
+        // breakOnNext no longer defaults to WebClient.
+        let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+        event_tx
+            .send(completion("1", Some(serde_json::json!(null)), None))
+            .await
+            .unwrap();
+        let cfg = BcDebugConfig {
+            break_on_next: Some("WebClient".to_string()),
+            ..BcDebugConfig::default()
+        };
+        session.attach(&cfg).await.expect("attach ok");
+        let frame = next_frame(&mut ws_rx);
+        assert_eq!(frame["arguments"][0]["breakOnNextClient"], 1);
+    }
+
+    #[tokio::test]
+    async fn attach_explicit_web_service_client_matches_default() {
+        let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+        event_tx
+            .send(completion("1", Some(serde_json::json!(null)), None))
+            .await
+            .unwrap();
+        let cfg = BcDebugConfig {
+            break_on_next: Some("WebServiceClient".to_string()),
+            ..BcDebugConfig::default()
+        };
+        session.attach(&cfg).await.expect("attach ok");
+        let frame = next_frame(&mut ws_rx);
+        assert_eq!(frame["arguments"][0]["breakOnNextClient"], 0);
     }
 
     #[tokio::test]
@@ -1504,6 +1571,117 @@ mod tests {
         assert_eq!(f1["arguments"][0], 1, "step_over => BreakpointExitReason 1");
         assert_eq!(f2["arguments"][0], 2, "step_in => BreakpointExitReason 2");
         assert_eq!(f3["arguments"][0], 3, "step_out => BreakpointExitReason 3");
+    }
+
+    #[tokio::test]
+    async fn break_after_step_reports_reason_step() {
+        // A Break that lands after a step_over must surface reason "step",
+        // not the default "breakpoint" — BC's own Break callback carries no
+        // such distinction, so the session must derive it from the last
+        // client action.
+        let (session, event_tx, _b, _w) = BcDebugSession::test_new("c".into());
+        event_tx
+            .send(completion("1", Some(serde_json::json!(null)), None))
+            .await
+            .unwrap();
+        session.step_over().await.expect("step_over");
+
+        event_tx
+            .send(invocation(Some("Break"), None))
+            .await
+            .unwrap();
+        let events = session.try_drain_push_events().await;
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            BcEvent::Break { reason, .. } => assert_eq!(reason, "step"),
+            other => panic!("expected Break, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn break_after_continue_reports_reason_breakpoint() {
+        let (session, event_tx, _b, _w) = BcDebugSession::test_new("c".into());
+        event_tx
+            .send(completion("1", Some(serde_json::json!(null)), None))
+            .await
+            .unwrap();
+        session
+            .continue_execution(serde_json::json!(0))
+            .await
+            .expect("continue");
+
+        event_tx
+            .send(invocation(Some("Break"), None))
+            .await
+            .unwrap();
+        let events = session.try_drain_push_events().await;
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            BcEvent::Break { reason, .. } => assert_eq!(reason, "breakpoint"),
+            other => panic!("expected Break, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn break_reason_step_is_consumed_by_one_break_only() {
+        // After the pending-step Break is drained, a second, unprompted
+        // Break must fall back to "breakpoint" rather than staying "step".
+        let (session, event_tx, _b, _w) = BcDebugSession::test_new("c".into());
+        event_tx
+            .send(completion("1", Some(serde_json::json!(null)), None))
+            .await
+            .unwrap();
+        session.step_over().await.expect("step_over");
+
+        event_tx
+            .send(invocation(Some("Break"), None))
+            .await
+            .unwrap();
+        event_tx
+            .send(invocation(Some("Break"), None))
+            .await
+            .unwrap();
+        let events = session.try_drain_push_events().await;
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            BcEvent::Break { reason, .. } => assert_eq!(reason, "step"),
+            other => panic!("expected Break, got {other:?}"),
+        }
+        match &events[1] {
+            BcEvent::Break { reason, .. } => assert_eq!(reason, "breakpoint"),
+            other => panic!("expected Break, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn break_with_message_reports_exception_even_after_step() {
+        // An error message takes priority over a pending step: the reason
+        // must be "exception" and the text must be surfaced.
+        let (session, event_tx, _b, _w) = BcDebugSession::test_new("c".into());
+        event_tx
+            .send(completion("1", Some(serde_json::json!(null)), None))
+            .await
+            .unwrap();
+        session.step_over().await.expect("step_over");
+
+        let break_args = vec![
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!("Division by zero"),
+        ];
+        event_tx
+            .send(invocation(Some("Break"), Some(break_args)))
+            .await
+            .unwrap();
+        let events = session.try_drain_push_events().await;
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            BcEvent::Break { reason, text, .. } => {
+                assert_eq!(reason, "exception");
+                assert_eq!(text.as_deref(), Some("Division by zero"));
+            }
+            other => panic!("expected Break, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -1749,7 +1927,7 @@ mod tests {
         let break_args = vec![
             serde_json::Value::Null,
             serde_json::json!([{ "DisplayName": "OnRun", "SourcePosition": { "Line": 10, "Column": 2 } }]),
-            serde_json::json!("hit"),
+            serde_json::json!(""),
         ];
         event_tx
             .send(invocation(Some("Break"), Some(break_args)))

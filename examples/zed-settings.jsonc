@@ -37,6 +37,12 @@
         "al.inlayHints.parameterNames": true,
         "al.inlayHints.returnTypes": false,
 
+        // ── Formatting ──
+        "al.formatting.blankLinesBetweenProcedures": "preserve", // "preserve" | "one" | "two"
+        "al.formatting.maxLineLength": 0, // 0 disables wrapping
+        "al.formatting.braceStyle": "nextLine", // "sameLine" | "nextLine"
+        "al.formatting.sortProperties": false,
+
         // ── Native lint ──
         "al.enableNativeLint": true,
         "al.nativeLintRules": {},
@@ -55,6 +61,13 @@
 
         // ── Resource limits ──
         "al.maxDocumentSizeBytes": null, // null = no cap
+
+        // ── Toolchain ──
+        // Path to the dotnet host used for Microsoft ALTool, alc, the semantic
+        // bridge, and the official LSP/DAP escape hatches. Exported to every
+        // spawned sidecar process as AL_DOTNET_PATH. null = resolve `dotnet`
+        // from PATH.
+        "al.dotnetPath": null,
 
         // ── Escape hatches ──
         "al.useOfficialLsp": false, // true delegates to Microsoft's official AL LSP (needs ALTool v17+)

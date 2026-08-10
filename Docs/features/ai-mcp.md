@@ -20,6 +20,23 @@ Standard MCP handshake: `initialize` (returns capabilities + serverInfo), `ping`
 the alias's mapped method or `al_call`'s requested method, builds a daemon `Request`, calls
 `dispatch_request()`, and serializes the result.
 
+### Concurrency and cancellation
+
+`tools/call` is dispatched as its own task, so lifecycle traffic — `ping` above all — keeps being
+answered while a long call (a live-BC `al_testsnapshot`, a full `al_build`) is still running; a
+client can no longer mistake a busy server for a dead one. Responses are written under a single
+stdout lock and may therefore arrive out of request order, which JSON-RPC allows.
+`notifications/cancelled` aborts the matching in-flight `tools/call` by `requestId`. Two limits are
+deliberate: cancellation aborts the MCP task but cannot roll back work already handed to an external
+process (a running `alc` build or a live BC test run continues to completion), and everything other
+than `tools/call` is still handled sequentially on the reader loop.
+
+Message framing follows the daemon transport: one JSON object per line, with a 64 MB cap enforced
+*while* reading so an oversized client line cannot force an unbounded allocation before parsing.
+A message with no `id` is a notification and is never answered; `"id": null` is treated as a request
+(and answered) on both the lifecycle and dispatch paths. Tool arguments are validated against the
+published input schema, including `minItems`/`maxItems` on array arguments.
+
 ## Tools
 
 | MCP tool | Internal method | Parameters | What it does |

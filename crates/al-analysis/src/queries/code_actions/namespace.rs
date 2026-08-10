@@ -111,6 +111,12 @@ fn extract_word_at_position(text: &str, range: Range) -> String {
         crate::resolution::utf16_col_to_byte_offset(line, range.start.character as usize);
     let end_byte = crate::resolution::utf16_col_to_byte_offset(line, range.end.character as usize);
 
+    // A namespace is never needed for text inside a comment or a string
+    // literal, and offering `Add using` there is pure noise.
+    if in_comment_or_string_literal(line, start_byte) {
+        return String::new();
+    }
+
     if start_byte < end_byte && end_byte <= line.len() {
         return line[start_byte..end_byte].trim_matches('"').to_string();
     }
@@ -144,56 +150,67 @@ fn extract_word_at_position(text: &str, range: Range) -> String {
     line[word_start..word_end].to_string()
 }
 
+/// Whether byte `offset` on `line` lies inside a `//` comment or a
+/// single-quoted AL string literal. Double quotes delimit *identifiers*, not
+/// literals, so they do not count.
+fn in_comment_or_string_literal(line: &str, offset: usize) -> bool {
+    let bytes = line.as_bytes();
+    let limit = offset.min(bytes.len());
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut i = 0usize;
+    while i < limit {
+        match bytes[i] {
+            b'/' if !in_single && !in_double && bytes.get(i + 1) == Some(&b'/') => return true,
+            b'\'' if !in_double => in_single = !in_single,
+            b'"' if !in_single => in_double = !in_double,
+            _ => {}
+        }
+        i += 1;
+    }
+    in_single
+}
+
+/// Extract the quoted identifier that *contains* `cursor`.
+///
+/// Quoted spans are walked left-to-right from the start of the line. Scanning
+/// leftwards from the cursor (as this used to) paired the *closing* quote of an
+/// earlier identifier with the *opening* quote of the next one, so a cursor
+/// between `... "X"; B: Record "Y"` extracted the garbage `; B: Record`.
 fn try_extract_quoted_identifier(bytes: &[u8], cursor: usize) -> Option<String> {
     if cursor >= bytes.len() {
         return None;
     }
 
-    // Scan left from cursor to find an opening quote.
-    // If cursor is ON a closing `"`, we need to look past it — treat that position
-    // as possibly the close quote and keep scanning left for the open quote.
-    let open_quote = {
-        // Start one position to the left of cursor if cursor is itself a quote
-        // (it may be the closing quote, not the opening one).
-        let start = if bytes[cursor] == b'"' && cursor > 0 {
-            cursor - 1
-        } else {
-            cursor
-        };
-        let mut pos = start;
-        loop {
-            if bytes[pos] == b'"' {
-                break Some(pos);
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'"' {
+            i += 1;
+            continue;
+        }
+        let open_quote = i;
+        let mut close = open_quote + 1;
+        while close < bytes.len() && bytes[close] != b'"' {
+            close += 1;
+        }
+        if close >= bytes.len() {
+            // Unterminated quote — no identifier to extract.
+            return None;
+        }
+        if cursor >= open_quote && cursor <= close {
+            let inner = std::str::from_utf8(&bytes[open_quote + 1..close]).ok()?;
+            if inner.is_empty() {
+                return None;
             }
-            if pos == 0 {
-                break None;
-            }
-            pos -= 1;
+            return Some(inner.to_string());
         }
-    }?;
-
-    let close_quote = {
-        let mut pos = open_quote + 1;
-        while pos < bytes.len() && bytes[pos] != b'"' {
-            pos += 1;
+        if open_quote > cursor {
+            // Spans are ordered; everything from here on starts after the cursor.
+            return None;
         }
-        if pos < bytes.len() {
-            Some(pos)
-        } else {
-            None
-        }
-    }?;
-
-    // Cursor must be within [open_quote, close_quote] inclusive.
-    if cursor < open_quote || cursor > close_quote {
-        return None;
+        i = close + 1;
     }
-
-    let inner = std::str::from_utf8(&bytes[open_quote + 1..close_quote]).ok()?;
-    if inner.is_empty() {
-        return None;
-    }
-    Some(inner.to_string())
+    None
 }
 
 /// Parse all `using ...;` directives from the file and return the list of namespace strings
@@ -681,5 +698,78 @@ codeunit 50100 "My Codeunit"
             word, "Sales Header",
             "Should extract 'Sales Header' when cursor is on closing quote"
         );
+    }
+
+    fn cursor_word(text: &str, character: u32) -> String {
+        extract_word_at_position(
+            text,
+            Range {
+                start: super::super::Position { line: 0, character },
+                end: super::super::Position { line: 0, character },
+            },
+        )
+    }
+
+    /// A cursor *between* two quoted identifiers used to pair the closing quote
+    /// of the first with the opening quote of the second, yielding garbage.
+    #[test]
+    fn cursor_between_two_quoted_identifiers_extracts_nothing_bogus() {
+        //                0         1         2         3         4
+        //                0123456789012345678901234567890123456789012345
+        let text = "    A: Record \"X\"; B: Record \"Y\";\n";
+        let semicolon = text.find(';').unwrap() as u32;
+        let word = cursor_word(text, semicolon);
+        assert!(
+            word.is_empty() || word == "X" || word == "Y",
+            "must not synthesize a cross-identifier word, got {word:?}"
+        );
+        assert!(
+            !word.contains("Record"),
+            "must not span from one identifier to the next, got {word:?}"
+        );
+        // Inside each identifier the correct name is still extracted.
+        let x_pos = text.find("\"X\"").unwrap() as u32 + 1;
+        assert_eq!(cursor_word(text, x_pos), "X");
+        let y_pos = text.find("\"Y\"").unwrap() as u32 + 1;
+        assert_eq!(cursor_word(text, y_pos), "Y");
+    }
+
+    #[test]
+    fn words_inside_comments_and_literals_are_ignored() {
+        let comment = "    // Customer is used here\n";
+        let offset = comment.find("Customer").unwrap() as u32 + 2;
+        assert_eq!(cursor_word(comment, offset), "");
+
+        let literal = "    Message('Customer was posted');\n";
+        let offset = literal.find("Customer").unwrap() as u32 + 2;
+        assert_eq!(cursor_word(literal, offset), "");
+
+        // A real identifier on the same line is still extracted.
+        let code = "    Cust: Record Customer; // Customer record\n";
+        let offset = code.find("Record Customer").unwrap() as u32 + 8;
+        assert_eq!(cursor_word(code, offset), "Customer");
+    }
+
+    #[test]
+    fn add_using_not_offered_for_a_type_name_inside_a_comment() {
+        let ws = Workspace::new();
+        ws.symbols.add_entries(&[make_entry_with_namespace(
+            ObjectKind::Table,
+            18,
+            "Customer",
+            "Microsoft.Sales",
+        )]);
+
+        let al_code =
+            "namespace MyApp;\n\ncodeunit 50100 Test\n{\n    // Customer lives elsewhere\n}\n";
+        let uri = Url::parse("file:///test/Comment.al").unwrap();
+        open_doc(&ws, &uri, al_code);
+
+        let character = al_code.lines().nth(4).unwrap().find("Customer").unwrap() as u32 + 2;
+        let range = Range {
+            start: super::super::Position { line: 4, character },
+            end: super::super::Position { line: 4, character },
+        };
+        assert!(source_action_add_using(&ws, &uri, al_code, range).is_empty());
     }
 }

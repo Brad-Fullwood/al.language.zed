@@ -48,11 +48,24 @@ pub fn collect_permissions(
 ) -> Result<Vec<PermissionEntry>, PermissionCollectionError> {
     let mut entries = Vec::new();
 
-    for item in workspace.file_index.files.iter() {
-        let path = item.key().clone();
-        let content = item.value();
-        let result = al_syntax::AlParser::parse_quick(content);
-        if !result.errors.is_empty() {
+    // Snapshot the paths first: holding a DashMap shard entry across a parse
+    // blocked every concurrent writer for the duration of that parse.
+    let mut paths: Vec<PathBuf> = workspace
+        .file_index
+        .files
+        .iter()
+        .map(|item| item.key().clone())
+        .collect();
+    paths.sort_unstable();
+
+    for path in paths {
+        // Reuse the FileIndex's cached tree instead of re-parsing every file
+        // from scratch on each invocation.
+        let Some((content, tree)) = workspace.file_index.get_cached_parse(&path) else {
+            continue;
+        };
+        if tree.root_node().has_error() {
+            let result = al_syntax::AlParser::parse_quick(&content);
             let details = result
                 .errors
                 .iter()
@@ -67,9 +80,16 @@ pub fn collect_permissions(
                 })
                 .collect::<Vec<_>>()
                 .join("; ");
-            return Err(PermissionCollectionError::ParseSource { path, details });
+            return Err(PermissionCollectionError::ParseSource {
+                path,
+                details: if details.is_empty() {
+                    "tree-sitter reported an error node".to_string()
+                } else {
+                    details
+                },
+            });
         }
-        let obj = al_syntax::find_object_declaration(&result.tree, content).ok_or_else(|| {
+        let obj = al_syntax::find_object_declaration(&tree, &content).ok_or_else(|| {
             PermissionCollectionError::MissingObjectDeclaration { path: path.clone() }
         })?;
         if let Some((perm_type, perm_value)) = permission_for_kind(&obj.kind) {

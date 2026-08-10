@@ -453,6 +453,7 @@ fn classify_reachable(
             }
             classify_procedure_ast(
                 workspace,
+                catalog,
                 location,
                 &mut decision,
                 &mut reasons,
@@ -627,6 +628,7 @@ fn has_object_global_declarations(root: tree_sitter::Node<'_>) -> bool {
 
 fn classify_procedure_ast(
     workspace: &Workspace,
+    catalog: &ProcedureCatalog,
     location: &ProcedureLocation,
     decision: &mut RoutingDecision,
     reasons: &mut Vec<RoutingReason>,
@@ -698,6 +700,8 @@ fn classify_procedure_ast(
                 CallRoutingContext {
                     reachable,
                     handler_support,
+                    catalog,
+                    object: &location.object,
                 },
             );
         } else if node.kind() == "attribute" || node.kind() == "attribute_list" {
@@ -864,9 +868,14 @@ fn table_platform_capability(
 }
 
 #[derive(Debug, Clone, Copy)]
-struct CallRoutingContext {
+struct CallRoutingContext<'a> {
     reachable: bool,
     handler_support: LocalHandlerSupport,
+    /// The workspace procedure catalog, for O(1) "same-object procedure"
+    /// lookups instead of a full-file tree walk per bare-global call.
+    catalog: &'a ProcedureCatalog,
+    /// Name of the object whose procedure is being classified.
+    object: &'a str,
 }
 
 fn classify_call(
@@ -876,12 +885,14 @@ fn classify_call(
     source: &[u8],
     file: &std::path::Path,
     outcome: (&mut RoutingDecision, &mut Vec<RoutingReason>),
-    context: CallRoutingContext,
+    context: CallRoutingContext<'_>,
 ) {
     let (decision, reasons) = outcome;
     let CallRoutingContext {
         reachable,
         handler_support,
+        catalog,
+        object,
     } = context;
     let mut cursor = node.walk();
     let children: Vec<_> = node.named_children(&mut cursor).collect();
@@ -941,6 +952,31 @@ fn classify_call(
                 reasons,
                 RoutingDecision::LiveBc,
                 &format!("calls platform operation {receiver}"),
+                file,
+                primary,
+                reachable,
+            );
+            return;
+        }
+        // A bare global call is interpreter-safe only when the interpreter
+        // actually implements it: a builtin from the shared catalog
+        // (`supports_global_builtin` is the single source of truth), a
+        // procedure of the same object (followed through the call graph), or
+        // a receiver-less native stub. Everything else has no local
+        // implementation and must route to LiveBc.
+        let is_builtin = al_runtime::interpreter::dispatch::supports_global_builtin(receiver);
+        let is_same_object_procedure = is_builtin
+            || catalog.contains_key(&(object.to_ascii_lowercase(), receiver.to_ascii_lowercase()));
+        let is_stub = is_same_object_procedure
+            || al_runtime::stubs::CATALOGS
+                .iter()
+                .any(|catalog| (catalog.resolve)(receiver).is_some());
+        if !is_builtin && !is_same_object_procedure && !is_stub {
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::LiveBc,
+                &format!("calls global '{receiver}' that the local interpreter does not implement"),
                 file,
                 primary,
                 reachable,
@@ -1098,6 +1134,30 @@ fn classify_call(
                 reachable,
             );
         }
+    } else if type_name.starts_with("text") || type_name.starts_with("code") {
+        if !al_runtime::interpreter::records::supports_text_method(method) {
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::LiveBc,
+                &format!("calls unsupported Text.{method} (requires BC semantics)"),
+                file,
+                member_node,
+                reachable,
+            );
+        }
+    } else if type_name.starts_with("dictionary") {
+        if !al_runtime::interpreter::records::supports_dict_method(method) {
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::LiveBc,
+                &format!("calls unsupported Dictionary.{method} (requires BC semantics)"),
+                file,
+                member_node,
+                reachable,
+            );
+        }
     } else if PLATFORM_TYPES
         .iter()
         .any(|platform| type_name.eq_ignore_ascii_case(platform))
@@ -1174,6 +1234,7 @@ fn push_reason(reasons: &mut Vec<RoutingReason>, reason: RoutingReason) {
     }
 }
 
+/// The root node of the tree containing `node` (walks up the parent chain).
 fn find_callable_node<'a>(
     root: tree_sitter::Node<'a>,
     source: &[u8],
@@ -1980,6 +2041,191 @@ mod tests {
                 .contains("exactly one supported local handler")),
             "unexpected reasons: {:?}",
             result.reasons
+        );
+    }
+
+    #[test]
+    fn unimplemented_bare_global_routes_to_live_bc() {
+        // `Evaluate` (and any other global the interpreter does not
+        // implement) has no local body: routing it to Interp would fail at
+        // runtime with "procedure not found" instead of falling back to BC.
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/GlobalRouting.Codeunit.al"),
+            r#"codeunit 50170 "Global Routing"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure UsesEvaluate()
+    var
+        t: Integer;
+    begin
+        Evaluate(t, '42');
+    end;
+}"#
+            .to_string(),
+        );
+        let result = classify_all(&workspace).unwrap().remove(0);
+        assert_eq!(result.decision, RoutingDecision::LiveBc);
+        assert!(
+            result.reasons.iter().any(|reason| reason
+                .message
+                .contains("global 'Evaluate' that the local interpreter does not implement")),
+            "unexpected reasons: {:?}",
+            result.reasons
+        );
+    }
+
+    #[test]
+    fn implemented_builtin_and_same_object_bare_calls_stay_interp() {
+        // Bare calls to interpreter builtins (shared safe-list) and to the
+        // codeunit's own procedures must not be pushed to LiveBc.
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/BuiltinRouting.Codeunit.al"),
+            r#"codeunit 50171 "Builtin Routing"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure UsesBuiltins()
+    var
+        n: Integer;
+        s: Text;
+    begin
+        n := Abs(-5);
+        n := StrPos('abc', 'b');
+        s := IncStr('INV-001');
+        Helper();
+    end;
+
+    procedure Helper()
+    begin
+    end;
+}"#
+            .to_string(),
+        );
+        let result = classify_all(&workspace).unwrap().remove(0);
+        assert_eq!(
+            result.decision,
+            RoutingDecision::Interp,
+            "builtin and same-object calls must stay local: {:?}",
+            result.reasons
+        );
+    }
+
+    #[test]
+    fn supported_text_methods_stay_local_and_unsupported_route_to_live_bc() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/TextRouting.Codeunit.al"),
+            r#"codeunit 50172 "Text Routing"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure SupportedTextMethod()
+    var
+        s: Text;
+        found: Boolean;
+    begin
+        s := 'abc';
+        found := s.Contains('b');
+    end;
+}"#
+            .to_string(),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/TextRouting2.Codeunit.al"),
+            r#"codeunit 50173 "Text Routing 2"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure UnsupportedTextMethod()
+    var
+        s: Text;
+    begin
+        s := 'abc';
+        s := s.PadLeft(10);
+    end;
+}"#
+            .to_string(),
+        );
+        let results = classify_all(&workspace).unwrap();
+        let supported = results
+            .iter()
+            .find(|result| result.method_name == "SupportedTextMethod")
+            .expect("supported classification");
+        assert_eq!(
+            supported.decision,
+            RoutingDecision::Interp,
+            "supported Text methods run locally: {:?}",
+            supported.reasons
+        );
+        let unsupported = results
+            .iter()
+            .find(|result| result.method_name == "UnsupportedTextMethod")
+            .expect("unsupported classification");
+        assert_eq!(unsupported.decision, RoutingDecision::LiveBc);
+        assert!(
+            unsupported
+                .reasons
+                .iter()
+                .any(|reason| reason.message.contains("unsupported Text.PadLeft")),
+            "unexpected reasons: {:?}",
+            unsupported.reasons
+        );
+    }
+
+    #[test]
+    fn dictionary_get_routes_to_live_bc_but_supported_methods_stay_local() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/DictRouting.Codeunit.al"),
+            r#"codeunit 50174 "Dict Routing"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure SupportedDictMethods()
+    var
+        d: Dictionary of [Text, Integer];
+        n: Integer;
+    begin
+        d.Add('a', 1);
+        d.Set('a', 2);
+        n := d.Count();
+    end;
+
+    [Test]
+    procedure UsesDictGet()
+    var
+        d: Dictionary of [Text, Integer];
+        n: Integer;
+    begin
+        d.Add('a', 1);
+        d.Get('a', n);
+    end;
+}"#
+            .to_string(),
+        );
+        let results = classify_all(&workspace).unwrap();
+        // Codeunit integrity keeps every method on one backend; the Get user
+        // must drag the codeunit to LiveBc with an explicit reason.
+        let get_user = results
+            .iter()
+            .find(|result| result.method_name == "UsesDictGet")
+            .expect("dict get classification");
+        assert_eq!(get_user.decision, RoutingDecision::LiveBc);
+        assert!(
+            get_user
+                .reasons
+                .iter()
+                .any(|reason| reason.message.contains("unsupported Dictionary.Get")),
+            "unexpected reasons: {:?}",
+            get_user.reasons
         );
     }
 

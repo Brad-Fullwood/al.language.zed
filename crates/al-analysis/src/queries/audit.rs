@@ -1111,19 +1111,41 @@ mod tests {
         assert!(report.over_granted_rights.is_empty());
     }
 
+    /// A single unparsable scratch file must not make the audits permanently
+    /// unavailable; it is skipped with a warning and the rest is audited.
     #[test]
-    fn whole_workspace_audits_reject_malformed_source() {
-        let ws = workspace_with(vec![(
-            "/src/Broken.al",
-            "codeunit 50100 Broken { procedure Incomplete(",
-        )]);
+    fn whole_workspace_audits_skip_malformed_source() {
+        let ws = workspace_with(vec![
+            (
+                "/src/Broken.al",
+                "codeunit 50100 Broken { procedure Incomplete(",
+            ),
+            (
+                "/src/Good.al",
+                "table 50101 Good { fields { field(1; Name; Text[10]) { DataClassification = CustomerContent; } } }",
+            ),
+        ]);
+
+        let classification = data_classification_audit(&ws).expect("audit must still run");
+        assert!(
+            classification.iter().any(|entry| entry.table == "Good"),
+            "the parsable object must still be audited: {classification:?}"
+        );
+        assert!(permission_set_audit(&ws).is_ok());
+    }
+
+    /// Workspace *incoherence* is still fatal: a partial report there would be
+    /// indistinguishable from a complete one.
+    #[test]
+    fn whole_workspace_audits_reject_an_incoherent_index() {
+        let ws = Workspace::new();
+        ws.file_index.files.insert(
+            std::path::PathBuf::from("/src/Ghost.al"),
+            "codeunit 50100 Ghost { }".to_string(),
+        );
 
         assert!(matches!(
             data_classification_audit(&ws),
-            Err(AuditError::IncompleteWorkspace { .. })
-        ));
-        assert!(matches!(
-            permission_set_audit(&ws),
             Err(AuditError::IncompleteWorkspace { .. })
         ));
     }

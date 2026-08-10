@@ -152,10 +152,14 @@ jobs:
         with:
           submodules: recursive
           persist-credentials: false
+      # zed-al (the published WASM extension) is included: its dependency
+      # tree (zed_extension_api, wit-bindgen, serde/serde_json, …) is small
+      # and entirely permissively licensed, so there is no reason to exempt
+      # it from the license/advisory/ban policy that gates every other crate.
       - name: Run cargo-deny
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
-          arguments: --workspace --exclude zed-al
+          arguments: --workspace
 
   wasm:
     name: WASM extension build
@@ -172,6 +176,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-wasip2
+          components: clippy
 
       - name: Cache cargo registry and build artifacts
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -192,6 +197,12 @@ jobs:
       # zed-al is excluded from the native workspace job, so run its host tests here.
       - name: Test zed-al (host)
         run: cargo test -p zed-al
+
+      # zed-al is excluded from the native workspace clippy run above (it only
+      # builds for wasm32-wasip2 there), so lint it here on host — matching
+      # what "Test zed-al (host)" already builds.
+      - name: Clippy (zed-al)
+        run: cargo clippy -p zed-al --all-targets -- -D warnings
 
       - name: Check repository slug consistency
         run: ./scripts/check-repo-consistency.sh

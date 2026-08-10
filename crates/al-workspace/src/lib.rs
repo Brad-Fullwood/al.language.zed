@@ -52,6 +52,12 @@ struct DependencySourceCache {
     /// `(canonical app path, byte length, modified time)` in stable order.
     fingerprint: DependencyFingerprint,
     index: Arc<FileIndex>,
+    /// Embedded `.al` files this generation had to skip — one that did not
+    /// parse cleanly, or one without an object declaration. Indexing degrades
+    /// per file, so a non-zero count is the only signal that dependency-backed
+    /// navigation is incomplete; it is kept with the generation rather than
+    /// only written to the log.
+    skipped_files: usize,
 }
 
 /// A synchronization failure that makes workspace state unsafe to inspect.
@@ -355,6 +361,20 @@ impl Workspace {
             .map(|(_, index)| index)
     }
 
+    /// How many embedded `.al` files the current dependency-source generation
+    /// had to skip (unparseable or declaration-free).
+    ///
+    /// Building the index degrades per file, so a non-zero count means
+    /// dependency-backed navigation and call-graph edges are incomplete.
+    /// Returns `None` when no generation has been built yet.
+    pub fn dependency_source_skipped_files(&self) -> Result<Option<usize>, DependencySourceError> {
+        let cache = self
+            .dependency_source_index
+            .read()
+            .map_err(|_| WorkspaceStateError::poisoned("dependency_source_index"))?;
+        Ok(cache.as_ref().map(|cache| cache.skipped_files))
+    }
+
     fn get_or_build_dependency_source_generation(
         &self,
     ) -> Result<(DependencyFingerprint, Arc<FileIndex>), DependencySourceError> {
@@ -384,6 +404,7 @@ impl Workspace {
         }
 
         let index = Arc::new(FileIndex::new());
+        let mut skipped_files = 0usize;
         for (app_path, _, _) in &fingerprint {
             let source_index =
                 al_symbols::source_index::get_or_build(app_path).map_err(|source| {
@@ -399,6 +420,11 @@ impl Workspace {
                 }
             })?;
             for (archive_path, source) in sources {
+                // Degrade per file: one odd embedded `.al` (a grammar gap for
+                // a newer AL construct, a namespace-only file, a vendor's
+                // scratch file) must not permanently disable call-graph and
+                // insight features for the whole workspace. Skip it with a
+                // warning and index the rest.
                 let parsed = al_syntax::AlParser::parse_quick(&source);
                 if !parsed.errors.is_empty() {
                     let details = parsed
@@ -415,17 +441,23 @@ impl Workspace {
                         })
                         .collect::<Vec<_>>()
                         .join("; ");
-                    return Err(DependencySourceError::ParseSource {
-                        package_path: app_path.clone(),
-                        archive_path,
-                        details,
-                    });
+                    tracing::warn!(
+                        package = %app_path.display(),
+                        archive_path = %archive_path,
+                        details = %details,
+                        "dependency source index: skipping embedded AL that does not parse cleanly"
+                    );
+                    skipped_files += 1;
+                    continue;
                 }
                 if al_syntax::find_object_declaration(&parsed.tree, &source).is_none() {
-                    return Err(DependencySourceError::MissingObjectDeclaration {
-                        package_path: app_path.clone(),
-                        archive_path,
-                    });
+                    tracing::debug!(
+                        package = %app_path.display(),
+                        archive_path = %archive_path,
+                        "dependency source index: skipping declaration-free embedded AL"
+                    );
+                    skipped_files += 1;
+                    continue;
                 }
                 index.add_file_with_tree(
                     dependency_virtual_path(app_path, &archive_path),
@@ -437,12 +469,14 @@ impl Workspace {
         tracing::info!(
             packages = fingerprint.len(),
             source_files = index.len(),
+            skipped_files,
             "dependency AL source index ready"
         );
         let index_for_return = Arc::clone(&index);
         *cache = Some(DependencySourceCache {
             fingerprint: fingerprint.clone(),
             index,
+            skipped_files,
         });
         Ok((fingerprint, index_for_return))
     }
@@ -725,6 +759,10 @@ pub struct CoreInitResult {
     pub package_count: usize,
     pub total_symbols: usize,
     pub has_toolchain: bool,
+    /// Configured symbol packages that could not be loaded (corrupt/truncated
+    /// `.app` files). Initialization proceeds without them; callers can
+    /// surface these as diagnostics/notifications.
+    pub package_load_failures: Vec<al_symbols::PackageLoadFailure>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -755,6 +793,7 @@ pub async fn initialize_core_workspace(
     let file_count;
     let mut package_count = 0usize;
     let mut total_symbols = 0usize;
+    let mut package_load_failures = Vec::new();
 
     // Bridge sync filesystem walks (find_project + file_index.scan) onto the
     // Tokio blocking pool so they don't stall the worker for the hundreds of
@@ -775,14 +814,26 @@ pub async fn initialize_core_workspace(
             );
 
             let cache = al_symbols::cache::SymbolCache::default_location();
-            let loaded = workspace
+            // Load per package instead of atomically: one truncated/corrupt
+            // `.app` in `.alpackages` (a common state after an interrupted
+            // download) must not abort the entire workspace initialization.
+            let (loaded, failures) = workspace
                 .symbols
-                .load_packages_cached(&project.packages, &cache)?;
+                .load_packages_cached_lenient(&project.packages, &cache);
+            for failure in &failures {
+                tracing::warn!(
+                    path = %failure.path.display(),
+                    message = %failure.message,
+                    "workspace: skipping unreadable symbol package"
+                );
+            }
+            package_load_failures = failures;
             total_symbols = loaded.iter().map(|p| p.object_count).sum();
             package_count = loaded.len();
             tracing::info!(
                 packages = package_count,
                 symbols = total_symbols,
+                failed_packages = package_load_failures.len(),
                 "workspace: loaded symbol packages"
             );
             // Load runtime enum definitions (compiler built-ins not in any package).
@@ -845,6 +896,7 @@ pub async fn initialize_core_workspace(
         package_count,
         total_symbols,
         has_toolchain,
+        package_load_failures,
     })
 }
 
@@ -1228,10 +1280,14 @@ mod workspace_lifecycle_tests {
         );
     }
 
+    /// One malformed embedded `.al` must degrade to a per-file skip (with a
+    /// warning) instead of rejecting the whole dependency-source generation —
+    /// otherwise a single grammar gap permanently disables call-graph and
+    /// insight features for the entire workspace.
     #[test]
-    fn failed_dependency_parse_publishes_no_partial_graph_or_source_index() {
+    fn failed_dependency_parse_skips_only_the_malformed_file() {
         let workspace = make_workspace();
-        let dir = unique_tempdir("dependency-parse-atomic");
+        let dir = unique_tempdir("dependency-parse-degrade");
         let app_path = dir.join("BrokenSource.app");
         let symbols = r#"{"Codeunits":[{"Id":50125,"Name":"Broken Source","Methods":[]}]}"#;
         std::fs::write(
@@ -1257,26 +1313,32 @@ mod workspace_lifecycle_tests {
             .load_packages(std::slice::from_ref(&app_path))
             .unwrap();
 
-        let error = match workspace.get_or_build_call_graph() {
-            Err(error) => error,
-            Ok(_) => panic!("one malformed embedded source must reject the whole graph generation"),
-        };
-        assert!(
-            matches!(
-                error,
-                CallGraphBuildError::DependencySource(DependencySourceError::ParseSource { .. })
-            ),
-            "{error}"
+        let (_, graph) = workspace
+            .get_or_build_call_graph()
+            .expect("one malformed embedded source must not reject the generation");
+        assert!(graph.is_some());
+        // Release the returned call-graph read guard before rebuilding below,
+        // or the rebuild's write lock would deadlock against it.
+        drop(graph);
+        assert_eq!(
+            workspace
+                .dependency_source_index
+                .read()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .index
+                .len(),
+            1,
+            "only the parsable embedded source is indexed"
         );
-        assert!(workspace.dependency_source_index.read().unwrap().is_none());
-        assert!(workspace.insight_graph.read().unwrap().is_none());
-        assert!(workspace.call_graph.read().unwrap().is_none());
-        assert!(workspace
-            .call_graph_dependency_fingerprint
-            .read()
-            .unwrap()
-            .is_none());
+        assert_eq!(
+            workspace.dependency_source_skipped_files().unwrap(),
+            Some(1),
+            "the degraded generation must report the file it had to skip"
+        );
 
+        // Repairing the package (fingerprint change) picks the file back up.
         std::fs::write(
             &app_path,
             build_test_app_with_sources(
@@ -1315,6 +1377,11 @@ mod workspace_lifecycle_tests {
                 .index
                 .len(),
             2
+        );
+        assert_eq!(
+            workspace.dependency_source_skipped_files().unwrap(),
+            Some(0),
+            "a repaired package leaves nothing skipped"
         );
     }
 
@@ -1736,6 +1803,49 @@ mod workspace_lifecycle_tests {
             .packages
             .iter()
             .any(|path| path.starts_with(&local)));
+    }
+
+    /// A single corrupt/truncated `.app` (e.g. an interrupted download) must
+    /// not abort workspace initialization: the valid packages load, and the
+    /// failure is reported for diagnostics.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn initialize_core_workspace_survives_one_corrupt_package() {
+        let workspace = make_workspace();
+        let dir = unique_tempdir("corruptpackage");
+        let packages = dir.join(".alpackages");
+        std::fs::create_dir_all(&packages).unwrap();
+        std::fs::write(
+            dir.join("app.json"),
+            serde_json::json!({
+                "id": "00000000-0000-0000-0000-000000000098",
+                "name": "InitTest",
+                "publisher": "Tester",
+                "version": "1.0.0.0"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            packages.join("Good.app"),
+            build_test_app("Good", "Good Table"),
+        )
+        .unwrap();
+        std::fs::write(packages.join("Truncated.app"), b"NAVX interrupted download").unwrap();
+
+        let result = initialize_core_workspace(&workspace, &dir)
+            .await
+            .expect("one corrupt package must not abort initialization");
+
+        assert_eq!(result.package_count, 1, "the valid package still loads");
+        assert_eq!(result.package_load_failures.len(), 1);
+        assert!(result.package_load_failures[0]
+            .path
+            .ends_with("Truncated.app"));
+        assert_eq!(workspace.symbols.get_by_name("Good Table").len(), 1);
+        assert!(
+            workspace.project.read().await.is_some(),
+            "the project must be stored despite the corrupt package"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

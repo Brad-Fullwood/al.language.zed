@@ -47,7 +47,15 @@ pub(super) fn dispatch_trace(
         Ok(graph) => graph,
         Err(error) => return graph_build_error(id, "trace", error),
     };
-    let steps = al_insight::search::trace_event(&graph, event_name, max_depth);
+    // Supply the call graph so the trace can follow the events a subscriber's
+    // body actually raises instead of fabricating hops from its object's
+    // unrelated publishers.
+    let steps = al_insight::search::trace_event_with_calls(
+        &graph,
+        _cg_guard.as_ref(),
+        event_name,
+        max_depth,
+    );
     serialized_response(id, &steps, "trace")
 }
 
@@ -56,7 +64,10 @@ pub(super) fn dispatch_entrypoints(workspace: &Workspace, id: u64) -> Response {
         Ok(graph) => graph,
         Err(error) => return graph_build_error(id, "entrypoints", error),
     };
-    let entry_points = al_insight::search::find_entry_points(&graph);
+    // Call edges live in the CallGraph, not the InsightGraph — pass it, or the
+    // filter has nothing to exclude and every procedure looks like an entry
+    // point.
+    let entry_points = al_insight::search::find_entry_points_with_calls(&graph, _cg_guard.as_ref());
     serialized_response(id, &entry_points, "entrypoints")
 }
 
@@ -358,20 +369,30 @@ mod tests {
     }
 
     #[test]
-    fn malformed_dependency_source_is_an_internal_error_not_an_empty_event_map() {
+    fn malformed_dependency_source_degrades_per_file_instead_of_failing() {
+        // One unparsable embedded .al in a dependency package must not take
+        // down whole-workspace insight: the bad file is skipped (with a
+        // warning at index time) and the event map still builds from
+        // everything that did parse.
         let (workspace, _package) = workspace_with_malformed_dependency_source();
 
         let response = dispatch_event_map(&workspace, 90);
         assert!(
-            response.result.is_none(),
-            "an incomplete graph must never be serialized as an empty result"
+            response.error.is_none(),
+            "a skipped malformed dependency file must not fail the event map: {:?}",
+            response.error
         );
-        let error = response.error.expect("graph failure must be explicit");
-        assert_eq!(error.code, error_codes::INTERNAL_ERROR);
-        assert!(error
-            .message
-            .contains("could not build a complete call graph"));
-        assert!(error.message.contains("did not parse cleanly"));
+        let result = response
+            .result
+            .expect("event map must be produced from the files that parsed");
+        let events = result
+            .get("events")
+            .and_then(|v| v.as_array())
+            .expect("event map result carries an events array");
+        assert!(
+            events.is_empty(),
+            "the skipped file's contents must not fabricate events: {events:?}"
+        );
     }
 
     #[test]
@@ -397,19 +418,39 @@ mod tests {
         assert_invalid_params(&resp);
     }
 
+    /// One unparsable file no longer takes the whole query down: it is skipped
+    /// per file (see `al_analysis::workspace_sources`), and the remaining files
+    /// still produce a report.
     #[test]
-    fn dispatch_impact_rejects_malformed_workspace_instead_of_returning_partial_results() {
+    fn dispatch_impact_degrades_per_file_on_a_malformed_workspace_source() {
         let ws = Workspace::new();
         ws.file_index.add_file(
             std::path::PathBuf::from("/project/Broken.al"),
             "codeunit 50100 Broken { procedure Incomplete(".to_string(),
         );
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/project/Uses.Codeunit.al"),
+            "codeunit 50101 Uses\n{\n    procedure P()\n    var\n        C: Record Customer;\n    begin\n    end;\n}\n"
+                .to_string(),
+        );
 
         let resp = dispatch_impact(&ws, 4, &serde_json::json!({ "symbol": "Customer" }));
-        assert!(resp.result.is_none());
-        let error = resp.error.expect("incomplete impact input must fail");
-        assert_eq!(error.code, error_codes::INTERNAL_ERROR);
-        assert!(error.message.contains("incomplete workspace snapshot"));
+        assert!(
+            resp.error.is_none(),
+            "one broken file must not fail the whole query: {:?}",
+            resp.error
+        );
+        let value = resp.result.expect("must carry a result");
+        let impacted = value
+            .get("impacted")
+            .and_then(|value| value.as_array())
+            .expect("impact result carries an 'impacted' array");
+        assert!(
+            impacted
+                .iter()
+                .any(|entry| entry.get("n").and_then(|v| v.as_str()) == Some("Uses")),
+            "the parsable file must still be reported: {value}"
+        );
     }
 
     #[test]

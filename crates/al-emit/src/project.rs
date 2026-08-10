@@ -514,26 +514,54 @@ fn elapsed_ns(started: std::time::Instant) -> u64 {
     u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
+/// Collect every `.al` file under `dir`, recursing into subdirectories.
+///
+/// Iterative (a `Vec`-backed stack) with a canonicalized visited-directory
+/// set — mirroring `al-explorer`'s `collect_al_files_for_extension` — rather
+/// than plain recursion on `p.is_dir()`. `is_dir()` follows symlinks, so a
+/// directory-symlink cycle inside the project (or a project that symlinks a
+/// directory into itself) previously recursed forever, aborting the native
+/// build with a stack overflow instead of failing cleanly or simply not
+/// re-visiting the same directory twice.
 fn collect_al_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), EmitError> {
-    let entries = std::fs::read_dir(dir).map_err(|e| {
-        EmitError::Project(format!("reading source directory {}: {e}", dir.display()))
-    })?;
-    for entry in entries {
-        let e = entry.map_err(|e| {
-            EmitError::Project(format!("reading source directory {}: {e}", dir.display()))
+    let mut visited = std::collections::HashSet::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current_dir) = stack.pop() {
+        let canonical = current_dir.canonicalize().map_err(|e| {
+            EmitError::Project(format!(
+                "resolving source directory {}: {e}",
+                current_dir.display()
+            ))
         })?;
-        let p = e.path();
-        if p.is_dir() {
-            // Skip dot-dirs (.alpackages, .snapshots, .git, .vscode, …): alc does
-            // not compile sources under them, and scanning the whole project root
-            // would otherwise descend into the symbol-package cache.
-            let name = p.file_name().unwrap_or_default().to_string_lossy();
-            if name.starts_with('.') {
-                continue;
+        if !visited.insert(canonical) {
+            continue;
+        }
+        let entries = std::fs::read_dir(&current_dir).map_err(|e| {
+            EmitError::Project(format!(
+                "reading source directory {}: {e}",
+                current_dir.display()
+            ))
+        })?;
+        for entry in entries {
+            let e = entry.map_err(|e| {
+                EmitError::Project(format!(
+                    "reading source directory {}: {e}",
+                    current_dir.display()
+                ))
+            })?;
+            let p = e.path();
+            if p.is_dir() {
+                // Skip dot-dirs (.alpackages, .snapshots, .git, .vscode, …): alc does
+                // not compile sources under them, and scanning the whole project root
+                // would otherwise descend into the symbol-package cache.
+                let name = p.file_name().unwrap_or_default().to_string_lossy();
+                if name.starts_with('.') {
+                    continue;
+                }
+                stack.push(p);
+            } else if p.extension().and_then(|x| x.to_str()) == Some("al") {
+                out.push(p);
             }
-            collect_al_files(&p, out)?;
-        } else if p.extension().and_then(|x| x.to_str()) == Some("al") {
-            out.push(p);
         }
     }
     Ok(())
@@ -1189,6 +1217,36 @@ pagecustomization "Local Card Custom" customizes "Local Card"
                 .any(|diagnostic| diagnostic.code == "ALN2301"),
             "expected local subscriber signature diagnostic: {:?}",
             result.diagnostics
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn collect_al_files_handles_symlink_cycle_without_hanging() {
+        // A directory symlink loop inside the project must not recurse
+        // forever (stack overflow/abort) — the visited-canonical-path set
+        // must stop re-descending into an already-visited directory.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Root.al"), "codeunit 1 X {}").unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("Sub.al"), "codeunit 2 Y {}").unwrap();
+        // Symlink back to the project root: sub/loop -> dir.
+        std::os::unix::fs::symlink(dir.path(), sub.join("loop")).unwrap();
+
+        let mut files = Vec::new();
+        collect_al_files(dir.path(), &mut files)
+            .expect("a symlink cycle must not hang or error the collector");
+        files.sort();
+
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["Root.al".to_string(), "Sub.al".to_string()],
+            "each file must be discovered exactly once despite the cycle"
         );
     }
 }

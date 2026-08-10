@@ -612,6 +612,25 @@ fn all_shipped_schemas_are_valid_json() {
     }
 }
 
+/// `debug_adapter_schemas/al.json` ships to users the same way `schemas/*.json`
+/// does (settings/launch-config autocomplete), but previously declared no
+/// `$schema` at all and so was exempt from `all_shipped_schemas_are_valid_json`
+/// above — nothing pinned its dialect. Give it the same guarantee.
+#[test]
+fn debug_adapter_schema_declares_draft_07() {
+    let content = include_str!("../debug_adapter_schemas/al.json");
+    let value: serde_json::Value =
+        serde_json::from_str(content).expect("debug_adapter_schemas/al.json is not valid JSON");
+    let schema_url = value
+        .get("$schema")
+        .and_then(|s| s.as_str())
+        .expect("debug_adapter_schemas/al.json must declare a $schema");
+    assert!(
+        schema_url.contains("draft-07"),
+        "debug_adapter_schemas/al.json must declare draft-07 (got {schema_url})"
+    );
+}
+
 /// The embedded settings schema (returned to Zed on API ≥ 0.8, and the source
 /// of truth for the parity test) must parse into an object with `properties`.
 /// Also exercises `crate::al_settings_schema` on the 0.7 build, where the schema

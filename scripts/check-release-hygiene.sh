@@ -18,6 +18,14 @@ REQUIRE_CI=0
 CI_TIMEOUT_SECONDS="${CI_TIMEOUT_SECONDS:-3600}"
 CI_POLL_SECONDS="${CI_POLL_SECONDS:-30}"
 CI_WORKFLOW="${CI_WORKFLOW:-CI}"
+# ci.yml only triggers on push to main/dev; a tag pushed on a commit that
+# never landed on one of those branches (or tagged before the branch push
+# propagated) will NEVER get a CI run — waiting the full CI_TIMEOUT_SECONDS
+# for one is just a slow, unhelpful failure. Bound how long we wait to see
+# ANY run appear at all (queued/in_progress/etc.) before giving up with an
+# actionable message; once a run is discovered, the full CI_TIMEOUT_SECONDS
+# still applies to waiting for it to finish.
+CI_DISCOVERY_TIMEOUT_SECONDS="${CI_DISCOVERY_TIMEOUT_SECONDS:-120}"
 REGENERATE=0
 FULL_REGENERATE=0
 
@@ -40,9 +48,16 @@ Options:
   -h, --help                  Show this help.
 
 Environment:
-  GITHUB_REPOSITORY           owner/repo for --require-ci in GitHub Actions.
-  GH_TOKEN or GITHUB_TOKEN    token used by gh for --require-ci.
-  CI_WORKFLOW                 workflow name to require (default: CI).
+  GITHUB_REPOSITORY            owner/repo for --require-ci in GitHub Actions.
+  GH_TOKEN or GITHUB_TOKEN     token used by gh for --require-ci.
+  CI_WORKFLOW                  workflow name to require (default: CI).
+  CI_DISCOVERY_TIMEOUT_SECONDS how long --require-ci waits for a FIRST run to
+                                appear for the tagged commit before failing
+                                fast, instead of hanging for the full
+                                CI_TIMEOUT_SECONDS (default: 120). ci.yml only
+                                runs on push to main/dev, so a commit that
+                                never reached one of those branches will never
+                                get a run at all.
 USAGE
 }
 
@@ -333,8 +348,13 @@ check_generated_cochange() {
     git rev-parse --verify "${base}^{commit}" >/dev/null \
         || fail "changed-since ref is not available: ${base}"
 
+    # `mapfile`/`readarray` (bash >= 4) is not available on stock macOS's
+    # /bin/bash 3.2, so populate the array with a portable read loop instead.
     local changed=()
-    mapfile -t changed < <(collect_changed_files "${base}" | sort -u)
+    local changed_file
+    while IFS= read -r changed_file; do
+        changed+=("${changed_file}")
+    done < <(collect_changed_files "${base}" | sort -u)
     [ "${#changed[@]}" -gt 0 ] || {
         ok "no changed files since ${base}; generated co-change guard skipped"
         return 0
@@ -530,10 +550,12 @@ require_ci_success() {
     [ -n "${token}" ] || fail "--require-ci needs GH_TOKEN or GITHUB_TOKEN"
     export GH_TOKEN="${token}"
 
-    local repo sha deadline now rows line status conclusion url
+    local repo sha deadline discovery_deadline discovered now rows status conclusion url
     repo="$(repo_slug)" || fail "could not determine GitHub repository slug for --require-ci"
     sha="$(git rev-parse HEAD)"
     deadline=$(( $(date +%s) + CI_TIMEOUT_SECONDS ))
+    discovery_deadline=$(( $(date +%s) + CI_DISCOVERY_TIMEOUT_SECONDS ))
+    discovered=0
 
     echo "Waiting for successful ${CI_WORKFLOW} run on ${sha} in ${repo}..."
     while true; do
@@ -546,6 +568,7 @@ require_ci_success() {
             --jq ".[] | select(.headSha == \"${sha}\") | [.databaseId, .status, (.conclusion // \"\"), .url] | @tsv")"
 
         if [ -n "${rows}" ]; then
+            discovered=1
             while IFS=$'\t' read -r _ status conclusion url; do
                 case "${status}:${conclusion}" in
                     completed:success)
@@ -562,6 +585,14 @@ require_ci_success() {
         fi
 
         now="$(date +%s)"
+        if [ "${discovered}" -eq 0 ] && [ "${now}" -ge "${discovery_deadline}" ]; then
+            fail "no ${CI_WORKFLOW} run was found for ${sha} in ${repo} after ${CI_DISCOVERY_TIMEOUT_SECONDS}s. \
+This usually means the tagged commit never triggered CI: ci.yml only runs on push to main/dev, so a tag \
+pushed on a commit that isn't (yet) on one of those branches will never get a run. Push the commit to \
+main/dev (e.g. merge the PR) before tagging, or verify the tagged sha with 'git log --oneline main..${sha}'. \
+Set CI_DISCOVERY_TIMEOUT_SECONDS to wait longer if CI is just slow to be scheduled. Not retrying for the \
+full --ci-timeout-seconds (${CI_TIMEOUT_SECONDS}s)."
+        fi
         [ "${now}" -lt "${deadline}" ] \
             || fail "timed out waiting for successful ${CI_WORKFLOW} run on ${sha}"
         sleep "${CI_POLL_SECONDS}"

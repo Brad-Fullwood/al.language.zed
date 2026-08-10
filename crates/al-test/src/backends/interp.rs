@@ -469,13 +469,8 @@ fn run_procedure_interp(
     // instead of pinning the spawned blocking thread until the daemon
     // shuts down.
     let mut ctx = DispatchCtx {
-        source: proc_source,
-        records: HashMap::new(),
         mode: dispatch_mode,
-        recursion_depth: 0,
-        ast_depth: 0,
         deadline: Some(std::time::Instant::now() + timeout_dur),
-        cancel: None,
         // Attach a dynamic-coverage collector only when requested,
         // seeded with this codeunit's file so its statements attribute there.
         coverage: collect_coverage.then(|| {
@@ -483,9 +478,8 @@ fn run_procedure_interp(
             cov.set_current_file(&cu.file);
             cov
         }),
-        condition_trace_stack: Vec::new(),
-        var_writebacks: Vec::new(),
         test_handlers,
+        ..DispatchCtx::new_pure(proc_source)
     };
 
     // One context (especially one record store and deadline) spans the full BC

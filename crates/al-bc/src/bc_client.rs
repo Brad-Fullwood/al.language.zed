@@ -1,18 +1,27 @@
 //! Business Central Dev API REST client.
 //!
-//! Wraps BC server REST endpoints used for publishing AL extensions:
-//! - `POST /dev/extensions` — upload + publish a `.app` file
-//! - `POST /dev/extensions/{id}/install` — install into a tenant
-//! - `DELETE /dev/extensions/{id}` — uninstall/remove
-//! - `GET /dev/applications/{appId}` — RAD state check
-//! - `PATCH /dev/applications/{appId}` — RAD incremental delta deploy
+//! Wraps the two BC server REST endpoints this crate actually implements:
+//! - `POST /dev/extensions` — upload + publish a `.app` file (see [`BcClient::publish_extension`])
+//! - `PATCH /dev/applications/{appId}` — RAD incremental delta deploy (see [`BcClient::rad_publish`])
 //!
 //! Reference endpoint: `{server}:{port}/{serverInstance}/dev/...`
 //!
+//! This client does **not** implement extension install/uninstall
+//! (`POST /dev/extensions/{id}/install`, `DELETE /dev/extensions/{id}`) or an
+//! application-status query (`GET /dev/applications/{appId}`) — there is no
+//! caller in this codebase for them today, and no live BC dev endpoint to
+//! verify a guessed wire shape against. `PublishPhase` (in `al-publish`)
+//! correspondingly has no `Install` variant.
+//!
 //! Authentication:
 //! - `UserPassword` — HTTP Basic (username + password from env vars `BC_USERNAME` / `BC_PASSWORD`)
-//! - `Windows` — NTLM/negotiate (on-prem only; uses `BC_USERNAME` / `BC_PASSWORD` if set)
-//! - `AAD` — Bearer token from `BC_TOKEN` env var or device-code flow
+//! - `Windows` — **also plain HTTP Basic**, using the same `BC_USERNAME` / `BC_PASSWORD` env vars.
+//!   This is *not* a real NTLM/Negotiate handshake — `reqwest` performs no such handshake — so a BC
+//!   server that requires genuine Windows-integrated auth (and has no Basic-auth fallback enabled)
+//!   will reject every request from this client with 401, regardless of which credentials are set.
+//! - `AAD` — Bearer token from the `BC_ACCESS_TOKEN` (or legacy `BC_TOKEN`) env var only; there is no
+//!   interactive device-code / OAuth sign-in flow. Without a pre-provisioned token, AAD publishes
+//!   fail fast with [`BcClientError::MissingCredentials`].
 
 use std::path::Path;
 use std::time::Duration;
@@ -22,7 +31,7 @@ use serde::Deserialize;
 use thiserror::Error;
 use tracing::{debug, warn};
 
-use crate::launch::{AuthMethod, BcServerConfig, EnvironmentType};
+use crate::launch::{is_safe_http_server, AuthMethod, BcServerConfig, EnvironmentType};
 
 /// Maximum bytes of an HTTP error body kept in BcClientError messages.
 /// Anything past this is replaced with a `... [N more bytes truncated]`
@@ -57,15 +66,22 @@ pub fn sanitize_error_body(body: &str) -> String {
         "client_secret=",
         "password=",
     ] {
+        // BC/IIS error pages commonly capitalize these differently
+        // (`Password=`, `PASSWORD=`, `authorization: bearer …`), so matching
+        // must be case-insensitive. `to_ascii_lowercase` is a 1:1,
+        // length-preserving byte mapping for ASCII bytes and leaves
+        // non-ASCII (UTF-8 continuation) bytes untouched, so byte offsets
+        // found in the lowercased haystack are valid offsets into `out`.
+        //
         // Advance the search start past each replacement so we never
         // re-scrub our own [REDACTED] sentinel — that bug would make the
         // loop run forever on bodies like client_secret=x&password=y where
         // replacing x with [REDACTED] still left a trailing & for the next
-        // pattern. Walking left-to-right with a moving start cursor also
-        // means a worst-case body scrubs in O(N) instead of O(N^2).
+        // pattern.
+        let needle_lower = needle.to_ascii_lowercase();
         const REDACTED: &str = "[REDACTED]";
         let mut search_from = 0;
-        while let Some(rel_idx) = out[search_from..].find(needle) {
+        while let Some(rel_idx) = out[search_from..].to_ascii_lowercase().find(&needle_lower) {
             let idx = search_from + rel_idx;
             let value_start = idx + needle.len();
             let value_end = out[value_start..]
@@ -93,7 +109,8 @@ pub enum BcClientError {
     #[error("No server configuration found in launch.json")]
     NoConfig,
     #[error(
-        "Missing credentials: set BC_ACCESS_TOKEN (or BC_TOKEN) for AAD, or BC_USERNAME and BC_PASSWORD for UserPassword"
+        "Missing credentials: set BC_ACCESS_TOKEN (or BC_TOKEN) for AAD, or BC_USERNAME and BC_PASSWORD for UserPassword. \
+         (AAD has no interactive sign-in flow here; a pre-provisioned token is required.)"
     )]
     MissingCredentials,
     #[error("Invalid bearer-token environment: {0}")]
@@ -321,7 +338,7 @@ impl BcClient {
             .body(app_bytes)
             .header("Content-Type", "application/octet-stream");
         req = self.apply_auth(req)?;
-        req = self.apply_tenant_header(req);
+        req = self.apply_tenant_query(req);
 
         let response = req.send().await?;
         self.handle_response(response).await
@@ -343,7 +360,7 @@ impl BcClient {
             .body(app_bytes)
             .header("Content-Type", "application/octet-stream");
         req = self.apply_auth(req)?;
-        req = self.apply_tenant_header(req);
+        req = self.apply_tenant_query(req);
 
         let response = req.send().await?;
         self.handle_response(response).await
@@ -359,14 +376,32 @@ impl BcClient {
                 let password = std::env::var("BC_PASSWORD").ok();
                 match (username, password) {
                     (Some(u), Some(p)) => {
+                        // NOTE: this is the ONLY authentication mechanism this
+                        // client implements for `AuthMethod::Windows` — plain
+                        // HTTP Basic, identical to `UserPassword`. It is not a
+                        // real NTLM/Negotiate handshake (see the module doc
+                        // comment), so it will not satisfy a BC server that
+                        // requires genuine Windows-integrated auth without a
+                        // Basic-auth fallback.
                         req = req.basic_auth(u, Some(p));
                     }
                     _ => {
                         if matches!(&self.auth, AuthMethod::UserPassword) {
                             return Err(BcClientError::MissingCredentials);
                         }
-                        // Windows NTLM: attempt without credentials (OS-level auth)
-                        warn!("Windows auth without credentials — may fail; set BC_USERNAME/BC_PASSWORD");
+                        // `AuthMethod::Windows` without BC_USERNAME/BC_PASSWORD:
+                        // this client implements no NTLM/Negotiate handshake
+                        // and has no OS-level Windows-integrated-auth fallback
+                        // (unlike a browser or WinHTTP client), so the request
+                        // is sent with no Authorization header at all. Warn
+                        // honestly instead of implying NTLM might still work —
+                        // a genuinely Windows-auth-only BC server will 401 this.
+                        warn!(
+                            "AuthMethod::Windows has no BC_USERNAME/BC_PASSWORD set — this client \
+                             does not implement NTLM/Negotiate, so the request carries no \
+                             Authorization header and a Windows-auth-only BC server will reject it \
+                             with 401. Set BC_USERNAME/BC_PASSWORD (sent as HTTP Basic, not NTLM)."
+                        );
                     }
                 }
             }
@@ -379,9 +414,14 @@ impl BcClient {
         Ok(req)
     }
 
-    fn apply_tenant_header(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    /// Attach the tenant as the `?tenant=` query parameter BC's dev endpoints
+    /// actually read (see `launch.rs::dev_packages_url`, which the
+    /// symbol-download path uses) — NOT a custom header. An `X-Tenant`
+    /// header is not recognised by BC and multitenant on-prem publishes would
+    /// silently target the default tenant instead.
+    fn apply_tenant_query(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match &self.tenant {
-            Some(t) if !t.is_empty() && t != "default" => req.header("X-Tenant", t),
+            Some(t) if !t.is_empty() && t != "default" => req.query(&[("tenant", t.as_str())]),
             _ => req,
         }
     }
@@ -434,6 +474,30 @@ impl BcClient {
     }
 }
 
+/// Fallback base URL used when `config.server` fails the [`is_safe_http_server`]
+/// allowlist. `.invalid` is the reserved TLD from RFC 2606 — guaranteed never
+/// to resolve — so a rejected `file://`/`gopher://`/etc. server config turns
+/// into an obvious connection failure instead of ever reaching the URL a
+/// hostile or misconfigured launch config supplied.
+const REJECTED_SERVER_BASE_URL: &str = "http://bc-client-rejected-unsafe-server.invalid";
+
+/// BC's documented on-premises dev-services port when a launch config omits
+/// `port` and the server string itself carries no explicit port. Applying
+/// this only when the host has no port of its own avoids double-porting a
+/// `server` value that already embeds one (e.g. a full `http://host:1234`
+/// URL, as used by every mock-server test in this crate).
+const DEFAULT_ONPREM_DEV_PORT: u16 = 7049;
+
+/// Whether `host` (the part of `server` after any `scheme://`) already
+/// carries an explicit `:<port>` suffix.
+fn host_has_explicit_port(host: &str) -> bool {
+    host.rsplit_once(':')
+        .map(|(_, maybe_port)| {
+            !maybe_port.is_empty() && maybe_port.bytes().all(|b| b.is_ascii_digit())
+        })
+        .unwrap_or(false)
+}
+
 /// Build the base URL for the BC Dev API from a server config.
 ///
 /// On-prem:  `http://{server}:{port}/{serverInstance}`
@@ -443,19 +507,58 @@ fn build_base_url(config: &BcServerConfig) -> String {
         EnvironmentType::OnPrem => {
             let server = config.server.as_deref().unwrap_or("localhost");
             let instance = config.server_instance.as_deref().unwrap_or("BC");
+
+            // Same http(s)-or-bare-host allowlist the symbol-download path
+            // (`launch.rs::dev_packages_url`) enforces on this same field —
+            // refuse to build a request URL from a `file://`/`gopher://`/etc.
+            // server value instead of silently embedding it.
+            if !is_safe_http_server(server) {
+                warn!(
+                    server = %server,
+                    "BC server URL failed the http(s)-or-bare-host safety allowlist; refusing to \
+                     build a request URL from it"
+                );
+                return REJECTED_SERVER_BASE_URL.to_string();
+            }
+
             // Ensure the server URL has a scheme to prevent accidental plain-HTTP
             // requests when the caller omits the scheme prefix.
             let server_with_scheme =
                 if server.starts_with("http://") || server.starts_with("https://") {
                     server.to_string()
                 } else {
+                    // Not silent: defaulting to http:// here means Basic
+                    // (UserPassword/Windows) credentials go out
+                    // Base64-in-cleartext. Say so, so an operator who wanted
+                    // TLS notices a plain hostname was misread as http.
+                    warn!(
+                        server = %server,
+                        "BC server URL has no scheme — defaulting to http:// (cleartext); Basic/\
+                         Windows credentials will be sent unencrypted. Use an explicit https:// \
+                         URL to avoid this."
+                    );
                     format!("http://{}", server)
                 };
             let server_trimmed = server_with_scheme.trim_end_matches('/');
-            if let Some(port) = config.port {
-                format!("{}:{}/{}", server_trimmed, port, instance)
-            } else {
-                format!("{}/{}", server_trimmed, instance)
+            let host = server_trimmed
+                .split_once("://")
+                .map_or(server_trimmed, |(_, rest)| rest);
+
+            match config.port {
+                Some(port) => format!("{}:{}/{}", server_trimmed, port, instance),
+                // `server` already carries its own port (e.g. a full
+                // `http://host:1234` URL, as every mock-server test in this
+                // crate uses) — do not double it up.
+                None if host_has_explicit_port(host) => {
+                    format!("{}/{}", server_trimmed, instance)
+                }
+                // No port anywhere: apply BC's documented on-prem dev
+                // default instead of silently falling through to whatever
+                // the scheme's default port is (80 for http).
+                None => format!(
+                    "{}:{}/{}",
+                    server_trimmed, DEFAULT_ONPREM_DEV_PORT, instance
+                ),
             }
         }
         EnvironmentType::Sandbox | EnvironmentType::Production => {
@@ -521,6 +624,40 @@ mod tests {
             url.starts_with("http://") || url.starts_with("https://"),
             "URL must have a scheme: {url}"
         );
+    }
+
+    #[test]
+    fn on_prem_url_applies_default_dev_port_when_absent() {
+        // The `port` field is documented as "default 7049" (launch.rs); a
+        // bare host with no port anywhere must get that default rather than
+        // silently falling through to the scheme's default (80 for http).
+        let mut config = on_prem_config();
+        config.server = Some("bc.example.com".to_string());
+        config.port = None;
+        let url = build_base_url(&config);
+        assert_eq!(url, "http://bc.example.com:7049/BC");
+    }
+
+    #[test]
+    fn on_prem_url_does_not_double_port_when_server_already_has_one() {
+        // A `server` value that already embeds a port (as every mock-server
+        // test in this module does) must not get `:7049` appended on top.
+        let mut config = on_prem_config();
+        config.server = Some("http://bc.example.com:8080".to_string());
+        config.port = None;
+        let url = build_base_url(&config);
+        assert_eq!(url, "http://bc.example.com:8080/BC");
+    }
+
+    #[test]
+    fn on_prem_url_rejects_unsafe_scheme() {
+        // Same allowlist the symbol-download path enforces
+        // (`launch::is_safe_http_server`) — a `file://`/`gopher://`/etc.
+        // server value must never be embedded in the request URL.
+        let mut config = on_prem_config();
+        config.server = Some("file:///etc/passwd".to_string());
+        let url = build_base_url(&config);
+        assert_eq!(url, REJECTED_SERVER_BASE_URL);
     }
 
     #[test]
@@ -974,5 +1111,299 @@ mod tests {
 
         let resp = client.publish_extension(&app).await.expect("should parse");
         assert_eq!(resp.app_id.as_deref(), Some("abc"));
+    }
+
+    #[tokio::test]
+    async fn publish_extension_sends_tenant_as_query_param_not_header() {
+        // BC's on-prem dev endpoints read `?tenant=` (see
+        // `launch::dev_packages_url`, used by the symbol-download path) —
+        // not a custom header. A mock that only matches the query param
+        // proves the tenant is sent that way: if the client regressed to an
+        // `X-Tenant` header, this mock would not match and the request would
+        // 404 against wiremock's default "no matching mock" response.
+        let server = wiremock::MockServer::start().await;
+        let body = r#"{"status":"Completed"}"#;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/BC/dev/extensions"))
+            .and(wiremock::matchers::query_param("tenant", "contoso"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Content-Length", body.len().to_string().as_str())
+                    .set_body_string(body),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let config = BcServerConfig {
+            name: "mock".to_string(),
+            environment_type: EnvironmentType::OnPrem,
+            server: Some(server.uri()),
+            server_instance: Some("BC".to_string()),
+            port: None,
+            environment_name: None,
+            tenant: Some("contoso".to_string()),
+            authentication: AuthMethod::Windows,
+            accept_invalid_certs: false,
+            debug_args: serde_json::json!({}),
+        };
+        let client = BcClient::new(&config);
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("ext.app");
+        tokio::fs::write(&app, b"app-bytes").await.unwrap();
+
+        client
+            .publish_extension(&app)
+            .await
+            .expect("tenant must be sent as a query param the mock matches on");
+    }
+
+    #[tokio::test]
+    async fn tenant_default_and_empty_are_never_sent() {
+        let server = wiremock::MockServer::start().await;
+        let body = r#"{"status":"Completed"}"#;
+        // The mock has NO query_param matcher: it must match regardless of
+        // whether wiremock decides to inspect the query string, but the real
+        // assertion is that request-building itself doesn't panic/error for
+        // the "default" and "" tenant sentinels, mirroring `apply_tenant_query`'s
+        // skip condition.
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/BC/dev/extensions"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Content-Length", body.len().to_string().as_str())
+                    .set_body_string(body),
+            )
+            .mount(&server)
+            .await;
+
+        for tenant in [Some("default".to_string()), Some(String::new()), None] {
+            let config = BcServerConfig {
+                name: "mock".to_string(),
+                environment_type: EnvironmentType::OnPrem,
+                server: Some(server.uri()),
+                server_instance: Some("BC".to_string()),
+                port: None,
+                environment_name: None,
+                tenant,
+                authentication: AuthMethod::Windows,
+                accept_invalid_certs: false,
+                debug_args: serde_json::json!({}),
+            };
+            let client = BcClient::new(&config);
+            let dir = tempfile::tempdir().unwrap();
+            let app = dir.path().join("ext.app");
+            tokio::fs::write(&app, b"app-bytes").await.unwrap();
+            client
+                .publish_extension(&app)
+                .await
+                .expect("default/empty tenant must not break the request");
+        }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(bc_creds_env)]
+    async fn windows_auth_uses_http_basic_when_credentials_present() {
+        // `AuthMethod::Windows` is documented as HTTP Basic, not a real
+        // NTLM/Negotiate handshake — with BC_USERNAME/BC_PASSWORD set it must
+        // send exactly the same `Authorization: Basic …` header UserPassword
+        // would.
+        // SAFETY: serialised via `#[serial_test::serial]` on this test name group.
+        unsafe {
+            std::env::set_var("BC_USERNAME", "alice");
+            std::env::set_var("BC_PASSWORD", "wonderland");
+        }
+
+        let server = wiremock::MockServer::start().await;
+        let body = r#"{"status":"Completed"}"#;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/BC/dev/extensions"))
+            .and(wiremock::matchers::header(
+                "Authorization",
+                // base64("alice:wonderland")
+                "Basic YWxpY2U6d29uZGVybGFuZA==",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Content-Length", body.len().to_string().as_str())
+                    .set_body_string(body),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("ext.app");
+        tokio::fs::write(&app, b"app-bytes").await.unwrap();
+        let result = client.publish_extension(&app).await;
+
+        // SAFETY: serialised via `#[serial_test::serial]` on this test name group.
+        unsafe {
+            std::env::remove_var("BC_USERNAME");
+            std::env::remove_var("BC_PASSWORD");
+        }
+        result.expect("Basic-auth request must match the mock");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(bc_creds_env)]
+    async fn windows_auth_without_credentials_sends_no_authorization_header() {
+        // Without BC_USERNAME/BC_PASSWORD, `AuthMethod::Windows` must NOT
+        // silently claim NTLM/Negotiate worked — it sends the request with no
+        // Authorization header at all (this crate implements no such
+        // handshake). A mock that rejects any Authorization header proves
+        // none was attached.
+        // SAFETY: serialised via `#[serial_test::serial]` on this test name group.
+        unsafe {
+            std::env::remove_var("BC_USERNAME");
+            std::env::remove_var("BC_PASSWORD");
+        }
+
+        let server = wiremock::MockServer::start().await;
+        let body = r#"{"status":"Completed"}"#;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/BC/dev/extensions"))
+            .and(|req: &wiremock::Request| !req.headers.contains_key("Authorization"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Content-Length", body.len().to_string().as_str())
+                    .set_body_string(body),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("ext.app");
+        tokio::fs::write(&app, b"app-bytes").await.unwrap();
+
+        client
+            .publish_extension(&app)
+            .await
+            .expect("no-Authorization request must match the mock");
+    }
+
+    #[test]
+    fn sanitize_error_body_redacts_case_insensitively() {
+        // IIS/BC error pages commonly capitalize these differently than the
+        // lowercase needles this function matches against.
+        let body = "Boom: Password=hunter2 and PASSWORD=hunter3 and \
+                     authorization: bearer sekrit-token rejected";
+        let out = sanitize_error_body(body);
+        assert!(
+            !out.contains("hunter2"),
+            "Password= must be redacted: {out}"
+        );
+        assert!(
+            !out.contains("hunter3"),
+            "PASSWORD= must be redacted: {out}"
+        );
+        assert!(
+            !out.contains("sekrit-token"),
+            "lowercase 'authorization: bearer' must be redacted: {out}"
+        );
+        assert_eq!(out.matches("[REDACTED]").count(), 3);
+    }
+
+    // `rad_publish` (PATCH /dev/applications/{id}) previously had zero test
+    // coverage: every wiremock test in this module exercised only
+    // `publish_extension`. These pin the RAD URL shape (method + path +
+    // tenant query param) and `ApplicationStateResponse` handling.
+
+    #[tokio::test]
+    async fn rad_publish_uses_patch_and_application_id_path() {
+        let body = r#"{"appId":"guid-42","status":"Completed","version":"3.0.0.0"}"#;
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/BC/dev/applications/guid-42"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Content-Length", body.len().to_string().as_str())
+                    .set_body_string(body),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("ext.app");
+        tokio::fs::write(&app, b"app-bytes").await.unwrap();
+
+        let resp = client
+            .rad_publish("guid-42", &app)
+            .await
+            .expect("PATCH to the app-id path must match the mock");
+        assert_eq!(resp.app_id.as_deref(), Some("guid-42"));
+        assert_eq!(resp.version.as_deref(), Some("3.0.0.0"));
+        assert_eq!(resp.status.as_deref(), Some("Completed"));
+    }
+
+    #[tokio::test]
+    async fn rad_publish_sends_tenant_as_query_param() {
+        let body = r#"{"appId":"guid-7","status":"Completed"}"#;
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/BC/dev/applications/guid-7"))
+            .and(wiremock::matchers::query_param("tenant", "contoso"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Content-Length", body.len().to_string().as_str())
+                    .set_body_string(body),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let config = BcServerConfig {
+            name: "mock".to_string(),
+            environment_type: EnvironmentType::OnPrem,
+            server: Some(server.uri()),
+            server_instance: Some("BC".to_string()),
+            port: None,
+            environment_name: None,
+            tenant: Some("contoso".to_string()),
+            authentication: AuthMethod::Windows,
+            accept_invalid_certs: false,
+            debug_args: serde_json::json!({}),
+        };
+        let client = BcClient::new(&config);
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("ext.app");
+        tokio::fs::write(&app, b"app-bytes").await.unwrap();
+
+        client
+            .rad_publish("guid-7", &app)
+            .await
+            .expect("tenant must be sent as a query param the mock matches on");
+    }
+
+    #[tokio::test]
+    async fn rad_publish_server_error_maps_to_server_error() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/BC/dev/applications/guid-9"))
+            .respond_with(wiremock::ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("ext.app");
+        tokio::fs::write(&app, b"app-bytes").await.unwrap();
+
+        let err = client
+            .rad_publish("guid-9", &app)
+            .await
+            .expect_err("500 must error");
+        match err {
+            BcClientError::ServerError { status, message } => {
+                assert_eq!(status, 500);
+                assert!(message.contains("boom"), "got: {message}");
+            }
+            other => panic!("expected ServerError, got {other:?}"),
+        }
     }
 }

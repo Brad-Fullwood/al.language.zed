@@ -5,19 +5,24 @@ Quick lookup for the native language server (`al-lsp --stdio`). Behavior is docu
 
 ## LSP methods handled
 
-`textDocument/`: `hover`, `completion`, `definition`, `references`, `documentSymbol`, `formatting`,
-`rangeFormatting`, `foldingRange`, `rename`, `prepareRename`, `semanticTokens/full`, `signatureHelp`,
-`codeAction`, `codeLens`, `inlayHint`, `diagnostic` (pull), plus the document lifecycle (`didOpen`,
-`didChange`, `didClose`, `didSave`). `workspace/`: `symbol`, `diagnostic`, `executeCommand`,
-`didChangeConfiguration`. Lifecycle: `initialize`, `initialized`, `shutdown`.
+`textDocument/`: `hover`, `completion`, `definition`, `implementation`, `references`,
+`documentSymbol`, `formatting`, `rangeFormatting`, `foldingRange`, `rename`, `prepareRename`,
+`semanticTokens/full`, `signatureHelp`, `codeAction`, `codeLens`, `inlayHint`, `diagnostic` (pull),
+plus the document lifecycle (`didOpen`, `didChange`, `didClose`, `didSave`). `workspace/`: `symbol`,
+`diagnostic`, `executeCommand`, `didChangeConfiguration`. Lifecycle: `initialize`, `initialized`,
+`shutdown`. Custom: `experimental/runnables` (Zed runnables; with a `position` it returns only the
+test at the cursor).
 
 ## Advertised capabilities
 
-Full text sync; save (no text); hover; completion (triggers `.` `:`); definition; references;
-document symbols; document + range formatting; folding; rename (+ prepare); semantic tokens (full +
-legend); CodeLens; inlay hints; signature help (triggers `(` `,`); workspace symbols; code actions;
-pull diagnostics (`identifier: "al-lsp"`, inter-file dependencies, workspace diagnostics);
-execute commands.
+Incremental text sync; save (no text); hover; completion (triggers `.` `:`); definition;
+implementation; references; document symbols; document + range formatting; folding; rename
+(+ prepare); semantic tokens (full + legend); CodeLens; inlay hints; signature help (triggers `(`
+`,`); workspace symbols; code actions; pull diagnostics (`identifier: "al-lsp"`, inter-file
+dependencies, workspace diagnostics); execute commands.
+
+`textDocument/codeAction` honours `context.only`: a request restricted to `quickfix` does not
+receive the `source` actions (*AL: Format File*, *AL: Lint File*).
 
 ## Client capability gating
 

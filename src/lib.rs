@@ -10,7 +10,11 @@ mod settings_test;
 
 use serde_json::{json, Value};
 use std::fs;
-use zed_extension_api::{self as zed, settings::LspSettings, Result};
+use zed_extension_api::{
+    self as zed,
+    settings::{ContextServerSettings, LspSettings},
+    Result,
+};
 
 /// Repository that publishes the extension's `al-lsp` release assets.
 const GITHUB_REPO: &str = "Brad-Fullwood/al.language.zed";
@@ -98,6 +102,53 @@ fn merge_json_inner(base: &Value, overrides: &Value, depth: u32) -> Value {
 }
 
 impl AlExtension {
+    /// Scan the extension work directory for a previously downloaded, complete
+    /// `al-lsp-<version>` release — both the `al-lsp` and `al-explorer`
+    /// sidecar present as regular files — without touching the network. This
+    /// lets a machine that downloaded a release in an earlier session start
+    /// `al-lsp` fully offline (no PATH install, no `binary.path`, no reachable
+    /// GitHub). When multiple cached releases are present, the most recently
+    /// modified one wins.
+    fn cached_release_binary_path(os: zed::Os) -> Option<String> {
+        let binary_name = match os {
+            zed::Os::Windows => "al-lsp.exe",
+            _ => "al-lsp",
+        };
+        let explorer_name = match os {
+            zed::Os::Windows => "al-explorer.exe",
+            _ => "al-explorer",
+        };
+
+        let entries = fs::read_dir(".").ok()?;
+        let mut best: Option<(std::time::SystemTime, String)> = None;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !name.starts_with("al-lsp-") {
+                continue;
+            }
+            let dir_path = entry.path();
+            let binary_path = dir_path.join(binary_name);
+            let explorer_path = dir_path.join(explorer_name);
+            if !fs::metadata(&binary_path).is_ok_and(|m| m.is_file())
+                || !fs::metadata(&explorer_path).is_ok_and(|m| m.is_file())
+            {
+                continue;
+            }
+            let modified = fs::metadata(&dir_path)
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            let path_str = binary_path.to_string_lossy().into_owned();
+            let is_better = best
+                .as_ref()
+                .is_none_or(|(best_modified, _)| modified > *best_modified);
+            if is_better {
+                best = Some((modified, path_str));
+            }
+        }
+        best.map(|(_, path)| path)
+    }
+
     /// Resolves an explicit, cached, installed, or downloadable `al-lsp` binary.
     fn find_or_download_binary(
         &mut self,
@@ -105,8 +156,12 @@ impl AlExtension {
         worktree: Option<&zed::Worktree>,
         user_configured_path: Option<&str>,
     ) -> Result<String> {
+        // Deliberately NOT cached into `self.cached_binary_path`: this path is
+        // scoped to whichever surface (LSP/DAP/MCP) is calling right now, and
+        // each surface resolves its own `binary.path`/`debugAdapterPath`
+        // setting independently. Caching it here would leak one surface's
+        // explicit override into the others' resolution on the very next call.
         if let Some(path) = user_configured_path {
-            self.cached_binary_path = Some(path.to_string());
             return Ok(path.to_string());
         }
 
@@ -122,14 +177,23 @@ impl AlExtension {
             return Ok(path);
         }
 
+        let (os, arch) = zed::current_platform();
+
+        // Reuse a previously downloaded release from disk before ever touching
+        // the network, so a fresh Zed session with a valid cached binary starts
+        // offline. `latest_github_release` below only runs when no on-disk
+        // release is found.
+        if let Some(path) = Self::cached_release_binary_path(os) {
+            self.cached_binary_path = Some(path.clone());
+            return Ok(path);
+        }
+
         if let Some(id) = status_id {
             zed::set_language_server_installation_status(
                 id,
                 &zed::LanguageServerInstallationStatus::CheckingForUpdate,
             );
         }
-
-        let (os, arch) = zed::current_platform();
 
         let release = zed::latest_github_release(
             GITHUB_REPO,
@@ -359,20 +423,32 @@ impl zed::Extension for AlExtension {
 
     fn context_server_command(
         &mut self,
-        _context_server_id: &zed::ContextServerId,
-        _project: &zed::Project,
+        context_server_id: &zed::ContextServerId,
+        project: &zed::Project,
     ) -> Result<zed::Command> {
         // A Project does not expose `which`, but the release cache/download
         // portion of the resolver is worktree-independent. This makes a fresh
         // gallery install self-contained instead of silently depending on a
         // developer `make install`.
         let al_lsp_path = self.find_or_download_binary(None, None, None)?;
+
+        // `cached_dotnet_path` is only populated once an LSP session has
+        // started (`language_server_command`). A `Project` cannot resolve
+        // worktree-scoped `lsp."al-lsp".settings`, but it CAN read this
+        // context server's own settings directly — so fall back to that when
+        // Zed starts the MCP server before any LSP session exists, rather
+        // than silently dropping the user's `al.dotnetPath`.
+        let dotnet_path = self.cached_dotnet_path.clone().or_else(|| {
+            ContextServerSettings::for_project(context_server_id.as_ref(), project)
+                .ok()
+                .and_then(|settings| settings.settings)
+                .and_then(|settings| settings::resolve_dotnet_path(Some(&settings)))
+        });
+
         Ok(zed::Command {
             command: al_lsp_path,
             args: vec!["mcp".to_string()],
-            env: self
-                .cached_dotnet_path
-                .clone()
+            env: dotnet_path
                 .map(|path| vec![("AL_DOTNET_PATH".to_string(), path)])
                 .unwrap_or_default(),
         })
@@ -385,11 +461,12 @@ impl zed::Extension for AlExtension {
         user_provided_debug_adapter_path: Option<String>,
         worktree: &zed::Worktree,
     ) -> Result<zed::DebugAdapterBinary> {
-        // Resolve al-lsp via the same 4-step chain used for LSP:
-        // user config → cached download → PATH → GitHub release download.
-        // No LanguageServerId exists on the DAP path (and the released API has
-        // no way to construct one), so download progress is not surfaced in
-        // the status UI — see find_or_download_binary's status_id doc.
+        // Resolve al-lsp via the same chain used for LSP: user config →
+        // in-memory session cache → PATH → on-disk cached download (offline) →
+        // GitHub release download. No LanguageServerId exists on the DAP path
+        // (and the released API has no way to construct one), so download
+        // progress is not surfaced in the status UI — see
+        // find_or_download_binary's status_id doc.
         let al_lsp_path = self.find_or_download_binary(
             None,
             Some(worktree),

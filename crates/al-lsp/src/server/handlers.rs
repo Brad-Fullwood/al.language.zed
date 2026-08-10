@@ -1,6 +1,5 @@
 use tower_lsp::lsp_types::*;
 
-use super::formatting;
 use super::AlServer;
 
 // handle_document_symbol inlined in lsp::document_symbol with
@@ -57,16 +56,42 @@ pub(crate) fn handle_signature_help(
     }))
 }
 
+/// Whether the client asked for actions of `kind`.
+///
+/// `CodeActionContext.only` is a filter contract: when the client sends
+/// `only: ["quickfix"]` it must not receive `source` actions. LSP kinds are
+/// hierarchical, so `refactor` also selects `refactor.extract`.
+fn kind_requested(only: Option<&Vec<CodeActionKind>>, kind: &CodeActionKind) -> bool {
+    let Some(only) = only else {
+        return true;
+    };
+    if only.is_empty() {
+        return true;
+    }
+    only.iter().any(|requested| {
+        let requested = requested.as_str();
+        let kind = kind.as_str();
+        kind == requested
+            || kind
+                .strip_prefix(requested)
+                .is_some_and(|rest| rest.starts_with('.'))
+    })
+}
+
 pub(crate) fn handle_code_action(
     server: &AlServer,
     uri: &Url,
     range: Range,
     diagnostics: &[Diagnostic],
+    only: Option<&Vec<CodeActionKind>>,
 ) -> Option<Vec<CodeActionOrCommand>> {
     let text = server.workspace.documents.get_text(uri)?;
     let mut actions = Vec::new();
 
-    for diag in diagnostics {
+    let quickfix_requested = kind_requested(only, &CodeActionKind::QUICKFIX);
+    let source_requested = kind_requested(only, &CodeActionKind::SOURCE);
+
+    for diag in diagnostics.iter().filter(|_| quickfix_requested) {
         let code = diag.code.as_ref().map(|c| match c {
             NumberOrString::String(s) => s.clone(),
             NumberOrString::Number(n) => n.to_string(),
@@ -103,49 +128,85 @@ pub(crate) fn handle_code_action(
     for entry in
         al_analysis::queries::code_actions::source_actions(&server.workspace, uri, core_range)
     {
+        let kind = match entry.kind {
+            al_analysis::queries::code_actions::CodeActionKind::QuickFix => {
+                CodeActionKind::QUICKFIX
+            }
+            al_analysis::queries::code_actions::CodeActionKind::Refactor => {
+                CodeActionKind::REFACTOR
+            }
+            al_analysis::queries::code_actions::CodeActionKind::Source => CodeActionKind::SOURCE,
+        };
+        if !kind_requested(only, &kind) {
+            continue;
+        }
         actions.push(core_action_to_lsp(entry, None));
     }
 
-    if let Some(edits) = formatting::handle_formatting(
-        server,
-        uri,
-        &FormattingOptions {
-            tab_size: 4,
-            insert_spaces: true,
-            ..Default::default()
-        },
-    ) {
-        if !edits.is_empty() {
-            let mut changes = std::collections::HashMap::new();
-            changes.insert(uri.clone(), edits);
+    if source_requested {
+        // Offering "AL: Format File" used to *format the whole document* on
+        // every codeAction request just to decide whether the entry is
+        // applicable. Zed issues those constantly, so the check is now a cheap
+        // structural probe; the real formatting still happens when the action
+        // is invoked (`al.formatFile`).
+        if document_needs_formatting(server, uri) {
             actions.push(CodeActionOrCommand::CodeAction(CodeAction {
                 title: "AL: Format File".to_string(),
                 kind: Some(CodeActionKind::SOURCE),
-                edit: Some(WorkspaceEdit {
-                    changes: Some(changes),
-                    ..Default::default()
+                command: Some(Command {
+                    title: "AL: Format File".to_string(),
+                    command: "al.formatFile".to_string(),
+                    arguments: serde_json::to_value(uri).ok().map(|v| vec![v]),
                 }),
                 ..Default::default()
             }));
         }
-    }
 
-    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-        title: "AL: Lint File".to_string(),
-        kind: Some(CodeActionKind::SOURCE),
-        command: Some(Command {
+        actions.push(CodeActionOrCommand::CodeAction(CodeAction {
             title: "AL: Lint File".to_string(),
-            command: "al.lintFile".to_string(),
-            arguments: serde_json::to_value(uri).ok().map(|v| vec![v]),
-        }),
-        ..Default::default()
-    }));
+            kind: Some(CodeActionKind::SOURCE),
+            command: Some(Command {
+                title: "AL: Lint File".to_string(),
+                command: "al.lintFile".to_string(),
+                arguments: serde_json::to_value(uri).ok().map(|v| vec![v]),
+            }),
+            ..Default::default()
+        }));
+    }
 
     if actions.is_empty() {
         None
     } else {
         Some(actions)
     }
+}
+
+/// Cheap "would formatting change anything?" probe.
+///
+/// Scans for the things the AL formatter always normalises — trailing
+/// whitespace, tab indentation when spaces are configured, CRLF line endings,
+/// and a missing final newline — instead of running the O(file) formatter on
+/// every `textDocument/codeAction`. False negatives only cost the user an
+/// explicit `al.formatFile`; there are no false edits.
+fn document_needs_formatting(server: &AlServer, uri: &Url) -> bool {
+    let Some(text) = server.workspace.documents.get_text(uri) else {
+        return false;
+    };
+    if text.is_empty() {
+        return false;
+    }
+    if text.contains('\r') || !text.ends_with('\n') {
+        return true;
+    }
+    text.lines().any(|line| {
+        line.ends_with(' ')
+            || line.ends_with('\t')
+            || line
+                .find(|c: char| c != ' ' && c != '\t')
+                .map(|first| &line[..first])
+                .unwrap_or(line)
+                .contains('\t')
+    })
 }
 
 /// Convert an `al-analysis` transport-agnostic `WorkspaceEdit` to a tower-lsp `WorkspaceEdit`.

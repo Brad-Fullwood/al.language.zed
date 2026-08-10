@@ -1100,7 +1100,7 @@ mod native_session_tests {
                     "SourcePosition": { "Line": 42, "Column": 8 },
                     "ApplicationObjectId": { "ObjectType": 5, "ObjectNumber": 50100 }
                 }],
-                "stopped"
+                ""
             ]),
         );
         fake.reply_ok(

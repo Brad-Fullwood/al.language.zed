@@ -239,6 +239,108 @@ pub(in crate::server::daemon) fn get_project_tenants(workspace: &Workspace) -> V
     }
     tenants
 }
+use crate::server::workspace::{
+    next_transitive_dependencies, read_manifests, MAX_TRANSITIVE_DEPENDENCY_DEPTH,
+};
+
+/// Download one wave of dependencies, returning a per-dependency result entry.
+///
+/// Extracted so the dispatcher can run it repeatedly: after each wave the
+/// freshly downloaded `.app` manifests are inspected for their own
+/// dependencies (`NavxManifest.dependencies`), which Microsoft's extension
+/// resolves recursively and this daemon previously never fetched.
+async fn download_dependency_wave(
+    workspace: &Workspace,
+    source: &str,
+    deps: &[al_symbols::nuget::AppDependency],
+    dest: &std::path::Path,
+    project_configs: &[al_bc::launch::BcServerConfig],
+) -> Vec<serde_json::Value> {
+    if source == "server" {
+        if project_configs.is_empty() {
+            return vec![serde_json::json!({
+                "error": "No BC server config found"
+            })];
+        }
+        let cfg = &project_configs[0];
+        let auth = match cfg.authentication {
+            al_bc::launch::AuthMethod::Windows => al_symbols::bc_server::AuthMethod::Windows,
+            al_bc::launch::AuthMethod::UserPassword => {
+                al_symbols::bc_server::AuthMethod::UserPassword
+            }
+            al_bc::launch::AuthMethod::AAD => al_symbols::bc_server::AuthMethod::AAD,
+        };
+        let client = match al_symbols::bc_server::BcServerClient::new(
+            auth,
+            cfg.tenant.clone(),
+            std::sync::Arc::new(|msg| tracing::info!("{msg}")),
+            cfg.accept_invalid_certs,
+        ) {
+            Ok(c) => c,
+            Err(e) => return vec![serde_json::json!({ "error": e.to_string() })],
+        };
+        let url_deps: Vec<(String, al_symbols::nuget::AppDependency)> = deps
+            .iter()
+            .filter_map(|dep| cfg.dev_packages_url(dep).map(|url| (url, dep.clone())))
+            .collect();
+        let bc_results = client.download_all(&url_deps, dest).await;
+        bc_results
+            .into_iter()
+            .zip(url_deps.iter())
+            .map(|(r, (_url, sym_dep))| match r {
+                Ok(path) => serde_json::json!({
+                    "name": sym_dep.name,
+                    "status": "ok",
+                    "path": path.display().to_string(),
+                }),
+                Err(e) => serde_json::json!({
+                    "name": sym_dep.name,
+                    "status": "error",
+                    "error": e.to_string(),
+                }),
+            })
+            .collect()
+    } else {
+        // honor al.nugetFeeds / al.useOnlyCustomFeeds /
+        // al.symbolsCountryRegion on the daemon path too.
+        let (nuget_feeds, country) = {
+            let cfg = workspace.config.read().await;
+            (
+                crate::server::workspace::map_nuget_feeds(
+                    &crate::server::workspace::effective_nuget_feeds(&cfg),
+                ),
+                cfg.symbols_country_region.clone(),
+            )
+        };
+        let client = match al_symbols::nuget::NuGetClient::new(nuget_feeds) {
+            Ok(client) => client.with_country(country),
+            Err(error) => {
+                return vec![serde_json::json!({
+                    "status": "error",
+                    "error": format!("could not initialize NuGet client: {error}"),
+                })];
+            }
+        };
+        let nuget_results = client.download_all(deps, dest).await;
+        nuget_results
+            .into_iter()
+            .enumerate()
+            .map(|(i, r)| match r {
+                Ok(path) => serde_json::json!({
+                    "name": deps[i].name,
+                    "status": "ok",
+                    "path": path.display().to_string(),
+                }),
+                Err(e) => serde_json::json!({
+                    "name": deps[i].name,
+                    "status": "error",
+                    "error": e.to_string(),
+                }),
+            })
+            .collect()
+    }
+}
+
 pub(in crate::server::daemon) async fn dispatch_download_symbols(
     workspace: &Workspace,
     id: u64,
@@ -341,94 +443,50 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
         .collect();
 
     let result: Vec<serde_json::Value> = {
-        async {
-            if source == "server" {
-                if project_configs.is_empty() {
-                    return vec![serde_json::json!({
-                        "error": "No BC server config found"
-                    })];
-                }
-                let cfg = &project_configs[0];
-                let auth = match cfg.authentication {
-                    al_bc::launch::AuthMethod::Windows => {
-                        al_symbols::bc_server::AuthMethod::Windows
-                    }
-                    al_bc::launch::AuthMethod::UserPassword => {
-                        al_symbols::bc_server::AuthMethod::UserPassword
-                    }
-                    al_bc::launch::AuthMethod::AAD => al_symbols::bc_server::AuthMethod::AAD,
-                };
-                let client = match al_symbols::bc_server::BcServerClient::new(
-                    auth,
-                    cfg.tenant.clone(),
-                    std::sync::Arc::new(|msg| tracing::info!("{msg}")),
-                    cfg.accept_invalid_certs,
-                ) {
-                    Ok(c) => c,
-                    Err(e) => return vec![serde_json::json!({ "error": e.to_string() })],
-                };
-                let url_deps: Vec<(String, al_symbols::nuget::AppDependency)> = all_deps
-                    .iter()
-                    .filter_map(|dep| cfg.dev_packages_url(dep).map(|url| (url, dep.clone())))
-                    .collect();
-                let bc_results = client.download_all(&url_deps, &dest).await;
-                bc_results
-                    .into_iter()
-                    .zip(url_deps.iter())
-                    .map(|(r, (_url, sym_dep))| match r {
-                        Ok(path) => serde_json::json!({
-                            "name": sym_dep.name,
-                            "status": "ok",
-                            "path": path.display().to_string(),
-                        }),
-                        Err(e) => serde_json::json!({
-                            "name": sym_dep.name,
-                            "status": "error",
-                            "error": e.to_string(),
-                        }),
-                    })
-                    .collect()
-            } else {
-                // honor al.nugetFeeds / al.useOnlyCustomFeeds /
-                // al.symbolsCountryRegion on the daemon path too.
-                let (nuget_feeds, country) = {
-                    let cfg = workspace.config.read().await;
-                    (
-                        crate::server::workspace::map_nuget_feeds(
-                            &crate::server::workspace::effective_nuget_feeds(&cfg),
-                        ),
-                        cfg.symbols_country_region.clone(),
-                    )
-                };
-                let client = match al_symbols::nuget::NuGetClient::new(nuget_feeds) {
-                    Ok(client) => client.with_country(country),
-                    Err(error) => {
-                        return vec![serde_json::json!({
-                            "status": "error",
-                            "error": format!("could not initialize NuGet client: {error}"),
-                        })];
-                    }
-                };
-                let nuget_results = client.download_all(&all_deps, &dest).await;
-                nuget_results
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, r)| match r {
-                        Ok(path) => serde_json::json!({
-                            "name": all_deps[i].name,
-                            "status": "ok",
-                            "path": path.display().to_string(),
-                        }),
-                        Err(e) => serde_json::json!({
-                            "name": all_deps[i].name,
-                            "status": "error",
-                            "error": e.to_string(),
-                        }),
-                    })
-                    .collect()
+        // Resolve the transitive closure: each wave's downloaded packages are
+        // inspected for their own manifest dependencies, bounded by a visited
+        // set and a depth cap.
+        let mut visited: std::collections::HashSet<String> = all_deps
+            .iter()
+            .map(|dependency| dependency.id.to_lowercase())
+            .collect();
+        let mut queue = all_deps.clone();
+        let mut entries: Vec<serde_json::Value> = Vec::new();
+        for wave in 0..=MAX_TRANSITIVE_DEPENDENCY_DEPTH {
+            if queue.is_empty() {
+                break;
             }
+            let round =
+                download_dependency_wave(workspace, source, &queue, &dest, &project_configs).await;
+            let downloaded: Vec<std::path::PathBuf> = round
+                .iter()
+                .filter(|entry| entry.get("status").and_then(|v| v.as_str()) == Some("ok"))
+                .filter_map(|entry| entry.get("path").and_then(|v| v.as_str()))
+                .map(std::path::PathBuf::from)
+                .collect();
+            entries.extend(round);
+            if downloaded.is_empty() {
+                break;
+            }
+            if wave == MAX_TRANSITIVE_DEPENDENCY_DEPTH {
+                tracing::warn!(
+                    depth = MAX_TRANSITIVE_DEPENDENCY_DEPTH,
+                    "Transitive dependency resolution stopped at the depth cap"
+                );
+                break;
+            }
+            let downloaded_manifests = read_manifests(&downloaded);
+            let mut available_paths = configured_packages.clone();
+            available_paths.extend(entries.iter().filter_map(|entry| {
+                entry
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .map(std::path::PathBuf::from)
+            }));
+            let available = read_manifests(&available_paths);
+            queue = next_transitive_dependencies(&downloaded_manifests, &available, &mut visited);
         }
-        .await
+        entries
     };
 
     let mut result = result;

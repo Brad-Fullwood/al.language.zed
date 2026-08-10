@@ -73,6 +73,13 @@ pub fn find_duplicates(
         );
     }
 
+    // Bigram maps are computed once per procedure rather than rebuilt inside
+    // the O(P²) pair loop, which re-hashed every procedure's tokens P times.
+    let bigram_index: Vec<BigramProfile> = procedures
+        .iter()
+        .map(|procedure| BigramProfile::new(&procedure.tokens))
+        .collect();
+
     let mut duplicates = Vec::new();
     for i in 0..procedures.len() {
         for j in (i + 1)..procedures.len() {
@@ -90,7 +97,7 @@ pub fn find_duplicates(
                 continue;
             }
 
-            let similarity = compute_similarity(&a.tokens, &b.tokens);
+            let similarity = bigram_index[i].similarity_to(&bigram_index[j]);
             let token_count =
                 ((a.tokens.len() + b.tokens.len()) as f32 / 2.0 * similarity) as usize;
 
@@ -215,31 +222,57 @@ fn collect_tokens(node: tree_sitter::Node, source: &[u8], tokens: &mut Vec<Strin
     }
 }
 
-/// Compute similarity using Jaccard-like coefficient on token bigrams.
-fn compute_similarity(a: &[String], b: &[String]) -> f32 {
-    if a.is_empty() && b.is_empty() {
-        return 1.0;
-    }
-    if a.is_empty() || b.is_empty() {
-        return 0.0;
-    }
+/// A procedure's token-bigram multiset, built once and reused for every pair
+/// comparison.
+struct BigramProfile {
+    empty_tokens: bool,
+    counts: HashMap<String, usize>,
+    total: usize,
+}
 
-    let a_bigrams = bigrams(a);
-    let b_bigrams = bigrams(b);
-
-    let total: usize = a_bigrams.values().sum::<usize>() + b_bigrams.values().sum::<usize>();
-    if total == 0 {
-        return 0.0;
-    }
-
-    let mut intersection = 0usize;
-    for (bigram, count) in &a_bigrams {
-        if let Some(&b_count) = b_bigrams.get(bigram) {
-            intersection += count.min(&b_count);
+impl BigramProfile {
+    fn new(tokens: &[String]) -> Self {
+        let counts = bigrams(tokens);
+        let total = counts.values().sum();
+        Self {
+            empty_tokens: tokens.is_empty(),
+            counts,
+            total,
         }
     }
 
-    2.0 * intersection as f32 / total as f32
+    /// Sørensen–Dice coefficient over the two bigram multisets.
+    fn similarity_to(&self, other: &Self) -> f32 {
+        if self.empty_tokens && other.empty_tokens {
+            return 1.0;
+        }
+        if self.empty_tokens || other.empty_tokens {
+            return 0.0;
+        }
+        let total = self.total + other.total;
+        if total == 0 {
+            return 0.0;
+        }
+        // Iterate the smaller map so the lookups run against the larger one.
+        let (small, large) = if self.counts.len() <= other.counts.len() {
+            (&self.counts, &other.counts)
+        } else {
+            (&other.counts, &self.counts)
+        };
+        let mut intersection = 0usize;
+        for (bigram, count) in small {
+            if let Some(&other_count) = large.get(bigram) {
+                intersection += (*count).min(other_count);
+            }
+        }
+        2.0 * intersection as f32 / total as f32
+    }
+}
+
+/// Compute similarity using a Jaccard-like coefficient on token bigrams.
+#[cfg(test)]
+fn compute_similarity(a: &[String], b: &[String]) -> f32 {
+    BigramProfile::new(a).similarity_to(&BigramProfile::new(b))
 }
 
 fn bigrams(tokens: &[String]) -> HashMap<String, usize> {

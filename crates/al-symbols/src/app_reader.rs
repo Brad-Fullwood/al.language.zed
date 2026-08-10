@@ -169,11 +169,30 @@ pub(crate) fn find_zip_offset(data: &[u8]) -> Option<usize> {
     // NAVX headers are tiny (40 bytes in current packages). A bounded fallback
     // supports historical/variable headers without scanning an entire 200 MB
     // package or accepting a coincidental PK signature inside header data.
+    //
+    // Each validation attempt runs a full EOCD backward scan (up to ~66 KB),
+    // so the number of *attempts* must be bounded too: a crafted file with
+    // hundreds of thousands of planted `PK\x03\x04` signatures would otherwise
+    // force gigabytes of scanning before rejection. Real variable headers put
+    // the archive within the first few signatures; anything needing more is
+    // rejected as malformed.
     const MAX_NAVX_HEADER_BYTES: usize = 1024 * 1024;
+    const MAX_ZIP_VALIDATION_ATTEMPTS: usize = 64;
     let search_end = data.len().min(MAX_NAVX_HEADER_BYTES).saturating_sub(3);
+    let mut attempts = 0usize;
     for i in MIN_HEADER_SIZE..search_end {
-        if &data[i..i + 4] == ZIP_MAGIC && is_valid_zip(data, i) {
-            return Some(i);
+        if &data[i..i + 4] == ZIP_MAGIC {
+            if is_valid_zip(data, i) {
+                return Some(i);
+            }
+            attempts += 1;
+            if attempts >= MAX_ZIP_VALIDATION_ATTEMPTS {
+                tracing::warn!(
+                    attempts,
+                    "giving up on .app ZIP-offset probing after too many false PK signatures"
+                );
+                return None;
+            }
         }
     }
     None
@@ -499,6 +518,24 @@ mod tests {
 
         let pkg = read_app_bytes(&data).unwrap();
         assert_eq!(pkg.name, "Test App");
+    }
+
+    #[test]
+    fn zip_offset_probing_is_bounded_against_planted_signatures() {
+        // A hostile file packed with false PK signatures must be rejected
+        // after a bounded number of expensive ZIP-validation attempts instead
+        // of forcing an EOCD scan at every one of them.
+        let mut data = Vec::new();
+        data.extend_from_slice(b"NAVX");
+        for _ in 0..1000 {
+            data.extend_from_slice(b"PK\x03\x04junk");
+        }
+        let started = std::time::Instant::now();
+        assert!(find_zip_offset(&data).is_none());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "bounded probing must reject quickly"
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@ name = "al-bc"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-description = "Business Central Dev API REST client (OAuth/Basic/NTLM), snapshot + profiler REST, and launch.json/.zed debug-config parsing"
+description = "Business Central Dev API REST client (OAuth/HTTP Basic — Windows auth is HTTP Basic, not NTLM), snapshot + profiler REST, and launch.json/.zed debug-config parsing"
 repository.workspace = true
 [dependencies]
 al-types = { path = "../al-types", version = "0.1.0" }
@@ -20,3 +20,4 @@ urlencoding = "2"
 wiremock = "0.6"
 tempfile = "3"
 tokio = { workspace = true, features = ["full"] }
+serial_test = "3"

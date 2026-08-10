@@ -289,6 +289,11 @@ pub struct DaemonClient {
     write_timeout: Duration,
     init_wait_total: Duration,
     init_retry_delay: Duration,
+    /// Request ids whose response deadline expired while the daemon was still
+    /// working. The daemon eventually writes those frames, so the next read
+    /// must drain them instead of mistaking one for the current request's
+    /// answer ("Response ID mismatch" on every subsequent call).
+    abandoned_ids: std::collections::HashSet<u64>,
 }
 
 impl DaemonClient {
@@ -381,6 +386,7 @@ impl DaemonClient {
             write_timeout: WRITE_TIMEOUT,
             init_wait_total: INIT_WAIT_TOTAL,
             init_retry_delay: INIT_RETRY_DELAY,
+            abandoned_ids: std::collections::HashSet::new(),
         })
     }
 
@@ -431,7 +437,16 @@ impl DaemonClient {
         let mut expected_id = self.send_request(method, &params)?;
 
         loop {
-            let response = self.read_response(timeout)?;
+            let response = match self.read_response(timeout) {
+                Ok(response) => response,
+                Err(error) => {
+                    // The daemon may still be working and will eventually write
+                    // this frame. Remember the id so the next request drains it
+                    // instead of reading it as its own (skewed) answer.
+                    self.abandoned_ids.insert(expected_id);
+                    return Err(error);
+                }
+            };
 
             if response.id != expected_id {
                 return Err(format!(
@@ -476,8 +491,29 @@ impl DaemonClient {
         Ok(id)
     }
 
+    /// Read the next response frame, discarding late answers to requests whose
+    /// deadline already expired.
+    ///
+    /// Without this drain a single timed-out request permanently skews the
+    /// connection: the abandoned response is still buffered, so the next
+    /// `request` reads it and fails with "Response ID mismatch", and so does
+    /// every request after it.
     fn read_response(&mut self, timeout: Duration) -> Result<Response, String> {
         let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let response = self.read_one_response(timeout, deadline)?;
+            if self.abandoned_ids.remove(&response.id) {
+                continue;
+            }
+            return Ok(response);
+        }
+    }
+
+    fn read_one_response(
+        &mut self,
+        timeout: Duration,
+        deadline: std::time::Instant,
+    ) -> Result<Response, String> {
         #[cfg(not(windows))]
         let line = read_bounded_line(&mut self.reader, MAX_RESPONSE_LINE, Some(deadline)).map_err(
             |e| {
@@ -640,9 +676,13 @@ mod tests {
                 let req: Request = serde_json::from_str(&line).expect("test");
                 let response = if count < fail_count {
                     count += 1;
-                    Response::error(req.id, -32603, "Workspace is initializing, try again")
+                    Response::error(
+                        req.dispatch_id(),
+                        -32603,
+                        "Workspace is initializing, try again",
+                    )
                 } else {
-                    Response::ok(req.id, serde_json::json!({"status": "ok"}))
+                    Response::ok(req.dispatch_id(), serde_json::json!({"status": "ok"}))
                 };
                 let mut json = serde_json::to_string(&response).expect("test");
                 json.push('\n');
@@ -732,6 +772,79 @@ mod tests {
         assert!(
             err_msg.contains("mismatch"),
             "Error should mention mismatch: {err_msg}"
+        );
+    }
+
+    /// A response whose request already timed out must be drained by id, not
+    /// mistaken for the answer to the request that follows it. Without the
+    /// drain the connection stays skewed forever ("Response ID mismatch").
+    #[test]
+    fn abandoned_response_is_drained_before_the_next_answer() {
+        fn mock_stale_then_fresh(sock_path: &Path) -> (UnixListener, std::thread::JoinHandle<()>) {
+            let listener = UnixListener::bind(sock_path).expect("test");
+            let listener_clone = listener.try_clone().expect("test");
+            let handle = std::thread::spawn(move || {
+                let (stream, _) = listener_clone.accept().expect("test");
+                let reader = std::io::BufReader::new(&stream);
+                let mut writer = &stream;
+                for line in reader.lines() {
+                    let line = line.expect("test");
+                    let req: Request = serde_json::from_str(&line).expect("parse");
+                    // The late answer to the abandoned request arrives first.
+                    for response in [
+                        Response::ok(1, serde_json::json!({"stale": true})),
+                        Response::ok(req.dispatch_id(), serde_json::json!({"fresh": true})),
+                    ] {
+                        let mut json = serde_json::to_string(&response).expect("test");
+                        json.push('\n');
+                        writer.write_all(json.as_bytes()).expect("test");
+                        writer.flush().expect("test");
+                    }
+                }
+            });
+            (listener, handle)
+        }
+
+        let sock = unique_sock();
+        let (_listener, _handle) = mock_stale_then_fresh(&sock);
+        let stream = UnixStream::connect(&sock).expect("test");
+        let mut client = DaemonClient::from_stream(test_stream(stream)).expect("test");
+        // Simulate a previous request (id 1) whose deadline expired.
+        client.next_id = 2;
+        client.abandoned_ids.insert(1);
+
+        let result = client
+            .request("ping", None)
+            .expect("the stale frame must be drained, not returned");
+        assert_eq!(result["fresh"], serde_json::json!(true));
+        assert!(
+            client.abandoned_ids.is_empty(),
+            "draining must clear the abandoned id"
+        );
+    }
+
+    /// A timed-out request must record its id so the eventual answer can be
+    /// drained instead of skewing the connection.
+    #[test]
+    fn timed_out_request_records_the_abandoned_id() {
+        let sock = unique_sock();
+        let listener = UnixListener::bind(&sock).expect("test");
+        let _handle = std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("test");
+            std::thread::sleep(Duration::from_secs(4));
+        });
+        let stream = UnixStream::connect(&sock).expect("test");
+        let mut client = DaemonClient::from_stream(test_stream(stream)).expect("test");
+        let error = client
+            .request_with_timeout("slow", None, Duration::from_millis(50))
+            .expect_err("an unanswered request must time out");
+        assert!(
+            error.contains("did not respond"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            client.abandoned_ids.contains(&1),
+            "the timed-out request id must be remembered for draining"
         );
     }
 
@@ -1057,7 +1170,7 @@ mod tests {
                 let line = line.expect("read");
                 let req: Request = serde_json::from_str(&line).expect("parse");
                 std::thread::sleep(Duration::from_millis(600));
-                let response = Response::ok(req.id, serde_json::json!({"slow": true}));
+                let response = Response::ok(req.dispatch_id(), serde_json::json!({"slow": true}));
                 let mut json = serde_json::to_string(&response).expect("ser");
                 json.push('\n');
                 writer.write_all(json.as_bytes()).expect("write");
@@ -1180,7 +1293,7 @@ mod cross_platform_tests {
             let request: Request = serde_json::from_str(line.trim()).expect("parse request");
 
             let response = Response::ok(
-                request.id,
+                request.dispatch_id(),
                 serde_json::json!({"transport": "local", "method": request.method}),
             );
             let mut frame = serde_json::to_vec(&response).expect("serialize response");

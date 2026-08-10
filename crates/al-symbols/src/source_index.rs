@@ -58,9 +58,10 @@ pub struct AppSourceIndex {
     /// Every `.al` archive path, in stable order.
     ///
     /// Retaining even paths whose lightweight header scan cannot identify an
-    /// object is deliberate: full dependency-source consumers must parse and
-    /// reject malformed or declaration-free AL rather than silently treating a
-    /// partially indexed package as complete.
+    /// object is deliberate: full dependency-source consumers parse each file
+    /// themselves and decide per file how to handle malformed or
+    /// declaration-free AL (al-workspace skips such files with a diagnostic)
+    /// instead of silently treating a partially indexed package as complete.
     source_paths: Vec<String>,
 }
 
@@ -129,9 +130,13 @@ impl AppSourceIndex {
             // object declaration beyond the fast header window. Only pay the
             // full read cost for entries where the first pass found no object;
             // otherwise name-based navigation would quietly lose valid
-            // ID-less or late-header sources.
-            let mut header = parse_object_header(&buf);
-            if header.is_none() && file.size() > buf.len() as u64 {
+            // ID-less or late-header sources. When the window is truncated, an
+            // unquoted name that runs into the window edge must not be
+            // accepted — the real name may continue past the boundary, and a
+            // truncated key would break name-based navigation.
+            let truncated = file.size() > buf.len() as u64;
+            let mut header = parse_object_header_inner(&buf, truncated);
+            if header.is_none() && truncated {
                 if file.size() > MAX_EXTRACTED_SOURCE_BYTES {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -392,6 +397,19 @@ pub fn clear_source_index_cache() {
 }
 
 fn parse_object_header(bytes: &[u8]) -> Option<(ObjectKind, i32, String)> {
+    parse_object_header_inner(bytes, false)
+}
+
+/// Parse the first object declaration header in `bytes`.
+///
+/// With `reject_name_at_end`, an *unquoted* name that terminates only because
+/// the buffer ends (no whitespace/`{` delimiter seen) is rejected: the caller
+/// passed a truncated window and the real name may continue past the boundary.
+/// Quoted names need no such guard — an unterminated quote already fails.
+fn parse_object_header_inner(
+    bytes: &[u8],
+    reject_name_at_end: bool,
+) -> Option<(ObjectKind, i32, String)> {
     let text = String::from_utf8_lossy(bytes);
     let s = text.as_ref();
     let b = s.as_bytes();
@@ -449,7 +467,13 @@ fn parse_object_header(bytes: &[u8]) -> Option<(ObjectKind, i32, String)> {
                 };
                 let mut k = next;
                 skip_ws_and_comments(b, &mut k);
-                if let Some((name, _)) = parse_name(s, b, k) {
+                if let Some((name, name_end)) = parse_name(s, b, k) {
+                    let unquoted = b.get(k) != Some(&b'"');
+                    if reject_name_at_end && unquoted && name_end == b.len() {
+                        // The name may straddle the truncated window edge;
+                        // force the caller's full-read fallback.
+                        return None;
+                    }
                     return Some((kind, id, name));
                 }
                 if kind == ObjectKind::DotNet {
@@ -1064,6 +1088,58 @@ mod tests {
         let extracted = idx.extract_source_for_entry(&e).unwrap().unwrap();
         assert_eq!(extracted.len(), src.len());
         assert_eq!(extracted, src);
+    }
+
+    #[test]
+    fn unquoted_name_straddling_header_window_is_indexed_with_its_full_name() {
+        // Craft a file whose unquoted object name is cut exactly by the
+        // 256 KiB fast-window boundary: the window ends mid-name, so a naive
+        // header parse would accept the truncated prefix as the object name
+        // and the full-read fallback would never run.
+        let name = "BoundaryStraddlingObjectName";
+        let declaration = format!("codeunit 50112 {name}\n{{\n}}\n");
+        // Position the declaration so the window edge lands inside the name.
+        let name_start_target = MAX_HEADER_BYTES - name.len() / 2;
+        let decl_offset = declaration.find(name).unwrap();
+        let mut src = String::new();
+        let filler = "// boundary filler comment line\n";
+        while src.len() + filler.len() <= name_start_target - decl_offset {
+            src.push_str(filler);
+        }
+        // Pad with a comment of exact length to hit the target offset.
+        let pad = name_start_target - decl_offset - src.len();
+        if pad > 0 {
+            assert!(pad >= 3, "padding must fit a comment marker");
+            src.push_str("//");
+            src.push_str(&"x".repeat(pad - 3));
+            src.push('\n');
+        }
+        src.push_str(&declaration);
+        let name_start = src.find(name).unwrap();
+        assert!(
+            name_start < MAX_HEADER_BYTES && name_start + name.len() > MAX_HEADER_BYTES,
+            "fixture must place the name across the header window boundary \
+             (starts at {name_start}, window is {MAX_HEADER_BYTES})"
+        );
+
+        let files = vec![("src/boundary.al".to_string(), src.into_bytes())];
+        let path = write_app_owned(&files);
+        let idx = AppSourceIndex::from_app_path(&path).unwrap();
+
+        let full = entry(ObjectKind::Codeunit, 50112, name);
+        assert_eq!(
+            idx.source_path_for_entry(&full),
+            Some("src/boundary.al"),
+            "the full name must be indexed via the full-read fallback"
+        );
+        let truncated = entry(ObjectKind::Codeunit, 0, &name[..name.len() / 2]);
+        assert_eq!(
+            idx.by_kind_name
+                .get(&(truncated.kind, truncated.name.to_lowercase()))
+                .map(String::as_str),
+            None,
+            "the truncated prefix must not be indexed as a name key"
+        );
     }
 
     #[test]

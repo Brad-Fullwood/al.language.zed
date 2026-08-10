@@ -71,14 +71,22 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    /// One unparsable file is skipped; the rest of the workspace is still
+    /// measured. Only index/cache incoherence fails the query.
     #[test]
-    fn workspace_complexity_rejects_malformed_or_incomplete_sources() {
+    fn workspace_complexity_skips_malformed_sources_but_rejects_incoherence() {
         let workspace = Workspace::new();
         workspace.file_index.add_file(
             PathBuf::from("/project/Broken.al"),
             "codeunit 50100 Broken { procedure Incomplete(".to_string(),
         );
-        assert!(workspace_complexity(&workspace, 10, 15).is_err());
+        workspace.file_index.add_file(
+            PathBuf::from("/project/Good.al"),
+            "codeunit 50101 Good { procedure Run() begin end; }".to_string(),
+        );
+        let measured = workspace_complexity(&workspace, 10, 15)
+            .expect("a broken scratch file must not fail the whole query");
+        assert_eq!(measured.len(), 1, "{measured:?}");
 
         let workspace = Workspace::new();
         workspace.file_index.files.insert(

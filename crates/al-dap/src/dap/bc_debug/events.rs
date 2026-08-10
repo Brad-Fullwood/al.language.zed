@@ -21,6 +21,11 @@ pub enum BcEvent {
         thread_id: i64,
         location: Option<BreakLocation>,
         frames: Vec<serde_json::Value>,
+        /// Non-empty message text carried by the Break callback's third
+        /// argument. BC only populates this when the break is a runtime
+        /// error (exception), so its presence is also what drives
+        /// `reason == "exception"`. `None` for ordinary breakpoint/step stops.
+        text: Option<String>,
     },
     Detached {
         terminate: bool,
@@ -108,6 +113,19 @@ fn break_location_from_args(arguments: &Option<Vec<serde_json::Value>>) -> Optio
     })
 }
 
+/// Extract the Break callback's message argument (`arguments[2]`), when it is
+/// a non-empty string. BC only sends a non-empty message here when the break
+/// was caused by a runtime error, so this doubles as the exception detector
+/// for `signalr_to_bc_event`.
+fn break_error_text(arguments: &Option<Vec<serde_json::Value>>) -> Option<String> {
+    let message = arguments.as_ref()?.get(2)?.as_str()?;
+    if message.is_empty() {
+        None
+    } else {
+        Some(message.to_string())
+    }
+}
+
 /// Convert a raw `SignalRMessage` (type-1 server callback) to a `BcEvent`.
 /// Extract an informative message from an `OnFatalDebuggerException` callback.
 ///
@@ -146,21 +164,42 @@ pub(super) fn fatal_exception_message(arguments: &Option<Vec<serde_json::Value>>
 }
 
 /// Returns `None` for messages that don't need to be forwarded to the DAP layer.
-pub(super) fn signalr_to_bc_event(msg: &SignalRMessage) -> Option<BcEvent> {
+///
+/// `expecting_step` tells the Break-reason derivation whether the most recent
+/// client-driven action was a step (over/in/out) rather than a plain
+/// continue; the caller (`BcDebugSession`) tracks this since it alone knows
+/// which `SetBreakpointResponse` exit reason was last sent to BC.
+pub(super) fn signalr_to_bc_event(msg: &SignalRMessage, expecting_step: bool) -> Option<BcEvent> {
     let target = msg.target.as_deref()?;
     match target {
-        "Break" => Some(BcEvent::Break {
-            reason: "breakpoint".to_string(),
-            thread_id: 1,
-            location: break_location_from_args(&msg.arguments),
-            frames: msg
-                .arguments
-                .as_ref()
-                .and_then(|args| args.get(1))
-                .and_then(|frames| frames.as_array())
-                .cloned()
-                .unwrap_or_default(),
-        }),
+        "Break" => {
+            let text = break_error_text(&msg.arguments);
+            // BC's Break callback doesn't distinguish breakpoint/step/error
+            // stops itself — derive it: a non-empty message means the break
+            // is a runtime error (exception); otherwise a step completes
+            // "step" if the last client action was a step request, else it's
+            // an ordinary "breakpoint" stop.
+            let reason = if text.is_some() {
+                "exception"
+            } else if expecting_step {
+                "step"
+            } else {
+                "breakpoint"
+            };
+            Some(BcEvent::Break {
+                reason: reason.to_string(),
+                thread_id: 1,
+                location: break_location_from_args(&msg.arguments),
+                frames: msg
+                    .arguments
+                    .as_ref()
+                    .and_then(|args| args.get(1))
+                    .and_then(|frames| frames.as_array())
+                    .cloned()
+                    .unwrap_or_default(),
+                text,
+            })
+        }
         "OnDetachedFromConnection" => {
             let terminate = msg
                 .arguments
@@ -232,7 +271,7 @@ mod tests {
             result: None,
             error: None,
         };
-        match signalr_to_bc_event(&msg) {
+        match signalr_to_bc_event(&msg, false) {
             Some(BcEvent::FatalError { message }) => {
                 assert!(message.contains("arguments field absent"), "{message}");
             }
@@ -256,20 +295,76 @@ mod tests {
 
     #[test]
     fn signalr_to_bc_event_break_maps_to_breakpoint_on_thread_1() {
-        // A "Break" callback always yields a Break event with reason
-        // "breakpoint" on AL's single thread (id 1), regardless of arguments.
+        // A "Break" callback with no message and no pending step yields a
+        // Break event with reason "breakpoint" on AL's single thread (id 1).
         let msg = invocation(Some("Break"), None);
-        match signalr_to_bc_event(&msg) {
+        match signalr_to_bc_event(&msg, false) {
             Some(BcEvent::Break {
                 reason,
                 thread_id,
                 location,
+                text,
                 ..
             }) => {
                 assert_eq!(reason, "breakpoint");
                 assert_eq!(thread_id, 1);
                 // No StackFrame[] argument → no location.
                 assert_eq!(location, None);
+                assert_eq!(text, None);
+            }
+            other => panic!("expected Break, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn signalr_to_bc_event_break_reports_step_when_a_step_was_pending() {
+        // The same callback, but the caller (BcDebugSession) reports that the
+        // last client-driven action was a step — the reason must be "step",
+        // not "breakpoint".
+        let msg = invocation(Some("Break"), None);
+        match signalr_to_bc_event(&msg, true) {
+            Some(BcEvent::Break { reason, text, .. }) => {
+                assert_eq!(reason, "step");
+                assert_eq!(text, None);
+            }
+            other => panic!("expected Break, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn signalr_to_bc_event_break_reports_exception_and_surfaces_message() {
+        // A non-empty message argument means BC broke on a runtime error —
+        // reason must be "exception" (even if a step was pending) and the
+        // message text must be carried through for the client to display.
+        let args = vec![
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!("Division by zero"),
+        ];
+        let msg = invocation(Some("Break"), Some(args));
+        match signalr_to_bc_event(&msg, true) {
+            Some(BcEvent::Break { reason, text, .. }) => {
+                assert_eq!(reason, "exception");
+                assert_eq!(text.as_deref(), Some("Division by zero"));
+            }
+            other => panic!("expected Break, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn signalr_to_bc_event_break_empty_message_is_not_an_exception() {
+        // An empty-string message (the common case) must not be treated as
+        // exception text.
+        let args = vec![
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!(""),
+        ];
+        let msg = invocation(Some("Break"), Some(args));
+        match signalr_to_bc_event(&msg, false) {
+            Some(BcEvent::Break { reason, text, .. }) => {
+                assert_eq!(reason, "breakpoint");
+                assert_eq!(text, None);
             }
             other => panic!("expected Break, got {other:?}"),
         }
@@ -292,10 +387,10 @@ mod tests {
                     "SourcePosition": { "Line": 1, "Column": 0 }
                 }
             ]),
-            serde_json::json!("stopped"),
+            serde_json::json!(""),
         ];
         let msg = invocation(Some("Break"), Some(args));
-        match signalr_to_bc_event(&msg) {
+        match signalr_to_bc_event(&msg, false) {
             Some(BcEvent::Break { location, .. }) => {
                 let loc = location.expect("location extracted from top StackFrame");
                 assert_eq!(loc.line, 42);
@@ -319,7 +414,7 @@ mod tests {
             serde_json::json!(""),
         ];
         let msg = invocation(Some("Break"), Some(args));
-        match signalr_to_bc_event(&msg) {
+        match signalr_to_bc_event(&msg, false) {
             Some(BcEvent::Break { location, .. }) => {
                 let loc = location.expect("location extracted");
                 assert_eq!(loc.line, 7);
@@ -336,7 +431,7 @@ mod tests {
             Some("OnDetachedFromConnection"),
             Some(vec![serde_json::json!(true)]),
         );
-        match signalr_to_bc_event(&msg) {
+        match signalr_to_bc_event(&msg, false) {
             Some(BcEvent::Detached { terminate }) => assert!(terminate),
             other => panic!("expected Detached, got {other:?}"),
         }
@@ -349,7 +444,7 @@ mod tests {
             Some("OnDetachedFromConnection"),
             Some(vec![serde_json::json!(false)]),
         );
-        match signalr_to_bc_event(&msg) {
+        match signalr_to_bc_event(&msg, false) {
             Some(BcEvent::Detached { terminate }) => assert!(!terminate),
             other => panic!("expected Detached, got {other:?}"),
         }
@@ -365,7 +460,7 @@ mod tests {
             Some(vec![serde_json::json!("not a bool")]),
         ] {
             let msg = invocation(Some("OnDetachedFromConnection"), args.clone());
-            match signalr_to_bc_event(&msg) {
+            match signalr_to_bc_event(&msg, false) {
                 Some(BcEvent::Detached { terminate }) => {
                     assert!(!terminate, "args {args:?} should default terminate=false")
                 }
@@ -381,7 +476,7 @@ mod tests {
         for target in ["IsAlive", "OnAttachedToConnection"] {
             let msg = invocation(Some(target), None);
             assert!(
-                signalr_to_bc_event(&msg).is_none(),
+                signalr_to_bc_event(&msg, false).is_none(),
                 "{target} must not produce a BcEvent"
             );
         }
@@ -392,7 +487,7 @@ mod tests {
         // An unrecognised callback is preserved verbatim as Other so it can be
         // logged without losing the target name.
         let msg = invocation(Some("SomeFutureCallback"), None);
-        match signalr_to_bc_event(&msg) {
+        match signalr_to_bc_event(&msg, false) {
             Some(BcEvent::Other { target }) => assert_eq!(target, "SomeFutureCallback"),
             other => panic!("expected Other, got {other:?}"),
         }
@@ -402,7 +497,7 @@ mod tests {
     fn signalr_to_bc_event_missing_target_is_dropped() {
         // Type-3/6 frames carry no target; they must not be forwarded.
         let msg = invocation(None, None);
-        assert!(signalr_to_bc_event(&msg).is_none());
+        assert!(signalr_to_bc_event(&msg, false).is_none());
     }
 
     #[test]

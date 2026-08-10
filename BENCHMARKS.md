@@ -6,7 +6,10 @@ against the Microsoft AL toolchain shipped in `ms-dynamics-smb.al`
 under [`benchmarks/results/published/2026-07-26/`](benchmarks/results/published/2026-07-26/).
 
 These measurements were made on a 13th Gen Intel Core i5-1345U with 12 logical
-CPUs and 32 GiB RAM, Linux 7.1.4, and a pinned six-package BC 28.1 symbol set.
+CPUs and 32 GiB RAM, running kernel `7.1.4-1-cachyos-bore-lto` (a CachyOS custom
+build, not a mainline Linux release — see the `kernel`/`os` fields recorded
+verbatim in [`benchmarks/results/published/2026-07-26/`](benchmarks/results/published/2026-07-26/)),
+and a pinned six-package BC 28.1 symbol set.
 Accuracy, package emission, and symbol-index results identify clean commit
 `d21d0475651bff5597d14ec5974e2f9610ab76aa`; LSP results identify clean commit
 `50d3bcc85614ee8fdd87ca2171e834181ad89d3b`.

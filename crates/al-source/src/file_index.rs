@@ -149,15 +149,22 @@ pub struct FileIndex {
     /// via the impl methods. Read via
     /// `object_path` / `object_path_of_kind` / `object_count`.
     pub objects: DashMap<String, Vec<ObjectEntry>>,
-    /// File path → lowercase object name (reverse index for O(1) cleanup).
+    /// File path → lowercase object names declared in the file (reverse
+    /// index for O(1) cleanup). AL legally allows multiple objects per file.
     /// Invariant-coupled to `objects`.
-    pub(crate) path_to_object: DashMap<PathBuf, String>,
+    pub(crate) path_to_object: DashMap<PathBuf, Vec<String>>,
     /// File path → (mtime, size) snapshot taken at last index time.
     /// Used by `incremental_scan` to detect changed files.
     pub(crate) file_metadata: DashMap<PathBuf, FileMetadata>,
-    /// File path → cached object declaration metadata (avoids re-parsing for workspace/symbol).
+    /// File path → cached metadata of the *first* object declaration
+    /// (avoids re-parsing for workspace/symbol).
     /// Public — al-lsp's DAP path needs object_id ↔ file_path lookups.
+    /// Files can declare several objects; see [`Self::object_infos`] for all
+    /// of them.
     pub object_info: DashMap<PathBuf, CachedObjectInfo>,
+    /// File path → cached metadata for *every* object declared in the file,
+    /// in document order. `object_info` holds the first entry of this list.
+    pub object_infos: DashMap<PathBuf, Vec<CachedObjectInfo>>,
     /// Parsed files stored as coherent `(text, tree)` pairs. Mutate only via the
     /// implementation methods to keep this cache consistent with `files`.
     pub(crate) file_trees: DashMap<PathBuf, std::sync::Arc<(String, tree_sitter::Tree)>>,
@@ -188,6 +195,7 @@ impl FileIndex {
             path_to_object: DashMap::new(),
             file_metadata: DashMap::new(),
             object_info: DashMap::new(),
+            object_infos: DashMap::new(),
             file_trees: DashMap::new(),
             file_symbols: DashMap::new(),
             procedures: DashMap::new(),
@@ -207,6 +215,7 @@ impl FileIndex {
         self.path_to_object.clear();
         self.file_metadata.clear();
         self.object_info.clear();
+        self.object_infos.clear();
         self.file_trees.clear();
         self.file_symbols.clear();
         self.procedures.clear();
@@ -226,6 +235,9 @@ impl FileIndex {
         }
         for (key, value) in replacement.object_info {
             self.object_info.insert(key, value);
+        }
+        for (key, value) in replacement.object_infos {
+            self.object_infos.insert(key, value);
         }
         for (key, value) in replacement.file_trees {
             self.file_trees.insert(key, value);
@@ -284,6 +296,22 @@ impl FileIndex {
                         + entry.value().kind.capacity()
                         + entry.value().name.capacity()
                         + std::mem::size_of_val(entry.value())
+                })
+                .sum::<usize>()
+            + self
+                .object_infos
+                .iter()
+                .map(|entry| {
+                    entry.key().as_os_str().len()
+                        + entry
+                            .value()
+                            .iter()
+                            .map(|info| {
+                                info.kind.capacity()
+                                    + info.name.capacity()
+                                    + std::mem::size_of_val(info)
+                            })
+                            .sum::<usize>()
                 })
                 .sum::<usize>()
             + self
@@ -438,10 +466,12 @@ impl FileIndex {
         if let Some(m) = meta {
             self.file_metadata.insert(path.clone(), m);
         }
-        // Remove the old object-name mapping for this path (if any), so
-        // stale entries don't linger when the object is renamed/replaced.
-        if let Some((_, old_obj_name)) = self.path_to_object.remove(&path) {
-            self.remove_owned_object_mapping(&old_obj_name, &path);
+        // Remove the old object-name mappings for this path (if any), so
+        // stale entries don't linger when objects are renamed/replaced.
+        if let Some((_, old_obj_names)) = self.path_to_object.remove(&path) {
+            for old_obj_name in old_obj_names {
+                self.remove_owned_object_mapping(&old_obj_name, &path);
+            }
         }
         self.remove_procedures_for_file(&path);
 
@@ -457,8 +487,10 @@ impl FileIndex {
     /// The caller is responsible for removing old object-name mappings via
     /// `path_to_object` and cleaning up stale procedure entries before calling this.
     pub fn add_file_with_tree(&self, path: PathBuf, content: String, tree: tree_sitter::Tree) {
-        if let Some((_, old_obj_name)) = self.path_to_object.remove(&path) {
-            self.remove_owned_object_mapping(&old_obj_name, &path);
+        if let Some((_, old_obj_names)) = self.path_to_object.remove(&path) {
+            for old_obj_name in old_obj_names {
+                self.remove_owned_object_mapping(&old_obj_name, &path);
+            }
         }
         self.remove_procedures_for_file(&path);
 
@@ -490,32 +522,36 @@ impl FileIndex {
             path.clone(),
             std::sync::Arc::new((content.clone(), tree.clone())),
         );
-        if let Some(obj_info) = al_syntax::find_object_declaration(tree, &content) {
-            let obj_name = obj_info.name.to_lowercase();
-            let kind = obj_info.kind.clone();
-            // Record this owner under its name, replacing any prior entry from
-            // this same path (re-index) or of the same kind (redefinition) —
-            // owners of *other* kinds are preserved so they never collapse.
-            {
+        let infos = collect_object_declarations(tree, &content);
+        if infos.is_empty() {
+            self.object_info.remove(&path);
+            self.object_infos.remove(&path);
+        } else {
+            let mut declared_names = Vec::with_capacity(infos.len());
+            for info in &infos {
+                if info.name.is_empty() {
+                    continue;
+                }
+                let obj_name = info.name.to_lowercase();
+                // Record this owner under its name, replacing any prior entry
+                // from this same path (re-index) or of the same kind
+                // (redefinition) — owners of *other* kinds are preserved so
+                // they never collapse.
                 let mut owners = self.objects.entry(obj_name.clone()).or_default();
-                owners.retain(|e| e.path != path && !e.kind.eq_ignore_ascii_case(&kind));
+                owners.retain(|e| e.path != path && !e.kind.eq_ignore_ascii_case(&info.kind));
                 owners.push(ObjectEntry {
-                    kind,
+                    kind: info.kind.clone(),
                     path: path.clone(),
                 });
+                drop(owners);
+                declared_names.push(obj_name);
             }
-            self.path_to_object.insert(path.clone(), obj_name);
-            self.object_info.insert(
-                path.clone(),
-                CachedObjectInfo {
-                    kind: obj_info.kind,
-                    id: obj_info.id,
-                    name: obj_info.name,
-                    range: obj_info.range,
-                },
-            );
-        } else {
-            self.object_info.remove(&path);
+            self.path_to_object.insert(path.clone(), declared_names);
+            // `object_info` keeps its historical "the file's object" meaning:
+            // the first declaration in document order.
+            self.object_info
+                .insert(path.clone(), infos.first().expect("non-empty").clone());
+            self.object_infos.insert(path.clone(), infos);
         }
 
         // Index procedure/event names for O(1) go-to-definition.
@@ -563,9 +599,12 @@ impl FileIndex {
         self.file_trees.remove(path);
         self.file_symbols.remove(path);
         self.object_info.remove(path);
+        self.object_infos.remove(path);
         self.remove_procedures_for_file(path);
-        if let Some((_, obj_name)) = self.path_to_object.remove(path) {
-            self.remove_owned_object_mapping(&obj_name, path);
+        if let Some((_, obj_names)) = self.path_to_object.remove(path) {
+            for obj_name in obj_names {
+                self.remove_owned_object_mapping(&obj_name, path);
+            }
         }
     }
 
@@ -648,6 +687,59 @@ impl FileIndex {
     pub fn is_empty(&self) -> bool {
         self.files.is_empty()
     }
+}
+
+/// Extract cached metadata for *every* top-level object declaration in a
+/// parsed AL file, in document order.
+///
+/// AL legally allows multiple objects per `.al` file;
+/// `al_syntax::find_object_declaration` returns only the first, which made
+/// all subsequent objects invisible to name lookup. Falls back to the
+/// single-object helper for grammar variants that expose the object type
+/// directly at the root.
+fn collect_object_declarations(tree: &tree_sitter::Tree, content: &str) -> Vec<CachedObjectInfo> {
+    let root = tree.root_node();
+    let source = content.as_bytes();
+    let mut infos = Vec::new();
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if child.kind() != "object_declaration" {
+            continue;
+        }
+        let mut kind = String::new();
+        if let Some(kind_node) = child.child_by_field_name("kind") {
+            kind = kind_node.kind().to_string();
+            if kind == "object_keyword" {
+                if let Ok(text) = kind_node.utf8_text(source) {
+                    kind = text.to_lowercase();
+                }
+            } else {
+                kind = kind.strip_prefix("kw_").unwrap_or(&kind).to_string();
+            }
+        }
+        let id = child
+            .child_by_field_name("id")
+            .and_then(|node| node.utf8_text(source).ok())
+            .and_then(|text| text.parse::<i64>().ok());
+        let name = al_syntax::extract_object_name(child, source).unwrap_or_default();
+        infos.push(CachedObjectInfo {
+            kind,
+            id,
+            name,
+            range: child.range(),
+        });
+    }
+    if infos.is_empty() {
+        if let Some(info) = al_syntax::find_object_declaration(tree, content) {
+            infos.push(CachedObjectInfo {
+                kind: info.kind,
+                id: info.id,
+                name: info.name,
+                range: info.range,
+            });
+        }
+    }
+    infos
 }
 
 /// Read one on-disk AL source with the same size, UTF-8, file-type, and
@@ -1275,6 +1367,80 @@ mod tests {
         assert!(index.object_path_of_kind("foo", &["enum"]).is_none());
     }
 
+    /// AL allows several objects in one `.al` file; every one of them must be
+    /// visible to name lookup, not just the first.
+    #[test]
+    fn multiple_objects_in_one_file_are_all_indexed() {
+        let index = FileIndex::new();
+        let path = PathBuf::from("/multi/Pair.al");
+        let content = r#"table 50100 "First Table"
+{
+    fields { field(1; "No."; Code[20]) { } }
+}
+
+codeunit 50101 "Second Codeunit"
+{
+    procedure SecondProc()
+    begin
+    end;
+}
+"#;
+        index.add_file(path.clone(), content.to_string());
+
+        assert_eq!(
+            index.find_by_object_name("First Table").as_deref(),
+            Some(path.as_path())
+        );
+        assert_eq!(
+            index.find_by_object_name("Second Codeunit").as_deref(),
+            Some(path.as_path()),
+            "objects after the first must be name-resolvable"
+        );
+        assert_eq!(index.object_count(), 2);
+
+        // `object_info` keeps its first-object meaning; `object_infos` has all.
+        let first = index.object_info.get(&path).unwrap();
+        assert_eq!(first.name, "First Table");
+        drop(first);
+        let all = index.object_infos.get(&path).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[1].name, "Second Codeunit");
+        assert_eq!(all[1].id, Some(50101));
+        drop(all);
+
+        // Procedures from the second object are indexed too.
+        assert!(index.lookup_procedures("SecondProc").is_some());
+
+        // Removal cleans every object's mapping.
+        index.remove_file(&path);
+        assert!(index.find_by_object_name("First Table").is_none());
+        assert!(index.find_by_object_name("Second Codeunit").is_none());
+        assert_eq!(index.object_count(), 0);
+    }
+
+    /// Re-indexing a multi-object file must clear stale names for all of its
+    /// previous objects.
+    #[test]
+    fn reindex_multi_object_file_clears_all_old_names() {
+        let index = FileIndex::new();
+        let path = PathBuf::from("/multi/Renamed.al");
+        index.add_file(
+            path.clone(),
+            "table 1 OldTable { }\ncodeunit 2 OldCodeunit { }\n".to_string(),
+        );
+        assert_eq!(index.object_count(), 2);
+
+        index.add_file(
+            path.clone(),
+            "table 1 NewTable { }\ncodeunit 2 NewCodeunit { }\n".to_string(),
+        );
+        assert!(index.find_by_object_name("OldTable").is_none());
+        assert!(index.find_by_object_name("OldCodeunit").is_none());
+        assert!(index.find_by_object_name("NewTable").is_some());
+        assert!(index.find_by_object_name("NewCodeunit").is_some());
+        assert_eq!(index.object_count(), 2);
+    }
+
     #[test]
     fn reindex_object_rename_clears_old_name() {
         let index = FileIndex::new();
@@ -1333,9 +1499,12 @@ mod tests {
 
         index.add_file(path.clone(), content);
 
-        let obj_name = index.path_to_object.get(&path);
-        assert!(obj_name.is_some());
-        assert_eq!(obj_name.unwrap().value(), "reverse test");
+        let obj_names = index.path_to_object.get(&path);
+        assert!(obj_names.is_some());
+        assert_eq!(
+            obj_names.unwrap().value(),
+            &vec!["reverse test".to_string()]
+        );
     }
 
     #[test]

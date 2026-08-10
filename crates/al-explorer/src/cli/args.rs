@@ -156,12 +156,13 @@ Examples:
     /// Format AL code
     Format {
         /// File to format (use --stdin to read from stdin instead)
+        #[arg(conflicts_with_all = ["stdin", "all"])]
         file: Option<String>,
         /// Check formatting without modifying (exit 1 if different)
         #[arg(long)]
         check: bool,
         /// Read from stdin instead of a file
-        #[arg(long)]
+        #[arg(long, conflicts_with = "all")]
         stdin: bool,
         /// Format all .al files in the project directory
         #[arg(long)]
@@ -531,7 +532,7 @@ Examples:
         #[arg(long)]
         codeunit: Option<i64>,
         /// Filter to a specific method name (requires --codeunit)
-        #[arg(long)]
+        #[arg(long, requires = "codeunit")]
         method: Option<String>,
     },
     /// Run all discovered tests, optionally writing JUnit/Cobertura output
@@ -659,4 +660,85 @@ Examples:
         #[arg(long)]
         dry_run: bool,
     },
+}
+
+#[cfg(test)]
+mod clap_wiring_tests {
+    use super::{Cli, Commands};
+    use clap::Parser;
+
+    /// clap's own dependency graph is exercised through `try_parse_from` so a
+    /// future edit that loosens `requires`/`conflicts_with` is caught here
+    /// rather than only by a user hitting undefined filtering behavior at
+    /// runtime.
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        let mut full = vec!["al-explorer"];
+        full.extend_from_slice(args);
+        Cli::try_parse_from(full)
+    }
+
+    #[test]
+    fn test_results_method_without_codeunit_is_rejected() {
+        assert!(
+            parse(&["test-results", "--method", "MyTest"]).is_err(),
+            "--method without --codeunit must be a clap parse error"
+        );
+    }
+
+    #[test]
+    fn test_results_method_with_codeunit_is_accepted() {
+        let cli = parse(&["test-results", "--codeunit", "50100", "--method", "MyTest"])
+            .expect("--method with --codeunit must parse");
+        match cli.command {
+            Commands::TestResults { codeunit, method } => {
+                assert_eq!(codeunit, Some(50100));
+                assert_eq!(method.as_deref(), Some("MyTest"));
+            }
+            _ => panic!("expected TestResults, got a different command"),
+        }
+    }
+
+    #[test]
+    fn test_results_codeunit_alone_is_accepted() {
+        assert!(parse(&["test-results", "--codeunit", "50100"]).is_ok());
+    }
+
+    #[test]
+    fn format_file_and_all_conflict() {
+        assert!(
+            parse(&["format", "Foo.al", "--all"]).is_err(),
+            "a positional file together with --all must be a clap conflict"
+        );
+    }
+
+    #[test]
+    fn format_stdin_and_all_conflict() {
+        assert!(
+            parse(&["format", "--stdin", "--all"]).is_err(),
+            "--stdin together with --all must be a clap conflict"
+        );
+    }
+
+    #[test]
+    fn format_file_and_stdin_conflict() {
+        assert!(
+            parse(&["format", "Foo.al", "--stdin"]).is_err(),
+            "a positional file together with --stdin must be a clap conflict"
+        );
+    }
+
+    #[test]
+    fn format_file_alone_is_accepted() {
+        assert!(parse(&["format", "Foo.al"]).is_ok());
+    }
+
+    #[test]
+    fn format_stdin_alone_is_accepted() {
+        assert!(parse(&["format", "--stdin"]).is_ok());
+    }
+
+    #[test]
+    fn format_all_alone_is_accepted() {
+        assert!(parse(&["format", "--all"]).is_ok());
+    }
 }

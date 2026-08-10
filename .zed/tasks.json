@@ -24,11 +24,6 @@
     "reveal": "always"
   },
   {
-    "label": "Extension: real-project validation gate",
-    "command": "scripts/validate-real-projects.sh",
-    "reveal": "always"
-  },
-  {
     "label": "Extension: build WASM (zed-al)",
     "command": "cargo",
     "args": ["build", "-p", "zed-al", "--target", "wasm32-wasip2", "--release"],

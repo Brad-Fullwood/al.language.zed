@@ -255,16 +255,18 @@ jobs:
       - name: List collected artifacts
         run: find artifacts/ -type f | sort
 
-      # Record archive checksums under the *released asset* name. Each artifact
-      # downloads into its own `artifacts/<name>/` directory, but the release
-      # uploads assets flat (basename only), so a directory-prefixed path here
-      # would make `sha256sum -c checksums.txt` fail for every entry after the
-      # user downloads the assets side by side.
+      # Record archive AND extension-package checksums under the *released
+      # asset* name. Each artifact downloads into its own `artifacts/<name>/`
+      # directory, but the release uploads assets flat (basename only), so a
+      # directory-prefixed path here would make `sha256sum -c checksums.txt`
+      # fail for every entry after the user downloads the assets side by side.
+      # extension.wasm/extension.toml are released assets too (see the `files:`
+      # list below) and must be verifiable exactly like the platform archives.
       - name: Generate SHA256 checksums
         run: |
           cd artifacts
           : > checksums.txt
-          find . \( -name '*.tar.gz' -o -name '*.zip' \) -type f -print0 \
+          find . \( -name '*.tar.gz' -o -name '*.zip' -o -name 'extension.wasm' -o -name 'extension.toml' \) -type f -print0 \
             | sort -z \
             | while IFS= read -r -d '' archive; do
                 ( cd "$(dirname "$archive")" && sha256sum "$(basename "$archive")" )

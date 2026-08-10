@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use super::index::SymbolIndex;
+use super::index::{fold_name, SymbolIndex};
 use super::model::{ComposedObject, ObjectKind, SymbolEntry};
 
 /// Get a composed view of an object by merging the base with all extensions.
@@ -29,9 +29,27 @@ pub fn get_composed(index: &SymbolIndex, kind: ObjectKind, name: &str) -> Option
         return None;
     }
 
-    // Find the base object — take Arc directly to avoid cloning the full struct
-    let candidates = index.get_by_name(name);
-    let base: Arc<SymbolEntry> = candidates.into_iter().find(|e| e.kind == kind)?;
+    // Find the base object — take Arc directly to avoid cloning the full
+    // struct. When the same object exists both in a loaded package and in the
+    // workspace (or in two packages), the choice must not depend on load
+    // order: prefer the workspace declaration (it is what the user edits),
+    // then fall back to a deterministic package ordering.
+    let mut candidates: Vec<Arc<SymbolEntry>> = index
+        .get_by_name(name)
+        .into_iter()
+        .filter(|e| e.kind == kind)
+        .collect();
+    candidates.sort_by(|a, b| {
+        let a_workspace = is_workspace_entry(a);
+        let b_workspace = is_workspace_entry(b);
+        b_workspace
+            .cmp(&a_workspace)
+            // Fold through the index's canonical helper so this tiebreak can
+            // never disagree with the name-keyed maps it mirrors.
+            .then_with(|| fold_name(&a.package).cmp(&fold_name(&b.package)))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    let base: Arc<SymbolEntry> = candidates.into_iter().next()?;
 
     let extensions = index.get_extensions_of(name);
     let relevant_extensions: Vec<Arc<SymbolEntry>> = extensions
@@ -40,6 +58,13 @@ pub fn get_composed(index: &SymbolIndex, kind: ObjectKind, name: &str) -> Option
         .collect();
 
     Some(compose(base, relevant_extensions))
+}
+
+/// Whether an entry was contributed by the open workspace rather than a
+/// loaded `.app` package (see `source_availability::classify`).
+fn is_workspace_entry(entry: &SymbolEntry) -> bool {
+    entry.package.eq_ignore_ascii_case("workspace")
+        || entry.package.eq_ignore_ascii_case("(workspace)")
 }
 
 /// Compose a base object with a set of extensions.
@@ -685,5 +710,65 @@ mod tests {
             "Warm compose took {}µs",
             warm_elapsed.as_micros()
         );
+    }
+
+    /// When the same object exists both in a package and in the workspace,
+    /// the composed base must be the workspace declaration regardless of the
+    /// order the two were registered in.
+    #[test]
+    fn base_choice_prefers_workspace_over_package_regardless_of_load_order() {
+        for workspace_first in [true, false] {
+            let index = SymbolIndex::new();
+            let mut package_entry = make_table(18, "Customer", Vec::new(), Vec::new());
+            package_entry.package = "Base Application".to_string();
+            let mut workspace_entry = make_table(18, "Customer", Vec::new(), Vec::new());
+            workspace_entry.package = "workspace".to_string();
+            workspace_entry.methods = vec![MethodSymbol {
+                name: "WorkspaceOnly".into(),
+                parameters: Vec::new(),
+                return_type: None,
+                attributes: Vec::new(),
+                is_local: false,
+            }];
+
+            if workspace_first {
+                index.add_entries(&[workspace_entry, package_entry]);
+            } else {
+                index.add_entries(&[package_entry, workspace_entry]);
+            }
+
+            let composed = get_composed(&index, ObjectKind::Table, "Customer")
+                .expect("composed view for duplicated object");
+            assert_eq!(
+                composed.base.package, "workspace",
+                "workspace declaration must win (workspace_first={workspace_first})"
+            );
+            assert_eq!(composed.all_methods.len(), 1);
+        }
+    }
+
+    /// Two packages declaring the same object must produce a deterministic
+    /// base choice independent of registration order.
+    #[test]
+    fn base_choice_between_two_packages_is_deterministic() {
+        for reversed in [false, true] {
+            let index = SymbolIndex::new();
+            let mut first = make_table(18, "Customer", Vec::new(), Vec::new());
+            first.package = "Alpha Vendor".to_string();
+            let mut second = make_table(18, "Customer", Vec::new(), Vec::new());
+            second.package = "Beta Vendor".to_string();
+
+            if reversed {
+                index.add_entries(&[second, first]);
+            } else {
+                index.add_entries(&[first, second]);
+            }
+
+            let composed = get_composed(&index, ObjectKind::Table, "Customer").unwrap();
+            assert_eq!(
+                composed.base.package, "Alpha Vendor",
+                "base choice must not depend on load order (reversed={reversed})"
+            );
+        }
     }
 }

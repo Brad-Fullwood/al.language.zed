@@ -35,7 +35,11 @@ concurrent in-memory maps.
 by lowercase name, by kind+id, by kind, by extension target (`extends`), and a composed-object cache.
 Common queries become direct map lookups. Package ZIP/JSON parsing runs in parallel, while the much
 shorter index commit is applied in input order; reloading a package therefore replaces its previous
-generation deterministically instead of racing duplicate entries into secondary indexes. Search is
+generation deterministically instead of racing duplicate entries into secondary indexes. Package
+generations are keyed by a canonical identity — the manifest's app GUID, with the folded display
+name as fallback — so two vendors' apps that merely share a display name keep independent symbol
+generations and never evict each other on (re)load; name-based path lookups over an ambiguous
+display name resolve deterministically. Search is
 stable and relevance-ranked (exact name, prefix, then substring), with synthetic pseudo-types kept
 out of user-facing results; a lazily-built ordered name catalogue lets bounded searches stop as soon
 as the requested deterministic window is full, without taxing package load. A pre-computed 30-entry
@@ -66,7 +70,11 @@ filename + FNV-1a path hash. The cache is validated against the `.app`'s mtime (
 and size, plus a `CACHE_SCHEMA_VERSION`; any mismatch silently re-parses. Writes are atomic (temp +
 rename), the cache directory is locked to 0700, and orphaned temp files from crashed writers are
 cleaned up. Warm starts therefore skip re-reading and re-parsing large `SymbolReference.json`
-payloads (the Base Application alone is ~6 MB).
+payloads (the Base Application alone is ~6 MB). A bounded, best-effort garbage collection runs once
+per process: entries untouched for 30 days are deleted (orphans from removed/renamed package paths
+included) and the directory is capped at 4 GiB, oldest entries first. The virtual-source cache
+(`~/.cache/al-lsp/symbols`) gets the same once-per-process sweep, since its hash-keyed files are
+re-minted on every package update.
 
 ### Composition (`composition.rs`)
 
@@ -161,7 +169,10 @@ local folders in configured order. Scans are deterministic, ignore non-files/non
 keep the newest parseable versioned filename across folders (exact filename ties keep the earlier
 folder). LSP configuration changes replace the file-backed symbol generation in place, reload runtime
 enums, and invalidate dependent analysis without a restart. If every file in a non-empty replacement
-set is invalid, the last good generation is retained instead of blanking the index.
+set is invalid, the last good generation is retained instead of blanking the index. Workspace
+initialization loads packages leniently: a corrupt or truncated `.app` (a common state after an
+interrupted download) is skipped with a per-package warning instead of aborting initialization, and
+the failures are reported in the init result.
 
 Dependency acquisition checks each loaded package's manifest GUID and minimum version. A single
 cached package therefore cannot suppress downloads for unrelated missing dependencies, and a package
@@ -173,7 +184,9 @@ with the right filename but the wrong identity/version does not count as satisfi
   an object's signatures, fields, keys, enum values and properties, but procedure *bodies* are
   compiled away — they are never shipped in a symbol package. Consequences:
   - When a package has no embedded source, navigation opens a **reconstructed outline** (see
-    `virtual_file::render_outline`): valid AL with full signatures but no `begin…end` bodies. That
+    `virtual_file::render_outline`): valid AL with full signatures but no `begin…end` bodies —
+    name-scoped kinds (interface, profile, controladdin, …) render without a numeric object ID, and
+    any name that is not a plain identifier is quoted (embedded quotes doubled). That
     virtual file is now prefixed with an explicit header (`virtual_file::OUTLINE_NOTE`) stating it is
     the public API only, with bodies unavailable, so the reader is never misled into thinking an empty
     body means an empty method.

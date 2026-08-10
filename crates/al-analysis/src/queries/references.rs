@@ -31,6 +31,9 @@ pub fn references(
     let cursor_decl = super::binding::decl_loc(workspace, uri, position)?;
 
     let mut locations = Vec::new();
+    // Memoize binder lookups: without it every occurrence in every workspace
+    // file runs a full go-to-definition query.
+    let mut binder = super::binding::DeclLocCache::new();
 
     // Collect binding-filtered identifier refs + unfiltered event-subscriber
     // refs from one parsed file into `locations`.
@@ -41,7 +44,8 @@ pub fn references(
         let bytes = ftext.as_bytes();
         for r in al_syntax::find_variable_references(ftree, ftext, clean_name) {
             let range: Range = al_syntax::ts_range_to_syntax(&r, bytes).into();
-            if super::binding::decl_loc(workspace, file_uri, range.start)? == cursor_decl {
+            if binder.decl_loc_for_reference(workspace, file_uri, ftext, ftree, &r)? == cursor_decl
+            {
                 locations.push(Location {
                     uri: file_uri.clone(),
                     range,

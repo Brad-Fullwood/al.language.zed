@@ -11,8 +11,10 @@ const MAX_SETTINGS_KEY_DEPTH: usize = 64;
 /// like "enableCodeAnalysis". This function strips the "al." prefix if present
 /// and merges the values into the config object.
 ///
-/// Special handling for nested keys like "al.compilationOptions.parallelBuild"
-/// and "al.inlayhints.parameterNames.enabled".
+/// Special handling for nested keys like "al.formatting.maxLineLength" (a real
+/// `AlConfig` leaf — `formatting` is a struct with `maxLineLength: u32`, not a
+/// scalar) and "al.inlayHints.parameterNames" (a plain bool; there is no
+/// `.enabled` sub-leaf).
 pub fn apply_al_settings_to_config(
     config: &serde_json::Value,
     user_settings: &serde_json::Value,
@@ -77,9 +79,19 @@ fn set_nested_value_inner(
         return;
     }
 
-    let Some(obj) = target.as_object_mut() else {
-        return;
-    };
+    // A user can supply the same key both as a scalar (`"al.formatting": "x"`)
+    // — or any other non-object value, e.g. an array — and as a path nested
+    // under it (`"al.formatting.maxLineLength": 100`). Bailing out here (the
+    // old behavior) silently dropped the nested setting with no error or
+    // fallback. Instead, coerce the intermediate value into an object so the
+    // more specific (deeper) key always wins over the shallower collision,
+    // rather than vanishing.
+    if !target.is_object() {
+        *target = json!({});
+    }
+    let obj = target
+        .as_object_mut()
+        .expect("target was just coerced into an object above");
 
     // Single remaining segment: insert it directly. At/over the depth cap,
     // stop recursing and store the remaining path as one joined literal key.

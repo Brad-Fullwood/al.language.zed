@@ -105,12 +105,15 @@ pub fn rename(
     // binder is the go-to-definition query: two positions bind to the same
     // symbol iff they resolve to the same declaration location.
     let cursor_decl = node_decl_loc(workspace, uri, node, source_bytes)?;
+    // Memoize binder lookups: without it every occurrence in every workspace
+    // file runs a full go-to-definition query.
+    let mut binder = binding::DeclLocCache::new();
 
     let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
     if !refs.is_empty() {
         let mut edits = Vec::new();
         for r in &refs {
-            if ref_decl_loc(workspace, uri, &text, r)? != cursor_decl {
+            if binder.decl_loc_for_reference(workspace, uri, &text, &tree, r)? != cursor_decl {
                 continue;
             }
             if let Some(matched_text) = text.get(r.start_byte..r.end_byte) {
@@ -144,7 +147,9 @@ pub fn rename(
             let file_source_bytes = file_text.as_bytes();
             let mut edits = Vec::new();
             for r in &refs {
-                if ref_decl_loc(workspace, &file_uri, &file_text, r)? != cursor_decl {
+                if binder.decl_loc_for_reference(workspace, &file_uri, &file_text, &file_tree, r)?
+                    != cursor_decl
+                {
                     continue;
                 }
                 if let Some(matched_text) = file_text.get(r.start_byte..r.end_byte) {
@@ -168,7 +173,7 @@ pub fn rename(
     Ok(Some(WorkspaceEdit { changes }))
 }
 
-use super::binding::{decl_loc, BindKey};
+use super::binding::{self, decl_loc, BindKey};
 
 fn node_decl_loc(
     workspace: &Workspace,
@@ -177,16 +182,6 @@ fn node_decl_loc(
     source: &[u8],
 ) -> Result<BindKey, WorkspaceStateError> {
     let range: Range = al_syntax::ts_range_to_syntax(&node.range(), source).into();
-    decl_loc(workspace, uri, range.start)
-}
-
-fn ref_decl_loc(
-    workspace: &Workspace,
-    uri: &Url,
-    text: &str,
-    r: &tree_sitter::Range,
-) -> Result<BindKey, WorkspaceStateError> {
-    let range: Range = al_syntax::ts_range_to_syntax(r, text.as_bytes()).into();
     decl_loc(workspace, uri, range.start)
 }
 

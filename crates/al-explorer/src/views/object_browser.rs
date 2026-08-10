@@ -140,14 +140,15 @@ pub(crate) fn handle_object_browser_mouse(
     app: &mut App,
     mouse_event: crossterm::event::MouseEvent,
 ) {
-    if let Ok((width, height)) = crossterm::terminal::size() {
-        // Account for the mode bar at the top (1 line)
-        let content_area = Rect {
-            x: 0,
-            y: 1,
-            width,
-            height: height.saturating_sub(1),
-        };
+    // Use the area the object browser was ACTUALLY last rendered into
+    // (recorded by `render_object_browser`) rather than recomputing it from
+    // `crossterm::terminal::size()`. Immediately after a terminal resize —
+    // before the next ~250ms redraw tick — the live terminal size and the
+    // pane rectangles on screen disagree, so hit-testing against the live
+    // size would dispatch clicks/scrolls against stale rectangles. No area
+    // has been rendered yet on the very first event, in which case there is
+    // nothing sensible to hit-test against.
+    if let Some(content_area) = app.object_browser_area {
         let layout = compute_layout(content_area);
         let (col, row) = (mouse_event.column, mouse_event.row);
 
@@ -252,6 +253,11 @@ pub(crate) fn handle_object_browser_mouse(
 }
 
 pub(crate) fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
+    // Record the exact area this frame renders into so mouse hit-testing
+    // (`handle_object_browser_mouse`) uses the pane rectangles that are
+    // actually on screen, not a value recomputed from a possibly-stale
+    // `crossterm::terminal::size()`.
+    app.object_browser_area = Some(area);
     let layout = compute_layout(area);
 
     let search_style = pane_style(app.active_pane == ActivePane::Search);
@@ -499,4 +505,62 @@ pub(crate) fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
         layout.main_columns[2],
         &mut app.details_list_state,
     );
+}
+
+#[cfg(test)]
+mod mouse_hit_testing_tests {
+    use super::*;
+    use crate::App;
+
+    fn area(x: u16, y: u16, width: u16, height: u16) -> Rect {
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn click_uses_the_last_rendered_area_not_live_terminal_size() {
+        let mut app = App::new();
+        app.packages = vec!["Pkg1".to_string(), "Pkg2".to_string(), "Pkg3".to_string()];
+        // Simulate a render at a small, atypical area — deliberately distinct
+        // from whatever the real (headless test-process) terminal size is,
+        // proving the handler reads this stored area and not
+        // `crossterm::terminal::size()`.
+        let rendered_area = area(0, 1, 100, 40);
+        app.object_browser_area = Some(rendered_area);
+
+        let layout = compute_layout(rendered_area);
+        let packages_inner = inner_area(layout.left_column[1]);
+        let click_row = packages_inner.y + 1; // second package row (0-indexed offset 1)
+        let event = crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: packages_inner.x,
+            row: click_row,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+
+        handle_object_browser_mouse(&mut app, event);
+
+        assert!(matches!(app.active_pane, ActivePane::Packages));
+        assert_eq!(app.package_list_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn mouse_event_before_any_render_is_a_noop() {
+        let mut app = App::new();
+        assert!(app.object_browser_area.is_none());
+        let event = crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 5,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+
+        // Must not panic, and must not guess at a pane to activate.
+        handle_object_browser_mouse(&mut app, event);
+        assert!(matches!(app.active_pane, ActivePane::Search));
+    }
 }

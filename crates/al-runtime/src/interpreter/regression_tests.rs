@@ -158,7 +158,12 @@ mod tests {
         let bytes = wrapper.as_bytes();
         let body = find_proc_body(root, bytes).expect("body");
         let mut stack = ScopeStack::new();
-        let frame = CallFrame::new("Regression", "Test");
+        let mut frame = CallFrame::new("Regression", "Test");
+        // Multi-name declarations must produce one default-initialised slot
+        // per name — assignment to an unbound name is an error.
+        if let Some(proc_node) = body.parent() {
+            crate::interpreter::dispatch::bind_procedure_locals(proc_node, bytes, &mut frame);
+        }
         stack.push(frame);
         let mut ctx = ctx();
         let eval = crate::interpreter::eval_stmt::eval_stmt(body, bytes, &mut stack, &mut ctx);

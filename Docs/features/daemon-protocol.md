@@ -14,6 +14,11 @@ path does **not** use the daemon — it uses LSP handlers directly. See
 - **Wire format:** newline-delimited JSON-RPC 2.0 (`Request { jsonrpc, id, method, params? }`,
   `Response { jsonrpc, id, result? , error? }`, `RpcError { code, message }`). Standard error codes
   plus `-32000` (code analysis) and `-32001` (file not found).
+- **Request ids:** string, number, and `null` ids are all accepted per the spec, and the response
+  echoes the id exactly as received. A message with **no** `id` is a notification: it is dispatched
+  but never answered. Text that is not valid JSON returns `-32700` (parse error) with a `null` id;
+  valid JSON that is not a valid request object returns `-32600` (invalid request), echoing the id
+  when one is present.
 - **Endpoint name (`socket.rs`):** deterministic — an FNV-1a hash of the canonicalized project root.
   Linux uses `$XDG_RUNTIME_DIR/al-lsp/{hash}.sock` with a `/run/user/{uid}` fallback; macOS uses its
   per-user `$TMPDIR` when XDG is unset; Windows uses
@@ -23,8 +28,23 @@ path does **not** use the daemon — it uses LSP handlers directly. See
   losers wait; stale locks
   (>30 s) are reclaimed. Client timeouts: 2 s socket poll (not the request deadline), 30 s default
   request timeout, 60 s init wait with 250 ms retries while the daemon reports "initializing".
-- **Lifecycle (`daemon/mod.rs`):** ≤64 concurrent connections (semaphore); 30-minute idle timeout
-  (skipped while a debug session is active); graceful 10 s drain on shutdown; 64 MB max request line.
+  When a request deadline expires the client remembers that id and drains the daemon's late answer
+  before reading the next response, so one slow request does not skew the connection.
+- **Lifecycle (`daemon/mod.rs`):** ≤64 concurrent connections (semaphore) — a connection over the
+  limit receives a JSON-RPC "server busy" error frame before the socket is closed, rather than being
+  dropped silently; 30-minute idle timeout, measured from the *start* as well as the end of each
+  request and suspended entirely while any request is in flight, so a long build/download/live-BC
+  capture cannot be reaped mid-request (it is also skipped while a debug session is active);
+  graceful 10 s drain on shutdown; 64 MB max request line.
+- **Startup resilience:** a workspace file the document store rejects (over `maxDocumentSizeBytes`,
+  unreadable, or without a file URI) is skipped with a warning; it no longer aborts daemon and MCP
+  startup.
+- **Per-connection ordering:** requests on one connection are served one at a time, in order, which
+  matches the shipped synchronous client (`DaemonClient` sends one request and waits for its
+  response). A client that wants concurrent work — or wants to keep issuing cheap queries while a
+  build runs — opens a second connection; up to 64 are served simultaneously. There is no
+  per-request cancellation, so a request already dispatched runs to completion even if its client
+  gives up waiting.
 
 ## Dispatch
 
@@ -44,7 +64,9 @@ focused submodules:
 The complete method list is in the [daemon method reference](../reference/daemon-methods.md). Notable
 hardening: duplicate-detection `minTokens`/`minSimilarity` are clamped to safe ranges;
 graph export is capped at 50k nodes+edges; trace depth is bounded; JSON-RPC `null` results are
-serialized explicitly.
+serialized explicitly. Workspace-scale walks (`deadCode`, `trace`, `entrypoints`, `graphExport`,
+`impact`, `suggestEvent`) run on the blocking pool so they cannot stall the async worker driving
+every connection's I/O.
 
 ## One dispatcher, three front ends
 

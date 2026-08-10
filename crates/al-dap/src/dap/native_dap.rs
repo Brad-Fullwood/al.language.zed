@@ -147,6 +147,14 @@ fn decode_scope_reference(reference: i64) -> Option<(i64, i64)> {
 /// `acquire_token` is a callback to get an OAuth access token for the given tenant.
 /// `resolve_object` maps a file path to its AL object type + ID using the workspace index.
 /// `resolve_path` is the reverse: given a BC (ObjectType, ObjectNumber) returns the source file.
+/// A parsed `setBreakpoints` request entry: `(line, condition)`. `condition`
+/// is `""` when the client sent none.
+type BpRequest = (i64, String);
+
+/// `setBreakpoints` requests queued per source path while no debug session
+/// exists yet.
+type PendingBreakpoints = HashMap<String, Vec<BpRequest>>;
+
 /// Both are provided by the caller (al-lsp binary) since they depend on `crate::symbols`.
 /// Shared state and host callbacks for the native DAP server.
 pub(crate) struct NativeDapState<F, R, P, C, A> {
@@ -157,6 +165,21 @@ pub(crate) struct NativeDapState<F, R, P, C, A> {
     session: Arc<Mutex<Option<Arc<BcDebugSession>>>>,
     debug_config: Arc<Mutex<Option<BcDebugConfig>>>,
     breakpoints: Arc<Mutex<HashMap<String, Vec<i64>>>>,
+    /// `setBreakpoints` requests received before a debug session exists
+    /// (i.e. during DAP configuration, right after `initialized`). DAP
+    /// clients send these before `launch`/`attach` completes, so they can't
+    /// be resolved against BC yet. Keyed by source path, replaced wholesale
+    /// on each `setBreakpoints` call for that path (mirrors BC's own
+    /// full-replace semantics). Drained and applied once a session starts
+    /// (`apply_pending_breakpoints`), which also emits `breakpoint` events
+    /// updating verification for the client's initially-unverified rows.
+    pending_breakpoints: Arc<Mutex<PendingBreakpoints>>,
+    /// True once `DebugAdapterConfigurationDone` has been accepted by BC for
+    /// the current session. Current BC online rejects it until
+    /// `OnAttachedToConnection` fires, so a rejected first attempt must be
+    /// retried by the background event-forwarding task rather than left
+    /// permanently unconfigured.
+    configured: Arc<Mutex<bool>>,
     variable_handles: Arc<Mutex<VariableHandleStore>>,
     /// Cancellation channel for the background event-forwarding task.
     /// When a new debug session starts we send a new value so the old task exits.
@@ -219,7 +242,10 @@ where
             }
             "continue" => self.handle_continue(out, request_seq, command).await?,
             "threads" => self.handle_threads(out, request_seq, command).await?,
-            "stackTrace" => self.handle_stack_trace(out, request_seq, command).await?,
+            "stackTrace" => {
+                self.handle_stack_trace(out, request_seq, command, arguments)
+                    .await?
+            }
             "scopes" => {
                 self.handle_scopes(out, request_seq, command, arguments)
                     .await?
@@ -280,14 +306,19 @@ where
         request_seq: i64,
         command: &str,
     ) -> Result<()> {
-        // Clone both Arc and config before dropping locks so we don't hold
-        // the mutex guard across the async invoke() call.
+        // Clone the Arc before dropping the lock so we don't hold the mutex
+        // guard across the async invoke() call.
         let session_arc = self.session.lock().await.clone();
-        let cfg = self.debug_config.lock().await.clone();
-        if let (Some(s), Some(cfg)) = (session_arc, cfg) {
-            if let Err(e) = s.configuration_done(&cfg).await {
-                warn!("configurationDone: {e}");
-            }
+        if let Some(s) = session_arc {
+            // Current BC online rejects DebugAdapterConfigurationDone until
+            // OnAttachedToConnection fires — which for break-on-next
+            // web-client launches happens only after the browser attaches,
+            // i.e. after the client already sent this very request. Attempt
+            // immediately when already attached (fast path); otherwise the
+            // background event-forwarding task retries on every poll once
+            // `is_attached()` flips true (same retry the MCP path performs
+            // in `NativeDebugSession::drain_events`).
+            try_configuration_done(&s, &self.debug_config, &self.configured).await;
         }
         write_dap(
             out,
@@ -314,6 +345,7 @@ where
             return Ok(());
         }
         self.variable_handles.lock().await.reset();
+        *self.configured.lock().await = false;
         // Store config for use in the configurationDone handler.
         *self.debug_config.lock().await = Some(config.clone());
 
@@ -620,7 +652,8 @@ where
                 } else {
                     None
                 };
-                *self.session.lock().await = Some(Arc::new(debug_session));
+                let session_arc = Arc::new(debug_session);
+                *self.session.lock().await = Some(session_arc.clone());
 
                 self.spawn_event_forwarder();
 
@@ -642,6 +675,14 @@ where
                     &make_response(&self.seq, request_seq, command, true, None, None),
                 )
                 .await?;
+
+                // Re-apply any breakpoints the client set during DAP
+                // configuration (before this session existed) — they were
+                // answered `verified: false` at the time and queued rather
+                // than lost. Now that a session exists, resolve/add them on
+                // BC and tell the client their real verification state via
+                // `breakpoint` events.
+                self.apply_pending_breakpoints(&session_arc, out).await?;
 
                 // Open browser with debug context params (must match SignalR ConnectionId)
                 if let Some(web_url) = web_url {
@@ -700,112 +741,52 @@ where
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
+        let parsed = parse_bp_requests(&bp_requests);
 
         // Clone the Arc<BcDebugSession> while holding the session mutex,
         // then drop the guard immediately so no mutex is held across
         // the async breakpoint operations below (prevents deadlock).
         let session_arc = self.session.lock().await.clone();
-        let mut result_bps = Vec::new();
 
-        if let Some(s) = session_arc {
+        let result_bps = if let Some(s) = session_arc {
             // Resolve object type and ID from workspace symbol index.
-            let resolved = (self.resolve_object)(&source_path);
-
-            if let Some(obj) = resolved {
-                let obj_type = obj.object_type;
-                let obj_id = obj.object_id;
-
-                // Hold the breakpoints lock for the ENTIRE remove → add → store
-                // cycle so two concurrent setBreakpoints calls on the same
-                // source_path serialise correctly. Without this hold-across-
-                // await (tokio::sync::Mutex makes that safe), both callers
-                // would read the same `old_ids`, both remove the same set on
-                // BC, both add fresh breakpoints, and one caller's `new_ids`
-                // would overwrite the other in the map — leaving the BC
-                // server's bp set as the union of both adds but the local map
-                // tracking only one half and orphaning the rest.
-                let mut bps = self.breakpoints.lock().await;
-                let old_ids: Vec<i64> = bps.remove(&source_path).unwrap_or_default();
-                for id in old_ids {
-                    if let Err(e) = s.remove_breakpoint(id).await {
-                        tracing::warn!(
-                            breakpoint_id = id,
-                            error = %e,
-                            "DAP setBreakpoints: removing prior breakpoint failed; \
-                             local state will be overwritten regardless"
-                        );
-                    }
+            match (self.resolve_object)(&source_path) {
+                Some(obj) => {
+                    self.apply_breakpoints_to_session(
+                        &s,
+                        &source_path,
+                        &parsed,
+                        obj.object_type,
+                        obj.object_id,
+                    )
+                    .await
                 }
-
-                let mut new_ids = Vec::new();
-                for bp in &bp_requests {
-                    let line = bp.get("line").and_then(|v| v.as_i64()).unwrap_or(1);
-                    let server_line = line.saturating_sub(1);
-                    let condition = bp.get("condition").and_then(|v| v.as_str()).unwrap_or("");
-
-                    match s
-                        .add_breakpoint(obj_type, obj_id, server_line, 0, condition)
-                        .await
-                    {
-                        Ok(result) => {
-                            // BC's add_breakpoint can return Ok(Value::Null) or a
-                            // payload without an Id field (bc_debug.rs:945). A
-                            // breakpoint id of 0 is not a usable handle: we could
-                            // neither remove it on a later setBreakpoints nor honour
-                            // a "verified: true" claim. Treat a missing/zero id as a
-                            // failure rather than recording an orphaned breakpoint.
-                            match extract_breakpoint_id(&result) {
-                                Some(bp_id) => {
-                                    new_ids.push(bp_id);
-                                    result_bps.push(serde_json::json!({
-                                        "id": bp_id,
-                                        "verified": true,
-                                        "line": line,
-                                    }));
-                                }
-                                None => {
-                                    tracing::warn!(
-                                        line = line,
-                                        ?result,
-                                        "DAP setBreakpoints: BC accepted the breakpoint \
-                                                 but returned no usable id; not tracking it"
-                                    );
-                                    result_bps.push(serde_json::json!({
-                                                "verified": false,
-                                                "line": line,
-                                                "message": "Breakpoint created but ID could not be extracted from BC response",
-                                            }));
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            result_bps.push(serde_json::json!({
-                                "verified": false,
-                                "line": line,
-                                "message": e.to_string(),
-                            }));
-                        }
-                    }
-                }
-                bps.insert(source_path.clone(), new_ids);
-                drop(bps);
-            } else {
-                for bp in &bp_requests {
-                    let line = bp.get("line").and_then(|v| v.as_i64()).unwrap_or(1);
-                    result_bps.push(serde_json::json!({
-                                "verified": false, "line": line,
-                                "message": format!("Could not resolve AL object from workspace index for: {source_path}"),
-                            }));
-                }
+                None => unresolved_object_breakpoints(&source_path, &parsed),
             }
         } else {
-            for bp in &bp_requests {
-                let line = bp.get("line").and_then(|v| v.as_i64()).unwrap_or(1);
-                result_bps.push(serde_json::json!({
-                    "verified": false, "line": line, "message": "No active debug session"
-                }));
-            }
-        }
+            // DAP clients (Zed included) send `setBreakpoints` during the
+            // configuration phase — right after `initialized`, well before
+            // `launch`/`attach` creates a session. Losing these would mean
+            // every breakpoint set before launch silently never fires.
+            // Queue them (replacing whatever was queued for this source
+            // before) and answer unverified-pending rather than permanently
+            // failed; `apply_pending_breakpoints` re-applies and re-verifies
+            // them once a session exists.
+            self.pending_breakpoints
+                .lock()
+                .await
+                .insert(source_path.clone(), parsed.clone());
+            parsed
+                .iter()
+                .map(|(line, _)| {
+                    serde_json::json!({
+                        "verified": false,
+                        "line": line,
+                        "message": "Debug session not started yet; breakpoint will be verified once the session starts",
+                    })
+                })
+                .collect()
+        };
 
         write_dap(
             out,
@@ -819,6 +800,149 @@ where
             ),
         )
         .await?;
+        Ok(())
+    }
+
+    /// Add/replace the full breakpoint set for one source against a *live*
+    /// BC session: remove any previously-tracked ids for that source, add
+    /// the requested ones, and return each request's DAP `Breakpoint`
+    /// result. Shared by `setBreakpoints` (session already exists) and
+    /// `apply_pending_breakpoints` (session just started, applying requests
+    /// queued while there was none).
+    async fn apply_breakpoints_to_session(
+        &self,
+        session: &BcDebugSession,
+        source_path: &str,
+        bp_requests: &[BpRequest],
+        object_type: i32,
+        object_id: i32,
+    ) -> Vec<serde_json::Value> {
+        let mut result_bps = Vec::new();
+
+        // Hold the breakpoints lock for the ENTIRE remove → add → store
+        // cycle so two concurrent setBreakpoints calls on the same
+        // source_path serialise correctly. Without this hold-across-
+        // await (tokio::sync::Mutex makes that safe), both callers
+        // would read the same `old_ids`, both remove the same set on
+        // BC, both add fresh breakpoints, and one caller's `new_ids`
+        // would overwrite the other in the map — leaving the BC
+        // server's bp set as the union of both adds but the local map
+        // tracking only one half and orphaning the rest.
+        let mut bps = self.breakpoints.lock().await;
+        let old_ids: Vec<i64> = bps.remove(source_path).unwrap_or_default();
+        for id in old_ids {
+            if let Err(e) = session.remove_breakpoint(id).await {
+                tracing::warn!(
+                    breakpoint_id = id,
+                    error = %e,
+                    "DAP setBreakpoints: removing prior breakpoint failed; \
+                     local state will be overwritten regardless"
+                );
+            }
+        }
+
+        let mut new_ids = Vec::new();
+        for (line, condition) in bp_requests {
+            let server_line = line.saturating_sub(1);
+
+            match session
+                .add_breakpoint(object_type, object_id, server_line, 0, condition)
+                .await
+            {
+                Ok(result) => {
+                    // BC's add_breakpoint can return Ok(Value::Null) or a
+                    // payload without an Id field (bc_debug.rs:945). A
+                    // breakpoint id of 0 is not a usable handle: we could
+                    // neither remove it on a later setBreakpoints nor honour
+                    // a "verified: true" claim. Treat a missing/zero id as a
+                    // failure rather than recording an orphaned breakpoint.
+                    match extract_breakpoint_id(&result) {
+                        Some(bp_id) => {
+                            new_ids.push(bp_id);
+                            result_bps.push(serde_json::json!({
+                                "id": bp_id,
+                                "verified": true,
+                                "line": line,
+                            }));
+                        }
+                        None => {
+                            tracing::warn!(
+                                line = line,
+                                ?result,
+                                "DAP setBreakpoints: BC accepted the breakpoint \
+                                         but returned no usable id; not tracking it"
+                            );
+                            result_bps.push(serde_json::json!({
+                                        "verified": false,
+                                        "line": line,
+                                        "message": "Breakpoint created but ID could not be extracted from BC response",
+                                    }));
+                        }
+                    }
+                }
+                Err(e) => {
+                    result_bps.push(serde_json::json!({
+                        "verified": false,
+                        "line": line,
+                        "message": e.to_string(),
+                    }));
+                }
+            }
+        }
+        bps.insert(source_path.to_string(), new_ids);
+        drop(bps);
+        result_bps
+    }
+
+    /// Re-apply `setBreakpoints` requests that were queued while no debug
+    /// session existed yet (see `handle_set_breakpoints`). Called once after
+    /// `launch`/`attach` establishes a session: resolves each queued
+    /// source's AL object, adds the breakpoints on BC via the same path
+    /// live `setBreakpoints` uses, and emits a `breakpoint` event per
+    /// breakpoint so the client updates its initially-unverified rows
+    /// (matched by `source.path` + `line` since no `id` was known yet at
+    /// the time of the original response).
+    async fn apply_pending_breakpoints<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        session: &BcDebugSession,
+        out: &mut W,
+    ) -> Result<()> {
+        let pending: PendingBreakpoints = {
+            let mut guard = self.pending_breakpoints.lock().await;
+            std::mem::take(&mut *guard)
+        };
+
+        for (source_path, bp_requests) in pending {
+            let result_bps = match (self.resolve_object)(&source_path) {
+                Some(obj) => {
+                    self.apply_breakpoints_to_session(
+                        session,
+                        &source_path,
+                        &bp_requests,
+                        obj.object_type,
+                        obj.object_id,
+                    )
+                    .await
+                }
+                None => unresolved_object_breakpoints(&source_path, &bp_requests),
+            };
+
+            for mut bp in result_bps {
+                bp["source"] = serde_json::json!({ "path": &source_path });
+                write_dap(
+                    out,
+                    &make_event(
+                        &self.seq,
+                        "breakpoint",
+                        Some(serde_json::json!({
+                            "reason": "changed",
+                            "breakpoint": bp,
+                        })),
+                    ),
+                )
+                .await?;
+            }
+        }
         Ok(())
     }
 
@@ -1001,6 +1125,7 @@ where
         out: &mut W,
         request_seq: i64,
         command: &str,
+        arguments: &serde_json::Value,
     ) -> Result<()> {
         let session_arc = self.session.lock().await.clone();
         let stack_frames = if let Some(s) = session_arc {
@@ -1014,7 +1139,7 @@ where
         } else {
             Vec::new()
         };
-        let total = stack_frames.len();
+        let (page, total) = page_stack_frames(stack_frames, arguments);
         write_dap(
             out,
             &make_response(
@@ -1023,7 +1148,7 @@ where
                 command,
                 true,
                 Some(serde_json::json!({
-                    "stackFrames": stack_frames,
+                    "stackFrames": page,
                     "totalFrames": total,
                 })),
                 None,
@@ -1336,6 +1461,8 @@ where
         let session_clone = self.session.clone();
         let event_tx_clone = self.dap_event_tx.clone();
         let seq_clone = self.seq.clone();
+        let debug_config_clone = self.debug_config.clone();
+        let configured_clone = self.configured.clone();
         tokio::spawn(async move {
             // Snapshot the generation we were spawned in.
             // If cancel_rx_clone sees a newer value, the task exits.
@@ -1353,6 +1480,17 @@ where
                     Some(s) => s,
                     None => return, // session ended
                 };
+
+                // Retry configurationDone here, exactly like the MCP path's
+                // `NativeDebugSession::drain_events` (native_debug.rs:222):
+                // current BC online rejects `DebugAdapterConfigurationDone`
+                // until `OnAttachedToConnection` fires, which for
+                // break-on-next web-client sessions happens only after the
+                // browser attaches — i.e. after the client already sent
+                // configurationDone once and got rejected. Poll here until
+                // it succeeds so accepted breakpoints don't stay inert.
+                try_configuration_done(&bc_session, &debug_config_clone, &configured_clone).await;
+
                 // All async calls happen without holding the session mutex.
                 let mut bc_events = bc_session.try_drain_push_events().await;
                 // Also flush pending events buffered during invoke() calls.
@@ -1361,16 +1499,24 @@ where
                 for bc_event in bc_events {
                     let dap_evt = match &bc_event {
                         BcEvent::Break {
-                            reason, thread_id, ..
-                        } => make_event(
-                            &seq_clone,
-                            "stopped",
-                            Some(serde_json::json!({
+                            reason,
+                            thread_id,
+                            text,
+                            ..
+                        } => {
+                            let mut body = serde_json::json!({
                                 "reason": reason,
                                 "threadId": thread_id,
                                 "allThreadsStopped": true,
-                            })),
-                        ),
+                            });
+                            // DAP's `stopped` event carries exception/error
+                            // detail in `text`; surface the Break message BC
+                            // sent instead of discarding it.
+                            if let Some(text) = text {
+                                body["text"] = serde_json::json!(text);
+                            }
+                            make_event(&seq_clone, "stopped", Some(body))
+                        }
                         BcEvent::Detached { terminate } => {
                             if *terminate {
                                 make_event(&seq_clone, "terminated", None)
@@ -1447,6 +1593,8 @@ where
         session: Arc::new(Mutex::new(None)),
         debug_config: Arc::new(Mutex::new(None)),
         breakpoints: Arc::new(Mutex::new(HashMap::new())),
+        pending_breakpoints: Arc::new(Mutex::new(HashMap::new())),
+        configured: Arc::new(Mutex::new(false)),
         variable_handles: Arc::new(Mutex::new(VariableHandleStore::default())),
         cancel_tx,
         cancel_rx,
@@ -1858,6 +2006,114 @@ fn bc_vars_to_dap(
         .collect()
 }
 
+/// Attempt `DebugAdapterConfigurationDone` if it hasn't already succeeded
+/// and BC reports the client has attached. Shared by `handle_configuration_done`
+/// (the fast path, attempted the moment the client's request arrives) and
+/// the background event-forwarding task (the retry path, polled every cycle
+/// until it succeeds) — mirrors the retry the MCP path performs in
+/// `NativeDebugSession::drain_events` (native_debug.rs:222): current BC
+/// online rejects the RPC until `OnAttachedToConnection` fires, which for
+/// break-on-next web-client launches happens only after the browser
+/// attaches, i.e. often after the DAP client already sent `configurationDone`
+/// once and got rejected.
+///
+/// Returns `true` if an attempt (successful or not) was made, `false` if
+/// skipped (already configured, no config stored yet, or not yet attached) —
+/// mainly useful for tests.
+async fn try_configuration_done(
+    session: &BcDebugSession,
+    debug_config: &Mutex<Option<BcDebugConfig>>,
+    configured: &Mutex<bool>,
+) -> bool {
+    if *configured.lock().await {
+        return false;
+    }
+    if !session.is_attached().await {
+        return false;
+    }
+    let Some(cfg) = debug_config.lock().await.clone() else {
+        return false;
+    };
+    match session.configuration_done(&cfg).await {
+        Ok(()) => {
+            *configured.lock().await = true;
+            info!("DAP configurationDone accepted after client attach");
+        }
+        Err(error) => {
+            warn!(%error, "configurationDone rejected; will retry");
+        }
+    }
+    true
+}
+
+/// Parse a `setBreakpoints` request's raw `breakpoints` array into
+/// `(line, condition)` pairs — the minimal data needed to (re)apply them
+/// against a BC session, whether immediately or after queuing.
+fn parse_bp_requests(bp_requests: &[serde_json::Value]) -> Vec<BpRequest> {
+    bp_requests
+        .iter()
+        .map(|bp| {
+            let line = bp.get("line").and_then(|v| v.as_i64()).unwrap_or(1);
+            let condition = bp
+                .get("condition")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            (line, condition)
+        })
+        .collect()
+}
+
+/// DAP `Breakpoint` results for a source path the workspace index couldn't
+/// resolve to an AL object — shared by the live and queued-and-deferred
+/// `setBreakpoints` paths.
+fn unresolved_object_breakpoints(
+    source_path: &str,
+    bp_requests: &[BpRequest],
+) -> Vec<serde_json::Value> {
+    bp_requests
+        .iter()
+        .map(|(line, _)| {
+            serde_json::json!({
+                "verified": false, "line": line,
+                "message": format!("Could not resolve AL object from workspace index for: {source_path}"),
+            })
+        })
+        .collect()
+}
+
+/// Slice a full DAP stack-frame list per the `stackTrace` request's
+/// `startFrame`/`levels` arguments and return `(page, totalFrames)`.
+///
+/// Per the DAP spec: `startFrame` defaults to 0, and `levels` of 0 or absent
+/// means "all remaining frames from `startFrame`". `totalFrames` is always
+/// the *full* stack length regardless of paging, so a delayed-stack-trace
+/// client knows how many more frames it can page in.
+fn page_stack_frames(
+    frames: Vec<serde_json::Value>,
+    arguments: &serde_json::Value,
+) -> (Vec<serde_json::Value>, usize) {
+    let total = frames.len();
+    let start_frame = arguments
+        .get("startFrame")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0)
+        .max(0) as usize;
+    let levels = arguments
+        .get("levels")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    if start_frame >= total {
+        return (Vec::new(), total);
+    }
+    let end = if levels <= 0 {
+        total
+    } else {
+        start_frame.saturating_add(levels as usize).min(total)
+    };
+    (frames[start_frame..end].to_vec(), total)
+}
+
 fn bc_stack_to_dap<P>(frames: serde_json::Value, resolve_path: &P) -> Vec<serde_json::Value>
 where
     P: Fn(i32, i32) -> Option<PathBuf>,
@@ -1877,16 +2133,34 @@ where
                 .unwrap_or("(unknown)")
                 .to_string();
 
-            let line = frame
-                .get("SourcePosition")
+            // Current BC servers send `StatementSpan.From` instead of
+            // `SourcePosition`; prefer it when present (see the fixture at
+            // native_debug.rs:905). Both carry 0-based line/column — DAP
+            // `stackFrame.line`/`column` are 1-based, so add 1 the same way
+            // `parse_bc_stack` (native_debug.rs:527) does. Without the +1
+            // Zed highlights one line above the actual stop; without the
+            // StatementSpan fallback, servers that only send it report
+            // line/column 0.
+            let position = frame
+                .get("StatementSpan")
+                .or_else(|| frame.get("statementSpan"))
+                .and_then(|span| span.get("From").or_else(|| span.get("from")))
+                .or_else(|| {
+                    frame
+                        .get("SourcePosition")
+                        .or_else(|| frame.get("sourcePosition"))
+                });
+
+            let line = position
                 .and_then(|sp| sp.get("Line").or_else(|| sp.get("line")))
                 .and_then(|v| v.as_i64())
+                .map(|v| v.saturating_add(1))
                 .unwrap_or(0);
 
-            let col = frame
-                .get("SourcePosition")
+            let col = position
                 .and_then(|sp| sp.get("Column").or_else(|| sp.get("column")))
                 .and_then(|v| v.as_i64())
+                .map(|v| v.saturating_add(1))
                 .unwrap_or(0);
 
             let object_type = frame
@@ -1994,12 +2268,96 @@ mod tests {
         assert_eq!(result.len(), 1);
         let frame = &result[0];
         assert_eq!(frame["name"], "MyCodeunit.OnRun");
-        assert_eq!(frame["line"], 10);
-        assert_eq!(frame["column"], 4);
+        // BC's SourcePosition is 0-based; DAP stackFrame line/column are 1-based.
+        assert_eq!(frame["line"], 11);
+        assert_eq!(frame["column"], 5);
         assert_eq!(
             frame["source"]["path"].as_str().unwrap_or(""),
             "/workspace/src/MyCodeunit.al"
         );
+    }
+
+    #[test]
+    fn bc_stack_to_dap_prefers_statement_span_from_over_source_position() {
+        // Current BC servers send StatementSpan.From instead of
+        // SourcePosition. When both are present StatementSpan.From wins;
+        // when only StatementSpan.From is present it must still be honored
+        // (not fall back to the line/column-0 default).
+        let frames = serde_json::json!([{
+            "DisplayName": "MyCodeunit.OnRun",
+            "StatementSpan": { "From": { "Line": 42, "Column": 8 } },
+            "SourcePosition": { "Line": 0, "Column": 0 }
+        }]);
+        let result = bc_stack_to_dap(frames, &|_ot: i32, _on: i32| None::<PathBuf>);
+        assert_eq!(result[0]["line"], 43);
+        assert_eq!(result[0]["column"], 9);
+    }
+
+    #[test]
+    fn page_stack_frames_honors_start_frame_and_levels() {
+        let frames: Vec<serde_json::Value> =
+            (0..10).map(|i| serde_json::json!({ "id": i })).collect();
+        let (page, total) =
+            page_stack_frames(frames, &serde_json::json!({ "startFrame": 2, "levels": 3 }));
+        assert_eq!(total, 10, "totalFrames must report the full stack size");
+        assert_eq!(page.len(), 3);
+        assert_eq!(page[0]["id"], 2);
+        assert_eq!(page[2]["id"], 4);
+    }
+
+    #[test]
+    fn page_stack_frames_defaults_to_full_stack_when_arguments_absent() {
+        let frames: Vec<serde_json::Value> =
+            (0..5).map(|i| serde_json::json!({ "id": i })).collect();
+        let (page, total) = page_stack_frames(frames, &serde_json::json!({}));
+        assert_eq!(total, 5);
+        assert_eq!(page.len(), 5, "no startFrame/levels means the whole stack");
+    }
+
+    #[test]
+    fn page_stack_frames_zero_levels_means_all_remaining() {
+        let frames: Vec<serde_json::Value> =
+            (0..5).map(|i| serde_json::json!({ "id": i })).collect();
+        let (page, total) =
+            page_stack_frames(frames, &serde_json::json!({ "startFrame": 3, "levels": 0 }));
+        assert_eq!(total, 5);
+        assert_eq!(page.len(), 2, "levels=0 means all frames from startFrame");
+        assert_eq!(page[0]["id"], 3);
+    }
+
+    #[test]
+    fn page_stack_frames_start_frame_past_end_yields_empty_page() {
+        let frames: Vec<serde_json::Value> =
+            (0..3).map(|i| serde_json::json!({ "id": i })).collect();
+        let (page, total) = page_stack_frames(
+            frames,
+            &serde_json::json!({ "startFrame": 10, "levels": 5 }),
+        );
+        assert_eq!(total, 3);
+        assert!(page.is_empty());
+    }
+
+    #[test]
+    fn page_stack_frames_levels_beyond_end_clamps_to_total() {
+        let frames: Vec<serde_json::Value> =
+            (0..3).map(|i| serde_json::json!({ "id": i })).collect();
+        let (page, total) = page_stack_frames(
+            frames,
+            &serde_json::json!({ "startFrame": 1, "levels": 100 }),
+        );
+        assert_eq!(total, 3);
+        assert_eq!(page.len(), 2);
+    }
+
+    #[test]
+    fn bc_stack_to_dap_statement_span_only_still_converts_to_one_based() {
+        let frames = serde_json::json!([{
+            "MethodName": "RunProbe - OnAction",
+            "StatementSpan": { "From": { "Line": 42, "Column": 8 } }
+        }]);
+        let result = bc_stack_to_dap(frames, &|_ot: i32, _on: i32| None::<PathBuf>);
+        assert_eq!(result[0]["line"], 43);
+        assert_eq!(result[0]["column"], 9);
     }
 
     #[test]
@@ -2381,8 +2739,8 @@ mod tests {
         let result = bc_stack_to_dap(frames, &resolve);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0]["name"], "CamelProc");
-        assert_eq!(result[0]["line"], 12);
-        assert_eq!(result[0]["column"], 3);
+        assert_eq!(result[0]["line"], 13);
+        assert_eq!(result[0]["column"], 4);
         assert_eq!(
             result[0]["source"]["path"].as_str().unwrap_or(""),
             "/ws/Cu.al"
@@ -2657,6 +3015,8 @@ mod handler_tests {
             session: Arc::new(Mutex::new(None)),
             debug_config: Arc::new(Mutex::new(None)),
             breakpoints: Arc::new(Mutex::new(HashMap::new())),
+            pending_breakpoints: Arc::new(Mutex::new(HashMap::new())),
+            configured: Arc::new(Mutex::new(false)),
             variable_handles: Arc::new(Mutex::new(VariableHandleStore::default())),
             cancel_tx,
             cancel_rx,
@@ -2853,6 +3213,10 @@ mod handler_tests {
 
     #[tokio::test]
     async fn set_breakpoints_without_session_reports_unverified() {
+        // Breakpoints set before launch/attach (DAP configuration phase)
+        // must not be answered as permanently failed — they're queued and
+        // will be verified once a session starts (see
+        // `set_breakpoints_without_session_are_queued_for_later_verification`).
         let (_, frames) = run_request(
             "setBreakpoints",
             serde_json::json!({
@@ -2867,8 +3231,276 @@ mod handler_tests {
         assert_eq!(bps.len(), 2);
         for bp in bps {
             assert_eq!(bp["verified"], false);
-            assert_eq!(bp["message"], "No active debug session");
+            assert!(bp.get("id").is_none(), "no BC id exists yet: {bp:?}");
+            assert_eq!(
+                bp["message"],
+                "Debug session not started yet; breakpoint will be verified once the session starts"
+            );
         }
+    }
+
+    fn resolve_foo_al(path: &str) -> Option<ResolvedObject> {
+        if path == "/proj/src/Foo.al" {
+            Some(ResolvedObject {
+                object_type: bc_object_type::CODEUNIT,
+                object_id: 50100,
+            })
+        } else {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn set_breakpoints_without_session_are_queued_and_reverified_on_launch() {
+        // Regression for the pre-session setBreakpoints finding: breakpoints
+        // set during DAP configuration (before launch/attach) must be
+        // queued, not lost, and re-applied/re-verified once a session
+        // starts.
+        let (cancel_tx, cancel_rx) = watch::channel(0u64);
+        let (dap_event_tx, _dap_event_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+        std::mem::forget(_dap_event_rx);
+        let state: TestState = NativeDapState {
+            seq: Arc::new(AtomicU64::new(1)),
+            session: Arc::new(Mutex::new(None)),
+            debug_config: Arc::new(Mutex::new(None)),
+            breakpoints: Arc::new(Mutex::new(HashMap::new())),
+            pending_breakpoints: Arc::new(Mutex::new(HashMap::new())),
+            configured: Arc::new(Mutex::new(false)),
+            variable_handles: Arc::new(Mutex::new(VariableHandleStore::default())),
+            cancel_tx,
+            cancel_rx,
+            dap_event_tx,
+            project_root: "/proj".to_string(),
+            acquire_token: no_token,
+            resolve_object: resolve_foo_al,
+            resolve_path: |_: i32, _: i32| -> Option<PathBuf> { None },
+            compile: no_compile,
+            find_app: |_| Ok(None),
+        };
+
+        // 1. setBreakpoints arrives before any session exists.
+        let (_, frames) = run_request_on(
+            &state,
+            "setBreakpoints",
+            serde_json::json!({
+                "source": {"path": "/proj/src/Foo.al"},
+                "breakpoints": [{"line": 10}, {"line": 20, "condition": "X > 1"}],
+            }),
+        )
+        .await;
+        let bps = frames[0]["body"]["breakpoints"].as_array().unwrap();
+        assert_eq!(bps.len(), 2);
+        assert!(bps.iter().all(|bp| bp["verified"] == false));
+        assert_eq!(
+            state
+                .pending_breakpoints
+                .lock()
+                .await
+                .get("/proj/src/Foo.al")
+                .cloned(),
+            Some(vec![(10, String::new()), (20, "X > 1".to_string())]),
+            "queued exactly the requested (line, condition) pairs"
+        );
+
+        // 2. A session "starts" — drive `apply_pending_breakpoints` directly,
+        // exactly as `handle_launch_attach` does right after connect/attach
+        // succeed, against a fake BC hub.
+        let (session, fake) = crate::dap::bc_debug::fake::FakeBc::start("conn-1");
+        fake.reply_ok("AddBreakpoint", serde_json::json!({ "Id": 501 }));
+        fake.reply_ok("AddBreakpoint", serde_json::json!({ "Id": 502 }));
+
+        let (mut client, server) = tokio::io::duplex(64 * 1024);
+        state
+            .apply_pending_breakpoints(&session, &mut client)
+            .await
+            .expect("apply_pending_breakpoints must not error");
+        use tokio::io::AsyncWriteExt;
+        client.shutdown().await.unwrap();
+        drop(client);
+        let mut reader = tokio::io::BufReader::new(server);
+        let mut events: Vec<serde_json::Value> = Vec::new();
+        while let Ok(body) = read_dap_body(&mut reader).await {
+            events.push(serde_json::from_slice(&body).expect("valid JSON frame"));
+        }
+
+        assert_eq!(
+            events.len(),
+            2,
+            "one breakpoint event per queued breakpoint: {events:?}"
+        );
+        for event in &events {
+            assert_eq!(event["event"], "breakpoint");
+            assert_eq!(event["body"]["reason"], "changed");
+            assert_eq!(event["body"]["breakpoint"]["verified"], true);
+            assert_eq!(
+                event["body"]["breakpoint"]["source"]["path"],
+                "/proj/src/Foo.al"
+            );
+        }
+        let lines: Vec<i64> = events
+            .iter()
+            .map(|e| e["body"]["breakpoint"]["line"].as_i64().unwrap())
+            .collect();
+        assert_eq!(lines, vec![10, 20], "verification events preserve order");
+
+        // The pending queue is drained and the newly-added BC ids are now
+        // tracked under `breakpoints` for future replace/remove.
+        assert!(state.pending_breakpoints.lock().await.is_empty());
+        assert_eq!(
+            state
+                .breakpoints
+                .lock()
+                .await
+                .get("/proj/src/Foo.al")
+                .cloned(),
+            Some(vec![501, 502])
+        );
+    }
+
+    #[tokio::test]
+    async fn set_breakpoints_without_session_unresolvable_object_is_still_queued() {
+        // A source path the workspace index can't resolve yet (e.g. still
+        // indexing) must still queue rather than drop the request — it may
+        // resolve by the time the session starts.
+        let state = test_state(); // resolve_object always returns None
+        let (_, frames) = run_request_on(
+            &state,
+            "setBreakpoints",
+            serde_json::json!({
+                "source": {"path": "/proj/src/Unresolvable.al"},
+                "breakpoints": [{"line": 5}],
+            }),
+        )
+        .await;
+        assert_eq!(frames[0]["body"]["breakpoints"][0]["verified"], false);
+        assert_eq!(
+            state
+                .pending_breakpoints
+                .lock()
+                .await
+                .get("/proj/src/Unresolvable.al")
+                .cloned(),
+            Some(vec![(5, String::new())])
+        );
+    }
+
+    #[tokio::test]
+    async fn configuration_done_skips_rpc_when_client_not_yet_attached() {
+        // Current BC online rejects DebugAdapterConfigurationDone before
+        // OnAttachedToConnection fires; the handler must not even attempt
+        // the RPC while unattached (it defers to the event-forwarder retry
+        // instead of burning a doomed call).
+        let state = test_state();
+        let (session, fake) = crate::dap::bc_debug::fake::FakeBc::start("conn-1");
+        *state.session.lock().await = Some(Arc::new(session));
+        *state.debug_config.lock().await = Some(BcDebugConfig::default());
+
+        let (_, frames) = run_request_on(&state, "configurationDone", serde_json::json!({})).await;
+        assert_eq!(
+            frames[0]["success"], true,
+            "response always acks: {frames:?}"
+        );
+        assert!(
+            fake.sent_frames()
+                .iter()
+                .all(|f| f["target"] != "DebugAdapterConfigurationDone"),
+            "must not attempt the RPC while BC reports not attached"
+        );
+        assert!(
+            !*state.configured.lock().await,
+            "must not mark configured when no attempt was made"
+        );
+    }
+
+    #[tokio::test]
+    async fn configuration_done_succeeds_immediately_when_already_attached() {
+        let state = test_state();
+        let (session, fake) = crate::dap::bc_debug::fake::FakeBc::start("conn-1");
+        // Drive OnAttachedToConnection through the session before wrapping
+        // it in the state, so is_attached() reads true.
+        fake.push_callback("OnAttachedToConnection", serde_json::Value::Null);
+        session.try_drain_push_events().await;
+        assert!(session.is_attached().await);
+
+        fake.reply_ok("DebugAdapterConfigurationDone", serde_json::json!(null));
+        *state.session.lock().await = Some(Arc::new(session));
+        *state.debug_config.lock().await = Some(BcDebugConfig::default());
+
+        let (_, frames) = run_request_on(&state, "configurationDone", serde_json::json!({})).await;
+        assert_eq!(frames[0]["success"], true);
+        assert_eq!(
+            fake.sent_frames()
+                .iter()
+                .filter(|f| f["target"] == "DebugAdapterConfigurationDone")
+                .count(),
+            1
+        );
+        assert!(*state.configured.lock().await, "must mark configured");
+    }
+
+    #[tokio::test]
+    async fn try_configuration_done_retries_after_attach_and_only_configures_once() {
+        // Models the background event-forwarder's retry loop directly:
+        // first call while unattached does nothing; once BC reports
+        // attached, the same helper succeeds; a third call is a no-op
+        // because it's already configured (BC must only see one call).
+        let (session, fake) = crate::dap::bc_debug::fake::FakeBc::start("conn-1");
+        let debug_config = Mutex::new(Some(BcDebugConfig::default()));
+        let configured = Mutex::new(false);
+
+        let attempted = try_configuration_done(&session, &debug_config, &configured).await;
+        assert!(!attempted, "must skip while not attached");
+        assert!(!*configured.lock().await);
+
+        fake.push_callback("OnAttachedToConnection", serde_json::Value::Null);
+        session.try_drain_push_events().await;
+        fake.reply_ok("DebugAdapterConfigurationDone", serde_json::json!(null));
+
+        let attempted = try_configuration_done(&session, &debug_config, &configured).await;
+        assert!(attempted, "must attempt once attached");
+        assert!(*configured.lock().await);
+
+        // A further call (e.g. the forwarder's next 50ms poll) must not
+        // re-invoke BC now that configuration succeeded.
+        let attempted_again = try_configuration_done(&session, &debug_config, &configured).await;
+        assert!(!attempted_again);
+        assert_eq!(
+            fake.sent_frames()
+                .iter()
+                .filter(|f| f["target"] == "DebugAdapterConfigurationDone")
+                .count(),
+            1,
+            "BC must see exactly one DebugAdapterConfigurationDone call"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_configuration_done_keeps_retrying_after_a_rejection() {
+        // BC rejects the first attempt (still not really ready) — the next
+        // call must retry rather than giving up permanently.
+        let (session, fake) = crate::dap::bc_debug::fake::FakeBc::start("conn-1");
+        let debug_config = Mutex::new(Some(BcDebugConfig::default()));
+        let configured = Mutex::new(false);
+
+        fake.push_callback("OnAttachedToConnection", serde_json::Value::Null);
+        session.try_drain_push_events().await;
+
+        // `configuration_done` itself retries once with no args if the
+        // debug-options form is rejected (older-BC compat); queue a
+        // rejection for both attempts so the overall call fails.
+        fake.reply_err("DebugAdapterConfigurationDone", "not ready");
+        fake.reply_err("DebugAdapterConfigurationDone", "still not ready");
+        let attempted = try_configuration_done(&session, &debug_config, &configured).await;
+        assert!(attempted);
+        assert!(
+            !*configured.lock().await,
+            "a rejected attempt must not mark configured"
+        );
+
+        fake.reply_ok("DebugAdapterConfigurationDone", serde_json::json!(null));
+        let attempted = try_configuration_done(&session, &debug_config, &configured).await;
+        assert!(attempted);
+        assert!(*configured.lock().await, "retry must succeed");
     }
 
     #[tokio::test]
@@ -2951,6 +3583,8 @@ mod handler_tests {
             session: Arc::new(Mutex::new(None)),
             debug_config: Arc::new(Mutex::new(None)),
             breakpoints: Arc::new(Mutex::new(HashMap::new())),
+            pending_breakpoints: Arc::new(Mutex::new(HashMap::new())),
+            configured: Arc::new(Mutex::new(false)),
             variable_handles: Arc::new(Mutex::new(VariableHandleStore::default())),
             cancel_tx,
             cancel_rx,

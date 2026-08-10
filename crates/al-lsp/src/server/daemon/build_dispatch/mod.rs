@@ -192,14 +192,8 @@ fn baseline_symbols_from_params(
 
 fn current_workspace_symbols(
     workspace: &Workspace,
+    project: &al_project::project::AlProject,
 ) -> Result<Vec<al_symbols::SymbolEntry>, String> {
-    let project = workspace
-        .project
-        .try_read()
-        .map_err(|_| "Project state is busy; retry the request".to_string())?
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| ERR_NO_PROJECT.to_string())?;
     let paths = al_analysis::queries::bulk_fix::collect_al_files(&project.root)?;
     let mut objects = Vec::new();
     for path in paths {
@@ -265,6 +259,32 @@ fn current_workspace_symbols(
     Ok(symbols)
 }
 
+/// Run the whole-workspace public-surface scan off the async executor.
+///
+/// `block_in_place` panics outright on a current-thread runtime (unit tests and
+/// any embedder that drives the dispatcher from one), so guard it exactly like
+/// `ensure_document` does instead of crashing the process on a `breaking` or
+/// `upgrade` request.
+fn scan_current_workspace_symbols(
+    workspace: &Workspace,
+) -> Result<Vec<al_symbols::SymbolEntry>, String> {
+    // Resolve the project *before* entering `block_in_place` so the lock wait
+    // never nests inside it.
+    let project = super::project_state_with_wait(workspace, |project| project.cloned())?
+        .ok_or_else(|| ERR_NO_PROJECT.to_string())?;
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle)
+            if matches!(
+                handle.runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            ) =>
+        {
+            tokio::task::block_in_place(|| current_workspace_symbols(workspace, &project))
+        }
+        _ => current_workspace_symbols(workspace, &project),
+    }
+}
+
 pub(super) async fn dispatch_breaking_changes(
     workspace: &Workspace,
     id: u64,
@@ -274,7 +294,7 @@ pub(super) async fn dispatch_breaking_changes(
         Ok(baseline) => baseline,
         Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
     };
-    let current = match tokio::task::block_in_place(|| current_workspace_symbols(workspace)) {
+    let current = match scan_current_workspace_symbols(workspace) {
         Ok(current) => current,
         Err(error) => return rpc_error(id, error_codes::CODE_ANALYSIS_ERROR, &error),
     };
@@ -349,7 +369,7 @@ pub(super) async fn dispatch_upgrade_report(
         Ok(baseline) => baseline,
         Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
     };
-    let current = match tokio::task::block_in_place(|| current_workspace_symbols(workspace)) {
+    let current = match scan_current_workspace_symbols(workspace) {
         Ok(current) => current,
         Err(error) => return rpc_error(id, error_codes::CODE_ANALYSIS_ERROR, &error),
     };
@@ -384,22 +404,32 @@ mod tests {
     use super::test_support::empty_ws;
     use super::*;
 
+    /// A file without a usable AL object declaration is skipped per file
+    /// (`al_analysis::workspace_sources`); it no longer takes the whole audit
+    /// down, so a scratch or work-in-progress source cannot block the report.
     #[test]
-    fn audit_dispatchers_reject_malformed_workspace_source() {
+    fn audit_dispatchers_degrade_per_file_on_a_malformed_workspace_source() {
         let workspace = empty_ws();
         workspace.file_index.add_file(
             std::path::PathBuf::from("/project/Broken.al"),
             "codeunit 50100 Broken { procedure Incomplete(".to_string(),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/project/Customer.Table.al"),
+            "table 50101 \"My Customer\"\n{\n    fields\n    {\n        field(1; Name; Text[50]) { }\n    }\n}\n"
+                .to_string(),
         );
 
         for response in [
             dispatch_audit_data_classification(&workspace, 1),
             dispatch_permission_set_audit(&workspace, 2),
         ] {
-            assert!(response.result.is_none());
-            let error = response.error.expect("incomplete audit input must fail");
-            assert_eq!(error.code, error_codes::INTERNAL_ERROR);
-            assert!(error.message.contains("incomplete workspace snapshot"));
+            assert!(
+                response.error.is_none(),
+                "one unparsable file must not fail the audit: {:?}",
+                response.error
+            );
+            assert!(response.result.is_some());
         }
     }
 
@@ -424,19 +454,26 @@ mod tests {
         }
     }
 
+    /// As above: the unparsable file is skipped, the rest of the workspace is
+    /// still compared.
     #[test]
-    fn duplicate_report_rejects_malformed_workspace() {
+    fn duplicate_report_degrades_per_file_on_a_malformed_workspace() {
         let workspace = empty_ws();
         workspace.file_index.add_file(
             std::path::PathBuf::from("/project/Broken.al"),
             "codeunit 50100 Broken { procedure Incomplete(".to_string(),
         );
-        let response = dispatch_find_duplicates(&workspace, 10, &serde_json::json!({}));
-        assert!(response.result.is_none());
-        assert_eq!(
-            response.error.expect("partial report must fail").code,
-            error_codes::INTERNAL_ERROR
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/project/Ok.Codeunit.al"),
+            "codeunit 50101 Ok\n{\n    procedure P()\n    begin\n    end;\n}\n".to_string(),
         );
+        let response = dispatch_find_duplicates(&workspace, 10, &serde_json::json!({}));
+        assert!(
+            response.error.is_none(),
+            "one unparsable file must not fail the duplicate report: {:?}",
+            response.error
+        );
+        assert!(response.result.is_some());
     }
 
     async fn install_dependency_project(

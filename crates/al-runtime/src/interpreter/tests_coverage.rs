@@ -61,6 +61,11 @@ fn run_with_coverage(src: &str, proc_name: &str) -> (Eval, Coverage) {
     let mut stack = ScopeStack::new();
     let mut frame = CallFrame::new("Cov", proc_name);
     frame.bind("x", Value::Integer(0));
+    // Bind the procedure's declared locals (the body's parent is its
+    // `procedure_declaration`) — assignment to unbound names is an error.
+    if let Some(proc_node) = body.parent() {
+        crate::interpreter::dispatch::bind_procedure_locals(proc_node, bytes, &mut frame);
+    }
     stack.push(frame);
 
     let mut ctx = DispatchCtx::new_pure(Arc::new(MockSource::new()));

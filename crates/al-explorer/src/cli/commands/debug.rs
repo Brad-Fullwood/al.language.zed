@@ -228,22 +228,34 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
             let params = serde_json::json!({"cmd": "stop"});
             match request_checked(&mut client, "debug", Some(params)) {
                 Ok(result) => {
+                    let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                    let stopped = debug_stop_actually_stopped(status);
                     if json {
                         print_json(&result);
+                    } else if stopped {
+                        println!("Debug session stopped.");
                     } else {
-                        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-                        if status == "stopped" {
-                            println!("Debug session stopped.");
-                        } else {
-                            println!("Debug stop: {status}.");
-                        }
+                        println!("Debug stop: {status}.");
                     }
-                    ExitCode::SUCCESS
+                    if stopped {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::FAILURE
+                    }
                 }
                 Err(e) => report_error(&e, json),
             }
         }
     }
+}
+
+/// Whether a `debug stop` response's `status` field means a session was
+/// actually stopped, versus e.g. "no active debug session" — a request the
+/// daemon reports as `Ok` (not a JSON-RPC error) even though there was
+/// nothing to stop. Per `Docs/reference/cli-commands.md`'s exit contract
+/// ("0 means the requested gate passed"), only the former should exit 0.
+fn debug_stop_actually_stopped(status: &str) -> bool {
+    status == "stopped"
 }
 
 pub fn cmd_snapshot(subcmd: &SnapshotCommands, json: bool) -> ExitCode {
@@ -532,5 +544,25 @@ pub fn cmd_profile(subcmd: &ProfileCommands, json: bool) -> ExitCode {
                 Err(e) => report_error(&e, json),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod debug_stop_exit_code_tests {
+    use super::debug_stop_actually_stopped;
+
+    #[test]
+    fn stopped_status_is_success() {
+        assert!(debug_stop_actually_stopped("stopped"));
+    }
+
+    #[test]
+    fn no_active_session_status_is_not_success() {
+        assert!(!debug_stop_actually_stopped("no active debug session"));
+    }
+
+    #[test]
+    fn unknown_status_is_not_success() {
+        assert!(!debug_stop_actually_stopped("?"));
     }
 }

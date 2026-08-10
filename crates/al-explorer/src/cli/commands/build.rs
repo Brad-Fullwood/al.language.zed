@@ -274,6 +274,20 @@ fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()>
 /// the caller refuses to emit. Returns `None` when validation passes and the
 /// native emit should proceed. Runs in a temp copy of the project so alc's
 /// output never pollutes the user's tree.
+/// Create a private, per-invocation temp dir for `--validate`'s alc copy.
+///
+/// `tempfile::tempdir()` creates the directory with owner-only permissions and
+/// a random name, unlike the previous predictable `al-pack-validate-{pid}`
+/// path under the shared, world-readable `std::env::temp_dir()` — which
+/// another local user could pre-create/symlink (a race) or read proprietary
+/// AL source from, and which two runs from a pid-reusing wrapper could
+/// collide on. The returned `TempDir` guard removes the directory
+/// automatically when it drops (every `validate_with_alc` return path,
+/// including early errors and unwinding), so no manual cleanup is needed.
+fn create_validation_tempdir() -> std::io::Result<tempfile::TempDir> {
+    tempfile::tempdir()
+}
+
 fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
     let toolchain = match al_project::toolchain::find_toolchain() {
         Ok(t) => t,
@@ -288,10 +302,18 @@ fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
         }
     };
 
-    let tmp = std::env::temp_dir().join(format!("al-pack-validate-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
+    let tmp = match create_validation_tempdir() {
+        Ok(t) => t,
+        Err(e) => {
+            return Some(report_error(
+                &format!("creating validation temp dir: {e}"),
+                json,
+            ));
+        }
+    };
+    let tmp_path = tmp.path();
     // Copy app.json + every source/.alpackages dir alc needs.
-    if let Err(e) = std::fs::create_dir_all(&tmp).and_then(|()| {
+    if let Err(e) = (|| -> std::io::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let name = entry.file_name();
@@ -300,7 +322,7 @@ fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
                 continue;
             }
             let from = entry.path();
-            let to = tmp.join(&name);
+            let to = tmp_path.join(&name);
             if entry.file_type()?.is_dir() {
                 copy_dir(&from, &to)?;
             } else {
@@ -308,27 +330,25 @@ fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
             }
         }
         Ok(())
-    }) {
-        let _ = std::fs::remove_dir_all(&tmp);
+    })() {
         return Some(report_error(
             &format!("preparing validation copy: {e}"),
             json,
         ));
     }
 
-    let pkg_cache = tmp.join(".alpackages");
+    let pkg_cache = tmp_path.join(".alpackages");
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
     {
         Ok(r) => r,
         Err(e) => {
-            let _ = std::fs::remove_dir_all(&tmp);
             return Some(report_error(&format!("starting async runtime: {e}"), json));
         }
     };
     let result = runtime.block_on(al_compile::build(al_compile::BuildRequest {
-        project_root: &tmp,
+        project_root: tmp_path,
         backend: al_compile::BuildBackend::Alc,
         toolchain: Some(&toolchain),
         dependency_packages: None,
@@ -336,7 +356,8 @@ fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
         analyzers: None,
         config: al_compile::CompilationConfigOptions::default(),
     }));
-    let _ = std::fs::remove_dir_all(&tmp);
+    // `tmp` (the `TempDir` guard) is dropped — and the directory removed —
+    // when this function returns, on every path below.
 
     let result = match result {
         Ok(r) => r,
@@ -510,5 +531,40 @@ fn canonicalize_xlf_path(path: &str) -> String {
             .ok()
             .map(|d| d.join(p).to_string_lossy().into_owned())
             .unwrap_or_else(|| path.to_string())
+    }
+}
+
+#[cfg(test)]
+mod validation_tempdir_tests {
+    use super::create_validation_tempdir;
+
+    /// The old implementation derived the validation copy's path
+    /// deterministically from the process id
+    /// (`al-pack-validate-{pid}` under the shared `std::env::temp_dir()`),
+    /// so two validations from the same process — or from a pid-reusing
+    /// wrapper — landed on the exact same path. `tempfile::tempdir()` must
+    /// produce a fresh, unpredictable directory on every call.
+    #[test]
+    fn two_calls_never_collide_on_the_same_process_id() {
+        let a = create_validation_tempdir().expect("first tempdir must be created");
+        let b = create_validation_tempdir().expect("second tempdir must be created");
+        assert_ne!(
+            a.path(),
+            b.path(),
+            "two validation temp dirs from the same process must not collide"
+        );
+        assert!(a.path().is_dir());
+        assert!(b.path().is_dir());
+    }
+
+    #[test]
+    fn path_does_not_match_the_old_predictable_pid_scheme() {
+        let dir = create_validation_tempdir().expect("tempdir must be created");
+        let pid_name = format!("al-pack-validate-{}", std::process::id());
+        assert_ne!(
+            dir.path().file_name().and_then(|n| n.to_str()),
+            Some(pid_name.as_str()),
+            "must not reproduce the old predictable pid-based directory name"
+        );
     }
 }

@@ -452,9 +452,14 @@ fn select_version(
             return Ok(exact.clone());
         }
         let prefix = version_prefix(requested);
+        let minimum = parse_version(requested);
+        // Dependency versions are minimums in AL: staying inside the requested
+        // major.minor line is not enough — a candidate below the requested
+        // build/revision would fail the post-download dependency check, so
+        // report "not found" instead of resolving it.
         return versions
             .iter()
-            .filter(|version| version.starts_with(&prefix))
+            .filter(|version| version.starts_with(&prefix) && parse_version(version) >= minimum)
             .max_by_key(|version| parse_version(version))
             .cloned()
             .ok_or_else(|| NuGetError::VersionNotFound {
@@ -1054,6 +1059,31 @@ mod tests {
             select_version("pkg", Some("26.5.0.0"), &versions),
             Err(NuGetError::VersionNotFound { .. })
         ));
+    }
+
+    /// Dependency versions are minimums: a feed that only offers versions
+    /// *below* the requested minimum in the same major.minor line must report
+    /// "not found" instead of resolving a package that cannot satisfy the
+    /// dependency.
+    #[test]
+    fn version_selection_rejects_candidates_below_requested_minimum() {
+        let versions = vec!["26.5.50.0".to_string(), "26.5.99.0".to_string()];
+        assert!(matches!(
+            select_version("pkg", Some("26.5.100.0"), &versions),
+            Err(NuGetError::VersionNotFound { .. })
+        ));
+
+        // A candidate at or above the minimum still resolves.
+        let versions = vec!["26.5.50.0".to_string(), "26.5.100.0".to_string()];
+        assert_eq!(
+            select_version("pkg", Some("26.5.100.0"), &versions).unwrap(),
+            "26.5.100.0"
+        );
+        let versions = vec!["26.5.150.0".to_string()];
+        assert_eq!(
+            select_version("pkg", Some("26.5.100.0"), &versions).unwrap(),
+            "26.5.150.0"
+        );
     }
 
     #[test]

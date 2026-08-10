@@ -1,4 +1,5 @@
 {
+  "$schema": "https://zed.dev/schema/themes/v0.2.0.json",
   "author": "Microsoft (converted)",
   "name": "Business Central",
   "themes": [
@@ -32,6 +33,41 @@
             "background": "#00747Fff",
             "cursor": "#00747Fff",
             "selection": "#00747F40"
+          },
+          {
+            "background": "#569CD6ff",
+            "cursor": "#569CD6ff",
+            "selection": "#569CD640"
+          },
+          {
+            "background": "#DCDCAAff",
+            "cursor": "#DCDCAAff",
+            "selection": "#DCDCAA40"
+          },
+          {
+            "background": "#CE9178ff",
+            "cursor": "#CE9178ff",
+            "selection": "#CE917840"
+          },
+          {
+            "background": "#C239B3ff",
+            "cursor": "#C239B3ff",
+            "selection": "#C239B340"
+          },
+          {
+            "background": "#9FD89Fff",
+            "cursor": "#9FD89Fff",
+            "selection": "#9FD89F40"
+          },
+          {
+            "background": "#D13438ff",
+            "cursor": "#D13438ff",
+            "selection": "#D1343840"
+          },
+          {
+            "background": "#4EC9B0ff",
+            "cursor": "#4EC9B0ff",
+            "selection": "#4EC9B040"
           }
         ],
         "scrollbar.thumb.background": "#40404080",
@@ -175,16 +211,51 @@
         "editor.line_number": "#101214",
         "editor.wrap_guide": "#E3E6E8",
         "element.active": "#00747F",
-        "element.hover": "#093B42",
-        "element.selected": "#005760",
+        "element.hover": "#D9F0F2",
+        "element.selected": "#8ADBE1",
         "elevated_surface.background": "#F3F3F3",
-        "ghost_element.hover": "#093B42",
-        "ghost_element.selected": "#005760",
+        "ghost_element.hover": "#D9F0F2",
+        "ghost_element.selected": "#8ADBE1",
         "players": [
           {
             "background": "#00747Fff",
             "cursor": "#00747Fff",
             "selection": "#00747F40"
+          },
+          {
+            "background": "#795E26ff",
+            "cursor": "#795E26ff",
+            "selection": "#795E2640"
+          },
+          {
+            "background": "#A31515ff",
+            "cursor": "#A31515ff",
+            "selection": "#A3151540"
+          },
+          {
+            "background": "#267F99ff",
+            "cursor": "#267F99ff",
+            "selection": "#267F9940"
+          },
+          {
+            "background": "#AF00DBff",
+            "cursor": "#AF00DBff",
+            "selection": "#AF00DB40"
+          },
+          {
+            "background": "#098658ff",
+            "cursor": "#098658ff",
+            "selection": "#09865840"
+          },
+          {
+            "background": "#800000ff",
+            "cursor": "#800000ff",
+            "selection": "#80000040"
+          },
+          {
+            "background": "#001080ff",
+            "cursor": "#001080ff",
+            "selection": "#00108040"
           }
         ],
         "scrollbar.thumb.background": "#E0E0E080",
@@ -193,7 +264,7 @@
         "surface.background": "#FFFFFF",
         "syntax": {
           "attribute": {
-            "color": "#FF0000",
+            "color": "#AF00DB",
             "font_style": null,
             "font_weight": null
           },

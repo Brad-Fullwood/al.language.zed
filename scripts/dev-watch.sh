@@ -13,7 +13,7 @@
 # Usage:  make watch     (or)   bash scripts/dev-watch.sh
 #   --release   build native binaries in release mode (slower build, faster binaries)
 #   --bridges   also rebuild the .NET semantic bridge on change (slower)
-set -uo pipefail
+set -euo pipefail
 cd "$(dirname "$0")/.." || exit
 
 PROFILE_FLAG=""
@@ -47,6 +47,12 @@ fi
 NATIVE_BUILD="build --workspace --exclude zed-al $PROFILE_FLAG"
 SEMANTIC_BUILD="cargo build -p al-lsp --bin al-lsp --features semantic $PROFILE_FLAG && rm -f $INSTALL_DIR/al-lsp && cp -f target/$PROFILE_DIR/al-lsp $INSTALL_DIR/al-lsp"
 WASM_BUILD="cargo build -p zed-al --target wasm32-wasip2 --release"
+# `"${BRIDGE_BUILD_ARGS[@]}"` alone is a fatal "unbound variable" under `set -u`
+# on bash < 4.4 (stock macOS 3.2) when this array is still empty (--bridges
+# not passed) -- expanding it directly at the end of the `exec cargo watch`
+# invocation below uses the `${arr[@]+"${arr[@]}"}` idiom instead, which is
+# safe on every bash version: it expands to nothing when the array is empty,
+# and to the quoted elements when it isn't.
 BRIDGE_BUILD_ARGS=()
 if [ "$WATCH_BRIDGES" = "1" ]; then
   BRIDGE_BUILD_ARGS=(-s "make bridges")
@@ -64,9 +70,9 @@ echo "   Press Ctrl-C to stop."
 echo "--------------------------------------------------------------"
 
 exec cargo watch --why \
-  -w crates -w src \
+  -w crates -w src -w schemas \
   -i 'target/**' -i '**/*.md' -i '.claude/**' -i 'FINDINGS.md' \
   -x "$NATIVE_BUILD" \
   -s "$SEMANTIC_BUILD" \
   -s "$WASM_BUILD" \
-  "${BRIDGE_BUILD_ARGS[@]}"
+  ${BRIDGE_BUILD_ARGS[@]+"${BRIDGE_BUILD_ARGS[@]}"}

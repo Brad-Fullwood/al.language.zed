@@ -206,19 +206,43 @@ impl InsightGraph {
 
     /// Get or insert a node, returning its index.
     ///
-    /// If one or more nodes already exist for this key, returns the first one
-    /// (same-key deduplication within a single package).  When a new node is
-    /// inserted it is appended to the Vec, so objects from different packages
-    /// that share the same (kind, name) each get their own graph node.
+    /// Reuses an existing node only when it has the **same identity** as the
+    /// incoming one. For `Object` nodes identity includes the declaring
+    /// package, so objects from different packages that share a `(kind, name)`
+    /// each get their own graph node — the documented behavior, which the
+    /// previous "return the first node for this key" implementation silently
+    /// broke (dropping the second package's id/package payload and making the
+    /// `Vec<NodeIndex>` index / [`get_nodes`](Self::get_nodes) multi-match
+    /// machinery unreachable).
+    ///
+    /// Member nodes (`Procedure`/`Event`/`Subscriber`) carry no package of
+    /// their own and stay one-per-key; their owning object nodes are what
+    /// distinguish the packages.
     pub fn ensure_node(&mut self, key: NodeKey, node: InsightNode) -> NodeIndex {
         if let Some(indices) = self.index.get(&key) {
-            if let Some(&first) = indices.first() {
-                return first;
+            for &existing in indices {
+                if same_node_identity(&self.graph[existing], &node) {
+                    return existing;
+                }
             }
         }
         let idx = self.graph.add_node(node);
         self.index.entry(key).or_default().push(idx);
         idx
+    }
+
+    /// The node for `key` declared by `package`, falling back to the first
+    /// node for the key when no package matches.
+    pub fn get_node_in_package(&self, key: &NodeKey, package: &str) -> Option<NodeIndex> {
+        let indices = self.index.get(key)?;
+        indices
+            .iter()
+            .copied()
+            .find(|&idx| match &self.graph[idx] {
+                InsightNode::Object { package: p, .. } => p.eq_ignore_ascii_case(package),
+                _ => false,
+            })
+            .or_else(|| indices.first().copied())
     }
 
     /// Look up the first node for a key (preserves existing call-site semantics).
@@ -346,15 +370,22 @@ impl InsightGraph {
 
     /// Remove all outgoing edges from `node`. Used for invalidation when
     /// a file changes and its call edges need re-extraction.
+    ///
+    /// petgraph's `remove_edge` swaps the **last** edge index into the removed
+    /// slot, invalidating any `EdgeIndex` collected beforehand. Removing two or
+    /// more edges from a pre-collected list therefore deleted the wrong edge or
+    /// left edges behind while desyncing `edge_set`. Re-resolving the first
+    /// outgoing edge on every iteration keeps every index live at the moment it
+    /// is used.
     pub fn remove_edges_from(&mut self, node: NodeIndex) {
-        let to_remove: Vec<_> = self
+        while let Some((edge_id, source, target, weight)) = self
             .graph
             .edges(node)
+            .next()
             .map(|e| (e.id(), e.source(), e.target(), *e.weight()))
-            .collect();
-        for (edge_id, src, tgt, weight) in to_remove {
+        {
             self.graph.remove_edge(edge_id);
-            self.edge_set.remove(&(src, tgt, weight));
+            self.edge_set.remove(&(source, target, weight));
         }
     }
 
@@ -413,20 +444,24 @@ impl InsightGraph {
         );
 
         for method in &entry.methods {
+            // AL attribute names are case-insensitive, and workspace-derived
+            // `SymbolEntry` attributes preserve the source casing — a source
+            // `[eventsubscriber(...)]` must not be mis-classified as a plain
+            // procedure.
             let is_event = method.attributes.iter().any(|a| {
-                a.name == super::attr_names::INTEGRATION_EVENT
-                    || a.name == super::attr_names::BUSINESS_EVENT
+                is_attr(a, super::attr_names::INTEGRATION_EVENT)
+                    || is_attr(a, super::attr_names::BUSINESS_EVENT)
             });
             let is_subscriber = method
                 .attributes
                 .iter()
-                .any(|a| a.name == super::attr_names::EVENT_SUBSCRIBER);
+                .any(|a| is_attr(a, super::attr_names::EVENT_SUBSCRIBER));
 
             if is_event {
                 let event_type = if method
                     .attributes
                     .iter()
-                    .any(|a| a.name == super::attr_names::BUSINESS_EVENT)
+                    .any(|a| is_attr(a, super::attr_names::BUSINESS_EVENT))
                 {
                     EventNodeType::Business
                 } else {
@@ -498,9 +533,13 @@ impl InsightGraph {
                 let ext_key = NodeKey::Object(entry.kind, entry.name.to_lowercase());
                 let base_key = NodeKey::Object(base_kind, extends_name.to_lowercase());
 
-                if let (Some(ext_idx), Some(base_idx)) =
-                    (self.get_node(&ext_key), self.get_node(&base_key))
-                {
+                // Objects are per-package now, so resolve the extension
+                // node in its own package rather than taking the first node
+                // that happens to share the (kind, name) key.
+                if let (Some(ext_idx), Some(base_idx)) = (
+                    self.get_node_in_package(&ext_key, &entry.package),
+                    self.get_node_in_package(&base_key, &entry.package),
+                ) {
                     self.add_edge(ext_idx, base_idx, InsightEdge::Extends);
                 }
             }
@@ -510,7 +549,7 @@ impl InsightGraph {
             if method
                 .attributes
                 .iter()
-                .any(|a| a.name == super::attr_names::EVENT_SUBSCRIBER)
+                .any(|a| is_attr(a, super::attr_names::EVENT_SUBSCRIBER))
             {
                 let (target_kind, target_object, target_event) =
                     parse_subscriber_target_full(&method.attributes);
@@ -564,20 +603,28 @@ impl InsightGraph {
                         // dotted field references (e.g. `"Item" WHERE(...)`), so a
                         // naive quote-strip would yield a bogus table name. Reuse
                         // the canonical parser from `analysis`.
-                        let related_table =
-                            match crate::analysis::extract_table_relation_table(&prop.value) {
-                                Some(t) => t.to_string(),
-                                None => continue,
-                            };
+                        // The conditional form (`IF (…) TableA ELSE TableB`)
+                        // relates the field to *every* branch table.
+                        let related_tables: Vec<String> =
+                            crate::analysis::extract_table_relation_tables(&prop.value)
+                                .into_iter()
+                                .map(str::to_string)
+                                .collect();
+                        if related_tables.is_empty() {
+                            continue;
+                        }
 
                         let src_key = NodeKey::Object(entry.kind, entry.name.to_lowercase());
-                        let target_key =
-                            NodeKey::Object(ObjectKind::Table, related_table.to_lowercase());
+                        for related_table in related_tables {
+                            let target_key =
+                                NodeKey::Object(ObjectKind::Table, related_table.to_lowercase());
 
-                        if let (Some(src_idx), Some(target_idx)) =
-                            (self.get_node(&src_key), self.get_node(&target_key))
-                        {
-                            self.add_edge(src_idx, target_idx, InsightEdge::RelatesTo);
+                            if let (Some(src_idx), Some(target_idx)) = (
+                                self.get_node_in_package(&src_key, &entry.package),
+                                self.get_node_in_package(&target_key, &entry.package),
+                            ) {
+                                self.add_edge(src_idx, target_idx, InsightEdge::RelatesTo);
+                            }
                         }
                     }
                 }
@@ -592,6 +639,32 @@ impl Default for InsightGraph {
     }
 }
 
+/// Case-insensitive AL attribute-name comparison.
+///
+/// AL attribute names are case-insensitive and workspace-derived
+/// `SymbolEntry` attributes preserve the source casing, so `[eventsubscriber]`
+/// and `[EventSubscriber]` must compare equal (see `calls.rs`, which already
+/// handles this).
+fn is_attr(attribute: &al_symbols::AttributeSymbol, name: &str) -> bool {
+    attribute.name.trim().eq_ignore_ascii_case(name)
+}
+
+/// Whether an existing node and an incoming one describe the *same* graph
+/// entity, for [`InsightGraph::ensure_node`] deduplication.
+///
+/// Object nodes are distinguished by their declaring package so two packages
+/// defining the same `(kind, name)` each keep their own node. Member nodes
+/// carry no package and stay one-per-key.
+fn same_node_identity(existing: &InsightNode, incoming: &InsightNode) -> bool {
+    match (existing, incoming) {
+        (InsightNode::Object { package: a, .. }, InsightNode::Object { package: b, .. }) => {
+            a.eq_ignore_ascii_case(b)
+        }
+        (InsightNode::Object { .. }, _) | (_, InsightNode::Object { .. }) => false,
+        _ => std::mem::discriminant(existing) == std::mem::discriminant(incoming),
+    }
+}
+
 /// Parse EventSubscriber attribute to extract target object kind (if determinable),
 /// target object name, and target event name.
 ///
@@ -601,7 +674,7 @@ fn parse_subscriber_target_full(
     attributes: &[al_symbols::AttributeSymbol],
 ) -> (Option<ObjectKind>, String, String) {
     for attr in attributes {
-        if attr.name == super::attr_names::EVENT_SUBSCRIBER {
+        if is_attr(attr, super::attr_names::EVENT_SUBSCRIBER) {
             // arg[0]: "ObjectType::Codeunit" — extract the type name
             let kind = attr.arguments.first().and_then(|s| {
                 let s = s.trim();
@@ -1319,5 +1392,201 @@ mod tests {
         let idx2 = g.ensure_node(key, node);
         assert_eq!(idx1, idx2);
         assert_eq!(g.node_count(), 1);
+    }
+
+    fn proc_node(name: &str) -> InsightNode {
+        InsightNode::Procedure {
+            object_kind: ObjectKind::Codeunit,
+            object_name: "CU".to_string(),
+            name: name.to_string(),
+            is_local: false,
+        }
+    }
+
+    fn proc_key(name: &str) -> NodeKey {
+        NodeKey::Procedure(
+            ObjectKind::Codeunit,
+            "cu".to_string(),
+            name.to_ascii_lowercase(),
+        )
+    }
+
+    /// petgraph's `remove_edge` swaps the last edge index into the removed
+    /// slot, so removing a pre-collected list of >=2 edges deleted the wrong
+    /// edge / left edges behind while desyncing `edge_set`. A single-edge test
+    /// structurally cannot catch it.
+    #[test]
+    fn remove_edges_from_clears_every_outgoing_edge() {
+        let mut g = InsightGraph::new();
+        let a = g.ensure_node(proc_key("a"), proc_node("A"));
+        let b = g.ensure_node(proc_key("b"), proc_node("B"));
+        let c = g.ensure_node(proc_key("c"), proc_node("C"));
+        let d = g.ensure_node(proc_key("d"), proc_node("D"));
+        let e = g.ensure_node(proc_key("e"), proc_node("E"));
+
+        g.add_edge(a, b, InsightEdge::Calls);
+        g.add_edge(a, c, InsightEdge::Calls);
+        g.add_edge(a, d, InsightEdge::Calls);
+        // Edges that must survive, including one added *after* a's edges so it
+        // occupies the highest EdgeIndex.
+        g.add_edge(b, c, InsightEdge::Calls);
+        g.add_edge(d, e, InsightEdge::Calls);
+        assert_eq!(g.edge_count(), 5);
+
+        g.remove_edges_from(a);
+
+        assert_eq!(g.edge_count(), 2, "only a's outgoing edges may be removed");
+        assert!(g.graph.find_edge(b, c).is_some(), "b->c must survive");
+        assert!(g.graph.find_edge(d, e).is_some(), "d->e must survive");
+        assert!(g.graph.find_edge(a, b).is_none());
+        assert!(g.graph.find_edge(a, c).is_none());
+        assert!(g.graph.find_edge(a, d).is_none());
+
+        // `edge_set` must stay in sync, otherwise re-adding a removed edge is
+        // silently dropped by add_edge's dedup.
+        g.add_edge(a, b, InsightEdge::Calls);
+        assert_eq!(g.edge_count(), 3, "edge_set desynced: re-add was dropped");
+    }
+
+    /// Documented behavior: objects from different packages that share a
+    /// (kind, name) each get their own graph node.
+    #[test]
+    fn ensure_node_gives_each_package_its_own_object_node() {
+        let mut g = InsightGraph::new();
+        let key = NodeKey::Object(ObjectKind::Table, "customer".to_string());
+
+        let base = g.ensure_node(
+            key.clone(),
+            InsightNode::Object {
+                kind: ObjectKind::Table,
+                id: 18,
+                name: "Customer".to_string(),
+                package: "Base".to_string(),
+            },
+        );
+        let other = g.ensure_node(
+            key.clone(),
+            InsightNode::Object {
+                kind: ObjectKind::Table,
+                id: 50100,
+                name: "Customer".to_string(),
+                package: "OtherApp".to_string(),
+            },
+        );
+        // Re-inserting the first package must reuse its node.
+        let base_again = g.ensure_node(
+            key.clone(),
+            InsightNode::Object {
+                kind: ObjectKind::Table,
+                id: 18,
+                name: "Customer".to_string(),
+                package: "Base".to_string(),
+            },
+        );
+
+        assert_ne!(base, other, "two packages must not share one node");
+        assert_eq!(base, base_again);
+        assert_eq!(g.node_count(), 2);
+        assert_eq!(g.get_nodes(&key).len(), 2);
+        assert_eq!(g.get_node_in_package(&key, "OtherApp"), Some(other));
+        assert_eq!(g.get_node_in_package(&key, "Base"), Some(base));
+    }
+
+    /// AL attributes are case-insensitive; workspace-derived entries preserve
+    /// the source casing.
+    #[test]
+    fn lowercase_attributes_still_classify_events_and_subscribers() {
+        let index = SymbolIndex::new();
+        index.add_entries(&[
+            make_codeunit(
+                1,
+                "Publisher",
+                vec![MethodSymbol {
+                    name: "OnAfterPost".to_string(),
+                    parameters: Vec::new(),
+                    return_type: None,
+                    attributes: vec![AttributeSymbol {
+                        name: "integrationevent".to_string(),
+                        arguments: vec!["false".to_string(), "false".to_string()],
+                    }],
+                    is_local: false,
+                }],
+            ),
+            make_codeunit(
+                2,
+                "Subscriber",
+                vec![MethodSymbol {
+                    name: "Handle".to_string(),
+                    parameters: Vec::new(),
+                    return_type: None,
+                    attributes: vec![AttributeSymbol {
+                        name: "eventsubscriber".to_string(),
+                        arguments: vec![
+                            "ObjectType::Codeunit".to_string(),
+                            "Codeunit::\"Publisher\"".to_string(),
+                            "'OnAfterPost'".to_string(),
+                        ],
+                    }],
+                    is_local: false,
+                }],
+            ),
+        ]);
+
+        let mut g = InsightGraph::new();
+        g.build_from_index(&index);
+
+        let event = g
+            .get_node(&NodeKey::Event(
+                ObjectKind::Codeunit,
+                "publisher".to_string(),
+                "onafterpost".to_string(),
+            ))
+            .expect("lowercase [integrationevent] must produce an Event node");
+        let subscriber = g
+            .get_node(&NodeKey::Subscriber(
+                ObjectKind::Codeunit,
+                "subscriber".to_string(),
+                "handle".to_string(),
+            ))
+            .expect("lowercase [eventsubscriber] must produce a Subscriber node");
+        assert!(
+            g.graph.find_edge(subscriber, event).is_some(),
+            "subscriber must be wired to the event"
+        );
+    }
+
+    #[test]
+    fn conditional_table_relation_links_every_branch_table() {
+        let index = SymbolIndex::new();
+        let mut source = make_table(50100, "Doc Line");
+        source.fields = vec![FieldSymbol {
+            id: 1,
+            name: "No.".to_string(),
+            type_name: "Code".to_string(),
+            properties: vec![PropertyValue {
+                name: "TableRelation".to_string(),
+                value: "IF (Type=CONST(Item)) Item.\"No.\" ELSE IF (Type=CONST(Resource)) Resource.\"No.\""
+                    .to_string(),
+            }],
+        }];
+        index.add_entries(&[source, make_table(27, "Item"), make_table(156, "Resource")]);
+
+        let mut g = InsightGraph::new();
+        g.build_from_index(&index);
+
+        let line = g
+            .get_node(&NodeKey::Object(ObjectKind::Table, "doc line".to_string()))
+            .unwrap();
+        for table in ["item", "resource"] {
+            let target = g
+                .get_node(&NodeKey::Object(ObjectKind::Table, table.to_string()))
+                .unwrap();
+            assert!(
+                g.graph
+                    .edges_connecting(line, target)
+                    .any(|e| *e.weight() == InsightEdge::RelatesTo),
+                "conditional TableRelation must relate to '{table}'"
+            );
+        }
     }
 }

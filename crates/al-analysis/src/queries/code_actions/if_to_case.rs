@@ -51,32 +51,41 @@ pub(super) fn source_action_if_to_case(
     let inner_indent = format!("{}    ", indent);
     let body_indent = format!("{}        ", indent);
 
-    let mut case_text = format!("{}case {} of\n", indent, var_name);
+    // The first line replaces the `if` in place, so it must not re-emit the
+    // statement's own indentation.
+    let mut case_text = format!("case {} of\n", var_name);
     for (_, value, body) in &branches {
-        let body_lines = body.trim();
         case_text.push_str(&format!("{}{}:\n", inner_indent, value));
-        for bl in body_lines.lines() {
-            case_text.push_str(&format!("{}{}\n", body_indent, bl.trim()));
-        }
+        push_branch_body(&mut case_text, body, &body_indent);
     }
     if let Some(ref eb) = else_body {
-        let eb_trimmed = eb.trim();
         case_text.push_str(&format!("{}else\n", inner_indent));
-        for bl in eb_trimmed.lines() {
-            case_text.push_str(&format!("{}{}\n", body_indent, bl.trim()));
-        }
+        push_branch_body(&mut case_text, eb, &body_indent);
     }
-    case_text.push_str(&format!("{}end\n", indent));
+    // No trailing newline: the replaced range stops at the end of the
+    // `if_statement` node, so the statement's own `;` (which the grammar puts
+    // *outside* the node) and anything else on that line stay intact.
+    case_text.push_str(&format!("{}end", indent));
 
+    let start_row = if_node.start_position().row;
+    let end_row = if_node.end_position().row;
+    let start_line_text = text.lines().nth(start_row).unwrap_or("");
+    let end_line_text = text.lines().nth(end_row).unwrap_or("");
     let edit = TextEdit {
         range: Range {
             start: super::Position {
-                line: if_node.start_position().row as u32,
-                character: 0,
+                line: start_row as u32,
+                character: al_syntax::byte_col_to_utf16_col(
+                    start_line_text,
+                    if_node.start_position().column,
+                ),
             },
             end: super::Position {
-                line: if_node.end_position().row as u32 + 1,
-                character: 0,
+                line: end_row as u32,
+                character: al_syntax::byte_col_to_utf16_col(
+                    end_line_text,
+                    if_node.end_position().column,
+                ),
             },
         },
         new_text: case_text,
@@ -88,6 +97,60 @@ pub(super) fn source_action_if_to_case(
         edit: Some(single_edit_ws(uri, vec![edit])),
         is_preferred: false,
     })
+}
+
+/// Append one case-branch body to `out`, re-indented under `body_indent` and
+/// terminated with `;`.
+///
+/// The branch body is copied out of the source verbatim, so every line after
+/// the first still carries its original file indentation while the first line
+/// (which started at the node position) carries none. Emitting
+/// `body_indent + line.trim()` for every line — as this used to — flattened all
+/// nested `begin/end` and `if` structure inside the branch. Relative
+/// indentation is therefore preserved by shifting each continuation line by its
+/// offset from the block's own minimum indentation.
+///
+/// AL separates case branches with `;`, and the grammar puts a statement's
+/// terminating `;` *outside* the `if_statement` node, so the extracted body
+/// never carries one. Append it when it is missing, otherwise the generated
+/// `case` does not compile.
+fn push_branch_body(out: &mut String, body: &str, body_indent: &str) {
+    let lines: Vec<&str> = body.trim_end().lines().collect();
+    if lines.is_empty() {
+        return;
+    }
+    let min_indent = lines
+        .iter()
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start().len())
+        .min()
+        .unwrap_or(0);
+
+    let mut rendered: Vec<String> = Vec::with_capacity(lines.len());
+    for (index, line) in lines.iter().enumerate() {
+        if line.trim().is_empty() {
+            rendered.push(String::new());
+            continue;
+        }
+        let extra = if index == 0 {
+            0
+        } else {
+            (line.len() - line.trim_start().len()).saturating_sub(min_indent)
+        };
+        rendered.push(format!("{body_indent}{}{}", " ".repeat(extra), line.trim()));
+    }
+
+    if let Some(last) = rendered.iter_mut().rev().find(|line| !line.is_empty()) {
+        if !last.trim_end().ends_with(';') {
+            last.push(';');
+        }
+    }
+
+    for line in rendered {
+        out.push_str(&line);
+        out.push('\n');
+    }
 }
 
 fn find_outermost_if_at_point(
@@ -643,5 +706,129 @@ mod tests {
             "Out-of-range line must not yield an if-to-case action; got: {:?}",
             action
         );
+    }
+
+    fn convert(al_code: &str, uri_str: &str, cursor_line: u32) -> (String, String) {
+        let ws = Workspace::new();
+        let uri = Url::parse(uri_str).unwrap();
+        open_doc(&ws, &uri, al_code);
+        let range = Range {
+            start: super::super::Position {
+                line: cursor_line,
+                character: 8,
+            },
+            end: super::super::Position {
+                line: cursor_line,
+                character: 8,
+            },
+        };
+        let action = source_action_if_to_case(&ws, &uri, al_code, range)
+            .expect("if-to-case action should be offered");
+        let updated = super::super::test_support::assert_action_applies_cleanly(
+            al_code,
+            &action,
+            "if_to_case",
+        );
+        let new_text = action.edit.as_ref().unwrap().changes[0].1[0]
+            .new_text
+            .clone();
+        (updated, new_text)
+    }
+
+    /// The replacement range used to end at `(last_row + 1, col 0)`, which
+    /// deleted whatever followed the if-statement on its last line — including
+    /// the statement's own `;` — so the converted procedure no longer parsed.
+    #[test]
+    fn if_to_case_keeps_trailing_code_and_semicolon() {
+        let al_code = r#"codeunit 50100 "My Codeunit"
+{
+    procedure DoStuff(x: Integer)
+    begin
+        if x = 1 then
+            Message('one')
+        else if x = 2 then
+            Message('two')
+        else if x = 3 then
+            Message('three');
+        Message('after');
+    end;
+}
+"#;
+        let (updated, _) = convert(al_code, "file:///test/IfTrailing.al", 4);
+        assert!(
+            updated.contains("Message('after');"),
+            "code after the if-statement must survive: {updated}"
+        );
+        assert!(
+            updated.contains("end;"),
+            "the statement's terminating ';' must survive: {updated}"
+        );
+    }
+
+    /// The if-statement is followed by another statement on the *same* line,
+    /// which the old full-line replacement range silently deleted.
+    #[test]
+    fn if_to_case_does_not_delete_trailing_statement_on_the_same_line() {
+        let al_code = "codeunit 50100 \"My Codeunit\"\n{\n    procedure DoStuff(x: Integer)\n    begin\n        if x = 1 then\n            Message('one')\n        else if x = 2 then\n            Message('two')\n        else if x = 3 then\n            Message('three'); Message('tail');\n    end;\n}\n";
+        let (updated, _) = convert(al_code, "file:///test/IfSameLineTail.al", 4);
+        assert!(
+            updated.contains("Message('tail');"),
+            "trailing statement on the same line must survive: {updated}"
+        );
+    }
+
+    #[test]
+    fn if_to_case_result_with_begin_end_bodies_reparses_and_keeps_nesting() {
+        let al_code = r#"codeunit 50100 "My Codeunit"
+{
+    procedure DoStuff(x: Integer)
+    begin
+        if x = 1 then begin
+            Message('one');
+            if x > 0 then
+                Message('positive');
+        end else if x = 2 then begin
+            Message('two');
+        end else if x = 3 then begin
+            Message('three');
+        end;
+    end;
+}
+"#;
+        let (updated, new_text) = convert(al_code, "file:///test/IfNested.al", 4);
+        assert!(updated.contains("case x of"), "{updated}");
+        let inner = new_text
+            .lines()
+            .find(|l| l.contains("Message('positive')"))
+            .expect("nested statement present");
+        let outer = new_text
+            .lines()
+            .find(|l| l.contains("Message('one')"))
+            .expect("outer statement present");
+        assert!(
+            inner.len() - inner.trim_start().len() > outer.len() - outer.trim_start().len(),
+            "nested indentation must be preserved:\n{new_text}"
+        );
+    }
+
+    #[test]
+    fn if_to_case_with_else_reparses_cleanly() {
+        let al_code = r#"codeunit 50100 "My Codeunit"
+{
+    procedure DoStuff(x: Integer)
+    begin
+        if x = 1 then
+            Message('one')
+        else if x = 2 then
+            Message('two')
+        else if x = 3 then
+            Message('three')
+        else
+            Message('default');
+    end;
+}
+"#;
+        let (updated, _) = convert(al_code, "file:///test/IfElseApply.al", 4);
+        assert!(updated.contains("else"), "{updated}");
     }
 }

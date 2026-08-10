@@ -45,7 +45,19 @@ declaration capacity.
 **Dispatch (`interpreter/dispatch.rs`):** receiver-specific stubs → catalog stubs → built-in globals
 → real workspace procedures found through the file index. Calls work in statement and expression
 position, through explicit object receivers and `Codeunit <Subtype>` variables, with `var` scalar
-parameter write-back.
+parameter write-back. The global builtin catalog covers `Error`/`Message`-class dialogs,
+`StrSubstNo`/`Format` (default and XML format 9, with the length argument), string functions
+(`StrLen`, `CopyStr`, `StrPos`, `DelChr`, `ConvertStr`, `PadStr`, `SelectStr`, `IncStr`,
+`LowerCase`/`UpperCase`, `IndexOf`, `MaxStrLen`), math (`Abs`, `Round` with banker's-rounding
+default and the `'='`/`'<'`/`'>'` directions, `Power`), date/time (`Today`, `Time`,
+`CurrentDateTime`, `CreateDateTime`, `Date2DMY`, `DMY2Date`, `DT2Date`, `DT2Time`, `WorkDate`
+with the session default of today), deterministic `Random`/`Randomize`, and
+`GetLastErrorText`/`ClearLastError` wired to `asserterror` capture.
+`supports_global_builtin` is the shared safe-list: the test router sends bare global calls
+outside it (for example `Evaluate` and `CalcDate`) to live BC. `Text` instance methods
+(`Contains`, `Split`, `Replace`, `Substring`, trims and casing) and `Dictionary` — both the
+mutating methods (`Add`/`Set`/`Remove`) and the read-only ones
+(`ContainsKey`/`Count`/`Keys`/`Values`) — also execute locally.
 
 **Native test libraries (`stubs/`):** Library Assert, Library - Variable Storage, Library Random, and
 Any. Randomness is seedable; thread-local state is reset between test methods.
@@ -53,17 +65,25 @@ Any. Randomness is seedable; thread-local state is reset between test methods.
 ## Workspace-record runtime
 
 `Value::Record` handles are wired through `interpreter/records.rs` to the BTreeMap-backed
-`mock::MockRecord` store. Record variables for the same table share a physical table inside one test;
-the complete store is discarded before the next test.
+`mock::MockRecord` store. Record variables for the same table share a physical table inside one
+test, while each variable keeps its own filter set, iteration cursor, and field buffer (BC's
+per-variable view semantics); the complete store is discarded before the next test.
 
 Supported behavior:
 
-- workspace table metadata supplies field numbers and primary keys;
-- Init/Get/Insert/Modify/Delete, field reads/writes, Find/FindSet/FindFirst/FindLast/Next;
-- SetRange/SetFilter, Count/CountApprox/IsEmpty, Reset/SetCurrentKey, DeleteAll;
-- BC-style comparisons, ranges, union/intersection, wildcards, and case-sensitive filters;
+- workspace table metadata supplies field numbers, field types, and primary keys; never-assigned
+  fields read back as their typed zero value (0 / '' / false / 0D) and match zero filters;
+- Init/Get/Insert/Modify/Delete, field reads/writes, Find/FindSet/FindFirst/FindLast/Next, with
+  BC statement/expression semantics (a statement-position `Get`/`Find*` miss raises; `if Rec.Get`
+  yields false; `if Rec.Insert() then` takes the false branch on a duplicate key);
+- Code primary keys are caseless and Integer/Decimal key values unify;
+- SetRange/SetFilter (descending `%N` substitution so `%10` is safe), Count/CountApprox/IsEmpty,
+  Reset/SetCurrentKey, and single-pass DeleteAll;
+- BC-style comparisons, ranges, union/intersection, wildcards, and BC filter case rules:
+  unprefixed Text patterns match case-sensitively, the `@` prefix makes a pattern
+  case-insensitive, and Code cells always compare caselessly;
 - CalcFields and automatic reads for Sum/Average/Min/Max/Count/Exist/Lookup FlowFields with
-  CONST/FIELD/FILTER clauses.
+  CONST/FIELD/FILTER clauses (including Boolean CONST values).
 
 PureLogic and WithRecords are enforced runtime modes. If routing misses a record access, PureLogic
 fails with a capability error instead of silently granting database behavior.
@@ -159,6 +179,10 @@ tests from blocked server tests.
   require live platform objects route to BC.
 - Workspace enum ordinals are exact. Dependency-only enum values route to live BC because package
   symbols do not provide executable source through the interpreter's source catalog.
+- `Evaluate` and `CalcDate` are not implemented natively (their full BC parsing rules are large);
+  the router sends tests that call them — like any other unimplemented global — to live BC.
+  `Format` supports the default and XML (9) renderings plus the length argument; custom
+  `<...>` format strings fail explicitly rather than being silently ignored.
 - `MaxStrLen` is exact for bounded `Text[N]` and `Code[N]` variables and parameters. Unbounded text
   and computed expressions have no finite declaration capacity in the native value model.
 - Live capture composes the native debug hub and live test runner, records explicitly configured

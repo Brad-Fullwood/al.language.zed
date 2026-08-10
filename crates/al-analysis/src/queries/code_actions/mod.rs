@@ -407,21 +407,29 @@ fn whole_declaration_range(text: &str, range: tree_sitter::Range) -> Range {
 /// at `declaration_line`. Quotes and line comments are skipped while locating
 /// the opening brace, so names such as `"Value { old }"` cannot redirect the
 /// edit. The returned columns are UTF-16 LSP columns.
-fn annotation_edit(text: &str, declaration_line: u32, property: &str) -> Option<TextEdit> {
+///
+/// The forward search is bounded by *structure*, not by a line budget: it stops
+/// at the first unquoted brace. A fixed 16-line window silently dropped the
+/// AL-NL002/AL-NL006 quick fixes for declarations whose `{` sits further down
+/// (heavily commented field headers, multi-line `field(...)` signatures).
+pub(super) fn annotation_edit(
+    text: &str,
+    declaration_line: u32,
+    property: &str,
+) -> Option<TextEdit> {
     let lines: Vec<&str> = text.split('\n').collect();
     let declaration = *lines.get(declaration_line as usize)?;
     let declaration_indent = declaration
         .get(..declaration.len() - declaration.trim_start().len())?
         .to_string();
 
-    for (line_index, line) in lines
-        .iter()
-        .enumerate()
-        .skip(declaration_line as usize)
-        .take(16)
-    {
-        let Some(brace_byte) = unquoted_open_brace(line) else {
-            continue;
+    for (line_index, line) in lines.iter().enumerate().skip(declaration_line as usize) {
+        let brace_byte = match unquoted_brace(line) {
+            Some((byte, '{')) => byte,
+            // A closing brace before any opening one means this declaration has
+            // no block of its own — there is nowhere to put the property.
+            Some(_) => return None,
+            None => continue,
         };
         let after_brace = &line[brace_byte + 1..];
         let leading_whitespace_bytes = after_brace.len() - after_brace.trim_start().len();
@@ -455,7 +463,9 @@ fn annotation_edit(text: &str, declaration_line: u32, property: &str) -> Option<
     None
 }
 
-fn unquoted_open_brace(line: &str) -> Option<usize> {
+/// First `{` or `}` on `line` that is not inside a quoted span and not part of
+/// a line comment, as `(byte_offset, brace)`.
+fn unquoted_brace(line: &str) -> Option<(usize, char)> {
     let mut chars = line.char_indices().peekable();
     let mut single_quoted = false;
     let mut double_quoted = false;
@@ -483,8 +493,8 @@ fn unquoted_open_brace(line: &str) -> Option<usize> {
             }
             continue;
         }
-        if ch == '{' && !single_quoted && !double_quoted {
-            return Some(byte);
+        if (ch == '{' || ch == '}') && !single_quoted && !double_quoted {
+            return Some((byte, ch));
         }
     }
     None
@@ -501,6 +511,29 @@ fn code_actions_enabled(workspace: &Workspace) -> bool {
         .try_read()
         .map(|c| c.enable_code_actions)
         .unwrap_or(true)
+}
+
+/// Wrap `name` in `"` when it is not a bare AL identifier.
+///
+/// Generated AL (interface stubs, `actionref` targets, …) must quote any name
+/// containing spaces/punctuation or colliding with a keyword; emitting those
+/// unquoted produces source the compiler rejects.
+pub(super) fn quote_al_identifier(name: &str) -> String {
+    let trimmed = name.trim().trim_matches('"');
+    let is_bare = !trimmed.is_empty()
+        && trimmed
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !al_syntax::language_data::is_keyword(trimmed);
+    if is_bare {
+        trimmed.to_string()
+    } else {
+        format!("\"{}\"", trimmed.replace('"', "\"\""))
+    }
 }
 
 fn detect_indent(text: &str, line: u32) -> String {
@@ -573,6 +606,8 @@ mod implement_interface;
 mod make_local;
 mod namespace;
 mod promoted;
+#[cfg(test)]
+mod test_support;
 mod with_elimination;
 
 #[cfg(test)]

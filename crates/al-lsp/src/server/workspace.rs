@@ -256,15 +256,17 @@ pub(crate) async fn initialize_workspace(
                 let has_server = !project.server_configs.is_empty();
                 if let Some(source) = prompt_download_symbols(&client, deps.len(), has_server).await
                 {
-                    let batch = match source {
-                        DownloadSource::Server => {
-                            download_symbols_from_server(&project, &deps, &client, session.clone())
-                                .await
-                        }
-                        DownloadSource::NuGet => {
-                            download_packages_nuget(&workspace, &deps, &project.packages_dir).await
-                        }
-                    };
+                    // Resolve the whole dependency closure: a downloaded
+                    // package's own manifest dependencies are fetched too.
+                    let batch = download_dependency_closure(
+                        &workspace,
+                        &project,
+                        source,
+                        &client,
+                        session.clone(),
+                        &deps,
+                    )
+                    .await;
                     if !batch.failures.is_empty() {
                         client
                             .show_message(
@@ -599,6 +601,137 @@ async fn refresh_current_symbol_generation(
         drop(publication);
         return Ok(counts);
     }
+}
+
+/// How many *transitive* dependency waves are resolved after the direct
+/// `app.json` dependencies.
+///
+/// Microsoft's extension fetches a dependency's own dependencies recursively.
+/// Real BC dependency chains are shallow (an app on top of a library on top of
+/// Base Application), so this cap only exists to bound a cyclic or hostile
+/// manifest graph; the visited set already prevents re-fetching.
+pub(crate) const MAX_TRANSITIVE_DEPENDENCY_DEPTH: usize = 8;
+
+/// Read `.app` manifests, skipping (with a warning) the ones that cannot be
+/// read. A single unreadable package must not stop transitive resolution.
+pub(crate) fn read_manifests(paths: &[PathBuf]) -> Vec<al_symbols::manifest::NavxManifest> {
+    paths
+        .iter()
+        .filter_map(
+            |path| match al_symbols::app_reader::read_app_manifest_file(path) {
+                Ok(manifest) => Some(manifest),
+                Err(error) => {
+                    warn!(
+                        package = %path.display(),
+                        %error,
+                        "Could not read package manifest for transitive dependency resolution"
+                    );
+                    None
+                }
+            },
+        )
+        .collect()
+}
+
+/// The next wave of dependencies to download.
+///
+/// `.app` manifests declare their own dependencies (`NavxManifest.dependencies`).
+/// Those were parsed but never resolved, so a dependency's dependencies stayed
+/// missing and their symbols never appeared. Returns the declared dependencies
+/// of `downloaded` that are neither already `visited` nor satisfied by an
+/// `available` package, and records them in `visited`.
+pub(crate) fn next_transitive_dependencies(
+    downloaded: &[al_symbols::manifest::NavxManifest],
+    available: &[al_symbols::manifest::NavxManifest],
+    visited: &mut std::collections::HashSet<String>,
+) -> Vec<al_project::project::AppDependency> {
+    let mut next = Vec::new();
+    for manifest in downloaded {
+        for dependency in &manifest.dependencies {
+            let key = dependency.app_id.to_lowercase();
+            if visited.contains(&key) {
+                continue;
+            }
+            let satisfied = available.iter().any(|candidate| {
+                candidate.app_id.eq_ignore_ascii_case(&dependency.app_id)
+                    && al_symbols::model::version_at_least(
+                        &candidate.version,
+                        &dependency.min_version,
+                    )
+            });
+            if satisfied {
+                visited.insert(key);
+                continue;
+            }
+            visited.insert(key);
+            next.push(al_project::project::AppDependency {
+                id: dependency.app_id.clone(),
+                name: dependency.name.clone(),
+                publisher: dependency.publisher.clone(),
+                version: dependency.min_version.clone(),
+            });
+        }
+    }
+    next
+}
+
+/// Download `direct` and then, recursively, whatever those packages themselves
+/// depend on — bounded by [`MAX_TRANSITIVE_DEPENDENCY_DEPTH`] and a visited set.
+async fn download_dependency_closure(
+    workspace: &al_workspace::Workspace,
+    project: &al_project::project::AlProject,
+    source: DownloadSource,
+    client: &tower_lsp::Client,
+    session: Option<LspSessionState>,
+    direct: &[al_project::project::AppDependency],
+) -> DownloadBatch {
+    let mut visited: std::collections::HashSet<String> = direct
+        .iter()
+        .map(|dependency| dependency.id.to_lowercase())
+        .collect();
+    let mut queue = direct.to_vec();
+    let mut batch = DownloadBatch::default();
+
+    for wave in 0..=MAX_TRANSITIVE_DEPENDENCY_DEPTH {
+        if queue.is_empty() {
+            break;
+        }
+        if wave > 0 {
+            info!(
+                wave,
+                count = queue.len(),
+                "Resolving transitive symbol dependencies"
+            );
+        }
+        let round = match source {
+            DownloadSource::Server => {
+                download_symbols_from_server(project, &queue, client, session.clone()).await
+            }
+            DownloadSource::NuGet => {
+                download_packages_nuget(workspace, &queue, &project.packages_dir).await
+            }
+        };
+        batch.failures.extend(round.failures);
+        if round.paths.is_empty() {
+            break;
+        }
+        if wave == MAX_TRANSITIVE_DEPENDENCY_DEPTH {
+            batch.paths.extend(round.paths);
+            warn!(
+                depth = MAX_TRANSITIVE_DEPENDENCY_DEPTH,
+                "Transitive dependency resolution stopped at the depth cap"
+            );
+            break;
+        }
+        let downloaded_manifests = read_manifests(&round.paths);
+        batch.paths.extend(round.paths);
+        let mut available_paths = project.packages.clone();
+        available_paths.extend(batch.paths.iter().cloned());
+        let available = read_manifests(&available_paths);
+        queue = next_transitive_dependencies(&downloaded_manifests, &available, &mut visited);
+    }
+
+    batch
 }
 
 fn missing_dependencies(
@@ -1040,20 +1173,15 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
         )
         .await;
 
-    let batch = match source {
-        DownloadSource::Server => {
-            download_symbols_from_server(
-                &project,
-                &deps,
-                &server.client,
-                Some(server.session.clone()),
-            )
-            .await
-        }
-        DownloadSource::NuGet => {
-            download_packages_nuget(&server.workspace, &deps, &project.packages_dir).await
-        }
-    };
+    let batch = download_dependency_closure(
+        &server.workspace,
+        &project,
+        source,
+        &server.client,
+        Some(server.session.clone()),
+        &deps,
+    )
+    .await;
     if server.session.is_cancelled() {
         return;
     }
@@ -1127,20 +1255,20 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
 /// VS Code, this feature returns only the user's project files. Package symbols
 /// are accessible via completion, hover, and go-to-definition.
 pub(crate) fn handle_workspace_symbol(
-    server: &AlServer,
+    workspace: &al_workspace::Workspace,
     query: &str,
 ) -> Option<Vec<SymbolInformation>> {
     // Use the shared search implementation, which reads cached object data
     // instead of reparsing files on every request.
     const MAX_LSP_SYMBOLS: usize = 10_000;
     let ws_results =
-        al_analysis::queries::search::workspace_search(&server.workspace, query, MAX_LSP_SYMBOLS);
+        al_analysis::queries::search::workspace_search(workspace, query, MAX_LSP_SYMBOLS);
 
     let mut results = Vec::new();
 
     // Top-level objects (table, page, codeunit, etc.)
     for r in ws_results {
-        if let Some(file_text_entry) = server.workspace.file_index.files.get(&r.file_path) {
+        if let Some(file_text_entry) = workspace.file_index.files.get(&r.file_path) {
             if let Ok(file_uri) = Url::from_file_path(&r.file_path) {
                 #[allow(deprecated)]
                 results.push(SymbolInformation {
@@ -1164,11 +1292,8 @@ pub(crate) fn handle_workspace_symbol(
     // Child symbols: procedures, triggers, events.
     let remaining = MAX_LSP_SYMBOLS.saturating_sub(results.len());
     if remaining > 0 {
-        let child_results = al_analysis::queries::search::workspace_search_children(
-            &server.workspace,
-            query,
-            remaining,
-        );
+        let child_results =
+            al_analysis::queries::search::workspace_search_children(workspace, query, remaining);
         for r in child_results {
             if let Ok(file_uri) = Url::from_file_path(&r.file_path) {
                 #[allow(deprecated)]
@@ -1614,6 +1739,114 @@ mod tests {
         let settings = recommended_al_settings();
         assert!(settings["lsp"]["al-lsp"]["settings"].is_object());
         assert!(settings["languages"]["AL"].is_object());
+    }
+
+    fn manifest(
+        id: &str,
+        version: &str,
+        dependencies: &[(&str, &str)],
+    ) -> al_symbols::manifest::NavxManifest {
+        al_symbols::manifest::NavxManifest {
+            app_id: id.to_string(),
+            name: format!("App {id}"),
+            publisher: "Tests".to_string(),
+            version: version.to_string(),
+            dependencies: dependencies
+                .iter()
+                .map(
+                    |(dep_id, min_version)| al_symbols::manifest::ManifestDependency {
+                        app_id: dep_id.to_string(),
+                        name: format!("App {dep_id}"),
+                        publisher: "Tests".to_string(),
+                        min_version: min_version.to_string(),
+                    },
+                )
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn transitive_dependencies_of_downloaded_packages_are_queued() {
+        let downloaded = vec![manifest("A", "1.0.0.0", &[("B", "2.0.0.0")])];
+        let available = vec![manifest("A", "1.0.0.0", &[("B", "2.0.0.0")])];
+        let mut visited: std::collections::HashSet<String> =
+            ["a".to_string()].into_iter().collect();
+        let next = next_transitive_dependencies(&downloaded, &available, &mut visited);
+        assert_eq!(
+            next.len(),
+            1,
+            "B is declared by A and not present: {next:?}"
+        );
+        assert_eq!(next[0].id, "B");
+        assert_eq!(next[0].version, "2.0.0.0");
+        assert!(
+            visited.contains("b"),
+            "the queued dependency must be marked visited"
+        );
+    }
+
+    #[test]
+    fn already_satisfied_or_visited_dependencies_are_not_requeued() {
+        let downloaded = vec![manifest(
+            "A",
+            "1.0.0.0",
+            &[("B", "2.0.0.0"), ("C", "1.0.0.0")],
+        )];
+        // B is already on disk at a new-enough version; C was requested before.
+        let available = vec![manifest("B", "2.5.0.0", &[])];
+        let mut visited: std::collections::HashSet<String> =
+            ["a".to_string(), "c".to_string()].into_iter().collect();
+        let next = next_transitive_dependencies(&downloaded, &available, &mut visited);
+        assert!(next.is_empty(), "nothing new to download: {next:?}");
+    }
+
+    #[test]
+    fn an_older_available_package_still_queues_the_dependency() {
+        let downloaded = vec![manifest("A", "1.0.0.0", &[("B", "3.0.0.0")])];
+        let available = vec![manifest("B", "2.0.0.0", &[])];
+        let mut visited: std::collections::HashSet<String> =
+            ["a".to_string()].into_iter().collect();
+        let next = next_transitive_dependencies(&downloaded, &available, &mut visited);
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].id, "B");
+    }
+
+    #[test]
+    fn a_dependency_cycle_terminates_via_the_visited_set() {
+        // A depends on B, B depends back on A.
+        let mut visited: std::collections::HashSet<String> =
+            ["a".to_string()].into_iter().collect();
+        let first = next_transitive_dependencies(
+            &[manifest("A", "1.0.0.0", &[("B", "1.0.0.0")])],
+            &[],
+            &mut visited,
+        );
+        assert_eq!(first.len(), 1);
+        let second = next_transitive_dependencies(
+            &[manifest("B", "1.0.0.0", &[("A", "1.0.0.0")])],
+            &[],
+            &mut visited,
+        );
+        assert!(
+            second.is_empty(),
+            "the cycle must not requeue A: {second:?}"
+        );
+    }
+
+    #[test]
+    fn transitive_depth_cap_is_bounded() {
+        assert!(
+            (1..=16).contains(&MAX_TRANSITIVE_DEPENDENCY_DEPTH),
+            "the depth cap must stay a small bound"
+        );
+    }
+
+    #[test]
+    fn unreadable_manifests_are_skipped_rather_than_failing_resolution() {
+        let dir = tempfile::tempdir().unwrap();
+        let bogus = dir.path().join("not-an-app.app");
+        std::fs::write(&bogus, b"definitely not a NAVX package").unwrap();
+        assert!(read_manifests(&[bogus]).is_empty());
     }
 
     #[test]
@@ -2315,7 +2548,7 @@ mod tests {
         let service = test_server();
         let server = service.inner();
         // No files indexed → no symbols → None (not an empty Vec).
-        assert!(handle_workspace_symbol(server, "anything").is_none());
+        assert!(handle_workspace_symbol(&server.workspace, "anything").is_none());
     }
 
     #[tokio::test]
@@ -2331,7 +2564,7 @@ mod tests {
             r#"page 50101 "Vendor Card" { }"#.to_string(),
         );
 
-        let results = handle_workspace_symbol(server, "Customer")
+        let results = handle_workspace_symbol(&server.workspace, "Customer")
             .expect("a matching object must yield Some results");
         assert_eq!(results.len(), 1, "only the Customer object matches");
         let sym = &results[0];
@@ -2352,7 +2585,7 @@ mod tests {
 
         // Querying the procedure name must surface the child symbol, not just
         // the top-level object.
-        let results = handle_workspace_symbol(server, "AddNumbers")
+        let results = handle_workspace_symbol(&server.workspace, "AddNumbers")
             .expect("procedure query must return Some");
         assert!(
             results.iter().any(|s| s.name == "AddNumbers"),
@@ -2369,7 +2602,7 @@ mod tests {
             std::path::PathBuf::from("/proj/CustomerCard.al"),
             r#"page 50100 "Customer Card" { }"#.to_string(),
         );
-        assert!(handle_workspace_symbol(server, "ZZZ_no_such_symbol").is_none());
+        assert!(handle_workspace_symbol(&server.workspace, "ZZZ_no_such_symbol").is_none());
     }
 
     #[tokio::test]
@@ -2385,7 +2618,7 @@ mod tests {
             "codeunit 50100 \"Math Util\"\n{\n    procedure AddNumbers(a: Integer): Integer\n    begin\n    end;\n}\n".to_string(),
         );
 
-        let results = handle_workspace_symbol(server, "AddNumbers")
+        let results = handle_workspace_symbol(&server.workspace, "AddNumbers")
             .expect("procedure query must return Some");
         let child = results
             .iter()
@@ -2407,8 +2640,8 @@ mod tests {
             "codeunit 50100 \"Math Util\"\n{\n    procedure AddNumbers(a: Integer): Integer\n    begin\n    end;\n}\n".to_string(),
         );
 
-        let results =
-            handle_workspace_symbol(server, "").expect("empty query must return all symbols");
+        let results = handle_workspace_symbol(&server.workspace, "")
+            .expect("empty query must return all symbols");
         assert!(
             results
                 .iter()
