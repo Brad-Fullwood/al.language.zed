@@ -150,7 +150,7 @@ dependencies = [
 
 [[package]]
 name = "al-explorer"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "al-compile",
  "al-emit",
@@ -188,7 +188,7 @@ dependencies = [
 
 [[package]]
 name = "al-lsp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "al-analysis",
  "al-bc",
@@ -6195,7 +6195,7 @@ dependencies = [
 
 [[package]]
 name = "zed-al"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde_json",
  "zed_extension_api",
