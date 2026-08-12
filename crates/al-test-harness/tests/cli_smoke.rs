@@ -146,7 +146,7 @@ fn assert_contains(args: &[&str], needle: &str, expect_success: bool) {
 #[test]
 fn cli_commands_use_the_real_project_daemon() {
     let cases: &[(&[&str], &str, bool)] = &[
-        (&["version"], "al 0.3", true),
+        (&["version"], "al 0.4", true),
         (&["diag"], "symbolCount", true),
         (&["parse", "src/HelloWorld.al"], "0 errors", true),
         (&["symbols", "src/HelloWorld.al"], "Hello World", true),
