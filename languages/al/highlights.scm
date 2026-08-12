@@ -7,13 +7,20 @@
 (integer) @number
 (decimal) @number
 (date_literal) @number
+(time_literal) @number
+(datetime_literal) @number
+
+; Preprocessor
+(directive) @keyword.directive
+(inactive_code) @comment.unused
 
 ; Generic captures precede structural overrides because query matches are last-wins.
 (identifier) @variable
 (quoted_identifier) @variable
 
+; AL is case-insensitive, so TRUE/True/true are all the boolean literal.
 ((identifier) @constant.builtin
- (#match? @constant.builtin "^(true|false)$"))
+ (#match? @constant.builtin "^([tT][rR][uU][eE]|[fF][aA][lL][sS][eE])$"))
 
 ; Keywords
 (kw_asserterror) @keyword.control
@@ -67,14 +74,7 @@
 (kw_tableextension) @keyword
 (kw_value) @keyword
 
-(op_and) @keyword.operator
-(op_as) @keyword.operator
-(op_div) @keyword.operator
-(op_is) @keyword.operator
-(op_mod) @keyword.operator
 (op_not) @keyword.operator
-(op_or) @keyword.operator
-(op_xor) @keyword.operator
 
 ; Type keywords (override control keyword captures)
 (kw_action) @type.builtin
@@ -216,7 +216,7 @@
 (object_keyword) @keyword
 (type_keyword) @type.builtin
 (metadata_keyword) @keyword
-(property_keyword) @operator
+(property_keyword) @property
 (keyword) @keyword
 (control_keyword) @keyword.control
 
@@ -226,10 +226,18 @@
 (comma) @punctuation
 ["(" ")" "[" "]" "{" "}"] @punctuation.bracket
 
-; Object declarations
+; Object declarations. The leaf is captured rather than the name_or_keyword
+; wrapper so the generic (identifier)/(quoted_identifier) captures above do not
+; win inside the wrapper's span.
 (object_declaration name: (name_or_keyword (name (quoted_identifier) @title)))
 (object_declaration name: (name_or_keyword (name (identifier) @title)))
-(object_declaration (quoted_identifier) @type)
+(object_declaration
+  name: (name_or_keyword [
+    (object_keyword)
+    (metadata_keyword)
+    (property_keyword)
+    (keyword)
+  ] @title))
 
 ; Properties
 (property_assignment name: (_) @property)

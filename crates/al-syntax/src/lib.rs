@@ -131,10 +131,17 @@ pub fn node_name_or(node: tree_sitter::Node, source: &[u8], fallback: &str) -> S
 
 /// Extract the object name from an `object_declaration` node.
 ///
-/// The grammar does not assign a field name to the object name, so we scan
-/// children looking for `identifier`, `quoted_identifier`, `string`, `name`,
-/// or `name_or_keyword` nodes and return the first non-empty, unquoted value.
+/// The name is on the `name:` field as
+/// `(name_or_keyword (name (identifier | quoted_identifier)))`; read it
+/// directly. The positional scan is retained only as a defensive fallback for
+/// any caller that passes a node without the field.
 pub fn extract_object_name(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    if let Some(name) = node
+        .child_by_field_name("name")
+        .and_then(|n| node_text_clean(n, source))
+    {
+        return Some(name);
+    }
     let mut cursor = node.walk();
     for c in node.children(&mut cursor) {
         match c.kind() {

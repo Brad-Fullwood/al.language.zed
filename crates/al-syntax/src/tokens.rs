@@ -1436,9 +1436,9 @@ codeunit 50100 Test
 
     #[test]
     fn test_preprocessor_directives_emit_preprocessor_keyword_tokens() {
-        // The scanner's `directive` leaf starts after the `#pragma ` prefix
-        // (the prefix itself is a hidden token), so the emitted token covers
-        // the directive body.
+        // The scanner's `directive` leaf spans the whole `#...` line, so the
+        // emitted token covers the entire directive including the `#pragma`
+        // prefix.
         let src = "#pragma warning disable AA0001\ncodeunit 50100 Test\n{\n}";
         let mut parser = AlParser::new();
         let result = parser.parse(src);
@@ -1446,7 +1446,7 @@ codeunit 50100 Test
         assert_token_type_for_text(
             src,
             &tokens,
-            "warning disable AA0001",
+            "#pragma warning disable AA0001",
             token_types::PREPROCESSOR_KEYWORD,
         );
 

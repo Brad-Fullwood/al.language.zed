@@ -1,5 +1,4 @@
 ; Outline/symbol rules for AL
-; AUTO-GENERATED - do not edit manually
 
 ; Top-level object declarations
 (object_declaration

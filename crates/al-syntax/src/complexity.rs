@@ -87,8 +87,10 @@ fn count_cyclomatic_decisions(node: Node, source: &[u8], count: &mut u32) {
             }
             // Binary operators: the grammar does NOT wrap binary expressions in a
             // `binary_expression` node — each operator appears as a
-            // `(binary_operator (operator_word))` child inside expression nodes
-            // (the standalone `op_and`/`op_or` tokens are never emitted).
+            // `(binary_operator (operator_word))` child inside expression nodes.
+            // The dedicated `op_and`/`op_or`/… tokens were removed from the
+            // grammar, so inspecting the `operator_word` text is the permanent,
+            // correct approach — not a temporary workaround.
             // Each AND/OR adds a path.
             "expression" => {
                 let mut c = current.walk();
@@ -282,9 +284,10 @@ mod tests {
 
     #[test]
     fn and_or_word_operators_add_decision_points() {
-        // Word operators lex as `(binary_operator (operator_word))`, not as
-        // the grammar's never-emitted `op_and`/`op_or` tokens. `a and b or c`
-        // must contribute two decision points.
+        // Word operators lex as `(binary_operator (operator_word))`; the
+        // dedicated `op_and`/`op_or` tokens were removed from the grammar, so
+        // reading the `operator_word` text is the permanent classification.
+        // `a and b or c` must contribute two decision points.
         let src = r#"codeunit 50100 Test
 {
     procedure WithBoolOps()

@@ -18,6 +18,16 @@
   (begin_end_block) @function.inside)
 
 ; Classes — AL objects (codeunit, table, page, report, etc.)
+(key_declaration) @class.around
+
+(key_declaration
+  body: (object_body) @class.inside)
+
+(key_section) @class.around
+
+(key_section
+  body: (object_body) @class.inside)
+
 (object_declaration) @class.around
 
 (object_declaration

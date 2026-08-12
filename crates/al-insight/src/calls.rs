@@ -1288,25 +1288,12 @@ fn info_implements_from_tree(
 
 /// Best-effort name of an `object_declaration` node (unquoted).
 fn object_decl_name(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
-    if let Some(n) = node.child_by_field_name("name") {
-        if let Ok(t) = n.utf8_text(source) {
-            return Some(t.trim().trim_matches('"').to_string());
-        }
-    }
-    // Fallback: first identifier-like child (the integer id is skipped — not
-    // identifier-like — so the first match is the object name).
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if matches!(
-            child.kind(),
-            "quoted_identifier" | "identifier" | "name_or_keyword" | "name"
-        ) {
-            if let Ok(t) = child.utf8_text(source) {
-                return Some(t.trim().trim_matches('"').to_string());
-            }
-        }
-    }
-    None
+    // The object name is reliably on the `name:` field
+    // `(name_or_keyword (name (identifier | quoted_identifier)))` for every
+    // object kind, so read it directly.
+    node.child_by_field_name("name")
+        .and_then(|n| n.utf8_text(source).ok())
+        .map(|t| t.trim().trim_matches('"').to_string())
 }
 
 fn collect_implements_from_object(node: tree_sitter::Node, source: &[u8]) -> Vec<String> {
