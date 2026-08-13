@@ -104,7 +104,10 @@ fn extract_region_ranges(root: Node, source: &[u8], ranges: &mut Vec<FoldingRang
                             start_line: start_row as u32,
                             start_character: Some(byte_col_to_utf16_col(start_line_str, start_col)),
                             end_line: marker.end_row as u32,
-                            end_character: Some(byte_col_to_utf16_col(end_line_str, marker.end_col)),
+                            end_character: Some(byte_col_to_utf16_col(
+                                end_line_str,
+                                marker.end_col,
+                            )),
                             kind: Some(FoldingRangeKind::Region),
                         });
                     }

@@ -311,7 +311,8 @@ fn parse_table_meta(root: Node<'_>, source: &[u8], want: &str) -> Result<TableMe
     // Post grammar bump `keys { key(...) {} }` parses as a dedicated
     // `key_section` (not a generic `object_section`) whose `body:` holds
     // `key_declaration` nodes; the first is the primary key.
-    let key_section = find_key_section(body).ok_or_else(|| "keys section is missing".to_string())?;
+    let key_section =
+        find_key_section(body).ok_or_else(|| "keys section is missing".to_string())?;
     let keys_body = key_section
         .child_by_field_name("body")
         .ok_or_else(|| "keys section has no body".to_string())?;
