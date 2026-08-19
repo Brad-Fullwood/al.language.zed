@@ -24,7 +24,7 @@ This project rewrites a large part of that experience in native Rust:
 - Native `.app` compilation is implemented in Rust: source is syntax/project/declaration/binding verified, packaged into NAVX/ZIP `.app` artifacts, reopened for integrity checks, and atomically handed off only after all blocking checks pass.
 - Business Central-specific workflows such as impact analysis, event tracing, subscriber lookup, dead-code detection, SQL anti-pattern detection, audit checks, and upgrade reports are exposed through the CLI, daemon JSON-RPC, and MCP tools.
 - Batch test execution includes native interpreter paths for pure-logic codeunits and the supported workspace-record subset, with conservative routing back to live Business Central for base-app/package records, unsupported record behavior, mixed/unknown codeunits, and platform-dependent behavior.
-- Zed talks to the same engine through LSP, DAP, and the `al-tools` MCP context server; repository contributors also have CLI tasks in `.zed/tasks.json`.
+- Zed talks to the same engine through LSP, DAP, and the `al-tools` MCP context server; the language package also ships an AL task list and inline test/event runnables that drive `al-explorer`, and repository contributors have extra CLI tasks in `.zed/tasks.json`.
 
 The goal is full native implementation where that is realistic, with Microsoft compatibility and fallback where exact compiler or runtime behavior still belongs to Microsoft.
 
@@ -369,8 +369,10 @@ Every native archive includes `al-lsp`, `al-explorer`, and the semantic bridge f
 
 Zed auto-resolves or downloads `al-lsp` for LSP, DAP, and the MCP context server. Release archives
 also ship `al-explorer`, but stable Zed cannot address an extension-private sidecar from static task
-JSON, so installed language tasks are intentionally not published. Contributors who run this
-checkout can use `.zed/tasks.json`, where `al-explorer` is expected on `PATH`.
+JSON, so the language package's `tasks.json` and `runnables.scm` expect `al-explorer` on `PATH` — see
+[Language assets](Docs/features/language-assets.md#al-explorer-must-be-on-path) for the install step.
+`.zed/tasks.json` in this checkout carries additional contributor-only tasks under the same
+expectation. LSP commands and the **AL Tools** MCP server cover the same operations without `PATH`.
 
 ## Zed Settings
 

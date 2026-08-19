@@ -29,11 +29,28 @@ files, snippets, themes, and JSON schemas for project files.
 | `injections.scm` | language injection points |
 | `overrides.scm` | tree-sitter quirk overrides |
 | `semantic_token_rules.json` | maps the LSP semantic token types (from `al-lsp`) to Zed theme classes (e.g. `builtinType→@type.builtin`, `tableField→@property`, `excludedCode→@comment.unused`) |
+| `tasks.json` | the AL task list Zed's task picker shows: compile, package, download symbols, authenticate, lint/format/fix, symbol and dependency queries, analysis reports, workspace fixups, and test runs — all `al-explorer` subcommands |
+| `runnables.scm` | inline run buttons next to `[Test]`, `[TestPermissions]`, `[HandlerFunctions]`, `[EventSubscriber]`, `[IntegrationEvent]` and `[BusinessEvent]` procedures, tagged `al-test` / `al-event-subscriber` / `al-event-publisher` |
 
-The installed language package intentionally has no `tasks.json`/`runnables.scm` pair. Stable Zed
-task JSON cannot refer to binaries in the extension work directory, so shipping bare
-`al-explorer` commands would make those buttons fail on a fresh gallery install. Editor-integrated
-operations are exposed through LSP commands and the resolved **AL Tools** MCP server instead.
+### `al-explorer` must be on `PATH`
+
+`tasks.json` and `runnables.scm` are a pair: the runnable queries emit the `al-test`,
+`al-event-publisher` and `al-event-subscriber` tags that task entries subscribe to, so a tag added to
+one needs a task in the other or the inline run button resolves to nothing. The smoke test
+`every_runnable_tag_has_a_task_that_subscribes_to_it` enforces that.
+
+Both invoke a bare `al-explorer`. Stable Zed task JSON cannot address a binary inside the extension
+work directory, so the extension's own downloaded sidecar is not reachable from a task — the tasks
+resolve only once `al-explorer` is on `PATH`. Install it from the release archive, or symlink the
+copy the extension already downloaded:
+
+```sh
+ln -sf "$(ls -d ~/.local/share/zed/extensions/work/al/al-lsp-*/al-explorer | tail -1)" ~/.local/bin/al-explorer
+```
+
+Until that is done the task entries appear in the picker and fail with "command not found". The
+same operations are also available without `PATH` through LSP commands (`al.downloadSymbols`,
+`al.build`, …) and the resolved **AL Tools** MCP server, neither of which needs the sidecar.
 
 ## Snippets
 

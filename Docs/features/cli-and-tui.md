@@ -117,10 +117,12 @@ cross-compiling it. See [Testing guide — daemon IPC](../testing-guide.md#daemo
 ## Compatibility boundaries
 
 - Windows uses a per-user named pipe; Linux and macOS use owner-only Unix-domain sockets.
-- Static language tasks remain unavailable because stable Zed task JSON cannot resolve the
-  extension-private `al-explorer` sidecar. The checkout's contributor-only `.zed/tasks.json`
-  includes affected tests, snapshot diff/validation/live replay, `deps-graph`, XLIFF
-  refresh/untranslated/suggestions, and table impact; smoke tests validate their complete clap
-  argument contracts. The replay task reads the required runtime identity from `AL_BC_VERSION`.
+- Static language tasks (`languages/al/tasks.json`) require `al-explorer` on `PATH`: stable Zed task
+  JSON cannot resolve the extension-private sidecar, so the extension's own downloaded copy is not
+  reachable from a task. See [Language assets](language-assets.md#al-explorer-must-be-on-path).
+  The checkout's contributor-only `.zed/tasks.json` additionally includes affected tests, snapshot
+  diff/validation/live replay, `deps-graph`, XLIFF refresh/untranslated/suggestions, and table
+  impact; smoke tests validate the complete clap argument contracts of both files. The replay task
+  reads the required runtime identity from `AL_BC_VERSION`.
 - Event-subscriber/call-site coverage in the CLI/TUI is workspace-source-only (package `.app` symbols
   have no method bodies).

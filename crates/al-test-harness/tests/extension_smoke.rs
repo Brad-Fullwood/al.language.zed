@@ -8,14 +8,18 @@
 //!   * the daemon / language-server startup path comes up offline (no Business
 //!     Central server) and answers,
 //!   * the MCP transport (`al-lsp mcp`) responds to `tools/list`, and
-//!   * every contributor-only `al-explorer` task in `.zed/tasks.json`
-//!     names a **real** subcommand and supplies clap-valid arguments — verified
-//!     by substituting representative Zed variables and running the complete
-//!     `al-explorer <args...> --help` invocation.
+//!   * every `al-explorer` task in `.zed/tasks.json` (contributor-only) and in
+//!     `languages/al/tasks.json` (shipped with the language package) names a
+//!     **real** subcommand and supplies clap-valid arguments — verified by
+//!     substituting representative Zed variables and running the complete
+//!     `al-explorer <args...> --help` invocation, and
+//!   * every runnable tag the language package emits has a task that subscribes
+//!     to it, so no inline run button resolves to nothing.
 //!
-//! The installed language package intentionally ships no static task/runnable
-//! pair: stable Zed task JSON cannot address binaries in an extension work
-//! directory.
+//! The language package's tasks invoke a bare `al-explorer`. The extension
+//! downloads that sidecar into its work directory but cannot put it on PATH,
+//! so the tasks only resolve once the user installs it — see
+//! `Docs/features/language-assets.md`.
 //!
 //! They do NOT render Zed or assert pixels: the in-editor experience (task
 //! picker, syntax highlight, LSP-in-Zed) needs the GUI e2e harness
@@ -569,11 +573,12 @@ fn substitute_zed_variables(arg: &str) -> String {
         .replace("$AL_BC_VERSION", "26.0.0.0")
 }
 
-#[test]
-fn zed_tasks_map_to_real_subcommands() {
-    let path = zed_tasks_path();
+/// Parse a Zed task file and prove every `al-explorer` entry is executable:
+/// strict JSON, a real subcommand chain, and an argv clap accepts. Returns the
+/// set of subcommand chains the file covers.
+fn assert_tasks_invoke_real_subcommands(path: &Path) -> BTreeSet<String> {
     let raw =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     // Must be STRICT JSON (serde_json rejects comments / trailing commas) so the
     // file round-trips through any tooling, not only Zed's lenient reader.
     let tasks: Vec<Value> = serde_json::from_str(&raw)
@@ -595,10 +600,12 @@ fn zed_tasks_map_to_real_subcommands() {
             .get("label")
             .and_then(Value::as_str)
             .unwrap_or("<no label>");
-        let args = task
-            .get("args")
-            .and_then(Value::as_array)
-            .unwrap_or_else(|| panic!("task {label:?} has no args array"));
+        // A task with no args launches the interactive object explorer; there
+        // is no subcommand chain to pin, and `al-explorer --help` is already
+        // covered by `binaries_resolve_to_built_files`.
+        let Some(args) = task.get("args").and_then(Value::as_array) else {
+            continue;
+        };
         let chain = subcommand_chain(args);
         assert!(
             !chain.is_empty(),
@@ -634,6 +641,13 @@ fn zed_tasks_map_to_real_subcommands() {
         );
         covered.insert(chain.join(" "));
     }
+
+    covered
+}
+
+#[test]
+fn zed_tasks_map_to_real_subcommands() {
+    let covered = assert_tasks_invoke_real_subcommands(&zed_tasks_path());
 
     for expected in EXPECTED_SUBCOMMANDS {
         assert!(
@@ -686,37 +700,95 @@ fn contributor_dependency_graph_task_executes_end_to_end() {
     );
 }
 
+/// Every `(#set! tag "...")` a runnable query emits.
+fn runnable_tags(source: &str) -> BTreeSet<String> {
+    let mut tags = BTreeSet::new();
+    for rest in source.split("(#set! tag ").skip(1) {
+        let Some(quoted) = rest.strip_prefix('"') else {
+            continue;
+        };
+        let Some(end) = quoted.find('"') else {
+            continue;
+        };
+        tags.insert(quoted[..end].to_string());
+    }
+    tags
+}
+
 #[test]
-fn installed_language_package_has_no_path_dependent_tasks() {
+fn installed_language_package_ships_runnable_tasks() {
     let root = workspace_root();
-    let generated = root.join("languages/al/tasks.json");
-    let template =
-        root.join("tree-sitter-al/generator/tools/al-gen/templates/zed-language/tasks.json");
-    let generated_runnables = root.join("languages/al/runnables.scm");
-    let runnable_template =
-        root.join("tree-sitter-al/generator/tools/al-gen/templates/zed-language/runnables.scm");
-    assert!(
-        !generated.exists(),
-        "installed language tasks cannot resolve extension work binaries; remove {}",
-        generated.display()
-    );
-    assert!(
-        !template.exists(),
-        "the generator must not recreate PATH-dependent language tasks: {}",
-        template.display()
-    );
-    assert!(
-        !generated_runnables.exists() && !runnable_template.exists(),
-        "runnable tags without a resolvable task would be dead UI wiring"
-    );
+    let template_dir = root.join("tree-sitter-al/generator/tools/al-gen/templates/zed-language");
+
+    // The language package is generated output: a file present only in
+    // `languages/al` would be wiped by the next `make language`, so assert the
+    // generator owns both halves of the pair.
+    for name in ["tasks.json", "runnables.scm"] {
+        for path in [
+            root.join("languages/al").join(name),
+            template_dir.join(name),
+        ] {
+            assert!(
+                path.exists(),
+                "the language package must ship {name}; missing {}",
+                path.display()
+            );
+        }
+    }
 
     let generator = root.join("tree-sitter-al/generator/tools/al-gen/src/zed_language.rs");
     let source = std::fs::read_to_string(&generator)
         .unwrap_or_else(|error| panic!("read {}: {error}", generator.display()));
+    let registered = source
+        .split_once("const TEMPLATE_FILES: &[&str] = &[")
+        .and_then(|(_, rest)| rest.split_once("];"))
+        .map(|(list, _)| list.to_string())
+        .unwrap_or_else(|| panic!("TEMPLATE_FILES list not found in {}", generator.display()));
+    for name in ["tasks.json", "runnables.scm"] {
+        assert!(
+            registered.contains(&format!("\"{name}\"")),
+            "{name} is not in the generator's TEMPLATE_FILES; `make language` would delete it"
+        );
+    }
+
+    assert_tasks_invoke_real_subcommands(&root.join("languages/al/tasks.json"));
+}
+
+#[test]
+fn every_runnable_tag_has_a_task_that_subscribes_to_it() {
+    let root = workspace_root();
+    let runnables = root.join("languages/al/runnables.scm");
+    let tasks_path = root.join("languages/al/tasks.json");
+
+    let source = std::fs::read_to_string(&runnables)
+        .unwrap_or_else(|error| panic!("read {}: {error}", runnables.display()));
+    let tags = runnable_tags(&source);
     assert!(
-        !source.contains("\"tasks.json\"") && !source.contains("\"runnables.scm\""),
-        "the generated-file set still requires the removed task/runnable surface"
+        !tags.is_empty(),
+        "{} declares no runnable tags",
+        runnables.display()
     );
+
+    let raw = std::fs::read_to_string(&tasks_path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", tasks_path.display()));
+    let tasks: Vec<Value> = serde_json::from_str(&raw)
+        .unwrap_or_else(|error| panic!("{} is not valid JSON: {error}", tasks_path.display()));
+    let subscribed: BTreeSet<String> = tasks
+        .iter()
+        .filter_map(|task| task.get("tags").and_then(Value::as_array))
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect();
+
+    for tag in &tags {
+        assert!(
+            subscribed.contains(tag),
+            "runnable tag {tag:?} has no task in {}; the inline run button would \
+             resolve to nothing",
+            tasks_path.display()
+        );
+    }
 }
 
 fn top_level_help_commands(help: &str) -> BTreeSet<String> {
