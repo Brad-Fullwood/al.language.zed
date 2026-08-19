@@ -308,11 +308,15 @@ fn parse_table_meta(root: Node<'_>, source: &[u8], want: &str) -> Result<TableMe
         return Err("fields section contains no usable field definitions".to_string());
     }
 
-    let keys_body =
-        section_body(body, "keys", source).ok_or_else(|| "keys section is missing".to_string())?;
-    let key_def = sections_with_keyword(keys_body, "key", source)
-        .into_iter()
-        .next()
+    // Post grammar bump `keys { key(...) {} }` parses as a dedicated
+    // `key_section` (not a generic `object_section`) whose `body:` holds
+    // `key_declaration` nodes; the first is the primary key.
+    let key_section =
+        find_key_section(body).ok_or_else(|| "keys section is missing".to_string())?;
+    let keys_body = key_section
+        .child_by_field_name("body")
+        .ok_or_else(|| "keys section has no body".to_string())?;
+    let key_def = first_key_declaration(keys_body)
         .ok_or_else(|| "keys section contains no primary key".to_string())?;
     let pk_field_names = parse_key_fields(key_def, source)?;
     if pk_field_names.is_empty() {
@@ -368,17 +372,14 @@ fn find_table_object<'a>(root: Node<'a>, source: &[u8], want: &str) -> Option<No
 }
 
 /// The object name (quoted or bare identifier) declared on an `object_declaration`.
+///
+/// The name lives on the `name:` field as
+/// `(name_or_keyword (name (identifier | quoted_identifier)))`. Reading the
+/// field text and stripping any surrounding quotes recovers the identifier.
 fn object_name_of(obj: Node<'_>, source: &[u8]) -> Option<String> {
-    let mut cursor = obj.walk();
-    for child in obj.named_children(&mut cursor) {
-        if matches!(child.kind(), "quoted_identifier" | "identifier") {
-            return child
-                .utf8_text(source)
-                .ok()
-                .map(|t| t.trim_matches('"').to_string());
-        }
-    }
-    None
+    obj.child_by_field_name("name")
+        .and_then(|n| n.utf8_text(source).ok())
+        .map(|t| t.trim().trim_matches('"').to_string())
 }
 
 /// Get the `body` object_body of the `object_section` whose keyword equals `kw`.
@@ -407,6 +408,26 @@ fn sections_with_keyword<'a>(body: Node<'a>, kw: &str, source: &[u8]) -> Vec<Nod
         }
     }
     out
+}
+
+/// The table's `key_section` (the `keys { }` block) among an object body's
+/// children. Post grammar bump `keys` is a dedicated `key_section` node rather
+/// than a generic `object_section`, so it is matched by kind, not keyword text.
+fn find_key_section<'a>(body: Node<'a>) -> Option<Node<'a>> {
+    let mut cursor = body.walk();
+    let found = body
+        .named_children(&mut cursor)
+        .find(|c| c.kind() == "key_section");
+    found
+}
+
+/// The first `key_declaration` (the primary key) inside a `key_section` body.
+fn first_key_declaration<'a>(keys_body: Node<'a>) -> Option<Node<'a>> {
+    let mut cursor = keys_body.walk();
+    let found = keys_body
+        .named_children(&mut cursor)
+        .find(|c| c.kind() == "key_declaration");
+    found
 }
 
 fn section_keyword(section: Node<'_>, source: &[u8]) -> Option<String> {
@@ -551,27 +572,27 @@ fn property_value_text(prop: Node<'_>, source: &[u8]) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Parse `key(Name; F1, F2, …)` → the field names (excluding the key name).
-fn parse_key_fields(section: Node<'_>, source: &[u8]) -> Result<Vec<String>, String> {
-    let mut cursor = section.walk();
-    let pblock = section
-        .named_children(&mut cursor)
-        .find(|n| n.kind() == "parenthesized_block")
-        .ok_or_else(|| "primary key definition is missing its parameter list".to_string())?;
+/// Parse a `key(Name; F1, F2, …)` `key_declaration` → the field names
+/// (excluding the key's own name).
+///
+/// The field references live on the grammar's `fields:` `key_field_list`; the
+/// key name is a separate `name:` field, so the list already excludes it. The
+/// list's named children are the field references interleaved with `comma`
+/// nodes.
+fn parse_key_fields(key: Node<'_>, source: &[u8]) -> Result<Vec<String>, String> {
+    let list = key
+        .child_by_field_name("fields")
+        .ok_or_else(|| "primary key definition is missing its field list".to_string())?;
     let mut names: Vec<String> = Vec::new();
-    let mut after_key_name = false;
-    let mut bc = pblock.walk();
-    for child in pblock.children(&mut bc) {
-        if child.kind() == "semicolon" {
-            after_key_name = true;
+    let mut cursor = list.walk();
+    for child in list.named_children(&mut cursor) {
+        if child.kind() == "comma" {
             continue;
         }
-        if after_key_name && child.is_named() && child.kind() != "comma" {
-            let text = child
-                .utf8_text(source)
-                .map_err(|error| format!("primary-key name is not UTF-8: {error}"))?;
-            names.push(text.trim_matches('"').to_string());
-        }
+        let text = child
+            .utf8_text(source)
+            .map_err(|error| format!("primary-key field name is not UTF-8: {error}"))?;
+        names.push(text.trim_matches('"').to_string());
     }
     Ok(names)
 }

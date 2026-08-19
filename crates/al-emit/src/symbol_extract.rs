@@ -1000,7 +1000,19 @@ fn extract_field_groups(body: Node, src: &[u8]) -> Vec<KeySymbol> {
 }
 
 fn extract_table_keys(body: Node, src: &[u8]) -> Vec<KeySymbol> {
-    let Some(keys_section) = find_section(body, src, "key") else {
+    // `keys { key(Name; F1, F2) {} }` parses as a dedicated `key_section` whose
+    // `body:` holds `key_declaration` nodes. The key name is the `name:` field
+    // and the field references are the `fields:` `key_field_list` (interleaved
+    // with `comma` nodes); key properties are the `key_declaration`'s `body:`.
+    let mut sc = body.walk();
+    let mut keys_section = None;
+    for child in body.children(&mut sc) {
+        if child.kind() == "key_section" {
+            keys_section = Some(child);
+            break;
+        }
+    }
+    let Some(keys_section) = keys_section else {
         return Vec::new();
     };
     let Some(inner) = keys_section.child_by_field_name("body") else {
@@ -1009,21 +1021,28 @@ fn extract_table_keys(body: Node, src: &[u8]) -> Vec<KeySymbol> {
     let mut out = Vec::new();
     let mut c = inner.walk();
     for child in inner.children(&mut c) {
-        if child.kind() != "object_section" {
+        if child.kind() != "key_declaration" {
             continue;
         }
-        let Some(pblock) = child_of_kind(child, "parenthesized_block") else {
+        let Some(name) = child.child_by_field_name("name") else {
             continue;
         };
-        let parts = paren_parts(pblock, src);
-        let Some(name) = parts.first() else { continue };
-        let field_names = parts.iter().skip(1).map(|s| unquote(s)).collect();
+        let mut field_names = Vec::new();
+        if let Some(list) = child.child_by_field_name("fields") {
+            let mut fc = list.walk();
+            for field in list.named_children(&mut fc) {
+                if field.kind() == "comma" {
+                    continue;
+                }
+                field_names.push(unquote(text(field, src)));
+            }
+        }
         let properties = child
             .child_by_field_name("body")
             .map(|b| extract_object_properties(b, src))
             .unwrap_or_default();
         out.push(KeySymbol {
-            name: unquote(name),
+            name: unquote(text(name, src)),
             field_names,
             properties,
         });

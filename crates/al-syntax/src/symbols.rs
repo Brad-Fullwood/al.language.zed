@@ -186,7 +186,11 @@ fn extract_body_children(body: Node, source: &[u8], symbols: &mut Vec<DocumentSy
                     symbols.push(sym);
                 }
             }
-            "object_section" => {
+            // `key_section` (the `keys { }` block) is routed through
+            // extract_section_symbol like any other section: its `keyword`
+            // field (`kw_keys`, text "keys") maps to SymbolKind::Key and its
+            // body's key_declarations become child key symbols.
+            "object_section" | "key_section" => {
                 if let Some(sym) = extract_section_symbol(child, source) {
                     symbols.push(sym);
                 }
@@ -639,7 +643,7 @@ fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<Do
         };
         top.idx += 1;
         match child.kind() {
-            "object_section" => {
+            "object_section" | "key_section" => {
                 if let Some(sym) = extract_section_symbol(child, source) {
                     symbols.push(sym);
                 }
@@ -655,14 +659,11 @@ fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<Do
                 }
             }
             "key_declaration" => {
-                // key_declaration covers both table keys (keyword="key") and
-                // report/query dataitems (keyword="dataitem"). Dataitems need
-                // their body braced_block scanned for raw trigger tokens.
-                if is_dataitem_key_declaration(child, source) {
-                    if let Some(sym) = extract_dataitem_symbol(child, source) {
-                        symbols.push(sym);
-                    }
-                } else if let Some(sym) = extract_key_symbol(child, source) {
+                // Post grammar bump `key_declaration` is reachable and only ever
+                // a table key `key(Name; fields) {}` (keyword `kw_key`).
+                // Report/query dataitems remain `object_section`
+                // (keyword="dataitem") and are handled by the object_section arm.
+                if let Some(sym) = extract_key_symbol(child, source) {
                     symbols.push(sym);
                 }
             }
@@ -690,9 +691,8 @@ fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<Do
             // Raw `trigger OnFoo()` patterns inside
             // dataitem/action bodies have a `control_keyword` parent (text
             // "trigger") followed by an identifier + parenthesized_block.
-            // Handle inline here; the standalone function is retained for
-            // callers that walk a single braced_block in isolation
-            // (extract_dataitem_symbol body scan).
+            // Handle inline here so dataitem/action inline triggers are picked
+            // up as the generic body walker descends their braced blocks.
             "control_keyword" => {
                 if let Some(sym) = try_extract_inline_trigger(child, source) {
                     symbols.push(sym);
@@ -742,40 +742,6 @@ fn try_extract_inline_trigger(kw_node: Node, source: &[u8]) -> Option<DocumentSy
         selection_range,
         children: None,
     })
-}
-
-/// Scan a `braced_block` for trigger declarations that the grammar parses as raw tokens.
-///
-/// Inside dataitem bodies and some action blocks, `trigger OnPreDataItem()` is not
-/// parsed as a `trigger_declaration` node — it appears as:
-///   `control_keyword("trigger")` + `identifier("OnPreDataItem")` + `parenthesized_block("()")`
-///
-/// This function walks the block's children looking for that pattern.
-fn extract_triggers_from_braced_block(
-    block: Node,
-    source: &[u8],
-    symbols: &mut Vec<DocumentSymbol>,
-) {
-    let mut cursor = block.walk();
-    if !cursor.goto_first_child() {
-        return;
-    }
-
-    loop {
-        let child = cursor.node();
-        // `control_keyword("trigger")` + name is the raw-token shape here.
-        // Delegate to try_extract_inline_trigger so the "trigger Name()"
-        // recognition — including rejecting bare `keyword` nodes (e.g. `var`)
-        // as trigger names — lives in exactly one place.
-        if child.kind() == "control_keyword" {
-            if let Some(sym) = try_extract_inline_trigger(child, source) {
-                symbols.push(sym);
-            }
-        }
-        if !cursor.goto_next_sibling() {
-            break;
-        }
-    }
 }
 
 fn try_extract_page_control(kw_node: Node, source: &[u8]) -> Option<DocumentSymbol> {
@@ -915,112 +881,6 @@ fn extract_key_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
         range,
         selection_range,
         children: None,
-    })
-}
-
-/// Return true if this `key_declaration` node represents a report/query dataitem
-/// (i.e. its first keyword child has text "dataitem") rather than a table key.
-fn is_dataitem_key_declaration(node: Node, source: &[u8]) -> bool {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if matches!(
-            child.kind(),
-            "keyword" | "metadata_keyword" | "control_keyword"
-        ) {
-            return child
-                .utf8_text(source)
-                .map(|t| t.eq_ignore_ascii_case("dataitem"))
-                .unwrap_or(false);
-        }
-    }
-    false
-}
-
-/// Extract a report/query dataitem symbol from a `key_declaration` node whose keyword is
-/// "dataitem".
-///
-/// The grammar reuses `key_declaration` for dataitems:
-///   key_declaration
-///     keyword("dataitem")
-///     name_or_keyword("StagingRec")
-///     semicolon
-///     name_or_keyword("\"Item Journal Staging\"")
-///     braced_block { ... }
-///
-/// Unlike table keys, the body braced_block may contain raw trigger tokens
-/// (`control_keyword("trigger") identifier("OnPreDataItem") ...`) that are not
-/// parsed as `trigger_declaration` nodes.
-fn extract_dataitem_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
-    let mut name = "(unnamed)".to_string();
-    let mut name_node_range = node.range();
-    let mut seen_semicolon = false;
-    {
-        let mut c = node.walk();
-        for child in node.children(&mut c) {
-            match child.kind() {
-                "keyword" | "metadata_keyword" | "control_keyword" => {}
-                "semicolon" => {
-                    seen_semicolon = true;
-                }
-                "(" | ")" => {}
-                _ if !seen_semicolon => {
-                    // Use index-based child access to avoid iterator borrow issues.
-                    let raw = child.utf8_text(source).unwrap_or("");
-                    let mut resolved = raw.to_string();
-                    // also capture the inner identifier's RANGE
-                    // so the selection_range points at just the name, not the
-                    // enclosing wrapper (e.g. parenthesized_block). Without
-                    // this the outline's "go to definition" target was the
-                    // whole `(Name; ...)` block.
-                    let mut resolved_range = child.range();
-                    for ci in 0..child.child_count() {
-                        if let Some(inner) = child.child(ci) {
-                            if matches!(inner.kind(), "identifier" | "quoted_identifier" | "name") {
-                                if let Ok(t) = inner.utf8_text(source) {
-                                    resolved = t.to_string();
-                                    resolved_range = inner.range();
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    let trimmed = resolved.trim_matches('"').trim().to_string();
-                    if !trimmed.is_empty() {
-                        name = trimmed;
-                        name_node_range = resolved_range;
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let range = ts_range_to_lsp(&node.range(), source);
-    let selection_range = ts_range_to_lsp(&name_node_range, source);
-
-    let mut children: Vec<DocumentSymbol> = Vec::new();
-    {
-        let mut c = node.walk();
-        for child in node.children(&mut c) {
-            if child.kind() == "braced_block" {
-                extract_triggers_from_braced_block(child, source, &mut children);
-                break;
-            }
-        }
-    }
-
-    Some(DocumentSymbol {
-        name,
-        detail: Some("dataitem".to_string()),
-        kind: SymbolKind::Struct,
-        range,
-        selection_range,
-        children: if children.is_empty() {
-            None
-        } else {
-            Some(children)
-        },
     })
 }
 
@@ -2435,83 +2295,14 @@ report 50102 "R2" { rendering { layout(L) { } } requestpage { layout { } } datas
     }
 
     #[test]
-    fn test_is_dataitem_key_declaration_true_and_false() {
-        // The first keyword-ish child's text decides. A report dataitem
-        // object_section has a leading metadata_keyword "dataitem" -> true.
-        let (tree, src) =
-            parse_tree("report 50200 \"R\"\n{\n    dataset { dataitem(I; Customer) { } }\n}");
-        let dataitem_section =
-            find_node_kind_text(tree.root_node(), "metadata_keyword", "dataitem", &src)
-                .and_then(|kw| kw.parent())
-                .expect("dataitem object_section");
-        assert!(
-            is_dataitem_key_declaration(dataitem_section, src.as_bytes()),
-            "first keyword child 'dataitem' -> true"
-        );
-
-        // A page area section's leading keyword is "area" -> false.
-        let (tree2, src2) = parse_tree("page 50100 \"P\"\n{\n    layout { area(Content) { } }\n}");
-        let area_section =
-            find_node_kind_text(tree2.root_node(), "metadata_keyword", "area", &src2)
-                .and_then(|kw| kw.parent())
-                .expect("area object_section");
-        assert!(
-            !is_dataitem_key_declaration(area_section, src2.as_bytes()),
-            "first keyword child 'area' -> false"
-        );
-    }
-
-    #[test]
-    fn test_extract_triggers_from_braced_block_finds_inline_trigger() {
-        // extract_triggers_from_braced_block scans a braced block for
-        // control_keyword("trigger") + identifier. The current grammar rarely
-        // emits that exact shape, so we assert the function's no-trigger path
-        // (a body with no trigger token yields no symbols) which still walks
-        // every child of a real braced block.
-        let (tree, src) = parse_tree(
-            "page 50100 \"P\"\n{\n    layout { area(Content) { field(F; Rec.F) { } } }\n}",
-        );
-        let body = find_node_of_kind(tree.root_node(), "object_body").expect("object_body");
-        let mut out = Vec::new();
-        extract_triggers_from_braced_block(body, src.as_bytes(), &mut out);
-        assert!(
-            out.iter().all(|s| s.kind == SymbolKind::Event),
-            "any extracted symbol must be an Event trigger"
-        );
-    }
-
-    #[test]
-    fn test_extract_dataitem_symbol_via_key_node_name_and_struct_kind() {
-        // extract_dataitem_symbol (the key_declaration spelling) walks children
-        // for the first non-keyword token as the name and emits a Struct symbol.
-        // Drive it with a report dataitem object_section: its first non-keyword
-        // child (after the metadata_keyword) is the dataitem name inside the
-        // parenthesized_block.
-        let (tree, src) = parse_tree(
-            "report 50200 \"R\"\n{\n    dataset { dataitem(StagingRec; \"Src\") { } }\n}",
-        );
-        let section = find_node_kind_text(tree.root_node(), "metadata_keyword", "dataitem", &src)
-            .and_then(|kw| kw.parent())
-            .expect("dataitem object_section");
-        let sym = extract_dataitem_symbol(section, src.as_bytes()).expect("always Some");
-        assert_eq!(sym.kind, SymbolKind::Struct);
-        assert_eq!(sym.detail.as_deref(), Some("dataitem"));
-        // The name is resolved from the inner identifier of the parenthesized
-        // block (StagingRec), not the literal "dataitem" keyword.
-        assert_ne!(sym.name, "dataitem");
-        assert_ne!(sym.name, "(unnamed)");
-    }
-
-    #[test]
     fn test_extract_named_symbol_unnamed_fallback() {
         // A node with no `name` field falls back to "(unnamed)" and uses the
-        // node range as the selection range.
+        // node range as the selection range. Object declarations now carry a
+        // populated `name:` field, so the fallback is exercised with an
+        // `object_body`, which has no name field.
         let (tree, src) = parse_tree("codeunit 50100 \"C\" { }");
-        // object_declaration has no `name` field (name is unnamed positional),
-        // so extract_named_symbol falls back to "(unnamed)".
-        let obj =
-            find_node_of_kind(tree.root_node(), "object_declaration").expect("object_declaration");
-        let sym = extract_named_symbol(obj, src.as_bytes(), SymbolKind::Function, None)
+        let body = find_node_of_kind(tree.root_node(), "object_body").expect("object_body");
+        let sym = extract_named_symbol(body, src.as_bytes(), SymbolKind::Function, None)
             .expect("always Some");
         assert_eq!(sym.name, "(unnamed)");
         assert_eq!(sym.selection_range, sym.range);

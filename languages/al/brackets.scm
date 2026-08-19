@@ -1,17 +1,14 @@
 ; Bracket matching rules for AL
-; AUTO-GENERATED - do not edit manually
 
 ; Standard bracket pairs
 ("[" @open "]" @close)
 ("(" @open ")" @close)
+("{" @open "}" @close)
 
-; begin/end blocks (procedures, triggers, etc.)
+; begin/end blocks (procedures, triggers, and nested statement blocks)
 ((begin_end_block (kw_begin) @open (kw_end) @close))
 
-; if/then - kw_if opens, the begin_end_block's kw_end closes
-((if_statement (kw_if) @open))
-
-; case - kw_case opens, kw_end closes (kw_end is a direct child of case_statement)
+; case/end (kw_end is a direct child of case_statement)
 ((case_statement (kw_case) @open (kw_end) @close))
 
 ; repeat/until

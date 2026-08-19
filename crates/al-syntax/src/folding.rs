@@ -22,9 +22,99 @@ pub fn extract_folding_ranges(tree: &Tree, text: &str) -> Vec<FoldingRange> {
     let mut ranges = Vec::new();
 
     extract_structural_ranges(root, source, &mut ranges);
+    extract_region_ranges(root, source, &mut ranges);
     extract_comment_block_ranges(text, &mut ranges);
 
     ranges
+}
+
+#[derive(Clone, Copy)]
+enum RegionMarker {
+    Start,
+    End,
+}
+
+/// Classify a `directive` node's text as a `#region` / `#endregion` marker.
+///
+/// Mirrors the `@fold.region.start` / `@fold.region.end` captures in
+/// `folds.scm`: the keyword is matched case-insensitively and requires a name
+/// boundary, so `#regional` does not open a fold and `#endregionExtra` does not
+/// close one. Any amount of whitespace is allowed between `#` and the keyword.
+fn directive_region_kind(text: &str) -> Option<RegionMarker> {
+    let rest = text.trim_start().strip_prefix('#')?.trim_start();
+    let lower = rest.to_ascii_lowercase();
+    if let Some(after) = lower.strip_prefix("endregion") {
+        if after.is_empty() || after.starts_with(char::is_whitespace) {
+            return Some(RegionMarker::End);
+        }
+    } else if let Some(after) = lower.strip_prefix("region") {
+        if after.is_empty() || after.starts_with(char::is_whitespace) {
+            return Some(RegionMarker::Start);
+        }
+    }
+    None
+}
+
+/// Fold `#region … #endregion` preprocessor blocks. `directive` nodes span the
+/// whole `#…` line; they are paired with a stack so nested regions fold
+/// independently and unmatched markers are ignored.
+fn extract_region_ranges(root: Node, source: &[u8], ranges: &mut Vec<FoldingRange>) {
+    // Collect region markers as owned data — `walk_tree` hands the closure a
+    // node that does not outlive the call, so `Node`s cannot be stored.
+    struct Marker {
+        kind: RegionMarker,
+        start_byte: usize,
+        start_row: usize,
+        start_col: usize,
+        end_row: usize,
+        end_col: usize,
+    }
+    let mut markers: Vec<Marker> = Vec::new();
+    walk_tree(root, &mut |node| {
+        if node.kind() != "directive" {
+            return;
+        }
+        if let Ok(text) = node.utf8_text(source) {
+            if let Some(kind) = directive_region_kind(text) {
+                let start = node.start_position();
+                let end = node.end_position();
+                markers.push(Marker {
+                    kind,
+                    start_byte: node.start_byte(),
+                    start_row: start.row,
+                    start_col: start.column,
+                    end_row: end.row,
+                    end_col: end.column,
+                });
+            }
+        }
+    });
+    markers.sort_by_key(|m| m.start_byte);
+
+    let mut open: Vec<(usize, usize)> = Vec::new();
+    for marker in &markers {
+        match marker.kind {
+            RegionMarker::Start => open.push((marker.start_row, marker.start_col)),
+            RegionMarker::End => {
+                if let Some((start_row, start_col)) = open.pop() {
+                    if start_row < marker.end_row {
+                        let start_line_str = get_source_line(source, start_row);
+                        let end_line_str = get_source_line(source, marker.end_row);
+                        ranges.push(FoldingRange {
+                            start_line: start_row as u32,
+                            start_character: Some(byte_col_to_utf16_col(start_line_str, start_col)),
+                            end_line: marker.end_row as u32,
+                            end_character: Some(byte_col_to_utf16_col(
+                                end_line_str,
+                                marker.end_col,
+                            )),
+                            kind: Some(FoldingRangeKind::Region),
+                        });
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn extract_structural_ranges(root: Node, source: &[u8], ranges: &mut Vec<FoldingRange>) {
@@ -40,6 +130,8 @@ fn extract_structural_ranges(root: Node, source: &[u8], ranges: &mut Vec<Folding
             | "event_procedure_declaration"
             | "begin_end_block"
             | "object_section"
+            | "key_section"
+            | "key_declaration"
             | "object_body"
             | "braced_block"
             | "var_section"
@@ -269,6 +361,65 @@ codeunit 50100 Test
             !ranges.is_empty(),
             "Should have folding ranges for procedure"
         );
+    }
+
+    #[test]
+    fn test_folding_table_keys() {
+        // Post grammar bump `keys { }` is a `key_section` and each `key(...)` a
+        // `key_declaration`; both must still produce folds.
+        let src = "table 50100 \"My Table\"\n{\n    keys\n    {\n        key(PK; \"No.\")\n        {\n            Clustered = true;\n        }\n    }\n}";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let ranges = extract_folding_ranges(&result.tree, src);
+        // The `keys` block opens on line 3 (its `{`).
+        assert!(
+            ranges
+                .iter()
+                .any(|r| r.kind == Some(FoldingRangeKind::Region) && r.start_line == 3),
+            "expected a fold for the keys block, got {ranges:?}"
+        );
+        assert_no_duplicate_ranges(&ranges);
+    }
+
+    #[test]
+    fn test_folding_region_directives() {
+        let src = "codeunit 50100 Test\n{\n    #region Helpers\n    procedure P()\n    begin\n    end;\n    #endregion\n}";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let ranges = extract_folding_ranges(&result.tree, src);
+        // #region on line 2, #endregion on line 6.
+        assert!(
+            ranges
+                .iter()
+                .any(|r| r.kind == Some(FoldingRangeKind::Region)
+                    && r.start_line == 2
+                    && r.end_line == 6),
+            "expected a #region fold spanning lines 2..=6, got {ranges:?}"
+        );
+    }
+
+    #[test]
+    fn test_region_marker_name_boundary() {
+        assert!(matches!(
+            directive_region_kind("#region"),
+            Some(RegionMarker::Start)
+        ));
+        assert!(matches!(
+            directive_region_kind("#region MyRegion"),
+            Some(RegionMarker::Start)
+        ));
+        assert!(matches!(
+            directive_region_kind("# region Spaced"),
+            Some(RegionMarker::Start)
+        ));
+        assert!(matches!(
+            directive_region_kind("#endregion"),
+            Some(RegionMarker::End)
+        ));
+        // Name boundary: these are not region markers.
+        assert!(directive_region_kind("#regional").is_none());
+        assert!(directive_region_kind("#endregionExtra").is_none());
+        assert!(directive_region_kind("#pragma warning disable AA0001").is_none());
     }
 
     #[test]
