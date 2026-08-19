@@ -1,6 +1,6 @@
 id = "al"
 name = "AL Language (Business Central)"
-version = "0.3.0"
+version = "0.4.0"
 schema_version = 1
 authors = ["Brad Fullwood"]
 description = "AL language support for Microsoft Dynamics 365 Business Central"
