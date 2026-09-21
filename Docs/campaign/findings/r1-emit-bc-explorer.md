@@ -204,21 +204,21 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
   `al authenticate status` prints `not authenticated` for every tenant and exits 0, so `al authenticate status && al download-symbols --source server` proceeds unauthenticated.
   `al xlf generate` goes through `run_command`, which always returns `SUCCESS` (commands/mod.rs:386-388), so a project without `features: ["TranslationFile"]` prints "No translatable texts found", writes no `.g.xlf`, and exits 0.
 - fix: `dead-code` fails on any non-empty findings array; `setup` reuses `doctor_exit_code`; `authenticate status` fails when no tenant is `authenticated && !expired`; `xlf generate` switches to `run_command_with_exit` and fails on a null `path`.
-- status: open
+- status: fixed 9440fb1b
 
 ### [BUG] a typo'd `authenticate` subcommand runs a real interactive login
 - where: crates/al-explorer/src/cli/args.rs:360-363
 - severity: medium
 - scenario: `cmd` is a free-form `String` with `default_value = "login"` and no `value_parser`. The daemon's dispatch falls through to the login branch for any unrecognised value (build_dispatch/symbols_auth.rs:89, 148), so `al authenticate clera` starts a real browser/device-code OAuth flow — with the default 30 s client timeout, because the 120 s bump at lsp/project.rs:243-245 only applies to the literal `"login"` — and then fails the response contract with "unsupported authenticate response command 'clera'" after the login has already happened.
 - fix: make `cmd` a `#[derive(ValueEnum)]` with `Login | Status | Clear` so clap rejects the typo before anything runs.
-- status: open
+- status: fixed 9440fb1b
 
 ### [GAP] three clap arguments promise a constraint the attributes do not enforce
 - where: crates/al-explorer/src/cli/subcommands.rs:115, 136, 153, 176, 196; cli/args.rs:424-426; cli/args.rs:573-574
 - severity: low
 - scenario: `--company` is declared `#[arg(long, default_value = "")]` on all five snapshot/profile subcommands, so `--help` shows `[default: ]` as if it were optional, and `al snapshot list --server http://host/BC` dies at runtime with "`--company` is required" from `bc_server_params` (commands/mod.rs:61-66). `--event`'s help says "(requires --object)" with no clap `requires`, enforced only by a manual check at insight.rs:460-467. `--table`'s help says "(required for page/report)" with no enforcement at all, so `al generate page --id 50100 --name Foo` fails with the daemon's misleading `Table '' not found in symbol index`. `TestResults::method` (args.rs:535) shows the project already knows the `requires` idiom.
 - fix: drop `default_value` and mark `--company` `required = true`; add `requires = "object"` to `--event`; add `required_if_eq_any = [("kind","page"),("kind","report")]` to `--table`.
-- status: open
+- status: fixed 9440fb1b
 
 ### [SIMPLIFY] the response-validation framework exists twice, field for field
 - where: crates/al-explorer/src/cli/commands/mod.rs:736-875 and crates/al-explorer/src/cli/commands/response_contract.rs:10-530
@@ -232,7 +232,7 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - severity: low
 - scenario: the `authenticate` help text tells users to "prefer reading credentials from a file or environment variable", and `bc_server_params`' comment repeats the claim as settled. No credentials-file reader exists anywhere in the repo; only `BC_USERNAME`/`BC_PASSWORD` do, so half of the advice is unactionable. In `build.rs` the doc comment describing `validate_with_alc` ("Compile `dir` with the Microsoft AL compiler … Returns `None` when validation passes") sits above `create_validation_tempdir`, which only makes a temp dir; the real `validate_with_alc` at line 291 has no doc comment. `cmd_test_run_all`'s doc says it "streams a per-codeunit summary" when it makes one blocking `request_checked` call at tests.rs:385 and prints only after the whole response arrives. Two smaller dead branches belong here too: `path == "null"` at build.rs:445 can never fire because `path` comes from `as_str().unwrap_or("")`, and the `[failed]` arm at lsp/refactor.rs:116-122 is unreachable because the daemon sets `"renamed": !dry_run` and turns real failures into RPC errors (build/organize.rs:439-459).
 - fix: implement `--password-file` or reword the help and the comment to name only the env vars; move the `validate_with_alc` doc down to the function it describes; reword the `test-run-all` doc; delete the two dead branches.
-- status: open
+- status: fixed 9440fb1b
 
 ## Findings added while fixing (alc 17.0.34.45391 probes)
 
