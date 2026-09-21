@@ -98,7 +98,7 @@ Insight:
 - severity: medium
 - scenario: the table's text comes from `workspace.file_index.files` (the indexed on-disk snapshot), and `find_table_field_declaration` / `annotation_edit` produce a line number and column against that snapshot. If the table file is also open in the editor with unsaved edits that shift line numbers (say three lines inserted above the field), the client applies the returned `TextEdit` to the *buffer*, so the `ToolTip = ...;` lands three lines off, inside a different field block or mid-property. The page-side delete uses the live document text, so the two halves disagree about which version of the world they are editing.
 - fix: prefer `workspace.documents.get_text_arc(&table_uri)` when the table is an open document and fall back to the file index only for closed files.
-- status: open
+- status: fixed ed298cbe
 
 ### [BUG] Promoted-action conversion counts braces inside comments and captions
 - where: crates/al-analysis/src/queries/code_actions/promoted.rs:159-185 (`find_block_extent`)
@@ -168,7 +168,7 @@ Insight:
 - severity: low
 - scenario: `let lower = line.to_lowercase(); let es_start = lower.find("eventsubscriber(")?;` then `let rest = &line[args_start..]` and `line[..quote_byte]` index the *original* line with offsets derived from the lowercased one. `str::to_lowercase` is not length-preserving: `İ` (U+0130, 2 bytes) lowercases to 3 bytes and `ẞ` (U+1E9E, 3 bytes) to 2. A character like that earlier on the attribute line (for example in a quoted object name, `Codeunit::"ẞ Post"`) shifts every subsequent index, so the slice either lands mid-character and panics or silently replaces the wrong span.
 - fix: use `to_ascii_lowercase()` (length-preserving, and the correct fold for AL identifiers) as make_local.rs:84 and with_elimination.rs:419 already do.
-- status: open
+- status: fixed ed298cbe
 
 ### [SLOP] Identical match arms in `extract_primary_expression_name`
 - where: crates/al-insight/src/calls.rs:639-647
