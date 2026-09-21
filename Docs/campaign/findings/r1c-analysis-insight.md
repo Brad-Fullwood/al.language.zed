@@ -78,7 +78,7 @@ Listed by neither checklist:
   ```
   only the `Preview` trigger is ever scanned, so no write site for `Ship Log` is recorded. `compute_over_granted_rights` then reports `I` as over-granted on `tabledata "Ship Log" = RIMD` with the reason "no write site for I found in workspace". Acting on that removes a permission the page needs and the action fails at runtime with a permission error. The module doc at audit.rs:16-19 and the struct doc at 205-212 both promise the opposite ("false positives avoided", "observed writes are never reported as removable rights"); the comment at 628-631 calls the skip "the documented precision limit" without noting that it inverts the direction of the error.
 - fix: walk the declaration nodes directly and scan every one, rather than collecting names and re-finding a single node per name. `al_insight::calls` would need node-taking variants of `extract_procedure_var_types` and `extract_call_sites`; both already work from a `proc_node` internally.
-- status: open
+- status: fixed 5996424f — the scan walks declaration nodes through new `al_insight::calls::{collect_declaration_nodes, procedure_var_types_in_node, call_sites_in_node}`. A write through an unresolvable receiver (`RecordRef`) now keeps its right for every table instead of leaving it reportable.
 
 ### [PERF] Every grant costs two full-workspace tree walks, and the second is a recomputation of the first
 - where: crates/al-analysis/src/queries/audit.rs:446-451 (`count_object_refs`), called at 423 (`compute_over_broad`) and again at 506 (`compute_over_granted_rights`)

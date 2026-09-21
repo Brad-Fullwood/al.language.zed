@@ -153,7 +153,8 @@ pub struct IntegrationPoint {
     pub params: Vec<ParamInfo>,
     /// Breadcrumb trace from the query source to this event.
     pub path: Vec<TraceHop>,
-    /// Ready-to-paste [EventSubscriber] attribute.
+    /// Ready-to-paste `[EventSubscriber]` attribute. Empty when the
+    /// publisher's object kind cannot carry a subscriber.
     pub example: String,
 }
 
@@ -355,7 +356,12 @@ fn query_table(
 
         let params = map_parameters_to_param_info(&pub_event.method.parameters);
 
-        let example = format_example(obj.kind, &obj.name, &pub_event.method.name);
+        let example = format_example(
+            &workspace.symbols,
+            obj.kind,
+            &obj.name,
+            &pub_event.method.name,
+        );
 
         points.push(IntegrationPoint {
             event: pub_event.method.name.clone(),
@@ -401,7 +407,7 @@ fn query_event(
     if let Some(event_node_id) = CallGraph::node_id_for(&insight, &event_key) {
         let (event_type_str, params) =
             resolve_event_details(&insight, &workspace.symbols, &event_key);
-        let example = format_example(object_kind, object_name, event_name);
+        let example = format_example(&workspace.symbols, object_kind, object_name, event_name);
 
         points.push(IntegrationPoint {
             event: event_name.to_string(),
@@ -503,7 +509,7 @@ fn trace_from_node(
 
             let params =
                 lookup_event_params(symbols, *object_kind, &object_name.to_lowercase(), name);
-            let example = format_example(*object_kind, object_name, name);
+            let example = format_example(symbols, *object_kind, object_name, name);
 
             points.push(IntegrationPoint {
                 event: name.clone(),
@@ -611,7 +617,7 @@ fn collect_published_events(
                     InsightNode::Event { ref name, .. } => name.clone(),
                     _ => continue,
                 };
-                let example = format_example(object_kind, object_name, &event_name);
+                let example = format_example(symbols, object_kind, object_name, &event_name);
                 points.push(IntegrationPoint {
                     event: event_name,
                     object: object_name.to_string(),
@@ -672,12 +678,70 @@ fn lookup_event_params(
     Vec::new()
 }
 
-/// Generate a ready-to-paste [EventSubscriber] attribute.
-fn format_example(object_kind: ObjectKind, object_name: &str, event_name: &str) -> String {
-    let kind_str = format!("{object_kind}");
+/// AL's `ObjectType::` member and object-reference scope for a publisher kind.
+///
+/// The two arguments of an `[EventSubscriber]` do not use the same word. A
+/// table subscriber is
+/// `[EventSubscriber(ObjectType::Table, Database::"Sales Header", ...)]`:
+/// Microsoft's EventSubscriber page states "For a table event, specify ObjectId
+/// by name with `Database::<ObjectName>`, not `Table::<ObjectName>`".
+///
+/// `None` for a kind that cannot publish a subscribable event: AL's `ObjectType`
+/// option has only Codeunit, MenuSuite, Page, Query, Report, Table and XmlPort.
+fn subscriber_scope(object_kind: ObjectKind) -> Option<(&'static str, &'static str)> {
+    match object_kind {
+        ObjectKind::Table | ObjectKind::TableExtension => Some(("Table", "Database")),
+        ObjectKind::Page | ObjectKind::PageExtension => Some(("Page", "Page")),
+        ObjectKind::Report | ObjectKind::ReportExtension => Some(("Report", "Report")),
+        ObjectKind::Codeunit => Some(("Codeunit", "Codeunit")),
+        ObjectKind::XmlPort => Some(("XmlPort", "Xmlport")),
+        ObjectKind::Query => Some(("Query", "Query")),
+        _ => None,
+    }
+}
+
+/// Generate a ready-to-paste `[EventSubscriber]` attribute.
+///
+/// Empty when the publisher's kind carries no subscriber, and empty for an
+/// extension object whose base cannot be resolved: an event declared in a
+/// `tableextension` is subscribed through the table it extends, so writing the
+/// extension's own name would not compile.
+fn format_example(
+    symbols: &SymbolIndex,
+    object_kind: ObjectKind,
+    object_name: &str,
+    event_name: &str,
+) -> String {
+    let Some((object_type, scope)) = subscriber_scope(object_kind) else {
+        return String::new();
+    };
+    let target = if matches!(
+        object_kind,
+        ObjectKind::TableExtension | ObjectKind::PageExtension | ObjectKind::ReportExtension
+    ) {
+        match extended_object_name(symbols, object_kind, object_name) {
+            Some(base) => base,
+            None => return String::new(),
+        }
+    } else {
+        object_name.to_string()
+    };
     format!(
-        "[EventSubscriber(ObjectType::{kind_str}, {kind_str}::\"{object_name}\", '{event_name}', '', false, false)]"
+        "[EventSubscriber(ObjectType::{object_type}, {scope}::\"{target}\", '{event_name}', '', false, false)]"
     )
+}
+
+/// The object an extension object extends, from the symbol index.
+fn extended_object_name(
+    symbols: &SymbolIndex,
+    object_kind: ObjectKind,
+    object_name: &str,
+) -> Option<String> {
+    symbols
+        .get_by_name(object_name)
+        .into_iter()
+        .find(|entry| entry.kind == object_kind)
+        .and_then(|entry| entry.extends.clone())
 }
 
 /// Remove duplicate integration points by (object, event) key.
@@ -1039,18 +1103,94 @@ mod tests {
         assert_eq!(result.integration_points[0].event, "OnBeforePostSalesDoc");
     }
 
-    #[test]
-    fn format_example_produces_event_subscriber_attribute() {
-        let example = format_example(ObjectKind::Codeunit, "Sales-Post", "OnAfterPost");
-        assert!(
-            example.contains("EventSubscriber"),
-            "Should contain EventSubscriber"
+    /// The attribute must parse as AL and spell the object reference the way
+    /// AL requires — `Database::` for a table, not `Table::`.
+    fn assert_example_parses(example: &str, expected: &str) {
+        assert_eq!(example, expected);
+        let source = format!(
+            "codeunit 50100 \"Sub\"\n{{\n    {example}\n    local procedure Handle()\n    begin\n    end;\n}}"
         );
-        assert!(example.contains("Sales-Post"), "Should contain object name");
-        assert!(example.contains("OnAfterPost"), "Should contain event name");
+        let parsed = al_syntax::AlParser::parse_quick(&source);
         assert!(
-            example.contains("ObjectType::Codeunit"),
-            "Should contain ObjectType"
+            !parsed.tree.root_node().has_error(),
+            "emitted attribute does not parse:\n{source}"
+        );
+        let mut attributes = Vec::new();
+        al_syntax::walk_tree(parsed.tree.root_node(), &mut |node| {
+            if node.kind() == "attribute" {
+                attributes.push(node.utf8_text(source.as_bytes()).unwrap().to_string());
+            }
+        });
+        assert_eq!(
+            attributes,
+            vec![example.to_string()],
+            "the attribute must survive a parse round trip"
+        );
+    }
+
+    #[test]
+    fn format_example_names_a_table_with_the_database_scope() {
+        let symbols = SymbolIndex::new();
+        assert_example_parses(
+            &format_example(&symbols, ObjectKind::Table, "Sales Header", "OnAfterInsertEvent"),
+            "[EventSubscriber(ObjectType::Table, Database::\"Sales Header\", 'OnAfterInsertEvent', '', false, false)]",
+        );
+    }
+
+    #[test]
+    fn format_example_covers_every_subscribable_kind() {
+        let symbols = SymbolIndex::new();
+        let cases = [
+            (
+                ObjectKind::Codeunit,
+                "ObjectType::Codeunit, Codeunit::\"X\"",
+            ),
+            (ObjectKind::Page, "ObjectType::Page, Page::\"X\""),
+            (ObjectKind::Report, "ObjectType::Report, Report::\"X\""),
+            (ObjectKind::XmlPort, "ObjectType::XmlPort, Xmlport::\"X\""),
+            (ObjectKind::Query, "ObjectType::Query, Query::\"X\""),
+        ];
+        for (kind, expected) in cases {
+            assert_example_parses(
+                &format_example(&symbols, kind, "X", "OnEvent"),
+                &format!("[EventSubscriber({expected}, 'OnEvent', '', false, false)]"),
+            );
+        }
+    }
+
+    #[test]
+    fn format_example_subscribes_to_an_extension_through_its_base_object() {
+        let symbols = SymbolIndex::new();
+        symbols.add_entries_owned(vec![SymbolEntry {
+            kind: ObjectKind::TableExtension,
+            id: 50100,
+            name: "Cust Ext".to_string(),
+            extends: Some("Customer".to_string()),
+            ..Default::default()
+        }]);
+        assert_example_parses(
+            &format_example(&symbols, ObjectKind::TableExtension, "Cust Ext", "OnMyEvent"),
+            "[EventSubscriber(ObjectType::Table, Database::\"Customer\", 'OnMyEvent', '', false, false)]",
+        );
+    }
+
+    #[test]
+    fn format_example_is_empty_for_a_kind_that_cannot_publish_a_subscriber() {
+        let symbols = SymbolIndex::new();
+        assert_eq!(
+            format_example(&symbols, ObjectKind::Interface, "IFoo", "OnEvent"),
+            "",
+            "AL's ObjectType option has no Interface member"
+        );
+        assert_eq!(
+            format_example(
+                &symbols,
+                ObjectKind::TableExtension,
+                "Unknown Ext",
+                "OnEvent"
+            ),
+            "",
+            "without the base table there is no name to write"
         );
     }
 
