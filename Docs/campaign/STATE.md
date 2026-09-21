@@ -4,23 +4,31 @@ Updated: 2026-09-21 01:30 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
-Round 1: review. Seven subsystem reviews run in parallel and write to `findings/`.
+Round 1: four of seven reviews are done (58 findings) and their fix agents are running. Three reviews and two follow-up reviews are still running.
 
 ## In flight
 
-| Item | Agent | Output |
-|------|-------|--------|
-| R1 review: syntax and grammar | background agent | `findings/r1-syntax-grammar.md` |
-| R1 review: analysis and insight | background agent | `findings/r1-analysis-insight.md` |
-| R1 review: LSP and protocol | background agent | `findings/r1-lsp-protocol.md` |
-| R1 review: symbols and project layer | background agent | `findings/r1-symbols-project.md` |
-| R1 review: runtime, test, DAP | background agent | `findings/r1-runtime-dap.md` |
-| R1 review: emit, compile, BC, explorer | background agent | `findings/r1-emit-bc-explorer.md` |
-| R1 review: extension, CI, scripts, security | background agent | `findings/r1-extension-ci-security.md` |
+| Item | Kind | Output |
+|------|------|--------|
+| R1 review: syntax and grammar | review | `findings/r1-syntax-grammar.md` |
+| R1 review: symbols and project layer | review | `findings/r1-symbols-project.md` |
+| R1 review: emit, compile, BC, explorer | review | `findings/r1-emit-bc-explorer.md` |
+| R1b review: al-analysis and al-insight modules the first pass skipped | review | `findings/r1b-analysis-insight.md` |
+| R1b review: runtime stubs, live BC, al-dap session, al-test-harness | review | `findings/r1b-runtime-dap.md` |
+| Fix R1 extension, CI, docs (12 findings) | worktree fix | branch `campaign/fix-r1-extension-ci` |
+| Fix R1 analysis and insight (18 findings) | worktree fix | branch `campaign/fix-r1-analysis-insight` |
+| Fix R1 LSP and protocol (15 findings, 2 security) | worktree fix | branch `campaign/fix-r1-lsp-protocol` |
+| Fix R1 runtime and DAP (13 findings) | worktree fix | branch `campaign/fix-r1-runtime-dap` |
+| AI tooling inventory and plugin design | design | `findings/ai-tooling-ideas.md` |
 | desloppify first scan | shell | `.campaign/desloppify-scan.log` |
 
-If a review file exists but has no `## Review complete` line, the agent died. Re-dispatch it
-with the instruction to read the file and continue from the areas not yet covered.
+A review file without a `## Review complete` line means the agent died. Re-dispatch it to
+continue from the unticked coverage items. A fix branch on origin with findings still `open`
+means the fix agent died. Re-dispatch a fix agent onto that branch for the open findings.
+Merge a fix branch into `campaign/2026-09-21` only after the full gates pass on the merge.
+
+Disk: 32 GB free at 02:20 on 2026-09-21. Fix agents build with `CARGO_PROFILE_DEV_DEBUG=0`
+and `-p` package filters. Remove merged worktrees and their target directories promptly.
 
 ## Workstreams
 

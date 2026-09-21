@@ -287,3 +287,21 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
 - fix: snap both offsets to char boundaries (`xml.floor_char_boundary` / a
   `is_char_boundary` loop) before slicing.
 - status: open
+
+## Review complete
+
+- Nearly every 2026-07-31 audit item in this area is fixed and pinned by tests or by
+  the 59-case grammar corpus; no audit item is still open, so nothing is tagged
+  `[STILL-OPEN]`.
+- `sort_members` corrupts a multi-object `.al` file: it takes the first `{` and the
+  last `}` as one object body and moves the second object's procedures into the first,
+  and `is_pure_reordering` cannot catch it because the result is a permutation.
+- `clean_identifier_text` fixed quoted-identifier unescaping in lib.rs but ~20 call
+  sites in navigation.rs, symbols.rs and type_resolver.rs (plus al-analysis's
+  `node_clean_name`) still use `trim_matches('"')`, so hover, definition and rename
+  silently fail on a name containing a doubled quote.
+- `ts_range_to_syntax` walks the file from byte 0 for every range, which makes
+  `documentSymbol` on a large table quadratic in file size; the crate already builds a
+  line-start table twice and should share one.
+- The incremental-parse benchmark never calls `Tree::edit`, so it measures tree reuse
+  rather than the keystroke path it claims to model.

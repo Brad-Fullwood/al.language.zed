@@ -171,3 +171,10 @@ No item is carried forward as [STILL-OPEN]. Findings above are new.
 - fix: at minimum drop `sources` content after `entries` is built (move rather than clone at assemble.rs:1012), and consider streaming `write_zip` into the output file instead of a `Vec`.
 - status: open
 
+### [BUG] the TUI profiler reads a profile with no size cap, contradicting its own parity comment
+- where: crates/al-explorer/src/views/profiler.rs:160-164 (comment at 17-23)
+- severity: medium
+- scenario: `load_profile` does `std::fs::read(&path)` on whatever the user types into the profiler pane, then `serde_json::from_slice` over the whole buffer, on the TUI's single thread. `al_bc::profiling::analyze_profile_file` guards the same input with `MAX_PROFILE_FILE_BYTES` (500 MB, profiling.rs:469-481) and every other BC input path in the workspace has an explicit cap. Entering the path of a multi-gigabyte file (a stray core dump, a mistyped path to a large log) freezes the TUI with no redraw and no way to cancel, then OOMs. The module comment at lines 17-23 claims this port keeps "this view's TUI safeguards (node cap, BOM strip, GC filter)", and the node cap does exist at line 200, but the size cap that would prevent the freeze is the one that was not ported.
+- fix: `std::fs::metadata(&path)` first and refuse anything over the same 500 MB bound with a status message, mirroring `analyze_profile_file`.
+- status: open
+
