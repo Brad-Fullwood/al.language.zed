@@ -1121,13 +1121,47 @@ fn unquote(s: &str) -> String {
     }
 }
 
+/// Cut a property value's trailing attribute list.
+///
+/// `Caption = 'SEPA CT', Locked = true;` and `Caption = 'Bye %1', Comment =
+/// 'wave';` are one `property_assignment` in the grammar, whose value field
+/// spans the attributes too. alc records only the value (`SEPA CT`), so the
+/// whole span would otherwise reach both `SymbolReference.json` and the
+/// packaged XLIFF.
+///
+/// A list-valued property (`Scripts = 'a', 'b';`, `Permissions = tabledata X =
+/// RIMD, table X = R;`) looks the same up to the comma. What separates them is
+/// the segment after it: an attribute is `Name =`, and nothing else is.
+fn strip_property_attributes(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    let mut quote: Option<u8> = None;
+    for (index, &byte) in bytes.iter().enumerate() {
+        match quote {
+            Some(open) if byte == open => quote = None,
+            Some(_) => {}
+            None if byte == b'\'' || byte == b'"' => quote = Some(byte),
+            None if byte == b',' => {
+                let rest = s[index + 1..].trim_start();
+                let name_len = rest
+                    .find(|c: char| !c.is_alphanumeric() && c != '_')
+                    .unwrap_or(rest.len());
+                if name_len > 0 && rest[name_len..].trim_start().starts_with('=') {
+                    return &s[..index];
+                }
+            }
+            None => {}
+        }
+    }
+    s
+}
+
 /// Strip a property value's surrounding quotes — single (`'…'` string) or
 /// double (`"…"` identifier, e.g. an object reference like `RoleCenter`). Only a
 /// *single* quoted token is unwrapped: a multi-token expression like
 /// `"Sweep Hdr"."No."` (a TableRelation) keeps its quotes verbatim, detected by
 /// an inner occurrence of the same quote.
 fn unquote_prop_value(s: &str) -> String {
-    let t = s.trim();
+    let t = strip_property_attributes(s).trim();
     let q = t.chars().next();
     if t.len() >= 2 && (q == Some('\'') || q == Some('"')) && t.ends_with(q.unwrap()) {
         let inner = &t[1..t.len() - 1];
@@ -1187,4 +1221,54 @@ fn find_section<'a>(body: Node<'a>, src: &[u8], member_keyword: &str) -> Option<
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn property_attributes_are_cut_from_the_value() {
+        assert_eq!(
+            strip_property_attributes("'SEPA CT', Locked = true"),
+            "'SEPA CT'"
+        );
+        assert_eq!(
+            strip_property_attributes("'Bye %1',Comment='wave'"),
+            "'Bye %1'"
+        );
+        // A list value has no `Name =` after the comma, so it is kept whole.
+        assert_eq!(
+            strip_property_attributes("'a.js', 'b.js'"),
+            "'a.js', 'b.js'"
+        );
+        assert_eq!(
+            strip_property_attributes("tabledata Widget = RIMD, table Widget = X"),
+            "tabledata Widget = RIMD, table Widget = X"
+        );
+        // A comma inside the literal is not a separator.
+        assert_eq!(
+            strip_property_attributes("'Hello, world', Locked = true"),
+            "'Hello, world'"
+        );
+    }
+
+    #[test]
+    fn locked_caption_keeps_only_the_caption_text() {
+        // alc 17.0.34.45391 records `Caption` as `SEPA CT` for this
+        // declaration; the whole `'SEPA CT', Locked = true` span used to reach
+        // both SymbolReference.json and the packaged XLIFF.
+        let objects = extract_objects(
+            "table 50100 Widget { fields { field(2; Name; Text[100]) \
+             { Caption = 'SEPA CT', Locked = true; } } }",
+            "src/Widget.al",
+        );
+        let field = &objects[0].entry.fields[0];
+        let caption = field
+            .properties
+            .iter()
+            .find(|property| property.name.eq_ignore_ascii_case("Caption"))
+            .expect("field caption");
+        assert_eq!(caption.value, "SEPA CT");
+    }
 }
