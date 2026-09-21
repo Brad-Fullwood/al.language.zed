@@ -65,21 +65,30 @@ fn tui_object_browser_lists_fixture_objects() {
     // budget. Sleeping two seconds before the first render cost that long even
     // when the TUI was already up, and a fixed number of two-second tries made
     // the budget depend on the granularity.
-    let poll = |buf: &Arc<Mutex<Vec<u8>>>, needle: &str, budget: Duration| -> String {
-        let deadline = Instant::now() + budget;
-        loop {
-            let screen = render(buf);
-            if screen.contains(needle) || Instant::now() >= deadline {
-                return screen;
+    let poll =
+        |buf: &Arc<Mutex<Vec<u8>>>, ready: &dyn Fn(&str) -> bool, budget: Duration| -> String {
+            let deadline = Instant::now() + budget;
+            loop {
+                let screen = render(buf);
+                if ready(&screen) || Instant::now() >= deadline {
+                    return screen;
+                }
+                thread::sleep(Duration::from_millis(100));
             }
-            thread::sleep(Duration::from_millis(100));
-        }
-    };
+        };
 
     // A fresh daemon labels the local package `(workspace)`, while a daemon
     // reused by the full suite can expose it as `workspace`. Runtime sorts
     // first in the latter case, so inspect the actual selection before moving.
-    let mut screen = poll(&buf, "workspace", Duration::from_secs(30));
+    //
+    // Wait for the `>>` marker rather than for the package name: the name is
+    // painted before the TUI starts reading input, and a Down sent in that
+    // window is dropped.
+    let mut screen = poll(
+        &buf,
+        &|screen: &str| screen.contains(">> "),
+        Duration::from_secs(30),
+    );
     if screen.contains(">> Runtime") {
         let down = b"\x1b[B";
         for _ in 0..2 {
