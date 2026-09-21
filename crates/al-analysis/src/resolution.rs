@@ -1346,6 +1346,7 @@ fn resolve_object_path(
     current_uri: Option<&Url>,
     name: &str,
 ) -> Option<PathBuf> {
+    let mut referring_path = None;
     if let Some(uri) = current_uri {
         if let Ok(current_path) = uri.to_file_path() {
             if workspace_object_name(workspace, &current_path)
@@ -1355,10 +1356,15 @@ fn resolve_object_path(
                 tracing::debug!(name = %name, source = "current_file", "resolve_object_path: matched current file");
                 return Some(current_path);
             }
+            referring_path = Some(current_path);
         }
     }
 
-    if let Some(path) = workspace.file_index.object_path(name) {
+    let resolved = match referring_path.as_deref() {
+        Some(from) => workspace.file_index.object_path_near(name, from),
+        None => workspace.file_index.object_path(name),
+    };
+    if let Some(path) = resolved {
         tracing::debug!(name = %name, source = "workspace_index", path = %path.display(), "resolve_object_path: found in workspace index");
         return Some(path);
     }
