@@ -173,6 +173,7 @@ pub fn create_project(dir: &Path, config: &ScaffoldConfig) -> Result<ScaffoldRes
             dir.display()
         ));
     }
+    check_derived_object_names(config)?;
 
     // User-defined templates own their entire file tree (including app.json),
     // so they are materialized directly rather than going through the built-in
@@ -214,6 +215,55 @@ pub fn create_project(dir: &Path, config: &ScaffoldConfig) -> Result<ScaffoldRes
         project_dir: dir.display().to_string(),
         files_created: files,
     })
+}
+
+/// AL rejects an object name longer than this (compiler error AL0305).
+const AL_OBJECT_NAME_LIMIT: usize = 30;
+
+/// Suffixes each built-in template appends to the project name when it derives
+/// an AL object name.
+///
+/// `declared_suffixes_match_the_names_the_templates_emit` pins this against
+/// what the templates actually render, so a template cannot grow a longer
+/// suffix without the limit check learning about it.
+fn derived_object_suffixes(template: &ProjectTemplate) -> &'static [&'static str] {
+    match template {
+        ProjectTemplate::Library => &[" Library"],
+        ProjectTemplate::TestApp => &[" Test"],
+        ProjectTemplate::Copilot => &[" Copilot Participant", " Azure OpenAI Helper"],
+        ProjectTemplate::Agent => &[" Agent", " Agent Job Handler"],
+        ProjectTemplate::Api => &[" API"],
+        // These templates name their objects without the project name.
+        ProjectTemplate::Default
+        | ProjectTemplate::PerTenantExtension
+        | ProjectTemplate::AppSourceApp
+        | ProjectTemplate::Custom(_) => &[],
+    }
+}
+
+/// Fail when the template's longest derived object name would exceed AL's
+/// 30-character limit, before any file is written.
+fn check_derived_object_names(config: &ScaffoldConfig) -> Result<(), String> {
+    let name_length = config.name.chars().count();
+    let Some(longest) = derived_object_suffixes(&config.template)
+        .iter()
+        .max_by_key(|suffix| suffix.chars().count())
+    else {
+        return Ok(());
+    };
+    let suffix_length = longest.chars().count();
+    let total = name_length + suffix_length;
+    if total <= AL_OBJECT_NAME_LIMIT {
+        return Ok(());
+    }
+    Err(format!(
+        "Project name '{}' is too long for this template: it derives the object name '{}{longest}' \
+         ({total} characters), and AL object names are limited to {AL_OBJECT_NAME_LIMIT}. \
+         Use a name of at most {} characters.",
+        config.name,
+        config.name,
+        AL_OBJECT_NAME_LIMIT - suffix_length
+    ))
 }
 
 /// Fail when any planned destination already exists, naming all of them.
@@ -1039,6 +1089,83 @@ mod tests {
                 !dir.path().join("app.json").exists(),
                 "nothing may be written when the scaffold is refused"
             );
+        }
+    }
+
+    /// AL object names are limited to 30 characters (AL0305). A template that
+    /// appends a suffix to the project name can exceed that, and the project
+    /// then did not compile.
+    #[test]
+    fn scaffold_refuses_a_name_whose_derived_object_exceeds_thirty_characters() {
+        for (template, limit) in [
+            (ProjectTemplate::Copilot, 10usize),
+            (ProjectTemplate::Agent, 12),
+            (ProjectTemplate::Library, 22),
+            (ProjectTemplate::TestApp, 25),
+            (ProjectTemplate::Api, 26),
+        ] {
+            let too_long = "X".repeat(limit + 1);
+            let dir = tempfile::tempdir().unwrap();
+            let error = create_project(
+                dir.path(),
+                &ScaffoldConfig {
+                    name: too_long,
+                    template: template.clone(),
+                    ..ScaffoldConfig::default()
+                },
+            )
+            .unwrap_err();
+            assert!(
+                error.contains(&limit.to_string()),
+                "{template:?}: the error must name the {limit}-character limit: {error}"
+            );
+            assert!(
+                !dir.path().join("app.json").exists(),
+                "{template:?}: nothing may be written when the name is refused"
+            );
+
+            let dir = tempfile::tempdir().unwrap();
+            create_project(
+                dir.path(),
+                &ScaffoldConfig {
+                    name: "X".repeat(limit),
+                    template: template.clone(),
+                    ..ScaffoldConfig::default()
+                },
+            )
+            .unwrap_or_else(|e| {
+                panic!("{template:?}: a {limit}-character name must be accepted: {e}")
+            });
+        }
+    }
+
+    /// Every derived object name the built-in templates emit has to be covered
+    /// by the limit check, or a template can grow a longer suffix unnoticed.
+    #[test]
+    fn declared_suffixes_match_the_names_the_templates_emit() {
+        for template in [
+            ProjectTemplate::Library,
+            ProjectTemplate::TestApp,
+            ProjectTemplate::Copilot,
+            ProjectTemplate::Agent,
+            ProjectTemplate::Api,
+        ] {
+            let config = ScaffoldConfig {
+                name: "Zqx".to_string(),
+                template: template.clone(),
+                ..ScaffoldConfig::default()
+            };
+            let rendered: String = generate_template_files(&config)
+                .unwrap()
+                .into_iter()
+                .map(|(_, bytes)| String::from_utf8(bytes).unwrap())
+                .collect();
+            for suffix in derived_object_suffixes(&template) {
+                assert!(
+                    rendered.contains(&format!("\"Zqx{suffix}\"")),
+                    "{template:?} does not emit an object named 'Zqx{suffix}':\n{rendered}"
+                );
+            }
         }
     }
 
