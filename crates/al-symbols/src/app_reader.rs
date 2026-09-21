@@ -153,31 +153,138 @@ pub fn read_app_manifest_file(path: &std::path::Path) -> Result<NavxManifest, Ap
     read_manifest(&mut archive)
 }
 
-pub(crate) fn find_zip_offset(data: &[u8]) -> Option<usize> {
-    fn is_valid_zip(data: &[u8], offset: usize) -> bool {
-        ZipArchive::new(Cursor::new(&data[offset..])).is_ok()
+/// End of central directory record: 22 bytes plus a comment of up to 64 KiB.
+const EOCD_SIGNATURE: &[u8; 4] = &[0x50, 0x4B, 0x05, 0x06];
+const EOCD_MIN_LEN: usize = 22;
+const MAX_EOCD_COMMENT: usize = u16::MAX as usize;
+const ZIP64_EOCD_SIGNATURE: &[u8; 4] = &[0x50, 0x4B, 0x06, 0x06];
+const ZIP64_EOCD_MIN_LEN: usize = 56;
+const CENTRAL_DIRECTORY_SIGNATURE: &[u8; 4] = &[0x50, 0x4B, 0x01, 0x02];
+
+/// What the archive trailer says about the central directory.
+struct ZipTrailer {
+    /// Offset of the end-of-central-directory record in `data`.
+    eocd_pos: usize,
+    entries: u64,
+    cd_size: u64,
+    /// Offset of the central directory *within the archive*, so relative to
+    /// the start of any prefix such as the NAVX header.
+    cd_offset: u64,
+}
+
+fn read_u16(data: &[u8], at: usize) -> u64 {
+    u16::from_le_bytes([data[at], data[at + 1]]) as u64
+}
+
+fn read_u32(data: &[u8], at: usize) -> u64 {
+    u32::from_le_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]) as u64
+}
+
+fn read_u64(data: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes(data[at..at + 8].try_into().expect("8 bytes"))
+}
+
+/// Read the trailer of the last archive in `data`.
+///
+/// Every candidate prefix shares one trailer: the zip reader scans back from
+/// the end of the buffer, which does not move when the prefix does. Reading it
+/// once is what makes locating the archive O(1) instead of one full
+/// central-directory parse per candidate.
+fn read_zip_trailer(data: &[u8]) -> Option<ZipTrailer> {
+    let scan_floor = data.len().saturating_sub(EOCD_MIN_LEN + MAX_EOCD_COMMENT);
+    let mut pos = data.len().checked_sub(EOCD_MIN_LEN)?;
+    let eocd_pos = loop {
+        if &data[pos..pos + 4] == EOCD_SIGNATURE {
+            break pos;
+        }
+        if pos == scan_floor {
+            return None;
+        }
+        pos -= 1;
+    };
+
+    let entries = read_u16(data, eocd_pos + 10);
+    let cd_size = read_u32(data, eocd_pos + 12);
+    let cd_offset = read_u32(data, eocd_pos + 16);
+    let is_zip64 =
+        entries == u16::MAX as u64 || cd_size == u32::MAX as u64 || cd_offset == u32::MAX as u64;
+    if !is_zip64 {
+        return Some(ZipTrailer {
+            eocd_pos,
+            entries,
+            cd_size,
+            cd_offset,
+        });
     }
 
-    // The standard NAVX header is 40 bytes. Check there first (common case O(1)).
+    // Zip64: the real counts live in a record that sits just before the
+    // locator, itself just before the EOCD. Both are near the end, so a short
+    // backward scan finds the record without a full pass.
+    let zip64_floor = eocd_pos.saturating_sub(MAX_EOCD_COMMENT + ZIP64_EOCD_MIN_LEN);
+    let mut pos = eocd_pos.checked_sub(ZIP64_EOCD_MIN_LEN)?;
+    loop {
+        if &data[pos..pos + 4] == ZIP64_EOCD_SIGNATURE {
+            return Some(ZipTrailer {
+                eocd_pos,
+                entries: read_u64(data, pos + 32),
+                cd_size: read_u64(data, pos + 40),
+                cd_offset: read_u64(data, pos + 48),
+            });
+        }
+        if pos == zip64_floor {
+            return None;
+        }
+        pos -= 1;
+    }
+}
+
+fn is_valid_zip(data: &[u8], offset: usize) -> bool {
+    ZipArchive::new(Cursor::new(&data[offset..])).is_ok()
+}
+
+pub(crate) fn find_zip_offset(data: &[u8]) -> Option<usize> {
+    let trailer = read_zip_trailer(data)?;
+    // Reject an oversized directory here rather than after parsing it: the
+    // parse is the expensive part, and `read_archive` would reject it anyway.
+    if trailer.entries > MAX_ARCHIVE_ENTRIES as u64 {
+        tracing::warn!(
+            entries = trailer.entries,
+            "refusing .app whose central directory claims more entries than the limit"
+        );
+        return None;
+    }
+
+    // The central directory ends where the EOCD begins, and starts `cd_offset`
+    // bytes into the archive, so the prefix length follows by arithmetic. No
+    // scanning, and at most one validation.
+    let cd_start = (trailer.eocd_pos as u64).checked_sub(trailer.cd_size);
+    if let Some(prefix) = cd_start
+        .and_then(|cd_start| cd_start.checked_sub(trailer.cd_offset))
+        .and_then(|prefix| usize::try_from(prefix).ok())
+        .filter(|prefix| *prefix < data.len())
+    {
+        let cd_pos = prefix as u64 + trailer.cd_offset;
+        let directory_is_there = usize::try_from(cd_pos)
+            .ok()
+            .and_then(|cd_pos| data.get(cd_pos..cd_pos + 4))
+            .is_some_and(|bytes| bytes == CENTRAL_DIRECTORY_SIGNATURE);
+        if (directory_is_there || trailer.entries == 0) && is_valid_zip(data, prefix) {
+            return Some(prefix);
+        }
+    }
+
+    // Archives whose directory offsets already count the prefix land here.
+    // Their payload starts at the first local header, so the standard 40-byte
+    // NAVX header and then a short bounded scan cover them.
     const STANDARD_HEADER: usize = 40;
+    const MAX_NAVX_HEADER_BYTES: usize = 1024 * 1024;
+    const MAX_ZIP_VALIDATION_ATTEMPTS: usize = 8;
     if data.len() > STANDARD_HEADER + 3
         && &data[STANDARD_HEADER..STANDARD_HEADER + 4] == ZIP_MAGIC
         && is_valid_zip(data, STANDARD_HEADER)
     {
         return Some(STANDARD_HEADER);
     }
-    // NAVX headers are tiny (40 bytes in current packages). A bounded fallback
-    // supports historical/variable headers without scanning an entire 200 MB
-    // package or accepting a coincidental PK signature inside header data.
-    //
-    // Each validation attempt runs a full EOCD backward scan (up to ~66 KB),
-    // so the number of *attempts* must be bounded too: a crafted file with
-    // hundreds of thousands of planted `PK\x03\x04` signatures would otherwise
-    // force gigabytes of scanning before rejection. Real variable headers put
-    // the archive within the first few signatures; anything needing more is
-    // rejected as malformed.
-    const MAX_NAVX_HEADER_BYTES: usize = 1024 * 1024;
-    const MAX_ZIP_VALIDATION_ATTEMPTS: usize = 64;
     let search_end = data.len().min(MAX_NAVX_HEADER_BYTES).saturating_sub(3);
     let mut attempts = 0usize;
     for i in MIN_HEADER_SIZE..search_end {
@@ -518,6 +625,56 @@ mod tests {
 
         let pkg = read_app_bytes(&data).unwrap();
         assert_eq!(pkg.name, "Test App");
+    }
+
+    /// The archive is located from the trailer, so planted `PK\x03\x04`
+    /// signatures cost nothing: neither a validation attempt each nor, past
+    /// the old attempt cap, a refusal to read a valid package.
+    #[test]
+    fn planted_signatures_before_the_archive_cost_no_validation() {
+        let valid = make_test_app(&test_manifest(), &test_symbols());
+        let mut data = Vec::new();
+        data.extend_from_slice(b"NAVX");
+        for _ in 0..500 {
+            data.extend_from_slice(b"PK\x03\x04junk");
+        }
+        // `make_test_app` writes its own 40-byte NAVX header before the zip.
+        let offset = data.len() + 40;
+        data.extend_from_slice(&valid);
+
+        assert_eq!(find_zip_offset(&data), Some(offset));
+        assert_eq!(read_app_bytes(&data).unwrap().name, "Test App");
+    }
+
+    /// A central directory bigger than the entry limit is refused from the
+    /// trailer, before anything parses it.
+    #[test]
+    fn an_oversized_central_directory_is_refused_without_parsing() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"NAVX");
+        data.extend_from_slice(&[0u8; 36]);
+        data.extend_from_slice(b"PK\x03\x04");
+        data.extend_from_slice(&[0u8; 64]);
+        // An EOCD claiming three million entries.
+        data.extend_from_slice(EOCD_SIGNATURE);
+        data.extend_from_slice(&[0u8; 6]);
+        data.extend_from_slice(&u16::MAX.to_le_bytes());
+        data.extend_from_slice(&64u32.to_le_bytes());
+        data.extend_from_slice(&40u32.to_le_bytes());
+        data.extend_from_slice(&[0u8; 2]);
+        // The zip64 record the sentinel points at.
+        let mut zip64 = Vec::new();
+        zip64.extend_from_slice(ZIP64_EOCD_SIGNATURE);
+        zip64.extend_from_slice(&44u64.to_le_bytes());
+        zip64.extend_from_slice(&[0u8; 20]);
+        zip64.extend_from_slice(&3_000_000u64.to_le_bytes());
+        zip64.extend_from_slice(&3_000_000u64.to_le_bytes());
+        zip64.extend_from_slice(&64u64.to_le_bytes());
+        zip64.extend_from_slice(&40u64.to_le_bytes());
+        let eocd_at = data.len() - EOCD_MIN_LEN;
+        data.splice(eocd_at..eocd_at, zip64);
+
+        assert!(find_zip_offset(&data).is_none());
     }
 
     #[test]
