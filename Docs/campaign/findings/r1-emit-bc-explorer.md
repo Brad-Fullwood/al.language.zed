@@ -21,13 +21,13 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - [x] crates/al-bc/src/profiling.rs
 - [x] crates/al-publish/src/lib.rs
 - [x] crates/al-snapshot/src/diff.rs + format.rs
-- [~] crates/al-explorer/src/cli/args.rs + subcommands.rs + mod.rs (delegated read in progress)
-- [ ] crates/al-explorer/src/cli/commands/mod.rs
-- [ ] crates/al-explorer/src/cli/commands/build.rs
+- [x] crates/al-explorer/src/cli/args.rs + subcommands.rs + mod.rs
+- [x] crates/al-explorer/src/cli/commands/mod.rs
+- [x] crates/al-explorer/src/cli/commands/build.rs
 - [x] crates/al-explorer/src/cli/commands/debug.rs
-- [ ] crates/al-explorer/src/cli/commands/response_contract.rs
-- [ ] crates/al-explorer/src/cli/commands/insight.rs
-- [ ] crates/al-explorer/src/cli/commands/lsp/*.rs
+- [x] crates/al-explorer/src/cli/commands/response_contract.rs
+- [x] crates/al-explorer/src/cli/commands/insight.rs
+- [x] crates/al-explorer/src/cli/commands/lsp/*.rs
 - [x] crates/al-explorer/src/tui.rs + app/ + views/
 - [x] Backlog re-verification pass (which 2026-07-31 items are still open)
 
@@ -71,7 +71,7 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 ### [SECURITY] RAD publish interpolates an unvalidated `app.json` `id` into the request path
 - where: crates/al-publish/src/lib.rs:350-363 and crates/al-bc/src/bc_client.rs:352
 - severity: medium
-- scenario: `extract_app_id_from_manifest` accepts any non-empty string from `app.json`'s `id` field and `rad_publish` builds `format!("{}/dev/applications/{}", self.base_url, app_id)` with no percent-encoding and no GUID check (contrast `dev_packages_url`, which percent-encodes `server_instance` for exactly this reason, and has a test for it). A cloned repo whose `app.json` has `"id": "../../../admin/SomeEndpoint"` makes `Url::parse` normalize the `..` segments away, so `al-explorer publish --incremental` sends an authenticated PATCH with the whole `.app` body to an operator-chosen path on the BC server. A `?` or `#` in the id truncates the path instead.
+- scenario: `extract_app_id_from_manifest` accepts any non-empty string from `app.json`'s `id` field and `rad_publish` builds `format!("{}/dev/applications/{}", self.base_url, app_id)` with no percent-encoding and no GUID check (contrast `dev_packages_url`, which percent-encodes `server_instance` for exactly this reason, and has a test for it). A cloned repo whose `app.json` has `"id": "../../../admin/SomeEndpoint"` makes `Url::parse` normalize the `..` segments away, so an incremental publish sends an authenticated PATCH with the whole `.app` body to a path the repo chose. A `?` or `#` in the id truncates the path instead. Not user-reachable today (see the unreachable-publish-pipeline finding below), which makes it cheap to fix now.
 - fix: validate the id parses as a GUID in `extract_app_id_from_manifest` (BC requires one), or at minimum `urlencoding::encode` it in `rad_publish` and reject any id containing `/`, `?` or `#`.
 - status: open
 
@@ -174,6 +174,66 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - fix: decide it: either wire `publish` into `al-explorer` and the daemon, or move `al-publish` behind a feature flag and drop the unused `al-lsp` dependency edge. Note this also means the two publish-path security findings above are not user-reachable today, which is the right time to fix them.
 - status: open
 
+### [BUG] `test-snapshot capture` prints `[PASS]` and exits 0 when the captured test failed
+- where: crates/al-explorer/src/cli/commands/lsp/refactor.rs:262-279
+- severity: high
+- scenario: the daemon returns a `testResult` object on every capture (build_dispatch/tests_dispatch.rs:2175, and it is a required field in the response contract at response_contract.rs:360). `cmd_test_snapshot` never reads it: it prints `[PASS] Captured N sample(s) to …` and returns `ExitCode::SUCCESS` whatever the test did. `al test-snapshot capture 50100 MyTests TestFoo --bc-version 26.0 --breakpoint src/X.al:20 --output snap/base.snap.json` against an instance where `TestFoo` fails records a baseline snapshot from a red test and reports success, so every later `validate`/`replay` compares against garbage.
+- fix: read `result["testResult"]["failed"]` (the field is `TestCodeunitResult.failed`, al-types/src/test_result.rs:35) and return `ExitCode::FAILURE` with a `[FAIL]` label when it is non-zero.
+- status: open
+
+### [BUG] `rename` rewrites source files non-atomically and leaves the workspace half-renamed
+- where: crates/al-explorer/src/cli/commands/lsp/language.rs:643-647
+- severity: high
+- scenario: `apply_workspace_edit` writes each file with `std::fs::write`, which truncates then writes, and the per-file loop propagates the first failure with `?`. `al rename src/A.al 10 5 NewName` touching five files where the third is read-only (or on a full disk) leaves files one and two already rewritten, exits 1, and gives the user a workspace where the old and new names both exist. A crash mid-write truncates a source file outright. The same crate already has the correct pattern: `cmd_pack_native` uses `NamedTempFile` + `persist` (commands/build.rs:209-215).
+- fix: stage every file to a `NamedTempFile` in its own directory first, then `persist` them all, so a failure leaves nothing changed.
+- status: open
+
+### [BUG] `test-mutate` panics on a project containing a non-ASCII file name
+- where: crates/al-explorer/src/cli/commands/lsp/refactor.rs:484
+- severity: medium
+- scenario: the human-readable formatter prints the variant id with `&id[..id.len().min(8)]`, a byte slice. `mutate.rs:523-540` builds the id as `"{kind}:{file_name}:{line}:{byte_start}:{mutated}"` and sanitizes only the `mutated` component, so the file name reaches the id verbatim. For a file `Kundæ.al` with kind `cb`, the id starts `cb:Kundæ…` where `æ` occupies bytes 7 and 8, so printing any surviving mutant panics with "byte index 8 is not a char boundary". Only the non-`--json` path is affected, which is the interactive one.
+- fix: `id.chars().take(8).collect::<String>()` instead of the byte slice.
+- status: open
+
+### [BUG] four commands exit 0 while reporting a failed gate
+- where: crates/al-explorer/src/cli/commands/insight.rs:112-119 and 180-184; lsp/env.rs:206-218; lsp/project.rs:259-304; commands/build.rs:435-451
+- severity: medium
+- scenario: `Docs/reference/cli-commands.md:10-18` says exit 0 means the gate passed and "a non-empty report is not silently treated as success". Four commands break that.
+  `al dead-code` gates its exit on `has_high_confidence`, so a workspace whose findings are all `Confidence::Medium` (the kind al-analysis/src/queries/dead_code.rs:349 emits) prints the whole "possibly unused" table and exits 0.
+  `al setup` prints `[!!] ALTool NOT installed` and `[!!] .NET SDK not found` then returns an unconditional `ExitCode::SUCCESS` at env.rs:218, while `doctor_exit_code` (env.rs:302-334) sitting directly below it returns `FAILURE` for the identical payload.
+  `al authenticate status` prints `not authenticated` for every tenant and exits 0, so `al authenticate status && al download-symbols --source server` proceeds unauthenticated.
+  `al xlf generate` goes through `run_command`, which always returns `SUCCESS` (commands/mod.rs:386-388), so a project without `features: ["TranslationFile"]` prints "No translatable texts found", writes no `.g.xlf`, and exits 0.
+- fix: `dead-code` fails on any non-empty findings array; `setup` reuses `doctor_exit_code`; `authenticate status` fails when no tenant is `authenticated && !expired`; `xlf generate` switches to `run_command_with_exit` and fails on a null `path`.
+- status: open
+
+### [BUG] a typo'd `authenticate` subcommand runs a real interactive login
+- where: crates/al-explorer/src/cli/args.rs:360-363
+- severity: medium
+- scenario: `cmd` is a free-form `String` with `default_value = "login"` and no `value_parser`. The daemon's dispatch falls through to the login branch for any unrecognised value (build_dispatch/symbols_auth.rs:89, 148), so `al authenticate clera` starts a real browser/device-code OAuth flow — with the default 30 s client timeout, because the 120 s bump at lsp/project.rs:243-245 only applies to the literal `"login"` — and then fails the response contract with "unsupported authenticate response command 'clera'" after the login has already happened.
+- fix: make `cmd` a `#[derive(ValueEnum)]` with `Login | Status | Clear` so clap rejects the typo before anything runs.
+- status: open
+
+### [GAP] three clap arguments promise a constraint the attributes do not enforce
+- where: crates/al-explorer/src/cli/subcommands.rs:115, 136, 153, 176, 196; cli/args.rs:424-426; cli/args.rs:573-574
+- severity: low
+- scenario: `--company` is declared `#[arg(long, default_value = "")]` on all five snapshot/profile subcommands, so `--help` shows `[default: ]` as if it were optional, and `al snapshot list --server http://host/BC` dies at runtime with "`--company` is required" from `bc_server_params` (commands/mod.rs:61-66). `--event`'s help says "(requires --object)" with no clap `requires`, enforced only by a manual check at insight.rs:460-467. `--table`'s help says "(required for page/report)" with no enforcement at all, so `al generate page --id 50100 --name Foo` fails with the daemon's misleading `Table '' not found in symbol index`. `TestResults::method` (args.rs:535) shows the project already knows the `requires` idiom.
+- fix: drop `default_value` and mark `--company` `required = true`; add `requires = "object"` to `--event`; add `required_if_eq_any = [("kind","page"),("kind","report")]` to `--table`.
+- status: open
+
+### [SIMPLIFY] the response-validation framework exists twice, field for field
+- where: crates/al-explorer/src/cli/commands/mod.rs:736-875 and crates/al-explorer/src/cli/commands/response_contract.rs:10-530
+- severity: low
+- scenario: `JsonFieldKind`/`validate_array_object_fields`/`validate_named_array_object_fields`/`validate_object_items`/`require_object_field`/`json_type_name` in `commands/mod.rs` duplicate `Kind`/`array_objects`/`named_array_objects`/`fields`/`type_name` in `response_contract.rs`, down to the `label()` strings and the type-name match arms. `request_checked` (mod.rs:432-437) tries `response_contract` first and only falls back to the copy, so the copy shrinks as contracts migrate and a reviewer has to check both to know which one governs a method. The `"tests.last_results"` arm at mod.rs:647-660 is already unreachable, because response_contract.rs:113 claims that method; only the direct-call test at mod.rs:1119 keeps it alive.
+- fix: move the remaining `validate_run_command_result` contracts into `response_contract` and delete the duplicate module.
+- status: open
+
+### [SLOP] three comments in the CLI describe behaviour that is not there
+- where: crates/al-explorer/src/cli/args.rs:355-359 (and commands/mod.rs:47-52); commands/build.rs:272-276; commands/lsp/tests.rs:346-347
+- severity: low
+- scenario: the `authenticate` help text tells users to "prefer reading credentials from a file or environment variable", and `bc_server_params`' comment repeats the claim as settled. No credentials-file reader exists anywhere in the repo; only `BC_USERNAME`/`BC_PASSWORD` do, so half of the advice is unactionable. In `build.rs` the doc comment describing `validate_with_alc` ("Compile `dir` with the Microsoft AL compiler … Returns `None` when validation passes") sits above `create_validation_tempdir`, which only makes a temp dir; the real `validate_with_alc` at line 291 has no doc comment. `cmd_test_run_all`'s doc says it "streams a per-codeunit summary" when it makes one blocking `request_checked` call at tests.rs:385 and prints only after the whole response arrives. Two smaller dead branches belong here too: `path == "null"` at build.rs:445 can never fire because `path` comes from `as_str().unwrap_or("")`, and the `[failed]` arm at lsp/refactor.rs:116-122 is unreachable because the daemon sets `"renamed": !dry_run` and turns real failures into RPC errors (build/organize.rs:439-459).
+- fix: implement `--password-file` or reword the help and the comment to name only the env vars; move the `validate_with_alc` doc down to the function it describes; reword the `test-run-all` doc; delete the two dead branches.
+- status: open
+
 ## Backlog re-verification (2026-07-31 "Emit, BC & Explorer" section)
 
 Checked every item in that section against current code. All of them are fixed, most with a
@@ -199,3 +259,22 @@ regression test and a comment naming the old behaviour:
 - Docs: the `generate-completions` and XLIFF-id claims both match the code now.
 
 No item is carried forward as [STILL-OPEN]. Findings above are new.
+
+## Review complete
+
+28 findings, none carried over from the 2026-07-31 backlog (every item in that section is fixed).
+
+1. Control add-in `Scripts`/`StartupScript`/`Images` paths skip the project-containment check that
+   report layouts and the logo go through, so `Scripts = '../../../../etc/passwd'` reads an
+   arbitrary file into the shipped `.app` and writes the archive entry at `addin/src/../../…`.
+2. The native emitter drops every `Label` translation unit and ignores `Locked = true`, so messages
+   in a natively built app are untranslatable and locked strings are handed to translators; the
+   `.g.xlf` written by `al-explorer xlf generate` disagrees with the `.app`'s own XLIFF.
+3. `resourceExposurePolicy` is read under the key `includeSourceInPackageFile`, which neither
+   Microsoft nor this repo's own `schemas/app.json` and `scaffold.rs` use, so an IP-protection flag
+   the developer set is silently dropped from the manifest.
+4. `test-snapshot capture` prints `[PASS]` and exits 0 for a failed test, and four more commands
+   (`dead-code`, `setup`, `authenticate status`, `xlf generate`) exit 0 on a failed gate.
+5. `rename` rewrites files with `std::fs::write` and aborts mid-loop, leaving a half-renamed
+   workspace; `test-mutate` panics on a non-ASCII file name; the TUI panics on a non-ASCII member
+   name and leaves mouse capture on when it does.
