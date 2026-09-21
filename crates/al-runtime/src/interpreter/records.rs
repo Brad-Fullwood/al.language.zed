@@ -129,15 +129,45 @@ fn key_for(table_name: &str) -> String {
     table_name.trim().trim_matches('"').to_ascii_lowercase()
 }
 
-/// Ensure a backing store exists for `table_name`, building it from the
-/// workspace table definition on first use. Returns the store key on success.
-fn ensure_store(ctx: &mut DispatchCtx, table_name: &str) -> Result<String, String> {
-    let key = key_for(table_name);
+/// Which backing store a record variable reads and writes.
+///
+/// A plain `Record "X"` shares one store per table, the way every AL variable
+/// over a physical table sees the same rows. A `Record "X" temporary` does
+/// not: its rows live in the variable, isolated from the physical table and
+/// from every other temporary variable, so its store is keyed per variable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TableRef {
+    /// Declared table name. Loads the workspace table definition.
+    pub name: String,
+    /// The owning variable's view handle, for a `temporary` declaration.
+    pub temp_owner: Option<u64>,
+}
+
+impl TableRef {
+    pub(crate) fn persistent(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            temp_owner: None,
+        }
+    }
+
+    fn key(&self) -> String {
+        match self.temp_owner {
+            Some(owner) => format!("{} temporary#{owner}", key_for(&self.name)),
+            None => key_for(&self.name),
+        }
+    }
+}
+
+/// Ensure a backing store exists for `table`, building it from the workspace
+/// table definition on first use. Returns the store key on success.
+fn ensure_store(ctx: &mut DispatchCtx, table: &TableRef) -> Result<String, String> {
+    let key = table.key();
     if ctx.records.contains_key(&key) {
         return Ok(key);
     }
     let source = Arc::clone(&ctx.source);
-    let meta = load_table_meta(&*source, table_name)?;
+    let meta = load_table_meta(&*source, &table.name)?;
     let store = RecordStore {
         record: MockRecord::new(meta.table_id, meta.table_name, meta.pk_fields),
         field_by_name: meta.field_by_name,
@@ -149,17 +179,17 @@ fn ensure_store(ctx: &mut DispatchCtx, table_name: &str) -> Result<String, Strin
     Ok(key)
 }
 
-/// Resolve the record variable named `recv` to its `(table_name, handle)`
-/// pair, allocating a fresh per-variable view handle on first use and writing
-/// it back onto the variable's `RecordValue`. Returns `None` when `recv` is
-/// not a bound record variable.
+/// Resolve the record variable named `recv` to its `(TableRef, handle)` pair,
+/// allocating a fresh per-variable view handle on first use and writing it
+/// back onto the variable's `RecordValue`. Returns `None` when `recv` is not a
+/// bound record variable.
 pub(crate) fn record_binding(
     recv: &str,
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
-) -> Option<(String, u64)> {
-    let table_name = match stack.lookup(recv) {
-        Some(Value::Record(rv)) => rv.table_name.clone(),
+) -> Option<(TableRef, u64)> {
+    let (table_name, temporary) = match stack.lookup(recv) {
+        Some(Value::Record(rv)) => (rv.table_name.clone(), rv.temporary),
         _ => return None,
     };
     let existing = match stack.lookup(recv) {
@@ -177,7 +207,11 @@ pub(crate) fn record_binding(
             handle
         }
     };
-    Some((table_name, handle))
+    let table = TableRef {
+        name: table_name,
+        temp_owner: temporary.then_some(handle),
+    };
+    Some((table, handle))
 }
 
 /// Give a by-value record argument its own view, seeded from the caller's
@@ -199,14 +233,38 @@ pub(crate) fn fork_record_for_by_value(ctx: &mut DispatchCtx, rv: &mut RecordVal
     let Some(caller_handle) = rv.handle.take() else {
         return;
     };
-    let key = key_for(&rv.table_name);
+    let caller_table = TableRef {
+        name: rv.table_name.clone(),
+        temp_owner: rv.temporary.then_some(caller_handle),
+    };
+    let key = caller_table.key();
     ctx.next_record_handle += 1;
     let handle = ctx.next_record_handle;
-    let Some(store) = ctx.records.get_mut(&key) else {
+    let Some(store) = ctx.records.get(&key) else {
         // The table was never materialized, so there is no view state to copy.
         // Leave the handle cleared; the callee allocates its own on demand.
         return;
     };
+    // A temporary record variable holds the rows, so copying the variable
+    // copies the whole in-memory table, not just the current buffer.
+    if rv.temporary {
+        let mut copy = store.clone();
+        let mut view = copy.record.new_view();
+        if let Some(caller_view) = copy.views.get(&caller_handle) {
+            view.copy_buffers_from(caller_view);
+        }
+        copy.views.clear();
+        copy.put_view(handle, view);
+        let callee_key = TableRef {
+            name: rv.table_name.clone(),
+            temp_owner: Some(handle),
+        }
+        .key();
+        ctx.records.insert(callee_key, copy);
+        rv.handle = Some(handle);
+        return;
+    }
+    let store = ctx.records.get_mut(&key).expect("store present above");
     let mut view = store.record.new_view();
     if let Some(caller_view) = store.views.get(&caller_handle) {
         view.copy_buffers_from(caller_view);
@@ -628,13 +686,13 @@ pub fn supports_record_method(method: &str) -> bool {
 
 /// Execute a record-API method call (`Rec.Method(args)`).
 ///
-/// `table_name` is the declared subtype of the receiver record variable and
-/// `handle` identifies that variable's own view (filters/cursor/buffer) over
-/// the shared table store. `args_node` is the call's `argument_list` (so
-/// field-reference arguments — e.g. the first arg of `SetRange` — can be read
-/// as field names rather than evaluated as variables).
+/// `table` names the receiver record variable's backing store and `handle`
+/// identifies that variable's own view (filters/cursor/buffer) over it.
+/// `args_node` is the call's `argument_list` (so field-reference arguments —
+/// e.g. the first arg of `SetRange` — can be read as field names rather than
+/// evaluated as variables).
 pub(crate) fn dispatch_record_method(
-    table_name: &str,
+    table: &TableRef,
     handle: u64,
     method: &str,
     args_node: Option<Node<'_>>,
@@ -657,7 +715,7 @@ pub(crate) fn dispatch_record_method(
     // subsequent plain read sees it. Handled before the value-eval loop so the
     // field-name nodes are never evaluated as variables.
     if lower == "calcfields" {
-        return dispatch_calcfields(table_name, handle, &nodes, source, ctx);
+        return dispatch_calcfields(table, handle, &nodes, source, ctx);
     }
 
     // SetCurrentKey takes only field references. Handle it before the general
@@ -666,7 +724,7 @@ pub(crate) fn dispatch_record_method(
         if nodes.is_empty() {
             return err("SetCurrentKey: requires at least one field");
         }
-        let key = match ensure_store(ctx, table_name) {
+        let key = match ensure_store(ctx, table) {
             Ok(key) => key,
             Err(error) => return err(error),
         };
@@ -705,7 +763,7 @@ pub(crate) fn dispatch_record_method(
         }
     }
 
-    let key = match ensure_store(ctx, table_name) {
+    let key = match ensure_store(ctx, table) {
         Ok(k) => k,
         Err(e) => return err(e),
     };
@@ -993,7 +1051,7 @@ fn read_buffer_field(store: &RecordStore, handle: u64, field: FieldNo) -> Value 
 /// any other field returns its buffer value, or the field's typed zero value
 /// when it was never assigned (BC zero-initialises every field).
 pub(crate) fn field_get(
-    table_name: &str,
+    table: &TableRef,
     handle: u64,
     field_name: &str,
     ctx: &mut DispatchCtx,
@@ -1001,7 +1059,7 @@ pub(crate) fn field_get(
     if !records_enabled(ctx) {
         return records_disabled_error();
     }
-    let key = match ensure_store(ctx, table_name) {
+    let key = match ensure_store(ctx, table) {
         Ok(k) => k,
         Err(e) => return err(e),
     };
@@ -1024,7 +1082,7 @@ pub(crate) fn field_get(
 /// result into the current buffer. Non-FlowField (or unparseable) args are
 /// ignored, matching BC's tolerance of explicitly-listed normal fields.
 fn dispatch_calcfields(
-    table_name: &str,
+    table: &TableRef,
     handle: u64,
     nodes: &[Node<'_>],
     source: &[u8],
@@ -1033,7 +1091,7 @@ fn dispatch_calcfields(
     if nodes.is_empty() {
         return err("CalcFields: requires at least one FlowField");
     }
-    let key = match ensure_store(ctx, table_name) {
+    let key = match ensure_store(ctx, table) {
         Ok(k) => k,
         Err(e) => return err(e),
     };
@@ -1104,8 +1162,10 @@ fn eval_flowfield(
         values
     };
 
-    // 2. Ensure the referenced table's store exists.
-    let ref_key = match ensure_store(ctx, &formula.table_name) {
+    // 2. Ensure the referenced table's store exists. A FlowField aggregates the
+    //    referenced table itself, so it reads the persistent store even when
+    //    the calculating record is temporary.
+    let ref_key = match ensure_store(ctx, &TableRef::persistent(&formula.table_name)) {
         Ok(k) => k,
         Err(e) => return err(e),
     };
@@ -1194,11 +1254,11 @@ pub(crate) fn try_field_assign(
     ctx: &mut DispatchCtx,
 ) -> Option<Eval> {
     let (recv, field_name) = record_field_access(lhs_node, source)?;
-    let (table_name, handle) = record_binding(&recv, stack, ctx)?;
+    let (table, handle) = record_binding(&recv, stack, ctx)?;
     if !records_enabled(ctx) {
         return Some(records_disabled_error());
     }
-    let key = match ensure_store(ctx, &table_name) {
+    let key = match ensure_store(ctx, &table) {
         Ok(k) => k,
         Err(e) => return Some(err(e)),
     };
@@ -1676,14 +1736,17 @@ pub(crate) fn default_for_structured(type_text: &str) -> Option<Value> {
     let trimmed = type_text.trim();
     let lower = trimmed.to_ascii_lowercase();
     if let Some(rest) = lower.strip_prefix("record") {
-        // `Record "My Item"` / `Record Item` — grab the subtype from the
-        // original (case-preserving) text after the `Record` keyword.
+        // `Record "My Item"` / `Record Item` / `Record "My Item" temporary` —
+        // grab the subtype from the original (case-preserving) text after the
+        // `Record` keyword.
         if rest.is_empty() || rest.starts_with(char::is_whitespace) {
-            let subtype = subtype_after_keyword(trimmed, "record");
+            let after = &trimmed["record".len()..];
+            let (subtype, temporary) = split_temporary_keyword(after);
             return Some(Value::Record(RecordValue {
                 table_name: subtype,
                 table_id: 0,
                 handle: None,
+                temporary,
             }));
         }
     }
@@ -1709,8 +1772,50 @@ pub(crate) fn default_for_structured(type_text: &str) -> Option<Value> {
 
 /// Extract the subtype name following a leading keyword, stripping quotes.
 fn subtype_after_keyword(type_text: &str, keyword: &str) -> String {
-    let rest = type_text[keyword.len()..].trim();
-    rest.trim_matches('"').trim().to_string()
+    unquote_subtype(&type_text[keyword.len()..])
+}
+
+/// Split a record subtype from a trailing `temporary` keyword. The AL grammar
+/// puts `temporary` inside the `type_reference`, so the declared type text of
+/// `TempLine: Record "Sales Line" temporary` arrives as one string.
+fn split_temporary_keyword(after_record_keyword: &str) -> (String, bool) {
+    let trimmed = after_record_keyword.trim();
+    let Some(head) = trimmed.strip_suffix_ignore_ascii_case("temporary") else {
+        return (unquote_subtype(trimmed), false);
+    };
+    // Only a whitespace-separated trailing word is the keyword; a table named
+    // `"Buffer Temporary"` ends with the same letters inside its quotes.
+    if head.ends_with(char::is_whitespace) {
+        (unquote_subtype(head), true)
+    } else {
+        (unquote_subtype(trimmed), false)
+    }
+}
+
+trait StripSuffixIgnoreCase {
+    fn strip_suffix_ignore_ascii_case(&self, suffix: &str) -> Option<&str>;
+}
+
+impl StripSuffixIgnoreCase for str {
+    fn strip_suffix_ignore_ascii_case(&self, suffix: &str) -> Option<&str> {
+        let split = self.len().checked_sub(suffix.len())?;
+        self.is_char_boundary(split)
+            .then(|| self.split_at(split))
+            .filter(|(_, tail)| tail.eq_ignore_ascii_case(suffix))
+            .map(|(head, _)| head)
+    }
+}
+
+/// Trim whitespace and one layer of quoting from each end independently.
+/// `trim_matches('"')` cannot do this: on `"Sales Line" temporary` it strips
+/// the leading quote and leaves the rest, producing `Sales Line" temporary`.
+fn unquote_subtype(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let stripped = trimmed
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap_or(trimmed);
+    stripped.trim().to_string()
 }
 
 fn node_text(node: Node<'_>, source: &[u8]) -> String {
@@ -1753,5 +1858,47 @@ fn render_filter_value(v: &Value) -> Result<String, String> {
             "placeholder value type {} is not supported by the local record runtime",
             value.type_name()
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_subtype_splits_the_trailing_temporary_keyword() {
+        assert_eq!(
+            split_temporary_keyword(r#" "Sales Line" temporary"#),
+            ("Sales Line".to_string(), true)
+        );
+        assert_eq!(
+            split_temporary_keyword(" Item TEMPORARY"),
+            ("Item".to_string(), true)
+        );
+        assert_eq!(
+            split_temporary_keyword(r#" "Sales Line""#),
+            ("Sales Line".to_string(), false)
+        );
+        // A table whose own name ends in the word keeps it.
+        assert_eq!(
+            split_temporary_keyword(r#" "Buffer Temporary""#),
+            ("Buffer Temporary".to_string(), false)
+        );
+    }
+
+    #[test]
+    fn temporary_stores_are_keyed_per_variable() {
+        let persistent = TableRef::persistent("Sales Line");
+        let temp_a = TableRef {
+            name: "Sales Line".into(),
+            temp_owner: Some(7),
+        };
+        let temp_b = TableRef {
+            name: "Sales Line".into(),
+            temp_owner: Some(8),
+        };
+        assert_eq!(persistent.key(), "sales line");
+        assert_ne!(temp_a.key(), persistent.key());
+        assert_ne!(temp_a.key(), temp_b.key());
     }
 }

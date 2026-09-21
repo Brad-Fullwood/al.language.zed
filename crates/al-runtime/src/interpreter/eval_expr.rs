@@ -523,8 +523,8 @@ fn eval_postfix(
     // receiver resolves to a bound `Value::Record`.
     if let Some((recv, field)) = records::record_field_access(node, source) {
         if matches!(stack.lookup(&recv), Some(Value::Record(_))) {
-            if let Some((table_name, handle)) = records::record_binding(&recv, stack, ctx) {
-                return records::field_get(&table_name, handle, &field, ctx);
+            if let Some((table, handle)) = records::record_binding(&recv, stack, ctx) {
+                return records::field_get(&table, handle, &field, ctx);
             }
         }
     }
@@ -803,13 +803,13 @@ fn eval_expression_node(
                 let new_val = match kind {
                     AssignKind::Plain => rhs_val,
                     AssignKind::Compound(base_op) => {
-                        let Some((table_name, handle)) = records::record_binding(&recv, stack, ctx)
+                        let Some((table, handle)) = records::record_binding(&recv, stack, ctx)
                         else {
                             return Eval::Error(simple_error(&format!(
                                 "record variable '{recv}' is not bound"
                             )));
                         };
-                        let current = match records::field_get(&table_name, handle, &field, ctx) {
+                        let current = match records::field_get(&table, handle, &field, ctx) {
                             Eval::Normal(v) => v,
                             other => return other,
                         };

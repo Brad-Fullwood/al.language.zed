@@ -163,6 +163,9 @@ pub struct RecordValue {
     /// Opaque handle into the mock table store. `None` means "no current
     /// record" (e.g. after `Reset` and before `FindFirst`).
     pub handle: Option<u64>,
+    /// Declared `Record "X" temporary`. The rows then live in this variable
+    /// rather than in the table, so the runtime keys its store per variable.
+    pub temporary: bool,
 }
 
 // Variants are ordered by their declaration index, then within each variant
@@ -557,11 +560,13 @@ mod tests {
                 table_name: String::new(),
                 table_id: 0,
                 handle: None,
+                temporary: false,
             }),
             Value::RecordRef(RecordValue {
                 table_name: String::new(),
                 table_id: 0,
                 handle: None,
+                temporary: false,
             }),
             Value::Variant(Box::new(Value::Null)),
             Value::Array(vec![]),
@@ -619,6 +624,7 @@ mod tests {
                 table_name: name.into(),
                 table_id: id,
                 handle,
+                temporary: false,
             })
         };
         assert!(rec(18, "Zebra", Some(99)) < rec(27, "Aardvark", Some(1)));
@@ -630,6 +636,7 @@ mod tests {
                 table_name: "T".into(),
                 table_id: id,
                 handle: None,
+                temporary: false,
             })
         };
         assert!(rref(1) < rref(2));
@@ -709,6 +716,7 @@ mod tests {
                 table_name: String::new(),
                 table_id: 0,
                 handle: None,
+                temporary: false,
             })
             .type_name(),
             "Record"
@@ -718,6 +726,7 @@ mod tests {
                 table_name: String::new(),
                 table_id: 0,
                 handle: None,
+                temporary: false,
             })
             .type_name(),
             "RecordRef"

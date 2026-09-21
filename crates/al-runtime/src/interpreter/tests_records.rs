@@ -1762,3 +1762,57 @@ fn flowfield_boolean_const_matches_boolean_cells() {
     );
     assert_eq!(ok(r), Value::Integer(2));
 }
+
+#[test]
+fn temporary_record_uses_the_table_name_without_the_temporary_keyword() {
+    let cu = r#"codeunit 50133 "Temp Name Tests"
+{
+    procedure CountRows(): Integer
+    var
+        TempItem: Record "Item" temporary;
+    begin
+        TempItem.Init();
+        TempItem."No." := 'A';
+        TempItem.Insert();
+        exit(TempItem.Count());
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/Item.al", ITEM_TABLE), ("/ws/TempName.al", cu)],
+        "Temp Name Tests",
+        "CountRows",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Integer(1));
+}
+
+#[test]
+fn each_temporary_record_variable_has_its_own_rows() {
+    // BC gives every temporary record variable a private in-memory table: rows
+    // in one are invisible to a second temporary variable over the same table
+    // and to the persistent table.
+    let cu = r#"codeunit 50134 "Temp Isolation Tests"
+{
+    procedure Expected(): Integer
+    var
+        TempA: Record "Item" temporary;
+        TempB: Record "Item" temporary;
+        Persistent: Record "Item";
+    begin
+        TempA.Init(); TempA."No." := 'A'; TempA.Insert();
+        TempA.Init(); TempA."No." := 'B'; TempA.Insert();
+        TempB.Init(); TempB."No." := 'C'; TempB.Insert();
+        Persistent.Init(); Persistent."No." := 'D'; Persistent.Insert();
+        exit(TempA.Count() * 100 + TempB.Count() * 10 + Persistent.Count());
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/Item.al", ITEM_TABLE), ("/ws/TempIsolation.al", cu)],
+        "Temp Isolation Tests",
+        "Expected",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Integer(211));
+}

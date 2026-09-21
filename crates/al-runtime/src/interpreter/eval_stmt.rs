@@ -823,19 +823,13 @@ pub(crate) fn eval_call(
     if let Some(recv) = receiver.as_deref() {
         match stack.lookup(recv) {
             Some(Value::Record(_)) if records::supports_record_method(&proc_name) => {
-                let Some((table_name, handle)) = records::record_binding(recv, stack, ctx) else {
+                let Some((table, handle)) = records::record_binding(recv, stack, ctx) else {
                     return Eval::Error(simple_error(&format!(
                         "record variable '{recv}' is not bound"
                     )));
                 };
                 return records::dispatch_record_method(
-                    &table_name,
-                    handle,
-                    &proc_name,
-                    args_node,
-                    source,
-                    stack,
-                    ctx,
+                    &table, handle, &proc_name, args_node, source, stack, ctx,
                 );
             }
             Some(Value::List(_)) if records::supports_list_method(&proc_name) => {
