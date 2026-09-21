@@ -146,7 +146,7 @@ current code are tagged [STILL-OPEN].
 - fix: this file only makes the editor mark the generated files read only. Log and continue
   on a malformed settings file (or overwrite it) rather than failing the navigation that
   triggered it.
-- status: open
+- status: fixed 06b1eb57
 
 ### [BUG] Background virtual-file GC can delete a cache entry between the existence check and the read
 - where: crates/al-symbols/src/virtual_file.rs:65 (`if !file_path.is_file()`), :110-111,
@@ -161,7 +161,7 @@ current code are tagged [STILL-OPEN].
   true for the write path and not for the reuse path.
 - fix: treat a `NotFound` from `enforce_readonly`/`materialized_availability` as a cache miss
   and regenerate once, or have the sweep skip files whose mtime it cannot claim exclusively.
-- status: open
+- status: fixed 06b1eb57
 
 ### [PERF] Every cache save re-scans the whole symbol cache directory, from every rayon worker
 - where: crates/al-symbols/src/cache.rs:256 (`self.cleanup_stale_tmp()` inside `save`),
