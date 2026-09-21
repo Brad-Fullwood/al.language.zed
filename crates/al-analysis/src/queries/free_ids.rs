@@ -283,9 +283,6 @@ const NO_RANGES_WARNING: &str =
 
 /// Describe the declared ranges for an error message: `50000-50099, 60000-60010`.
 fn describe_ranges(ranges: &[IdRange]) -> String {
-    if ranges.is_empty() {
-        return "none declared".to_string();
-    }
     ranges
         .iter()
         .map(|range| format!("{}-{}", range.from, range.to))
@@ -293,7 +290,15 @@ fn describe_ranges(ranges: &[IdRange]) -> String {
         .join(", ")
 }
 
+/// No number is available. An empty range set and a full range set are
+/// different problems, and the fix differs, so they get different messages.
 fn exhausted(domain: &str, ranges: &[IdRange]) -> FreeIdsError {
+    if ranges.is_empty() {
+        return FreeIdsError::Exhausted(format!(
+            "app.json declares no idRanges, so no {domain} can be allocated; \
+             add an idRanges entry to app.json"
+        ));
+    }
     FreeIdsError::Exhausted(format!(
         "no free {domain} left in the declared app.json idRanges ({}); \
          widen idRanges in app.json or reuse the number of a removed object",
@@ -1062,7 +1067,12 @@ mod tests {
     #[test]
     fn a_missing_id_range_set_warns_rather_than_guessing() {
         let error = allocate(&[], &[], &query(Some(ObjectKind::Table), 1)).unwrap_err();
-        assert!(error.to_string().contains("none declared"), "{error}");
+        let message = error.to_string();
+        assert!(message.contains("declares no idRanges"), "{message}");
+        assert!(
+            !message.contains("widen"),
+            "nothing to widen when nothing is declared: {message}"
+        );
 
         let summary = allocate(&[], &[], &query(None, 1)).unwrap();
         assert_eq!(summary.warnings, vec![NO_RANGES_WARNING.to_string()]);
