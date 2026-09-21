@@ -55,6 +55,9 @@ pub struct RecordStore {
     /// this default (BC zero-initialises every field); fields with types the
     /// interpreter cannot default are absent.
     field_defaults: HashMap<FieldNo, Value>,
+    /// Field number → the declared `Text[N]`/`Code[N]` capacity. A longer
+    /// value assigned to the field is a runtime error, as on BC.
+    field_lengths: HashMap<FieldNo, usize>,
     /// Per-record-variable view state (filters/cursor/buffer), keyed by the
     /// variable's handle. BC gives each record variable independent state over
     /// the shared physical table.
@@ -92,7 +95,9 @@ impl RecordStore {
     /// types store the value as-is.
     fn coerce_to_field(&self, field: FieldNo, value: Value) -> Result<Value, String> {
         match self.field_defaults.get(&field) {
-            Some(default) => Value::coerce_into_slot(default, value),
+            Some(default) => {
+                Value::coerce_into_slot(default, value, self.field_lengths.get(&field).copied())
+            }
             None => Ok(value),
         }
     }
@@ -105,6 +110,7 @@ struct TableMeta {
     field_by_name: HashMap<String, FieldNo>,
     flowfields: HashMap<FieldNo, CalcFormula>,
     field_defaults: HashMap<FieldNo, Value>,
+    field_lengths: HashMap<FieldNo, usize>,
     pk_fields: Vec<FieldNo>,
 }
 
@@ -129,37 +135,69 @@ fn key_for(table_name: &str) -> String {
     table_name.trim().trim_matches('"').to_ascii_lowercase()
 }
 
-/// Ensure a backing store exists for `table_name`, building it from the
-/// workspace table definition on first use. Returns the store key on success.
-fn ensure_store(ctx: &mut DispatchCtx, table_name: &str) -> Result<String, String> {
-    let key = key_for(table_name);
+/// Which backing store a record variable reads and writes.
+///
+/// A plain `Record "X"` shares one store per table, the way every AL variable
+/// over a physical table sees the same rows. A `Record "X" temporary` does
+/// not: its rows live in the variable, isolated from the physical table and
+/// from every other temporary variable, so its store is keyed per variable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TableRef {
+    /// Declared table name. Loads the workspace table definition.
+    pub name: String,
+    /// The owning variable's view handle, for a `temporary` declaration.
+    pub temp_owner: Option<u64>,
+}
+
+impl TableRef {
+    pub(crate) fn persistent(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            temp_owner: None,
+        }
+    }
+
+    fn key(&self) -> String {
+        match self.temp_owner {
+            Some(owner) => format!("{} temporary#{owner}", key_for(&self.name)),
+            None => key_for(&self.name),
+        }
+    }
+}
+
+/// Ensure a backing store exists for `table`, building it from the workspace
+/// table definition on first use. Returns the store key on success.
+fn ensure_store(ctx: &mut DispatchCtx, table: &TableRef) -> Result<String, String> {
+    let key = table.key();
     if ctx.records.contains_key(&key) {
         return Ok(key);
     }
     let source = Arc::clone(&ctx.source);
-    let meta = load_table_meta(&*source, table_name)?;
+    let meta = load_table_meta(&*source, &table.name)?;
     let store = RecordStore {
-        record: MockRecord::new(meta.table_id, meta.table_name, meta.pk_fields),
+        record: MockRecord::new(meta.table_id, meta.table_name, meta.pk_fields)
+            .with_field_defaults(meta.field_defaults.clone()),
         field_by_name: meta.field_by_name,
         flowfields: meta.flowfields,
         field_defaults: meta.field_defaults,
+        field_lengths: meta.field_lengths,
         views: HashMap::new(),
     };
     ctx.records.insert(key.clone(), store);
     Ok(key)
 }
 
-/// Resolve the record variable named `recv` to its `(table_name, handle)`
-/// pair, allocating a fresh per-variable view handle on first use and writing
-/// it back onto the variable's `RecordValue`. Returns `None` when `recv` is
-/// not a bound record variable.
+/// Resolve the record variable named `recv` to its `(TableRef, handle)` pair,
+/// allocating a fresh per-variable view handle on first use and writing it
+/// back onto the variable's `RecordValue`. Returns `None` when `recv` is not a
+/// bound record variable.
 pub(crate) fn record_binding(
     recv: &str,
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
-) -> Option<(String, u64)> {
-    let table_name = match stack.lookup(recv) {
-        Some(Value::Record(rv)) => rv.table_name.clone(),
+) -> Option<(TableRef, u64)> {
+    let (table_name, temporary) = match stack.lookup(recv) {
+        Some(Value::Record(rv)) => (rv.table_name.clone(), rv.temporary),
         _ => return None,
     };
     let existing = match stack.lookup(recv) {
@@ -177,7 +215,11 @@ pub(crate) fn record_binding(
             handle
         }
     };
-    Some((table_name, handle))
+    let table = TableRef {
+        name: table_name,
+        temp_owner: temporary.then_some(handle),
+    };
+    Some((table, handle))
 }
 
 /// Give a by-value record argument its own view, seeded from the caller's
@@ -199,14 +241,38 @@ pub(crate) fn fork_record_for_by_value(ctx: &mut DispatchCtx, rv: &mut RecordVal
     let Some(caller_handle) = rv.handle.take() else {
         return;
     };
-    let key = key_for(&rv.table_name);
+    let caller_table = TableRef {
+        name: rv.table_name.clone(),
+        temp_owner: rv.temporary.then_some(caller_handle),
+    };
+    let key = caller_table.key();
     ctx.next_record_handle += 1;
     let handle = ctx.next_record_handle;
-    let Some(store) = ctx.records.get_mut(&key) else {
+    let Some(store) = ctx.records.get(&key) else {
         // The table was never materialized, so there is no view state to copy.
         // Leave the handle cleared; the callee allocates its own on demand.
         return;
     };
+    // A temporary record variable holds the rows, so copying the variable
+    // copies the whole in-memory table, not just the current buffer.
+    if rv.temporary {
+        let mut copy = store.clone();
+        let mut view = copy.record.new_view();
+        if let Some(caller_view) = copy.views.get(&caller_handle) {
+            view.copy_buffers_from(caller_view);
+        }
+        copy.views.clear();
+        copy.put_view(handle, view);
+        let callee_key = TableRef {
+            name: rv.table_name.clone(),
+            temp_owner: Some(handle),
+        }
+        .key();
+        ctx.records.insert(callee_key, copy);
+        rv.handle = Some(handle);
+        return;
+    }
+    let store = ctx.records.get_mut(&key).expect("store present above");
     let mut view = store.record.new_view();
     if let Some(caller_view) = store.views.get(&caller_handle) {
         view.copy_buffers_from(caller_view);
@@ -240,12 +306,17 @@ fn load_table_meta(
         ));
     }
     let bytes = text.as_bytes();
-    parse_table_meta(tree.root_node(), bytes, want)
+    parse_table_meta(tree.root_node(), bytes, want, source)
         .map_err(|reason| format!("invalid metadata for record table '{want}': {reason}"))
 }
 
 /// Parse a table `object_declaration` (matching `want`) into [`TableMeta`].
-fn parse_table_meta(root: Node<'_>, source: &[u8], want: &str) -> Result<TableMeta, String> {
+fn parse_table_meta(
+    root: Node<'_>,
+    source: &[u8],
+    want: &str,
+    workspace: &dyn al_types::ProcedureSource,
+) -> Result<TableMeta, String> {
     let obj = find_table_object(root, source, want)
         .ok_or_else(|| "matching table object declaration was not found".to_string())?;
 
@@ -271,12 +342,14 @@ fn parse_table_meta(root: Node<'_>, source: &[u8], want: &str) -> Result<TableMe
     let mut field_by_name: HashMap<String, FieldNo> = HashMap::new();
     let mut flowfields: HashMap<FieldNo, CalcFormula> = HashMap::new();
     let mut field_defaults: HashMap<FieldNo, Value> = HashMap::new();
+    let mut field_lengths: HashMap<FieldNo, usize> = HashMap::new();
 
     let fields_body = section_body(body, "fields", source)
         .ok_or_else(|| "fields section is missing".to_string())?;
     let mut field_numbers = std::collections::HashSet::new();
     for fdef in sections_with_keyword(fields_body, "field", source) {
         let (no, name, type_text, calc) = parse_field_def(fdef, source)?;
+        let option_members = parse_option_members(fdef, source);
         if no <= 0 {
             return Err(format!("field '{name}' has non-positive number {no}"));
         }
@@ -294,7 +367,14 @@ fn parse_table_meta(root: Node<'_>, source: &[u8], want: &str) -> Result<TableMe
                 .next()
                 .unwrap_or(&type_text)
                 .trim();
+            if let Some(length) = crate::interpreter::dispatch::declared_text_length(&type_text) {
+                field_lengths.insert(no, length);
+            }
             if let Some(default) = Value::default_for(base) {
+                field_defaults.insert(no, default);
+            } else if let Some(default) =
+                option_field_default(base, &type_text, option_members.as_deref(), workspace)
+            {
                 field_defaults.insert(no, default);
             }
         }
@@ -339,6 +419,7 @@ fn parse_table_meta(root: Node<'_>, source: &[u8], want: &str) -> Result<TableMe
         field_by_name,
         flowfields,
         field_defaults,
+        field_lengths,
         pk_fields,
     })
 }
@@ -461,6 +542,7 @@ fn parse_field_def(
     let mut number: Option<FieldNo> = None;
     let mut name: Option<String> = None;
     let mut type_text: Option<String> = None;
+    let mut type_start: Option<usize> = None;
     let mut segment = 0_u8;
     let mut bc = pblock.walk();
     for child in pblock.children(&mut bc) {
@@ -491,9 +573,13 @@ fn parse_field_def(
                         .to_string(),
                 );
             }
-            2 if type_text.is_none() => {
-                type_text = child
-                    .utf8_text(source)
+            // The declared type can span several children of the generic
+            // parenthesized block (`Code` + `[20]`), so slice the source from
+            // the first to the last rather than taking only the first.
+            2 => {
+                let end = child.end_byte();
+                let start = type_start.get_or_insert(child.start_byte());
+                type_text = std::str::from_utf8(source.get(*start..end).unwrap_or_default())
                     .ok()
                     .map(|text| text.trim().to_string());
             }
@@ -555,6 +641,89 @@ fn parse_field_calcformula(
     calcformula_parser::parse(&formula_text)
         .map(Some)
         .map_err(|error| format!("FlowField '{field_name}' CalcFormula is invalid: {error}"))
+}
+
+/// The `OptionMembers` property of a field, verbatim (`Low,High` or
+/// `" ",Low,High`). `None` when the field does not declare one.
+fn parse_option_members(section: Node<'_>, source: &[u8]) -> Option<String> {
+    let body = section.child_by_field_name("body")?;
+    let mut cursor = body.walk();
+    let found = body
+        .named_children(&mut cursor)
+        .filter(|child| child.kind() == "property_assignment")
+        .find(|child| {
+            child
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .is_some_and(|n| n.trim().eq_ignore_ascii_case("OptionMembers"))
+        });
+    found.and_then(|prop| property_value_text(prop, source))
+}
+
+/// The typed zero of an `Option` or `Enum "X"` field: ordinal 0, named after
+/// whichever member carries that ordinal.
+///
+/// BC zero-initialises every field, and an option or enum field holds an
+/// integer ordinal, so an unassigned one reads as its ordinal-0 member rather
+/// than as an absent value. An `Option` field names its members inline; an
+/// `Enum "X"` field takes them from the workspace enum object, and when that
+/// object is not in the workspace the member name is left empty so the ordinal
+/// still compares.
+fn option_field_default(
+    base_type: &str,
+    type_text: &str,
+    option_members: Option<&str>,
+    workspace: &dyn al_types::ProcedureSource,
+) -> Option<Value> {
+    if base_type.eq_ignore_ascii_case("option") {
+        let member = option_members
+            .and_then(|members| members.split(',').next())
+            .map(|m| m.trim().trim_matches('"').to_string())
+            .unwrap_or_default();
+        return Some(Value::Option {
+            type_name: String::new(),
+            member,
+            ordinal: 0,
+        });
+    }
+    if !base_type.eq_ignore_ascii_case("enum") {
+        return None;
+    }
+    let type_name = unquote_subtype(&type_text[base_type.len()..]);
+    Some(Value::Option {
+        member: enum_member_with_ordinal_zero(workspace, &type_name).unwrap_or_default(),
+        type_name,
+        ordinal: 0,
+    })
+}
+
+/// The name of the `value(0; …)` member of a workspace enum object.
+fn enum_member_with_ordinal_zero(
+    workspace: &dyn al_types::ProcedureSource,
+    type_name: &str,
+) -> Option<String> {
+    let path = workspace.find_by_object_name(type_name)?;
+    let (text, tree) = workspace.get_cached_parse(&path)?;
+    let bytes = text.as_bytes();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "enum_value_declaration" {
+            let ordinal = node
+                .child_by_field_name("id")
+                .and_then(|id| id.utf8_text(bytes).ok())
+                .and_then(|id| id.trim().parse::<i64>().ok());
+            if ordinal == Some(0) {
+                return node
+                    .child_by_field_name("name")
+                    .and_then(|name| name.utf8_text(bytes).ok())
+                    .map(|name| name.trim().trim_matches('"').to_string());
+            }
+            continue;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+    None
 }
 
 /// Reconstruct the full text of a `property_assignment`'s value. The grammar
@@ -628,13 +797,13 @@ pub fn supports_record_method(method: &str) -> bool {
 
 /// Execute a record-API method call (`Rec.Method(args)`).
 ///
-/// `table_name` is the declared subtype of the receiver record variable and
-/// `handle` identifies that variable's own view (filters/cursor/buffer) over
-/// the shared table store. `args_node` is the call's `argument_list` (so
-/// field-reference arguments — e.g. the first arg of `SetRange` — can be read
-/// as field names rather than evaluated as variables).
+/// `table` names the receiver record variable's backing store and `handle`
+/// identifies that variable's own view (filters/cursor/buffer) over it.
+/// `args_node` is the call's `argument_list` (so field-reference arguments —
+/// e.g. the first arg of `SetRange` — can be read as field names rather than
+/// evaluated as variables).
 pub(crate) fn dispatch_record_method(
-    table_name: &str,
+    table: &TableRef,
     handle: u64,
     method: &str,
     args_node: Option<Node<'_>>,
@@ -657,7 +826,7 @@ pub(crate) fn dispatch_record_method(
     // subsequent plain read sees it. Handled before the value-eval loop so the
     // field-name nodes are never evaluated as variables.
     if lower == "calcfields" {
-        return dispatch_calcfields(table_name, handle, &nodes, source, ctx);
+        return dispatch_calcfields(table, handle, &nodes, source, ctx);
     }
 
     // SetCurrentKey takes only field references. Handle it before the general
@@ -666,7 +835,7 @@ pub(crate) fn dispatch_record_method(
         if nodes.is_empty() {
             return err("SetCurrentKey: requires at least one field");
         }
-        let key = match ensure_store(ctx, table_name) {
+        let key = match ensure_store(ctx, table) {
             Ok(key) => key,
             Err(error) => return err(error),
         };
@@ -705,7 +874,7 @@ pub(crate) fn dispatch_record_method(
         }
     }
 
-    let key = match ensure_store(ctx, table_name) {
+    let key = match ensure_store(ctx, table) {
         Ok(k) => k,
         Err(e) => return err(e),
     };
@@ -993,7 +1162,7 @@ fn read_buffer_field(store: &RecordStore, handle: u64, field: FieldNo) -> Value 
 /// any other field returns its buffer value, or the field's typed zero value
 /// when it was never assigned (BC zero-initialises every field).
 pub(crate) fn field_get(
-    table_name: &str,
+    table: &TableRef,
     handle: u64,
     field_name: &str,
     ctx: &mut DispatchCtx,
@@ -1001,7 +1170,7 @@ pub(crate) fn field_get(
     if !records_enabled(ctx) {
         return records_disabled_error();
     }
-    let key = match ensure_store(ctx, table_name) {
+    let key = match ensure_store(ctx, table) {
         Ok(k) => k,
         Err(e) => return err(e),
     };
@@ -1024,7 +1193,7 @@ pub(crate) fn field_get(
 /// result into the current buffer. Non-FlowField (or unparseable) args are
 /// ignored, matching BC's tolerance of explicitly-listed normal fields.
 fn dispatch_calcfields(
-    table_name: &str,
+    table: &TableRef,
     handle: u64,
     nodes: &[Node<'_>],
     source: &[u8],
@@ -1033,7 +1202,7 @@ fn dispatch_calcfields(
     if nodes.is_empty() {
         return err("CalcFields: requires at least one FlowField");
     }
-    let key = match ensure_store(ctx, table_name) {
+    let key = match ensure_store(ctx, table) {
         Ok(k) => k,
         Err(e) => return err(e),
     };
@@ -1104,8 +1273,10 @@ fn eval_flowfield(
         values
     };
 
-    // 2. Ensure the referenced table's store exists.
-    let ref_key = match ensure_store(ctx, &formula.table_name) {
+    // 2. Ensure the referenced table's store exists. A FlowField aggregates the
+    //    referenced table itself, so it reads the persistent store even when
+    //    the calculating record is temporary.
+    let ref_key = match ensure_store(ctx, &TableRef::persistent(&formula.table_name)) {
         Ok(k) => k,
         Err(e) => return err(e),
     };
@@ -1194,11 +1365,11 @@ pub(crate) fn try_field_assign(
     ctx: &mut DispatchCtx,
 ) -> Option<Eval> {
     let (recv, field_name) = record_field_access(lhs_node, source)?;
-    let (table_name, handle) = record_binding(&recv, stack, ctx)?;
+    let (table, handle) = record_binding(&recv, stack, ctx)?;
     if !records_enabled(ctx) {
         return Some(records_disabled_error());
     }
-    let key = match ensure_store(ctx, &table_name) {
+    let key = match ensure_store(ctx, &table) {
         Ok(k) => k,
         Err(e) => return Some(err(e)),
     };
@@ -1676,14 +1847,17 @@ pub(crate) fn default_for_structured(type_text: &str) -> Option<Value> {
     let trimmed = type_text.trim();
     let lower = trimmed.to_ascii_lowercase();
     if let Some(rest) = lower.strip_prefix("record") {
-        // `Record "My Item"` / `Record Item` — grab the subtype from the
-        // original (case-preserving) text after the `Record` keyword.
+        // `Record "My Item"` / `Record Item` / `Record "My Item" temporary` —
+        // grab the subtype from the original (case-preserving) text after the
+        // `Record` keyword.
         if rest.is_empty() || rest.starts_with(char::is_whitespace) {
-            let subtype = subtype_after_keyword(trimmed, "record");
+            let after = &trimmed["record".len()..];
+            let (subtype, temporary) = split_temporary_keyword(after);
             return Some(Value::Record(RecordValue {
                 table_name: subtype,
                 table_id: 0,
                 handle: None,
+                temporary,
             }));
         }
     }
@@ -1709,8 +1883,50 @@ pub(crate) fn default_for_structured(type_text: &str) -> Option<Value> {
 
 /// Extract the subtype name following a leading keyword, stripping quotes.
 fn subtype_after_keyword(type_text: &str, keyword: &str) -> String {
-    let rest = type_text[keyword.len()..].trim();
-    rest.trim_matches('"').trim().to_string()
+    unquote_subtype(&type_text[keyword.len()..])
+}
+
+/// Split a record subtype from a trailing `temporary` keyword. The AL grammar
+/// puts `temporary` inside the `type_reference`, so the declared type text of
+/// `TempLine: Record "Sales Line" temporary` arrives as one string.
+fn split_temporary_keyword(after_record_keyword: &str) -> (String, bool) {
+    let trimmed = after_record_keyword.trim();
+    let Some(head) = trimmed.strip_suffix_ignore_ascii_case("temporary") else {
+        return (unquote_subtype(trimmed), false);
+    };
+    // Only a whitespace-separated trailing word is the keyword; a table named
+    // `"Buffer Temporary"` ends with the same letters inside its quotes.
+    if head.ends_with(char::is_whitespace) {
+        (unquote_subtype(head), true)
+    } else {
+        (unquote_subtype(trimmed), false)
+    }
+}
+
+trait StripSuffixIgnoreCase {
+    fn strip_suffix_ignore_ascii_case(&self, suffix: &str) -> Option<&str>;
+}
+
+impl StripSuffixIgnoreCase for str {
+    fn strip_suffix_ignore_ascii_case(&self, suffix: &str) -> Option<&str> {
+        let split = self.len().checked_sub(suffix.len())?;
+        self.is_char_boundary(split)
+            .then(|| self.split_at(split))
+            .filter(|(_, tail)| tail.eq_ignore_ascii_case(suffix))
+            .map(|(head, _)| head)
+    }
+}
+
+/// Trim whitespace and one layer of quoting from each end independently.
+/// `trim_matches('"')` cannot do this: on `"Sales Line" temporary` it strips
+/// the leading quote and leaves the rest, producing `Sales Line" temporary`.
+fn unquote_subtype(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let stripped = trimmed
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap_or(trimmed);
+    stripped.trim().to_string()
 }
 
 fn node_text(node: Node<'_>, source: &[u8]) -> String {
@@ -1743,15 +1959,67 @@ fn optional_boolean(method: &str, values: &[Value]) -> Result<bool, String> {
     }
 }
 
+/// Render a `SetFilter` placeholder value into the filter expression.
+///
+/// Date, Time and DateTime render as the day or millisecond carrier the cell
+/// itself holds, and an Option as its ordinal, because BC filters an option
+/// field by ordinal. Both then compare through the numeric arms of
+/// `filter::cmp_value`, so a `SetFilter(F, '%1..%2', A, B)` selects the rows
+/// `SetRange(F, A, B)` selects.
 fn render_filter_value(v: &Value) -> Result<String, String> {
     match v {
         Value::Integer(n) | Value::BigInteger(n) => Ok(n.to_string()),
         Value::Decimal(d) => Ok(d.normalize().to_string()),
         Value::Text(s) | Value::Code(s) => Ok(s.clone()),
         Value::Boolean(b) => Ok(b.to_string()),
+        Value::Date(d) | Value::Time(d) | Value::DateTime(d) => Ok(d.to_string()),
+        Value::Option { ordinal, .. } => Ok(ordinal.to_string()),
+        Value::Char(c) => Ok(c.to_string()),
         value => Err(format!(
             "placeholder value type {} is not supported by the local record runtime",
             value.type_name()
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_subtype_splits_the_trailing_temporary_keyword() {
+        assert_eq!(
+            split_temporary_keyword(r#" "Sales Line" temporary"#),
+            ("Sales Line".to_string(), true)
+        );
+        assert_eq!(
+            split_temporary_keyword(" Item TEMPORARY"),
+            ("Item".to_string(), true)
+        );
+        assert_eq!(
+            split_temporary_keyword(r#" "Sales Line""#),
+            ("Sales Line".to_string(), false)
+        );
+        // A table whose own name ends in the word keeps it.
+        assert_eq!(
+            split_temporary_keyword(r#" "Buffer Temporary""#),
+            ("Buffer Temporary".to_string(), false)
+        );
+    }
+
+    #[test]
+    fn temporary_stores_are_keyed_per_variable() {
+        let persistent = TableRef::persistent("Sales Line");
+        let temp_a = TableRef {
+            name: "Sales Line".into(),
+            temp_owner: Some(7),
+        };
+        let temp_b = TableRef {
+            name: "Sales Line".into(),
+            temp_owner: Some(8),
+        };
+        assert_eq!(persistent.key(), "sales line");
+        assert_ne!(temp_a.key(), persistent.key());
+        assert_ne!(temp_a.key(), temp_b.key());
     }
 }

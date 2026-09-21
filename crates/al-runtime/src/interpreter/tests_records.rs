@@ -1762,3 +1762,445 @@ fn flowfield_boolean_const_matches_boolean_cells() {
     );
     assert_eq!(ok(r), Value::Integer(2));
 }
+
+#[test]
+fn temporary_record_uses_the_table_name_without_the_temporary_keyword() {
+    let cu = r#"codeunit 50133 "Temp Name Tests"
+{
+    procedure CountRows(): Integer
+    var
+        TempItem: Record "Item" temporary;
+    begin
+        TempItem.Init();
+        TempItem."No." := 'A';
+        TempItem.Insert();
+        exit(TempItem.Count());
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/Item.al", ITEM_TABLE), ("/ws/TempName.al", cu)],
+        "Temp Name Tests",
+        "CountRows",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Integer(1));
+}
+
+#[test]
+fn each_temporary_record_variable_has_its_own_rows() {
+    // BC gives every temporary record variable a private in-memory table: rows
+    // in one are invisible to a second temporary variable over the same table
+    // and to the persistent table.
+    let cu = r#"codeunit 50134 "Temp Isolation Tests"
+{
+    procedure Expected(): Integer
+    var
+        TempA: Record "Item" temporary;
+        TempB: Record "Item" temporary;
+        Persistent: Record "Item";
+    begin
+        TempA.Init(); TempA."No." := 'A'; TempA.Insert();
+        TempA.Init(); TempA."No." := 'B'; TempA.Insert();
+        TempB.Init(); TempB."No." := 'C'; TempB.Insert();
+        Persistent.Init(); Persistent."No." := 'D'; Persistent.Insert();
+        exit(TempA.Count() * 100 + TempB.Count() * 10 + Persistent.Count());
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/Item.al", ITEM_TABLE), ("/ws/TempIsolation.al", cu)],
+        "Temp Isolation Tests",
+        "Expected",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Integer(211));
+}
+
+const STATE_ENUM: &str = r#"enum 50110 "My State"
+{
+    value(0; Open) { }
+    value(1; Released) { }
+    value(2; Closed) { }
+}
+"#;
+
+/// A table with an Enum field and an Option field, neither with an InitValue.
+const TICKET_TABLE: &str = r#"table 50111 "Ticket"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Status; Enum "My State") { }
+        field(3; Priority; Option)
+        {
+            OptionMembers = Low,High;
+        }
+        field(4; "Posting Date"; Date) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+}
+"#;
+
+#[test]
+fn unassigned_enum_field_reads_as_its_ordinal_zero_member() {
+    // BC zero-initialises an Enum field, so a row inserted without assigning
+    // Status is Open, matches SetRange(Status, Status::Open), and compares
+    // equal to Status::Open.
+    let cu = r#"codeunit 50135 "Enum Zero Tests"
+{
+    procedure OpenRowsAndEquality(): Integer
+    var
+        Ticket: Record "Ticket";
+        Found: Integer;
+    begin
+        Ticket.Init();
+        Ticket."No." := 'A';
+        Ticket.Insert();
+        Ticket.Reset();
+        Ticket.SetRange(Status, "My State"::Open);
+        Found := Ticket.Count() * 10;
+        Ticket.Reset();
+        Ticket.FindFirst();
+        if Ticket.Status = "My State"::Open then
+            Found := Found + 1;
+        exit(Found);
+    end;
+}
+"#;
+    let r = run(
+        &[
+            ("/ws/MyState.al", STATE_ENUM),
+            ("/ws/Ticket.al", TICKET_TABLE),
+            ("/ws/EnumZero.al", cu),
+        ],
+        "Enum Zero Tests",
+        "OpenRowsAndEquality",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Integer(11));
+}
+
+#[test]
+fn unassigned_option_field_reads_as_its_first_member() {
+    let cu = r#"codeunit 50136 "Option Zero Tests"
+{
+    procedure PriorityOrdinal(): Integer
+    var
+        Ticket: Record "Ticket";
+    begin
+        Ticket.Init();
+        Ticket."No." := 'A';
+        Ticket.Insert();
+        Ticket.Reset();
+        Ticket.FindFirst();
+        exit(Ticket.Priority + 0);
+    end;
+}
+"#;
+    let r = run(
+        &[
+            ("/ws/MyState.al", STATE_ENUM),
+            ("/ws/Ticket.al", TICKET_TABLE),
+            ("/ws/OptionZero.al", cu),
+        ],
+        "Option Zero Tests",
+        "PriorityOrdinal",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Integer(0));
+}
+
+#[test]
+fn setfilter_accepts_date_placeholders() {
+    // The range a Date SetFilter selects must be the range SetRange selects.
+    let cu = r#"codeunit 50137 "Date Filter Tests"
+{
+    procedure FilterAndRange(): Integer
+    var
+        Ticket: Record "Ticket";
+        Filtered: Integer;
+    begin
+        Ticket.Init(); Ticket."No." := 'A'; Ticket."Posting Date" := 20240101D; Ticket.Insert();
+        Ticket.Init(); Ticket."No." := 'B'; Ticket."Posting Date" := 20240615D; Ticket.Insert();
+        Ticket.Init(); Ticket."No." := 'C'; Ticket."Posting Date" := 20241231D; Ticket.Insert();
+        Ticket.Reset();
+        Ticket.SetFilter("Posting Date", '%1..%2', 20240101D, 20240630D);
+        Filtered := Ticket.Count();
+        Ticket.Reset();
+        Ticket.SetRange("Posting Date", 20240101D, 20240630D);
+        exit(Filtered * 10 + Ticket.Count());
+    end;
+}
+"#;
+    let r = run(
+        &[
+            ("/ws/MyState.al", STATE_ENUM),
+            ("/ws/Ticket.al", TICKET_TABLE),
+            ("/ws/DateFilter.al", cu),
+        ],
+        "Date Filter Tests",
+        "FilterAndRange",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Integer(22));
+}
+
+#[test]
+fn setfilter_accepts_option_placeholders() {
+    // BC filters an option field by ordinal, so '%1|%2' over two enum members
+    // selects exactly the rows holding those two ordinals.
+    let cu = r#"codeunit 50138 "Option Filter Tests"
+{
+    procedure OpenOrReleased(): Integer
+    var
+        Ticket: Record "Ticket";
+    begin
+        Ticket.Init(); Ticket."No." := 'A'; Ticket.Status := "My State"::Open; Ticket.Insert();
+        Ticket.Init(); Ticket."No." := 'B'; Ticket.Status := "My State"::Released; Ticket.Insert();
+        Ticket.Init(); Ticket."No." := 'C'; Ticket.Status := "My State"::Closed; Ticket.Insert();
+        Ticket.Reset();
+        Ticket.SetFilter(Status, '%1|%2', "My State"::Open, "My State"::Released);
+        exit(Ticket.Count());
+    end;
+}
+"#;
+    let r = run(
+        &[
+            ("/ws/MyState.al", STATE_ENUM),
+            ("/ws/Ticket.al", TICKET_TABLE),
+            ("/ws/OptionFilter.al", cu),
+        ],
+        "Option Filter Tests",
+        "OpenOrReleased",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Integer(2));
+}
+
+#[test]
+fn assigning_past_a_code_field_capacity_is_an_error() {
+    // "No." is Code[20]. BC traps the overflow at the assignment.
+    let cu = r#"codeunit 50139 "Field Length Tests"
+{
+    procedure Overflow(): Integer
+    var
+        Item: Record "Item";
+    begin
+        Item.Init();
+        Item."No." := 'THIS-CODE-IS-WAY-LONGER-THAN-TWENTY';
+        exit(1);
+    end;
+}
+"#;
+    let message = error_message(run(
+        &[("/ws/Item.al", ITEM_TABLE), ("/ws/FieldLength.al", cu)],
+        "Field Length Tests",
+        "Overflow",
+        vec![],
+    ));
+    assert!(
+        message.contains("35") && message.contains("20"),
+        "expected a length overflow naming both lengths, got: {message}"
+    );
+}
+
+#[test]
+fn assigning_past_a_local_text_capacity_is_an_error() {
+    let cu = r#"codeunit 50140 "Local Length Tests"
+{
+    procedure Overflow(): Integer
+    var
+        Short: Text[5];
+    begin
+        Short := 'abcdefgh';
+        exit(1);
+    end;
+}
+"#;
+    let message = error_message(run(
+        &[("/ws/LocalLength.al", cu)],
+        "Local Length Tests",
+        "Overflow",
+        vec![],
+    ));
+    assert!(
+        message.contains('8') && message.contains('5'),
+        "expected a length overflow naming both lengths, got: {message}"
+    );
+}
+
+#[test]
+fn a_code_value_is_trimmed_and_fits_its_capacity() {
+    // A Code variable's length is the text without leading or trailing spaces,
+    // so '  ABCDE  ' is five characters and fits Code[5].
+    let cu = r#"codeunit 50141 "Code Trim Tests"
+{
+    procedure Trimmed(): Text
+    var
+        Short: Code[5];
+    begin
+        Short := '  abcde  ';
+        exit(Short);
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/CodeTrim.al", cu)],
+        "Code Trim Tests",
+        "Trimmed",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Code("ABCDE".to_string()));
+}
+
+#[test]
+fn insert_without_a_primary_key_assignment_stores_the_blank_key() {
+    // BC inserts a row whose Code key is '' and only rejects the second such
+    // insert as a duplicate.
+    let cu = r#"codeunit 50142 "Blank Key Tests"
+{
+    procedure BlankThenDuplicate(): Integer
+    var
+        Item: Record "Item";
+        Found: Integer;
+    begin
+        Item.Init();
+        Item.Description := 'blank key row';
+        Item.Insert();
+        Item.Reset();
+        Found := Item.Count() * 10;
+        Item.Init();
+        if not Item.Insert(false) then
+            Found := Found + 1;
+        exit(Found);
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/Item.al", ITEM_TABLE), ("/ws/BlankKey.al", cu)],
+        "Blank Key Tests",
+        "BlankThenDuplicate",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Integer(11));
+}
+
+const AMT_LINE_TABLE: &str = r#"table 50143 "Amt Line"
+{
+    fields
+    {
+        field(1; "Id"; Integer) { }
+        field(2; Amount; Decimal) { }
+    }
+    keys
+    {
+        key(PK; "Id") { }
+    }
+}
+"#;
+
+const AMT_HDR_TABLE: &str = r#"table 50144 "Amt Hdr"
+{
+    fields
+    {
+        field(1; "Id"; Integer) { }
+        field(2; MinAmount; Decimal)
+        {
+            FieldClass = FlowField;
+            CalcFormula = Min("Amt Line".Amount);
+        }
+    }
+    keys
+    {
+        key(PK; "Id") { }
+    }
+}
+"#;
+
+#[test]
+fn flowfield_min_counts_rows_that_never_assigned_the_field() {
+    // A row inserted without assigning Amount holds the field's zero, so Min
+    // over rows with Amount = 5 and Amount unassigned is 0, not 5.
+    let cu = r#"codeunit 50145 "Min Zero Tests"
+{
+    procedure MinAmount(): Decimal
+    var
+        Line: Record "Amt Line";
+        Hdr: Record "Amt Hdr";
+    begin
+        Line.Init(); Line."Id" := 1; Line.Amount := 5; Line.Insert();
+        Line.Init(); Line."Id" := 2; Line.Insert();
+        exit(Hdr.MinAmount);
+    end;
+}
+"#;
+    let r = run(
+        &[
+            ("/ws/AmtLine.al", AMT_LINE_TABLE),
+            ("/ws/AmtHdr.al", AMT_HDR_TABLE),
+            ("/ws/MinZero.al", cu),
+        ],
+        "Min Zero Tests",
+        "MinAmount",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Decimal(dec!(0)));
+}
+
+const EXPECTED_ERROR_CODEUNIT: &str = r#"codeunit 50146 "Expected Error Tests"
+{
+    var
+        Assert: Codeunit "Library Assert";
+
+    procedure Boom()
+    begin
+        Error('The order must have a customer');
+    end;
+
+    procedure Matching(): Integer
+    begin
+        asserterror Boom();
+        Assert.ExpectedError('must have a customer');
+        exit(1);
+    end;
+
+    procedure Mismatched(): Integer
+    begin
+        asserterror Boom();
+        Assert.ExpectedError('a completely different message');
+        exit(1);
+    end;
+
+    procedure NoErrorAtAll(): Integer
+    begin
+        Assert.ExpectedError('anything');
+        exit(1);
+    end;
+}
+"#;
+
+#[test]
+fn assert_expected_error_matches_a_substring_of_the_caught_error() {
+    let files = [("/ws/ExpectedError.al", EXPECTED_ERROR_CODEUNIT)];
+    assert_eq!(
+        ok(run(&files, "Expected Error Tests", "Matching", vec![])),
+        Value::Integer(1)
+    );
+
+    let mismatch = error_message(run(&files, "Expected Error Tests", "Mismatched", vec![]));
+    assert!(
+        mismatch.contains("Assert.ExpectedError failed")
+            && mismatch.contains("The order must have a customer"),
+        "expected the BC failure message naming both texts, got: {mismatch}"
+    );
+
+    let none = error_message(run(&files, "Expected Error Tests", "NoErrorAtAll", vec![]));
+    assert!(
+        none.contains("has not been thrown") || none.contains("Assert.ExpectedError failed"),
+        "expected a thrown-nothing failure, got: {none}"
+    );
+}

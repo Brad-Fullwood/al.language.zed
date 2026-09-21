@@ -523,8 +523,8 @@ fn eval_postfix(
     // receiver resolves to a bound `Value::Record`.
     if let Some((recv, field)) = records::record_field_access(node, source) {
         if matches!(stack.lookup(&recv), Some(Value::Record(_))) {
-            if let Some((table_name, handle)) = records::record_binding(&recv, stack, ctx) {
-                return records::field_get(&table_name, handle, &field, ctx);
+            if let Some((table, handle)) = records::record_binding(&recv, stack, ctx) {
+                return records::field_get(&table, handle, &field, ctx);
             }
         }
     }
@@ -803,13 +803,13 @@ fn eval_expression_node(
                 let new_val = match kind {
                     AssignKind::Plain => rhs_val,
                     AssignKind::Compound(base_op) => {
-                        let Some((table_name, handle)) = records::record_binding(&recv, stack, ctx)
+                        let Some((table, handle)) = records::record_binding(&recv, stack, ctx)
                         else {
                             return Eval::Error(simple_error(&format!(
                                 "record variable '{recv}' is not bound"
                             )));
                         };
-                        let current = match records::field_get(&table_name, handle, &field, ctx) {
+                        let current = match records::field_get(&table, handle, &field, ctx) {
                             Eval::Normal(v) => v,
                             other => return other,
                         };
@@ -861,10 +861,11 @@ fn eval_expression_node(
             }
         };
 
+        let capacity = stack.declared_text_length(&lhs_name);
         if let Some(slot) = stack.lookup_mut(&lhs_name) {
             // Preserve the slot's declared type (Code caselessness / integer
             // width) rather than adopting the RHS's — see `coerce_into_slot`.
-            match Value::coerce_into_slot(slot, new_val) {
+            match Value::coerce_into_slot(slot, new_val, capacity) {
                 Ok(value) => *slot = value,
                 Err(message) => return Eval::Error(simple_error(&message)),
             }
@@ -1643,7 +1644,18 @@ mod tests {
 
     #[test]
     fn deep_expression_nesting_errors_instead_of_overflowing() {
-        let depth = 400; // beyond the cap, far below crash territory
+        // The cap is sized against the stack an interpreted body gets, so run
+        // on that stack rather than the 2 MiB test default.
+        std::thread::Builder::new()
+            .stack_size(crate::interpreter::dispatch::INTERP_STACK_BYTES)
+            .spawn(deep_expression_nesting_body)
+            .expect("spawn deep expression test thread")
+            .join()
+            .expect("deep expression test thread panicked");
+    }
+
+    fn deep_expression_nesting_body() {
+        let depth = crate::interpreter::scope::MAX_EXPR_DEPTH + 64;
         let expr = format!("{}1{}", "(".repeat(depth), ")".repeat(depth));
         let source = format!(
             "codeunit 50100 X\n{{\n    procedure P()\n    var\n        I: Integer;\n    begin\n        I := {expr};\n    end;\n}}\n"

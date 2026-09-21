@@ -20,23 +20,29 @@ use crate::interpreter::scope::{CallFrame, Eval, ScopeStack};
 use crate::interpreter::value::{ErrorInfo, Value};
 use crate::stubs;
 
-/// Each interpreted call level is a dispatch→eval_stmt→eval_expr native
-/// frame cluster that can cost tens of KiB of stack in debug builds, and
-/// the interpreter must stay within a 2 MiB thread stack (test threads and
-/// tokio workers — not the 8 MiB main thread). 48 levels keeps the worst
-/// case comfortably inside that budget while remaining far deeper than any
-/// realistic AL test-code call chain.
-const MAX_RECURSION_DEPTH: usize = 48;
+/// Stack size for the thread an interpreted AL body runs on.
+///
+/// Each interpreted call level is a dispatch→eval_stmt→eval_expr native frame
+/// cluster costing tens of KiB in debug builds. A tokio blocking worker or a
+/// test thread gives 2 MiB, which is what held the call cap at 48 levels —
+/// shallower than a BOM explosion or a recursive chart-of-accounts total, so
+/// those failed locally and passed on BC. Callers that interpret AL spawn a
+/// thread of this size and the caps below are sized against it.
+pub const INTERP_STACK_BYTES: usize = 64 * 1024 * 1024;
+
+/// Maximum simultaneous AL call frames. Sized against [`INTERP_STACK_BYTES`]:
+/// 48 frames fitted 2 MiB, so 512 leaves several times that margin inside
+/// 64 MiB while being deeper than any AL algorithm that recurses over data.
+const MAX_RECURSION_DEPTH: usize = 512;
 
 /// Maximum syntactic nesting depth `eval_stmt` will descend into before
 /// aborting with an error. The counter is cumulative across nested
 /// procedure calls (a call chain stacks ~4 AST levels per frame), so the
-/// cap must exceed what `MAX_RECURSION_DEPTH` (48 × ~4 = 192) can reach
+/// cap must exceed what `MAX_RECURSION_DEPTH` (512 × ~4 = 2048) can reach
 /// via call recursion alone — that way an infinite-call test trips the
 /// call cap first (clearer error message) and only truly pathological
-/// single-procedure nesting trips this AST cap. 256 such frames stay
-/// within the same 2 MiB thread-stack budget as the call cap.
-pub const MAX_AST_DEPTH: usize = 256;
+/// single-procedure nesting trips this AST cap.
+pub const MAX_AST_DEPTH: usize = 2560;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchMode {
@@ -355,6 +361,9 @@ pub(crate) fn dispatch_call_scoped(
     // a callee's body.
     ctx.stmt_position = false;
     if let Some(recv) = receiver {
+        if stubs::is_context_member(recv, procedure) {
+            return dispatch_stub_with_context(recv, procedure, &args, ctx);
+        }
         if let Some(stub_fn) = stubs::resolve(recv, procedure) {
             return stub_fn(&args);
         }
@@ -541,6 +550,23 @@ pub(crate) fn dispatch_call_scoped(
     dispatch_workspace_procedure(receiver, procedure, args, stack, ctx)
 }
 
+/// Run a stub member that reads the interpreter context, which a context-free
+/// [`stubs::StubFn`] cannot. `stubs::is_context_member` decides membership, so
+/// an unmatched name here means the two lists drifted apart.
+fn dispatch_stub_with_context(
+    receiver: &str,
+    procedure: &str,
+    args: &[Value],
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    if procedure.eq_ignore_ascii_case("ExpectedError") {
+        return crate::stubs::library_assert::expected_error(args, ctx.last_error.as_ref());
+    }
+    simple_error(format!(
+        "stub member '{receiver}.{procedure}' is listed as context-aware but has no implementation"
+    ))
+}
+
 /// Look up a procedure in the workspace and execute it.
 ///
 /// The explicit receiver wins. An unqualified call resolves only against the
@@ -562,7 +588,11 @@ fn dispatch_workspace_procedure(
     // inclusive upper bound on simultaneous frames — without this, one
     // extra frame slipped through (101 instead of the documented 100).
     if ctx.recursion_depth >= MAX_RECURSION_DEPTH {
-        return simple_error("recursion depth exceeded");
+        return simple_error(format!(
+            "call depth of {MAX_RECURSION_DEPTH} exceeded at '{procedure}'. This is a limit of \
+             the local test runner, not of Business Central: re-run this test on live BC if the \
+             recursion is genuine."
+        ));
     }
 
     let target_object = receiver
@@ -610,7 +640,8 @@ fn dispatch_workspace_procedure(
         // Walk the tree to find a procedure_declaration with the matching name.
         // Iterative traversal (rule: no recursion).
         let mut stack_nodes = vec![root];
-        let mut found_proc: Option<(tree_sitter::Node<'_>, Vec<ParamDecl>)> = None;
+        let mut found_proc: Option<(tree_sitter::Node<'_>, Vec<ParamDecl>, Option<ReturnDecl>)> =
+            None;
 
         'outer: while let Some(node) = stack_nodes.pop() {
             if node.kind() == "procedure_declaration" {
@@ -619,7 +650,8 @@ fn dispatch_workspace_procedure(
                         let clean = name_text.trim_matches('"');
                         if clean.eq_ignore_ascii_case(procedure) {
                             let params = collect_params(node, source);
-                            found_proc = Some((node, params));
+                            let ret = collect_return(node, source);
+                            found_proc = Some((node, params, ret));
                             break 'outer;
                         }
                     }
@@ -633,7 +665,7 @@ fn dispatch_workspace_procedure(
             }
         }
 
-        let Some((proc_node, params)) = found_proc else {
+        let Some((proc_node, params, return_decl)) = found_proc else {
             continue;
         };
 
@@ -698,6 +730,21 @@ fn dispatch_workspace_procedure(
                 frame.bind_declared_text_length(&param.name, length);
             }
         }
+        // A named return value (`procedure F() Result: Integer`) is an ordinary
+        // local initialised to the return type's default. It is what the call
+        // yields when the body falls off the end or runs a bare `exit`.
+        let return_default = return_decl
+            .as_ref()
+            .and_then(|r| default_for_declared_type(&r.type_name))
+            .unwrap_or(Value::Empty);
+        if let Some(r) = &return_decl {
+            if let Some(name) = &r.name {
+                frame.bind(name, return_default.clone());
+                if let Some(length) = declared_text_length(&r.type_name) {
+                    frame.bind_declared_text_length(name, length);
+                }
+            }
+        }
         // Bind the procedure's local `var` section to default values so a
         // variable can be read before its first assignment. Handles
         // multi-name declarations (`A, B, C : Integer;`) — every name on the
@@ -737,6 +784,17 @@ fn dispatch_workspace_procedure(
                 }
             }
         }
+        // The value a fall-through or a bare `exit` yields: the named return
+        // variable if the declaration has one, otherwise the return type's
+        // default. Read before the frame is dropped.
+        let fallthrough_value = match return_decl.as_ref().and_then(|r| r.name.as_deref()) {
+            Some(name) => stack
+                .top()
+                .and_then(|f| f.get(name))
+                .cloned()
+                .unwrap_or(return_default),
+            None => return_default,
+        };
         stack.pop();
         if install_root_globals {
             stack.pop();
@@ -745,8 +803,14 @@ fn dispatch_workspace_procedure(
         // Unwrap Exit into Normal (exit only unwinds the current procedure).
         // A break/continue that reached here escaped all loops — a runtime
         // error in AL, not silent success.
+        //
+        // A body that ends without `exit` does not return its last statement's
+        // value: BC gives the caller the return type's default, so a Boolean
+        // function whose last statement is `Rec.Insert()` returns false.
         return match result {
+            Eval::Exit(Value::Empty) => Eval::Normal(fallthrough_value),
             Eval::Exit(v) => Eval::Normal(v),
+            Eval::Normal(_) => Eval::Normal(fallthrough_value),
             Eval::Break => simple_error("break statement not inside a loop"),
             Eval::Continue => simple_error("continue statement not inside a loop"),
             other => other,
@@ -839,6 +903,37 @@ struct ParamDecl {
     /// caller's argument variable is updated with the parameter's final value
     /// after the call returns.
     is_var: bool,
+}
+
+/// A procedure's declared return, from `procedure F(…) [Name]: Type`.
+struct ReturnDecl {
+    /// The named return value, when the declaration gives one.
+    name: Option<String>,
+    type_name: String,
+}
+
+/// The zero value for a declared type as written in source, so `Text[30]`
+/// resolves through the same table as `Text`.
+fn default_for_declared_type(type_text: &str) -> Option<Value> {
+    let base = type_text.trim().split('[').next()?.trim();
+    Value::default_for(base)
+}
+
+/// Read the `return_var` / `return_type` fields the AL grammar attaches to a
+/// `procedure_declaration`. `None` for a procedure with no return type.
+fn collect_return(proc_node: tree_sitter::Node<'_>, source: &[u8]) -> Option<ReturnDecl> {
+    let type_name = proc_node
+        .child_by_field_name("return_type")?
+        .utf8_text(source)
+        .ok()?
+        .trim()
+        .to_string();
+    let name = proc_node
+        .child_by_field_name("return_var")
+        .and_then(|n| n.utf8_text(source).ok())
+        .map(|t| t.trim().trim_matches('"').to_string())
+        .filter(|t| !t.is_empty());
+    Some(ReturnDecl { name, type_name })
 }
 
 /// Pre-bind a procedure's structured local variables. Scans the `var_section`
@@ -1080,7 +1175,7 @@ fn bind_regular_var_decl(reg: tree_sitter::Node<'_>, source: &[u8], frame: &mut 
     }
 }
 
-fn declared_text_length(type_text: &str) -> Option<usize> {
+pub(crate) fn declared_text_length(type_text: &str) -> Option<usize> {
     let trimmed = type_text.trim();
     let base = trimmed.split('[').next()?.trim();
     if !matches!(base.to_ascii_lowercase().as_str(), "text" | "code") {
@@ -1549,12 +1644,14 @@ fn builtin_round(args: &[Value]) -> Eval {
     let Some(quotient) = number.checked_div(precision) else {
         return simple_error("Round: arithmetic overflow");
     };
+    // '<' and '>' move the magnitude, not the signed value: the System.Round
+    // page rounds -1234.56789 to -1234.567 with '<' and to -1234.568 with '>'.
     let rounded = match direction.as_str() {
         "=" => {
-            quotient.round_dp_with_strategy(0, rust_decimal::RoundingStrategy::MidpointNearestEven)
+            quotient.round_dp_with_strategy(0, rust_decimal::RoundingStrategy::MidpointAwayFromZero)
         }
-        "<" => quotient.floor(),
-        ">" => quotient.ceil(),
+        "<" => quotient.round_dp_with_strategy(0, rust_decimal::RoundingStrategy::ToZero),
+        ">" => quotient.round_dp_with_strategy(0, rust_decimal::RoundingStrategy::AwayFromZero),
         other => {
             return simple_error(format!(
                 "Round: direction must be '=', '<' or '>', got '{other}'"
@@ -1984,7 +2081,7 @@ pub(crate) fn clock_current_datetime() -> i64 {
 /// (`MM/DD/YYYY`, `HH:MM:SS`), not their raw integer carriers; the undefined
 /// values (0D/0T and the zero DateTime) render as the empty string, matching
 /// BC.
-fn render_value(v: &Value) -> String {
+pub(crate) fn render_value(v: &Value) -> String {
     match v {
         Value::Integer(n) | Value::BigInteger(n) => n.to_string(),
         Value::Decimal(n) => n.normalize().to_string(),
@@ -2469,6 +2566,89 @@ mod tests {
     }
 
     #[test]
+    fn falling_off_the_end_returns_the_declared_types_default() {
+        let ws = Arc::new(Workspace::new());
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/test/FallThrough.al"),
+            r#"codeunit 50997 "Fall Through"
+{
+    procedure LastStatementIsTrue(): Boolean
+    var
+        b: Boolean;
+    begin
+        b := true;
+        b := b;
+    end;
+
+    procedure LastStatementIsAnAssignment(): Integer
+    var
+        n: Integer;
+    begin
+        n := 7;
+    end;
+
+    procedure NamedResult() Result: Integer
+    begin
+        Result := 42;
+    end;
+
+    procedure NamedResultNeverAssigned() Result: Text
+    var
+        n: Integer;
+    begin
+        n := 1;
+    end;
+
+    procedure BareExitKeepsTheNamedResult() Result: Integer
+    begin
+        Result := 9;
+        exit;
+    end;
+
+    procedure BareExitWithNoReturnType()
+    begin
+        exit;
+    end;
+
+    procedure ExitWinsOverTheNamedResult() Result: Integer
+    begin
+        Result := 9;
+        exit(3);
+    end;
+}"#
+            .to_string(),
+        );
+        let mut ctx = DispatchCtx::new_pure(ws);
+        let call = |ctx: &mut DispatchCtx, name: &str| {
+            ok(dispatch_call(Some("Fall Through"), name, vec![], ctx))
+        };
+
+        assert_eq!(
+            call(&mut ctx, "LastStatementIsTrue"),
+            Value::Boolean(false),
+            "a Boolean function that falls off the end returns false, not its last statement"
+        );
+        assert_eq!(
+            call(&mut ctx, "LastStatementIsAnAssignment"),
+            Value::Integer(0)
+        );
+        assert_eq!(call(&mut ctx, "NamedResult"), Value::Integer(42));
+        assert_eq!(
+            call(&mut ctx, "NamedResultNeverAssigned"),
+            Value::Text(String::new())
+        );
+        assert_eq!(
+            call(&mut ctx, "BareExitKeepsTheNamedResult"),
+            Value::Integer(9)
+        );
+        assert_eq!(call(&mut ctx, "BareExitWithNoReturnType"), Value::Empty);
+        assert_eq!(
+            call(&mut ctx, "ExitWinsOverTheNamedResult"),
+            Value::Integer(3)
+        );
+    }
+
+    #[test]
     fn workspace_dispatch_unknown_procedure_not_found_negative() {
         let ws = workspace_with_helper();
         let mut ctx = DispatchCtx::new_pure(ws);
@@ -2525,21 +2705,53 @@ mod tests {
         // (CI test threads default to 2 MiB and debug frames vary by
         // toolchain).
         std::thread::Builder::new()
-            .stack_size(16 * 1024 * 1024)
+            .stack_size(INTERP_STACK_BYTES)
             .spawn(|| {
                 let ws = workspace_with_helper();
                 let mut ctx = DispatchCtx::new_pure(ws);
                 let result = dispatch_call(Some("Helper"), "Forever", vec![], &mut ctx);
                 let e = err(result);
                 assert!(
-                    e.message.contains("recursion depth exceeded"),
-                    "expected 'recursion depth exceeded' in error, got: {}",
+                    e.message.contains("local test runner"),
+                    "expected the message to name the runner limit, got: {}",
                     e.message
                 );
             })
             .expect("spawn recursion test thread")
             .join()
             .expect("recursion test thread panicked");
+    }
+
+    #[test]
+    fn recursion_over_a_data_hierarchy_completes() {
+        // A BOM explosion or a chart-of-accounts total recurses once per row.
+        // 200 frames is ordinary for that shape and used to fail locally with
+        // "recursion depth exceeded" while passing on BC.
+        std::thread::Builder::new()
+            .stack_size(INTERP_STACK_BYTES)
+            .spawn(|| {
+                let ws = Arc::new(Workspace::new());
+                ws.file_index.add_file(
+                    std::path::PathBuf::from("/test/Depth.al"),
+                    r#"codeunit 50996 "Depth"
+{
+    procedure Walk(n: Integer): Integer
+    begin
+        if n <= 0 then
+            exit(0);
+        exit(1 + Walk(n - 1));
+    end;
+}"#
+                    .to_string(),
+                );
+                let mut ctx = DispatchCtx::new_pure(ws);
+                let result =
+                    dispatch_call(Some("Depth"), "Walk", vec![Value::Integer(200)], &mut ctx);
+                assert_eq!(ok(result), Value::Integer(200));
+            })
+            .expect("spawn deep recursion test thread")
+            .join()
+            .expect("deep recursion test thread panicked");
     }
 
     #[test]
@@ -2634,24 +2846,24 @@ mod tests {
     }
 
     #[test]
-    fn round_uses_bankers_rounding_and_directions() {
+    fn round_matches_the_documented_bc_directions() {
         use rust_decimal_macros::dec;
         let mut ctx = ctx();
         let round =
             |ctx: &mut DispatchCtx, args: Vec<Value>| dispatch_call(None, "Round", args, ctx);
 
-        // Default precision 0.01, banker's midpoint: 2.675 → 2.68 (268 even).
+        // Default precision 0.01: 2.675 → 2.68.
         assert_eq!(
             ok(round(&mut ctx, vec![Value::Decimal(dec!(2.675))])),
             Value::Decimal(dec!(2.68))
         );
-        // Midpoints round to the EVEN multiple: 2.5 → 2, 1.5 → 2.
+        // '=' takes midpoints away from zero: 2.5 → 3, 1.5 → 2, -2.5 → -3.
         assert_eq!(
             ok(round(
                 &mut ctx,
                 vec![Value::Decimal(dec!(2.5)), Value::Integer(1)]
             )),
-            Value::Decimal(dec!(2))
+            Value::Decimal(dec!(3))
         );
         assert_eq!(
             ok(round(
@@ -2660,6 +2872,51 @@ mod tests {
             )),
             Value::Decimal(dec!(2))
         );
+        assert_eq!(
+            ok(round(
+                &mut ctx,
+                vec![Value::Decimal(dec!(-2.5)), Value::Integer(1)]
+            )),
+            Value::Decimal(dec!(-3))
+        );
+        assert_eq!(
+            ok(round(
+                &mut ctx,
+                vec![Value::Decimal(dec!(0.125)), Value::Decimal(dec!(0.01))]
+            )),
+            Value::Decimal(dec!(0.13))
+        );
+        // Every row of the example table on the System.Round reference page,
+        // except Round(-1234.56789, 1, '='), which the page prints as -1234
+        // while every neighbouring row rounds the magnitude away from zero.
+        for (number, precision, direction, expected) in [
+            (dec!(1234.56789), dec!(100), "=", dec!(1200)),
+            (dec!(1234.56789), dec!(10), "=", dec!(1230)),
+            (dec!(1234.56789), dec!(1), "=", dec!(1235)),
+            (dec!(1234.56789), dec!(0.1), "=", dec!(1234.6)),
+            (dec!(1234.56789), dec!(0.001), "=", dec!(1234.568)),
+            (dec!(1234.56789), dec!(0.001), "<", dec!(1234.567)),
+            (dec!(1234.56789), dec!(0.001), ">", dec!(1234.568)),
+            (dec!(-1234.56789), dec!(100), "=", dec!(-1200)),
+            (dec!(-1234.56789), dec!(10), "=", dec!(-1230)),
+            (dec!(-1234.56789), dec!(0.1), "=", dec!(-1234.6)),
+            (dec!(-1234.56789), dec!(0.001), "=", dec!(-1234.568)),
+            (dec!(-1234.56789), dec!(0.001), "<", dec!(-1234.567)),
+            (dec!(-1234.56789), dec!(0.001), ">", dec!(-1234.568)),
+        ] {
+            assert_eq!(
+                ok(round(
+                    &mut ctx,
+                    vec![
+                        Value::Decimal(number),
+                        Value::Decimal(precision),
+                        Value::Text(direction.into())
+                    ]
+                )),
+                Value::Decimal(expected),
+                "Round({number}, {precision}, '{direction}')"
+            );
+        }
         // Explicit directions.
         assert_eq!(
             ok(round(

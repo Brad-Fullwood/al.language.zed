@@ -23,9 +23,6 @@ pub struct CallFrame {
     /// values intentionally remain plain strings; MaxStrLen consults this
     /// parallel type metadata through the scope stack.
     pub declared_text_lengths: HashMap<String, usize>,
-    /// Slot for the procedure return value, populated on `exit(value)`
-    /// or by assigning to the procedure name.
-    pub return_slot: Option<Value>,
     /// Source location of the call site (file + line) for stack traces.
     /// `None` for the synthetic top frame.
     pub call_site: Option<(String, u32)>,
@@ -38,7 +35,6 @@ impl CallFrame {
             object: object.into(),
             locals: HashMap::new(),
             declared_text_lengths: HashMap::new(),
-            return_slot: None,
             call_site: None,
         }
     }
@@ -71,17 +67,21 @@ impl CallFrame {
 pub struct ScopeStack {
     frames: Vec<CallFrame>,
     /// Current `eval_expr` recursion depth. Expression evaluation recurses
-    /// per AST nesting level; ~400 nested parens overflow a 2 MiB thread
-    /// stack (tokio worker default) and ABORT the process. Capped at
-    /// `MAX_EXPR_DEPTH` so degenerate input yields `Eval::Error` instead.
-    /// Statement nesting has its own cap in `DispatchCtx`.
+    /// per AST nesting level and does not reset across a call, so a recursive
+    /// AL procedure whose recursive call sits inside an expression — the usual
+    /// `exit(1 + Walk(n - 1))` shape — spends a couple of levels per frame.
+    /// Capped at `MAX_EXPR_DEPTH` so degenerate input yields `Eval::Error`
+    /// rather than aborting the process on a stack overflow. Statement nesting
+    /// has its own cap in `DispatchCtx`.
     expr_depth: usize,
 }
 
 /// Maximum `eval_expr` AST recursion depth. Mirrors `eval_stmt`'s
-/// MAX_AST_DEPTH rationale: real AL expressions nest ~10 deep; 256 is far
-/// beyond anything legitimate and comfortably inside a 2 MiB thread stack.
-pub const MAX_EXPR_DEPTH: usize = 256;
+/// MAX_AST_DEPTH rationale: real AL expressions nest ~10 deep, and the cap has
+/// to clear what `MAX_RECURSION_DEPTH` call frames spend on their way down, so
+/// an over-deep recursion reports the call limit rather than this one. Sized
+/// against `INTERP_STACK_BYTES`, like the other two caps.
+pub const MAX_EXPR_DEPTH: usize = 2560;
 
 impl ScopeStack {
     pub fn new() -> Self {

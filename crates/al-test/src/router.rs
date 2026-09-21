@@ -461,7 +461,7 @@ fn classify_reachable(
                 handler_support,
             );
         } else if !matches!(info.node_type.as_str(), "event" | "object")
-            && al_runtime::stubs::resolve(&info.object, &info.name).is_none()
+            && !al_runtime::stubs::is_supported(&info.object, &info.name)
         {
             decision = RoutingDecision::LiveBc;
             push_reason(
@@ -1115,7 +1115,7 @@ fn classify_call(
             .is_some_and(|(text, tree)| {
                 find_callable_node(tree.root_node(), text.as_bytes(), method).is_some()
             });
-        let has_stub = !subtype.is_empty() && al_runtime::stubs::resolve(subtype, method).is_some();
+        let has_stub = !subtype.is_empty() && al_runtime::stubs::is_supported(subtype, method);
         if !has_local_body && !has_stub {
             promote(
                 decision,
