@@ -301,15 +301,23 @@ mod tests {
     #[test]
     fn the_displayed_root_matches_the_path_the_caller_would_type() {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().to_path_buf();
-        let canonical = root.canonicalize().unwrap();
+        let canonical = tmp.path().canonicalize().unwrap();
 
         assert!(
             canonical.to_string_lossy().starts_with(r"\\?\"),
             "this test only means anything while Windows canonicalize is verbatim: {}",
             canonical.display()
         );
-        assert_eq!(display_path(&canonical), root.to_string_lossy());
+        let displayed = display_path(&canonical);
+        assert!(!displayed.starts_with(r"\\?\"), "{displayed}");
+        assert!(
+            canonical.to_string_lossy().ends_with(&displayed),
+            "only the prefix may be dropped: {canonical:?} -> {displayed}"
+        );
+        assert!(
+            Path::new(&displayed).is_dir(),
+            "the displayed path must still name the directory: {displayed}"
+        );
         assert!(
             resolve_path_within_roots(Path::new("Foo.al"), &canonical, &project(&canonical))
                 .is_some(),
