@@ -53,7 +53,13 @@ pub fn obsolete_usages(
         }
     }
 
-    let timeline = super::obsolescence::obsolescence_timeline(workspace)?;
+    // The snapshot above is the one the timeline needs, and none of the caller
+    // counts it would compute are read below.
+    let timeline = super::obsolescence::timeline_from_sources(
+        workspace,
+        &sources,
+        super::obsolescence::CallerCounts::Skip,
+    );
     for obsolete in timeline
         .iter()
         .filter(|entry| entry.kind == "procedure" && entry.file.is_some())
