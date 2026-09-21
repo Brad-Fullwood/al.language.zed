@@ -52,7 +52,7 @@ audit that are still present in current code are tagged [STILL-OPEN].
 - severity: medium
 - scenario: The abandoned-id drain only resynchronizes when a *whole* response frame arrives late. Two paths break that assumption. (1) Read side: `read_bounded_line` accumulates into a local `buf` and `consume`s the bytes it took from the `BufReader`. When the request deadline expires mid-frame (a multi-megabyte `workspace/symbol` or `al_build` result still streaming), the function returns `Err`, `buf` is dropped, and the already-consumed prefix is gone. The remainder of that JSON line stays in the socket, so the next `request` reads a truncated fragment and fails with "Failed to parse response" even though the frame was well formed. (2) Write side: `write_all_bounded` can return `Err` after a partial write; `send_request` propagates the error but leaves the connection open, so the next `send_request` appends a second JSON object to the half-written line and the daemon sees one corrupt frame.
 - fix: Mark the connection poisoned on any partial-frame read or write (a `desynced: bool` on `DaemonClient`), and either reconnect transparently or fail subsequent requests with a clear "connection out of sync, reconnect" error instead of a parse error.
-- status: open
+- status: fixed 620956ba
 
 ### [SECURITY] Daemon and MCP file dispatchers accept any absolute path, with no project-root containment
 - where: crates/al-lsp/src/server/daemon/mod.rs:1123 (`file_uri_from_params`), 1078 (`ensure_document`), crates/al-lsp/src/server/daemon/build_dispatch/fixes.rs:97 (`dispatch_format`), crates/al-lsp/src/server/daemon/build_dispatch/codegen.rs:104 (`dispatch_new_project`)
