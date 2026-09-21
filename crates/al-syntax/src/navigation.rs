@@ -63,12 +63,63 @@ fn is_object_type_kind(kind: &str) -> bool {
     super::language_data::is_object_keyword_node(kind)
 }
 
-/// Find the object declaration in the tree.
+/// Read one `object_declaration` node into an [`ObjectInfo`].
+fn object_declaration_info(node: Node, source: &[u8]) -> ObjectInfo {
+    let mut kind = String::new();
+    if let Some(kind_node) = node.child_by_field_name("kind") {
+        kind = kind_node.kind().to_string();
+        if kind == "object_keyword" {
+            if let Ok(text) = kind_node.utf8_text(source) {
+                kind = text.to_lowercase();
+            }
+        } else {
+            kind = kind.strip_prefix("kw_").unwrap_or(&kind).to_string();
+        }
+    }
+
+    let id = node
+        .child_by_field_name("id")
+        .and_then(|id_node| id_node.utf8_text(source).ok())
+        .and_then(|text| text.parse::<i64>().ok());
+
+    ObjectInfo {
+        kind,
+        id,
+        name: super::extract_object_name(node, source).unwrap_or_default(),
+        range: node.range(),
+    }
+}
+
+/// Every top-level object declaration in the tree, in document order.
+///
+/// AL allows several objects in one `.al` file — a setup table followed by its
+/// card page is routine. Callers that hold a position, a name or a kind must
+/// use this and pick the matching declaration; [`find_object_declaration`]
+/// answers only for the first one.
+pub fn find_object_declarations(tree: &Tree, text: &str) -> Vec<ObjectInfo> {
+    let root = tree.root_node();
+    let source = text.as_bytes();
+    let mut cursor = root.walk();
+    let infos: Vec<ObjectInfo> = root
+        .children(&mut cursor)
+        .filter(|child| child.kind() == "object_declaration")
+        .map(|child| object_declaration_info(child, source))
+        .collect();
+    if !infos.is_empty() {
+        return infos;
+    }
+    find_object_declaration(tree, text).into_iter().collect()
+}
+
+/// Find the first object declaration in the tree.
 ///
 /// Handles all AL object types: table, page, codeunit, report, query, xmlport,
 /// enum, interface, permissionset, profile, pagecustomization, controladdin,
 /// tableextension, pageextension, reportextension, enumextension,
 /// permissionsetextension, entitlement, profileextension, dotnet.
+///
+/// A file with several objects has only its first one described here; use
+/// [`find_object_declarations`] for the rest.
 pub fn find_object_declaration(tree: &Tree, text: &str) -> Option<ObjectInfo> {
     let root = tree.root_node();
     let source = text.as_bytes();
@@ -76,40 +127,7 @@ pub fn find_object_declaration(tree: &Tree, text: &str) -> Option<ObjectInfo> {
     let mut cursor = root.walk();
     for child in root.children(&mut cursor) {
         if child.kind() == "object_declaration" {
-            let mut kind_str = String::new();
-            let mut id = None;
-            let mut name = String::new();
-
-            if let Some(kind_node) = child.child_by_field_name("kind") {
-                kind_str = kind_node.kind().to_string();
-                if kind_str == "object_keyword" {
-                    if let Ok(t) = kind_node.utf8_text(source) {
-                        kind_str = t.to_lowercase();
-                    }
-                } else {
-                    kind_str = kind_str
-                        .strip_prefix("kw_")
-                        .unwrap_or(&kind_str)
-                        .to_string();
-                }
-            }
-
-            if let Some(id_node) = child.child_by_field_name("id") {
-                if let Ok(id_text) = id_node.utf8_text(source) {
-                    id = id_text.parse::<i64>().ok();
-                }
-            }
-
-            if let Some(n) = super::extract_object_name(child, source) {
-                name = n;
-            }
-
-            return Some(ObjectInfo {
-                kind: kind_str,
-                id,
-                name,
-                range: child.range(),
-            });
+            return Some(object_declaration_info(child, source));
         }
     }
 

@@ -244,20 +244,33 @@ fn source_candidates(
     let mut workspace_candidates = Vec::new();
     if workspace_requested {
         for path in workspace.file_index.object_paths(name) {
-            let info = workspace.file_index.object_info.get(&path).ok_or_else(|| {
-                SourceLookupError::InvalidWorkspaceDeclaration {
+            // A file can declare several objects. Take the declaration that
+            // carries the requested *name*, not the file's first one.
+            let infos = workspace.file_index.object_infos_in(&path);
+            let mut matched = false;
+            for info in infos
+                .iter()
+                .filter(|info| info.name.eq_ignore_ascii_case(name))
+            {
+                let kind = info.kind.parse::<ObjectKind>().map_err(|reason| {
+                    SourceLookupError::InvalidWorkspaceDeclaration {
+                        path: path.clone(),
+                        reason,
+                    }
+                })?;
+                matched = true;
+                if kind_filter.is_none_or(|expected| expected == kind) {
+                    workspace_candidates.push(SourceCandidate::Workspace {
+                        path: path.clone(),
+                        kind,
+                    });
+                }
+            }
+            if !matched {
+                return Err(SourceLookupError::InvalidWorkspaceDeclaration {
                     path: path.clone(),
                     reason: "object-name index has no matching declaration metadata".to_string(),
-                }
-            })?;
-            let kind = info.kind.parse::<ObjectKind>().map_err(|reason| {
-                SourceLookupError::InvalidWorkspaceDeclaration {
-                    path: path.clone(),
-                    reason,
-                }
-            })?;
-            if kind_filter.is_none_or(|expected| expected == kind) {
-                workspace_candidates.push(SourceCandidate::Workspace { path, kind });
+                });
             }
         }
     }
@@ -324,11 +337,22 @@ fn try_workspace_source(
             name: name.to_string(),
         })?;
 
-    let obj_info = al_syntax::find_object_declaration(&tree, &text).ok_or_else(|| {
-        SourceLookupError::ObjectNotFound {
+    // Re-read the declarations from the text and tree in hand rather than the
+    // index, so an open, edited buffer answers about itself. The declaration
+    // wanted is the one named `name`, which in a multi-object file is not
+    // necessarily the first.
+    let declarations = al_syntax::find_object_declarations(&tree, &text);
+    let obj_info = declarations
+        .iter()
+        .find(|info| info.name.eq_ignore_ascii_case(name) && kind_matches(&info.kind, kind))
+        .or_else(|| {
+            declarations
+                .iter()
+                .find(|info| info.name.eq_ignore_ascii_case(name))
+        })
+        .ok_or_else(|| SourceLookupError::ObjectNotFound {
             name: name.to_string(),
-        }
-    })?;
+        })?;
     let declared_kind = obj_info.kind.parse::<ObjectKind>().map_err(|reason| {
         SourceLookupError::InvalidWorkspaceDeclaration {
             path: file_path.to_path_buf(),
@@ -347,10 +371,14 @@ fn try_workspace_source(
             path: file_path.to_path_buf(),
             reason: error.to_string(),
         })?;
+    let object_range = obj_info.range;
+    let object_node = tree
+        .root_node()
+        .descendant_for_byte_range(object_range.start_byte, object_range.end_byte)
+        .unwrap_or_else(|| tree.root_node());
 
     if let Some(member) = member {
-        let root = tree.root_node();
-        if let Some((node, sig)) = find_member_node(&root, &text, member) {
+        if let Some((node, sig)) = find_member_node(&object_node, &text, member) {
             let start_line = node.start_position().row;
             let end_line = node.end_position().row;
             let code = node.utf8_text(text.as_bytes()).unwrap_or("").to_string();
@@ -395,9 +423,16 @@ fn try_workspace_source(
         pkg: None,
         sig: None,
         range: None,
-        code: text.clone(),
+        code: text[object_range.start_byte..object_range.end_byte.min(text.len())].to_string(),
         note: None,
     })
+}
+
+/// Compare a parsed declaration kind string against a resolved [`ObjectKind`].
+fn kind_matches(declared: &str, kind: ObjectKind) -> bool {
+    declared
+        .parse::<ObjectKind>()
+        .is_ok_and(|parsed| parsed == kind)
 }
 
 fn try_package_source(
@@ -1524,6 +1559,109 @@ mod tests {
             source(&ws, "Workspace Source", None, None, procedure("OnInsert")),
             Err(SourceLookupError::MemberNotFound { .. })
         ));
+    }
+
+    const TWO_TABLES: &str = r#"table 50100 "Shipment Header"
+{
+    fields { field(1; "No."; Code[20]) { } }
+
+    procedure HeaderWork()
+    begin
+    end;
+}
+
+table 50101 "Shipment Line"
+{
+    fields { field(1; "Line No."; Integer) { } }
+
+    procedure LineWork()
+    begin
+    end;
+}
+"#;
+
+    #[test]
+    fn source_returns_the_named_object_in_a_multi_object_file() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/project/Shipment.al"),
+            TWO_TABLES.to_string(),
+        );
+
+        let header = source(&ws, "Shipment Header", None, None, None).expect("first object");
+        assert_eq!(header.id, 50100);
+        assert!(header.code.starts_with("table 50100"));
+        assert!(
+            !header.code.contains("Shipment Line"),
+            "the first object's source must stop before the second"
+        );
+
+        let line = source(&ws, "Shipment Line", None, None, None).expect("second object");
+        assert_eq!(line.id, 50101, "the second object reports its own id");
+        assert_eq!(line.n, "Shipment Line");
+        assert!(line.code.starts_with("table 50101"));
+        assert!(
+            !line.code.contains("Shipment Header"),
+            "the second object's source must not include the first"
+        );
+    }
+
+    #[test]
+    fn source_finds_a_second_object_of_a_different_kind() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/project/Setup.al"),
+            r#"table 50110 "Ship Setup"
+{
+    fields { field(1; "Primary Key"; Code[10]) { } }
+}
+
+page 50110 "Ship Setup Card"
+{
+    PageType = Card;
+    SourceTable = "Ship Setup";
+
+    procedure Refresh()
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+
+        let page = source(&ws, "Ship Setup Card", None, None, None)
+            .expect("a page declared after a table is still findable");
+        assert_eq!(page.k, ObjectKind::Page);
+        assert_eq!(page.id, 50110);
+
+        let filtered = source(&ws, "Ship Setup Card", Some(ObjectKind::Page), None, None)
+            .expect("an explicit --kind page must not drop the candidate");
+        assert_eq!(filtered.k, ObjectKind::Page);
+
+        let table = source(&ws, "Ship Setup", Some(ObjectKind::Table), None, None)
+            .expect("the table is still findable by its own kind");
+        assert_eq!(table.k, ObjectKind::Table);
+    }
+
+    #[test]
+    fn source_member_lookup_is_scoped_to_the_named_object() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/project/Shipment.al"),
+            TWO_TABLES.to_string(),
+        );
+
+        let line_member = source(&ws, "Shipment Line", None, None, procedure("LineWork"))
+            .expect("the second object's own procedure");
+        assert!(line_member.code.contains("procedure LineWork"));
+
+        assert!(
+            matches!(
+                source(&ws, "Shipment Line", None, None, procedure("HeaderWork")),
+                Err(SourceLookupError::MemberNotFound { .. })
+            ),
+            "a procedure of the sibling object is not a member of this one"
+        );
     }
 
     #[test]

@@ -177,7 +177,7 @@ Listed by neither checklist:
 - scenario: the walk credits a call only when `node.kind()` is `"method_call"`, `"function_call"`, `"invocation_expression"` or `"call_expression"`. None of those four is a node type in tree-sitter-al: `grep -c` over `tree-sitter-al/grammar.js` returns 0 for each, and none appears in `tree-sitter-al/src/node-types.json`. The grammar spells calls with `postfix_expression` + `call_suffix` / `member_call_suffix`, which is what `crates/al-syntax/src/navigation.rs:282-303` matches. So the condition is never true, `collect_called_identifiers` always returns `(vec![], vec![])`, and every `TestCoverageEntry` leaves `collect_coverage_from_tree` with empty `covers`. All actual coverage comes from `augment_coverage_with_call_graph`. About 110 lines are unreachable, including the same-object candidate preference at 562-573 and the `"bare call matches multiple declarations; no candidate was credited"` unresolved reason at 595, which can never be emitted. The module header still describes this as one of the two passes ("A conservative direct pass handles uniquely named bare calls").
   The tests do not catch it: every coverage assertion (963-1088 and the later indirect-dispatch cases) goes through the graph pass, and `find_callee_name_returns_first_identifier` (886-918) calls the helper directly from its own tree walk instead of through `collect_identifiers_recursive`.
 - fix: delete the direct pass and the module doc sentence describing it, or match the real node kinds. If it stays, note that `augment_coverage_with_call_graph` returns early when `coverage.is_empty()`, so the two passes are not independent.
-- status: open
+- status: fixed 334afb5c — the pass now matches `postfix_expression` + `call_suffix`, and `crates/al-analysis/tests/node_kind_literals.rs` fails on any kind literal the grammar does not define. That guard found seven more dead branches (`attribute_list`, `property`, `local`, `line_comment`, `block_comment`, `call_arguments`, `return_type`), fixed in the same commit.
 
 ### [GAP] Test handler functions are reported as untested production procedures
 - where: crates/al-analysis/src/queries/test_coverage.rs:176-189 (`untested` filter) and 385 (`is_test`)
@@ -294,6 +294,15 @@ Listed by neither checklist:
 - scenario: the doc opens "Extracted from al-core" and the comment above `pub mod resolution` says it was promoted to `pub` "so it can be re-exported from al-core (`pub use al_analysis::resolution;`)". There is no `al-core` crate in `crates/`, because the split renamed it to `al-lsp`. A reader following that instruction has nowhere to put the re-export. The same stale name survives in Cargo.toml comments (crates/al-analysis/Cargo.toml:34, crates/al-dap/Cargo.toml:19, crates/al-workspace/Cargo.toml:29-30).
 - fix: name the current crate in each comment, or drop the migration note now that the split has landed.
 - status: open
+
+## Opened while fixing
+
+### [SLOP] `obsolescence.rs` tests for the node kind `attribute_list`, which the grammar does not define
+- where: crates/al-analysis/src/queries/obsolescence.rs:186 and 200
+- severity: low
+- scenario: both lines read `s.kind() == "attribute" || s.kind() == "attribute_list"`. tree-sitter-al's node is `attribute`; there is no `attribute_list`, so the second test is always false. Harmless today because the first test is correct, but it states a grammar shape that does not exist and the same pattern in dead_code.rs, tests.rs and test_coverage.rs sat next to a real bug. `crates/al-analysis/tests/node_kind_literals.rs` carries an `ALLOWED_ABSENT` entry for this pair; delete the entry with the fix.
+- fix: drop the `|| ... == "attribute_list"` on both lines.
+- status: open (the file belongs to a concurrent fix branch)
 
 ## Review complete
 
