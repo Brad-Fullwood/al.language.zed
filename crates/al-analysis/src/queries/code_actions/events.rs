@@ -2,7 +2,7 @@
 
 use url::Url;
 
-use super::{annotation_edit, detect_object_kind, single_edit_ws};
+use super::{annotation_edit, detect_object_kind, single_edit_ws, strip_literals_and_comment};
 use super::{AlObjectKind, CodeActionEntry, CodeActionKind, Range, TextEdit, WorkspaceEdit};
 use al_workspace::Workspace;
 
@@ -174,33 +174,6 @@ fn parse_member_head(trimmed: &str) -> Option<MemberHead> {
         keyword,
         args: trimmed[open + 1..close].to_string(),
     })
-}
-
-/// Blank out single/double-quoted spans and drop a trailing line comment so
-/// braces inside AL captions do not corrupt the nesting count.
-fn strip_literals_and_comment(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut chars = line.char_indices().peekable();
-    let mut in_single = false;
-    let mut in_double = false;
-    while let Some((_, ch)) = chars.next() {
-        if !in_single && !in_double && ch == '/' && chars.peek().is_some_and(|(_, n)| *n == '/') {
-            break;
-        }
-        match ch {
-            '\'' if !in_double => {
-                in_single = !in_single;
-                out.push(ch);
-            }
-            '"' if !in_single => {
-                in_double = !in_double;
-                out.push(ch);
-            }
-            _ if in_single => out.push(' '),
-            _ => out.push(ch),
-        }
-    }
-    out
 }
 
 /// Table field name displayed by a page control's `field(Name; Source)` args.

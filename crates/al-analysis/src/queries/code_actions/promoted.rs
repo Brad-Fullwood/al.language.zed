@@ -2,7 +2,7 @@
 
 use url::Url;
 
-use super::{detect_indent, detect_object_kind, single_edit_ws};
+use super::{detect_indent, detect_object_kind, single_edit_ws, strip_literals_and_comment};
 use super::{AlObjectKind, CodeActionEntry, CodeActionKind, Range, TextEdit};
 
 /// Detect page actions that use old-style `Promoted = true` / `PromotedCategory` properties
@@ -162,7 +162,7 @@ fn find_block_extent(lines: &[&str], start: usize) -> (usize, Vec<usize>) {
     let mut block_started = false;
 
     for (i, line) in lines.iter().enumerate().skip(start) {
-        for ch in line.chars() {
+        for ch in strip_literals_and_comment(line).chars() {
             match ch {
                 '{' => {
                     depth += 1;
@@ -212,7 +212,10 @@ fn find_block_in(
     predicate: impl Fn(&str) -> bool,
 ) -> Option<BlockSpan> {
     for i in from..to.min(lines.len()) {
-        let normalized = lines[i].trim().to_lowercase().replace(' ', "");
+        let normalized = strip_literals_and_comment(lines[i])
+            .trim()
+            .to_lowercase()
+            .replace(' ', "");
         if predicate(&normalized) {
             let (close, _) = find_block_extent(lines, i);
             return Some(BlockSpan { header: i, close });
@@ -1493,6 +1496,40 @@ mod tests {
         );
         assert!(
             updated.contains("actionref(Second_Promoted; Second)"),
+            "{updated}"
+        );
+    }
+
+    /// A brace inside a caption, a quoted identifier or a line comment used to
+    /// move the depth counter, so the action body ended on the wrong line and
+    /// the `Promoted = true` below it was never seen.
+    #[test]
+    fn promoted_conversion_ignores_braces_in_captions_comments_and_quoted_names() {
+        let al_code = r#"page 50100 "My Page"
+{
+    actions
+    {
+        area(processing)
+        {
+            action("Open { Braces }")
+            {
+                ApplicationArea = All;
+                Caption = 'Open }';
+                // TODO: rework the { } layout
+                Promoted = true;
+                PromotedCategory = Process;
+            }
+        }
+    }
+}
+"#;
+        let (_, updated) = convert_promoted(al_code, "file:///test/PromotedBraces.al", 11);
+        assert!(!updated.contains("Promoted = true"), "{updated}");
+        assert!(!updated.contains("PromotedCategory"), "{updated}");
+        assert!(updated.contains("area(Promoted)"), "{updated}");
+        assert!(updated.contains("Caption = 'Open }';"), "{updated}");
+        assert!(
+            updated.contains("// TODO: rework the { } layout"),
             "{updated}"
         );
     }
