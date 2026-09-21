@@ -242,7 +242,7 @@ Listed by neither checklist:
   ```
   the editor shows `Modify(Reason: Text; Silent: Boolean)` for `Cust.Modify(`. `Get`, `Run`, `Init`, `Insert`, `Delete`, `Validate` and `Find` are all both common local procedure names and record methods, so this is not a rare collision. The receiver-aware `resolve_receiver_signature` exists and is simply reached too late.
 - fix: detect the qualified form first, which `resolve_receiver_signature` already does from `prefix.rfind('(')` and `rfind('.')`, and only fall back to the unqualified same-file scan when there is no receiver before the callee.
-- status: open
+- status: fixed 52b75eda — `has_receiver` gates the two paths, and the unqualified path now also answers a bare call inside a table with the implicit `Rec` record method, after the same-file scan so a local procedure still shadows it.
 
 ### [GAP] Type-position completion offers an arbitrary 50 objects per kind, each with a leading quote
 - where: crates/al-analysis/src/queries/completions.rs:139-161
