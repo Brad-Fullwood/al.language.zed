@@ -114,7 +114,7 @@ pub fn lint(tree: &Tree, text: &str) -> Vec<LintDiagnostic> {
 /// Build a `tree_sitter::Range` covering an entire source line, given its
 /// 0-based row index. Byte offsets remain exact for LF, CRLF, and an unterminated
 /// final line.
-fn line_range(text: &str, line_idx: usize, _line: &str) -> Range {
+fn line_range(text: &str, line_idx: usize) -> Range {
     let start_byte = text
         .split_inclusive('\n')
         .take(line_idx)
@@ -380,7 +380,7 @@ fn scan_procedure_for_find_in_loop(
                 message: "FindFirst()/FindLast() inside a loop causes N+1 queries; use \
                           FindSet()/repeat..until Next() = 0 instead."
                     .to_string(),
-                range: line_range(file_text, line_idx, line),
+                range: line_range(file_text, line_idx),
                 severity: LintSeverity::Warning,
             });
         }
@@ -419,7 +419,7 @@ fn lint_missing_data_classification(tree: &Tree, text: &str, out: &mut Vec<LintD
             out.push(LintDiagnostic {
                 code: "AL-NL002".to_string(),
                 message: "Table field has no DataClassification property.".to_string(),
-                range: line_range(text, row, ""),
+                range: line_range(text, row),
                 severity: LintSeverity::Warning,
             });
         }
@@ -496,7 +496,7 @@ fn lint_missing_set_load_fields(tree: &Tree, text: &str, out: &mut Vec<LintDiagn
                                     "Record {receiver} is read without a preceding \
                                      SetLoadFields call in this procedure."
                                 ),
-                                range: line_range(text, start_row + offset, line),
+                                range: line_range(text, start_row + offset),
                                 severity: LintSeverity::Warning,
                             });
                         }
@@ -620,7 +620,7 @@ fn lint_page_control_properties(tree: &Tree, text: &str, out: &mut Vec<LintDiagn
             out.push(LintDiagnostic {
                 code: "AL-NL006".to_string(),
                 message: "Page field/action has no effective ApplicationArea.".to_string(),
-                range: line_range(text, row, ""),
+                range: line_range(text, row),
                 severity: LintSeverity::Warning,
             });
         }
@@ -628,7 +628,7 @@ fn lint_page_control_properties(tree: &Tree, text: &str, out: &mut Vec<LintDiagn
             out.push(LintDiagnostic {
                 code: "AL-NL007".to_string(),
                 message: format!("Page {} has no ToolTip.", section.keyword),
-                range: line_range(text, row, ""),
+                range: line_range(text, row),
                 severity: LintSeverity::Warning,
             });
         }
@@ -1558,7 +1558,7 @@ mod tests {
     #[test]
     fn line_ranges_are_exact_for_crlf_sources() {
         let source = "first\r\nsecond\r\nthird";
-        let range = line_range(source, 1, "ignored");
+        let range = line_range(source, 1);
         assert_eq!(&source[range.start_byte..range.end_byte], "second");
         assert_eq!(range.start_point, Point { row: 1, column: 0 });
         assert_eq!(range.end_point, Point { row: 1, column: 6 });
