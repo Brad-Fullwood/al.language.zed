@@ -1644,7 +1644,18 @@ mod tests {
 
     #[test]
     fn deep_expression_nesting_errors_instead_of_overflowing() {
-        let depth = 400; // beyond the cap, far below crash territory
+        // The cap is sized against the stack an interpreted body gets, so run
+        // on that stack rather than the 2 MiB test default.
+        std::thread::Builder::new()
+            .stack_size(crate::interpreter::dispatch::INTERP_STACK_BYTES)
+            .spawn(deep_expression_nesting_body)
+            .expect("spawn deep expression test thread")
+            .join()
+            .expect("deep expression test thread panicked");
+    }
+
+    fn deep_expression_nesting_body() {
+        let depth = crate::interpreter::scope::MAX_EXPR_DEPTH + 64;
         let expr = format!("{}1{}", "(".repeat(depth), ")".repeat(depth));
         let source = format!(
             "codeunit 50100 X\n{{\n    procedure P()\n    var\n        I: Integer;\n    begin\n        I := {expr};\n    end;\n}}\n"

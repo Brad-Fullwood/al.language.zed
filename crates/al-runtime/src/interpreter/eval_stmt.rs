@@ -54,8 +54,8 @@ pub fn eval_stmt(
     // Stack-overflow guard. AL test sources with thousands of nested
     // `begin/end` or `if … then if …` blocks would otherwise recurse into
     // `eval_stmt` deeply enough to blow the Rust stack and kill the daemon.
-    // Cap at MAX_AST_DEPTH (256) — well clear of typical test nesting (~10)
-    // and well below the OS stack limit when accounting for each frame's
+    // Cap at MAX_AST_DEPTH — well clear of typical test nesting (~10) and well
+    // inside the interpreter thread's stack when accounting for each frame's
     // locals + Node payload.
     if ctx.ast_depth >= MAX_AST_DEPTH {
         return Eval::Error(simple_error(&format!(
@@ -1715,29 +1715,38 @@ mod tests {
 
     #[test]
     fn deep_nesting_errors_instead_of_stack_overflow() {
-        let depth = 1500;
-        let mut body = String::new();
-        for _ in 0..depth {
-            body.push_str("begin ");
-        }
-        body.push_str("x := 1; ");
-        for _ in 0..depth {
-            body.push_str("end; ");
-        }
-        let (eval, _) = run_stmt(&body);
-        assert!(
-            eval.is_error(),
-            "deep nesting must produce a clean Eval::Error, got {:?}",
-            eval
-        );
-        let msg = match eval {
-            Eval::Error(info) => info.message,
-            _ => String::new(),
-        };
-        assert!(
-            msg.contains("AST nesting depth exceeded"),
-            "error message must name the depth cap, got: {msg}"
-        );
+        // The cap is sized against the stack an interpreted body gets, so the
+        // test has to run on that stack rather than the 2 MiB test default.
+        std::thread::Builder::new()
+            .stack_size(crate::interpreter::dispatch::INTERP_STACK_BYTES)
+            .spawn(|| {
+                let depth = MAX_AST_DEPTH * 2;
+                let mut body = String::new();
+                for _ in 0..depth {
+                    body.push_str("begin ");
+                }
+                body.push_str("x := 1; ");
+                for _ in 0..depth {
+                    body.push_str("end; ");
+                }
+                let (eval, _) = run_stmt(&body);
+                assert!(
+                    eval.is_error(),
+                    "deep nesting must produce a clean Eval::Error, got {:?}",
+                    eval
+                );
+                let msg = match eval {
+                    Eval::Error(info) => info.message,
+                    _ => String::new(),
+                };
+                assert!(
+                    msg.contains("AST nesting depth exceeded"),
+                    "error message must name the depth cap, got: {msg}"
+                );
+            })
+            .expect("spawn deep nesting test thread")
+            .join()
+            .expect("deep nesting test thread panicked");
     }
 
     #[test]

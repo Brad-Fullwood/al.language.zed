@@ -351,15 +351,35 @@ fn run_codeunit_interp(
         al_runtime::stubs::reset_thread_local_state();
 
         let start = Instant::now();
-        let (result, test_coverage) = run_procedure_interp(
-            workspace,
-            cu,
-            codeunit_name,
-            proc_name,
-            timeout_dur,
-            dispatch_mode,
-            collect_coverage,
-        );
+        // spawn_blocking hands out tokio's 2 MiB worker stacks, which is what
+        // held the interpreter's call depth to 48 frames. Give the AL body a
+        // thread whose stack the depth caps are actually sized against.
+        let (result, test_coverage) = std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .stack_size(al_runtime::interpreter::dispatch::INTERP_STACK_BYTES)
+                .spawn_scoped(scope, || {
+                    run_procedure_interp(
+                        workspace,
+                        cu,
+                        codeunit_name,
+                        proc_name,
+                        timeout_dur,
+                        dispatch_mode,
+                        collect_coverage,
+                    )
+                })
+                .map_err(|error| {
+                    TestRunnerError::WorkerFailed(format!(
+                        "could not start the interpreter thread: {error}"
+                    ))
+                })?
+                .join()
+                .map_err(|_| {
+                    TestRunnerError::WorkerFailed(format!(
+                        "the interpreter thread panicked running '{codeunit_name}.{proc_name}'"
+                    ))
+                })
+        })?;
         let duration_ms = start.elapsed().as_millis() as u64;
 
         // Merge this test's dynamic coverage into the run-wide aggregate (gap

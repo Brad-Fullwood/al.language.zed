@@ -20,23 +20,29 @@ use crate::interpreter::scope::{CallFrame, Eval, ScopeStack};
 use crate::interpreter::value::{ErrorInfo, Value};
 use crate::stubs;
 
-/// Each interpreted call level is a dispatch→eval_stmt→eval_expr native
-/// frame cluster that can cost tens of KiB of stack in debug builds, and
-/// the interpreter must stay within a 2 MiB thread stack (test threads and
-/// tokio workers — not the 8 MiB main thread). 48 levels keeps the worst
-/// case comfortably inside that budget while remaining far deeper than any
-/// realistic AL test-code call chain.
-const MAX_RECURSION_DEPTH: usize = 48;
+/// Stack size for the thread an interpreted AL body runs on.
+///
+/// Each interpreted call level is a dispatch→eval_stmt→eval_expr native frame
+/// cluster costing tens of KiB in debug builds. A tokio blocking worker or a
+/// test thread gives 2 MiB, which is what held the call cap at 48 levels —
+/// shallower than a BOM explosion or a recursive chart-of-accounts total, so
+/// those failed locally and passed on BC. Callers that interpret AL spawn a
+/// thread of this size and the caps below are sized against it.
+pub const INTERP_STACK_BYTES: usize = 64 * 1024 * 1024;
+
+/// Maximum simultaneous AL call frames. Sized against [`INTERP_STACK_BYTES`]:
+/// 48 frames fitted 2 MiB, so 512 leaves several times that margin inside
+/// 64 MiB while being deeper than any AL algorithm that recurses over data.
+const MAX_RECURSION_DEPTH: usize = 512;
 
 /// Maximum syntactic nesting depth `eval_stmt` will descend into before
 /// aborting with an error. The counter is cumulative across nested
 /// procedure calls (a call chain stacks ~4 AST levels per frame), so the
-/// cap must exceed what `MAX_RECURSION_DEPTH` (48 × ~4 = 192) can reach
+/// cap must exceed what `MAX_RECURSION_DEPTH` (512 × ~4 = 2048) can reach
 /// via call recursion alone — that way an infinite-call test trips the
 /// call cap first (clearer error message) and only truly pathological
-/// single-procedure nesting trips this AST cap. 256 such frames stay
-/// within the same 2 MiB thread-stack budget as the call cap.
-pub const MAX_AST_DEPTH: usize = 256;
+/// single-procedure nesting trips this AST cap.
+pub const MAX_AST_DEPTH: usize = 2560;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchMode {
@@ -582,7 +588,11 @@ fn dispatch_workspace_procedure(
     // inclusive upper bound on simultaneous frames — without this, one
     // extra frame slipped through (101 instead of the documented 100).
     if ctx.recursion_depth >= MAX_RECURSION_DEPTH {
-        return simple_error("recursion depth exceeded");
+        return simple_error(format!(
+            "call depth of {MAX_RECURSION_DEPTH} exceeded at '{procedure}'. This is a limit of \
+             the local test runner, not of Business Central: re-run this test on live BC if the \
+             recursion is genuine."
+        ));
     }
 
     let target_object = receiver
@@ -2695,21 +2705,53 @@ mod tests {
         // (CI test threads default to 2 MiB and debug frames vary by
         // toolchain).
         std::thread::Builder::new()
-            .stack_size(16 * 1024 * 1024)
+            .stack_size(INTERP_STACK_BYTES)
             .spawn(|| {
                 let ws = workspace_with_helper();
                 let mut ctx = DispatchCtx::new_pure(ws);
                 let result = dispatch_call(Some("Helper"), "Forever", vec![], &mut ctx);
                 let e = err(result);
                 assert!(
-                    e.message.contains("recursion depth exceeded"),
-                    "expected 'recursion depth exceeded' in error, got: {}",
+                    e.message.contains("local test runner"),
+                    "expected the message to name the runner limit, got: {}",
                     e.message
                 );
             })
             .expect("spawn recursion test thread")
             .join()
             .expect("recursion test thread panicked");
+    }
+
+    #[test]
+    fn recursion_over_a_data_hierarchy_completes() {
+        // A BOM explosion or a chart-of-accounts total recurses once per row.
+        // 200 frames is ordinary for that shape and used to fail locally with
+        // "recursion depth exceeded" while passing on BC.
+        std::thread::Builder::new()
+            .stack_size(INTERP_STACK_BYTES)
+            .spawn(|| {
+                let ws = Arc::new(Workspace::new());
+                ws.file_index.add_file(
+                    std::path::PathBuf::from("/test/Depth.al"),
+                    r#"codeunit 50996 "Depth"
+{
+    procedure Walk(n: Integer): Integer
+    begin
+        if n <= 0 then
+            exit(0);
+        exit(1 + Walk(n - 1));
+    end;
+}"#
+                    .to_string(),
+                );
+                let mut ctx = DispatchCtx::new_pure(ws);
+                let result =
+                    dispatch_call(Some("Depth"), "Walk", vec![Value::Integer(200)], &mut ctx);
+                assert_eq!(ok(result), Value::Integer(200));
+            })
+            .expect("spawn deep recursion test thread")
+            .join()
+            .expect("deep recursion test thread panicked");
     }
 
     #[test]
