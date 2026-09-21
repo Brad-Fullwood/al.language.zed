@@ -233,7 +233,7 @@ current code are tagged [STILL-OPEN].
 - fix: skip an entry whose `canonicalize`/`file_type` fails and continue the walk, the same
   way `search_dotnet_tool_store` already tolerates a failing package directory. Only an error
   reading `root` itself should abort.
-- status: open
+- status: fixed e705e010
 
 ### [SIMPLIFY] Three separate JSONC strippers
 - where: crates/al-types/src/jsonc.rs:11 (`strip_json_comments`),
