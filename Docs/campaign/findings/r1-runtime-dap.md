@@ -11,27 +11,40 @@ that are still open are tagged [STILL-OPEN].
 - [x] al-runtime/src/interpreter/scope.rs
 - [x] al-runtime/src/interpreter/eval_expr.rs
 - [x] al-runtime/src/interpreter/eval_stmt.rs
-- [ ] al-runtime/src/interpreter/dispatch.rs
-- [ ] al-runtime/src/interpreter/records.rs
-- [ ] al-runtime/src/interpreter/coverage.rs
-- [ ] al-runtime/src/interpreter/mod.rs
+- [x] al-runtime/src/interpreter/dispatch.rs
+- [x] al-runtime/src/interpreter/records.rs
+- [x] al-runtime/src/interpreter/coverage.rs
 - [x] al-runtime/src/mock/record.rs
 - [x] al-runtime/src/mock/filter.rs
-- [ ] al-runtime/src/mock/calcformula_parser.rs
-- [ ] al-runtime/src/stubs/*.rs
-- [ ] al-test/src/router.rs
-- [ ] al-test/src/mutate.rs
-- [ ] al-test/src/backends/interp.rs
-- [ ] al-test/src/backends/live_bc.rs + snapshot.rs
-- [x] al-test/src/output/cobertura.rs + junit.rs
-- [ ] al-test/src/test_runner.rs + session.rs + persistence.rs
-- [ ] al-dap/src/dap/native_dap.rs
-- [ ] al-dap/src/dap/bc_debug/session.rs + session_config.rs
-- [ ] al-dap/src/dap/bc_debug/events.rs + wire.rs + rest.rs
-- [ ] al-dap/src/native_debug.rs
-- [ ] al-dap/src/dap/client.rs + framing.rs + protocol.rs + types.rs
-- [ ] al-test-harness/src/lib.rs + protocol.rs
-- [ ] existing test coverage in the above (tests_records.rs, regression_tests.rs, tests_coverage.rs)
+- [x] al-runtime/src/stubs/mod.rs + library_assert.rs
+- [x] al-test/src/router.rs
+- [x] al-test/src/mutate.rs (score accounting, variant validation)
+- [x] al-test/src/backends/interp.rs (pass/fail decision, lifecycle)
+- [x] al-test/src/output/cobertura.rs
+- [x] al-dap/src/dap/native_dap.rs (stack frames, paging, pending breakpoints)
+- [x] al-dap/src/dap/bc_debug/events.rs (stop reasons)
+- [x] al-dap/src/dap/framing.rs
+- [ ] al-runtime/src/mock/calcformula_parser.rs — not read
+- [ ] al-runtime/src/stubs/library_random.rs, library_variable_storage.rs, any.rs — not read
+- [ ] al-test/src/backends/live_bc.rs + snapshot.rs — not read
+- [ ] al-test/src/test_runner.rs + session.rs + persistence.rs — not read
+- [ ] al-test/src/output/junit.rs — not read
+- [ ] al-dap/src/dap/bc_debug/session.rs + session_config.rs + wire.rs + rest.rs — not read
+- [ ] al-dap/src/native_debug.rs — not read
+- [ ] al-test-harness/src/lib.rs + protocol.rs — not read
+
+### Audit-backlog items confirmed fixed (not re-reported)
+
+String-literal unescaping, compound record-field assignment, DateTime/Duration arithmetic,
+`coerce_into_slot` i32 narrowing, CASE label error propagation, assignment to an unbound
+identifier, the missing global builtin catalog, `asserterror` error capture, `Format`'s length
+and format arguments, `render_value` Date rendering, `substitute_placeholders` re-scanning,
+`CopyStr` past the end, per-record-variable views, statement-position `Get`/`Find*`,
+`SetFilter` placeholder ordering, unset-field typed zeros, caseless `Code` primary keys,
+FlowField Boolean constants, filter case-sensitivity, quoted empty filter tokens, set-literal
+parse memoization, `DeleteAll` complexity, the router's bare-global safe-list, the DAP
+`initialized`/pending-breakpoint queue, stack-frame line off-by-one and `StatementSpan.From`,
+`startFrame`/`levels` paging, Break stop reasons, and the `configurationDone` retry.
 
 ## Findings
 
@@ -107,3 +120,101 @@ that are still open are tagged [STILL-OPEN].
 - scenario: the interpreter records hits only, so the writer sets `line-rate="1.0"` and `lines-valid == lines-covered` whenever anything ran. A CI step that fails the build below, say, 80 percent line coverage passes unconditionally on this file. The doc comment discloses the limitation, but the emitted document does not: a consumer sees a valid Cobertura file claiming 100 percent.
 - fix: the denominator is available — `al-analysis` already knows every statement line per file. Feed the executable-line set into `write_cobertura_dynamic` and emit real misses as `hits="0"`, or (cheaper) drop `line-rate`/`lines-valid` from the dynamic document and keep only `branch-rate` and the MC/DC attributes, which do have honest denominators.
 - status: open
+
+### [BUG] `Record "X" temporary` is routed to the local record runtime but its table name keeps the `temporary` keyword
+- where: crates/al-runtime/src/interpreter/records.rs:1711 (`subtype_after_keyword`) via records.rs:1682, against crates/al-test/src/router.rs:1193 (`split_type_reference`, which strips `" temporary"`)
+- severity: high
+- scenario: the AL grammar puts `kw_temporary` inside `type_reference` (tree-sitter-al/grammar.js:681, pinned by crates/al-syntax/src/symbols.rs:1339 which asserts the declared type string is `Record "Sales Header" temporary`). `subtype_after_keyword` slices off the `Record` keyword and then calls `trim_matches('"')`, which strips the leading quote but not the trailing keyword, so the record's `table_name` becomes `Sales Header" temporary`.
+  ```al
+  var
+      TempSalesLine: Record "Sales Line" temporary;
+  begin
+      TempSalesLine.Init();
+      TempSalesLine."Line No." := 10000;
+      TempSalesLine.Insert();
+  end;
+  ```
+  The router strips `" temporary"` in `split_type_reference`, finds table `Sales Line` in the workspace and routes the test to `InterpRecord`. The runtime then calls `ensure_store("Sales Line\" temporary")`, `find_by_object_name` misses, and the test dies with `record table 'Sales Line" temporary' not found in workspace`. Every interp-routed test that declares a temporary record, which is most BC test code, fails locally with a message naming a table that does not exist.
+- fix: strip a trailing `temporary` keyword in `subtype_after_keyword` (or read the subtype from the grammar's own child nodes rather than slicing text), and trim quotes from each end independently instead of `trim_matches('"')`. Beyond the name, a temporary record needs its own store: BC gives each temporary record variable a private in-memory table isolated from the physical one and from other temporary variables, while `ensure_store` keys only on the table name. Once the name is fixed, two `Record "X" temporary` variables would silently share rows with each other and with the persistent `Record "X"` — the classic expected-buffer-versus-actual-buffer test would then pass unconditionally. Key the store on `(table_name, temporary-instance-id)` and have the router keep routing to `LiveBc` until that lands.
+- status: open
+
+### [BUG] A procedure that falls off the end returns its last statement's value instead of the return type's default
+- where: crates/al-runtime/src/interpreter/dispatch.rs:748 (`Eval::Exit(v) => Eval::Normal(v)`, with the fall-through `other => other` carrying `eval_block`'s last value) and crates/al-runtime/src/interpreter/eval_stmt.rs:135 (`eval_block` returns `last`)
+- severity: high
+- scenario: the declared return type is never parsed (`collect_params` reads parameters only; nothing in dispatch.rs looks at the return type), so when a body ends without `exit(...)` the caller receives whatever the last statement evaluated to. Record methods return `Boolean`, so:
+  ```al
+  procedure TryCreate(): Boolean
+  begin
+      Rec.Init();
+      Rec."No." := 'A';
+      Rec.Insert();          // last statement, evaluates to Boolean(true)
+  end;                       // no exit
+  ...
+  Assert.IsTrue(TryCreate(), 'creation succeeded');
+  ```
+  Local: `TryCreate` returns `true` and the assertion passes. BC: a function that falls off the end returns the return type's default, `false`, and the assertion fails. The inverse shape is a false failure: a body whose last statement is an assignment yields `Value::Empty`, so `if MyIntFunc() = 0 then` compares `Empty` against `Integer(0)` in `values_equal` and is false where BC says true, and `if MyBoolFunc() then` errors with "if condition must be Boolean, got Empty".
+- fix: parse the procedure declaration's return type in `collect_params`' sibling (or a new `collect_return_type`), and in `dispatch_workspace_procedure` map a fall-through `Eval::Normal(_)` to `Value::default_for(<return type>)` (or `Value::Empty` for a procedure with no return type) rather than passing the body's last value out. Add a regression test for the `Rec.Insert()`-as-last-statement shape above.
+- status: open
+
+### [SLOP] `CallFrame::return_slot` is declared and initialised but never read or written
+- where: crates/al-runtime/src/interpreter/scope.rs:28 and scope.rs:41
+- severity: low
+- scenario: the field is documented as "Slot for the procedure return value, populated on `exit(value)` or by assigning to the procedure name". `grep -rn return_slot crates/al-runtime/src` finds only the declaration and the `None` initialiser. `exit(value)` is carried by `Eval::Exit` instead, and assigning to the procedure name is not implemented at all — `eval_assignment` would reject it as an unbound identifier. The field misleads a reader into thinking a return path exists that does not.
+- fix: delete the field and its doc comment, or implement the return-by-name path it describes as part of the return-type fix above.
+- status: open
+
+### [GAP] Assert.ExpectedError is absent, so the asserterror round trip still cannot run locally
+- where: crates/al-runtime/src/stubs/library_assert.rs:147 (`resolve`), against crates/al-runtime/src/interpreter/eval_stmt.rs:705 (`ctx.last_error`) and dispatch.rs:519 (`getlasterrortext`)
+- severity: medium
+- scenario: `asserterror` now stores the caught `ErrorInfo` in `ctx.last_error` and `GetLastErrorText`/`ClearLastError` are implemented, specifically so the standard pattern works. But the `Library Assert` stub catalog resolves only `IsTrue`, `IsFalse`, `AreEqual`, `AreNotEqual`, `AreNearlyEqual` and `Fail`, so
+  ```al
+  asserterror CreateInvalidOrder();
+  Assert.ExpectedError('The order must have a customer');
+  ```
+  still routes the whole test to `LiveBc` (router.rs:1116 promotes on `stubs::resolve(subtype, method) == None`). The error-path plumbing is finished but unreachable. The same applies to the other common members: `RecordIsEmpty`, `RecordIsNotEmpty`, `TableIsEmpty`, `IsSubstring`, `KnownFailure`.
+- fix: add `expectederror` to `library_assert::resolve` as a stub that compares its argument against `ctx.last_error`. That needs the ctx, so either give `StubFn` a context parameter or special-case `ExpectedError` in `dispatch_call_scoped` alongside `getlasterrortext`.
+- status: open
+
+### [BUG] Assertion failure messages print Date/Time/DateTime as raw day and millisecond carriers
+- where: crates/al-runtime/src/stubs/library_assert.rs:136
+- severity: low
+- scenario: `render_value` in the assert stub has `Date(d) | Time(d) | DateTime(d) => d.to_string()`, so `Assert.AreEqual(20240701D, Rec."Posting Date", 'date')` fails with `expected 739068 but got 739069` instead of a date. `dispatch::render_value` (dispatch.rs:1987) was fixed to render these properly; this second copy was not.
+- fix: call `crate::interpreter::dispatch::render_value` from the assert stub rather than keeping a second renderer, or at minimum apply the same `ymd_from_al_days` formatting.
+- status: open
+
+### [GAP] Recursion is capped at 48 AL call frames, below what real AL algorithms use
+- where: crates/al-runtime/src/interpreter/dispatch.rs:29 (`MAX_RECURSION_DEPTH`), enforced at dispatch.rs:564
+- severity: low
+- scenario: the cap exists to stay inside a 2 MiB thread stack, which is a sound reason, but 48 is shallow for AL code that recurses over data. A BOM explosion, a recursive chart-of-accounts total, or a `ProcessNode` walk over a 60-row hierarchy fails locally with `recursion depth exceeded` and passes on BC. The failure looks like a product bug rather than a runner limit.
+- fix: raise the cap and buy the headroom explicitly — run the interpreter body on a thread created with `std::thread::Builder::stack_size` (the unit test at dispatch.rs:2522 already does exactly this with 16 MiB to test the guard), or set `thread_stack_size` on the runtime whose blocking pool `al-test/src/backends/interp.rs:219` spawns into. Also make the error text say it is a local runner limit and suggest re-running that test on live BC.
+- status: open
+
+### [BUG] Text[N] and Code[N] length limits are never enforced on assignment
+- where: crates/al-runtime/src/interpreter/value.rs:332 (`coerce_into_slot`), crates/al-runtime/src/interpreter/records.rs:290-300 (field type parsing strips the `[N]` suffix), crates/al-runtime/src/interpreter/dispatch.rs:1083 (`declared_text_length`, which feeds `MaxStrLen` only)
+- severity: medium
+- scenario: `parse_table_meta` splits the declared field type on `[` and keeps only the base name, so a `field(2; "No."; Code[20])` records the default `Value::Code("")` and nothing else. `coerce_into_slot` uppercases a `Code` assignment but never checks length. The same holds for locals: `bind_declared_text_length` stores the capacity but only `MaxStrLen` reads it.
+  ```al
+  Rec."No." := 'THIS-CODE-IS-WAY-LONGER-THAN-TWENTY';   // Code[20]
+  Rec.Insert();
+  Rec.Get('THIS-CODE-IS-WAY-LONGER-THAN-TWENTY');
+  Assert.AreEqual('THIS-CODE-IS-WAY-LONGER-THAN-TWENTY', Rec."No.", '');  // local: passes
+  ```
+  BC raises "The length of the string is 35, but it must be less than or equal to 20 characters" at the assignment. The mirror case is a false failure: `asserterror Rec.Validate("No.", TooLongCode)` finds no error locally and reports "asserterror: expected an error to be raised, but none was".
+- fix: keep the parsed `[N]` capacity in `RecordStore::field_defaults` (as a parallel `field_lengths: HashMap<FieldNo, usize>`) and in `CallFrame::declared_text_lengths` for locals, and have `coerce_into_slot` take the capacity so an over-long `Text`/`Code` assignment returns `Err` the way the out-of-range `Integer` narrowing already does.
+- status: open
+
+## Review complete
+
+Round 1 found 13 open items; the 2026-07-31 audit's Runtime and DAP list is otherwise fixed, and
+the whole al-dap surface it flagged now has tests pinning the corrected behaviour.
+
+1. `Round` uses banker's rounding; BC rounds midpoints away from zero, so `Round(2.5, 1)` is 2
+   locally and 3 on BC, and a unit test pins the wrong answer. Money tests go green locally, red on BC.
+2. A procedure that falls off the end returns its last statement's value, so `Rec.Insert()` as the
+   last statement makes a `Boolean` function return true where BC returns the default false.
+3. `Record "X" temporary` keeps the `temporary` keyword in the table name, so the router sends the
+   test to the local record runtime and the runtime then cannot find table `X" temporary`.
+4. Option and Enum fields have no typed zero: an unset enum reads as `Empty`, never matches an
+   ordinal-0 filter, and never compares equal to its own ordinal-0 member.
+5. `SetFilter` rejects Date and Option placeholder values outright, and `Text[N]`/`Code[N]` length
+   limits are never enforced, both of which split local and BC results in opposite directions.
