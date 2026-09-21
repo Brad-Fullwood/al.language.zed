@@ -295,6 +295,18 @@ pub fn run(cli: Cli) -> ExitCode {
         }
         Commands::ArchLint => lsp::cmd_arch_lint(cli.json),
         Commands::NativeCheck => lsp::cmd_native_check(cli.json),
+        Commands::FreeIds {
+            kind,
+            object,
+            count,
+            include_used,
+        } => lsp::cmd_free_ids(
+            kind.as_deref(),
+            object.as_deref(),
+            count,
+            include_used,
+            cli.json,
+        ),
         Commands::Duplicates {
             min_tokens,
             min_similarity,

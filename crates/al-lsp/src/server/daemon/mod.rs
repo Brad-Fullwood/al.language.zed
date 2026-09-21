@@ -758,6 +758,7 @@ pub(crate) async fn dispatch_request(
             })
             .await
         }
+        "freeIds" => build_dispatch::dispatch_free_ids(workspace, id, &params).await,
         "permissions" => build_dispatch::dispatch_permissions(workspace, id, &params),
         "compile" => build_dispatch::dispatch_compile(workspace, id).await,
         "package" => build_dispatch::dispatch_package(workspace, id).await,

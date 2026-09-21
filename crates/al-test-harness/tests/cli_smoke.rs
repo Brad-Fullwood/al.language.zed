@@ -435,6 +435,7 @@ fn every_top_level_command_has_a_structured_black_box_path() {
         &["breaking"],
         &["arch-lint"],
         &["native-check"],
+        &["free-ids", "--kind", "table"],
         &["duplicates"],
         &["upgrade"],
         &["profiler-hints", "Hello World.DoSomething"],

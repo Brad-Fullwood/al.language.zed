@@ -654,6 +654,40 @@ Examples:
   al native-check --json"
     )]
     NativeCheck,
+    /// Report the next free object ID, table field number or enum value
+    /// ordinal inside the idRanges declared in app.json. Counts every object
+    /// in the workspace, including the second and later objects in a
+    /// multi-object file, and the dependency package objects inside the same
+    /// range. An exhausted range is an error naming the range.
+    #[command(
+        name = "free-ids",
+        after_help = "\
+Examples:
+  al free-ids
+  al free-ids --kind table
+  al free-ids --kind codeunit --count 5
+  al free-ids --object \"Customer Ext\"
+  al free-ids --json --kind page"
+    )]
+    FreeIds {
+        /// Object kind to allocate an ID for (table, page, codeunit, report,
+        /// query, xmlport, enum, tableextension, pageextension, permissionset,
+        /// ...). Omit for a summary of every kind in use.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Table, table extension, enum or enum extension whose next free
+        /// field number or enum ordinal is wanted. Takes precedence over
+        /// --kind, which then only disambiguates a shared name.
+        #[arg(long)]
+        object: Option<String>,
+        /// How many free numbers to return, in ascending order (1 to 100).
+        #[arg(long, default_value = "1")]
+        count: u32,
+        /// Add the full used-number list. Off by default so the answer stays
+        /// a few hundred bytes.
+        #[arg(long)]
+        include_used: bool,
+    },
     /// Find duplicate code blocks
     Duplicates {
         /// Minimum token count to consider a block

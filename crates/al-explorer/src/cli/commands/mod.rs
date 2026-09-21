@@ -578,6 +578,12 @@ fn validate_run_command_result(method: &str, result: &serde_json::Value) -> Resu
             require_object_field(result, "nodes", serde_json::Value::is_u64, "integer")?;
             require_object_field(result, "edges", serde_json::Value::is_u64, "integer")?;
         }
+        // `mode` selects which of the remaining fields are present, so it is
+        // the one field the formatter cannot do without.
+        "freeIds" => {
+            require_object_field(result, "mode", serde_json::Value::is_string, "string")?;
+            require_object_field(result, "usedCount", serde_json::Value::is_i64, "integer")?;
+        }
         "xlf.generate" => {
             require_object_field(result, "units", serde_json::Value::is_u64, "integer")?;
             let path = result
@@ -1094,6 +1100,7 @@ mod path_tests {
                 | "builtinTypes"
                 | "tests.discover" => serde_json::json!([]),
                 "insightStats" => serde_json::json!({"nodes": 0, "edges": 0}),
+                "freeIds" => serde_json::json!({"mode": "summary", "usedCount": 0}),
                 "xlf.refresh" => {
                     serde_json::json!({
                         "added": [],
