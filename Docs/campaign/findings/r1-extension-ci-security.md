@@ -59,7 +59,7 @@ fixed in current code are not repeated. Still-open backlog items are tagged `[ST
   binary) and only reuse a cached directory whose version matches, or attempt
   `latest_github_release` first with the cached path as the fallback on any network error rather
   than as an unconditional early return.
-- status: open
+- status: fixed 4c377a73
 
 ### [SECURITY] Downloaded al-lsp release archives are never integrity-checked against the published checksums
 - where: src/lib.rs:263-264 (`zed::download_file`), .github/workflows/release.yml:265-280 (checksums.txt), README.md:364
@@ -76,7 +76,7 @@ fixed in current code are not repeated. Still-open backlog items are tagged `[ST
   against a SHA-256 of the downloaded archive before `make_file_executable`. If the WASM sandbox
   makes hashing impractical, say so in the README rather than listing `checksums.txt` as though it
   protects the auto-download.
-- status: open
+- status: fixed 4c377a73
 
 ### [SECURITY] dtolnay/rust-toolchain is referenced by mutable branch while every other action is SHA-pinned
 - where: .github/workflows/ci.yml:34,115,176,228; .github/workflows/release.yml:38,91,205; .github/workflows/verify-generated-assets.yml:32
@@ -199,7 +199,7 @@ fixed in current code are not repeated. Still-open backlog items are tagged `[ST
   `$schema` key on the theme file, build the `players` array from the theme's syntax palette rather
   than one brand color, and apply the light-theme hover/selected/attribute overrides in the
   converter. Then regenerate and commit, so the file and the generator agree.
-- status: open
+- status: fixed 84ce743d (grammar d8c4cc7)
 
 ### [BUG] Dark-theme keyword and comment colors fall below readable contrast on the theme's own background
 - where: themes/bc-themes.json (Business Central Dark: `background` `#1E1E1E`, `syntax.keyword`/`operator`/`title`/`emphasis.strong` `#00747F`, `syntax.comment.doc` `#56616C`, `syntax.comment` `#64707D`)
@@ -215,7 +215,7 @@ fixed in current code are not repeated. Still-open backlog items are tagged `[ST
   4.5:1 against that theme's background (for `#1E1E1E`, roughly `#2FB3BF` or lighter for the teal,
   and around `#8A97A5` for the comment greys), and add a generator assertion that fails the build
   when a shipped syntax color drops below the threshold.
-- status: open
+- status: fixed 84ce743d (grammar d8c4cc7)
 
 ### [DOCS] README states the shipped language package has no static shell tasks, 120 lines after describing the 55 it ships
 - where: README.md:255, README.md:370-372, languages/al/tasks.json, extension.toml:8
@@ -234,7 +234,7 @@ fixed in current code are not repeated. Still-open backlog items are tagged `[ST
 - fix: rewrite README.md:253-263 to match the shipped state: the package ships 55 `al-explorer`
   tasks plus the runnables, each of which needs `al-explorer` on `PATH`, and LSP execute commands
   plus the AL Tools MCP server cover the same operations without one.
-- status: open
+- status: fixed fb58b642
 
 ### [SLOP] The README opens with a negation and a marketing section heading
 - where: README.md:3, README.md:15-16, README.md:413
@@ -252,7 +252,7 @@ fixed in current code are not repeated. Still-open backlog items are tagged `[ST
 - fix: cut the second sentence of line 3 (the list that follows already says what the repository
   contains), retitle the section "Scope" or "Why this exists" and start line 16 at "Most Microsoft AL
   tooling is coupled to …", and rewrite line 413 as an ordinary unbolded sentence with commas.
-- status: open
+- status: fixed fb58b642
 
 ## Review complete
 
