@@ -5,7 +5,7 @@
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
@@ -60,22 +60,26 @@ fn tui_object_browser_lists_fixture_objects() {
         parser.process(&bytes);
         parser.screen().contents()
     };
-    let poll = |buf: &Arc<Mutex<Vec<u8>>>, needle: &str, tries: usize| -> String {
-        let mut s = String::new();
-        for _ in 0..tries {
-            thread::sleep(Duration::from_secs(2));
-            s = render(buf);
-            if s.contains(needle) {
-                break;
+    // Render before sleeping and poll finely against one wall-clock deadline:
+    // a fast start returns in milliseconds and a slow one still gets the whole
+    // budget. Sleeping two seconds before the first render cost that long even
+    // when the TUI was already up, and a fixed number of two-second tries made
+    // the budget depend on the granularity.
+    let poll = |buf: &Arc<Mutex<Vec<u8>>>, needle: &str, budget: Duration| -> String {
+        let deadline = Instant::now() + budget;
+        loop {
+            let screen = render(buf);
+            if screen.contains(needle) || Instant::now() >= deadline {
+                return screen;
             }
+            thread::sleep(Duration::from_millis(100));
         }
-        s
     };
 
     // A fresh daemon labels the local package `(workspace)`, while a daemon
     // reused by the full suite can expose it as `workspace`. Runtime sorts
     // first in the latter case, so inspect the actual selection before moving.
-    let mut screen = poll(&buf, "workspace", 15);
+    let mut screen = poll(&buf, "workspace", Duration::from_secs(30));
     if screen.contains(">> Runtime") {
         let down = b"\x1b[B";
         for _ in 0..2 {
@@ -87,12 +91,16 @@ fn tui_object_browser_lists_fixture_objects() {
 
     // Wait for a workspace object's details to render, regardless of which
     // object-kind tab is active or which workspace label the daemon supplied.
-    for _ in 0..6 {
-        thread::sleep(Duration::from_secs(2));
+    let details_deadline = Instant::now() + Duration::from_secs(12);
+    loop {
         screen = render(&buf);
-        if screen.contains("Package: workspace") || screen.contains("Package: (workspace)") {
+        if screen.contains("Package: workspace")
+            || screen.contains("Package: (workspace)")
+            || Instant::now() >= details_deadline
+        {
             break;
         }
+        thread::sleep(Duration::from_millis(100));
     }
 
     // Quit cleanly: al-explorer treats Ctrl-C (0x03) as "quit" in raw mode.

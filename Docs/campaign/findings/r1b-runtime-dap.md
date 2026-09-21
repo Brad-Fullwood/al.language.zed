@@ -138,21 +138,21 @@ item that file left unticked, plus the files its checklist does not name.
 - severity: low
 - scenario: `grep -rn 'invoke("' crates/al-dap/src` lists every target the session ever sends: Attach, DebugAdapterConfigurationDone, AddBreakpoint, RemoveBreakpoint, UpdateBreakpoint, SetBreakpointResponse, StopDebugging, TerminateSession, GetStackTrace, GetVariables, ExpandGlobals, ExpandNode, GetWatchNode, GetSource and IsAlive. Stepping goes through `SetBreakpointResponse` (session.rs:789), so the 10-second arm is unreachable and the real step budget is the 30-second breakpoint bucket. `invoke_timeout_step_ops_are_short` asserts a property of strings no caller produces, and the sibling test `invoke_timeout_dead_entries_are_gone` at wire.rs:320 exists specifically to stop dead entries creeping back.
 - fix: delete the arm and rewrite `invoke_timeout_step_ops_are_short` to assert the budget for `SetBreakpointResponse`, which is what a step actually waits on.
-- status: open
+- status: fixed 317f2623
 
 ### [SLOP] The `redact_connection_token` doc comment is attached to `validate_signalr_handshake_response`
 - where: crates/al-dap/src/dap/bc_debug/wire.rs:175-179 and :219
 - severity: low
 - scenario: the module split left the redaction doc (lines 175 to 178) immediately above the handshake doc with no blank line, so rustdoc renders both paragraphs on `validate_signalr_handshake_response` and `redact_connection_token` at line 219 documents nothing. A reader of the handshake validator is told it replaces `connectionToken` with a placeholder.
 - fix: move the four-line block back above `redact_connection_token`.
-- status: open
+- status: fixed 317f2623
 
 ### [BUG] A full completion channel stalls the single SignalR reader, so Break events stop arriving
 - where: crates/al-dap/src/dap/bc_debug/session.rs:158 (`completion_tx.send(msg).await` inside `route_signalr_message`), called from the one reader task at session.rs:394
 - severity: medium
 - scenario: the comment at session.rs:37 promises that Break has "a *separate* dedicated channel" so a dropped push cannot leave the debugger stuck. That holds only while the reader keeps running. `route_signalr_message` awaits the bounded 32-slot `completion_tx` on the reader task, so once 32 type-3 messages are buffered with no `invoke` consuming them the reader blocks inside that await and routes nothing further, including Break, OnDetachedFromConnection and IsAlive. A BC hub that answers an invocation twice, or that replies to invocations the client already timed out on, reaches 32 unconsumed completions and the session goes silent with no error surfaced: the DAP client simply never receives another `stopped` event.
 - fix: bound the wait, for example `try_send` with a warn and a drop for a completion whose invocation id is not the one currently in flight, or move the completion routing off the reader task so a full channel cannot block Break routing.
-- status: open
+- status: fixed 317f2623
 
 ### [DEAD] Snapshot capture's shutdown-failure handling can never run, because `stop()` swallows every error
 - where: crates/al-test/src/backends/snapshot.rs:104-112 (the four-arm match) and the `CaptureAndShutdown` variant at snapshot.rs:88, against crates/al-dap/src/native_debug.rs:397 (`stop`) and crates/al-dap/src/dap/bc_debug/session.rs:810 (`stop_debugging`)
@@ -166,7 +166,7 @@ item that file left unticked, plus the files its checklist does not name.
 - severity: low
 - scenario: the candidate filter matches on `breakpoint.line == location.line` and only narrows by object when `current_object()` is `Some`. With breakpoints on line 42 of two different files and a stop whose object is unknown, `candidates` has two entries and the `_` arm returns `UnexpectedStop`, aborting a capture where both breakpoints were configured exactly as asked. The same filter would also mis-attribute the sample if it happened to pick one.
 - fix: narrow by file as well when the object is unknown, using the stop's source path if the session exposes it, and fail with a message that says the object was unknown rather than that the stop was unconfigured.
-- status: open
+- status: fixed 317f2623
 
 ### [BUG] A breakpoint BC arms for the wrong object is marked unverified locally but never removed from the server
 - where: crates/al-dap/src/native_debug.rs:133 (`if bp_id != 0 && object_matches { new_ids.push(bp_id) }`), test at native_debug.rs:1007
@@ -194,7 +194,7 @@ item that file left unticked, plus the files its checklist does not name.
 - severity: low
 - scenario: the body is `if let Ok(mut client) = result { client.kill().await.unwrap(); }` with the comment "If cat doesn't exist (unlikely), that's ok — skip". On any host where `/usr/bin/cat` is not at that path, which includes NixOS and several container images where it is `/bin/cat`, the test asserts nothing and reports green. It also asserts nothing about the spawned client on the hosts where it does run, beyond `kill` returning `Ok`, and `kill` returns `Ok` unconditionally (client.rs:201).
 - fix: resolve the binary with a `which`-style lookup and fail the test when it is missing, or delete the test since `spawn_fake` at client.rs:360 already drives the real spawn seam with a script the test writes itself.
-- status: open
+- status: fixed 317f2623 (deleted)
 
 ### [BUG] A live-BC timeout is reported to CI as an assertion failure
 - where: crates/al-test/src/backends/live_bc.rs:165 and :210 (`format!("timeout after {} ms", ...)`) feeding crates/al-test/src/output/junit.rs:129 (`type="AssertionError"`), with the unused crates/al-test/src/error.rs:24 (`TestRunnerError::Timeout`)
