@@ -51,33 +51,38 @@ disambiguates when two packages define the same object name.
 
 ## When you do not know the procedure name
 
-A wrong name dead-ends and suggests nothing:
+A wrong name now names the ones that exist:
 
 ```json
-{"error": "procedure 'PostSalesDoc' was not found in object 'Sales-Post' (code -32602)"}
+{"error": "procedure 'PostSalesDoc' was not found in object 'Sales-Post'. It declares: PostSalesLines, PostAssocItemJnlLine, … (code -32602)"}
 ```
 
-List the names first, from the symbol index rather than the source:
+To see all of them with signatures and line ranges and no bodies:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json by-id codeunit 80 \
-  | jq -r '.[0].methods[] | select(.name | test("post.*sales"; "i")) | .name'
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json source "Sales-Post" --list-procedures
 ```
 
-```
-PostSalesLines
-PostAssocItemJnlLine
+```json
+{"k":"Codeunit","id":80,"n":"Sales-Post","pkg":"Base Application","total":607,
+ "members":[{"name":"RunWithCheck","kind":"procedure",
+   "signature":"internal procedure RunWithCheck(var SalesHeader2: Record \"Sales Header\")",
+   "startLine":118,"endLine":141}]}
 ```
 
-`Sales-Post` has 607 methods. Drop the `select` only when you need all of them,
-and keep the `jq -r` so the 552 KB payload stays in the pipe.
+Filter it when the object is large:
+
+```bash
+... al-explorer --json source "Sales-Post" --list-procedures \
+  | jq -r '.members[] | select(.name | test("post.*sales"; "i")) | .signature'
+```
 
 ## Never read a whole package object
 
 `source "Sales-Post"` with no `--procedure` returns 837,509 bytes, the entire
 codeunit. It will fill your context and it is almost never the question. Use
-`--procedure`, or, when you genuinely need to scan the body, grep inside the
-pipe:
+`--list-procedures` to pick, then `--procedure` to read. When you genuinely need
+to scan the body, grep inside the pipe:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json source "Sales-Post" \
@@ -107,5 +112,6 @@ procedure SchedulePost(var Staging: Record "Work Order Staging")
 ## Do not
 
 - Unzip, extract or decompile a `.app` file.
-- Read `source` without `--procedure` on a package object.
-- Ask for a procedure name you have not confirmed in the method list.
+- Read `source` without `--procedure` or `--list-procedures` on a package
+  object.
+- Ask for a procedure name you have not confirmed in `--list-procedures`.
