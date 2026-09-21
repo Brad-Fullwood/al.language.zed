@@ -12,16 +12,12 @@ pub enum TestRunnerError {
     ServerError { status: u16, message: String },
     #[error("invalid BC test-runner response: {0}")]
     InvalidResponse(String),
-    #[error("No server configuration found in launch.json")]
-    NoConfig,
     #[error(
         "Missing credentials: set BC_ACCESS_TOKEN (or BC_TOKEN) for AAD, or BC_USERNAME and BC_PASSWORD for UserPassword"
     )]
     MissingCredentials,
     #[error("Invalid bearer-token environment: {0}")]
     CredentialConfiguration(#[from] al_bc::http_auth::AccessTokenEnvError),
-    #[error("Timeout after {secs}s waiting for test runner")]
-    Timeout { secs: u64 },
     #[error("JSON parse error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("test event channel closed: receiver dropped")]

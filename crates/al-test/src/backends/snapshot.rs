@@ -103,7 +103,16 @@ pub async fn capture_live_snapshot(
     let shutdown_result = debug.stop().await;
     match (capture_result, shutdown_result) {
         (Ok(snapshot), Ok(())) => Ok(snapshot),
-        (Ok(_), Err(shutdown)) => Err(SnapshotCaptureError::Debug(shutdown)),
+        // The snapshot is complete and useful; a debugger BC failed to detach
+        // is an operational problem for the next session, not a reason to
+        // throw the capture away.
+        (Ok(snapshot), Err(shutdown)) => {
+            tracing::warn!(
+                %shutdown,
+                "snapshot captured, but the BC debug session did not detach"
+            );
+            Ok(snapshot)
+        }
         (Err(capture), Ok(())) => Err(capture),
         (Err(capture), Err(shutdown)) => Err(SnapshotCaptureError::CaptureAndShutdown {
             capture: capture.to_string(),

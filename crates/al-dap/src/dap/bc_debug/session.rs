@@ -807,10 +807,13 @@ impl BcDebugSession {
         self.continue_execution(serde_json::json!(3)).await
     }
 
+    /// Detach the debugger on the server.
+    ///
+    /// The error is returned rather than logged: a BC session that refuses
+    /// StopDebugging keeps an attached debugger, and swallowing that here left
+    /// the caller reporting a clean teardown.
     pub async fn stop_debugging(&self) -> Result<()> {
-        if let Err(e) = self.invoke("StopDebugging", vec![]).await {
-            tracing::warn!("StopDebugging failed (non-fatal): {e}");
-        }
+        self.invoke("StopDebugging", vec![]).await?;
         Ok(())
     }
 
