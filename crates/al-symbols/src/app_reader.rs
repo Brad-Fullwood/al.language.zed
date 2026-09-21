@@ -113,8 +113,13 @@ fn read_archive<R: Read + Seek>(
     if archive.len() > MAX_ARCHIVE_ENTRIES {
         return Err(AppReaderError::TooManyEntries(archive.len()));
     }
-    let manifest = read_manifest(&mut archive)?;
-    let objects = read_symbol_reference(&mut archive, &manifest.name)?;
+    // Both wanted entries are resolved in the same pass over the name table.
+    let mut names = find_files_in_archive(&archive, &["NavxManifest.xml", "SymbolReference.json"]);
+    let symbol_reference_name = names.pop().flatten();
+    let manifest_name = names.pop().flatten().ok_or(AppReaderError::NoManifest)?;
+    let symbol_reference_name = symbol_reference_name.ok_or(AppReaderError::NoSymbolReference)?;
+    let manifest = read_named_manifest(&mut archive, manifest_name)?;
+    let objects = read_symbol_reference(&mut archive, symbol_reference_name, &manifest.name)?;
     Ok(SymbolPackage {
         app_id: manifest.app_id,
         name: manifest.name,
@@ -310,7 +315,13 @@ fn read_manifest<R: Read + Seek>(
 ) -> Result<NavxManifest, AppReaderError> {
     let manifest_name =
         find_file_in_archive(archive, "NavxManifest.xml").ok_or(AppReaderError::NoManifest)?;
+    read_named_manifest(archive, manifest_name)
+}
 
+fn read_named_manifest<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    manifest_name: String,
+) -> Result<NavxManifest, AppReaderError> {
     let file = archive.by_name(&manifest_name)?;
     if file.size() > MAX_MANIFEST_BYTES {
         return Err(AppReaderError::EntryTooLarge {
@@ -342,11 +353,9 @@ fn read_manifest<R: Read + Seek>(
 
 fn read_symbol_reference(
     archive: &mut ZipArchive<impl Read + Seek>,
+    sr_name: String,
     package_name: &str,
 ) -> Result<Vec<super::model::SymbolEntry>, AppReaderError> {
-    let sr_name = find_file_in_archive(archive, "SymbolReference.json")
-        .ok_or(AppReaderError::NoSymbolReference)?;
-
     let file = archive.by_name(&sr_name)?;
     if file.size() > MAX_APP_FILE_SIZE {
         return Err(AppReaderError::EntryTooLarge {
@@ -398,39 +407,50 @@ fn has_only_json_padding(bytes: &[u8]) -> bool {
         .all(|byte| byte.is_ascii_whitespace() || matches!(byte, 0x00 | 0x1A))
 }
 
-/// Find a file in the archive by name (case-insensitive, ignoring path prefixes).
-/// Maximum number of entries we will inspect when locating a single file
-/// inside a `.app` ZIP archive (T-sec-008). Real BC packages have well
-/// under 100k entries; refusing to walk a many-million-entry archive
-/// caps zip-bomb amplification — a malicious .app could otherwise force
-/// `archive.by_index(i)` calls in a tight loop until they exceed the
-/// 200 MB outer cap on file *size* (which says nothing about entry
-/// count). Higher than realistic BC packages by ~10x.
-fn find_file_in_archive<R: Read + Seek>(
-    archive: &mut ZipArchive<R>,
-    target: &str,
-) -> Option<String> {
-    let target_lower = target.to_lowercase();
+/// Resolve archive entries by file name, case-insensitively and ignoring
+/// directory prefixes, in one pass over the name table.
+///
+/// `by_index` seeks to and parses an entry's local file header, so resolving a
+/// name that way costs a seek per entry; a cloud-targeted Base Application
+/// carries one entry per source file. `file_names` reads the central directory
+/// already in memory.
+///
+/// The entry cap (T-sec-008) is a zip-bomb guard: real BC packages stay well
+/// under 100k entries, and the 200 MB limit on file size says nothing about
+/// entry count.
+fn find_files_in_archive<R: Read + Seek>(
+    archive: &ZipArchive<R>,
+    targets: &[&str],
+) -> Vec<Option<String>> {
     let entries = archive.len();
     if entries > MAX_ARCHIVE_ENTRIES {
         tracing::warn!(
             entries,
             limit = MAX_ARCHIVE_ENTRIES,
-            target = target,
             ".app archive entry count exceeds safety cap — aborting search"
         );
-        return None;
+        return vec![None; targets.len()];
     }
-    for i in 0..entries {
-        if let Ok(file) = archive.by_index(i) {
-            let name = file.name().to_string();
-            let filename = name.rsplit('/').next().unwrap_or(&name);
-            if filename.to_lowercase() == target_lower {
-                return Some(name);
+    let wanted: Vec<String> = targets.iter().map(|target| target.to_lowercase()).collect();
+    let mut found: Vec<Option<String>> = vec![None; targets.len()];
+    for name in archive.file_names() {
+        let filename = name.rsplit('/').next().unwrap_or(name).to_lowercase();
+        for (slot, want) in found.iter_mut().zip(&wanted) {
+            if slot.is_none() && filename == *want {
+                *slot = Some(name.to_string());
             }
         }
+        if found.iter().all(Option::is_some) {
+            break;
+        }
     }
-    None
+    found
+}
+
+fn find_file_in_archive<R: Read + Seek>(archive: &ZipArchive<R>, target: &str) -> Option<String> {
+    find_files_in_archive(archive, &[target])
+        .pop()
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -675,6 +695,55 @@ mod tests {
         data.splice(eocd_at..eocd_at, zip64);
 
         assert!(find_zip_offset(&data).is_none());
+    }
+
+    /// A package built from many source files carries one archive entry per
+    /// file, with the wanted entries at either end of the name table.
+    #[test]
+    fn both_wanted_entries_are_found_in_a_thirty_thousand_entry_archive() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"NAVX");
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&[0u8; 32]);
+
+        let mut zip_buf = Vec::new();
+        {
+            let cursor = Cursor::new(&mut zip_buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("NavxManifest.xml", options).unwrap();
+            zip.write_all(test_manifest().as_bytes()).unwrap();
+            for i in 0..30_000 {
+                zip.start_file(format!("src/Object{i}.al"), options)
+                    .unwrap();
+                zip.write_all(b"codeunit 1 X { }").unwrap();
+            }
+            zip.start_file("SymbolReference.json", options).unwrap();
+            zip.write_all(test_symbols().as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        data.extend_from_slice(&zip_buf);
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(&data).unwrap();
+        file.flush().unwrap();
+
+        let archive =
+            ZipArchive::new(std::fs::File::open(file.path()).unwrap()).expect("archive opens");
+        assert_eq!(archive.len(), 30_002);
+        let names = find_files_in_archive(&archive, &["NavxManifest.xml", "SymbolReference.json"]);
+        assert_eq!(
+            names,
+            vec![
+                Some("NavxManifest.xml".to_string()),
+                Some("SymbolReference.json".to_string())
+            ]
+        );
+        drop(archive);
+
+        let package = read_app_file(file.path()).unwrap();
+        assert_eq!(package.name, "Test App");
     }
 
     #[test]
