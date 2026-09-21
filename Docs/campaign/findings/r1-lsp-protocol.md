@@ -67,7 +67,7 @@ audit that are still present in current code are tagged [STILL-OPEN].
 - severity: low
 - scenario: `tokio::task::block_in_place` panics on a current-thread runtime. Every other call site in the crate guards it by checking `Handle::try_current().runtime_flavor()` first: `ensure_document` (daemon/mod.rs:1088), `scan_current_workspace_symbols` (build_dispatch/mod.rs:276), `xliff::blocking` (xliff.rs:62), `symbols_auth` (symbols_auth.rs:605). This one does not. A `format` request that names a file and does not set `check` therefore aborts the process when the dispatcher is driven from a current-thread runtime, which is what a plain `#[tokio::test]` gives you and what an embedder may use. The shipped binaries build a multi-thread runtime (bin/al-lsp.rs:105, 128), so this is not reachable from the released daemon or MCP server today.
 - fix: Reuse the same guarded helper. The `xliff::blocking` function already has the exact shape; promote it to `daemon::blocking` and call it from all five sites.
-- status: open
+- status: fixed 00667357
 
 ### [GAP] Daemon connections still dispatch strictly sequentially [STILL-OPEN]
 - where: crates/al-lsp/src/server/daemon/mod.rs:405 (`handle_connection`'s `while let Some(line)` loop)
@@ -102,7 +102,7 @@ audit that are still present in current code are tagged [STILL-OPEN].
 - severity: medium
 - scenario: These build `Response { id, result: None, error: None, .. }`. Both fields carry `#[serde(skip_serializing_if = "Option::is_none")]` (jsonrpc.rs:132, 136), so the wire frame is `{"jsonrpc":"2.0","id":7}`. JSON-RPC 2.0 §5 requires exactly one of `result` or `error` on every response. Concrete: a `definition` request on a position with no target, or `hover` returning `None`, sends that frame. `al-protocol`'s own client tolerates it (`response.result.unwrap_or(Value::Null)`, client.rs:468) and so does the MCP forwarder (mcp.rs:1152), so the bug is invisible in-tree, but any conforming third-party JSON-RPC client rejects it. The crate already carries the correct constructor, `Response::null` (jsonrpc.rs:177), whose doc comment describes this exact case. It has zero call sites outside its own tests, so it is dead code and the bug it was written to prevent is live.
 - fix: Replace the three `Response { result: None, error: None }` literals with `Response::null(id)`.
-- status: open
+- status: fixed 00667357
 
 ### [GAP] Symbol download and CodeLens test runs silently use the first launch configuration
 - where: crates/al-lsp/src/server/workspace.rs:910 (`configs[0]`), crates/al-lsp/src/server/daemon/build_dispatch/symbols_auth.rs:265 (`project_configs[0]`), crates/al-lsp/src/server/commands.rs:610 (`configs.into_iter().next()`)
@@ -130,7 +130,7 @@ audit that are still present in current code are tagged [STILL-OPEN].
 - severity: medium
 - scenario: The audit's fix wrapped `trace`, `entrypoints`, `graphExport`, `impact` and `suggestEvent` in the new `offload` helper (daemon/mod.rs:565). These four were left as direct synchronous calls, and each one starts with `workspace.get_or_build_call_graph()`, the same lazy whole-workspace enriched build. On a cold graph, `al_call {"method":"eventMap"}` (or the CLI's `al events map`) runs that build inline on the tokio worker that also drives the daemon's accept loop and every other connection's reads and writes, so unrelated clients stall for the length of the build.
 - fix: Route these four through `offload` exactly as the other five now are.
-- status: open
+- status: fixed 00667357
 
 ### [SECURITY] `al_debug start` sends a freshly acquired OAuth bearer token to a caller-supplied server URL
 - where: crates/al-lsp/src/server/daemon/debug_dispatch.rs:277-360, `has_inline_debug_config` at 233, `debug_uses_oauth` at 225; config built by `BcDebugConfig::from_dap_args` (al-dap/src/dap/bc_debug/session_config.rs:212)
