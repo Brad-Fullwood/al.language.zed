@@ -22,6 +22,7 @@ Queued for a free build slot (at most 7 building agents, RAM is the limit):
 - Fix `findings/r1b-analysis-insight.md` (35 findings: quoted identifiers cannot be renamed, rename misses EventSubscriber strings, fields with `)` in the name dropped from resolution). Start after `campaign/fix-r1-analysis-insight` merges.
 - Fix `findings/r1c-analysis-insight.md` (29 findings, 5 high: unreachable coverage pass keyed on node kinds the grammar does not have, multi-object files read as first object only by 14 consumers, permission audit recommends dropping needed permissions, `Table::` where AL needs `Database::`, signature help picks a local procedure over the receiver's). Same crate as the analysis fix branch, start after it merges.
 - Fix `findings/r1b-scaffold-generators.md` (11 findings): handed to the analysis fix agent.
+| Blog: delete six posts, site cleanup, fact sheet, series plan, draft 1 | blog repo branch `campaign/2026-09-rewrite` | `findings/blog-plan.md` |
 
 A review file without a `## Review complete` line means the agent died. Re-dispatch it to
 continue from the unticked coverage items. A fix branch on origin with findings still `open`
