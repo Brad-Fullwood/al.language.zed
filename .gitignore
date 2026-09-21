@@ -37,3 +37,4 @@ crates/*/bridge/bin/
 
 # Improvement campaign runtime state
 /.campaign/
+/scorecard.png

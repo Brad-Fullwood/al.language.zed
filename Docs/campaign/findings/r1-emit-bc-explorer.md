@@ -50,7 +50,7 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 ### [BUG] one unrelated debug configuration rejects the whole launch file
 - where: crates/al-bc/src/launch.rs:281-299 and 307-328
 - severity: medium
-- scenario: `parse_vscode_launch_file` deserializes the whole `VsCodeLaunchJson` (every configuration, typed) before the `config_type == "al"` filter at line 323. A real `.vscode/launch.json` usually holds other adapters' configs. One entry with `"port": "${command:pickPort}"` (a string, common for node/coreclr/debugpy) or `"port": 70000` (out of `u16`) fails `serde_json::from_value` for the entire file, so `find_launch_config` returns `Err` and no AL configuration is found at all. The Zed path (line 288) has the same shape: the per-config `from_value` runs before the `adapter == "al"` filter at line 294.
+- scenario: `parse_vscode_launch_file` deserializes every configuration into the typed `VsCodeLaunchConfigJson` before the `config_type == "al"` filter at line 323, so one bad *non-AL* entry fails `serde_json::from_value` for the whole file, `find_launch_config` returns `Err`, and no AL configuration is discovered. Unknown keys are ignored, so the trigger is a same-named key with a different type — `port` is the realistic one, since it is `Option<u16>` here and several adapters write it as a string. The VS Code Java extension's "Attach to Remote Program" snippet inserts `"port": "<debug port of debuggee>"` verbatim, so a `.vscode/launch.json` holding an AL config next to an unedited Java attach config breaks AL launch discovery, publish, and symbol download with "invalid type: string, expected u16". The Zed path (line 288) has the same shape: the per-config `from_value` runs before the `adapter == "al"` filter at line 294.
 - fix: filter on the raw `serde_json::Value` (`type`/`adapter` and `environmentType`) before typed deserialization, so a non-AL entry can never block AL discovery.
 - status: open
 
@@ -121,7 +121,8 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - where: crates/al-emit/src/assemble.rs:305-381 (`xliff_xml`)
 - severity: high
 - scenario: `xliff_xml` emits units only for object/field captions, page control and action Caption/ToolTip, and page-extension control changes. It has no handling of `Label` declarations. `al-analysis`'s extractor does (crates/al-analysis/src/xliff.rs:221-236 emits `"{Kind} {hash} - NamedType {hash}"`), and `Docs/features/xliff-translation.md` documents `Codeunit 1535166296 - NamedType 3010734695` as a real alc id shape. So for `codeunit 50100 X { var GreetingLbl: Label 'Hello'; }` the packaged `TextData/<App>.TextData.en-US.xliff` contains no unit for `GreetingLbl`, and every `Error`/`Message`/`Confirm` string in a natively built app is untranslatable. `crates/al-explorer xlf generate` (the al-analysis path) *does* produce that unit, so the two XLIFF surfaces of this toolchain disagree about the same project.
-- fix: extract `Label`/`TextConst` declarations in `symbol_extract` and emit `{root_kind} {hash} - NamedType {hash}` units from `xliff_xml`, matching what `al-analysis/src/xliff.rs` already produces.
+  Microsoft's own description of the generated file is "all the labels, label properties, and report labels that you're using in the extension" (devenv-work-with-translation-files), so report `labels { ... }` sections are missing too.
+- fix: extract `Label` declarations and report `labels` sections in `symbol_extract` and emit `{root_kind} {hash} - NamedType {hash}` units from `xliff_xml`, matching what `al-analysis/src/xliff.rs` already produces. Honour `Locked = true` while doing it (`TextConst` is correctly excluded: Microsoft documents it as never appearing in the .xlf).
 - status: open
 
 ### [TEST] no test pins the two independent XLIFF id implementations to each other
@@ -130,32 +131,6 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - scenario: `name_hash` is implemented twice, deliberately (the al-analysis copy says so at xliff.rs:434-437), and the two crates run separate extractors over the same AL source to produce trans-unit ids that must match byte for byte or `xlf refresh` matches zero ids. Nothing asserts they agree. The one test that could have caught the missing-Label gap above, `emit_differential`, compares `TextData/DiffCorpus.TextData.en-US.xliff` against real alc output (line 352) but its corpus declares no `Label` anywhere, and it needs a local Microsoft toolchain to run at all.
 - fix: add a test in `al-test-harness` that runs both extractors over one fixture containing a table caption, a page control ToolTip and a `Label`, and asserts the two id sets are equal; add a `Label` to the differential corpus.
 - status: open
-
-## Backlog re-verification (2026-07-31 "Emit, BC & Explorer" section)
-
-Checked every item in that section against current code. All of them are fixed, most with a
-regression test and a comment naming the old behaviour:
-
-- XLIFF (al-analysis/src/xliff.rs): ids are now FNV `name_hash` (line 438), obsolete units are
-  sorted before append (line 947-951), `Locked` is honoured, empty captions are emitted,
-  page controls get distinct ids (test at line 2048).
-- xlf refresh dispatch (al-lsp/.../build_dispatch/xliff.rs): app name comes from the `original`
-  attribute (line 131), the write is a temp-file `persist` (line 164), and an ambiguous
-  `*.g.xlf` set is a hard error instead of an arbitrary pick (line 100).
-- al-bc: `Windows` auth is documented as Basic with a no-credentials warning, tenant is a
-  `?tenant=` query param with a mock test, `build_base_url` enforces `is_safe_http_server` and the
-  7049 default, `sanitize_error_body` is case-insensitive, snapshot errors preserve the HTTP
-  status, `rad_publish` has wiremock coverage in both al-bc and al-publish, and
-  `analyze_profile_file` has a 500 MB cap.
-- al-explorer: `bc_server_params` requires `--company` and falls back to `BC_USERNAME`/
-  `BC_PASSWORD`, `resolve_lint_targets` handles multi-file lint, `validate_with_alc` uses
-  `tempfile::tempdir()`, `debug stop` exits non-zero when nothing was stopped, mouse hit-testing
-  uses the last rendered area.
-- al-emit: `collect_al_files` is iterative with a canonicalized visited set,
-  `control_addin_bundle` de-duplicates outer `addin/src/` entries.
-- Docs: the `generate-completions` and XLIFF-id claims both match the code now.
-
-No item is carried forward as [STILL-OPEN]. Findings above are new.
 
 ### [BUG] the emitted `.app` is written with owner-only permissions
 - where: crates/al-explorer/src/cli/commands/build.rs:209-215 and crates/al-compile/src/lib.rs:630-634
@@ -185,3 +160,42 @@ No item is carried forward as [STILL-OPEN]. Findings above are new.
 - fix: call `client.set_request_timeout` with the same bound the CLI uses before `tests.run_batch`/`tests.run_auto`, and move the call off the event loop the way `App::start_init_workspace` already does for indexing.
 - status: open
 
+### [BUG] the packaged XLIFF ignores `Locked = true` on captions and tooltips
+- where: crates/al-emit/src/assemble.rs:153-158, 222-256, 339-370
+- severity: medium
+- scenario: `caption_value` and `property_value` return the property value with no check for the `Locked` attribute, so `Caption = 'SEPA CT', Locked = true;` or a `ToolTip` marked `Locked` is emitted into `TextData/<App>.TextData.en-US.xliff` as a translatable `<trans-unit translate="yes">`. Microsoft documents `Locked = true` as "the label shouldn't be translated" and gates locked trans-units behind the opt-in `GenerateLockedTranslations` feature. `al-analysis`'s extractor already handles this (`property_is_locked`, xliff.rs:222), so the two XLIFF surfaces of this toolchain disagree again, and a translator is handed strings that must not change.
+- fix: parse the property attribute list in `symbol_extract` so `Locked` reaches `PropertyValue`, and skip locked properties in `xliff_xml` unless the app.json `features` array contains `GenerateLockedTranslations`.
+- status: open
+
+### [SLOP] the whole publish pipeline is unreachable from any shipped surface
+- where: crates/al-publish/src/lib.rs (869 lines), crates/al-bc/src/bc_client.rs (1409 lines), crates/al-lsp/Cargo.toml:33
+- severity: medium
+- scenario: nothing outside these two crates calls `al_publish::publish`, `BcClient::new`, `publish_extension` or `rad_publish`. The only caller in the repo is `crates/al-test-harness/tests/live_bc_contract.rs:420-433`, which is `#[ignore]`d (line 914) and needs live BC credentials. There is no `publish` subcommand in `al-explorer` (`cli/args.rs` has none) and no `publish` method in the daemon table (`daemon/mod.rs` dispatches `compile` and `package`, both of which build only). `al-lsp` declares `al-publish` as a dependency (Cargo.toml:33) and never references it in any source file, so it is linked into the shipped binary for nothing. The feature is documented as working in `Docs/features/native-app-emitter.md`.
+- fix: decide it: either wire `publish` into `al-explorer` and the daemon, or move `al-publish` behind a feature flag and drop the unused `al-lsp` dependency edge. Note this also means the two publish-path security findings above are not user-reachable today, which is the right time to fix them.
+- status: open
+
+## Backlog re-verification (2026-07-31 "Emit, BC & Explorer" section)
+
+Checked every item in that section against current code. All of them are fixed, most with a
+regression test and a comment naming the old behaviour:
+
+- XLIFF (al-analysis/src/xliff.rs): ids are now FNV `name_hash` (line 438), obsolete units are
+  sorted before append (line 947-951), `Locked` is honoured, empty captions are emitted,
+  page controls get distinct ids (test at line 2048).
+- xlf refresh dispatch (al-lsp/.../build_dispatch/xliff.rs): app name comes from the `original`
+  attribute (line 131), the write is a temp-file `persist` (line 164), and an ambiguous
+  `*.g.xlf` set is a hard error instead of an arbitrary pick (line 100).
+- al-bc: `Windows` auth is documented as Basic with a no-credentials warning, tenant is a
+  `?tenant=` query param with a mock test, `build_base_url` enforces `is_safe_http_server` and the
+  7049 default, `sanitize_error_body` is case-insensitive, snapshot errors preserve the HTTP
+  status, `rad_publish` has wiremock coverage in both al-bc and al-publish, and
+  `analyze_profile_file` has a 500 MB cap.
+- al-explorer: `bc_server_params` requires `--company` and falls back to `BC_USERNAME`/
+  `BC_PASSWORD`, `resolve_lint_targets` handles multi-file lint, `validate_with_alc` uses
+  `tempfile::tempdir()`, `debug stop` exits non-zero when nothing was stopped, mouse hit-testing
+  uses the last rendered area.
+- al-emit: `collect_al_files` is iterative with a canonicalized visited set,
+  `control_addin_bundle` de-duplicates outer `addin/src/` entries.
+- Docs: the `generate-completions` and XLIFF-id claims both match the code now.
+
+No item is carried forward as [STILL-OPEN]. Findings above are new.

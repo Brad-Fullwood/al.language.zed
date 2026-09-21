@@ -41,7 +41,7 @@ whichever ones pay off most. Record progress per workstream below so gaps are vi
 |---|------------|----------|-----------|
 | A | Correctness: review rounds, triage, fixes with a failing test first | R1 reviews running | Triage each `findings/r1-*.md` as it completes, dispatch fix agents per crate group |
 | B | Old audit: mark each of the 227 `AUDIT-BACKLOG.md` findings fixed or open | R1 reviewers report still-open ones | Collect `[STILL-OPEN]` tags, queue them under A |
-| C | Slop and simplification: desloppify plan, per-crate simplify pass (al-analysis 47k lines, al-lsp 37k, al-runtime 20k first) | first scan running | Read the scan, record the score, start `desloppify next` |
+| C | Slop and simplification: desloppify plan, per-crate simplify pass (al-analysis 47k lines, al-lsp 37k, al-runtime 20k first) | first scan: objective 83.4, strict 20.9, 1243 issues. Triage agent running | Fix batches from `findings/desloppify.md` after R1 fix branches merge |
 | D | Security: credentials in al-bc and al-publish, `.app` and zip parsing, MCP and daemon input, extension binary download, `cargo deny`, `cargo audit` | covered in part by R1 | Dedicated security review after R1 triage |
 | E | Tests: coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis | not started | Measure coverage, list the weakest modules |
 | F | Grammar: corpus tests, query drift between `languages/al` and `tree-sitter-al/queries` | R1 review running | From R1 findings |
