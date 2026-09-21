@@ -54,8 +54,12 @@ at `crates/al-lsp/src/server/mcp.rs:1100` and `:891` onward.
 
 ### 1b. Daemon catalog (`al_call` methods)
 
-The complete match arm list is `crates/al-lsp/src/server/daemon/mod.rs:589-780`.
-119 methods. Implementations live in four dispatch modules.
+The complete match arm list is the `match req.method.as_str()` in
+`crates/al-lsp/src/server/daemon/mod.rs:661`. 92 distinct method names, counted
+from the dispatcher itself; the earlier figure of 119 counted string literals
+inside the arm bodies as well. `daemon_reference_names_every_dispatched_method`
+in the same file pins `Docs/reference/daemon-methods.md` to that list.
+Implementations live in four dispatch modules.
 
 Symbol and language queries (`daemon/lsp_dispatch.rs`):
 

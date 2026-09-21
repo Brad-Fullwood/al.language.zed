@@ -46,6 +46,12 @@ pub struct Cli {
     /// Output as JSON
     #[arg(long, global = true)]
     pub json: bool,
+
+    /// Per-request deadline in milliseconds. Overrides AL_REQUEST_TIMEOUT_MS.
+    /// A request blocked on the dependency source index keeps waiting while
+    /// that index makes progress, whatever this is set to.
+    #[arg(long, global = true, value_name = "MS")]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Subcommand)]

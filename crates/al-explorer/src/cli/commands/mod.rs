@@ -171,23 +171,46 @@ pub fn file_to_uri(file: &str) -> Result<String, String> {
         })
 }
 
+/// The `--timeout-ms` value for this process, set once by `cli::run`.
+///
+/// A global rather than a parameter because every one of the ~80 subcommand
+/// functions calls [`connect`] and none of them should have to thread a
+/// deadline through.
+static REQUEST_TIMEOUT_OVERRIDE: std::sync::OnceLock<std::time::Duration> =
+    std::sync::OnceLock::new();
+
+/// Record the per-request deadline the caller asked for. Later calls are
+/// ignored, so the first (the one `cli::run` makes) wins.
+pub fn set_request_timeout_override(millis: u64) {
+    if millis > 0 {
+        let _ = REQUEST_TIMEOUT_OVERRIDE.set(std::time::Duration::from_millis(millis));
+    }
+}
+
 pub fn connect(project_dir: Option<&str>) -> Result<DaemonClient, String> {
     let root = project_root(project_dir)?;
-    DaemonClient::connect(&root).map_err(|e| {
-        if e.contains("No such file") || e.contains("Connection refused") {
-            format!(
-                "{e}\n\nHint: Is the daemon running? Start it with: al-lsp daemon --project {}",
-                root.display()
-            )
-        } else if e.contains("app.json") {
-            format!(
-                "{e}\n\nHint: No AL project found. Ensure app.json exists in {}",
-                root.display()
-            )
-        } else {
-            e
-        }
-    })
+    DaemonClient::connect(&root)
+        .map(|mut client| {
+            if let Some(timeout) = REQUEST_TIMEOUT_OVERRIDE.get() {
+                client.set_request_timeout(*timeout);
+            }
+            client
+        })
+        .map_err(|e| {
+            if e.contains("No such file") || e.contains("Connection refused") {
+                format!(
+                    "{e}\n\nHint: Is the daemon running? Start it with: al-lsp daemon --project {}",
+                    root.display()
+                )
+            } else if e.contains("app.json") {
+                format!(
+                    "{e}\n\nHint: No AL project found. Ensure app.json exists in {}",
+                    root.display()
+                )
+            } else {
+                e
+            }
+        })
 }
 
 pub fn report_error(msg: &str, json: bool) -> ExitCode {

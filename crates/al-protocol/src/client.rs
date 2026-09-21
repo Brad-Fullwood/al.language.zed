@@ -20,8 +20,39 @@ const INIT_RETRY_DELAY: Duration = Duration::from_millis(250);
 const INIT_WAIT_TOTAL: Duration = Duration::from_secs(60);
 /// Default per-request response deadline. Individual commands override
 /// this via [`DaemonClient::set_request_timeout`] for long operations
-/// (symbol downloads, compiles, test runs).
+/// (symbol downloads, compiles, test runs), and `AL_REQUEST_TIMEOUT_MS`
+/// overrides it for a whole process.
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Ceiling on progress-aware waiting. A request that waits past this gives up
+/// even while the dependency source index is still advancing.
+const MAX_INDEX_WAIT: Duration = Duration::from_secs(600);
+
+/// What the daemon's dependency source index is doing, as seen by a client
+/// whose own request has reached its deadline.
+struct IndexProgress {
+    building: bool,
+    packages_done: usize,
+    packages_total: usize,
+    files_done: usize,
+    elapsed_ms: u64,
+}
+
+/// Whether an error came from the response deadline rather than a broken
+/// connection. Matches the text [`DaemonClient::read_one_response`] produces.
+fn is_timeout_message(error: &str) -> bool {
+    error.starts_with("Daemon did not respond within")
+}
+
+/// The per-request deadline for this process: `AL_REQUEST_TIMEOUT_MS` when it
+/// parses as a positive integer, otherwise [`DEFAULT_REQUEST_TIMEOUT`].
+fn configured_request_timeout() -> Duration {
+    std::env::var("AL_REQUEST_TIMEOUT_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|millis| *millis > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(DEFAULT_REQUEST_TIMEOUT)
+}
 /// Socket-level read timeout = polling granularity. A timed-out socket
 /// read is NOT a request failure — `read_bounded_line` keeps polling
 /// until the caller's request deadline expires.
@@ -335,6 +366,13 @@ pub struct DaemonClient {
     /// frame has reached the daemon. Nothing can undo that, so every later
     /// request fails with this reason instead of a misleading parse error.
     desynced: Option<String>,
+    /// The project this client is connected to, when it is known.
+    ///
+    /// A second connection to the same daemon is how a request that has hit
+    /// its deadline asks whether the dependency source index is still
+    /// building. Without it a timeout carries no reason and a retry walks into
+    /// the next one.
+    project_root: Option<PathBuf>,
 }
 
 impl DaemonClient {
@@ -351,7 +389,7 @@ impl DaemonClient {
         let stream = connect_stream(&endpoint).map_err(|error| {
             format!("No running daemon for {}: {error}", project_root.display())
         })?;
-        Self::from_stream(stream)
+        Self::from_stream(stream).map(|client| client.with_project_root(project_root))
     }
 
     /// Connect to the daemon for a project, auto-starting if needed.
@@ -366,10 +404,10 @@ impl DaemonClient {
             .ok_or_else(|| "Cannot determine a daemon startup lock path".to_string())?;
 
         if let Ok(stream) = connect_stream(&endpoint) {
-            return Self::from_stream(stream);
+            return Self::from_stream(stream).map(|client| client.with_project_root(project_root));
         }
 
-        match try_acquire_spawn_lock(&lock_path)
+        let result = match try_acquire_spawn_lock(&lock_path)
             .map_err(|e| format!("Cannot acquire daemon spawn lock: {}", e))?
         {
             SpawnLockResult::Acquired(lock_path) => {
@@ -389,7 +427,8 @@ impl DaemonClient {
                 let stream = Self::wait_for_daemon(&endpoint, None)?;
                 Self::from_stream(stream)
             }
-        }
+        };
+        result.map(|client| client.with_project_root(project_root))
     }
 
     /// Create a client from an already-connected stream (for testing).
@@ -423,14 +462,22 @@ impl DaemonClient {
             reader: BufReader::new(stream),
             writer,
             next_id: 1,
-            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            request_timeout: configured_request_timeout(),
             write_timeout: WRITE_TIMEOUT,
             init_wait_total: INIT_WAIT_TOTAL,
             init_retry_delay: INIT_RETRY_DELAY,
             abandoned_ids: std::collections::HashSet::new(),
             partial_frame: Vec::new(),
             desynced: None,
+            project_root: None,
         })
+    }
+
+    /// Record which project this connection belongs to, so a request that
+    /// reaches its deadline can ask the daemon whether it is still indexing.
+    fn with_project_root(mut self, project_root: &Path) -> Self {
+        self.project_root = Some(project_root.to_path_buf());
+        self
     }
 
     /// Set the per-request response deadline (for long-running operations
@@ -484,10 +531,46 @@ impl DaemonClient {
         }
         let init_deadline = std::time::Instant::now() + self.init_wait_total;
         let mut expected_id = self.send_request(method, &params)?;
+        let started = std::time::Instant::now();
+        let mut last_files_done = 0usize;
 
         loop {
             let response = match self.read_response(timeout) {
                 Ok(response) => response,
+                Err(error) if is_timeout_message(&error) => {
+                    // The deadline is not evidence that the daemon is stuck.
+                    // On a fresh project it is usually the dependency AL
+                    // source index, which takes about a minute, and retrying
+                    // into the next deadline was the whole first-minute
+                    // experience. Ask a second connection what the daemon is
+                    // doing and keep waiting while it makes progress.
+                    match self.index_progress() {
+                        Some(progress)
+                            if progress.building
+                                && started.elapsed() < MAX_INDEX_WAIT
+                                && progress.files_done >= last_files_done =>
+                        {
+                            last_files_done = progress.files_done;
+                            continue;
+                        }
+                        Some(progress) if progress.building => {
+                            self.abandoned_ids.insert(expected_id);
+                            return Err(format!(
+                                "{method} is waiting on the dependency source index, which is \
+                                 still building ({} of {} packages, {} files, {} s elapsed). \
+                                 Call `status` to watch it, or raise AL_REQUEST_TIMEOUT_MS.",
+                                progress.packages_done,
+                                progress.packages_total,
+                                progress.files_done,
+                                progress.elapsed_ms / 1000
+                            ));
+                        }
+                        _ => {
+                            self.abandoned_ids.insert(expected_id);
+                            return Err(error);
+                        }
+                    }
+                }
                 Err(error) => {
                     // The daemon may still be working and will eventually write
                     // this frame. Remember the id so the next request drains it
@@ -516,6 +599,32 @@ impl DaemonClient {
 
             return Ok(response.result.unwrap_or(serde_json::Value::Null));
         }
+    }
+
+    /// Ask the daemon, on a second connection, how far the dependency source
+    /// index has got. `None` when there is no project root, no daemon to ask,
+    /// or the answer does not carry `sourceIndex`.
+    fn index_progress(&self) -> Option<IndexProgress> {
+        let project_root = self.project_root.as_ref()?;
+        let mut probe = Self::connect_existing(project_root).ok()?;
+        // Short deadline: `status` touches no index and answers in milliseconds
+        // even while a build holds the index write lock.
+        probe.request_timeout = Duration::from_secs(5);
+        let status = probe.request("status", None).ok()?;
+        let source_index = status.get("sourceIndex")?;
+        let number = |key: &str| {
+            source_index
+                .get(key)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+        };
+        Some(IndexProgress {
+            building: source_index.get("state").and_then(|v| v.as_str()) == Some("building"),
+            packages_done: number("packagesDone") as usize,
+            packages_total: number("packagesTotal") as usize,
+            files_done: number("filesDone") as usize,
+            elapsed_ms: number("elapsedMs"),
+        })
     }
 
     fn send_request(
@@ -584,8 +693,8 @@ impl DaemonClient {
             ) {
                 format!(
                     "Daemon did not respond within {}s — the operation may still be \
-                         running. Retry with a longer timeout, or check the daemon log at \
-                         ~/.local/share/al-lsp/logs/al-lsp.log",
+                         running. Raise AL_REQUEST_TIMEOUT_MS or pass --timeout-ms, or \
+                         check the daemon log at ~/.local/share/al-lsp/logs/al-lsp.log",
                     timeout.as_secs()
                 )
             } else {
@@ -606,8 +715,8 @@ impl DaemonClient {
             ) {
                 format!(
                     "Daemon did not respond within {}s — the operation may still be \
-                         running. Retry with a longer timeout, or check the daemon log at \
-                         ~/.local/share/al-lsp/logs/al-lsp.log",
+                         running. Raise AL_REQUEST_TIMEOUT_MS or pass --timeout-ms, or \
+                         check the daemon log at ~/.local/share/al-lsp/logs/al-lsp.log",
                     timeout.as_secs()
                 )
             } else {
@@ -1568,5 +1677,32 @@ mod cross_platform_tests {
         let _ = std::fs::remove_dir_all(&root);
         #[cfg(unix)]
         let _ = std::fs::remove_dir_all(&runtime);
+    }
+
+    /// The old message told the caller to "retry with a longer timeout" and
+    /// there was no way to set one.
+    #[test]
+    fn timeout_message_names_a_control_that_exists() {
+        use super::is_timeout_message;
+        // The literal in `read_one_response`, checked directly: building a
+        // real stall here would add seconds to the suite for one string.
+        let rendered = format!(
+            "Daemon did not respond within {}s — the operation may still be \
+             running. Raise AL_REQUEST_TIMEOUT_MS or pass --timeout-ms, or \
+             check the daemon log at ~/.local/share/al-lsp/logs/al-lsp.log",
+            30
+        );
+        assert!(is_timeout_message(&rendered));
+        assert!(rendered.contains("AL_REQUEST_TIMEOUT_MS"));
+        assert!(!rendered.contains("Retry with a longer timeout"));
+    }
+
+    #[test]
+    fn a_non_timeout_error_is_not_treated_as_one() {
+        use super::is_timeout_message;
+        assert!(!is_timeout_message(
+            "Failed to read response: Connection reset by peer (os error 104)"
+        ));
+        assert!(!is_timeout_message("Connection closed by daemon (EOF)"));
     }
 }

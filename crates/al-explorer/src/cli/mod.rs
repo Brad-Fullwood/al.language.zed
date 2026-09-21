@@ -24,6 +24,9 @@ use clap_complete::generate;
 use commands::{build, debug, insight, lsp};
 
 pub fn run(cli: Cli) -> ExitCode {
+    if let Some(millis) = cli.timeout_ms {
+        commands::set_request_timeout_override(millis);
+    }
     match cli.command {
         Commands::GenerateCompletions { shell } => {
             let mut cmd = Cli::command();

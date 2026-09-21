@@ -707,6 +707,60 @@ mod tests {
         assert_invalid_params(&resp);
     }
 
+    /// `trace` timed out at 30 s twice in a row while `dead-code` answered in
+    /// 47 ms on the same daemon. `dead-code` reads the workspace file index;
+    /// `trace` waits for the dependency AL source index, which takes about a
+    /// minute on Base Application and only starts when a query first needs it.
+    /// Once that index exists the traversal itself is bounded by the event's
+    /// own subscriber fan-out, not by the graph size, which is what this
+    /// asserts: a graph with a thousand unrelated events costs the same as one
+    /// with a handful.
+    #[test]
+    fn trace_cost_follows_the_event_not_the_graph_size() {
+        fn workspace_with_events(unrelated: usize) -> Workspace {
+            let ws = Workspace::new();
+            ws.file_index.add_file(
+                std::path::PathBuf::from("/proj/Target.Codeunit.al"),
+                "codeunit 50000 \"Target Publisher\"\n{\n    [IntegrationEvent(false, false)]\n    procedure OnTargetEvent()\n    begin\n    end;\n}\n".to_string(),
+            );
+            for index in 0..unrelated {
+                ws.file_index.add_file(
+                    std::path::PathBuf::from(format!("/proj/Noise{index}.Codeunit.al")),
+                    format!(
+                        "codeunit {} \"Noise {index}\"\n{{\n    [IntegrationEvent(false, false)]\n    procedure OnNoise{index}()\n    begin\n    end;\n}}\n",
+                        50_100 + index
+                    ),
+                );
+            }
+            // Pay the graph build before timing the query. The guard is
+            // dropped at the end of this statement, which is what lets the
+            // workspace be returned.
+            drop(ws.get_or_build_call_graph().expect("graph builds"));
+            ws
+        }
+
+        let small = workspace_with_events(4);
+        let large = workspace_with_events(1_000);
+        let params = serde_json::json!({ "event": "OnTargetEvent" });
+
+        let time = |ws: &Workspace| {
+            let start = std::time::Instant::now();
+            let response = dispatch_trace(ws, 60, &params);
+            assert!(response.error.is_none(), "{:?}", response.error);
+            start.elapsed()
+        };
+        let small_elapsed = time(&small);
+        let large_elapsed = time(&large);
+
+        // Generous headroom: the point is that the cost does not scale with
+        // the 250x larger graph, not a precise ratio on a shared runner.
+        assert!(
+            large_elapsed < small_elapsed + std::time::Duration::from_millis(250),
+            "trace on a 1000-event graph took {large_elapsed:?} against {small_elapsed:?} on a \
+             4-event graph; a per-call whole-graph walk would show up here"
+        );
+    }
+
     #[test]
     fn dispatch_trace_valid_event_returns_result() {
         let ws = Workspace::new();
