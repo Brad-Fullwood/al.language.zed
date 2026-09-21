@@ -6,14 +6,17 @@
 //! caller-supplied `mpsc::Sender`.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
 
 use crate::error::TestRunnerError;
 use crate::result::{TestCodeunitResult, TestMethodResult, TestStatus};
-use crate::session::{method_name_matches, RunOptions, TestEvent, TestId, TestSession};
+use crate::session::{
+    method_name_matches, RunOptions, TestEvent, TestId, TestSession, DEFAULT_MAX_PARALLEL,
+};
 use crate::test_runner::TestRunnerClient;
 use al_bc::launch::BcServerConfig;
 
@@ -329,12 +332,26 @@ impl TestSession for LiveBcMode {
             entry.1.push(test.method_name);
         }
 
-        let codeunits: Vec<(i32, String, Vec<Option<String>>)> = groups
+        let mut codeunits: Vec<(i32, String, Vec<Option<String>>)> = groups
             .into_iter()
             .map(|(id, (name, methods))| (id, name, methods))
             .collect();
+        codeunits.sort_by_key(|(id, _, _)| *id);
 
+        // Reconcile against what was asked for, before the collapse below
+        // removes the individually named methods from the work list.
         let mut unreported = requested_targets(&codeunits);
+
+        // "Run selected" in a tree UI sends the codeunit node and a method node
+        // under it in one request, so a group can hold both `None` and
+        // `Some("TestA")`. Running both issues two BC calls and counts TestA in
+        // two SuiteComplete summaries. The whole-codeunit run covers every
+        // named method, so it wins and the named entries are dropped.
+        for (_, _, methods) in codeunits.iter_mut() {
+            if methods.iter().any(Option::is_none) {
+                methods.retain(Option::is_none);
+            }
+        }
 
         let mut total_total: usize = 0;
         let mut total_passed: usize = 0;
@@ -342,10 +359,17 @@ impl TestSession for LiveBcMode {
         let mut total_skipped: usize = 0;
 
         if opts.parallel && codeunits.len() > 1 {
+            let permits = opts.max_parallel.unwrap_or(DEFAULT_MAX_PARALLEL).max(1);
+            let gate = Arc::new(Semaphore::new(permits));
             let mut join_set: JoinSet<Vec<TestEvent>> = JoinSet::new();
             for (codeunit_id, codeunit_name, methods) in codeunits {
                 let config = self.config.clone();
+                let gate = Arc::clone(&gate);
                 join_set.spawn(async move {
+                    let _permit = gate
+                        .acquire_owned()
+                        .await
+                        .expect("the parallelism gate is never closed");
                     run_one_codeunit(&config, codeunit_id, &codeunit_name, &methods, timeout_dur)
                         .await
                 });
@@ -438,6 +462,8 @@ impl TestSession for LiveBcMode {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use tokio::sync::mpsc;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1005,6 +1031,100 @@ mod tests {
         }
     }
 
+    /// Serve every request with a fixed JSON body after a short hold, and
+    /// record the highest number of requests held at once.
+    ///
+    /// wiremock answers from a shared pool and does not expose in-flight
+    /// counts, so the concurrency ceiling needs a socket the test owns.
+    async fn counting_server(
+        hold: Duration,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let in_flight = std::sync::Arc::new(AtomicUsize::new(0));
+        let peak = std::sync::Arc::new(AtomicUsize::new(0));
+        let peak_handle = std::sync::Arc::clone(&peak);
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let in_flight = std::sync::Arc::clone(&in_flight);
+                let peak = std::sync::Arc::clone(&peak);
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = socket.read(&mut buf).await;
+                    let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    tokio::time::sleep(hold).await;
+                    in_flight.fetch_sub(1, Ordering::SeqCst);
+                    let body = r#"{"value":[{"name":"TestA","result":"pass"}]}"#;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+
+        (format!("http://127.0.0.1:{port}"), peak_handle)
+    }
+
+    #[tokio::test]
+    async fn parallel_runs_are_capped_at_max_parallel() {
+        let (base_url, peak) = counting_server(Duration::from_millis(120)).await;
+        let mode = LiveBcMode::new(config_for(&base_url));
+
+        let tests: Vec<TestId> = (0..8)
+            .map(|index| test_id(50100 + index, &format!("Suite{index}")))
+            .collect();
+        let (tx, mut rx) = mpsc::channel::<TestEvent>(256);
+        mode.run(
+            tests,
+            RunOptions {
+                parallel: true,
+                max_parallel: Some(2),
+                ..Default::default()
+            },
+            tx,
+        )
+        .await
+        .expect("parallel run completes");
+
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        match events.last() {
+            Some(TestEvent::SessionComplete { total, .. }) => assert_eq!(*total, 8),
+            other => panic!("expected SessionComplete last, got {other:?}"),
+        }
+        let observed = peak.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            observed <= 2,
+            "at most 2 codeunit runs may be in flight, saw {observed}"
+        );
+        assert!(
+            observed >= 2,
+            "the run must still be parallel, saw {observed}"
+        );
+    }
+
+    #[test]
+    fn the_default_fan_out_is_bounded() {
+        assert!(
+            (1..=8).contains(&crate::session::DEFAULT_MAX_PARALLEL),
+            "an unbounded default would open one BC session per codeunit"
+        );
+        assert_eq!(RunOptions::default().max_parallel, None);
+    }
+
     #[tokio::test]
     async fn test_live_bc_mode_per_test_timeout() {
         use std::time::Duration;
@@ -1146,6 +1266,65 @@ mod tests {
                 assert_eq!(*passed, 1);
                 assert_eq!(*failed, 0);
                 assert_eq!(*skipped, 0);
+            }
+            other => panic!("expected SessionComplete last, got {other:?}"),
+        }
+    }
+
+    /// A tree UI that sends the codeunit node and one of its method nodes in
+    /// the same request used to run the codeunit twice and count the named
+    /// method in both summaries.
+    #[tokio::test]
+    async fn codeunit_plus_one_of_its_methods_runs_the_codeunit_once() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/BC/dev/tests/50100/run"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "value": [
+                    { "name": "TestA", "result": "pass" },
+                    { "name": "TestB", "result": "pass" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let mode = LiveBcMode::new(config_for(&server.uri()));
+        let (tx, mut rx) = mpsc::channel::<TestEvent>(64);
+        mode.run(
+            vec![
+                test_id(50100, "MyTests"),
+                method_test_id(50100, "MyTests", "TestA"),
+            ],
+            RunOptions::default(),
+            tx,
+        )
+        .await
+        .expect("run completes");
+
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            1,
+            "the whole-codeunit run already covers TestA"
+        );
+        let suites = events
+            .iter()
+            .filter(|event| matches!(event, TestEvent::SuiteComplete { .. }))
+            .count();
+        assert_eq!(suites, 1, "expected one SuiteComplete, got {events:?}");
+        match events.last() {
+            Some(TestEvent::SessionComplete {
+                total,
+                passed,
+                failed,
+                ..
+            }) => {
+                assert_eq!(*total, 2, "TestA must not be counted twice: {events:?}");
+                assert_eq!(*passed, 2);
+                assert_eq!(*failed, 0);
             }
             other => panic!("expected SessionComplete last, got {other:?}"),
         }

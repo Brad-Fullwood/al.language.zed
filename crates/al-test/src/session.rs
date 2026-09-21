@@ -13,6 +13,9 @@ use tokio::sync::mpsc;
 use crate::error::TestRunnerError;
 use crate::result::{TestCodeunitResult, TestMethodResult};
 
+/// Codeunit runs in flight at once when `RunOptions::max_parallel` is unset.
+pub const DEFAULT_MAX_PARALLEL: usize = 4;
+
 /// Identifies a single test target: a codeunit, or a specific method within one.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +33,13 @@ pub struct RunOptions {
     /// Per-test timeout in milliseconds. Backends apply a default if `None`.
     pub timeout_ms: Option<u64>,
     pub parallel: bool,
+    /// Ceiling on codeunit runs in flight at once when `parallel` is set.
+    /// `None` uses [`DEFAULT_MAX_PARALLEL`]. One BC codeunit run holds one
+    /// server session, and an on-prem NST caps concurrent sessions well below
+    /// the number of codeunits in a suite, so an uncapped fan-out turns the
+    /// surplus into server errors that read as test failures.
+    #[serde(default)]
+    pub max_parallel: Option<usize>,
     /// If set, write a JUnit XML report to this path after the run completes.
     pub junit_out: Option<PathBuf>,
     /// If set, write a Cobertura XML coverage report to this path.

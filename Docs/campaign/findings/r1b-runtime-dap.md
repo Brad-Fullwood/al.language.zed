@@ -106,7 +106,7 @@ item that file left unticked, plus the files its checklist does not name.
   ```
   Both names do end with the pattern. In `LiveBcMode::run` a method that does not match is dropped from `expanded`, so the test is never sent to BC, never appears in any `CaseResult`, and `SessionComplete` counts it in neither `total` nor `failed`. `al test run --filter '*Post'` prints a green summary that silently omits `TestPostPost`. The unit tests at live_bc.rs:406-434 only exercise patterns whose chunk occurs once.
 - fix: when the pattern has no trailing `*`, match the final chunk with `ends_with` against the remaining slice instead of the greedy `find`, and check that the match starts at or after `cursor`. Add the `("TestPostPost", "*Post")` and `("aaa", "*aa")` cases as regression tests.
-- status: open
+- status: fixed 40a64ccf
 
 ### [BUG] A group holding both a whole-codeunit and a single-method target runs the codeunit twice and double-counts it
 - where: crates/al-test/src/backends/live_bc.rs:114 (`has_specific_methods`) and the loop at :117

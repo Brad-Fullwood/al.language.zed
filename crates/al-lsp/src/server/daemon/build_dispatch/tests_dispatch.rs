@@ -683,6 +683,9 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
     let opts = RunOptions {
         timeout_ms,
         parallel,
+        // No RPC parameter yet; the backend default keeps the live-BC fan-out
+        // inside a typical on-prem concurrent-session limit.
+        max_parallel: None,
         // Validate output paths against project_root — a malicious client
         // could otherwise ask the daemon to overwrite arbitrary files
         // (cron tabs, ssh keys) as the daemon's user.
