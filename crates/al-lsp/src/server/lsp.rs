@@ -1280,7 +1280,40 @@ impl LanguageServer for AlServer {
         ) {
             Ok((text_arc, _version)) => {
                 self.semantic_diagnostic_cache.lock().await.remove(&uri);
-                al_workspace::on_document_change(&self.workspace, &uri, &text_arc);
+                // `on_document_change` reparses the document, clones its text
+                // and rebuilds this file's index entries. On a 10k-line AL file
+                // that is milliseconds of CPU per keystroke, and running it
+                // here occupied the tokio worker that also drives every other
+                // connection's futures. The generation write guard still spans
+                // the whole mutation, so the document store and the file index
+                // stay in step; only the CPU moves to the blocking pool.
+                let reindex_workspace = Arc::clone(&self.workspace);
+                let reindex_uri = uri.clone();
+                let reindex_text = Arc::clone(&text_arc);
+                if let Err(error) = tokio::task::spawn_blocking(move || {
+                    al_workspace::on_document_change(
+                        &reindex_workspace,
+                        &reindex_uri,
+                        &reindex_text,
+                    );
+                })
+                .await
+                {
+                    // The index is now behind the document store. Say so
+                    // rather than serving stale results silently.
+                    tracing::error!(uri = %uri, %error, "did_change: re-index worker failed");
+                    drop(generation);
+                    self.client
+                        .show_message(
+                            MessageType::ERROR,
+                            format!(
+                                "AL language server could not re-index {uri} after an edit. \
+                                 Run al.reindex to resynchronize."
+                            ),
+                        )
+                        .await;
+                    return;
+                }
                 // Only schedule per-keystroke diagnostics when trigger is Continuous.
                 // In OnSave mode, diagnostics are deferred to did_save to avoid per-keystroke work.
                 let (trigger, scope) = {
@@ -3578,6 +3611,79 @@ mod project_diagnostics_convergence_tests {
         assert!(
             published.expect("the staging loop must converge, not retry forever"),
             "the pass must publish rather than give up silently"
+        );
+    }
+}
+
+#[cfg(test)]
+mod did_change_offload_tests {
+    use super::*;
+
+    fn large_codeunit(procedures: usize) -> String {
+        let mut text = String::from("codeunit 50100 Big\n{\n");
+        for i in 0..procedures {
+            text.push_str(&format!(
+                "    procedure P{i}(Value: Integer): Integer\n    begin\n        exit(Value + {i});\n    end;\n"
+            ));
+        }
+        text.push_str("}\n");
+        text
+    }
+
+    /// The reparse and re-index that `did_change` performs now runs on the
+    /// blocking pool. It still happens under the same generation write guard,
+    /// so the document store and the file index must never be observable out
+    /// of step: after the call returns, both reflect the new text.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_offloaded_reindex_leaves_the_store_and_the_index_in_step() {
+        let (service, _socket) = LspService::new(AlServer::new);
+        let server = service.inner();
+        server
+            .workspace_init_state
+            .send_replace(WorkspaceInitState::Ready);
+
+        let uri = Url::parse("file:///proj/Big.Codeunit.al").unwrap();
+        let path = std::path::Path::new("/proj/Big.Codeunit.al");
+        server
+            .workspace
+            .documents
+            .open_with_client_version(uri.clone(), large_codeunit(200), 1)
+            .unwrap();
+        al_workspace::on_document_change(
+            &server.workspace,
+            &uri,
+            &server.workspace.documents.get_text(&uri).unwrap(),
+        );
+
+        server
+            .did_change(DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: large_codeunit(201),
+                }],
+            })
+            .await;
+
+        let (text, version) = server
+            .workspace
+            .documents
+            .get_text_and_client_version(&uri)
+            .expect("document stays open");
+        assert_eq!(version, 2, "the edit must have been applied");
+        assert!(text.contains("P200"), "the store holds the new text");
+        assert!(
+            server
+                .workspace
+                .file_index
+                .procedures_snapshot(path)
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case("P200")),
+            "the file index must reflect the same edit by the time did_change returns"
         );
     }
 }
