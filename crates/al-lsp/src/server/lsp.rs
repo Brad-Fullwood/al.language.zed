@@ -629,6 +629,40 @@ impl AlServer {
         Ok(snapshot)
     }
 
+    /// Wait for a usable workspace generation, run `work` on the blocking pool
+    /// with the generation read guard released, and reject the result if the
+    /// workspace moved on while it ran.
+    ///
+    /// `tokio::sync::RwLock` is fair: a read guard held across an await queues
+    /// `did_change`'s writer behind it, and every later reader behind that
+    /// writer. A whole-workspace walk under the guard therefore froze typing
+    /// for as long as the walk took, and the editor's text and the server's
+    /// diverged meanwhile. Releasing the guard first and comparing
+    /// `generation_revision` afterwards keeps the same consistency guarantee —
+    /// a result computed across a generation swap is never returned — at the
+    /// cost of a `ContentModified`, which LSP clients answer by re-requesting.
+    async fn offload_after_ready<T, F>(&self, what: &'static str, work: F) -> Result<T>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        let generation = self.await_ready().await?;
+        let revision = self.workspace.generation_revision();
+        drop(generation);
+
+        let result = tokio::task::spawn_blocking(work)
+            .await
+            .map_err(|error| internal_error(format!("{what} worker failed: {error}")))?;
+
+        let generation = self.workspace.generation_lock.read().await;
+        let moved = self.workspace.generation_revision() != revision;
+        drop(generation);
+        if moved {
+            return Err(content_modified_error());
+        }
+        Ok(result)
+    }
+
     /// Whether `uri` still holds the exact snapshot a request started from.
     fn snapshot_is_current(&self, uri: &Url, snapshot: &Option<(Arc<String>, i32)>) -> bool {
         let Some((text, version)) = snapshot else {
@@ -1667,7 +1701,6 @@ impl LanguageServer for AlServer {
         &self,
         params: GotoImplementationParams,
     ) -> Result<Option<GotoImplementationResponse>> {
-        let _generation = self.await_ready().await?;
         let uri = params
             .text_document_position_params
             .text_document
@@ -1675,18 +1708,18 @@ impl LanguageServer for AlServer {
             .clone();
         let position = params.text_document_position_params.position;
         let workspace = Arc::clone(&self.workspace);
-        let locations = tokio::task::spawn_blocking(move || {
-            al_analysis::queries::implementation::find_implementations(
-                &workspace,
-                &uri,
-                position.into(),
-            )
-            .into_iter()
-            .map(Into::into)
-            .collect::<Vec<Location>>()
-        })
-        .await
-        .map_err(|error| internal_error(format!("go-to-implementation worker failed: {error}")))?;
+        let locations = self
+            .offload_after_ready("go-to-implementation", move || {
+                al_analysis::queries::implementation::find_implementations(
+                    &workspace,
+                    &uri,
+                    position.into(),
+                )
+                .into_iter()
+                .map(Into::into)
+                .collect::<Vec<Location>>()
+            })
+            .await?;
 
         if locations.is_empty() {
             Ok(None)
@@ -1696,7 +1729,6 @@ impl LanguageServer for AlServer {
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
-        let _generation = self.await_ready().await?;
         let uri = params.text_document_position.text_document.uri.clone();
         let position = params.text_document_position.position;
         let include_declaration = params.context.include_declaration;
@@ -1710,29 +1742,29 @@ impl LanguageServer for AlServer {
         // future) but the CPU is wasted.
         let workspace = Arc::clone(&self.workspace);
         let uri_for_log = uri.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let core_pos = position.into();
-            let locations = al_analysis::queries::references::references(
-                &workspace,
-                &uri,
-                core_pos,
-                include_declaration,
-            )
-            .map_err(|error| error.to_string())?;
-            if locations.is_empty() {
-                Ok::<Option<Vec<Location>>, String>(None)
-            } else {
-                Ok::<Option<Vec<Location>>, String>(Some(
-                    locations
-                        .into_iter()
-                        .map(Into::into)
-                        .collect::<Vec<Location>>(),
-                ))
-            }
-        })
-        .await
-        .map_err(|error| internal_error(format!("references worker failed: {error}")))?
-        .map_err(internal_error)?;
+        let result = self
+            .offload_after_ready("references", move || {
+                let core_pos = position.into();
+                let locations = al_analysis::queries::references::references(
+                    &workspace,
+                    &uri,
+                    core_pos,
+                    include_declaration,
+                )
+                .map_err(|error| error.to_string())?;
+                if locations.is_empty() {
+                    Ok::<Option<Vec<Location>>, String>(None)
+                } else {
+                    Ok::<Option<Vec<Location>>, String>(Some(
+                        locations
+                            .into_iter()
+                            .map(Into::into)
+                            .collect::<Vec<Location>>(),
+                    ))
+                }
+            })
+            .await?
+            .map_err(internal_error)?;
 
         let elapsed = start.elapsed();
         let count = result.as_ref().map(|v| v.len()).unwrap_or(0);
@@ -1744,26 +1776,27 @@ impl LanguageServer for AlServer {
         &self,
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
-        let _generation = self.await_ready().await?;
         let uri = params.text_document.uri.clone();
         let start = std::time::Instant::now();
         // spawn_blocking for cancel-friendliness on large files.
         let workspace = Arc::clone(&self.workspace);
         let uri_for_log = uri.clone();
         let hierarchical = self.document_symbol_hierarchical.load(Ordering::Relaxed);
-        let result = tokio::task::spawn_blocking(move || {
-            al_analysis::queries::symbols::document_symbols(&workspace, &uri).map(|symbols| {
-                if hierarchical {
-                    DocumentSymbolResponse::Nested(symbols.into_iter().map(Into::into).collect())
-                } else {
-                    DocumentSymbolResponse::Flat(al_analysis::lsp::flatten_document_symbols(
-                        symbols, &uri,
-                    ))
-                }
+        let result = self
+            .offload_after_ready("document-symbol", move || {
+                al_analysis::queries::symbols::document_symbols(&workspace, &uri).map(|symbols| {
+                    if hierarchical {
+                        DocumentSymbolResponse::Nested(
+                            symbols.into_iter().map(Into::into).collect(),
+                        )
+                    } else {
+                        DocumentSymbolResponse::Flat(al_analysis::lsp::flatten_document_symbols(
+                            symbols, &uri,
+                        ))
+                    }
+                })
             })
-        })
-        .await
-        .map_err(|error| internal_error(format!("document-symbol worker failed: {error}")))?;
+            .await?;
         let elapsed = start.elapsed();
         tracing::debug!(uri = %uri_for_log, found = result.is_some(), elapsed_us = elapsed.as_micros() as u64, "document_symbol");
         Ok(result)
@@ -1822,36 +1855,35 @@ impl LanguageServer for AlServer {
         &self,
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
-        let _generation = self.await_ready().await?;
         let uri = params.text_document.uri.clone();
         let start = std::time::Instant::now();
         // spawn_blocking — semantic_tokens_full traverses the entire
         // tree-sitter tree on big AL files; cancellation-friendliness matters.
         let workspace = Arc::clone(&self.workspace);
         let uri_for_log = uri.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let tokens =
-                al_analysis::queries::semantic_tokens::semantic_tokens_full(&workspace, &uri);
-            if tokens.is_empty() {
-                return None;
-            }
-            let lsp_tokens: Vec<SemanticToken> = tokens
-                .into_iter()
-                .map(|t| SemanticToken {
-                    delta_line: t.delta_line,
-                    delta_start: t.delta_start,
-                    length: t.length,
-                    token_type: t.token_type,
-                    token_modifiers_bitset: t.token_modifiers,
-                })
-                .collect();
-            Some(SemanticTokensResult::Tokens(SemanticTokens {
-                result_id: None,
-                data: lsp_tokens,
-            }))
-        })
-        .await
-        .map_err(|error| internal_error(format!("semantic-tokens worker failed: {error}")))?;
+        let result = self
+            .offload_after_ready("semantic-tokens", move || {
+                let tokens =
+                    al_analysis::queries::semantic_tokens::semantic_tokens_full(&workspace, &uri);
+                if tokens.is_empty() {
+                    return None;
+                }
+                let lsp_tokens: Vec<SemanticToken> = tokens
+                    .into_iter()
+                    .map(|t| SemanticToken {
+                        delta_line: t.delta_line,
+                        delta_start: t.delta_start,
+                        length: t.length,
+                        token_type: t.token_type,
+                        token_modifiers_bitset: t.token_modifiers,
+                    })
+                    .collect();
+                Some(SemanticTokensResult::Tokens(SemanticTokens {
+                    result_id: None,
+                    data: lsp_tokens,
+                }))
+            })
+            .await?;
         let count = result
             .as_ref()
             .map(|r| match r {
@@ -2012,18 +2044,17 @@ impl LanguageServer for AlServer {
         &self,
         params: WorkspaceSymbolParams,
     ) -> Result<Option<Vec<SymbolInformation>>> {
-        let _generation = self.await_ready().await?;
         let start = std::time::Instant::now();
         // Up to 10 000 results from a workspace-wide scan: run it on the
         // blocking pool like `references`/`documentSymbol` already do, so a
         // broad query cannot stall the executor driving every other request.
         let workspace_handle = Arc::clone(&self.workspace);
         let query = params.query.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            workspace::handle_workspace_symbol(&workspace_handle, &query)
-        })
-        .await
-        .map_err(|error| internal_error(format!("workspace-symbol worker failed: {error}")))?;
+        let result = self
+            .offload_after_ready("workspace-symbol", move || {
+                workspace::handle_workspace_symbol(&workspace_handle, &query)
+            })
+            .await?;
         let elapsed = start.elapsed();
         let count = result.as_ref().map(|v| v.len()).unwrap_or(0);
         tracing::debug!(query = %params.query, count, elapsed_us = elapsed.as_micros() as u64, "workspace_symbol");
@@ -2106,18 +2137,15 @@ impl LanguageServer for AlServer {
         params: ExecuteCommandParams,
     ) -> Result<Option<serde_json::Value>> {
         tracing::info!(command = %params.command, "execute_command");
-        let mut generation = Some(self.await_ready().await?);
-        if matches!(
-            params.command.as_str(),
-            "al.downloadSymbols"
-                | "al.downloadSymbolsNuget"
-                | "al.downloadSymbolsServer"
-                | "al.reindex"
-        ) {
-            // These commands acquire their own read/write guards while staging
-            // and publishing a replacement generation.
-            drop(generation.take());
-        }
+        // Wait for a usable workspace, then release the generation read guard
+        // before running the command. `al.compile` spawns `dotnet alc` and
+        // `al.runTest` drives a whole test run; holding the guard across either
+        // queued `did_change`'s writer behind it, so the editor stopped
+        // accepting AL edits until the build finished. Every command clones
+        // the project state it needs (`commands::compile` takes root, package
+        // cache, packages and config up front) or takes its own guard while
+        // publishing a replacement generation.
+        drop(self.await_ready().await?);
 
         let start = std::time::Instant::now();
         let result = match params.command.as_str() {
@@ -2765,6 +2793,72 @@ mod workspace_init_state_tests {
             .await_semantic_workspace()
             .await
             .expect("semantic phase should resume after workspace readiness");
+    }
+}
+
+#[cfg(test)]
+mod generation_guard_tests {
+    use super::*;
+
+    /// A `references`-shaped request used to hold the generation read guard for
+    /// the whole blocking walk, so the next keystroke blocked in `did_change`'s
+    /// `generation_lock.write()` until the walk finished. The edit must land
+    /// while the slow request is still running.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_edit_lands_while_a_slow_request_is_in_flight() {
+        let (service, _socket) = LspService::new(AlServer::new);
+        let server = service.inner();
+        server
+            .workspace_init_state
+            .send_replace(WorkspaceInitState::Ready);
+
+        let uri = Url::parse("file:///proj/Foo.Codeunit.al").unwrap();
+        server
+            .workspace
+            .documents
+            .open(uri.clone(), "codeunit 50100 Foo\n{\n}\n".to_string())
+            .unwrap();
+
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        let slow = server.offload_after_ready("slow", move || {
+            blocked.recv().expect("the edit releases the slow worker");
+        });
+
+        let edit = async {
+            let params = DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: "codeunit 50100 Foo\n{\n    procedure X() begin end;\n}\n".to_string(),
+                }],
+            };
+            server.did_change(params).await;
+            release.send(()).expect("slow worker is still waiting");
+        };
+
+        let (slow_result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(slow, edit)
+        })
+        .await
+        .expect("did_change must not wait for the slow request");
+
+        assert_eq!(
+            server
+                .workspace
+                .documents
+                .get_text_and_client_version(&uri)
+                .expect("document stays open")
+                .1,
+            2,
+            "the edit must have been applied"
+        );
+        let error = slow_result
+            .expect_err("a result computed across the edit must not be returned as current");
+        assert_eq!(error.code, content_modified_error().code);
     }
 }
 
