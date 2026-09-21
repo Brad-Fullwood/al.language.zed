@@ -52,7 +52,7 @@ current code are tagged [STILL-OPEN].
   the data and that the bytes there are `PK\x01\x02`. Alternatively move the
   `archive.len() > MAX_ARCHIVE_ENTRIES` check inside the probe by using
   `ZipArchive::with_config`/a bounded reader so a probe cannot parse an unbounded directory.
-- status: open
+- status: fixed 8095dcd7
 
 ### [PERF] Every entry lookup inside a `.app` walks the archive with `by_index`
 - where: crates/al-symbols/src/app_reader.rs:296-328 (`find_file_in_archive`), called twice
