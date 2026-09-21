@@ -200,28 +200,28 @@ Files the first checklist does not list at all:
 - severity: medium
 - scenario: baseline `procedure Post(SalesHeader: Record "Sales Header")`, current `procedure Post(Header: Record "Sales Header")`. The parameter types and `var` modifiers match, so `parameter_contract_matches` finds the exact overload and `check_matching_signature` runs. Lines 585-599 then emit a `SignatureChanged` with `is_breaking: true`, which `upgrade.rs:102-108` turns into severity `error` with the hint "Update all callers of 'Post' to match the new signature". AL calls are positional only, so no caller needs to change. On any release where a developer tidies up parameter names, the breaking-change gate fails on a change that breaks nothing.
 - fix: either drop the parameter-name comparison or emit it with `is_breaking: false` so it lands as a warning.
-- status: open
+- status: fixed 70a60a8a
 
 ### [BUG] `is_breaking` is `true` at every construction site, so the whole warning path is dead
 - where: crates/al-analysis/src/queries/breaking_changes.rs:42-43 (declaration), every `BreakingChange` literal in the file, and crates/al-analysis/src/queries/upgrade.rs:107
 - severity: medium
 - scenario: the field's doc comment says "Whether this is definitely breaking (vs potentially non-breaking)", and `upgrade.rs:107` branches on it: `if change.is_breaking { "error" } else { "warning" }`. A grep across the workspace finds no `is_breaking: false` anywhere, so the `"warning"` arm cannot be reached and the field carries no information. Combined with the finding above, every detected change is reported at severity `error`, including the ones that do not break a caller.
 - fix: set `is_breaking: false` on the genuinely soft cases (parameter rename, and an `ObsoleteState` that only advanced to `Pending`), or delete the field and the dead branch.
-- status: open
+- status: fixed 70a60a8a
 
 ### [GAP] Table keys and page controls are never diffed
 - where: crates/al-analysis/src/queries/breaking_changes.rs:252-489 (`diff_object`)
 - severity: medium
 - scenario: `SymbolEntry` carries `keys` and `controls`, and `diff_object` reads neither (a grep for `.keys` and `controls` in the file hits only the test fixtures' `Vec::new()`). Baseline `table 50100 "Shipment Log" { keys { key(PK; "Entry No.") { Clustered = true } } }`, current changes the primary key to `key(PK; "Document No.", "Line No.")`. That invalidates every stored record's identity and breaks every `Get()` call in dependent apps, and `analyze_breaking_changes` returns nothing. The same holds for removing a named page control, which breaks any `pageextension` that does `addafter(ControlName)` or `modify(ControlName)`.
 - fix: diff `keys` by key name and field list, and `controls` by name, emitting new `BreakingChangeKind` variants.
-- status: open
+- status: fixed 70a60a8a
 
 ### [SIMPLIFY] A field type change is reported twice by `upgrade_report`
 - where: crates/al-analysis/src/queries/upgrade.rs:407-444 (`check_data_migration_needs`) duplicating crates/al-analysis/src/queries/breaking_changes.rs:403-414
 - severity: low
 - scenario: `field(5; Amount; Decimal)` becomes `field(5; Amount; Text[30])`. `diff_object` emits `FieldTypeChanged`, which `breaking_change_to_upgrade_issue` (upgrade.rs:144-150) maps to an `error` with the hint "Add upgrade code that preserves existing table data and update all field references." `check_data_migration_needs` then independently rebuilds the same name-keyed field maps, applies the same lowercased type comparison, and emits a second `error` saying "data migration required". One change, two errors, with near-identical advice.
 - fix: drop `check_data_migration_needs` and attach the `OnUpgradePerCompany` hint to the existing `FieldTypeChanged` arm.
-- status: open
+- status: fixed 70a60a8a
 
 ### [BUG] Object-level obsolescence is never detected, because AL expresses it as a property and the scan only reads attributes
 - where: crates/al-analysis/src/queries/obsolescence.rs:112-126 and 180-209 (`extract_obsolete_from_preceding_attr`)
@@ -305,7 +305,7 @@ Files the first checklist does not list at all:
 - severity: low
 - scenario: when `surface_key(current_entry)` is absent from `baseline_map`, `old_permissions` falls back to `&[]` (line 351-354), so `old_value` is 0 for every permission and `added == permission.value` is non-zero for all of them. Adding one `permissionset 50100 "My App Objects"` that grants RIMD on 200 tables yields 200 separate `NewPermission` warnings, all saying "Review the added privilege against least-privilege and AppSource policy." The signal that matters (a *new* permission set exists) is buried in 200 identical rows.
 - fix: when the permission set itself is new, emit a single issue naming the set and the number of grants, and keep the per-permission breakdown for sets that already existed.
-- status: open
+- status: fixed 70a60a8a
 
 ## Not covered by this pass
 
