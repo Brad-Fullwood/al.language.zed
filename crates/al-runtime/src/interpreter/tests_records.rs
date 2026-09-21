@@ -1816,3 +1816,98 @@ fn each_temporary_record_variable_has_its_own_rows() {
     );
     assert_eq!(ok(r), Value::Integer(211));
 }
+
+const STATE_ENUM: &str = r#"enum 50110 "My State"
+{
+    value(0; Open) { }
+    value(1; Released) { }
+}
+"#;
+
+/// A table with an Enum field and an Option field, neither with an InitValue.
+const TICKET_TABLE: &str = r#"table 50111 "Ticket"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Status; Enum "My State") { }
+        field(3; Priority; Option)
+        {
+            OptionMembers = Low,High;
+        }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+}
+"#;
+
+#[test]
+fn unassigned_enum_field_reads_as_its_ordinal_zero_member() {
+    // BC zero-initialises an Enum field, so a row inserted without assigning
+    // Status is Open, matches SetRange(Status, Status::Open), and compares
+    // equal to Status::Open.
+    let cu = r#"codeunit 50135 "Enum Zero Tests"
+{
+    procedure OpenRowsAndEquality(): Integer
+    var
+        Ticket: Record "Ticket";
+        Found: Integer;
+    begin
+        Ticket.Init();
+        Ticket."No." := 'A';
+        Ticket.Insert();
+        Ticket.Reset();
+        Ticket.SetRange(Status, "My State"::Open);
+        Found := Ticket.Count() * 10;
+        Ticket.Reset();
+        Ticket.FindFirst();
+        if Ticket.Status = "My State"::Open then
+            Found := Found + 1;
+        exit(Found);
+    end;
+}
+"#;
+    let r = run(
+        &[
+            ("/ws/MyState.al", STATE_ENUM),
+            ("/ws/Ticket.al", TICKET_TABLE),
+            ("/ws/EnumZero.al", cu),
+        ],
+        "Enum Zero Tests",
+        "OpenRowsAndEquality",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Integer(11));
+}
+
+#[test]
+fn unassigned_option_field_reads_as_its_first_member() {
+    let cu = r#"codeunit 50136 "Option Zero Tests"
+{
+    procedure PriorityOrdinal(): Integer
+    var
+        Ticket: Record "Ticket";
+    begin
+        Ticket.Init();
+        Ticket."No." := 'A';
+        Ticket.Insert();
+        Ticket.Reset();
+        Ticket.FindFirst();
+        exit(Ticket.Priority + 0);
+    end;
+}
+"#;
+    let r = run(
+        &[
+            ("/ws/MyState.al", STATE_ENUM),
+            ("/ws/Ticket.al", TICKET_TABLE),
+            ("/ws/OptionZero.al", cu),
+        ],
+        "Option Zero Tests",
+        "PriorityOrdinal",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Integer(0));
+}

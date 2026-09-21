@@ -136,6 +136,15 @@ fn zero_like(bound: &Value) -> Option<Value> {
         Value::DateTime(_) => Value::DateTime(0),
         Value::Duration(_) => Value::Duration(0),
         Value::Char(_) => Value::Char('\0'),
+        // An option or enum cell holds an ordinal, and BC zero-initialises it,
+        // so an unset cell is the bound's own type at ordinal 0.
+        Value::Option {
+            type_name, member, ..
+        } => Value::Option {
+            type_name: type_name.clone(),
+            member: member.clone(),
+            ordinal: 0,
+        },
         _ => return None,
     })
 }

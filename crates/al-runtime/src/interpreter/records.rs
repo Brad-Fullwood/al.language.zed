@@ -298,12 +298,17 @@ fn load_table_meta(
         ));
     }
     let bytes = text.as_bytes();
-    parse_table_meta(tree.root_node(), bytes, want)
+    parse_table_meta(tree.root_node(), bytes, want, source)
         .map_err(|reason| format!("invalid metadata for record table '{want}': {reason}"))
 }
 
 /// Parse a table `object_declaration` (matching `want`) into [`TableMeta`].
-fn parse_table_meta(root: Node<'_>, source: &[u8], want: &str) -> Result<TableMeta, String> {
+fn parse_table_meta(
+    root: Node<'_>,
+    source: &[u8],
+    want: &str,
+    workspace: &dyn al_types::ProcedureSource,
+) -> Result<TableMeta, String> {
     let obj = find_table_object(root, source, want)
         .ok_or_else(|| "matching table object declaration was not found".to_string())?;
 
@@ -335,6 +340,7 @@ fn parse_table_meta(root: Node<'_>, source: &[u8], want: &str) -> Result<TableMe
     let mut field_numbers = std::collections::HashSet::new();
     for fdef in sections_with_keyword(fields_body, "field", source) {
         let (no, name, type_text, calc) = parse_field_def(fdef, source)?;
+        let option_members = parse_option_members(fdef, source);
         if no <= 0 {
             return Err(format!("field '{name}' has non-positive number {no}"));
         }
@@ -353,6 +359,10 @@ fn parse_table_meta(root: Node<'_>, source: &[u8], want: &str) -> Result<TableMe
                 .unwrap_or(&type_text)
                 .trim();
             if let Some(default) = Value::default_for(base) {
+                field_defaults.insert(no, default);
+            } else if let Some(default) =
+                option_field_default(base, &type_text, option_members.as_deref(), workspace)
+            {
                 field_defaults.insert(no, default);
             }
         }
@@ -613,6 +623,89 @@ fn parse_field_calcformula(
     calcformula_parser::parse(&formula_text)
         .map(Some)
         .map_err(|error| format!("FlowField '{field_name}' CalcFormula is invalid: {error}"))
+}
+
+/// The `OptionMembers` property of a field, verbatim (`Low,High` or
+/// `" ",Low,High`). `None` when the field does not declare one.
+fn parse_option_members(section: Node<'_>, source: &[u8]) -> Option<String> {
+    let body = section.child_by_field_name("body")?;
+    let mut cursor = body.walk();
+    let found = body
+        .named_children(&mut cursor)
+        .filter(|child| child.kind() == "property_assignment")
+        .find(|child| {
+            child
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .is_some_and(|n| n.trim().eq_ignore_ascii_case("OptionMembers"))
+        });
+    found.and_then(|prop| property_value_text(prop, source))
+}
+
+/// The typed zero of an `Option` or `Enum "X"` field: ordinal 0, named after
+/// whichever member carries that ordinal.
+///
+/// BC zero-initialises every field, and an option or enum field holds an
+/// integer ordinal, so an unassigned one reads as its ordinal-0 member rather
+/// than as an absent value. An `Option` field names its members inline; an
+/// `Enum "X"` field takes them from the workspace enum object, and when that
+/// object is not in the workspace the member name is left empty so the ordinal
+/// still compares.
+fn option_field_default(
+    base_type: &str,
+    type_text: &str,
+    option_members: Option<&str>,
+    workspace: &dyn al_types::ProcedureSource,
+) -> Option<Value> {
+    if base_type.eq_ignore_ascii_case("option") {
+        let member = option_members
+            .and_then(|members| members.split(',').next())
+            .map(|m| m.trim().trim_matches('"').to_string())
+            .unwrap_or_default();
+        return Some(Value::Option {
+            type_name: String::new(),
+            member,
+            ordinal: 0,
+        });
+    }
+    if !base_type.eq_ignore_ascii_case("enum") {
+        return None;
+    }
+    let type_name = unquote_subtype(&type_text[base_type.len()..]);
+    Some(Value::Option {
+        member: enum_member_with_ordinal_zero(workspace, &type_name).unwrap_or_default(),
+        type_name,
+        ordinal: 0,
+    })
+}
+
+/// The name of the `value(0; …)` member of a workspace enum object.
+fn enum_member_with_ordinal_zero(
+    workspace: &dyn al_types::ProcedureSource,
+    type_name: &str,
+) -> Option<String> {
+    let path = workspace.find_by_object_name(type_name)?;
+    let (text, tree) = workspace.get_cached_parse(&path)?;
+    let bytes = text.as_bytes();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "enum_value_declaration" {
+            let ordinal = node
+                .child_by_field_name("id")
+                .and_then(|id| id.utf8_text(bytes).ok())
+                .and_then(|id| id.trim().parse::<i64>().ok());
+            if ordinal == Some(0) {
+                return node
+                    .child_by_field_name("name")
+                    .and_then(|name| name.utf8_text(bytes).ok())
+                    .map(|name| name.trim().trim_matches('"').to_string());
+            }
+            continue;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+    None
 }
 
 /// Reconstruct the full text of a `property_assignment`'s value. The grammar
