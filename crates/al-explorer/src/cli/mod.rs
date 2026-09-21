@@ -181,6 +181,10 @@ pub fn run(cli: Cli) -> ExitCode {
             role_id,
         } => lsp::cmd_permissions(&format, &name, id, &role_id, cli.json),
         Commands::Package => build::cmd_package(cli.json),
+        Commands::Publish {
+            config,
+            incremental,
+        } => build::cmd_publish(config.as_deref(), incremental, cli.json),
         Commands::New {
             dir,
             name,

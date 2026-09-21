@@ -89,6 +89,84 @@ pub fn cmd_compile(project_dir: Option<&str>, json: bool) -> ExitCode {
     }
 }
 
+/// Publish can compile a whole project and then upload it, so it needs both
+/// the build deadline and the upload's.
+const PUBLISH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1200);
+
+/// Compile the project and publish the `.app` to the BC dev API.
+///
+/// The daemon's `publish` method is the only publish path: it calls
+/// `al_publish::publish`, which resolves the launch configuration, compiles,
+/// and uploads (or RAD-deploys with `--incremental`).
+pub fn cmd_publish(config: Option<&str>, incremental: bool, json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(client) => client,
+        Err(error) => return report_error(&error, json),
+    };
+    client.set_request_timeout(PUBLISH_TIMEOUT);
+    let mut params = serde_json::json!({ "incremental": incremental });
+    if let Some(config) = config {
+        params["config"] = serde_json::json!(config);
+    }
+    match request_checked(&mut client, "publish", Some(params)) {
+        Ok(result) => {
+            let success = result
+                .get("success")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            if json {
+                print_json(&result);
+            } else {
+                let server = result.get("server").and_then(|v| v.as_str()).unwrap_or("?");
+                let method = result.get("method").and_then(|v| v.as_str()).unwrap_or("?");
+                println!("Publish to {server} ({method}):");
+                for step in result
+                    .get("steps")
+                    .and_then(|value| value.as_array())
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[])
+                {
+                    let phase = step.get("phase").and_then(|v| v.as_str()).unwrap_or("?");
+                    let ok = step
+                        .get("success")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let message = step.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                    let mark = if ok { "[OK]" } else { "[!!]" };
+                    println!("  {mark} {phase}: {message}");
+                }
+                for diagnostic in result
+                    .get("diagnostics")
+                    .and_then(|value| value.as_array())
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[])
+                {
+                    let file = diagnostic
+                        .get("file")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let line = diagnostic.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let code = diagnostic
+                        .get("code")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let message = diagnostic
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    eprintln!("{file}:{line}: {code}: {message}");
+                }
+            }
+            if success {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(error) => report_error(&error, json),
+    }
+}
+
 pub fn cmd_package(json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,

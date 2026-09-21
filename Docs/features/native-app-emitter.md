@@ -174,12 +174,21 @@ only total wall-clock time, so its total is never presented as a phase-equivalen
 
 `publish.rs` resolves a `launch.json`/`.zed/debug.json` config, compiles (native by default), and
 uploads the `.app` to the BC dev API — optionally via **RAD** incremental deploy when `app.json` has
-an id. Each phase (`PublishPhase::Compile`/`Upload`/`Rad`) is tracked. `launch.rs` parses the debug
-configs and builds dev-endpoint URLs for on-prem vs cloud with tenant validation, sent as the BC
-dev API's documented `?tenant=` query parameter. `bc_client.rs` is the hardened REST client (size
-caps: 500 MB upload / 16 MB JSON / 500 MB binary; error-body redaction of bearer
-tokens/passwords/secrets, case-insensitively). DAP deploy reuses the same package-selection logic so
-launch never publishes a stale `.app`.
+an id, which must be a GUID. Each phase (`PublishPhase::Compile`/`Upload`/`Rad`) is tracked.
+`launch.rs` parses the debug configs and builds dev-endpoint URLs for on-prem vs cloud with tenant
+validation, sent as the BC dev API's documented `?tenant=` query parameter. `bc_client.rs` is the
+hardened REST client (size caps: 500 MB upload / 16 MB JSON / 500 MB binary; error-body redaction
+of bearer tokens, Basic credentials, passwords and secrets, case-insensitively).
+
+Reachable as `al-explorer publish [--config <name>] [--incremental]`, which calls the daemon's
+`publish` method; that method calls `al_publish::publish` and adds no pipeline of its own.
+
+Native DAP launch does **not** go through `al-publish`. `al-dap`'s `bc_debug/rest.rs` posts a
+multipart form to `{base}/dev/apps` with `SchemaUpdateMode` and `DependencyPublishingOption`, using
+the OAuth token from its own sign-in, while `al-publish` posts an octet-stream body to
+`{base}/dev/extensions` with credentials from `BC_ACCESS_TOKEN` or `BC_USERNAME`/`BC_PASSWORD`.
+Those are two different BC dev endpoints, so collapsing them needs a live server to settle which
+one each BC version accepts.
 
 `bc_client.rs` implements only the two BC dev endpoints publish actually uses — `POST
 /dev/extensions` (full upload) and `PATCH /dev/applications/{appId}` (RAD delta deploy). It does

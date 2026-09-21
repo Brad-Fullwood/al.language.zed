@@ -353,6 +353,19 @@ Examples:
     },
     /// Compile AL project into .app file
     Package,
+    /// Compile the project and publish the .app to the Business Central dev API
+    ///
+    /// Reads the server from `.vscode/launch.json` or `.zed/debug.json`.
+    /// Credentials come from `BC_ACCESS_TOKEN` (AAD) or
+    /// `BC_USERNAME`/`BC_PASSWORD` (UserPassword, Windows).
+    Publish {
+        /// Launch configuration name (the first AL configuration if omitted)
+        #[arg(long)]
+        config: Option<String>,
+        /// Deploy incrementally through the RAD API instead of a full upload
+        #[arg(long)]
+        incremental: bool,
+    },
     /// Create a new AL project
     New {
         /// Directory for the new project
