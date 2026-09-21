@@ -46,19 +46,23 @@ fn builtin_for<'a>(
     cache: &'a al_semantic::SemanticCache,
     receiver: &ResolvedType,
 ) -> Option<&'a al_semantic::BuiltinType> {
-    let member_class = match receiver.type_name.to_ascii_lowercase().as_str() {
+    // `Text[100]` names the same type as `Text`; the catalog is keyed by the
+    // bare name, so the length qualifier is dropped for the lookup while the
+    // declared spelling stays on the ResolvedType for display.
+    let type_name = strip_length(&receiver.type_name);
+    let member_class = match type_name.to_ascii_lowercase().as_str() {
         "record" => Some("TableClass".to_string()),
         "codeunit" if receiver.type_subtype.is_some() => Some("CodeunitInstanceClass".to_string()),
         "report" if receiver.type_subtype.is_some() => Some("ReportInstanceClass".to_string()),
         "xmlport" if receiver.type_subtype.is_some() => Some("XmlportInstanceClass".to_string()),
         "query" if receiver.type_subtype.is_some() => Some("QueryInstanceClass".to_string()),
-        _ => Some(format!("{}Class", receiver.type_name)),
+        _ => Some(format!("{type_name}Class")),
     };
 
     member_class
         .as_deref()
         .and_then(|name| cache.get_type(name))
-        .or_else(|| cache.get_type(&receiver.type_name))
+        .or_else(|| cache.get_type(type_name))
         .or_else(|| {
             receiver
                 .type_subtype
@@ -99,6 +103,14 @@ pub(crate) struct ResolvedMember {
 }
 
 pub(crate) fn access_path_at(tree: &Tree, text: &str, position: Position) -> Option<AccessPath> {
+    // The text shortcut below works on the raw line and knows nothing of
+    // comments or literals, so `// Update Cust.Name before posting` and
+    // `Error('Cust.Name is required')` both produced a member access and a
+    // tooltip. The tree branch cannot fire inside either, so only the shortcut
+    // needs the guard.
+    if position_is_in_comment_or_literal(tree, text, position) {
+        return None;
+    }
     if let Some(path) = access_path_from_text(text, position) {
         tracing::debug!(
             receiver = %path.receiver,
@@ -590,7 +602,9 @@ pub(crate) fn resolve_member(
         );
 
         if let Some(subtype) = receiver.type_subtype.as_deref() {
-            if let Some(path) = resolve_object_path(workspace, Some(uri), subtype) {
+            if let Some(path) =
+                resolve_object_path(workspace, Some(uri), subtype, Some(&receiver.type_name))
+            {
                 if let Some(member) = workspace_member(workspace, &path, target_name) {
                     tracing::debug!(
                         member = %target_name,
@@ -969,7 +983,7 @@ pub(crate) fn resolve_workspace_object_definition(
     workspace: &Workspace,
     name: &str,
 ) -> Option<(Url, Range)> {
-    let path = resolve_object_path(workspace, None, name)?;
+    let path = resolve_object_path(workspace, None, name, None)?;
     let (file_source, tree) = workspace.file_index.get_cached_parse(&path)?;
     let obj = al_syntax::find_object_declaration(&tree, &file_source)?;
     let uri = Url::from_file_path(&path).ok()?;
@@ -1119,7 +1133,8 @@ pub(crate) fn completion_items_for_receiver(
     let mut builtin_methods = 0usize;
 
     if let Some(subtype) = receiver.type_subtype.as_deref() {
-        if let Some(path) = resolve_object_path(workspace, None, subtype) {
+        if let Some(path) = resolve_object_path(workspace, None, subtype, Some(&receiver.type_name))
+        {
             if let Some((file_text, tree)) = workspace.file_index.get_cached_parse(&path) {
                 let resolver = al_syntax::TypeResolver::new(&tree, &file_text);
                 for var in resolver.variables_at(Position::default().into()) {
@@ -1387,19 +1402,65 @@ fn workspace_object_type(workspace: &Workspace, path: &Path) -> Option<ResolvedT
     })
 }
 
+/// Whether `position` sits inside a comment or a string literal.
+fn position_is_in_comment_or_literal(tree: &Tree, text: &str, position: Position) -> bool {
+    al_syntax::find_node_at_position(tree, text, position.into()).is_some_and(|node| {
+        matches!(
+            node.kind(),
+            "comment" | "string" | "verbatim_string" | "inactive_code"
+        )
+    })
+}
+
+/// The file declaring the object `name`, preferring one whose AL type matches
+/// `al_type` (`Record`, `Page`, `Codeunit`, …).
+///
+/// Without the type, `file_index.object_path` returns whichever file was
+/// indexed last, and re-indexing a file moves it to the back of the owners
+/// list. A project with `table 50100 "Sales Setup"` and `page 50100 "Sales
+/// Setup"`, which is the usual AL convention for a setup table and its card,
+/// therefore resolved `Setup."Posting No. Series"` to the page as soon as the
+/// table was edited, and offered the page's globals in place of the table's
+/// fields.
 fn resolve_object_path(
     workspace: &Workspace,
     current_uri: Option<&Url>,
     name: &str,
+    al_type: Option<&str>,
 ) -> Option<PathBuf> {
+    let matches_type = |path: &Path| {
+        let Some(al_type) = al_type else {
+            return true;
+        };
+        workspace
+            .file_index
+            .object_info
+            .get(path)
+            .is_some_and(|info| {
+                al_syntax::type_resolver::object_kind_to_al_type(&info.kind)
+                    .eq_ignore_ascii_case(al_type)
+            })
+    };
+
     if let Some(uri) = current_uri {
         if let Ok(current_path) = uri.to_file_path() {
             if workspace_object_name(workspace, &current_path)
                 .as_deref()
                 .is_some_and(|object_name| object_name.eq_ignore_ascii_case(name))
+                && matches_type(&current_path)
             {
                 tracing::debug!(name = %name, source = "current_file", "resolve_object_path: matched current file");
                 return Some(current_path);
+            }
+        }
+    }
+
+    if al_type.is_some() {
+        for entry in workspace.file_index.object_info.iter() {
+            if entry.value().name.eq_ignore_ascii_case(name) && matches_type(entry.key()) {
+                let path = entry.key().clone();
+                tracing::debug!(name = %name, al_type = ?al_type, path = %path.display(), "resolve_object_path: matched on AL type");
+                return Some(path);
             }
         }
     }
@@ -1701,6 +1762,12 @@ fn split_last<'a>(value: &'a str, needle: &str) -> Option<(&'a str, &'a str)> {
 
 fn parse_type_expr(value: &str) -> ResolvedType {
     let trimmed = value.trim();
+    // `array[10] of Text` names an array of `Text`; splitting on the first
+    // space instead produced `array[10]` with subtype `of Text`, which no
+    // builtin lookup matches.
+    if let Some((_, element)) = split_array_element(trimmed) {
+        return parse_type_expr(element);
+    }
     if let Some((name, subtype)) = trimmed.split_once(' ') {
         let clean_subtype = subtype.trim().trim_matches('"').trim_matches('\'');
         if !clean_subtype.is_empty() {
@@ -1713,6 +1780,35 @@ fn parse_type_expr(value: &str) -> ResolvedType {
     ResolvedType {
         type_name: trimmed.trim_matches('"').to_string(),
         type_subtype: None,
+    }
+}
+
+/// `array[10] of Text` split into its dimensions and its element type.
+fn split_array_element(value: &str) -> Option<(&str, &str)> {
+    let lower = value.to_ascii_lowercase();
+    if !lower.starts_with("array[") {
+        return None;
+    }
+    let close = value.find(']')?;
+    let after = value.get(close + 1..)?.trim_start();
+    let element = after.strip_prefix("of ").or_else(|| {
+        after
+            .get(..3)
+            .filter(|prefix| prefix.eq_ignore_ascii_case("of "))
+            .and_then(|_| after.get(3..))
+    })?;
+    Some((&value[..close + 1], element.trim()))
+}
+
+/// `Text[100]` -> `Text`, matching `al_syntax::parse_type_reference`.
+///
+/// A length-qualified type kept its `[100]`, so `builtin_for` looked up
+/// `Text[100]Class`, missed, and `Rec.Description.` offered no Text methods at
+/// all while the same variable declared locally worked.
+fn strip_length(name: &str) -> &str {
+    match name.split_once('[') {
+        Some((base, rest)) if rest.ends_with(']') && !base.is_empty() => base,
+        _ => name,
     }
 }
 
@@ -1751,9 +1847,21 @@ pub(crate) fn format_builtin_signature(method: &al_semantic::BuiltinMethod) -> S
     }
 }
 
+/// The return type in a procedure detail string such as
+/// `"(var Header: Record; Preview: Boolean): Boolean"`, or `None` when the
+/// procedure returns nothing.
+///
+/// Splitting on the last `": "` anywhere found the separator inside the
+/// *parameter list* of a void procedure: `(var Cust: Record Customer)` yielded
+/// `Record Customer)`, which made `Helper.GetCustomer.` offer the whole
+/// TableClass method list and put a trailing `)` on every field lookup. The
+/// return type is what follows the `": "` after the parameter list's closing
+/// paren.
 fn extract_return_type(detail: &str) -> Option<&str> {
-    let (_, ret) = detail.rsplit_once(": ")?;
-    Some(ret)
+    let close = detail.rfind(')')?;
+    let after = detail.get(close + 1..)?;
+    let ret = after.trim_start().strip_prefix(':')?.trim();
+    (!ret.is_empty()).then_some(ret)
 }
 
 pub(crate) fn extract_doc_comment(text: &str, line_idx: usize) -> Option<String> {
@@ -2418,11 +2526,68 @@ mod tests {
         assert_eq!(extract_return_type("(x: Code[20]): Text"), Some("Text"));
     }
 
+    /// `Text[100]` and `array[10] of Text` are the spellings a table field
+    /// uses. Both used to survive into `type_name`, so `builtin_for` looked up
+    /// `Text[100]Class`, missed, and the member list came back empty.
     #[test]
-    fn extract_return_type_splits_on_last_colon_space_even_in_params() {
-        // The function rsplits on the LAST ": ", which for a no-return signature
-        // is the parameter's type — documenting the (lossy) real behavior.
-        assert_eq!(extract_return_type("(a: Integer)"), Some("Integer)"));
+    fn parse_type_expr_handles_a_length_and_an_array() {
+        let text = parse_type_expr("Text[100]");
+        assert_eq!(text.type_name, "Text[100]");
+        assert_eq!(strip_length(&text.type_name), "Text");
+        assert_eq!(text.type_subtype, None);
+
+        let code = parse_type_expr("Code[20]");
+        assert_eq!(strip_length(&code.type_name), "Code");
+
+        let array = parse_type_expr("array[10] of Text");
+        assert_eq!(array.type_name, "Text");
+        assert_eq!(array.type_subtype, None);
+
+        let records = parse_type_expr("array[5] of Record \"Sales Header\"");
+        assert_eq!(records.type_name, "Record");
+        assert_eq!(records.type_subtype.as_deref(), Some("Sales Header"));
+    }
+
+    /// Hovering an identifier inside a comment or a string literal used to
+    /// reach the text shortcut, which knows nothing of either, and produced a
+    /// member access and a tooltip.
+    #[test]
+    fn access_path_ignores_comments_and_string_literals() {
+        let source = r#"codeunit 50100 "Test"
+{
+    procedure Run()
+    var
+        Cust: Record Customer;
+    begin
+        // Update Cust.Name before posting
+        Error('Cust.Name is required');
+        Cust.Name := 'X';
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let parsed = parser.parse(source);
+
+        let at = |line: u32, character: u32| {
+            access_path_at(&parsed.tree, source, Position { line, character })
+        };
+        assert!(at(6, 19).is_none(), "comment produced an access path");
+        assert!(
+            at(7, 20).is_none(),
+            "string literal produced an access path"
+        );
+        let real = at(8, 14).expect("the real member access still resolves");
+        assert_eq!(real.receiver, "Cust");
+        assert_eq!(real.member, "Name");
+    }
+
+    /// A void procedure has no return type. Finding the `": "` inside its
+    /// parameter list reported one, and `Helper.GetCustomer.` then offered the
+    /// whole TableClass method list.
+    #[test]
+    fn extract_return_type_is_none_for_a_void_procedure() {
+        assert_eq!(extract_return_type("(a: Integer)"), None);
+        assert_eq!(extract_return_type("(var Cust: Record Customer)"), None);
+        assert_eq!(extract_return_type("()"), None);
     }
 
     #[test]
@@ -2715,6 +2880,41 @@ mod tests {
             Position::default()
         )
         .is_none());
+    }
+
+    /// A setup table and its card share a name, which is the usual AL
+    /// convention. `object_path` returns whichever file was indexed last, so
+    /// editing the table used to make `Setup.Field` resolve to the page.
+    #[test]
+    fn resolve_object_path_prefers_the_receiver_s_own_al_type() {
+        let ws = Workspace::new();
+        let table_path = std::path::PathBuf::from("/proj/Tab50100.al");
+        let page_path = std::path::PathBuf::from("/proj/Pag50100.al");
+        ws.file_index.add_file(
+            table_path.clone(),
+            "table 50100 \"Sales Setup\"\n{\n    fields\n    {\n        field(1; \"Posting No. Series\"; Code[20]) { }\n    }\n}"
+                .to_string(),
+        );
+        ws.file_index.add_file(
+            page_path.clone(),
+            "page 50100 \"Sales Setup\"\n{\n    SourceTable = \"Sales Setup\";\n}".to_string(),
+        );
+        // Re-index the table: it moves to the back of the owners list, which is
+        // exactly what used to flip the result.
+        ws.file_index.add_file(
+            table_path.clone(),
+            "table 50100 \"Sales Setup\"\n{\n    fields\n    {\n        field(1; \"Posting No. Series\"; Code[20]) { }\n    }\n}"
+                .to_string(),
+        );
+
+        assert_eq!(
+            resolve_object_path(&ws, None, "Sales Setup", Some("Record")),
+            Some(table_path)
+        );
+        assert_eq!(
+            resolve_object_path(&ws, None, "Sales Setup", Some("Page")),
+            Some(page_path)
+        );
     }
 
     #[test]
