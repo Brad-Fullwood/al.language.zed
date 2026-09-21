@@ -87,14 +87,14 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - severity: medium
 - scenario: `find_member_line_in_file` advances its scan with `start = abs + 1`, where `abs` is a byte offset into `line_lower`. When the searched name starts with a multi-byte character the next byte is a UTF-8 continuation byte, and the next iteration's `line_lower[start..]` panics with "byte index N is not a char boundary". Concrete input: a table with `field(1; "Ärsredovisning"; Text[30])` and a source line such as `xÄrsredovisning := 1;` (any line where the name appears preceded by an identifier byte, so the whole-word check rejects the first hit and the loop continues). The user presses Enter on that member in the object browser and the TUI dies. Quoted non-ASCII identifiers are ordinary in Nordic and German BC code.
 - fix: advance by the matched character's width, e.g. `start = abs + line_lower[abs..].chars().next().map_or(1, char::len_utf8);`, and add a unit test with a non-ASCII member name preceded by an identifier character.
-- status: open
+- status: fixed ace62d9c
 
 ### [BUG] the TUI panic hook leaves mouse capture enabled
 - where: crates/al-explorer/src/tui.rs:44-49
 - severity: low
 - scenario: `run_tui` enables mouse capture at line 53 and disables it on the normal exit path at line 69. The panic hook disables raw mode and leaves the alternate screen but never sends `DisableMouseCapture`. After any TUI panic (see the finding above) the terminal keeps SGR mouse tracking on, so the user's shell prints escape sequences on every mouse move until they run `reset`. The same gap applies if `execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?` partially succeeds and then the `Terminal::new` at line 55 fails: that `?` returns with raw mode and mouse capture still on.
 - fix: add `DisableMouseCapture` to the panic hook's `execute!` list, and move the teardown into a guard type whose `Drop` runs on every exit path.
-- status: open
+- status: fixed ace62d9c
 
 ### [BUG] one non-UTF-8 `.al` file aborts the whole native build with an infrastructure error
 - where: crates/al-emit/src/project.rs:405-406
@@ -179,21 +179,21 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - severity: high
 - scenario: the daemon returns a `testResult` object on every capture (build_dispatch/tests_dispatch.rs:2175, and it is a required field in the response contract at response_contract.rs:360). `cmd_test_snapshot` never reads it: it prints `[PASS] Captured N sample(s) to …` and returns `ExitCode::SUCCESS` whatever the test did. `al test-snapshot capture 50100 MyTests TestFoo --bc-version 26.0 --breakpoint src/X.al:20 --output snap/base.snap.json` against an instance where `TestFoo` fails records a baseline snapshot from a red test and reports success, so every later `validate`/`replay` compares against garbage.
 - fix: read `result["testResult"]["failed"]` (the field is `TestCodeunitResult.failed`, al-types/src/test_result.rs:35) and return `ExitCode::FAILURE` with a `[FAIL]` label when it is non-zero.
-- status: open
+- status: fixed ace62d9c
 
 ### [BUG] `rename` rewrites source files non-atomically and leaves the workspace half-renamed
 - where: crates/al-explorer/src/cli/commands/lsp/language.rs:643-647
 - severity: high
 - scenario: `apply_workspace_edit` writes each file with `std::fs::write`, which truncates then writes, and the per-file loop propagates the first failure with `?`. `al rename src/A.al 10 5 NewName` touching five files where the third is read-only (or on a full disk) leaves files one and two already rewritten, exits 1, and gives the user a workspace where the old and new names both exist. A crash mid-write truncates a source file outright. The same crate already has the correct pattern: `cmd_pack_native` uses `NamedTempFile` + `persist` (commands/build.rs:209-215).
 - fix: stage every file to a `NamedTempFile` in its own directory first, then `persist` them all, so a failure leaves nothing changed.
-- status: open
+- status: fixed ace62d9c
 
 ### [BUG] `test-mutate` panics on a project containing a non-ASCII file name
 - where: crates/al-explorer/src/cli/commands/lsp/refactor.rs:484
 - severity: medium
 - scenario: the human-readable formatter prints the variant id with `&id[..id.len().min(8)]`, a byte slice. `mutate.rs:523-540` builds the id as `"{kind}:{file_name}:{line}:{byte_start}:{mutated}"` and sanitizes only the `mutated` component, so the file name reaches the id verbatim. For a file `Kundæ.al` with kind `cb`, the id starts `cb:Kundæ…` where `æ` occupies bytes 7 and 8, so printing any surviving mutant panics with "byte index 8 is not a char boundary". Only the non-`--json` path is affected, which is the interactive one.
 - fix: `id.chars().take(8).collect::<String>()` instead of the byte slice.
-- status: open
+- status: fixed ace62d9c
 
 ### [BUG] four commands exit 0 while reporting a failed gate
 - where: crates/al-explorer/src/cli/commands/insight.rs:112-119 and 180-184; lsp/env.rs:206-218; lsp/project.rs:259-304; commands/build.rs:435-451
