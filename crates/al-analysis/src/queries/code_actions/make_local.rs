@@ -52,6 +52,55 @@ fn external_caller_exists(workspace: &Workspace, current_uri: &Url, proc_name: &
     false
 }
 
+/// The declaration's member modifiers and its `procedure`/`function` keyword.
+///
+/// The grammar puts `repeat($.attribute)` inside `procedure_declaration`, so
+/// the node starts at the first attribute, which may sit lines above the
+/// signature and may itself contain the word "procedure" — an event name such
+/// as `'OnAfterPostProcedure'`. Reading the keyword node instead of searching
+/// the declaration's first line for a substring is the only way to get the
+/// span that actually holds the keyword.
+///
+/// `None` for an `event procedure` declaration: `local` cannot be spliced in
+/// front of `event` and this action has no rule for where it would go.
+fn signature_keywords(
+    declaration: tree_sitter::Node<'_>,
+) -> Option<(
+    Vec<(&'static str, tree_sitter::Node<'_>)>,
+    tree_sitter::Node<'_>,
+)> {
+    let mut inner = declaration;
+    let mut cursor = declaration.walk();
+    if let Some(event) = declaration
+        .children(&mut cursor)
+        .find(|child| child.kind() == "event_procedure_declaration")
+    {
+        inner = event;
+    }
+
+    let mut modifiers = Vec::new();
+    let mut cursor = inner.walk();
+    for child in inner.children(&mut cursor) {
+        let kind = match child.kind() {
+            "member_modifier" => child.child(0).map_or("member_modifier", |k| k.kind()),
+            other => other,
+        };
+        match kind {
+            "kw_local"
+            | "kw_internal"
+            | "kw_protected"
+            | "kw_withevents"
+            | "kw_runonclient"
+            | "kw_securityfiltering"
+            | "kw_suppressdispose" => modifiers.push((kind, child)),
+            "kw_event" => return None,
+            "kw_procedure" | "kw_function" => return Some((modifiers, child)),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Make method local — offer to add `local` keyword when procedure has no external callers.
 pub(super) fn source_action_make_local(
     workspace: &Workspace,
@@ -79,28 +128,16 @@ pub(super) fn source_action_make_local(
         node = node.parent()?;
     }
 
-    let proc_line = node.start_position().row;
-    let line_text = text.lines().nth(proc_line)?;
-    let lower = line_text.to_ascii_lowercase();
-
-    // Only the modifiers that precede the `procedure` keyword decide whether
-    // the action applies. A plain `line.contains("local ")` also matched a
-    // trailing comment (`procedure Foo() // local helper`) and, worse, treated
-    // `internal procedure` as "not local" and emitted the invalid modifier
-    // combination `internal local procedure`.
-    let declaration_col = node.start_position().column.min(lower.len());
-    let procedure_offset = lower[declaration_col..].find("procedure")? + declaration_col;
-    let modifiers = &lower[declaration_col..procedure_offset];
-    if modifiers.split_whitespace().any(|word| word == "local") {
+    let (modifiers, keyword) = signature_keywords(node)?;
+    if modifiers.iter().any(|(kind, _)| *kind == "kw_local") {
         return None;
     }
     // `internal`/`protected` are access modifiers that cannot coexist with
     // `local`; replace them rather than prepending.
     let replace_from = modifiers
-        .split_whitespace()
-        .find(|word| matches!(*word, "internal" | "protected"))
-        .and_then(|word| modifiers.find(word).map(|offset| declaration_col + offset))
-        .unwrap_or(procedure_offset);
+        .iter()
+        .find(|(kind, _)| matches!(*kind, "kw_internal" | "kw_protected"))
+        .map_or(keyword, |(_, node)| *node);
 
     // Conservatively suppress the action on any same-name call in another file.
     let proc_name = node
@@ -111,25 +148,29 @@ pub(super) fn source_action_make_local(
         return None;
     }
 
-    // Byte offsets above; LSP `Position.character` is a UTF-16 code unit count.
-    // Convert before using, otherwise a multi-byte character earlier on the
-    // line shifts the edit to the wrong column.
-    let proc_end_col_bytes = procedure_offset + "procedure".len();
-    let proc_col_utf16 = al_syntax::byte_col_to_utf16_col(line_text, replace_from);
-    let proc_end_col_utf16 = al_syntax::byte_col_to_utf16_col(line_text, proc_end_col_bytes);
+    // Tree-sitter columns are byte offsets; LSP `Position.character` is a
+    // UTF-16 code unit count. Convert before using, otherwise a multi-byte
+    // character earlier on the line shifts the edit to the wrong column.
+    let start_point = replace_from.start_position();
+    let end_point = keyword.end_position();
+    let start_line_text = text.lines().nth(start_point.row)?;
+    let end_line_text = text.lines().nth(end_point.row)?;
+    // `function` is a legacy spelling the grammar still accepts; echo whatever
+    // the source used instead of rewriting it to `procedure`.
+    let keyword_text = keyword.utf8_text(text.as_bytes()).ok()?;
 
     let edit = TextEdit {
         range: Range {
             start: super::Position {
-                line: proc_line as u32,
-                character: proc_col_utf16,
+                line: start_point.row as u32,
+                character: al_syntax::byte_col_to_utf16_col(start_line_text, start_point.column),
             },
             end: super::Position {
-                line: proc_line as u32,
-                character: proc_end_col_utf16,
+                line: end_point.row as u32,
+                character: al_syntax::byte_col_to_utf16_col(end_line_text, end_point.column),
             },
         },
-        new_text: "local procedure".to_string(),
+        new_text: format!("local {keyword_text}"),
     };
 
     Some(CodeActionEntry {
@@ -374,6 +415,83 @@ mod tests {
         assert!(
             updated.contains("local procedure UniquelyNamedCommentHelperQ()"),
             "{updated}"
+        );
+    }
+
+    /// The grammar puts `repeat($.attribute)` inside `procedure_declaration`,
+    /// so the declaration's start row is the attribute line. Searching that
+    /// line for "procedure" hits the word inside the event name.
+    #[test]
+    fn make_local_edits_the_procedure_line_not_an_attribute_that_contains_the_word() {
+        let al_code = r#"codeunit 50100 "My Codeunit"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Sales-Post", 'OnAfterPostProcedure', '', false, false)]
+    procedure UniquelyNamedAttributedHelperQ()
+    begin
+        Message('helper');
+    end;
+}
+"#;
+        let action = make_local_action(al_code, "file:///test/MakeLocalAttr.al", 3)
+            .expect("an attributed procedure must still be offered the action");
+        let updated = super::super::test_support::assert_action_applies_cleanly(
+            al_code,
+            &action,
+            "make_local attributed",
+        );
+        assert!(
+            updated.contains("'OnAfterPostProcedure'"),
+            "the attribute must be left alone: {updated}"
+        );
+        assert!(
+            updated.contains("    local procedure UniquelyNamedAttributedHelperQ()"),
+            "{updated}"
+        );
+    }
+
+    /// An attribute without the word "procedure" made the substring search
+    /// return `None`, so the action was never offered.
+    #[test]
+    fn make_local_offered_on_a_procedure_whose_attribute_lacks_the_keyword() {
+        let al_code = r#"codeunit 50100 "My Codeunit"
+{
+    [NonDebuggable]
+    internal procedure UniquelyNamedNonDebuggableHelperQ()
+    begin
+        Message('helper');
+    end;
+}
+"#;
+        let action =
+            make_local_action(al_code, "file:///test/MakeLocalNonDebug.al", 3).expect("offered");
+        let updated = super::super::test_support::assert_action_applies_cleanly(
+            al_code,
+            &action,
+            "make_local nondebuggable",
+        );
+        assert!(updated.contains("    [NonDebuggable]"), "{updated}");
+        assert!(
+            updated.contains("    local procedure UniquelyNamedNonDebuggableHelperQ()"),
+            "{updated}"
+        );
+    }
+
+    /// A `local` modifier on an attributed procedure sits on a different line
+    /// from the declaration's start row.
+    #[test]
+    fn make_local_not_offered_on_an_attributed_procedure_that_is_already_local() {
+        let al_code = r#"codeunit 50100 "My Codeunit"
+{
+    [Obsolete('Use the other procedure instead', '25.0')]
+    local procedure UniquelyNamedObsoleteHelperQ()
+    begin
+        Message('helper');
+    end;
+}
+"#;
+        assert!(
+            make_local_action(al_code, "file:///test/MakeLocalObsolete.al", 3).is_none(),
+            "already local"
         );
     }
 
