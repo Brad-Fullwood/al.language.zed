@@ -133,6 +133,33 @@ into the worktree's own `target/debug` (both tests below fall back to an
   `the_displayed_root_matches_the_path_the_caller_would_type` behind
   `#[cfg(windows)]`.
 
+## [RESOLVED] `test_project_dir` built a mixed-separator path
+
+- job: Windows native build, run 35651190412 (the round after the refusal
+  message was fixed)
+- test: `formatting_a_file_outside_the_project_is_refused`
+- symptom: with the verbatim prefix gone the message read `is outside the
+  project at 'D:\a\al.language.zed\...\data\test_al_project'`, character for
+  character what the assertion wanted, and the assertion still failed.
+- root cause: `test_project_dir` was
+  `PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/test_al_project")`, and
+  `join` does not rewrite separators. On Windows that string ends
+  `...\al-test-harness\data/test_al_project`, with one forward slash, while the
+  daemon reports its canonical root with backslashes throughout.
+- fix: join the two directories separately in
+  `crates/al-test-harness/src/lib.rs`.
+
+## [RESOLVED] A newer clippy denies `chunks_exact` with a constant size
+
+- job: CI (ubuntu-latest) and CI (macos-latest), run 35651190412
+- symptom: `error: using chunks_exact with a constant chunk size` at
+  `crates/al-test-harness/src/protocol.rs:43`, breaking the Clippy step on both
+  platforms.
+- root cause: nothing to do with these changes. Both jobs stopped at the Test
+  step before, so the Clippy step had never run on this branch. CI's clippy is
+  newer than the one installed here, where the lint does not fire.
+- fix: `semantic_token_data` uses `as_chunks::<5>()`.
+
 ## CI ran only as far as the first failing suite
 
 Each of the three jobs stopped at its first failure, so everything after it
