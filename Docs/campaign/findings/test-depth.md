@@ -185,6 +185,82 @@ At `PROPTEST_CASES=20000` over generated objects and mutated fixtures, with the 
 - formatting preserves the tree-sitter leaf token stream, modulo whitespace inside a token
 - CRLF stays CRLF, LF stays LF, and no stray CR appears in LF output
 
+## For the orchestrator
+
+### Proposed CI job for the property tests
+
+Every property test file reads `PROPTEST_CASES` and defaults to 128 (32 in al-emit, whose
+cases each write a project and run a full build). Measured wall-clock test time on this
+machine, excluding compilation:
+
+| Target | 256 cases | 4096 cases |
+| --- | ---: | ---: |
+| `al-syntax --test property_formatting` | 1.1 s | 18.3 s |
+| `al-source --test property_positions` | 0.1 s | 0.8 s |
+| `al-runtime` (3 files) | 0.5 s | 4.1 s |
+| `al-symbols --test property_app_reader` | 0.4 s | 4.3 s |
+| `al-emit --test property_roundtrip` | 2.8 s | 71.0 s |
+| total | 4.9 s | 98.5 s |
+
+Per-PR job, `PROPTEST_CASES=256`, about 5 seconds of test time on top of the compile the
+workspace gate already pays:
+
+```yaml
+  property-tests:
+    runs-on: ubuntu-latest
+    env:
+      PROPTEST_CASES: 256
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: true }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p al-syntax --test property_formatting
+      - run: cargo test -p al-source --test property_positions
+      - run: cargo test -p al-runtime --test property_filter --test property_round --test property_record_model
+      - run: cargo test -p al-symbols --test property_app_reader
+      - run: cargo test -p al-emit --test property_roundtrip
+```
+
+Nightly profile, `PROPTEST_CASES=8192`, about 3.5 minutes: the same steps with the env value
+changed and `PROPTEST_MAX_SHRINK_ITERS: 4096` so a nightly failure arrives already minimised.
+Commit any `*.proptest-regressions` file a nightly run produces; the per-PR job then replays
+it at no extra cost, because proptest runs a persisted regression before the random cases.
+
+One caveat worth stating: proptest draws a fresh seed on every run, so the per-PR 256-case
+job accumulates search across runs rather than testing the same 256 inputs each time. Of the
+four bugs below, the 256-case budget would have found F2, F3 and F4 within a handful of cases.
+F1 took about 900 and 1500 cases in the two runs that surfaced it, so it is the nightly
+profile that earns its keep.
+
+### Shortlist for `cargo mutants`
+
+Files with high line coverage, where mutation testing answers the question coverage cannot:
+are the assertions load-bearing, or do the tests merely execute the code? Ordered by how much
+logic sits behind the coverage.
+
+| File | Lines | Line coverage | Why it is worth mutating |
+| --- | ---: | ---: | --- |
+| `crates/al-syntax/src/formatting.rs` | 1845 | 98.2% | a state machine with many near-miss branches, and F1 showed a whole pass could be mis-ordered while the suite stayed green |
+| `crates/al-syntax/src/sort.rs` | 864 | 99.0% | comparator and grouping logic, where an off-by-one or a flipped comparison still produces plausible output |
+| `crates/al-runtime/src/mock/record.rs` | 1260 | 97.8% | F3 and F4 both lived in a line that every test executed and none asserted on |
+| `crates/al-runtime/src/mock/filter.rs` | 593 | 97.8% | boundary conditions in range and wildcard matching |
+| `crates/al-source/src/documents.rs` | 1160 | 95.2% | clamping and offset arithmetic, where F2 showed a wrong answer looks like a right one |
+| `crates/al-syntax/src/lint.rs` | 1239 | 97.3% | one rule per branch, so a mutant that disables a rule should be caught by a named test |
+| `crates/al-emit/src/method_id.rs` | 116 | 98.3% | reproduces alc's hash byte for byte, so any surviving mutant is a real gap |
+| `crates/al-symbols/src/composition.rs` | 635 | 98.9% | package merge and override precedence |
+| `crates/al-test/src/output/cobertura.rs` | 558 | 99.5% | a report format that is asserted mostly by snapshot, the classic place for vacuous coverage |
+| `crates/al-bc/src/http_auth.rs` | 166 | 99.4% | small, security-relevant, fully covered |
+
+Suggested first run, since `cargo mutants` is slow:
+
+```bash
+cargo mutants --in-place -p al-syntax --file crates/al-syntax/src/formatting.rs --file crates/al-syntax/src/sort.rs
+cargo mutants --in-place -p al-runtime --file crates/al-runtime/src/mock/record.rs --file crates/al-runtime/src/mock/filter.rs
+```
+
 ## Coverage
 
 `cargo llvm-cov --summary-only`, one run per batch of crates, on this branch with the new
@@ -245,3 +321,70 @@ Per-crate worst files, for the record:
 - al-runtime: `records.rs` 73.0%, `eval_stmt.rs` 81.3%, `library_variable_storage.rs` 82.5%
 - al-test: `backends/snapshot.rs` 18.2%, `router.rs` 84.1%, `mutate.rs` 85.9%
 - al-dap: `native_dap.rs` 77.7%, `bc_debug/session.rs` 84.0%
+
+### Gap tests written
+
+Two of the three worst user-input-reachable files now have tests. The third does not, for a
+reason worth recording.
+
+`crates/al-project/src/analyzers.rs`, 62.6% -> 92.8%. The new cases cover the builtin and
+blank entries, absolute and directory explicit paths, a missing configured probing path
+against a missing default root, a probing path naming the assembly directly or naming an
+unrelated file, configured search order, the `packages/` fallback, symlink skipping, the
+depth limit, version-key ordering, entry suffix and casing, `dedup_paths` and the
+editor-extension directory matcher.
+
+`crates/al-emit/src/verification.rs`, 76.1% -> 84.5%, and al-emit as a whole 89.4% -> 90.4%.
+This was the largest block of uncovered user-input-driven logic in the workspace and almost
+all of it was the diagnostic arms: the conditions were reachable, nothing triggered them.
+`crates/al-emit/tests/verification_diagnostics.rs` writes a project to disk and reads the
+codes back out of `build_verified_app_from_project`, covering the record and assignment
+checks (ALN2401 to ALN2405), local procedure semantics (ALN2203, ALN2204, ALN2206 to
+ALN2209), object identity (ALN1001 to ALN1003), duplicate members (ALN1105 and the ALN11xx
+family) and the `app.json` checks (ALN01xx), plus a clean project that reports nothing and a
+malformed `app.json` that yields no `.app`.
+
+`crates/al-test/src/backends/snapshot.rs`, 18.2%, is left alone. The file is one async
+function that drives a live Business Central debug session and test runner. Both are
+concrete types (`NativeDebugSession`, `TestRunnerClient`) with no trait seam, so covering it
+means restructuring non-test source in al-test to introduce one. That is a design change, not
+a test-depth change, and it belongs in its own piece of work. The 18% it does have is the
+error enum's `Display` impls. Recommendation for the orchestrator: put a trait behind
+`NativeDebugSession` for the three calls this backend makes (`set_breakpoints`, `state`,
+`current_object`), and the breakpoint grouping, the ambiguous-stop narrowing and the
+timeout path all become testable without a server.
+
+## Tests left behind
+
+| File | What it checks |
+| --- | --- |
+| `crates/al-syntax/tests/algen/mod.rs` | grammar-driven AL generator plus fixture mutators, shared by the formatter properties |
+| `crates/al-syntax/tests/property_formatting.rs` | format idempotence, parse cleanliness, token preservation, line endings, every option combination |
+| `crates/al-syntax/tests/property_formatting.proptest-regressions` | the two F1 seeds, replayed before the random cases on every run |
+| `crates/al-source/tests/property_positions.rs` | the document store against a reference implementation of the LSP position rules |
+| `crates/al-runtime/tests/property_filter.rs` | filter parse, print, re-parse stability and the Boolean algebra of the operators |
+| `crates/al-runtime/tests/property_round.rs` | `Round` against scaled-integer reference arithmetic |
+| `crates/al-runtime/tests/property_record_model.rs` | record operations against a `BTreeMap` model, the canonical delete loop, `Next` reversibility |
+| `crates/al-emit/tests/property_roundtrip.rs` | project to `.app` to symbol index round trip, archive entry-name containment |
+| `crates/al-emit/tests/verification_diagnostics.rs` | every native verification diagnostic family, from a project on disk |
+| `crates/al-symbols/tests/property_app_reader.rs` | `read_app_bytes` on arbitrary, NAVX-shaped, truncated and mutated bytes |
+
+Unit regressions added alongside the fixes: two in `al-syntax::formatting::tests`, two in
+`al-source::documents::tests`, four in `al-runtime::mock::record::tests`, and twenty in
+`al-project::analyzers::tests`.
+
+## Gates
+
+On the tip of `campaign/test-depth`:
+
+```
+cargo fmt -p al-syntax -p al-source -p al-runtime -p al-emit -p al-symbols -p al-project -- --check
+cargo clippy -p al-syntax -p al-source -p al-runtime -p al-emit -p al-symbols -p al-project --all-targets -- -D warnings
+cargo test -p al-syntax -p al-source -p al-runtime -p al-emit -p al-symbols -p al-project --no-fail-fast
+```
+
+all clean. The workspace `ropey` feature change in F2 reaches every consumer, so
+`al-workspace`, `al-analysis`, `al-insight` and `al-lsp` were run as well: 1137 and 743 tests
+respectively, all passing.
+
+## Test depth pass complete
