@@ -1,6 +1,6 @@
 //! XLIFF translation-file dispatchers.
 
-use super::super::{require_project_root, rpc_error};
+use super::super::{blocking, require_project_root, rpc_error};
 use super::serialized_response;
 use al_protocol::jsonrpc::Response;
 use al_workspace::Workspace;
@@ -52,26 +52,6 @@ pub(in crate::server::daemon) async fn dispatch_xlf_generate(
         Err(e) => rpc_error(id, -32000, &format!("xlf-build failed: {e}")),
     }
 }
-/// Run a blocking filesystem step off the async executor when the runtime
-/// supports it.
-///
-/// `block_in_place` panics outright on a current-thread runtime (unit tests and
-/// any embedder that drives the dispatcher from one), so guard it the way
-/// `ensure_document` does instead of crashing on an `xlf.*` request.
-fn blocking<T>(work: impl FnOnce() -> T) -> T {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle)
-            if matches!(
-                handle.runtime_flavor(),
-                tokio::runtime::RuntimeFlavor::MultiThread
-            ) =>
-        {
-            tokio::task::block_in_place(work)
-        }
-        _ => work(),
-    }
-}
-
 /// Pick the generated `*.g.xlf` base file from a Translations directory.
 ///
 /// `read_dir` yields entries in OS order, so taking the first match made the

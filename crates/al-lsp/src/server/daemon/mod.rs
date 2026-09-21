@@ -648,7 +648,13 @@ pub(crate) async fn dispatch_request(
             })
             .await
         }
-        "insightStats" => insight_dispatch::dispatch_insight_stats(workspace, id),
+        "insightStats" => {
+            let ws = Arc::clone(workspace);
+            offload(id, "insightStats", move || {
+                insight_dispatch::dispatch_insight_stats(&ws, id)
+            })
+            .await
+        }
         "deadCode" => {
             let ws = Arc::clone(workspace);
             offload(id, "deadCode", move || {
@@ -664,7 +670,13 @@ pub(crate) async fn dispatch_request(
             })
             .await
         }
-        "tableImpact" => insight_dispatch::dispatch_table_impact(workspace, id, &params),
+        "tableImpact" => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "tableImpact", move || {
+                insight_dispatch::dispatch_table_impact(&ws, id, &args)
+            })
+            .await
+        }
         "suggestEvent" => {
             let (ws, args) = (Arc::clone(workspace), params.clone());
             offload(id, "suggestEvent", move || {
@@ -672,8 +684,20 @@ pub(crate) async fn dispatch_request(
             })
             .await
         }
-        "traceChain" => insight_dispatch::dispatch_trace_chain(workspace, id, &params),
-        "eventMap" => insight_dispatch::dispatch_event_map(workspace, id),
+        "traceChain" => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "traceChain", move || {
+                insight_dispatch::dispatch_trace_chain(&ws, id, &args)
+            })
+            .await
+        }
+        "eventMap" => {
+            let ws = Arc::clone(workspace);
+            offload(id, "eventMap", move || {
+                insight_dispatch::dispatch_event_map(&ws, id)
+            })
+            .await
+        }
         "permissions" => build_dispatch::dispatch_permissions(workspace, id, &params),
         "compile" => build_dispatch::dispatch_compile(workspace, id).await,
         "package" => build_dispatch::dispatch_package(workspace, id).await,
@@ -1068,6 +1092,26 @@ pub(crate) fn parse_object_kind(
     })
 }
 
+/// Run a blocking step off the async executor when the runtime supports it.
+///
+/// `tokio::task::block_in_place` panics outright on a current-thread runtime,
+/// which is what a plain `#[tokio::test]` gives and what an embedder may drive
+/// the dispatcher from. Every blocking step in the daemon goes through here so
+/// none of them can abort the process.
+pub(crate) fn blocking<T>(work: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle)
+            if matches!(
+                handle.runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            ) =>
+        {
+            tokio::task::block_in_place(work)
+        }
+        _ => work(),
+    }
+}
+
 /// Ensure a file is loaded in the document store. If not found, read it through
 /// the same bounded, regular-file-only ingestion path used by workspace scans.
 #[allow(clippy::result_large_err)]
@@ -1086,20 +1130,7 @@ pub(crate) fn ensure_document(
             "Document URI is not a local file",
         )
     })?;
-    let read_result = match tokio::runtime::Handle::try_current() {
-        Ok(handle)
-            if matches!(
-                handle.runtime_flavor(),
-                tokio::runtime::RuntimeFlavor::MultiThread
-            ) =>
-        {
-            tokio::task::block_in_place(|| al_source::file_index::read_source_file(&path))
-        }
-        // Synchronous/unit-test callers and current-thread runtimes cannot use
-        // block_in_place. The dispatcher API is synchronous, so perform the
-        // bounded read directly rather than panicking.
-        _ => al_source::file_index::read_source_file(&path),
-    };
+    let read_result = blocking(|| al_source::file_index::read_source_file(&path));
     let content = read_result
         .map_err(|error| {
             rpc_error(

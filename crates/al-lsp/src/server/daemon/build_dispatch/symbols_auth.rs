@@ -601,13 +601,7 @@ fn refresh_workspace_after_download(
             .symbols
             .load_packages_cached(&downloaded_paths, &cache)
     };
-    let loaded = match tokio::runtime::Handle::try_current() {
-        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
-            tokio::task::block_in_place(load)
-        }
-        _ => load(),
-    }
-    .map_err(|error| error.to_string())?;
+    let loaded = crate::server::daemon::blocking(load).map_err(|error| error.to_string())?;
     workspace.symbols.load_runtime_enums();
     for package in &loaded {
         package_info.retain(|existing| {

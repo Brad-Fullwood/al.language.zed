@@ -188,7 +188,7 @@ pub(in crate::server::daemon) async fn dispatch_format(
                 }
             };
             if changed {
-                if let Err(e) = tokio::task::block_in_place(|| {
+                if let Err(e) = crate::server::daemon::blocking(|| {
                     write_al_file_and_refresh(workspace, &path, formatted.clone())
                 }) {
                     return rpc_error(
@@ -941,6 +941,28 @@ mod tests {
         let path = tmp.path().join(name);
         std::fs::write(&path, content).unwrap();
         path.canonicalize().unwrap().to_string_lossy().to_string()
+    }
+
+    /// `dispatch_format` called `block_in_place` directly, which panics and
+    /// aborts on a current-thread runtime — what a plain `#[tokio::test]` and
+    /// any single-threaded embedder give it. The write path must survive one.
+    #[test]
+    fn format_writes_the_file_on_a_current_thread_runtime() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let ws = ws_at(&tmp);
+            let file = write_al(
+                &tmp,
+                "Fmt.al",
+                "codeunit 50100 Fmt\n{\n      procedure X() begin end;\n}\n",
+            );
+            let response = dispatch_format(&ws, 1, &serde_json::json!({ "file": file })).await;
+            assert!(response.error.is_none(), "{:?}", response.error);
+        });
     }
 
     #[tokio::test]
