@@ -142,6 +142,19 @@ pub fn parse_detail_params(detail: &str) -> Vec<(String, String, String)> {
 ///
 /// Shared by definition, implementation, and any other query that needs to
 /// navigate into a symbol from a `.app` package.
+/// The extracted source file for `entry`, without locating a range inside it.
+///
+/// [`get_or_create_virtual_file`] reads the whole extracted source back to find
+/// the object's declaration line. A caller that only wants the file itself
+/// skips that read, which for a base-app object is several thousand lines.
+pub fn virtual_file_path(
+    workspace: &al_workspace::Workspace,
+    entry: &SymbolEntry,
+) -> Option<std::path::PathBuf> {
+    let app_path = workspace.symbols.app_path(&entry.package);
+    al_symbols::virtual_file::get_or_create(entry, app_path.as_deref()).ok()
+}
+
 pub fn get_or_create_virtual_file(
     workspace: &al_workspace::Workspace,
     entry: &SymbolEntry,

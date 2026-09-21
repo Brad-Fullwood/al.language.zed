@@ -1014,26 +1014,37 @@ pub(crate) enum CompletionCandidateKind {
 /// `workspace_field_items`). Moving it would force those internals to `pub(crate)`
 /// and split two tightly-coupled resolution calls across the layer boundary —
 /// increasing coupling, not reducing it.
-/// Map of `procedure name (lowercased) -> formatted XML doc` for a symbol-package
-/// object, extracted from the `///` comments in its virtual-file source (the same
-/// source go-to-definition opens). Empty when the package ships no source for the
-/// object — completion then shows no documentation, as before.
-fn symbol_package_proc_docs(
-    workspace: &Workspace,
-    object_name: &str,
-) -> std::collections::HashMap<String, String> {
+/// `procedure name (lowercased) -> formatted XML doc` for one symbol-package
+/// source file.
+type ProcDocs = std::sync::Arc<std::collections::HashMap<String, String>>;
+
+/// Documentation maps per symbol-package source file, with the symbol-index
+/// generation they were built from.
+///
+/// `completion_items_for_receiver` runs on every `textDocument/completion`
+/// request, so without this each keystroke after `Cust.` re-read the extracted
+/// Customer source from disk twice and ran a full tree-sitter parse plus
+/// document-symbol extraction over several thousand lines, all of it to fill
+/// in the `documentation` field of the completion items. The extracted source
+/// only changes when the package does, which is what the generation tracks.
+static SYMBOL_PACKAGE_DOCS: std::sync::LazyLock<
+    std::sync::RwLock<(u64, std::collections::HashMap<PathBuf, ProcDocs>)>,
+> = std::sync::LazyLock::new(|| std::sync::RwLock::new((0, std::collections::HashMap::new())));
+
+/// The documentation map for one already-extracted symbol-package source file.
+fn proc_docs_for_file(path: &Path, generation: u64) -> ProcDocs {
+    {
+        let cache = SYMBOL_PACKAGE_DOCS
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if cache.0 == generation {
+            if let Some(docs) = cache.1.get(path) {
+                return std::sync::Arc::clone(docs);
+            }
+        }
+    }
     let mut map = std::collections::HashMap::new();
-    for entry in workspace.symbols.get_by_name(object_name) {
-        let Some((uri, _)) = crate::queries::get_or_create_virtual_file(workspace, &entry, None)
-        else {
-            continue;
-        };
-        let Ok(path) = uri.to_file_path() else {
-            continue;
-        };
-        let Ok(content) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+    if let Ok(content) = std::fs::read_to_string(path) {
         let result = al_syntax::AlParser::parse_quick(&content);
         for symbol in al_syntax::extract_document_symbols(&result.tree, &content) {
             let Some(children) = symbol.children else {
@@ -1052,7 +1063,45 @@ fn symbol_package_proc_docs(
             }
         }
     }
-    map
+    let docs: ProcDocs = std::sync::Arc::new(map);
+    let mut cache = SYMBOL_PACKAGE_DOCS
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if cache.0 != generation {
+        cache.1.clear();
+        cache.0 = generation;
+    }
+    cache
+        .1
+        .insert(path.to_path_buf(), std::sync::Arc::clone(&docs));
+    docs
+}
+
+/// Procedure documentation for a symbol-package object, one map per source
+/// file the package ships for it (the same sources go-to-definition opens).
+/// Empty when the package ships none, and completion then shows no
+/// documentation.
+fn symbol_package_proc_docs(workspace: &Workspace, object_name: &str) -> Vec<ProcDocs> {
+    let generation = workspace.symbols.generation();
+    workspace
+        .symbols
+        .get_by_name(object_name)
+        .into_iter()
+        .filter_map(|entry| {
+            let path = crate::queries::virtual_file_path(workspace, &entry)?;
+            Some(proc_docs_for_file(&path, generation))
+        })
+        .filter(|docs| !docs.is_empty())
+        .collect()
+}
+
+/// The documentation for `name` in the first map that carries it.
+fn proc_doc(docs: &[ProcDocs], name: &str) -> Option<String> {
+    if docs.is_empty() {
+        return None;
+    }
+    let key = name.to_lowercase();
+    docs.iter().find_map(|map| map.get(&key).cloned())
 }
 
 pub(crate) fn completion_items_for_receiver(
@@ -1140,7 +1189,7 @@ pub(crate) fn completion_items_for_receiver(
                         &method.parameters,
                         method.return_type.as_deref(),
                     )),
-                    documentation: pkg_docs.get(&method.name.to_lowercase()).cloned(),
+                    documentation: proc_doc(&pkg_docs, &method.name),
                     insert_text: None,
                     sort_text: None,
                 });
@@ -1846,6 +1895,34 @@ mod tests {
         // "München" with quotes = 10 bytes (ü is 2), 9 UTF-16 units.
         assert_eq!(name_part.len(), 10);
         assert_eq!(range.end.character - range.start.character, 9);
+    }
+
+    /// The documentation map is read and parsed once per generation. Deleting
+    /// the file between the two calls proves the second one did not go to disk,
+    /// and bumping the generation proves a package reload invalidates it.
+    #[test]
+    fn symbol_package_docs_are_parsed_once_per_generation() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("Cod50100.al");
+        std::fs::write(
+            &path,
+            "codeunit 50100 \"Helper\"\n{\n    /// <summary>Posts the document.</summary>\n    procedure Post()\n    begin\n    end;\n}\n",
+        )
+        .expect("write");
+
+        let first = proc_docs_for_file(&path, 7);
+        assert!(first.contains_key("post"), "got {first:?}");
+
+        std::fs::remove_file(&path).expect("remove");
+        let second = proc_docs_for_file(&path, 7);
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &second),
+            "the second lookup re-read and re-parsed the source"
+        );
+
+        // A new package generation drops what the old one produced.
+        let after_reload = proc_docs_for_file(&path, 8);
+        assert!(after_reload.is_empty());
     }
 
     #[test]
