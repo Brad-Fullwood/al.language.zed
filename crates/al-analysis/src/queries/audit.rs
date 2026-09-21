@@ -244,6 +244,29 @@ pub struct PermissionAuditReport {
     /// `tabledata` grants whose Insert/Modify/Delete rights exceed observed
     /// write access, for tables that are referenced (right-level / RIMDX check).
     pub over_granted_rights: Vec<OverGrantedRightsEntry>,
+    /// Grant clauses the audit could not read. The rest of the workspace is
+    /// still audited; a clause listed here took no part in any check.
+    pub parse_issues: Vec<PermissionParseIssue>,
+}
+
+/// A grant clause the audit could not parse.
+///
+/// One unreadable clause used to abort the whole audit, so a single `system`
+/// grant took down coverage, over-broad and over-granted-rights for the entire
+/// workspace. Clauses degrade one at a time instead, and the clause is
+/// reported rather than silently dropped.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionParseIssue {
+    /// Name of the permission set holding the clause.
+    pub permission_set: String,
+    /// File declaring that permission set.
+    pub file: String,
+    /// 1-based position of the clause within the `Permissions` property.
+    pub clause: usize,
+    /// The clause as written.
+    pub text: String,
+    pub reason: String,
 }
 
 /// A single permission clause parsed from a permission set body.
@@ -266,16 +289,16 @@ pub fn permission_set_audit(workspace: &Workspace) -> Result<PermissionAuditRepo
     // Names of objects declared in the workspace (non-permissionset). Used as a
     // reference baseline: an object's own declaration counts as one reference.
     let mut declared_names: HashSet<String> = HashSet::new();
+    let mut parse_issues: Vec<PermissionParseIssue> = Vec::new();
 
     for source in &sources {
         if matches!(
             source.object.kind,
             al_symbols::ObjectKind::PermissionSet | al_symbols::ObjectKind::PermissionSetExtension
         ) {
-            perm_sets.push((
-                source.object.info.name.clone(),
-                extract_permission_grants(source)?,
-            ));
+            let (grants, issues) = extract_permission_grants(source)?;
+            parse_issues.extend(issues);
+            perm_sets.push((source.object.info.name.clone(), grants));
             perm_set_paths.insert(source.path.clone());
         } else {
             declared_names.insert(source.object.info.name.to_lowercase());
@@ -298,10 +321,13 @@ pub fn permission_set_audit(workspace: &Workspace) -> Result<PermissionAuditRepo
     let over_granted_rights =
         compute_over_granted_rights(&scan_files, &perm_sets, &declared_names, &observed_writes);
 
+    parse_issues.sort_by(|left, right| (&left.file, left.clause).cmp(&(&right.file, right.clause)));
+
     Ok(PermissionAuditReport {
         coverage,
         over_broad,
         over_granted_rights,
+        parse_issues,
     })
 }
 
@@ -387,6 +413,13 @@ fn compute_over_broad(
                 grant.object.to_lowercase(),
             );
             if !seen.insert(key) {
+                continue;
+            }
+
+            // A `system` grant names a platform capability, not a workspace
+            // object, so there is nothing for the reference scan to find and
+            // "never referenced" would always be true.
+            if grant.object_type.eq_ignore_ascii_case("system") {
                 continue;
             }
 
@@ -656,7 +689,17 @@ fn collect_procedure_names(tree: &tree_sitter::Tree, text: &str) -> Vec<String> 
     names
 }
 
-fn extract_permission_grants(source: &WorkspaceSource) -> Result<Vec<PermissionGrant>, AuditError> {
+/// Read the `Permissions` property of a permission-set object.
+///
+/// Returns the clauses that parsed plus one [`PermissionParseIssue`] per clause
+/// that did not. Only a property-level problem (no assignment operator, two
+/// `Permissions` properties) is an `AuditError`: those leave the audit unable
+/// to say what the set grants at all, where a single bad clause leaves the rest
+/// of the set readable.
+#[allow(clippy::type_complexity)]
+fn extract_permission_grants(
+    source: &WorkspaceSource,
+) -> Result<(Vec<PermissionGrant>, Vec<PermissionParseIssue>), AuditError> {
     let mut permission_properties = Vec::new();
     let mut stack = vec![source.tree.root_node()];
     while let Some(node) = stack.pop() {
@@ -673,7 +716,7 @@ fn extract_permission_grants(source: &WorkspaceSource) -> Result<Vec<PermissionG
         stack.extend(node.named_children(&mut cursor));
     }
     let property = match permission_properties.as_slice() {
-        [] => return Ok(Vec::new()),
+        [] => return Ok((Vec::new(), Vec::new())),
         [property] => *property,
         _ => {
             return Err(AuditError::InvalidSource {
@@ -713,12 +756,6 @@ fn extract_permission_grants(source: &WorkspaceSource) -> Result<Vec<PermissionG
             break;
         }
         if child.kind() == "comma" || token == "," {
-            if clauses.last().is_some_and(Vec::is_empty) {
-                return Err(AuditError::InvalidSource {
-                    path: source.path.clone(),
-                    reason: "Permissions property contains an empty grant clause".to_string(),
-                });
-            }
             clauses.push(Vec::new());
             continue;
         }
@@ -737,28 +774,41 @@ fn extract_permission_grants(source: &WorkspaceSource) -> Result<Vec<PermissionG
         });
     }
     if clauses.len() == 1 && clauses[0].is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
+    // A trailing comma before the `;` is idiomatic AL formatting, not a clause.
     if clauses.last().is_some_and(Vec::is_empty) {
-        return Err(AuditError::InvalidSource {
-            path: source.path.clone(),
-            reason: "Permissions property ends with an empty grant clause".to_string(),
-        });
+        clauses.pop();
     }
 
-    clauses
-        .into_iter()
-        .enumerate()
-        .map(|(index, clause)| {
-            parse_permission_clause(&clause).map_err(|reason| AuditError::InvalidSource {
-                path: source.path.clone(),
-                reason: format!("Permissions clause {} is invalid: {reason}", index + 1),
-            })
-        })
-        .collect()
+    let mut grants = Vec::new();
+    let mut issues = Vec::new();
+    for (index, clause) in clauses.into_iter().enumerate() {
+        match parse_permission_clause(&clause) {
+            Ok(grant) => grants.push(grant),
+            Err(reason) => issues.push(PermissionParseIssue {
+                permission_set: source.object.info.name.clone(),
+                file: source.path.display().to_string(),
+                clause: index + 1,
+                text: clause.join(" "),
+                reason,
+            }),
+        }
+    }
+    Ok((grants, issues))
 }
 
+/// Parse one `ObjectType ObjectIdentifier = Rights` clause.
+///
+/// The object types are those the security system defines for a permission:
+/// TableData, Table, Report, Codeunit, XmlPort, Page, Query and System. Only
+/// TableData carries RIMD rights; everything else carries execute (`X`/`x`).
+/// `System` names a platform capability (`system "Tools, Debugger" = X`) rather
+/// than a workspace object, so it is excluded from the usage scans.
 fn parse_permission_clause(tokens: &[String]) -> Result<PermissionGrant, String> {
+    if tokens.is_empty() {
+        return Err("empty grant clause".to_string());
+    }
     if tokens.len() != 4 || tokens[2] != "=" {
         return Err(format!(
             "expected ObjectType ObjectIdentifier = Rights, got '{}'",
@@ -773,6 +823,7 @@ fn parse_permission_clause(tokens: &[String]) -> Result<PermissionGrant, String>
         "xmlport" => "XmlPort",
         "page" => "Page",
         "query" => "Query",
+        "system" => "System",
         other => return Err(format!("unsupported permission object type '{other}'")),
     };
     let object = if tokens[1] == "*" {
@@ -1069,18 +1120,81 @@ mod tests {
     }
 
     #[test]
-    fn malformed_permission_clause_is_an_explicit_audit_error() {
+    fn a_malformed_clause_is_reported_without_failing_the_audit() {
         let ws = workspace_with(vec![(
             "/src/Perms.al",
             r#"permissionset 50100 Perms
 {
-    Permissions = TableData Customer = RX;
+    Permissions = TableData Customer = RX, TableData Vendor = R;
 }"#,
         )]);
 
-        let error = permission_set_audit(&ws).unwrap_err();
-        assert!(matches!(error, AuditError::InvalidSource { .. }));
-        assert!(error.to_string().contains("rights 'RX' are invalid"));
+        let report = permission_set_audit(&ws).expect("one bad clause must not abort the audit");
+        assert_eq!(report.parse_issues.len(), 1);
+        let issue = &report.parse_issues[0];
+        assert_eq!(issue.permission_set, "Perms");
+        assert_eq!(issue.clause, 1);
+        assert!(issue.reason.contains("rights 'RX' are invalid"));
+        assert!(issue.text.contains("Customer"));
+    }
+
+    #[test]
+    fn a_system_grant_is_accepted_and_leaves_the_audit_intact() {
+        let ws = workspace_with(vec![
+            (
+                "/src/MyTable.al",
+                r#"table 50100 "My Table" { fields { field(1; Name; Text[10]) { } } }"#,
+            ),
+            (
+                "/src/Unused.al",
+                r#"table 50101 "Unused Table" { fields { field(1; Name; Text[10]) { } } }"#,
+            ),
+            (
+                "/src/Perms.al",
+                r#"permissionset 50102 Perms
+{
+    Permissions = tabledata "My Table" = R,
+                  system "Tools, Debugger" = X,
+                  tabledata "Unused Table" = R;
+}"#,
+            ),
+        ]);
+
+        let report = permission_set_audit(&ws).expect("`system` is a legal permission object type");
+        assert!(
+            report.parse_issues.is_empty(),
+            "`system` must parse: {:?}",
+            report.parse_issues
+        );
+        assert!(
+            report
+                .over_broad
+                .iter()
+                .any(|entry| entry.object == "Unused Table"),
+            "the checks after the system grant must still run: {:?}",
+            report.over_broad
+        );
+        assert!(
+            !report
+                .over_broad
+                .iter()
+                .any(|entry| entry.object_type.eq_ignore_ascii_case("system")),
+            "a system grant names a platform capability, not a workspace object"
+        );
+    }
+
+    #[test]
+    fn a_trailing_comma_is_not_an_empty_clause() {
+        let ws = workspace_with(vec![(
+            "/src/Perms.al",
+            r#"permissionset 50100 Perms
+{
+    Permissions = TableData Customer = R,;
+}"#,
+        )]);
+
+        let report = permission_set_audit(&ws).expect("a trailing comma is idiomatic AL");
+        assert!(report.parse_issues.is_empty(), "{:?}", report.parse_issues);
     }
 
     #[test]
