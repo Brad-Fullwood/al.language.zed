@@ -54,8 +54,8 @@ into the worktree's own `target/debug` (both tests below fall back to an
 - suite: `cargo test -p al-test-harness --test real_world`
 - test: `test_completion_after_dot`, `crates/al-test-harness/tests/real_world.rs:692`
 - symptom: `member completion must offer the Record methods; "FindSet" missing`.
-  The table's own fields came back; not one platform method did. Green on the
-  development machine, red on a clean runner.
+  The table's own fields came back, and not one platform method. Green on
+  the development machine, red on a clean runner.
 - root cause: `completion_items_for_receiver` read the Record methods from
   `Workspace::semantic_cache`. That cache is filled by
   `load_caches_from_disk` from `~/.cache/al-lsp/semantic/builtins-<toolchain
@@ -121,7 +121,7 @@ into the worktree's own `target/debug` (both tests below fall back to an
 - root cause: containment canonicalises the requested path and the project
   root before comparing them, and Windows `canonicalize` returns the verbatim
   `\\?\` form. Comparing two verbatim paths is correct and the refusal itself
-  was right; printing one is not, because the caller never typed that path and
+  was right. Printing one is not, because the caller never typed that path and
   cannot match a message against it.
 - fix: `display_path` in `crates/al-lsp/src/server/daemon/containment.rs`
   strips the `\\?\` prefix for the message only, handling the drive form and
