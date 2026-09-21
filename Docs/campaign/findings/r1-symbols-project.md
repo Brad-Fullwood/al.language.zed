@@ -117,7 +117,8 @@ current code are tagged [STILL-OPEN].
   `SymbolIndex::clear_loaded_packages` / `remove_package_identities`. The memory report in
   `SymbolIndex::memory_stats` also does not count these allocations, so the growth is
   invisible to the workspace diagnostics endpoint.
-- status: open
+- status: fixed ddaad70f. Per-path removal on package unload, plus a 64-entry LRU bound, plus
+  the cached bytes in `SymbolIndexMemoryStats`.
 
 ### [GAP] Only the first object in a multi-object embedded `.al` is reachable by navigation
 - where: crates/al-symbols/src/source_index.rs:409-488 (`parse_object_header_inner` returns
