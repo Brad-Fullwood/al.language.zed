@@ -95,7 +95,7 @@ audit that are still present in current code are tagged [STILL-OPEN].
 - severity: medium
 - scenario: The loop takes `generation_lock.read()`, runs `compute_workspace_push_diagnostics` over every indexed file, drops the guard, reacquires it, and if `generation_revision()` moved it calls `yield_now()` and starts over. `al_workspace::on_document_change` bumps the revision on every keystroke (al-workspace/src/lib.rs:986), so with `diagnosticsScope: "project"` on a workspace where the pass takes longer than the user's typing gaps, the loop discards its result and recomputes forever, never publishing. Each iteration also holds the read guard for the whole pass, so the `did_change` writer queued behind it blocks for that long, and the requests queued behind the writer block too. The same code runs from `did_save` (lsp.rs:1412) and `did_close` (lsp.rs:1388), where the user is not necessarily typing, but the debounced path (lsp.rs:892) re-arms on each keystroke and is exactly where it bites.
 - fix: Bound the retry (recompute at most once, then publish the older generation with its recorded versions and let the next debounce correct it), and compute from a cloned snapshot rather than under the read guard so the pass never queues a writer.
-- status: open
+- status: fixed 0255a549
 
 ### [BUG] Daemon "no result" responses omit both `result` and `error`, violating JSON-RPC 2.0
 - where: crates/al-lsp/src/server/daemon/lsp_dispatch.rs:45-51 (`ok_response_opt` None branch), 98-103 (`dispatch_definition` Ok(None)), 244-249 (`dispatch_rename` Ok(None))
@@ -116,7 +116,7 @@ audit that are still present in current code are tagged [STILL-OPEN].
 - severity: medium
 - scenario: Both loops snapshot `generation_revision`, do the expensive staging in `spawn_blocking`, reacquire the write lock, and `continue` when the revision moved. `on_document_change` bumps the revision on every keystroke (al-workspace/src/lib.rs:986). Concrete: the user runs `al.downloadSymbols`, which ends in `refresh_current_symbol_generation`, then goes back to typing. Each iteration re-runs `load_packages_cached` over every `.app` in the package cache (seconds of CPU and disk on a real BC project), finds the revision moved, and starts over. The symbol index is never published while typing continues, and there is no iteration cap or backoff. `did_change_configuration`'s loop is identical, and fires on any settings change that touches `packageCachePath` or `appLocalFolderPaths`.
 - fix: Separate the revisions. Document edits do not invalidate a package generation, so stage against a package/project revision counter that only project and configuration changes bump, or cap the retries and publish with a forced write on the last attempt.
-- status: open
+- status: fixed 0255a549
 
 ### [BUG] Aborting an in-flight reindex can leave a half-published workspace generation
 - where: crates/al-lsp/src/server/commands.rs:225 (`prev.abort()`), crates/al-lsp/src/server/workspace.rs:517 (`publish_complete_generation`)
