@@ -1508,24 +1508,6 @@ fn workspace_member(
     result
 }
 
-/// Parse a single `field(id; name; type)` line and return `(name_part, type_str)` slices
-/// from the trimmed version of the line.  Returns `None` when the line is not a field
-/// declaration or is missing the name / type segments.
-///
-/// Shared by `find_workspace_field` (needs name_part to compute column offsets) and
-/// `workspace_field_items` (needs both segments to build completion items).
-fn parse_field_line(trimmed: &str) -> Option<(&str, &str)> {
-    let inside = trimmed.strip_prefix("field(")?.split(')').next()?;
-    let mut parts = inside.splitn(3, ';');
-    let _ = parts.next()?; // skip id
-    let name_part = parts.next()?.trim();
-    let ty = parts.next()?.trim();
-    if name_part.is_empty() {
-        return None;
-    }
-    Some((name_part, ty))
-}
-
 /// Every `field(id; "Name"; Type ...)` declaration node in `tree`. A field is
 /// a node whose text begins with `field(`, so two `field(...)`
 /// on one line each resolve independently, unlike the old per-line text scan
@@ -1573,28 +1555,43 @@ fn byte_to_position(content: &str, byte: usize) -> Position {
 }
 
 /// Parse a field declaration `node` into `(name_part, type_str)` plus the byte
-/// range of the name within `content`. Feeds the node's own text to
-/// [`parse_field_line`], so layout (one-per-line vs several on a line) is
-/// irrelevant.
+/// range of the name within `content`.
+///
+/// The header parses as `(<id> ; <name> ; <type…>)`, so the name is the token
+/// between the first and second `;` and the type is everything from the second
+/// `;` to the end of the header. Splitting the text instead cut the
+/// declaration at its first `)`, which dropped every standard Business Central
+/// field named like `"Amount (LCY)"` or `"Qty. (Base)"` and mis-split any name
+/// holding a `;`.
 fn parse_field_node<'a>(
     node: tree_sitter::Node<'_>,
     content: &'a str,
 ) -> Option<(&'a str, &'a str, usize, usize)> {
-    let src = content.as_bytes();
-    let node_text = node.utf8_text(src).ok()?;
-    let lead = node_text.len() - node_text.trim_start().len();
-    let trimmed = &node_text[lead..];
-    let (name_part, ty) = parse_field_line(trimmed)?;
-    // Offsets are into `trimmed`; map back into `content`.
-    let name_off = lead + (name_part.as_ptr() as usize - trimmed.as_ptr() as usize);
-    let name_byte_start = node.start_byte() + name_off;
-    let name_byte_end = name_byte_start + name_part.len();
-    // SAFETY of slices: name_part/ty borrow node_text which borrows `src` =
-    // content bytes, so their lifetime is tied to `content`.
-    let name_part: &'a str = &content[name_byte_start..name_byte_end];
-    let ty_start = node.start_byte() + lead + (ty.as_ptr() as usize - trimmed.as_ptr() as usize);
-    let ty: &'a str = &content[ty_start..ty_start + ty.len()];
-    Some((name_part, ty, name_byte_start, name_byte_end))
+    let mut cursor = node.walk();
+    let header = node
+        .children(&mut cursor)
+        .find(|child| child.kind() == "parenthesized_block")?;
+    let mut header_cursor = header.walk();
+    let parts: Vec<tree_sitter::Node> = header.named_children(&mut header_cursor).collect();
+    let mut separators = parts
+        .iter()
+        .enumerate()
+        .filter(|(_, part)| part.kind() == "semicolon")
+        .map(|(index, _)| index);
+    let after_id = separators.next()? + 1;
+    let after_name = separators.next()?;
+    if after_id >= after_name {
+        return None; // `field(1; ; Integer)`
+    }
+    let name = parts.get(after_id)?;
+    let type_start = parts.get(after_name + 1)?.start_byte();
+    let type_end = parts.last()?.end_byte();
+    Some((
+        content.get(name.start_byte()..name.end_byte())?,
+        content.get(type_start..type_end)?,
+        name.start_byte(),
+        name.end_byte(),
+    ))
 }
 
 fn find_workspace_field(
@@ -1607,7 +1604,7 @@ fn find_workspace_field(
         let Some((name_part, ty, start, end)) = parse_field_node(node, content) else {
             continue;
         };
-        if !name_part.trim_matches('"').eq_ignore_ascii_case(field_name) {
+        if !al_syntax::clean_identifier(name_part).eq_ignore_ascii_case(field_name) {
             continue;
         }
         let range = Range {
@@ -1626,7 +1623,7 @@ fn workspace_field_items(content: &str, tree: &tree_sitter::Tree) -> Vec<Complet
         .filter_map(|node| {
             let (name_part, ty, _, _) = parse_field_node(node, content)?;
             Some(CompletionCandidate {
-                label: name_part.trim_matches('"').to_string(),
+                label: al_syntax::clean_identifier(name_part),
                 kind: CompletionCandidateKind::Field,
                 detail: Some(ty.to_string()),
                 documentation: None,
@@ -1853,11 +1850,12 @@ mod tests {
 
     #[test]
     fn workspace_field_items_lists_fields() {
-        let text = "table 1 T\n{\n    fields\n    {\n        field(1; Name; Text[50]) { }\n        field(2; \"Ørn\"; Integer) { }\n    }\n}";
+        let text = "table 1 T\n{\n    fields\n    {\n        field(1; Name; Text[50]) { }\n        field(2; \"Ørn\"; Integer) { }\n        field(50; \"Amount (LCY)\"; Decimal) { }\n    }\n}";
         let items = workspace_field_items(text, &tree_of(text));
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert!(labels.contains(&"Name"));
         assert!(labels.contains(&"Ørn"));
+        assert!(labels.contains(&"Amount (LCY)"), "got {labels:?}");
     }
 
     #[test]
@@ -2486,26 +2484,67 @@ mod tests {
         assert_eq!(extract_doc_comment(text, 99), None);
     }
 
-    #[test]
-    fn parse_field_line_extracts_name_and_type() {
-        let (name, ty) = parse_field_line("field(1; Name; Text[50]) { }").expect("parsed");
-        assert_eq!(name, "Name");
-        assert_eq!(ty, "Text[50]");
+    /// `(name, type)` for every field in a one-table source, in source order.
+    fn parsed_fields(content: &str) -> Vec<(&str, &str)> {
+        let tree = tree_of(content);
+        let mut fields: Vec<(usize, &str, &str)> = field_decl_nodes(&tree, content.as_bytes())
+            .into_iter()
+            .filter_map(|node| {
+                let (name, ty, start, _) = parse_field_node(node, content)?;
+                Some((start, name, ty))
+            })
+            .collect();
+        fields.sort_by_key(|(start, _, _)| *start);
+        fields.into_iter().map(|(_, name, ty)| (name, ty)).collect()
     }
 
     #[test]
-    fn parse_field_line_none_for_non_field() {
-        assert_eq!(parse_field_line("procedure Foo()"), None);
+    fn parse_field_node_extracts_name_and_type() {
+        let content =
+            "table 1 T\n{\n    fields\n    {\n        field(1; Name; Text[50]) { }\n    }\n}";
+        assert_eq!(parsed_fields(content), vec![("Name", "Text[50]")]);
+    }
+
+    /// A parenthesis, a percent sign and a `;` all appear in standard Business
+    /// Central field names, and all three used to cut the declaration short.
+    #[test]
+    fn parse_field_node_handles_punctuation_in_a_quoted_name() {
+        let content = "table 1 T\n{\n    fields\n    {\n        field(50; \"Amount (LCY)\"; Decimal) { }\n        field(51; \"Line Discount %\"; Decimal) { }\n        field(52; \"A;B\"; Text[10]) { }\n    }\n}";
+        assert_eq!(
+            parsed_fields(content),
+            vec![
+                ("\"Amount (LCY)\"", "Decimal"),
+                ("\"Line Discount %\"", "Decimal"),
+                ("\"A;B\"", "Text[10]"),
+            ]
+        );
+    }
+
+    /// A multi-token type keeps every token, up to the closing paren.
+    #[test]
+    fn parse_field_node_keeps_a_multi_token_type() {
+        let content = "table 1 T\n{\n    fields\n    {\n        field(53; Kind; Enum \"My Enum\") { }\n        field(54; Items; array[10] of Text) { }\n    }\n}";
+        assert_eq!(
+            parsed_fields(content),
+            vec![("Kind", "Enum \"My Enum\""), ("Items", "array[10] of Text")]
+        );
     }
 
     #[test]
-    fn parse_field_line_none_when_missing_segments() {
-        assert_eq!(parse_field_line("field(1)"), None);
+    fn parse_field_node_none_when_name_or_type_is_missing() {
+        let content = "table 1 T\n{\n    fields\n    {\n        field(1; ; Integer) { }\n        field(2) { }\n    }\n}";
+        assert!(parsed_fields(content).is_empty());
     }
 
+    /// A field a punctuated name reaches hover and go-to-definition, which is
+    /// what the text split dropped.
     #[test]
-    fn parse_field_line_none_when_name_empty() {
-        assert_eq!(parse_field_line("field(1; ; Integer)"), None);
+    fn find_workspace_field_resolves_a_punctuated_name() {
+        let content = "table 1 T\n{\n    fields\n    {\n        field(50; \"Amount (LCY)\"; Decimal) { }\n    }\n}";
+        let (resolved, range) =
+            find_workspace_field(content, &tree_of(content), "Amount (LCY)").expect("resolved");
+        assert_eq!(resolved.type_name, "Decimal");
+        assert_eq!(range.start.line, 4);
     }
 
     #[test]
