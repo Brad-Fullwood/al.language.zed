@@ -13,7 +13,7 @@ use al_workspace::Workspace;
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum CodeLensKind {
     Reference(usize),
-    /// e.g. `"⏱ 42ms · 3 calls"`
+    /// e.g. `"⏱ 42ms · 3 samples"`
     Profiler(String),
     Test(TestLensStatus),
 }
@@ -78,7 +78,7 @@ pub struct TestTarget {
 ///   is referenced across the workspace (e.g. `"3 references"`).
 /// - **Profiler lenses** — shown only when a `.alcpuprofile` is loaded into the
 ///   workspace; display self-time and hit count for the procedure
-///   (e.g. `"⏱ 42ms · 3 calls"`).
+///   (e.g. `"⏱ 42ms · 3 samples"`).
 pub fn code_lens(workspace: &Workspace, uri: &Url) -> Result<Vec<CodeLensEntry>, String> {
     let Some((text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, uri) else {
         return Ok(vec![]);
@@ -767,7 +767,7 @@ mod tests {
         // the LSP server asserts it handles, so a drift here is a dead lens.
         let kinds = [
             CodeLensKind::Reference(3),
-            CodeLensKind::Profiler("⏱ 1ms · 1 call".to_string()),
+            CodeLensKind::Profiler("⏱ 1ms · 1 sample".to_string()),
             CodeLensKind::Test(TestLensStatus::NotRun),
         ];
         for kind in &kinds {
@@ -1162,7 +1162,7 @@ codeunit 50101 "Second CU"
             prof_lenses.len(),
             lenses.iter().map(|l| &l.title).collect::<Vec<_>>()
         );
-        assert_eq!(prof_lenses[0].title, "⏱ 42ms · 3 calls");
+        assert_eq!(prof_lenses[0].title, "⏱ 42ms · 3 samples");
     }
 
     #[test]
@@ -1182,7 +1182,7 @@ codeunit 50101 "Second CU"
         let prof_lenses: Vec<&CodeLensEntry> =
             lenses.iter().filter(|l| l.title.contains('⏱')).collect();
         assert_eq!(prof_lenses.len(), 1);
-        assert_eq!(prof_lenses[0].title, "⏱ 7ms · 1 call");
+        assert_eq!(prof_lenses[0].title, "⏱ 7ms · 1 sample");
     }
 
     #[test]

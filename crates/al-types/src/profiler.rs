@@ -19,7 +19,13 @@ pub struct ProfilerHint {
     pub object: String,
     pub self_time_ms: f64,
     pub total_time_ms: f64,
-    /// Number of samples / call count.
+    /// Number of *samples* whose top frame was this node, read straight from
+    /// the profile's `hitCount`.
+    ///
+    /// Not an invocation count: a Chrome-format CPU profile samples the stack
+    /// on a timer, so a procedure called once that runs for 300 ms has a high
+    /// hit count and a procedure called a million times that never lands on a
+    /// sample has none.
     pub hit_count: u64,
     /// Source file path, if mapped. May be workspace-relative or absolute.
     pub file: Option<String>,

@@ -118,7 +118,7 @@ Listed by neither checklist:
   ```
   discards the URI and applies every file's edits to the same `source`. A two-file action would have the table's edits, whose line numbers are relative to the table file, spliced into the page's text before the re-parse, so the assertion result says nothing about either file.
 - fix: key the helper on a map of `uri -> source` and apply each change list to its own document, then extend it to events.rs, namespace.rs and bulk_fix.
-- status: open
+- status: fixed 0928fdee — `assert_action_applies_cleanly_to` keys sources by URI, the single-document form now refuses a multi-file action outright, and events.rs and namespace.rs use them. bulk_fix does not produce a `CodeActionEntry`; it writes files directly and its own tests re-parse the result, so there is nothing for the helper to take.
 
 ### [BUG] The generated `[EventSubscriber]` for a table event does not compile
 - where: crates/al-analysis/src/queries/suggest_event.rs:676-681 (`format_example`)

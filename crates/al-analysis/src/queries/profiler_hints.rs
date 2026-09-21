@@ -179,14 +179,6 @@ pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, String> {
         .and_then(|v| v.as_array())
         .ok_or_else(|| "No 'nodes' array in profile".to_string())?;
 
-    let start_us = json
-        .get("startTime")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let end_us = json.get("endTime").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let duration_ms = (end_us - start_us) / 1000.0;
-    let _ = duration_ms; // total recording duration, kept for context only
-
     // Accurate per-node self time (µs) from samples + timeDeltas. Empty when the
     // profile omits those arrays, in which case we keep the hit-count estimate.
     let self_time_by_node = aggregate_self_time_us(&json);
@@ -483,7 +475,7 @@ fn collect_proc_location(
 ///
 /// For each procedure declaration in the document, this looks up whether an active
 /// `ProfilerHint` matches (by file path + procedure name). When a match is found a lens
-/// like `"⏱ 42ms · 3 calls"` is attached to the procedure's declaration line.
+/// like `"⏱ 42ms · 3 samples"` is attached to the procedure's declaration line.
 ///
 /// Returns an empty `Vec` when `active_hints` is empty, or when the `uri` cannot be
 /// resolved to a file path.
@@ -579,11 +571,17 @@ fn collect_profiler_lenses(
     }
 }
 
+/// Render a profiler lens title.
+///
+/// `hit_count` is a *sample* count, not a call count: in a Chrome-format CPU
+/// profile it is the number of samples whose top frame was this node. Labelling
+/// it "calls" told the reader a procedure called once that ran for 300 ms was
+/// called 300 times.
 fn profiler_lens_title(hint: &ProfilerHint) -> String {
     let ms = hint.self_time_ms.round() as u64;
-    let calls = hint.hit_count;
-    let call_word = if calls == 1 { "call" } else { "calls" };
-    format!("⏱ {ms}ms · {calls} {call_word}")
+    let samples = hint.hit_count;
+    let sample_word = if samples == 1 { "sample" } else { "samples" };
+    format!("⏱ {ms}ms · {samples} {sample_word}")
 }
 
 /// Load profiler hints from a `.alcpuprofile` file on disk and activate them
@@ -1119,8 +1117,8 @@ mod tests {
             lenses[0].title
         );
         assert!(
-            lenses[0].title.contains("3 calls"),
-            "lens should include call count: {}",
+            lenses[0].title.contains("3 samples"),
+            "lens should include the sample count: {}",
             lenses[0].title
         );
     }
@@ -1167,21 +1165,21 @@ mod tests {
     }
 
     #[test]
-    fn profiler_lens_title_plural() {
+    fn profiler_lens_title_names_samples_not_calls() {
         let hint = make_hint_with_file("P", "/f", 100.0, 5);
-        assert_eq!(profiler_lens_title(&hint), "⏱ 100ms · 5 calls");
+        assert_eq!(profiler_lens_title(&hint), "⏱ 100ms · 5 samples");
     }
 
     #[test]
     fn profiler_lens_title_singular() {
         let hint = make_hint_with_file("P", "/f", 1.0, 1);
-        assert_eq!(profiler_lens_title(&hint), "⏱ 1ms · 1 call");
+        assert_eq!(profiler_lens_title(&hint), "⏱ 1ms · 1 sample");
     }
 
     #[test]
     fn profiler_lens_title_rounds_ms() {
         let hint = make_hint_with_file("P", "/f", 3.7, 2);
-        assert_eq!(profiler_lens_title(&hint), "⏱ 4ms · 2 calls");
+        assert_eq!(profiler_lens_title(&hint), "⏱ 4ms · 2 samples");
     }
 
     #[test]
