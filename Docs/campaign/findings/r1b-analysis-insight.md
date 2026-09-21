@@ -132,28 +132,28 @@ Files the first checklist does not list at all:
 - severity: high
 - scenario: `parse_xliff` builds each `TranslationUnit` with `object_type: String::new(), object_id: 0, object_name: String::new()` and the comment `// reconstructed from id`. Nothing reconstructs them. `dispatch_xlf_untranslated` reads a language `.xlf` through `parse_xliff` and emits `"objectType": u.object_type, "objectId": u.object_id, "objectName": u.object_name` for every item, so every row of the `xlf.untranslated` response carries `""`, `0`, `""`. A translator asking which object a missing string belongs to gets nothing back, for every string.
 - fix: parse the id back into its parts (`<ObjectType> <hash> - ...`) and fill at least `object_type`, or drop the three fields from the response and from `TranslationUnit` when it came from a parse.
-- status: open
+- status: fixed 95e80294
 
 ### [BUG] Only the first object in a multi-object `.al` file gets translation units, and the rest collide or vanish
 - where: crates/al-analysis/src/xliff.rs:158-166 (`extract_from_file`), 467-546 (`detect_object_header`)
 - severity: high
 - scenario: AL allows several objects in one file and the index explicitly supports it (crates/al-source/src/file_index.rs:695). `detect_object_header` returns on the *first* declaration it finds, and `extract_from_file` then attributes every `Caption`, `ToolTip` and `Label` in the whole file to that one object. Given a file holding `table 50100 "Shipment Header"` followed by `table 50101 "Shipment Line"`, the second table's captions get ids built from `name_hash("Shipment Header")` and note text naming the wrong object. When both tables have a field of the same name (`"Document No."`, near-universal in BC), the two produce a byte-identical id, and `extract_translation_units` (134-145) drops the second as a duplicate. The translation for the second table's field is then simply absent from the `.g.xlf`, with only a `tracing::warn!` that no CLI surface shows.
 - fix: scan for every object declaration in the file and re-anchor the object context when the brace depth returns to zero, rather than detecting a single header up front.
-- status: open
+- status: fixed 95e80294
 
 ### [BUG] `Caption='X';` without spaces around `=` produces no translation unit
 - where: crates/al-analysis/src/xliff.rs:582-591 (`parse_property_value`)
 - severity: medium
 - scenario: `prefix = format!("{} =", property)` then `line_lower.starts_with(&prefix_lower)`, so the match requires exactly one space between the property name and `=`. `Caption='Posted Shipment';` and `Caption  = 'Posted Shipment';` both fail `starts_with("caption =")` and the string is silently left out of the generated `.g.xlf`. alc accepts either spelling, so the file compiles and ships with an untranslatable caption that nobody is told about. `parse_label_declaration` (595-610) does not have this problem because it matches on `:` and `label ` separately.
 - fix: split the line on the first `=`, trim both sides, and compare the left side to the property name case-insensitively.
-- status: open
+- status: fixed 95e80294
 
 ### [BUG] A `Comment` containing the word "locked" suppresses the translation unit
 - where: crates/al-analysis/src/xliff.rs:371-410 (`property_is_locked`)
 - severity: medium
 - scenario: the function finds the first `'`, skips that one literal honouring `''`, then searches the *raw remainder* for "locked". It never skips the later literals. Given `Caption = 'Closed', Comment = 'Shown when the period is locked; %1 is the date';`, the remainder after the first literal still contains the Comment's text. `lower.find("locked")` hits inside the comment string, `after` is `; %1 is the date';`, `strip_prefix('=')` returns `None`, and the `None` arm accepts `after.starts_with(';')` as the bare-`Locked` shorthand. The caption is treated as locked and dropped from the `.g.xlf`, so it can never be translated. `Comment = 'locked, see the manual'` triggers the same through the `,` branch.
 - fix: skip every single-quoted literal on the line before searching for the modifier, reusing the same doubled-quote-aware scan the function already has for the first literal.
-- status: open
+- status: fixed 95e80294
 
 ### [BUG] An action group inside `actions` is keyed as `Control` instead of `Action`
 - where: crates/al-analysis/src/xliff.rs:259-275 (`MemberBlock::in_actions` and `id_kind`), set only at 302-308
@@ -165,35 +165,35 @@ Files the first checklist does not list at all:
   the `action(Post)` caption is keyed `Action` through the `self.keyword == "action"` test, but the `group(Posting)` caption is keyed `Control`, because `group` is not in that keyword test and the enclosing `actions` flag is never consulted. alc emits `Action` for action groups, so the generated id does not match the one in the translator's file: `refresh_xliff` reports the unit as both added and removed on every run and the existing translation is lost.
   - the field is therefore close to dead: it is written once and can only ever be read on the marker block, which has an empty `name`.
 - fix: propagate `in_actions` when pushing onto the stack (inherit it from the nearest enclosing entry), and drop the per-keyword special case.
-- status: open
+- status: fixed 95e80294
 
 ### [BUG] A `/* */` block comment containing an unbalanced brace corrupts the member stack for the rest of the file
 - where: crates/al-analysis/src/xliff.rs:342-365 (`strip_literals_for_structure`), used at 173 and 239-247
 - severity: medium
 - scenario: `strip_literals_for_structure` blanks single-quoted literals and stops at `//`, and handles neither `/*` nor `*/`. AL supports block comments, and `detect_object_header` (467-494) handles them, so the module knows they exist. A line such as `    /* the old layout used a { here */` pushes an extra entry onto `stack` at line 241 that is never popped. From that point every `Caption` in the file resolves its anchor one level too deep, so table fields declared after the comment get ids built from the wrong member, and the closing `}` of the object pops the wrong frame. The generated ids no longer match alc's, so those strings cannot be matched to existing translations.
 - fix: track `/* */` state in `strip_literals_for_structure` the way `detect_object_header` already does, and blank the comment body.
-- status: open
+- status: fixed 95e80294
 
 ### [BUG] A property on the same line as its member block is attributed to the enclosing block
 - where: crates/al-analysis/src/xliff.rs:172-247
 - severity: low
 - scenario: `anchor` is read at line 180 from the stack as it stands *before* the current line's braces are processed at 239-247. For a one-line member such as `field(1; "No."; Code[20]) { Caption = 'No.'; }`, `pending` is set at 175 but not yet pushed, so `anchor` is the enclosing `fields` frame (or `None`). The caption is emitted with the object-level id `Table <hash> - Property <hash>` instead of `Table <hash> - Field <hash> - Property <hash>`. If two one-line fields both carry a `Caption`, they produce the same object-level id and `extract_translation_units` drops the second as a duplicate.
 - fix: push `pending` for braces that open before the property's position on the line, or detect the single-line form and use `pending` as the anchor when it is set on the same line.
-- status: open
+- status: fixed 95e80294
 
 ### [SLOP] `find_untranslated`'s doc claims a sort the code does not do
 - where: crates/al-analysis/src/xliff.rs:964-978
 - severity: low
 - scenario: the doc comment says "Returns units where `target` is `None` or empty, sorted by object type and ID." The body is a `filter().filter().collect()` with no sort. The caller at crates/al-lsp/src/server/daemon/build_dispatch/xliff.rs:338-341 builds its input with `units_map.into_values()`, which is `HashMap` iteration order, so the `xlf.untranslated` output is in a different order on every run. The same module fixed exactly this for obsolete units at xliff.rs:944-951 with the comment "huge spurious VCS diffs".
 - fix: sort by `id` (the object type and id are blank anyway, per the first finding), or correct the doc.
-- status: open
+- status: fixed 95e80294
 
 ### [SLOP] Dead reset of `current_target` after the trans-unit is emitted
 - where: crates/al-analysis/src/xliff.rs:860
 - severity: low
 - scenario: `current_target = None;` runs after the `if let` block that already did `current_target.take()` at line 840, and the next `<trans-unit ` line resets it again at 800. It can only matter for a `</trans-unit>` whose `<source>` was missing, and in that case the next `<trans-unit ` clears it anyway.
 - fix: delete the line.
-- status: open
+- status: fixed 95e80294
 
 ### [BUG] Renaming a procedure parameter is reported as a breaking change, and AL has no named arguments
 - where: crates/al-analysis/src/queries/breaking_changes.rs:582-600 (`check_matching_signature`)
