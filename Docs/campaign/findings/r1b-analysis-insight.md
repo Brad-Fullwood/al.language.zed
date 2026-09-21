@@ -76,7 +76,7 @@ Files the first checklist does not list at all:
 - severity: high
 - scenario: `field(50; "Amount (LCY)"; Decimal) { }` in a workspace table. `parse_field_line` does `trimmed.strip_prefix("field(")?.split(')').next()?`, which cuts at the *first* `)`, giving `50; "Amount (LCY"`. `splitn(3, ';')` then yields only two segments, so `parts.next()?` for the type returns `None` and the whole field is dropped. `find_workspace_field` never matches it, so hover and go-to-definition on `Rec."Amount (LCY)"` return nothing, and `workspace_field_items` omits it from the `Rec.` completion list. `"Amount (LCY)"`, `"Sales (LCY)"`, `"Profit (LCY)"`, `"Qty. (Base)"` are standard Business Central field names that developers copy into custom tables. The same cut breaks any field whose name contains `;`, for example `field(1; "A;B"; Text[10])`, which yields `name_part = "A` and `ty = B"`.
 - fix: `field_decl_nodes` already hands `parse_field_node` a tree-sitter node, so the id, name and type are available as child nodes. Read them from the node instead of re-splitting the text. If the text split has to stay, make it quote-aware the way `split_last` (1640-1657) already is.
-- status: fixed 9148954c
+- status: open
 
 ### [TEST] No `parse_field_line` test uses a quoted field name with punctuation
 - where: crates/al-analysis/src/resolution.rs:2490-2510
