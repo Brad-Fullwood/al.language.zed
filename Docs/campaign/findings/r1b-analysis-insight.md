@@ -270,35 +270,39 @@ Files the first checklist does not list at all:
 - severity: low
 - scenario: `add_trigger_invocation` is the only function that constructs a `TriggerInvocation` edge, and a grep across the repo finds exactly one call, in its own unit test at index.rs:646. No production code path creates one. The module header still advertises it as one of "three kinds of edges tracked", `search.rs:142` includes it in the traversal filter, `search.rs:430` assigns it a hop cost of 1, and `test_coverage.rs:327` matches it when deciding what counts as coverage. All four are unreachable. The feature the doc describes, "Trigger A invokes Procedure B", is not implemented.
 - fix: either wire it up where triggers are parsed (calls.rs already emits `RecordTrigger` at line 890) or delete the variant and the four dead branches.
-- status: open
+- status: partly fixed 80cb7756 — `add_trigger_invocation` and the module header claim are gone,
+  and the variant now documents that no pass produces it. The variant itself, `search.rs:142`,
+  `search.rs:430` and `test_coverage.rs:327` are still there: removing the variant needs an edit
+  to `crates/al-analysis/src/queries/test_coverage.rs`, which another agent owned during this round.
+  See the open finding below.
 
 ### [SLOP] `CallGraph::remove_edges_from` is dead, and it would leave stale resolution state if it were used
 - where: crates/al-insight/src/index.rs:245-254
 - severity: low
 - scenario: the doc says "Used for invalidation". Its only caller is the test at index.rs:810. If it were called, it would remove the node's edges but leave `self.resolution` untouched, and `calls.rs:1878` and `1934` gate lazy edge resolution on `resolution_state(proc_id)` not being `Resolved`. An invalidated node would therefore stay marked `Resolved` and never have its edges rebuilt, leaving the node permanently edge-less. The bug is latent only because nothing calls the function.
 - fix: delete it, or have it also `self.resolution.remove(&node)` and add a test that re-resolves after invalidation.
-- status: open
+- status: fixed 80cb7756
 
 ### [BUG] `discover_events` output order is not deterministic when two nodes share an object and event name
 - where: crates/al-insight/src/discovery.rs:91-97, 101-105, 157, and the sorts at 206-226
 - severity: low
 - scenario: `graph.index` is a `HashMap` whose values are `Vec<NodeIndex>` (line 93 iterates `indices`, so one `NodeKey::Event` can map to several nodes). Two workspace files both declaring `codeunit 50100 "Publisher"` with `[IntegrationEvent] procedure OnPost()`, which is what a half-finished copy-paste refactor looks like, produce two distinct event nodes under one key. Both become `DiscoveredEvent`s with identical sort keys, so the final `sort_by` (stable) preserves whatever order `event_subscribers`, itself a `HashMap`, happened to yield. `al subscribers` then prints the two in a different order between runs. `search.rs:373` and `xliff.rs:944-951` both call out and fix this exact nondeterminism elsewhere in the codebase.
 - fix: add the node index as the final tiebreaker in the `events` and `orphans` comparators.
-- status: open
+- status: fixed 80cb7756
 
 ### [SLOP] The event type in the JSON output is a `Debug` format of an enum
 - where: crates/al-insight/src/discovery.rs:169
 - severity: low
 - scenario: `event_type: format!("{:?}", event_type)` puts the `Debug` rendering of the event-type enum into `PublisherInfo::event_type`, a `#[serde]`-exposed field of the `al subscribers` JSON. The tests pin the resulting strings (`"Integration"` at discovery.rs:363, `"Business"` at 378), so renaming the enum variant silently changes the public JSON contract with no compiler error. Every other serialized enum in the file uses `#[serde(rename_all = "camelCase")]`.
 - fix: give the event-type enum a `Display` impl or derive `Serialize` on it and store the typed value rather than a formatted string.
-- status: open
+- status: fixed 80cb7756
 
 ### [SIMPLIFY] The same case-insensitive string comparator is spelled out five times
 - where: crates/al-insight/src/discovery.rs:174-187, 206-226, 228-241
 - severity: low
 - scenario: each of the five comparisons is written as `a.field.as_bytes().iter().map(u8::to_ascii_lowercase).cmp(b.field.as_bytes().iter().map(u8::to_ascii_lowercase))`, which is 34 lines of sort code for three sorts on what are two-field keys. A `fn lower_key(s: &str) -> impl Iterator<Item = u8> + '_` (or just `str::to_ascii_lowercase` on the two keys) collapses it, and the tiebreaker fix above would then have one place to go.
 - fix: extract the comparator into one helper.
-- status: open
+- status: fixed 80cb7756
 
 ### [GAP] A brand-new permission set produces one issue per permission entry
 - where: crates/al-analysis/src/queries/upgrade.rs:333-385 (`detect_new_permissions`)
@@ -306,6 +310,33 @@ Files the first checklist does not list at all:
 - scenario: when `surface_key(current_entry)` is absent from `baseline_map`, `old_permissions` falls back to `&[]` (line 351-354), so `old_value` is 0 for every permission and `added == permission.value` is non-zero for all of them. Adding one `permissionset 50100 "My App Objects"` that grants RIMD on 200 tables yields 200 separate `NewPermission` warnings, all saying "Review the added privilege against least-privilege and AppSource policy." The signal that matters (a *new* permission set exists) is buried in 200 identical rows.
 - fix: when the permission set itself is new, emit a single issue naming the set and the number of grants, and keep the per-permission breakdown for sets that already existed.
 - status: fixed 70a60a8a
+
+## Found while fixing
+
+### [SLOP] `EdgeKind::TriggerInvocation` still exists with no producer
+- where: crates/al-insight/src/index.rs:54 (variant), crates/al-insight/src/search.rs:142 and 430,
+  crates/al-analysis/src/queries/test_coverage.rs:327
+- severity: low
+- scenario: nothing constructs a `TriggerInvocation` edge any more, so the traversal filter at
+  `search.rs:142`, the hop cost at `search.rs:430` and the coverage test at `test_coverage.rs:327`
+  are all unreachable. A trigger's calls are ordinary `DirectCall` edges out of the trigger's own
+  node, so the variant carries nothing the graph does not already have.
+- fix: delete the variant and the three branches. `test_coverage.rs` was owned by a concurrent fix
+  agent during round 1b, which is why the removal stopped short.
+- status: open
+
+### [BUG] A bare field reference inside a table's own procedure is dropped by rename
+- where: crates/al-analysis/src/queries/binding.rs:38-47 (`decl_loc`'s go-to-definition fallback)
+- severity: medium
+- scenario: `table 50100 "Shipment" { fields { field(2; "Posting Date"; Date) { } } procedure Stamp()
+  begin "Posting Date" := Today(); end; }`. The declaration now binds correctly (the `object_section`
+  arm added in eae29618), but `definition()` does not resolve the *unqualified* use inside the
+  table's own procedure, so `decl_loc` falls back to `(uri, line, character)` of the use itself.
+  That key can never equal the declaration's, so the use is silently left out of the rename and the
+  field ends up renamed in its declaration only. `Rec."Posting Date"` resolves and is renamed.
+- fix: resolve a bare name inside a table's member against the table's own fields (implicit `Rec`),
+  in `queries/definition.rs` or in `enclosing_declaration_name`'s fallback.
+- status: open
 
 ## Not covered by this pass
 
