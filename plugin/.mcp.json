@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "al": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh",
+      "args": ["al-lsp", "mcp", "--project", "${CLAUDE_PROJECT_DIR}"]
+    }
+  }
+}

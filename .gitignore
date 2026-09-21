@@ -17,7 +17,7 @@ crates/*/bridge/bin/
 !.claude/skills/
 !.claude/skills/**
 .agentic/
-.mcp.json
+/.mcp.json
 
 # Supervisor / runtime state
 /tmp/al-*
