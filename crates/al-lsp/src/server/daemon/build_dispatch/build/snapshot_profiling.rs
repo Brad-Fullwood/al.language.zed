@@ -7,6 +7,7 @@ use super::bc_server_params::{parse_bc_server_params, reject_unsafe_server_url};
 use crate::server::daemon::{optional_bounded_usize_param, rpc_error};
 
 pub(in crate::server::daemon) async fn dispatch_snapshot(
+    workspace: &al_workspace::Workspace,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
@@ -26,7 +27,7 @@ pub(in crate::server::daemon) async fn dispatch_snapshot(
         }
     };
 
-    let bc = match parse_bc_server_params(params, "snapshots") {
+    let bc = match parse_bc_server_params(workspace, params, "snapshots") {
         Ok(config) => config,
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
@@ -164,6 +165,7 @@ pub(in crate::server::daemon) async fn dispatch_snapshot(
     }
 }
 pub(in crate::server::daemon) async fn dispatch_profiling(
+    workspace: &al_workspace::Workspace,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
@@ -182,7 +184,7 @@ pub(in crate::server::daemon) async fn dispatch_profiling(
         }
     };
 
-    let bc = match parse_bc_server_params(params, "profiles") {
+    let bc = match parse_bc_server_params(workspace, params, "profiles") {
         Ok(config) => config,
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
@@ -280,7 +282,9 @@ pub(in crate::server::daemon) async fn dispatch_profiling(
                     };
                 }
             };
-            // Require absolute path to prevent path traversal.
+            // A relative path would resolve against the daemon process cwd,
+            // which is not the project; containment then keeps the read inside
+            // the project the daemon was started for.
             if !profile_path.is_absolute() {
                 return Response {
                     id,
@@ -292,6 +296,19 @@ pub(in crate::server::daemon) async fn dispatch_profiling(
                     ..Default::default()
                 };
             }
+            let profile_path = match crate::server::daemon::containment::resolve_within_project(
+                workspace,
+                &profile_path,
+            ) {
+                Ok(path) => path,
+                Err(message) => {
+                    return rpc_error(
+                        id,
+                        error_codes::INVALID_PARAMS,
+                        &format!("'path' {message}"),
+                    )
+                }
+            };
             let top_n = match optional_bounded_usize_param(params, "topN", 20, 1000) {
                 Ok(top_n) => top_n,
                 Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
@@ -345,13 +362,23 @@ mod tests {
     use super::*;
     use al_protocol::jsonrpc::error_codes;
 
+    /// A workspace with a project root, plus the temporary directory backing
+    /// it. `outputDir` and `path` parameters are contained to that root.
+    fn project_ws() -> (tempfile::TempDir, al_workspace::Workspace) {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = al_workspace::Workspace::new();
+        crate::server::daemon::set_test_project_root(&workspace, dir.path());
+        (dir, workspace)
+    }
+
     #[tokio::test]
     async fn dispatch_snapshot_rejects_non_http_serverurl() {
+        let (_project, ws) = project_ws();
         // A file:// serverUrl returns INVALID_PARAMS (the guard) rather than an
         // INTERNAL_ERROR from a connection attempt — proves the dispatcher
         // refuses before touching the network.
         let params = serde_json::json!({ "cmd": "list", "serverUrl": "file:///etc/passwd" });
-        let resp = dispatch_snapshot(42, &params).await;
+        let resp = dispatch_snapshot(&ws, 42, &params).await;
         let err = resp.error.expect("must error");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("http(s)"));
@@ -359,15 +386,17 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_profiling_rejects_non_http_serverurl() {
+        let (_project, ws) = project_ws();
         let params = serde_json::json!({ "cmd": "start", "serverUrl": "gopher://internal" });
-        let resp = dispatch_profiling(7, &params).await;
+        let resp = dispatch_profiling(&ws, 7, &params).await;
         let err = resp.error.expect("must error");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
     }
 
     #[tokio::test]
     async fn snapshot_missing_cmd_is_invalid_params() {
-        let resp = dispatch_snapshot(1, &serde_json::json!({})).await;
+        let (_project, ws) = project_ws();
+        let resp = dispatch_snapshot(&ws, 1, &serde_json::json!({})).await;
         let err = resp.error.expect("err");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("cmd"));
@@ -375,7 +404,8 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_unknown_cmd_is_invalid_params() {
-        let resp = dispatch_snapshot(2, &serde_json::json!({ "cmd": "bogus" })).await;
+        let (_project, ws) = project_ws();
+        let resp = dispatch_snapshot(&ws, 2, &serde_json::json!({ "cmd": "bogus" })).await;
         let err = resp.error.expect("err");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("Unknown snapshot command"));
@@ -383,7 +413,8 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_download_missing_id_is_invalid_params() {
-        let resp = dispatch_snapshot(3, &serde_json::json!({ "cmd": "download" })).await;
+        let (_project, ws) = project_ws();
+        let resp = dispatch_snapshot(&ws, 3, &serde_json::json!({ "cmd": "download" })).await;
         let err = resp.error.expect("err");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("snapshotId"));
@@ -391,13 +422,15 @@ mod tests {
 
     #[tokio::test]
     async fn profiling_missing_cmd_is_invalid_params() {
-        let resp = dispatch_profiling(1, &serde_json::json!({})).await;
+        let (_project, ws) = project_ws();
+        let resp = dispatch_profiling(&ws, 1, &serde_json::json!({})).await;
         assert_eq!(resp.error.expect("err").code, error_codes::INVALID_PARAMS);
     }
 
     #[tokio::test]
     async fn profiling_unknown_cmd_is_invalid_params() {
-        let resp = dispatch_profiling(2, &serde_json::json!({ "cmd": "zzz" })).await;
+        let (_project, ws) = project_ws();
+        let resp = dispatch_profiling(&ws, 2, &serde_json::json!({ "cmd": "zzz" })).await;
         let err = resp.error.expect("err");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("Unknown profiling command"));
@@ -405,7 +438,8 @@ mod tests {
 
     #[tokio::test]
     async fn profiling_analyze_missing_path_is_invalid_params() {
-        let resp = dispatch_profiling(3, &serde_json::json!({ "cmd": "analyze" })).await;
+        let (_project, ws) = project_ws();
+        let resp = dispatch_profiling(&ws, 3, &serde_json::json!({ "cmd": "analyze" })).await;
         let err = resp.error.expect("err");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("path"));
@@ -413,8 +447,10 @@ mod tests {
 
     #[tokio::test]
     async fn profiling_analyze_rejects_relative_path() {
+        let (_project, ws) = project_ws();
         // Path-traversal guard before any file read.
         let resp = dispatch_profiling(
+            &ws,
             4,
             &serde_json::json!({ "cmd": "analyze", "path": "rel/profile.json" }),
         )
@@ -426,6 +462,7 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_and_profiling_reject_malformed_optional_params() {
+        let (_project, ws) = project_ws();
         for params in [
             serde_json::json!({ "cmd": "list", "serverUrl": 7049 }),
             serde_json::json!({ "cmd": "list", "acceptInvalidCerts": "yes" }),
@@ -433,7 +470,7 @@ mod tests {
             serde_json::json!({ "cmd": "start", "description": 7 }),
         ] {
             assert_eq!(
-                dispatch_snapshot(20, &params)
+                dispatch_snapshot(&ws, 20, &params)
                     .await
                     .error
                     .expect("malformed snapshot params")
@@ -444,6 +481,7 @@ mod tests {
 
         for top_n in [serde_json::json!("many"), serde_json::json!(1001)] {
             let response = dispatch_profiling(
+                &ws,
                 21,
                 &serde_json::json!({
                     "cmd": "analyze",
@@ -475,6 +513,7 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_start_posts_and_parses_id() {
+        let (_project, ws) = project_ws();
         let server = MockServer::start().await;
         Mock::given(wm_method("POST"))
             .and(wm_path("/dev/snapshot"))
@@ -488,6 +527,7 @@ mod tests {
             .await;
 
         let resp = dispatch_snapshot(
+            &ws,
             1,
             &serde_json::json!({
                 "cmd": "start",
@@ -506,6 +546,7 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_start_server_error_maps_to_internal_error() {
+        let (_project, ws) = project_ws();
         // Negative: a 500 from BC must become an INTERNAL_ERROR whose message
         // names the failed operation — not a silent success.
         let server = MockServer::start().await;
@@ -516,6 +557,7 @@ mod tests {
             .await;
 
         let resp = dispatch_snapshot(
+            &ws,
             2,
             &serde_json::json!({
                 "cmd": "start",
@@ -535,6 +577,7 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_list_parses_value_envelope() {
+        let (_project, ws) = project_ws();
         // The OData `{ "value": [...] }` envelope must be parsed into the
         // dispatcher's `snapshots` array with id/description carried through.
         let server = MockServer::start().await;
@@ -550,6 +593,7 @@ mod tests {
             .await;
 
         let resp = dispatch_snapshot(
+            &ws,
             3,
             &serde_json::json!({
                 "cmd": "list",
@@ -569,6 +613,7 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_download_writes_file_and_returns_path() {
+        let (project, ws) = project_ws();
         let server = MockServer::start().await;
         Mock::given(wm_method("GET"))
             .and(wm_path("/dev/snapshots/snap-9"))
@@ -576,15 +621,16 @@ mod tests {
             .mount(&server)
             .await;
 
-        let out = tempfile::TempDir::new().unwrap();
+        let out = project.path().join("downloads");
         let resp = dispatch_snapshot(
+            &ws,
             4,
             &serde_json::json!({
                 "cmd": "download",
                 "snapshotId": "snap-9",
                 "serverUrl": server.uri(),
                 "company": "CRONUS",
-                "outputDir": out.path().to_string_lossy(),
+                "outputDir": out.to_string_lossy(),
             }),
         )
         .await;
@@ -600,6 +646,7 @@ mod tests {
 
     #[tokio::test]
     async fn profiling_start_posts_and_parses_session_id() {
+        let (_project, ws) = project_ws();
         let server = MockServer::start().await;
         Mock::given(wm_method("POST"))
             .and(wm_path("/dev/profiler/start"))
@@ -613,6 +660,7 @@ mod tests {
             .await;
 
         let resp = dispatch_profiling(
+            &ws,
             1,
             &serde_json::json!({
                 "cmd": "start",
@@ -630,6 +678,7 @@ mod tests {
 
     #[tokio::test]
     async fn profiling_start_server_error_maps_to_internal_error() {
+        let (_project, ws) = project_ws();
         let server = MockServer::start().await;
         Mock::given(wm_method("POST"))
             .and(wm_path("/dev/profiler/start"))
@@ -638,6 +687,7 @@ mod tests {
             .await;
 
         let resp = dispatch_profiling(
+            &ws,
             2,
             &serde_json::json!({
                 "cmd": "start",
@@ -657,6 +707,7 @@ mod tests {
 
     #[tokio::test]
     async fn profiling_stop_posts_session_and_writes_profile() {
+        let (project, ws) = project_ws();
         let server = MockServer::start().await;
         Mock::given(wm_method("POST"))
             .and(wm_path("/dev/profiler/stop"))
@@ -666,15 +717,16 @@ mod tests {
             .mount(&server)
             .await;
 
-        let out = tempfile::TempDir::new().unwrap();
+        let out = project.path().join("profiles");
         let resp = dispatch_profiling(
+            &ws,
             3,
             &serde_json::json!({
                 "cmd": "stop",
                 "sessionId": "sess-42",
                 "serverUrl": server.uri(),
                 "company": "CRONUS",
-                "outputDir": out.path().to_string_lossy(),
+                "outputDir": out.to_string_lossy(),
             }),
         )
         .await;

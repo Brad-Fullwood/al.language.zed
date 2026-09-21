@@ -14,6 +14,7 @@
 //! every platform.
 
 mod build_dispatch;
+mod containment;
 mod debug_dispatch;
 mod insight_dispatch;
 mod lsp_dispatch;
@@ -676,7 +677,7 @@ pub(crate) async fn dispatch_request(
         "permissions" => build_dispatch::dispatch_permissions(workspace, id, &params),
         "compile" => build_dispatch::dispatch_compile(workspace, id).await,
         "package" => build_dispatch::dispatch_package(workspace, id).await,
-        "newProject" => build_dispatch::dispatch_new_project(id, &params),
+        "newProject" => build_dispatch::dispatch_new_project(workspace, id, &params),
         "errorCodes" => build_dispatch::dispatch_error_codes(workspace, id).await,
         "builtinTypes" => build_dispatch::dispatch_builtin_types(workspace, id).await,
         "setup" => build_dispatch::dispatch_setup(workspace, id),
@@ -686,8 +687,8 @@ pub(crate) async fn dispatch_request(
             build_dispatch::dispatch_download_symbols(workspace, id, &params).await
         }
         "debug" => debug_dispatch::dispatch_debug(workspace, id, &params).await,
-        "snapshot" => build_dispatch::dispatch_snapshot(id, &params).await,
-        "profiling" => build_dispatch::dispatch_profiling(id, &params).await,
+        "snapshot" => build_dispatch::dispatch_snapshot(workspace, id, &params).await,
+        "profiling" => build_dispatch::dispatch_profiling(workspace, id, &params).await,
         "xlf.generate" => build_dispatch::dispatch_xlf_generate(workspace, id, &params).await,
         "xlf.refresh" => build_dispatch::dispatch_xlf_refresh(workspace, id, &params).await,
         "xlf.untranslated" => build_dispatch::dispatch_xlf_untranslated(id, &params),
@@ -1120,7 +1121,18 @@ pub(crate) fn ensure_document(
         })
 }
 
-pub(crate) fn file_uri_from_params(params: &serde_json::Value) -> Result<Option<url::Url>, String> {
+/// The single existing local regular file a request names, resolved inside the
+/// loaded project's boundary.
+///
+/// Every dispatcher that takes `uri` or `file` goes through here, so the
+/// containment check in [`containment::resolve_within_project`] applies to all
+/// of them at once. Relative paths resolve against the project root, not the
+/// daemon's working directory: the daemon outlives the shell that started it,
+/// so its cwd is not a meaningful base for a client's path.
+pub(crate) fn file_uri_from_params(
+    workspace: &Workspace,
+    params: &serde_json::Value,
+) -> Result<Option<url::Url>, String> {
     // Daemon file operations accept exactly one existing local regular file.
     // Failing canonicalisation used to fall back to the unresolved path, which
     // made missing files, inaccessible parents, and symlink failures look like
@@ -1150,22 +1162,13 @@ pub(crate) fn file_uri_from_params(params: &serde_json::Value) -> Result<Option<
             if raw.trim().is_empty() {
                 return Err("'file' must not be empty".to_string());
             }
-            let path = std::path::Path::new(raw);
-            if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                std::env::current_dir()
-                    .map_err(|error| format!("resolve current directory failed: {error}"))?
-                    .join(path)
-            }
+            std::path::PathBuf::from(raw)
         }
         (None, None) => return Ok(None),
         (Some(_), Some(_)) => unreachable!("mutual exclusion checked above"),
     };
 
-    let canonical = path
-        .canonicalize()
-        .map_err(|error| format!("resolve input file '{}' failed: {error}", path.display()))?;
+    let canonical = containment::resolve_within_project(workspace, &path)?;
     if !canonical.is_file() {
         return Err(format!(
             "input path '{}' is not a regular file",
@@ -1179,6 +1182,33 @@ pub(crate) fn file_uri_from_params(params: &serde_json::Value) -> Result<Option<
         )
     })?;
     Ok(Some(uri))
+}
+
+/// Load a minimal project rooted at `root` so a test workspace has a
+/// containment boundary. `try_write` rather than `write().await` so the same
+/// helper serves synchronous and `#[tokio::test]` callers.
+#[cfg(test)]
+pub(crate) fn set_test_project_root(workspace: &Workspace, root: &Path) {
+    *workspace
+        .project
+        .try_write()
+        .expect("test workspace project lock is uncontended") =
+        Some(al_project::project::AlProject {
+            root: root.to_path_buf(),
+            app_json: al_project::project::AppManifest {
+                id: "test".to_string(),
+                name: "Test".to_string(),
+                publisher: "Test".to_string(),
+                version: "1.0.0.0".to_string(),
+                dependencies: Vec::new(),
+                application: None,
+                platform: None,
+                runtime: None,
+            },
+            packages_dir: root.join(".alpackages"),
+            packages: Vec::new(),
+            server_configs: Vec::new(),
+        });
 }
 
 /// Only failures that leave the daemon without a usable workspace abort
@@ -1260,10 +1290,12 @@ mod tests {
         dispatch_diag, dispatch_request, ensure_document, extract_i32, extract_position,
         extract_uri, file_not_found, file_uri_from_params, invalid_params, parse_object_kind,
         read_bounded_line, require_document_text, require_project_root, rpc_error,
+        set_test_project_root,
     };
     use al_protocol::jsonrpc::{error_codes, Request};
     use futures::FutureExt;
     use std::collections::BTreeSet;
+    use std::path::{Path, PathBuf};
     use tokio::sync::Notify;
 
     fn dispatched_method_literals(source: &str) -> BTreeSet<String> {
@@ -1431,15 +1463,23 @@ mod tests {
         assert_eq!(result, Some("no newline here".to_string()));
     }
 
+    /// A workspace whose project root is `dir`, plus a `doc.al` inside it.
+    fn project_with_doc(dir: &Path) -> (al_workspace::Workspace, PathBuf) {
+        let file = dir.join("doc.al");
+        std::fs::write(&file, b"x").unwrap();
+        let workspace = al_workspace::Workspace::new();
+        set_test_project_root(&workspace, dir);
+        (workspace, file)
+    }
+
     #[test]
     fn file_uri_accepts_existing_local_uri() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("doc.al");
-        std::fs::write(&file, b"x").unwrap();
+        let (workspace, file) = project_with_doc(dir.path());
         let params = serde_json::json!({
             "uri": url::Url::from_file_path(&file).unwrap(),
         });
-        let uri = file_uri_from_params(&params)
+        let uri = file_uri_from_params(&workspace, &params)
             .expect("uri must be valid")
             .expect("uri must be present");
         assert_eq!(uri.to_file_path().unwrap(), file.canonicalize().unwrap());
@@ -1448,10 +1488,9 @@ mod tests {
     #[test]
     fn file_uri_canonicalizes_absolute_existing_path() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("doc.al");
-        std::fs::write(&file, b"x").unwrap();
+        let (workspace, file) = project_with_doc(dir.path());
         let params = serde_json::json!({ "file": file.to_str().unwrap() });
-        let uri = file_uri_from_params(&params)
+        let uri = file_uri_from_params(&workspace, &params)
             .expect("absolute file path must be valid")
             .expect("absolute file path must produce a uri");
         let canon = file.canonicalize().unwrap();
@@ -1459,40 +1498,93 @@ mod tests {
     }
 
     #[test]
-    fn file_uri_resolves_existing_relative_path_against_cwd() {
-        let cwd = std::env::current_dir().unwrap();
-        let dir = tempfile::tempdir_in(&cwd).unwrap();
-        let file = dir.path().join("relative.al");
-        std::fs::write(&file, b"x").unwrap();
-        let relative = file.strip_prefix(&cwd).unwrap();
-        let params = serde_json::json!({ "file": relative });
-        let uri = file_uri_from_params(&params)
+    fn file_uri_resolves_relative_path_against_the_project_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let (workspace, file) = project_with_doc(dir.path());
+        let params = serde_json::json!({ "file": "doc.al" });
+        let uri = file_uri_from_params(&workspace, &params)
             .expect("relative path must be valid")
             .expect("relative path must produce a uri");
-        let path = uri.to_file_path().unwrap();
-        assert_eq!(path, file.canonicalize().unwrap());
+        assert_eq!(uri.to_file_path().unwrap(), file.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn file_uri_rejects_a_path_outside_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        let secret = outside.join("id_rsa");
+        std::fs::write(&secret, b"PRIVATE KEY").unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let (workspace, _) = project_with_doc(&root);
+
+        for params in [
+            serde_json::json!({ "file": secret.to_str().unwrap() }),
+            serde_json::json!({ "file": "../outside/id_rsa" }),
+            serde_json::json!({ "uri": url::Url::from_file_path(&secret).unwrap() }),
+        ] {
+            let error = file_uri_from_params(&workspace, &params)
+                .expect_err("a path outside the project must be rejected");
+            assert!(error.contains("outside the project"), "{error}: {params}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_uri_rejects_a_symlink_that_escapes_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("id_rsa"), b"PRIVATE KEY").unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        let (workspace, _) = project_with_doc(&root);
+
+        let params = serde_json::json!({ "file": "link/id_rsa" });
+        let error = file_uri_from_params(&workspace, &params)
+            .expect_err("a symlink out of the project must be rejected");
+        assert!(error.contains("outside the project"), "{error}");
+    }
+
+    #[test]
+    fn file_uri_rejects_every_path_when_no_project_is_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("doc.al");
+        std::fs::write(&file, b"x").unwrap();
+        let workspace = al_workspace::Workspace::new();
+        let params = serde_json::json!({ "file": file.to_str().unwrap() });
+        let error = file_uri_from_params(&workspace, &params)
+            .expect_err("without a project there is nothing to contain against");
+        assert!(error.contains("No project is loaded"), "{error}");
     }
 
     #[test]
     fn file_uri_rejects_missing_path_instead_of_falling_back() {
-        let params = serde_json::json!({
-            "file": "/definitely/not/existing/al-test-xyz.al"
-        });
-        let error = file_uri_from_params(&params).expect_err("nonexistent path must be rejected");
+        let dir = tempfile::tempdir().unwrap();
+        let (workspace, _) = project_with_doc(dir.path());
+        let params = serde_json::json!({ "file": "not/existing/al-test-xyz.al" });
+        let error = file_uri_from_params(&workspace, &params)
+            .expect_err("nonexistent path must be rejected");
         assert!(
-            error.contains("resolve input file"),
+            error.contains("is not a regular file"),
             "unexpected error: {error}"
         );
     }
 
     #[test]
     fn file_uri_returns_absent_without_uri_or_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (workspace, _) = project_with_doc(dir.path());
         let params = serde_json::json!({ "something": "else" });
-        assert_eq!(file_uri_from_params(&params).unwrap(), None);
+        assert_eq!(file_uri_from_params(&workspace, &params).unwrap(), None);
     }
 
     #[test]
     fn file_uri_rejects_ambiguous_or_malformed_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (workspace, _) = project_with_doc(dir.path());
         for params in [
             serde_json::json!({"uri": "file:///tmp/x.al", "file": "/tmp/x.al"}),
             serde_json::json!({"uri": 7}),
@@ -1502,7 +1594,7 @@ mod tests {
             serde_json::json!({"file": "  "}),
         ] {
             assert!(
-                file_uri_from_params(&params).is_err(),
+                file_uri_from_params(&workspace, &params).is_err(),
                 "malformed input must be rejected: {params}"
             );
         }

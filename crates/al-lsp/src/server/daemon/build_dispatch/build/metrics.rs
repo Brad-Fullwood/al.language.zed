@@ -55,7 +55,7 @@ pub(in crate::server::daemon) fn dispatch_metrics(
         };
     }
 
-    let uri = match file_uri_from_params(params) {
+    let uri = match file_uri_from_params(workspace, params) {
         Ok(Some(uri)) => uri,
         Ok(None) => return invalid_params(id),
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
@@ -160,6 +160,14 @@ mod tests {
         Workspace::new()
     }
 
+    /// A workspace rooted at `tmp`, so the `file`/`uri` parameters below fall
+    /// inside the project boundary the dispatchers enforce.
+    fn ws_at(tmp: &tempfile::TempDir) -> Workspace {
+        let workspace = Workspace::new();
+        crate::server::daemon::set_test_project_root(&workspace, tmp.path());
+        workspace
+    }
+
     fn write_al(tmp: &tempfile::TempDir, name: &str, content: &str) -> String {
         let path = tmp.path().join(name);
         std::fs::write(&path, content).unwrap();
@@ -175,8 +183,8 @@ mod tests {
 
     #[test]
     fn metrics_single_file_returns_thresholds_and_procedures() {
-        let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_at(&tmp);
         let file = write_al(
             &tmp,
             "M.al",
@@ -192,8 +200,8 @@ mod tests {
 
     #[test]
     fn metrics_rejects_out_of_range_or_wrong_typed_options() {
-        let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_at(&tmp);
         let file = write_al(
             &tmp,
             "M.al",
@@ -226,8 +234,8 @@ mod tests {
 
     #[test]
     fn metrics_rejects_malformed_source_in_single_and_workspace_modes() {
-        let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_at(&tmp);
         let file = write_al(
             &tmp,
             "Broken.al",
@@ -253,8 +261,8 @@ mod tests {
 
     #[test]
     fn metrics_output_includes_procedure_nesting_depth() {
-        let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_at(&tmp);
         let file = write_al(
             &tmp,
             "Nested.al",

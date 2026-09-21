@@ -300,9 +300,24 @@ pub(in crate::server::daemon) fn dispatch_event_source(
     let Some(line) = params.get("line").and_then(|v| v.as_u64()) else {
         return invalid_params(id);
     };
-    match al_analysis::queries::source::event_source(
+    // `event_source` falls back to reading the file from disk when it is not
+    // in the parse cache, so the path is contained like any other.
+    let file = match crate::server::daemon::containment::resolve_within_project(
         workspace,
         std::path::Path::new(file),
+    ) {
+        Ok(file) => file,
+        Err(message) => {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                &format!("'file' {message}"),
+            )
+        }
+    };
+    match al_analysis::queries::source::event_source(
+        workspace,
+        &file,
         line.min(u64::from(u32::MAX)) as u32,
     ) {
         Ok(result) => Response {

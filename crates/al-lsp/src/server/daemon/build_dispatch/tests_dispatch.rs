@@ -1,5 +1,6 @@
 //! Test-runner and coverage dispatchers.
 
+use super::super::containment::resolve_output_path_within_project;
 use super::super::{optional_bool_param, optional_bounded_usize_param, rpc_error};
 use super::ERR_NO_PROJECT;
 use al_protocol::jsonrpc::{error_codes, Response};
@@ -231,91 +232,6 @@ fn test_routing_details(
         }
     }
     details
-}
-
-/// Resolve a user-provided output-file path against `project_root` and reject
-/// anything that escapes it (path traversal). Used for JUnit / Cobertura
-/// output paths in `dispatch_tests_run_batch`, where a malicious or
-/// misconfigured client could otherwise ask the daemon to write XML to
-/// arbitrary filesystem locations as the daemon's user.
-///
-/// Symlinks are resolved (including symlinked parent directories that point
-/// outside the project), so `/project/link/evil.xml` where `link -> /outside`
-/// is rejected even though it textually starts with the project root.
-///
-/// Returns `Some(canonical_path)` — the symlink-resolved absolute path — if the
-/// requested location is inside `project_root`, else `None`.
-fn resolve_output_path_within_project(
-    requested: &std::path::Path,
-    project_root: &std::path::Path,
-) -> Option<PathBuf> {
-    let absolute = if requested.is_absolute() {
-        requested.to_path_buf()
-    } else {
-        project_root.join(requested)
-    };
-
-    // We can't use `Path::canonicalize` because the file may not yet exist.
-    let mut normalised = PathBuf::new();
-    for comp in absolute.components() {
-        use std::path::Component;
-        match comp {
-            Component::ParentDir => {
-                if !normalised.pop() {
-                    // `..` above the root — definitely escaping.
-                    return None;
-                }
-            }
-            Component::CurDir => {}
-            other => normalised.push(other.as_os_str()),
-        }
-    }
-
-    // Canonicalise the project root so symlinks / case-normalisation can't
-    // be used to spoof containment. The root must exist; if canonicalisation
-    // fails, reject conservatively.
-    let project_canonical = project_root.canonicalize().ok()?;
-
-    // Logical normalisation alone is not enough: a symlink *inside* the
-    // project pointing outside (e.g. `/project/link -> /outside`) would let
-    // `/project/link/evil.xml` pass a textual `starts_with` check while the
-    // real write target is `/outside/evil.xml`. Resolve symlinks by
-    // canonicalising the deepest ancestor of `normalised` that actually
-    // exists, then re-appending the not-yet-created tail, and require the
-    // *canonical* result to stay within the canonical root.
-    let mut existing = normalised.as_path();
-    let mut tail = PathBuf::new();
-    let canonical_existing = loop {
-        match existing.canonicalize() {
-            Ok(c) => break c,
-            Err(_) => {
-                let file = existing.file_name()?;
-                // Build the tail by PREPENDING each not-yet-existing component.
-                // `PathBuf::from(file).push(&tail)` when `tail` is empty appends
-                // a trailing separator (`j.xml` -> `j.xml/`), so the resolved
-                // path ended in a separator and was later treated as a
-                // directory — `write_junit_to_path` then `create_dir_all`'d the
-                // file-as-directory and the report write failed silently while
-                // the command still reported success. Only
-                // push when there is an existing tail to append.
-                tail = if tail.as_os_str().is_empty() {
-                    PathBuf::from(file)
-                } else {
-                    let mut new_tail = PathBuf::from(file);
-                    new_tail.push(&tail);
-                    new_tail
-                };
-                existing = existing.parent()?;
-            }
-        }
-    };
-    let resolved = canonical_existing.join(&tail);
-
-    if resolved.starts_with(&project_canonical) {
-        Some(resolved)
-    } else {
-        None
-    }
 }
 
 pub(in crate::server::daemon) fn dispatch_tests_discover(

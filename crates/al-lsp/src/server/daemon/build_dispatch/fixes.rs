@@ -63,7 +63,7 @@ pub(in crate::server::daemon) async fn dispatch_lint(
         };
     }
 
-    let uri = match file_uri_from_params(params) {
+    let uri = match file_uri_from_params(workspace, params) {
         Ok(Some(uri)) => uri,
         Ok(None) => return invalid_params(id),
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
@@ -104,7 +104,7 @@ pub(in crate::server::daemon) async fn dispatch_format(
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
 
-    let file_uri = match file_uri_from_params(params) {
+    let file_uri = match file_uri_from_params(workspace, params) {
         Ok(file_uri) => file_uri,
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
@@ -245,7 +245,7 @@ pub(in crate::server::daemon) fn dispatch_fix(
         }
     }
 
-    let file_uri = match file_uri_from_params(params) {
+    let file_uri = match file_uri_from_params(workspace, params) {
         Ok(uri) => uri,
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
@@ -557,7 +557,7 @@ pub(in crate::server::daemon) fn dispatch_parse(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let uri = match file_uri_from_params(params) {
+    let uri = match file_uri_from_params(workspace, params) {
         Ok(Some(uri)) => uri,
         Ok(None) => return invalid_params(id),
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
@@ -926,6 +926,14 @@ mod tests {
         Workspace::new()
     }
 
+    /// A workspace rooted at `tmp`, so the `file`/`uri` parameters below fall
+    /// inside the project boundary the dispatchers enforce.
+    fn ws_at(tmp: &tempfile::TempDir) -> Workspace {
+        let workspace = Workspace::new();
+        crate::server::daemon::set_test_project_root(&workspace, tmp.path());
+        workspace
+    }
+
     /// Open a real `.al` file on disk and return its `file://` URI string,
     /// suitable for the `{ "file": ... }` param shape the dispatchers accept.
     /// The file must exist because `file_uri_from_params` canonicalises it.
@@ -945,8 +953,8 @@ mod tests {
 
     #[tokio::test]
     async fn lint_single_file_reports_parse_errors() {
-        let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_at(&tmp);
         // Deliberately malformed AL — unterminated object.
         let file = write_al(&tmp, "Bad.al", "codeunit 50100 \"Bad\" { procedure X( ");
         let resp = dispatch_lint(&ws, 2, &serde_json::json!({ "file": file })).await;
@@ -1136,8 +1144,8 @@ mod tests {
 
     #[test]
     fn fix_reports_zero_fixes_for_clean_file() {
-        let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_at(&tmp);
         let file = write_al(&tmp, "Ok.al", "codeunit 50100 \"Ok\"\n{\n}\n");
         let resp = dispatch_fix(&ws, 2, &serde_json::json!({ "file": file, "dryRun": true }));
         assert!(resp.error.is_none(), "{:?}", resp.error);
@@ -1148,8 +1156,8 @@ mod tests {
 
     #[test]
     fn fix_dry_run_reports_edit_and_apply_updates_workspace_and_disk() {
-        let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_at(&tmp);
         let source = r#"table 50100 "Fix Me"
 {
     fields
@@ -1198,8 +1206,8 @@ mod tests {
 
     #[test]
     fn fix_rejects_unknown_rule_instead_of_reporting_false_zero() {
-        let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_at(&tmp);
         let file = write_al(&tmp, "Fix.al", "codeunit 50100 X { }\n");
         let response = dispatch_fix(
             &ws,
@@ -1240,8 +1248,8 @@ mod tests {
 
     #[test]
     fn parse_reports_node_count_and_errors() {
-        let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_at(&tmp);
         let file = write_al(&tmp, "P.al", "codeunit 50100 \"P\"\n{\n}\n");
         let resp = dispatch_parse(&ws, 2, &serde_json::json!({ "file": file }));
         assert!(resp.error.is_none());

@@ -32,7 +32,7 @@ pub(in crate::server::daemon) fn dispatch_sort_members(
             }
         },
     };
-    let file_uri = match file_uri_from_params(params) {
+    let file_uri = match file_uri_from_params(workspace, params) {
         Ok(file_uri) => file_uri,
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
