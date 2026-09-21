@@ -17,12 +17,14 @@ Round 1: four of seven reviews are done (58 findings) and their fix agents are r
 | Fix R1 analysis and insight (18 findings) | worktree fix | branch `campaign/fix-r1-analysis-insight` |
 | Fix R1 LSP and protocol (15 findings, 2 security) | worktree fix | branch `campaign/fix-r1-lsp-protocol` |
 | Fix R1 runtime and DAP (13 findings) | worktree fix | branch `campaign/fix-r1-runtime-dap` |
-| AI tooling inventory and plugin design | design | `findings/ai-tooling-ideas.md` |
+| Build the Claude Code plugin (`plugin/`, marketplace manifest, 8 skills, 2 subagents) | worktree build | branch `campaign/ai-plugin` |
+| R1c review: last unreviewed al-analysis modules | review | `findings/r1c-analysis-insight.md` |
 | desloppify first scan | shell | `.campaign/desloppify-scan.log` |
 
 Queued for a free build slot (at most 7 building agents, RAM is the limit):
 
 - Fix `findings/r1b-runtime-dap.md` (28 findings, 1 high: `--filter '*Post'` drops tests from a green summary). Crates: al-test, al-dap, al-test-harness, al-runtime stubs. Start after `campaign/fix-r1-runtime-dap` merges, on a branch from the merged result.
+- AI tooling build list items 1, 2, 3, 5, 7, 8 (`findings/ai-tooling-ideas.md` section 6: limit and fields projection, `scope` parameter, `source --list-procedures`, fix `subscribers` and `impact --table`, index progress, compact JSON). They edit the daemon dispatchers, so start after `campaign/fix-r1-lsp-protocol` merges. Item 4 (free object ID allocator, new file) can start as soon as a build slot frees. Items 9 and 10 (package version diff, persisted symbol index) later in the week.
 - Fix `findings/r1b-analysis-insight.md` (35 findings: quoted identifiers cannot be renamed, rename misses EventSubscriber strings, fields with `)` in the name dropped from resolution). Start after `campaign/fix-r1-analysis-insight` merges.
 - Review still owed in al-analysis: `queries/source.rs`, `queries/audit.rs`, `queries/test_diagnostics.rs`, `code_actions/test_support.rs`, `suggest_event.rs`, `profiler_hints.rs`, `test_coverage.rs`.
 - Fix `findings/r1b-scaffold-generators.md` (11 findings): handed to the analysis fix agent.
@@ -50,7 +52,7 @@ whichever ones pay off most. Record progress per workstream below so gaps are vi
 | D | Security: credentials in al-bc and al-publish, `.app` and zip parsing, MCP and daemon input, extension binary download, `cargo deny`, `cargo audit` | covered in part by R1 | Dedicated security review after R1 triage |
 | E | Tests: coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis | not started | Measure coverage, list the weakest modules |
 | F | Grammar: corpus tests, query drift between `languages/al` and `tree-sitter-al/queries` | R1 review running | From R1 findings |
-| G | AI tooling: make this project speed up and sharpen AI work on Business Central (see below) | not started | Inventory the MCP and CLI surface, design the plugin |
+| G | AI tooling: make this project speed up and sharpen AI work on Business Central (see below) | Inventory, measurements and design done (`findings/ai-tooling-ideas.md`): latency is 4 to 150 ms warm, but 14 of 20 measured answers are too large for an agent (up to 9.4 MB). Plugin build running | Daemon projection work after the LSP fix branch merges |
 | H | Docs: `Docs/`, `README.md`, `ROADMAP.md` match the code, then unsloppify | R1 docs review running | From R1 findings |
 | I | Blog: replace the six articles with a new series on the current project, unsloppify each | inventory done | Outline the series, work on a blog branch, merge to `main` only when ready (Vercel deploys `main`) |
 

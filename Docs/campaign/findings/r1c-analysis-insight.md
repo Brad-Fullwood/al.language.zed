@@ -10,8 +10,8 @@ scope here (covered by `r1b-scaffold-generators.md`).
 Explicitly named as unreviewed:
 - [x] queries/source.rs
 - [x] queries/audit.rs
-- [ ] queries/test_diagnostics.rs
-- [ ] queries/code_actions/test_support.rs
+- [x] queries/test_diagnostics.rs
+- [x] queries/code_actions/test_support.rs (no finding)
 - [ ] queries/suggest_event.rs
 - [ ] queries/profiler_hints.rs
 - [ ] queries/test_coverage.rs
@@ -85,4 +85,25 @@ Listed by neither checklist:
 - severity: medium
 - scenario: `count_object_refs` runs `al_syntax::find_variable_references` over every non-permissionset file, which is a full tree walk each. `compute_over_broad` calls it once per unique grant; `compute_over_granted_rights` then calls it again with the same argument for every `tabledata` grant, recomputing a number the first pass already had. A permission set with 300 tabledata grants over a 2000-file project is 300 x 2000 walks for the first check plus another 300 x 2000 for the second. `collect_observed_writes` (570-611) adds its own quadratic term: for each file it calls `extract_procedure_var_types` and `extract_call_sites` once per procedure name, and each of those re-walks that file's tree from the root to find the procedure.
 - fix: collect every referenced identifier name per file once (`al_syntax::collect_call_site_names` has the same shape and its doc, navigation.rs:291-303, argues exactly this point) into one multiset, then look each grant up in it. Pass the counts from `compute_over_broad` into `compute_over_granted_rights` rather than recomputing them.
+- status: open
+
+### [BUG] The "unknown location" line-0 sentinel lands on the codeunit header anyway
+- where: crates/al-analysis/src/queries/test_diagnostics.rs:92-105, consumed by crates/al-lsp/src/server/diagnostics.rs:749-754 (`test_diag_to_lsp`)
+- severity: medium
+- scenario: the comment at test_diagnostics.rs:92-98 explains the choice of `0` for a test method that the static discovery did not see: "fall back to line 0 — matching the documented 'unknown location' contract ... Line 1 would point at the codeunit header, misleading jump-to-diagnostic." But `line` is documented as 1-based and `test_diag_to_lsp` converts with `td.line.saturating_sub(1)`, so `0` and `1` both become LSP line 0 — the codeunit header. A test method present in the BC run results but missing from discovery (added since the last index, or a file whose parse failed) produces `file: "/src/MyTests.al", line: 0`, which the editor renders as a red squiggle on `codeunit 50100 "My Tests"`. The exact outcome the comment says it is avoiding. `discovered_codeunit_undiscovered_method_falls_back_to_line_zero` (373-398) asserts the sentinel and never follows it through the conversion.
+- fix: make the unknown-location case explicit rather than numeric, for example `line: Option<u32>`, and have the LSP layer skip publishing (or attach to the file with no range) when it is `None`.
+- status: open
+
+### [TEST] No test asserts that a failing test resolves to its source line
+- where: crates/al-analysis/src/queries/test_diagnostics.rs:234-291, 332-337
+- severity: medium
+- scenario: the module's stated job is "Failing tests become error-severity diagnostics pointing at the procedure declaration line inside the source file" (lines 5-6). Every `results_to_diagnostics` test builds `al_workspace::Workspace::new()`, an empty workspace, so `discover_tests` returns nothing, `cu_info` is `None` and every diagnostic comes out with `file: ""` and `line: 0`. The tests then assert only severity, message and `test_name`. `unrun_test_hints_returns_hints_for_empty_workspace` likewise asserts that an empty workspace produces no hints. The lookup at lines 91-105, which is the only logic in the module, could return a constant and every test would still pass. At the LSP boundary `file: ""` fails `Url::from_file_path` (crates/al-lsp/src/server/diagnostics.rs:776-781), so those diagnostics are dropped with a warning and never reach the editor.
+- fix: build a workspace holding a `[Test]` codeunit, run `results_to_diagnostics` against a `TestCodeunitResult` with the matching id, and assert the returned `file` and `line` point at the procedure.
+- status: open
+
+### [SLOP] Three of the module's six public functions have no caller
+- where: crates/al-analysis/src/queries/test_diagnostics.rs:136-138 (`clear_diagnostics`), 143-163 (`unrun_test_hints`), 179-189 (`find_proc_line`)
+- severity: low
+- scenario: a workspace-wide grep finds callers only for `group_by_file` and `results_to_diagnostics`. `clear_diagnostics` is `pub fn clear_diagnostics() -> Vec<TestDiagnostic> { Vec::new() }` with a test that asserts the empty vec is empty. `find_proc_line`'s own doc says it is "Used when the workspace file index is not available (e.g., in tests)", and that is its only use. The clearing path the dead function was presumably for is also broken on the consumer side: `publish_test_diagnostics` (crates/al-lsp/src/server/diagnostics.rs:766-786) says "Pass an empty `diagnostics` slice to clear test diagnostics", but an empty slice makes `group_by_file` return an empty map, so the publish loop never runs and no file is ever cleared.
+- fix: delete the three functions, and if clearing is wanted, have the LSP layer track the files it last published to and publish an empty diagnostic list to each.
 - status: open
