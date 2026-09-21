@@ -129,7 +129,7 @@ Listed by neither checklist:
   ```
   AL does not name a table that way in the second argument. A table subscriber is written `[EventSubscriber(ObjectType::Table, Database::"Sales Header", 'OnAfterInsertEvent', '', false, false)]`, and every fixture in this repo spells it that way (crates/al-analysis/src/queries/code_actions/events.rs:459, dead_code.rs:1260, transaction_lint.rs:859, crates/al-insight/src/calls.rs:2637, crates/al-syntax/src/sort.rs:541). `suggest_event` emits `Table::"Sales Header"`, which alc rejects, because `Table` is not an object-reference scope. `IntegrationPoint::example` is documented as a "Ready-to-paste [EventSubscriber] attribute" and the `{type:'table'}` query source exists specifically to produce table events, so the paste-ready output is wrong on the query's main path. `TableExtension`, `PageExtension` and the other extension kinds are wrong the same way.
 - fix: map `ObjectKind` to its AL object-reference scope (`Table`/`TableExtension` -> `Database`, `Page` -> `Page`, `Codeunit` -> `Codeunit`, `Report` -> `Report`, `XmlPort` -> `Xmlport`, `Query` -> `Query`) and use that for the second argument only. No test asserts the text of `example`, so add one per kind.
-- status: open
+- status: fixed 3302ac49 — `subscriber_scope` maps the two arguments separately, an extension resolves its `extends` target so the attribute names the base object, and a kind with no `ObjectType` member gets no attribute. Tests parse each emitted attribute with the grammar.
 
 ### [BUG] Which integration points `suggest_event` returns depends on HashMap iteration order
 - where: crates/al-analysis/src/queries/suggest_event.rs:259 and 602 (`insight.index.keys()`), 471-486 (`trace_from_node`'s shared `visited` plus `depth >= max_depth`)
