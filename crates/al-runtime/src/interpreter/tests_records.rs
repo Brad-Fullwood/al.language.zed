@@ -1821,6 +1821,7 @@ const STATE_ENUM: &str = r#"enum 50110 "My State"
 {
     value(0; Open) { }
     value(1; Released) { }
+    value(2; Closed) { }
 }
 "#;
 
@@ -1835,6 +1836,7 @@ const TICKET_TABLE: &str = r#"table 50111 "Ticket"
         {
             OptionMembers = Low,High;
         }
+        field(4; "Posting Date"; Date) { }
     }
     keys
     {
@@ -1910,4 +1912,71 @@ fn unassigned_option_field_reads_as_its_first_member() {
         vec![],
     );
     assert_eq!(ok(r), Value::Integer(0));
+}
+
+#[test]
+fn setfilter_accepts_date_placeholders() {
+    // The range a Date SetFilter selects must be the range SetRange selects.
+    let cu = r#"codeunit 50137 "Date Filter Tests"
+{
+    procedure FilterAndRange(): Integer
+    var
+        Ticket: Record "Ticket";
+        Filtered: Integer;
+    begin
+        Ticket.Init(); Ticket."No." := 'A'; Ticket."Posting Date" := 20240101D; Ticket.Insert();
+        Ticket.Init(); Ticket."No." := 'B'; Ticket."Posting Date" := 20240615D; Ticket.Insert();
+        Ticket.Init(); Ticket."No." := 'C'; Ticket."Posting Date" := 20241231D; Ticket.Insert();
+        Ticket.Reset();
+        Ticket.SetFilter("Posting Date", '%1..%2', 20240101D, 20240630D);
+        Filtered := Ticket.Count();
+        Ticket.Reset();
+        Ticket.SetRange("Posting Date", 20240101D, 20240630D);
+        exit(Filtered * 10 + Ticket.Count());
+    end;
+}
+"#;
+    let r = run(
+        &[
+            ("/ws/MyState.al", STATE_ENUM),
+            ("/ws/Ticket.al", TICKET_TABLE),
+            ("/ws/DateFilter.al", cu),
+        ],
+        "Date Filter Tests",
+        "FilterAndRange",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Integer(22));
+}
+
+#[test]
+fn setfilter_accepts_option_placeholders() {
+    // BC filters an option field by ordinal, so '%1|%2' over two enum members
+    // selects exactly the rows holding those two ordinals.
+    let cu = r#"codeunit 50138 "Option Filter Tests"
+{
+    procedure OpenOrReleased(): Integer
+    var
+        Ticket: Record "Ticket";
+    begin
+        Ticket.Init(); Ticket."No." := 'A'; Ticket.Status := "My State"::Open; Ticket.Insert();
+        Ticket.Init(); Ticket."No." := 'B'; Ticket.Status := "My State"::Released; Ticket.Insert();
+        Ticket.Init(); Ticket."No." := 'C'; Ticket.Status := "My State"::Closed; Ticket.Insert();
+        Ticket.Reset();
+        Ticket.SetFilter(Status, '%1|%2', "My State"::Open, "My State"::Released);
+        exit(Ticket.Count());
+    end;
+}
+"#;
+    let r = run(
+        &[
+            ("/ws/MyState.al", STATE_ENUM),
+            ("/ws/Ticket.al", TICKET_TABLE),
+            ("/ws/OptionFilter.al", cu),
+        ],
+        "Option Filter Tests",
+        "OpenOrReleased",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Integer(2));
 }

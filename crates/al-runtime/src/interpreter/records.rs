@@ -1941,12 +1941,22 @@ fn optional_boolean(method: &str, values: &[Value]) -> Result<bool, String> {
     }
 }
 
+/// Render a `SetFilter` placeholder value into the filter expression.
+///
+/// Date, Time and DateTime render as the day or millisecond carrier the cell
+/// itself holds, and an Option as its ordinal, because BC filters an option
+/// field by ordinal. Both then compare through the numeric arms of
+/// `filter::cmp_value`, so a `SetFilter(F, '%1..%2', A, B)` selects the rows
+/// `SetRange(F, A, B)` selects.
 fn render_filter_value(v: &Value) -> Result<String, String> {
     match v {
         Value::Integer(n) | Value::BigInteger(n) => Ok(n.to_string()),
         Value::Decimal(d) => Ok(d.normalize().to_string()),
         Value::Text(s) | Value::Code(s) => Ok(s.clone()),
         Value::Boolean(b) => Ok(b.to_string()),
+        Value::Date(d) | Value::Time(d) | Value::DateTime(d) => Ok(d.to_string()),
+        Value::Option { ordinal, .. } => Ok(ordinal.to_string()),
+        Value::Char(c) => Ok(c.to_string()),
         value => Err(format!(
             "placeholder value type {} is not supported by the local record runtime",
             value.type_name()
