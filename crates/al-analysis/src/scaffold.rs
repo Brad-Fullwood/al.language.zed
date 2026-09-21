@@ -785,8 +785,18 @@ fn generate_debug_json() -> Result<String, String> {
     .map_err(|e| format!("Failed to serialize debug.json: {e}"))
 }
 
+/// Escape `text` for an AL single-quoted string literal.
+///
+/// AL doubles `'` inside a literal and treats `"` as an ordinary character —
+/// the opposite of a quoted identifier, which `permissions::al_escape_name`
+/// handles. Using the identifier escape here produced
+/// `Message('Hello from Brad's App!');`, which does not parse.
+fn al_escape_literal(text: &str) -> String {
+    text.replace('\'', "''")
+}
+
 fn generate_starter_codeunit(config: &ScaffoldConfig) -> String {
-    let name = crate::permissions::al_escape_name(&config.name);
+    let name = al_escape_literal(&config.name);
     format!(
         r#"codeunit 50100 "Hello World"
 {{
@@ -867,9 +877,7 @@ fn generate_copilot_codeunit(config: &ScaffoldConfig) -> String {
 
 fn generate_azure_openai_codeunit(config: &ScaffoldConfig) -> String {
     let name = crate::permissions::al_escape_name(&config.name);
-    // The second interpolation is inside a single-quoted AL string literal;
-    // AL escapes single quotes as `''` (not `\'`). Apply the same convention.
-    let single_quoted = config.name.replace('\'', "''");
+    let single_quoted = al_escape_literal(&config.name);
     format!(
         r#"codeunit 50101 "{name} Azure OpenAI Helper"
 {{
@@ -1290,6 +1298,29 @@ mod tests {
         let config = ScaffoldConfig::default();
         let src = generate_starter_codeunit(&config);
         assert_al_parses("starter codeunit", &src);
+    }
+
+    /// The name goes into a single-quoted AL literal, where `'` is doubled and
+    /// `"` is an ordinary character. Escaping it for a quoted *identifier*
+    /// instead produced `Message('Hello from Brad's App!');`, which does not
+    /// parse, and printed `My""App` for a name containing a double quote.
+    #[test]
+    fn generated_starter_codeunit_escapes_the_name_for_a_string_literal() {
+        let config = ScaffoldConfig {
+            name: "Brad's App".to_string(),
+            ..ScaffoldConfig::default()
+        };
+        let src = generate_starter_codeunit(&config);
+        assert_al_parses("starter codeunit with an apostrophe", &src);
+        assert!(src.contains("Message('Hello from Brad''s App!');"), "{src}");
+
+        let config = ScaffoldConfig {
+            name: "My\"App".to_string(),
+            ..ScaffoldConfig::default()
+        };
+        let src = generate_starter_codeunit(&config);
+        assert_al_parses("starter codeunit with a double quote", &src);
+        assert!(src.contains("Message('Hello from My\"App!');"), "{src}");
     }
 
     #[test]
