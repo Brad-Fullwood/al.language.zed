@@ -38,28 +38,28 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - severity: medium
 - scenario: the needle list covers `Authorization: Bearer `, `access_token=`, `refresh_token=`, `client_secret=` and `password=`. The client's own `UserPassword`/`Windows` path sends `Authorization: Basic <base64(user:pass)>` (bc_client.rs:386). An IIS/BC verbose 401 or 500 page that echoes the request headers therefore lands in `BcClientError::AuthenticationFailed { message }` with the Base64 credential intact, and that message is printed by the CLI, logged, and returned over JSON-RPC. Also missing: `username=`, `pwd=`, `client_assertion=`, and `Authorization: Basic` with no space variant.
 - fix: add `"Authorization: Basic "`, `"Authorization:Basic "`, `"username="`, `"pwd="`, `"client_assertion="` to the needle array, and add a case-insensitive unit test with a Basic header body.
-- status: open
+- status: fixed 49458927
 
 ### [BUG] `dev_packages_url` does not add a scheme to a bare host, unlike `build_base_url`
 - where: crates/al-bc/src/launch.rs:86-102
 - severity: medium
 - scenario: `launch.json` with `"server": "bc.example.com"` (no scheme) is accepted by `is_safe_http_server` (launch.rs:261 returns `true` for any bare host). `build_base_url` (bc_client.rs:526-541) prepends `http://`, so publish works. `dev_packages_url` does not, so it produces `bc.example.com:7049/BC/dev/packages?...`. `url::Url::parse` reads `bc.example.com` as the scheme, and the reqwest GET in `bc_server::download_all` fails with an opaque URL error. With no port it produces `bc.example.com/BC/dev/packages?...`, which fails as "relative URL without a base". Result: publishing works but symbol download from the same config silently fails with an unrelated-looking error.
 - fix: factor the scheme-defaulting from `build_base_url` into one helper in `launch.rs` and call it from both `dev_packages_url` and `build_base_url`, keeping the cleartext warning in one place.
-- status: open
+- status: fixed 49458927
 
 ### [BUG] one unrelated debug configuration rejects the whole launch file
 - where: crates/al-bc/src/launch.rs:281-299 and 307-328
 - severity: medium
 - scenario: `parse_vscode_launch_file` deserializes every configuration into the typed `VsCodeLaunchConfigJson` before the `config_type == "al"` filter at line 323, so one bad *non-AL* entry fails `serde_json::from_value` for the whole file, `find_launch_config` returns `Err`, and no AL configuration is discovered. Unknown keys are ignored, so the trigger is a same-named key with a different type — `port` is the realistic one, since it is `Option<u16>` here and several adapters write it as a string. The VS Code Java extension's "Attach to Remote Program" snippet inserts `"port": "<debug port of debuggee>"` verbatim, so a `.vscode/launch.json` holding an AL config next to an unedited Java attach config breaks AL launch discovery, publish, and symbol download with "invalid type: string, expected u16". The Zed path (line 288) has the same shape: the per-config `from_value` runs before the `adapter == "al"` filter at line 294.
 - fix: filter on the raw `serde_json::Value` (`type`/`adapter` and `environmentType`) before typed deserialization, so a non-AL entry can never block AL discovery.
-- status: open
+- status: fixed 49458927
 
 ### [SLOP] `is_safe_http_server` comment describes a rejection that the code does not perform
 - where: crates/al-bc/src/launch.rs:258-261
 - severity: low
 - scenario: the comment says "reject if it contains a `:` followed by what looks like an unknown-scheme separator", then the body is an unconditional `true`. `is_safe_http_server("javascript:alert(1)")` returns `true` (the `split_once("://")` guard only catches schemes written with `//`). No caller is harmed today because both callers then prepend `http://` or use the value as a host, but the comment documents behavior that was never written.
 - fix: delete the two comment lines and state what the function does, or implement the check (reject a bare host whose pre-colon segment is not a host and whose post-colon segment is not all digits).
-- status: open
+- status: fixed 49458927
 
 ### [BUG] a killed alc build leaves a temp dir that permanently blocks the next build with the same pid
 - where: crates/al-compile/src/lib.rs:219-222
