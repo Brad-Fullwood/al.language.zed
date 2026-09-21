@@ -252,28 +252,40 @@ fn default_test_stub() -> String {
     "    [Test]\n    procedure TestSomething()\n    begin\n        Error('Placeholder test: implementation required');\n    end;\n".to_string()
 }
 
+/// Camel-case `name` into a bare AL identifier for a page control or report
+/// column.
+///
+/// The result has to be a legal unquoted identifier, so only `[A-Za-z0-9_]`
+/// survives. Base-app field names are full of characters that are not:
+/// `Amount (LCY)` used to come out as `amount(LCY)` and `Line Discount %` as
+/// `lineDiscount%`, neither of which compiles. An identifier also cannot start
+/// with a digit, so `2nd Reminder` gets the `field` prefix.
 fn al_identifier(name: &str) -> String {
-    let mut out = String::new();
+    const FALLBACK: &str = "field";
+    let mut out = String::with_capacity(name.len());
     let mut capitalize_next = false;
     for ch in name.chars() {
-        if ch == ' ' || ch == '-' || ch == '_' || ch == '.' {
-            capitalize_next = true;
-        } else if capitalize_next {
-            out.extend(ch.to_uppercase());
-            capitalize_next = false;
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            if capitalize_next {
+                out.extend(ch.to_uppercase());
+                capitalize_next = false;
+            } else {
+                out.push(ch);
+            }
         } else {
-            out.push(ch);
+            // Any separator or punctuation starts a new word.
+            capitalize_next = !out.is_empty();
         }
     }
-    if out.is_empty() {
-        "field".to_string()
-    } else {
-        let mut chars = out.chars();
-        match chars.next() {
-            None => String::new(),
-            Some(c) => c.to_lowercase().collect::<String>() + chars.as_str(),
-        }
+
+    let mut chars = out.chars();
+    let Some(first) = chars.next() else {
+        return FALLBACK.to_string();
+    };
+    if first.is_ascii_digit() {
+        return format!("{FALLBACK}{}", out);
     }
+    first.to_lowercase().collect::<String>() + chars.as_str()
 }
 
 fn sanitize_identifier(name: &str) -> String {
@@ -468,6 +480,58 @@ mod tests {
         assert_eq!(al_identifier("No."), "no");
         assert_eq!(al_identifier("Customer Name"), "customerName");
         assert_eq!(al_identifier("Unit of Measure"), "unitOfMeasure");
+    }
+
+    /// Base-app field names carry punctuation that is not legal in a bare AL
+    /// identifier. Passing it through produced `field(amount(LCY); …)`.
+    #[test]
+    fn al_identifier_drops_characters_an_identifier_cannot_hold() {
+        assert_eq!(al_identifier("Amount (LCY)"), "amountLCY");
+        assert_eq!(al_identifier("Line Discount %"), "lineDiscount");
+        assert_eq!(
+            al_identifier("Qty. per Unit of Measure"),
+            "qtyPerUnitOfMeasure"
+        );
+        assert_eq!(al_identifier("2nd Reminder"), "field2ndReminder");
+        assert_eq!(al_identifier("%"), "field");
+        assert_eq!(al_identifier(""), "field");
+    }
+
+    /// The whole point of the sanitisation: a page over a table with such a
+    /// field has to compile.
+    #[test]
+    fn generate_page_over_punctuated_field_names_parses() {
+        let table = make_table(
+            "Cust. Ledger Entry",
+            vec![
+                make_field(1, "Amount (LCY)", "Decimal"),
+                make_field(2, "Line Discount %", "Decimal"),
+                make_field(3, "2nd Reminder", "Boolean"),
+            ],
+        );
+        let config = GeneratePageConfig {
+            object_id: 50100,
+            page_name: "Cust Ledger List".to_string(),
+            page_type: PageType::List,
+            source_table: table.clone(),
+        };
+        let src = generate_page(&config);
+        assert_al_parses("page over punctuated field names", &src);
+        assert!(
+            src.contains("field(amountLCY; Rec.\"Amount (LCY)\")"),
+            "{src}"
+        );
+
+        let report = generate_report(&GenerateReportConfig {
+            object_id: 50101,
+            report_name: "Cust Ledger Report".to_string(),
+            source_table: table,
+        });
+        assert_al_parses("report over punctuated field names", &report);
+        assert!(
+            report.contains("column(lineDiscount; \"Line Discount %\")"),
+            "{report}"
+        );
     }
 
     #[test]
