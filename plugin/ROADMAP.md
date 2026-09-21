@@ -4,12 +4,27 @@
 
 - [x] `.claude-plugin/plugin.json`, `.mcp.json`, `scripts/al-bin.sh` (shellcheck clean)
 - [x] `.claude-plugin/marketplace.json` at the repository root
-- [ ] Eight skills under `skills/`
-- [ ] Two subagents under `agents/`
-- [ ] `claude plugin validate ./plugin` passes
-- [ ] `make plugin-validate`
-- [ ] README section
-- [ ] `plugin/TESTING.md` with five Haiku runs recorded
+- [x] Eight skills under `skills/`
+- [x] Two subagents under `agents/`
+- [x] `hooks/hooks.json` plus `scripts/al-session-context.sh`, firing only in an AL project
+- [x] `claude plugin validate ./plugin` and `claude plugin validate .` pass
+- [x] `make plugin-validate`
+- [x] README section
+- [x] `plugin/TESTING.md` with five Haiku runs recorded, all correct through the plugin
+
+Left for the next agent:
+
+- [ ] Agent runs for `bc-object-id-allocator`, `bc-test-locally`,
+      `bc-upgrade-impact`, `bc-workspace-health` and `bc-cop-fixer`. Their
+      commands are verified by hand, but none has been through a Haiku session.
+- [ ] An agent run against a project with `.alpackages`, which is the only way
+      to exercise the base-app lookups, the dependency source index and the
+      30-second timeout the skills tell the agent to retry.
+- [ ] `claude plugin eval` cases under `plugin/evals/`, one per question in
+      section 2 of `Docs/campaign/findings/ai-tooling-ideas.md`, so triggering
+      is measured rather than sampled.
+- [ ] A `Setup` hook that offers to download a release archive into
+      `$CLAUDE_PLUGIN_DATA/bin` when `al-bin.sh` finds nothing.
 
 ## What to simplify once build items 1 to 5 land
 
@@ -67,17 +82,44 @@ still transfers half a megabyte through the pipe.
 
 ### Item 4, free object IDs
 
-No tool enumerates free IDs in `app.json`'s `idRanges`, and no `al-explorer`
-subcommand exposes the daemon's `location` method either.
+No tool enumerates free IDs in `app.json`'s `idRanges`.
 
 Workaround: `skills/bc-object-id-allocator/SKILL.md` reads `idRanges` from
-`app.json` with `jq`, collects used IDs from `al-explorer --json search` filtered
-to `"(workspace)"`, and subtracts them in `jq`. The search-based inventory misses
-an object kind that no search term matches, so the skill also greps the source as
-a cross-check.
+`app.json` with `jq`, greps the workspace source for `<kind> <number>`
+declarations, and subtracts the two with `seq` and `grep -vxFf`. `search` is not
+usable for the inventory: it is fuzzy, and a single-letter query returned 20 of
+the fixture's 23 objects.
 
 - Replace the whole recipe with `al-explorer free-ids --kind table` once item 4
   lands, and keep `native-check` as the confirmation step.
+
+### No way to map an object to its file
+
+The daemon has a `location` method, but no `al-explorer` subcommand and no MCP
+tool expose it, and `source "<name>"` without `--procedure` returns `code`
+without a `range`. A Haiku run asked for `.range`, got `null`, and fell back to
+`find`.
+
+Workaround: `skills/bc-symbol-lookup/SKILL.md` gives two routes, `source
+--procedure <member>` for `range.f`, and a grep for the declaration line.
+
+- Add an `al-explorer location` subcommand over the existing daemon method, then
+  delete the grep fallback from that skill and from
+  `agents/bc-symbol-scout.md`.
+
+### Workspace objects return a stub
+
+`object` and `by-id` return `fields` and `methods` only for objects that came
+from a `.app` package. For a workspace object they return kind, id, name,
+package and `source_availability`, and nothing else. Two Haiku runs hit this:
+one asked `by-id codeunit 50130` for `.methods[0].name` and got `null`.
+
+Workaround: read `source "<name>" | jq -r '.code'` for a workspace object's
+members, documented in `skills/bc-symbol-lookup/SKILL.md` and as rule 2 in
+`agents/bc-symbol-scout.md`.
+
+- Populating `fields` and `methods` from the workspace symbol index would make
+  one recipe serve both cases. It is not in the build list; add it there.
 
 ### Item 5, wrong answers to route around
 
@@ -127,6 +169,18 @@ reporting failure.
 
 - When item 7 lands, replace the retry advice with a `status` check on
   `sourceIndex.state`.
+
+### Triggering
+
+Skill descriptions alone did not fire on Haiku in a session that already had
+about sixty other skills loaded. A correct answer arrived through `find` and
+`grep` while all eight skills sat unused. Two things fixed it: descriptions that
+lead with the shape of the question and name the tools they replace, and a
+`SessionStart` hook that emits a routing note in an AL project.
+
+The hook is a blunt instrument. It is worth removing once
+`claude plugin eval` shows the descriptions trigger on their own, which needs
+the eval cases listed in the checklist above.
 
 ### Memory
 
