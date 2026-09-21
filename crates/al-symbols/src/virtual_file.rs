@@ -124,7 +124,7 @@ fn write_virtual_file(
             }
         },
     };
-    let tmp_path = virtual_file_temp_path(file_path);
+    let tmp_path = crate::temp_path::beside(file_path, "symbol.al");
     let write_result = (|| -> std::io::Result<()> {
         let mut file = fs::OpenOptions::new()
             .write(true)
@@ -179,20 +179,6 @@ fn materialized_availability(path: &Path) -> std::io::Result<SourceAvailability>
     } else {
         Ok(SourceAvailability::EmbeddedSource)
     }
-}
-
-fn virtual_file_temp_path(target: &Path) -> PathBuf {
-    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let filename = target
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("symbol.al");
-    target.with_file_name(format!(
-        ".{filename}.{}.{}.tmp",
-        std::process::id(),
-        sequence
-    ))
 }
 
 /// mtime of the running al-lsp executable, computed once. Cache entries older

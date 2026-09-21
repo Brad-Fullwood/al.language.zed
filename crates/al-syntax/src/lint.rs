@@ -706,10 +706,10 @@ fn lint_unused_in_callable(
 
     let mut references = std::collections::HashSet::new();
     for body in bodies {
-        collect_primary_expression_names(body, source, &mut references);
+        crate::navigation::collect_primary_expression_names_into(body, source, &mut references);
     }
     for value in initializer_values {
-        collect_primary_expression_names(value, source, &mut references);
+        crate::navigation::collect_primary_expression_names_into(value, source, &mut references);
     }
 
     for declaration in declarations {
@@ -759,50 +759,6 @@ fn collect_local_declarations<'tree>(
                 continue;
             }
             _ => {}
-        }
-
-        let mut cursor = node.walk();
-        stack.extend(node.children(&mut cursor));
-    }
-}
-
-fn collect_primary_expression_names(
-    root: tree_sitter::Node<'_>,
-    source: &[u8],
-    names: &mut std::collections::HashSet<String>,
-) {
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
-        if node.kind() == "primary_expression" {
-            if let Some(child) = node.named_child(0) {
-                if matches!(
-                    child.kind(),
-                    "name"
-                        | "name_or_keyword"
-                        | "identifier"
-                        | "quoted_identifier"
-                        | "object_keyword"
-                        | "type_keyword"
-                        | "metadata_keyword"
-                        | "property_keyword"
-                        | "keyword"
-                ) {
-                    if let Some(name) = crate::node_text_clean(child, source) {
-                        names.insert(name.to_ascii_lowercase());
-                    }
-                    continue;
-                }
-            }
-        }
-
-        // FOR/FOREACH iterator fields are identifier nodes rather than primary
-        // expressions, but the loop machinery itself is a meaningful use.
-        if matches!(node.kind(), "for_statement" | "foreach_statement") {
-            if let Some(iterator) = node.child_by_field_name("iterator") {
-                if let Some(name) = crate::node_text_clean(iterator, source) {
-                    names.insert(name.to_ascii_lowercase());
-                }
-            }
         }
 
         let mut cursor = node.walk();

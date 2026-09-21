@@ -542,9 +542,10 @@ async fn get_with_retry(
     for attempt in 1..=MAX_DOWNLOAD_ATTEMPTS {
         match client.get(url).send().await {
             Ok(response)
-                if is_retryable_status(response.status()) && attempt < MAX_DOWNLOAD_ATTEMPTS =>
+                if crate::retry::is_retryable_status(response.status().as_u16())
+                    && attempt < MAX_DOWNLOAD_ATTEMPTS =>
             {
-                let delay = retry_delay(&response, attempt);
+                let delay = crate::retry::retry_delay(response.headers(), attempt as u32 - 1);
                 warn!(url, status = %response.status(), attempt, ?delay, "Transient NuGet response; retrying");
                 tokio::time::sleep(delay).await;
             }
@@ -560,20 +561,6 @@ async fn get_with_retry(
     unreachable!("retry loop always returns on its final attempt")
 }
 
-fn is_retryable_status(status: reqwest::StatusCode) -> bool {
-    matches!(status.as_u16(), 429 | 502 | 503 | 504)
-}
-
-fn retry_delay(response: &reqwest::Response, attempt: usize) -> std::time::Duration {
-    response
-        .headers()
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(|seconds| std::time::Duration::from_secs(seconds.min(30)))
-        .unwrap_or_else(|| std::time::Duration::from_millis(200 * (1 << (attempt - 1))))
-}
-
 fn body_too_large_error(name: &str, actual: u64, limit: u64) -> NuGetError {
     NuGetError::Io(std::io::Error::new(
         std::io::ErrorKind::InvalidData,
@@ -582,8 +569,6 @@ fn body_too_large_error(name: &str, actual: u64, limit: u64) -> NuGetError {
 }
 
 fn download_temp_path(dest: &Path, package_id: &str) -> PathBuf {
-    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let safe_id: String = package_id
         .chars()
         .map(|character| {
@@ -595,9 +580,8 @@ fn download_temp_path(dest: &Path, package_id: &str) -> PathBuf {
         })
         .collect();
     dest.join(format!(
-        ".{safe_id}.{}.{}.nupkg.tmp",
-        std::process::id(),
-        sequence
+        ".{safe_id}.{}.nupkg.tmp",
+        crate::temp_path::unique_token()
     ))
 }
 

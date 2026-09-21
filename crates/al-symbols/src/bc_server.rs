@@ -269,18 +269,9 @@ impl BcServerClient {
             match request.send().await {
                 Ok(response) => {
                     let status = response.status().as_u16();
-                    let transient = matches!(status, 429 | 502 | 503 | 504);
-                    if transient && attempt + 1 < MAX_ATTEMPTS {
-                        let retry_after = response
-                            .headers()
-                            .get(reqwest::header::RETRY_AFTER)
-                            .and_then(|value| value.to_str().ok())
-                            .and_then(|value| value.parse::<u64>().ok())
-                            .map(std::time::Duration::from_secs)
-                            .unwrap_or_else(|| {
-                                std::time::Duration::from_millis(200 * (1u64 << attempt))
-                            })
-                            .min(std::time::Duration::from_secs(30));
+                    if crate::retry::is_retryable_status(status) && attempt + 1 < MAX_ATTEMPTS {
+                        let retry_after =
+                            crate::retry::retry_delay(response.headers(), attempt as u32);
                         warn!(
                             package = %dep.name,
                             status,

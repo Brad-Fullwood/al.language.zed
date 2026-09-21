@@ -543,9 +543,19 @@ pub fn collect_primary_expression_names(
     tree: &Tree,
     source: &str,
 ) -> std::collections::HashSet<String> {
-    let bytes = source.as_bytes();
     let mut names = std::collections::HashSet::new();
-    let mut stack = vec![tree.root_node()];
+    collect_primary_expression_names_into(tree.root_node(), source.as_bytes(), &mut names);
+    names
+}
+
+/// [`collect_primary_expression_names`] over one subtree, accumulating into
+/// `names`, for callers that walk several scopes of one file.
+pub(crate) fn collect_primary_expression_names_into(
+    root: Node<'_>,
+    source: &[u8],
+    names: &mut std::collections::HashSet<String>,
+) {
+    let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         if node.kind() == "primary_expression" {
             if let Some(child) = node.named_child(0) {
@@ -561,24 +571,27 @@ pub fn collect_primary_expression_names(
                         | "property_keyword"
                         | "keyword"
                 ) {
-                    if let Some(name) = super::node_text_clean(child, bytes) {
+                    if let Some(name) = super::node_text_clean(child, source) {
                         names.insert(name.to_ascii_lowercase());
                     }
                     continue;
                 }
             }
         }
+
+        // FOR/FOREACH iterator fields are identifier nodes rather than primary
+        // expressions, but the loop machinery itself is a meaningful use.
         if matches!(node.kind(), "for_statement" | "foreach_statement") {
             if let Some(iterator) = node.child_by_field_name("iterator") {
-                if let Some(name) = super::node_text_clean(iterator, bytes) {
+                if let Some(name) = super::node_text_clean(iterator, source) {
                     names.insert(name.to_ascii_lowercase());
                 }
             }
         }
+
         let mut cursor = node.walk();
         stack.extend(node.children(&mut cursor));
     }
-    names
 }
 
 #[cfg(test)]
