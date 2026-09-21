@@ -557,7 +557,7 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
             .iter()
             .map(|p| {
                 let var_prefix = if p.is_var { "var " } else { "" };
-                format!("{}{}: {}", var_prefix, p.name, p.type_name)
+                format!("{}{}: {}", var_prefix, format_name(&p.name), p.type_name)
             })
             .collect();
 
@@ -565,7 +565,7 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
         out.push_str(&format!(
             "{}procedure {}({})",
             local,
-            m.name,
+            format_name(&m.name),
             params.join("; ")
         ));
         if let Some(ref ret) = m.return_type {
@@ -605,8 +605,17 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
     if !entry.keys.is_empty() {
         out.push_str("    keys\n    {\n");
         for k in &entry.keys {
-            let fields = k.field_names.join(", ");
-            out.push_str(&format!("        key({}; {})\n", k.name, fields));
+            let fields = k
+                .field_names
+                .iter()
+                .map(|field| format_name(field))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!(
+                "        key({}; {})\n",
+                format_name(&k.name),
+                fields
+            ));
         }
         out.push_str("    }\n\n");
     }
@@ -623,7 +632,12 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
         out.push_str("    var\n");
         for v in &entry.variables {
             let prot = if v.is_protected { "protected " } else { "" };
-            out.push_str(&format!("        {}{}: {};\n", prot, v.name, v.type_name));
+            out.push_str(&format!(
+                "        {}{}: {};\n",
+                prot,
+                format_name(&v.name),
+                v.type_name
+            ));
         }
         out.push('\n');
     }
@@ -1212,6 +1226,76 @@ mod tests {
             ..Default::default()
         };
         assert!(render_outline(&entry).starts_with("codeunit 1 \"Has\"\"Quote\"\n"));
+    }
+
+    /// BC's own tables use names like `No.` and `Entry No.` for fields, keys,
+    /// parameters and variables. The outline claims to be valid AL, so the
+    /// generated text has to parse.
+    #[test]
+    fn render_outline_of_bc_style_names_parses_as_al() {
+        use crate::model::{FieldSymbol, KeySymbol, MethodSymbol, ParameterSymbol, VariableSymbol};
+
+        let entry = SymbolEntry {
+            kind: ObjectKind::Table,
+            id: 18,
+            name: "Customer".to_string(),
+            fields: vec![
+                FieldSymbol {
+                    id: 1,
+                    name: "No.".to_string(),
+                    type_name: "Code[20]".to_string(),
+                    properties: Vec::new(),
+                },
+                FieldSymbol {
+                    id: 2,
+                    name: "Entry No.".to_string(),
+                    type_name: "Integer".to_string(),
+                    properties: Vec::new(),
+                },
+            ],
+            keys: vec![KeySymbol {
+                name: "Key1".to_string(),
+                field_names: vec!["No.".to_string(), "Entry No.".to_string()],
+                properties: Vec::new(),
+            }],
+            variables: vec![VariableSymbol {
+                name: "Sales Header".to_string(),
+                type_name: "Record \"Sales Header\"".to_string(),
+                is_protected: false,
+            }],
+            methods: vec![MethodSymbol {
+                name: "Post Document".to_string(),
+                parameters: vec![ParameterSymbol {
+                    name: "Line No.".to_string(),
+                    type_name: "Integer".to_string(),
+                    is_var: true,
+                }],
+                return_type: Some("Boolean".to_string()),
+                attributes: Vec::new(),
+                is_local: false,
+            }],
+            ..Default::default()
+        };
+
+        let outline = render_outline(&entry);
+        for expected in [
+            "key(Key1; \"No.\", \"Entry No.\")",
+            "procedure \"Post Document\"(var \"Line No.\": Integer)",
+            "\"Sales Header\": Record \"Sales Header\";",
+        ] {
+            assert!(outline.contains(expected), "missing {expected}:\n{outline}");
+        }
+
+        let parsed = al_syntax::AlParser::parse_quick(&outline);
+        assert!(
+            parsed.errors.is_empty(),
+            "generated outline does not parse: {:?}\n{outline}",
+            parsed
+                .errors
+                .iter()
+                .map(|error| error.message.clone())
+                .collect::<Vec<_>>()
+        );
     }
 
     /// Object-level navigation must work for ID-less kinds in both rendered
