@@ -172,7 +172,7 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - severity: medium
 - scenario: nothing outside these two crates calls `al_publish::publish`, `BcClient::new`, `publish_extension` or `rad_publish`. The only caller in the repo is `crates/al-test-harness/tests/live_bc_contract.rs:420-433`, which is `#[ignore]`d (line 914) and needs live BC credentials. There is no `publish` subcommand in `al-explorer` (`cli/args.rs` has none) and no `publish` method in the daemon table (`daemon/mod.rs` dispatches `compile` and `package`, both of which build only). `al-lsp` declares `al-publish` as a dependency (Cargo.toml:33) and never references it in any source file, so it is linked into the shipped binary for nothing. The feature is documented as working in `Docs/features/native-app-emitter.md`.
 - fix: decide it: either wire `publish` into `al-explorer` and the daemon, or move `al-publish` behind a feature flag and drop the unused `al-lsp` dependency edge. Note this also means the two publish-path security findings above are not user-reachable today, which is the right time to fix them.
-- status: open
+- status: fixed 4d17d271 (CLI + daemon). `al-explorer publish` and the daemon's `publish` method both call `al_publish::publish`, which makes the al-lsp dependency edge real. Native DAP launch is **not** unified: `al-dap`'s `bc_debug/rest.rs` posts a multipart form to `{base}/dev/apps` with `SchemaUpdateMode`/`DependencyPublishingOption` and its own OAuth token, while `al-publish` posts an octet-stream to `{base}/dev/extensions`. Those are different BC dev endpoints, and picking one needs a live BC server to confirm which versions accept it — see the follow-up finding below.
 
 ### [BUG] `test-snapshot capture` prints `[PASS]` and exits 0 when the captured test failed
 - where: crates/al-explorer/src/cli/commands/lsp/refactor.rs:262-279
@@ -249,6 +249,13 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - scenario: `parse_property_value` requires the trimmed line to *start* with `Caption =`, and the anchor stack only gains the member after the line's `{` is consumed. So `field(1; "No."; Code[20]) { Caption = 'No.'; }` — legal AL, and the compact style the differential corpus itself uses — produces no unit at all. Worse, if the scan is made to see it without fixing the anchor, the caption keys onto the enclosing object and collides with the object's own `Caption`, where the duplicate-id filter drops one of the two. alc emits `Table 4006738456 - Field 4200184881 - Property 2879900210` for that declaration. Found by `crates/al-test-harness/tests/xliff_id_contract.rs`, whose fixture had to be written multi-line to pass.
 - fix: scan properties across the whole line rather than from its start, and anchor a property that follows an opening `{` on the same line to the member that `{` opened.
 - status: open (in al-analysis, which another agent holds on another branch)
+
+### [SLOP] two BC publish clients target two different dev endpoints
+- where: crates/al-dap/src/dap/bc_debug/rest.rs:14-70 and crates/al-bc/src/bc_client.rs (`publish_extension`)
+- severity: medium
+- scenario: native DAP launch publishes with `POST {base}/dev/apps`, a multipart form carrying `SchemaUpdateMode` and `DependencyPublishingOption`, authenticated with the token from its own sign-in. `al-publish` publishes with `POST {base}/dev/extensions`, an octet-stream body, authenticated from `BC_ACCESS_TOKEN` or `BC_USERNAME`/`BC_PASSWORD`. A fix to one (a size cap, a redaction, a retry, a status check) does not reach the other, and the two disagree about what "publish succeeded" means.
+- fix: confirm against a live BC server which endpoint each supported version accepts, then keep one client. `al-publish` is the one with the phase model, the size caps and the wiremock coverage, so it should absorb the DAP path's query parameters and token source rather than the other way round.
+- status: open (needs a live BC server; `Docs/campaign/findings/r1b-runtime-dap.md` owns the DAP surface)
 
 ## Backlog re-verification (2026-07-31 "Emit, BC & Explorer" section)
 
