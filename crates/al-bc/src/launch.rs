@@ -74,14 +74,7 @@ impl BcServerConfig {
 
         match self.environment_type {
             EnvironmentType::OnPrem => {
-                let server = self.server.as_deref()?;
-                if !is_safe_http_server(server) {
-                    warn!(
-                        server = %server,
-                        "BC server URL must start with http:// or https:// (or be a bare host); refusing to construct dev-packages URL"
-                    );
-                    return None;
-                }
+                let server = server_with_scheme(self.server.as_deref()?)?;
                 let instance = self.server_instance.as_deref()?;
                 let base = if let Some(port) = self.port {
                     format!("{}:{}", server.trim_end_matches('/'), port)
@@ -135,8 +128,6 @@ struct ZedDebugConfigJson {
     #[serde(default)]
     label: String,
     #[serde(default)]
-    adapter: String,
-    #[serde(default)]
     environment_type: Option<String>,
     #[serde(default)]
     server: Option<String>,
@@ -155,18 +146,10 @@ struct ZedDebugConfigJson {
 }
 
 #[derive(Debug, Deserialize)]
-struct VsCodeLaunchJson {
-    #[serde(default)]
-    configurations: Vec<VsCodeLaunchConfigJson>,
-}
-
-#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VsCodeLaunchConfigJson {
     #[serde(default)]
     name: String,
-    #[serde(default, rename = "type")]
-    config_type: String,
     #[serde(default)]
     environment_type: Option<String>,
     #[serde(default)]
@@ -251,14 +234,48 @@ pub fn is_safe_http_server(server: &str) -> bool {
     if s.is_empty() {
         return false;
     }
-    if let Some(rest) = s.split_once("://") {
-        let scheme = rest.0.to_ascii_lowercase();
+    if let Some((scheme, _)) = s.split_once("://") {
+        let scheme = scheme.to_ascii_lowercase();
         return scheme == "http" || scheme == "https";
     }
-    // Bare host (no scheme): reject if it contains a `:` followed by what looks
-    // like an unknown-scheme separator. A `:` for port-only (e.g. `localhost:7048`)
-    // is fine; that's a port number, not a scheme. Accept the rest.
-    true
+    // A bare host has no `://`, so the only `:` it can carry is a port
+    // separator. Reject anything else after it, which catches a scheme written
+    // without slashes (`javascript:alert(1)`, `file:/etc/passwd`).
+    match s.split_once(':') {
+        Some((host, port)) => {
+            !host.is_empty() && !port.is_empty() && port.chars().all(|c| c.is_ascii_digit())
+        }
+        None => true,
+    }
+}
+
+/// `server` with a scheme, or `None` when it is not an acceptable BC server.
+///
+/// Both URL builders need this: `build_base_url` prepends `http://` to a bare
+/// host, and `dev_packages_url` used not to, so a `launch.json` with
+/// `"server": "bc.example.com"` published fine and then failed symbol download
+/// with `url::Url` reading `bc.example.com` as the scheme.
+pub fn server_with_scheme(server: &str) -> Option<String> {
+    let server = server.trim();
+    if !is_safe_http_server(server) {
+        warn!(
+            server = %server,
+            "BC server URL must be http(s):// or a bare host; refusing to build a request URL"
+        );
+        return None;
+    }
+    if server.starts_with("http://") || server.starts_with("https://") {
+        return Some(server.to_string());
+    }
+    // Not silent: defaulting to http:// here means Basic (UserPassword/Windows)
+    // credentials go out Base64-in-cleartext. Say so, so an operator who wanted
+    // TLS notices a plain hostname was misread as http.
+    warn!(
+        server = %server,
+        "BC server URL has no scheme — defaulting to http:// (cleartext); Basic/Windows \
+         credentials will be sent unencrypted. Use an explicit https:// URL to avoid this."
+    );
+    Some(format!("http://{server}"))
 }
 
 fn read_launch_file_capped(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
@@ -275,6 +292,22 @@ fn read_launch_file_capped(path: &Path) -> Result<String, Box<dyn std::error::Er
     Ok(std::fs::read_to_string(path)?)
 }
 
+/// Whether a raw debug configuration is an AL one. `kind_key` is `type` in a
+/// VS Code `launch.json` and `adapter` in a Zed `debug.json`.
+///
+/// This has to run before typed deserialization. One unrelated configuration
+/// with a same-named key of a different type used to fail `from_value` for the
+/// whole file, so no AL configuration was found at all: the VS Code Java
+/// "Attach to Remote Program" snippet writes `"port": "<debug port of
+/// debuggee>"` verbatim, and `port` is an `Option<u16>` here.
+fn is_al_debug_config(value: &serde_json::Value, kind_key: &str) -> bool {
+    value.get(kind_key).and_then(serde_json::Value::as_str) == Some("al")
+        || value
+            .get("environmentType")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+}
+
 fn parse_zed_debug_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std::error::Error>> {
     let content = read_launch_file_capped(path)?;
     let clean = strip_json_comments(&content);
@@ -283,16 +316,10 @@ fn parse_zed_debug_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std::err
     let configs: Vec<BcServerConfig> = configs_raw
         .into_iter()
         .enumerate()
-        .map(|debug_args| {
-            let (index, debug_args) = debug_args;
-            let parsed: ZedDebugConfigJson = serde_json::from_value(debug_args.clone())
+        .filter(|(_, debug_args)| is_al_debug_config(debug_args, "adapter"))
+        .map(|(index, debug_args)| {
+            let config: ZedDebugConfigJson = serde_json::from_value(debug_args.clone())
                 .map_err(|error| format!("configuration {index}: {error}"))?;
-            Ok((index, parsed, debug_args))
-        })
-        .collect::<Result<Vec<_>, String>>()?
-        .into_iter()
-        .filter(|(_, config, _)| config.adapter == "al" || config.environment_type.is_some())
-        .map(|(index, config, debug_args)| {
             convert_zed_config(config, debug_args)
                 .map_err(|error| format!("configuration {index}: {error}"))
         })
@@ -308,20 +335,19 @@ fn parse_vscode_launch_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std:
     let content = read_launch_file_capped(path)?;
     let clean = strip_json_comments(&content);
     let raw_value: serde_json::Value = serde_json::from_str(&clean)?;
-    let raw: VsCodeLaunchJson = serde_json::from_value(raw_value.clone())?;
     let raw_configs = raw_value
         .get("configurations")
         .and_then(serde_json::Value::as_array)
         .cloned()
         .unwrap_or_default();
 
-    let configs: Vec<BcServerConfig> = raw
-        .configurations
+    let configs: Vec<BcServerConfig> = raw_configs
         .into_iter()
-        .zip(raw_configs)
         .enumerate()
-        .filter(|(_, (config, _))| config.config_type == "al" || config.environment_type.is_some())
-        .map(|(index, (config, debug_args))| {
+        .filter(|(_, debug_args)| is_al_debug_config(debug_args, "type"))
+        .map(|(index, debug_args)| {
+            let config: VsCodeLaunchConfigJson = serde_json::from_value(debug_args.clone())
+                .map_err(|error| format!("configuration {index}: {error}"))?;
             convert_vscode_config(config, debug_args)
                 .map_err(|error| format!("configuration {index}: {error}"))
         })
@@ -704,9 +730,76 @@ mod tests {
 
     #[test]
     fn dev_packages_url_onprem_unsafe_server_returns_none() {
+        for server in [
+            "file:///etc/passwd",
+            // A scheme written without slashes reached `is_safe_http_server`'s
+            // bare-host branch, which returned true unconditionally.
+            "javascript:alert(1)",
+            "file:/etc/passwd",
+            "localhost:notaport",
+        ] {
+            let mut cfg = onprem_config();
+            cfg.server = Some(server.to_string());
+            assert!(
+                cfg.dev_packages_url(&make_dep()).is_none(),
+                "{server} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn dev_packages_url_adds_a_scheme_to_a_bare_host() {
+        // `build_base_url` prepended `http://` and this did not, so publishing
+        // worked and symbol download from the same config failed with
+        // `url::Url` reading `bc.example.com` as the scheme.
         let mut cfg = onprem_config();
-        cfg.server = Some("file:///etc/passwd".to_string());
-        assert!(cfg.dev_packages_url(&make_dep()).is_none());
+        cfg.server = Some("bc.example.com".to_string());
+        cfg.port = Some(7049);
+        let url = cfg.dev_packages_url(&make_dep()).unwrap();
+        assert!(
+            url.starts_with("http://bc.example.com:7049/BC/dev/packages?"),
+            "unexpected URL: {url}"
+        );
+        assert_eq!(url::Url::parse(&url).unwrap().scheme(), "http");
+    }
+
+    #[test]
+    fn one_broken_non_al_configuration_does_not_hide_the_al_one() {
+        // VS Code's Java "Attach to Remote Program" snippet writes
+        // `"port": "<debug port of debuggee>"` verbatim. `port` is an
+        // `Option<u16>` here, so deserializing every configuration before
+        // filtering on `type` failed the whole file.
+        let dir = make_tempdir("broken-sibling");
+        std::fs::create_dir_all(dir.join(".vscode")).unwrap();
+        std::fs::write(
+            dir.join(".vscode/launch.json"),
+            r#"{"configurations":[
+                {"name":"Java","type":"java","request":"attach",
+                 "port":"<debug port of debuggee>"},
+                {"name":"AL","type":"al","environmentType":"Sandbox",
+                 "tenant":"contoso","environmentName":"Sandbox"}
+            ]}"#,
+        )
+        .unwrap();
+
+        let file = find_launch_config(&dir)
+            .expect("a non-AL configuration must not fail the file")
+            .expect("AL config");
+        assert_eq!(file.configs.len(), 1);
+        assert_eq!(file.configs[0].name, "AL");
+    }
+
+    #[test]
+    fn a_broken_al_configuration_is_still_an_error() {
+        let dir = make_tempdir("broken-al");
+        std::fs::create_dir_all(dir.join(".vscode")).unwrap();
+        std::fs::write(
+            dir.join(".vscode/launch.json"),
+            r#"{"configurations":[{"name":"AL","type":"al","port":"nope"}]}"#,
+        )
+        .unwrap();
+
+        find_launch_config(&dir).expect_err("a malformed AL configuration must be reported");
     }
 
     #[test]

@@ -31,7 +31,7 @@ use serde::Deserialize;
 use thiserror::Error;
 use tracing::{debug, warn};
 
-use crate::launch::{is_safe_http_server, AuthMethod, BcServerConfig, EnvironmentType};
+use crate::launch::{AuthMethod, BcServerConfig, EnvironmentType};
 
 /// Maximum bytes of an HTTP error body kept in BcClientError messages.
 /// Anything past this is replaced with a `... [N more bytes truncated]`
@@ -61,10 +61,19 @@ pub fn sanitize_error_body(body: &str) -> String {
     for needle in [
         "Authorization: Bearer ",
         "Authorization:Bearer ",
+        // The UserPassword/Windows path sends `Authorization: Basic
+        // <base64(user:pass)>`, so a verbose IIS/BC 401 or 500 page that echoes
+        // the request headers used to carry the credential into the error
+        // message the CLI prints and the daemon returns over JSON-RPC.
+        "Authorization: Basic ",
+        "Authorization:Basic ",
         "access_token=",
         "refresh_token=",
         "client_secret=",
+        "client_assertion=",
         "password=",
+        "pwd=",
+        "username=",
     ] {
         // BC/IIS error pages commonly capitalize these differently
         // (`Password=`, `PASSWORD=`, `authorization: bearer …`), so matching
@@ -512,34 +521,10 @@ fn build_base_url(config: &BcServerConfig) -> String {
             // (`launch.rs::dev_packages_url`) enforces on this same field —
             // refuse to build a request URL from a `file://`/`gopher://`/etc.
             // server value instead of silently embedding it.
-            if !is_safe_http_server(server) {
-                warn!(
-                    server = %server,
-                    "BC server URL failed the http(s)-or-bare-host safety allowlist; refusing to \
-                     build a request URL from it"
-                );
+            let Some(with_scheme) = crate::launch::server_with_scheme(server) else {
                 return REJECTED_SERVER_BASE_URL.to_string();
-            }
-
-            // Ensure the server URL has a scheme to prevent accidental plain-HTTP
-            // requests when the caller omits the scheme prefix.
-            let server_with_scheme =
-                if server.starts_with("http://") || server.starts_with("https://") {
-                    server.to_string()
-                } else {
-                    // Not silent: defaulting to http:// here means Basic
-                    // (UserPassword/Windows) credentials go out
-                    // Base64-in-cleartext. Say so, so an operator who wanted
-                    // TLS notices a plain hostname was misread as http.
-                    warn!(
-                        server = %server,
-                        "BC server URL has no scheme — defaulting to http:// (cleartext); Basic/\
-                         Windows credentials will be sent unencrypted. Use an explicit https:// \
-                         URL to avoid this."
-                    );
-                    format!("http://{}", server)
-                };
-            let server_trimmed = server_with_scheme.trim_end_matches('/');
+            };
+            let server_trimmed = with_scheme.trim_end_matches('/');
             let host = server_trimmed
                 .split_once("://")
                 .map_or(server_trimmed, |(_, rest)| rest);
@@ -698,6 +683,33 @@ mod tests {
             "raw bearer token must not survive sanitisation"
         );
         assert!(out.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn sanitize_error_body_redacts_basic_credentials() {
+        // The UserPassword and Windows auth paths both send Basic, and an IIS
+        // or BC error page that echoes the request headers used to carry the
+        // Base64 user:pass straight into the message the CLI prints.
+        for body in [
+            "401 Unauthorized\nAuthorization: Basic YWRtaW46aHVudGVyMg== rejected",
+            "401\nauthorization:basic YWRtaW46aHVudGVyMg==\n",
+        ] {
+            let out = sanitize_error_body(body);
+            assert!(
+                !out.contains("YWRtaW46aHVudGVyMg=="),
+                "Basic credential must not survive sanitisation: {out}"
+            );
+            assert!(out.contains("[REDACTED]"), "{out}");
+        }
+        for body in [
+            "POST /token username=admin&pwd=hunter2",
+            "client_assertion=eyJ0eXAi.abc.def&grant_type=client_credentials",
+        ] {
+            let out = sanitize_error_body(body);
+            for secret in ["admin", "hunter2", "eyJ0eXAi.abc.def"] {
+                assert!(!out.contains(secret), "{secret} survived in {out}");
+            }
+        }
     }
 
     #[test]
