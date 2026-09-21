@@ -55,7 +55,7 @@ Files the first checklist does not list at all:
 - severity: high
 - scenario: `[IntegrationEvent(false, false)] local procedure OnAfterPostSalesDoc(...)` in codeunit A, and in codeunit B `[EventSubscriber(ObjectType::Codeunit, Codeunit::"A", 'OnAfterPostSalesDoc', '', false, false)]`. Rename the publisher procedure to `OnAfterPostSales`. `find_variable_references` only matches `identifier`/`quoted_identifier`/`name` nodes (crates/al-syntax/src/navigation.rs:255-259), and the subscriber names the event in a *string literal*, so B is never edited. The result compiles to AL0132 (or, on older runtimes, a subscriber that silently never fires). `references.rs:59-64` already calls `al_syntax::find_event_subscriber_references` for exactly this reason, with the comment "surface them so `references` on an event lists its subscribers". `rename` never calls it, so Find All References and Rename disagree about what the symbol's references are.
 - fix: in the per-file loop, also walk `find_event_subscriber_references(tree, text, clean_name)` and emit an edit for the event-name argument. Note the helper returns the whole `attribute_argument` range including the `'` quotes, so the replacement text has to be `'NewName'`. Guard it on the cursor node actually being an event procedure declaration (an `[IntegrationEvent]`/`[BusinessEvent]` attribute on the enclosing procedure) so an ordinary rename does not rewrite unrelated attribute strings.
-- status: fixed PENDING
+- status: fixed 9148954c
 
 ### [BUG] `is_valid_rename_target` rejects legal AL identifiers because it treats every type keyword as reserved
 - where: crates/al-analysis/src/queries/rename.rs:214-215
@@ -76,7 +76,7 @@ Files the first checklist does not list at all:
 - severity: high
 - scenario: `field(50; "Amount (LCY)"; Decimal) { }` in a workspace table. `parse_field_line` does `trimmed.strip_prefix("field(")?.split(')').next()?`, which cuts at the *first* `)`, giving `50; "Amount (LCY"`. `splitn(3, ';')` then yields only two segments, so `parts.next()?` for the type returns `None` and the whole field is dropped. `find_workspace_field` never matches it, so hover and go-to-definition on `Rec."Amount (LCY)"` return nothing, and `workspace_field_items` omits it from the `Rec.` completion list. `"Amount (LCY)"`, `"Sales (LCY)"`, `"Profit (LCY)"`, `"Qty. (Base)"` are standard Business Central field names that developers copy into custom tables. The same cut breaks any field whose name contains `;`, for example `field(1; "A;B"; Text[10])`, which yields `name_part = "A` and `ty = B"`.
 - fix: `field_decl_nodes` already hands `parse_field_node` a tree-sitter node, so the id, name and type are available as child nodes. Read them from the node instead of re-splitting the text. If the text split has to stay, make it quote-aware the way `split_last` (1640-1657) already is.
-- status: open
+- status: fixed 9148954c
 
 ### [TEST] No `parse_field_line` test uses a quoted field name with punctuation
 - where: crates/al-analysis/src/resolution.rs:2490-2510
