@@ -34,6 +34,12 @@ The complete method names accepted by `al_call`, grouped by capability, are in t
 [daemon method reference](./daemon-methods.md). Its `params` object is passed unchanged to the same
 dispatcher used by `al-explorer` and checkout-local contributor tasks.
 
+A `uri` or `file` outside the loaded project is refused with `-32002`, for MCP as for every other
+caller, and nothing here reads a file on the caller's behalf. A read-only single-file method can
+be given the source as `text` instead, which the caller already has; a method that rewrites the
+file it names takes no `text` at all. See
+[paths and the project boundary](./daemon-methods.md#paths-and-the-project-boundary).
+
 ## Protocol surface
 
 `initialize` → `{ protocolVersion, capabilities: { tools }, serverInfo }`; `ping` → `{}`;

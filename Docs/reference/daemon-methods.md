@@ -66,12 +66,33 @@ calls.
 - Lifecycle methods: `ping` returns an empty object, `status` returns daemon/workspace state, and
   `shutdown` requests an orderly daemon stop.
 - JSON-RPC 2.0 over newline-delimited frames; error codes include standard set plus `-32000`
-  (code analysis) and `-32001` (file not found). `null` results are serialized explicitly.
+  (code analysis), `-32001` (file not found) and `-32002` (the daemon will not touch this path).
+  `null` results are serialized explicitly.
 - `duplicates` clamps `minTokens` and `minSimilarity`; `graphExport` is capped at
   50k nodes+edges; `trace`/`traceChain` depth bounded; 64 MB max request line; ≤64 concurrent
   connections; 30-minute idle shutdown (skipped during an active debug session).
 - Local-only IPC: Unix-domain socket at `$XDG_RUNTIME_DIR/al-lsp/{hash}.sock` (with platform
   runtime-directory fallbacks) on Linux/macOS; per-user named pipe on Windows.
+
+## Paths and the project boundary
+
+A `uri` or `file` parameter is resolved inside the loaded project: its root, the package cache, and
+the directory each resolved `.app` came from. Anything else is refused with `-32002`, whose message
+names the path and the project root. The same dispatchers answer MCP's `al_call`, where the caller
+may be an agent and the path may be anything it asks for, so the boundary holds for every caller.
+
+A read-only single-file method (`parse`, `lint`, `metrics`, `hover`, `definition`, `references`,
+`implementations`, `completions`, `signatureHelp`, `documentSymbols`, `foldingRanges`,
+`semanticTokens`, `inlayHints`, `codeActions`) also accepts `text` beside the path. The daemon then
+analyses that text and never opens the path, and the document it holds for the request is dropped
+when the request is answered. `text` is refused for a path inside the project, where the daemon's
+own copy is authoritative, and refused outright by any method that rewrites the file it names
+(`format`, `fix*`, `sortMembers`, `organizeFiles`, `rename`): supplied content is analysed, never
+written back.
+
+`al-explorer` uses that: on `-32002` from a read-only method it reads the file itself and asks
+again with `text`, so `al-explorer parse ../elsewhere/Foo.al` works while the daemon still opens
+nothing outside the project. A write command reports the refusal instead.
 
 Common parameter shapes: position queries accept `uri` plus `{line, character}`; `breaking` and
 `upgrade` accept `baselineSymbols`; `tests.snapshot_validate` accepts `snapshotPath`;
