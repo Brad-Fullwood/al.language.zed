@@ -32,6 +32,7 @@ pub fn definition(
     let Some(clean_name) = super::node_clean_name(node, source) else {
         return Ok(None);
     };
+    let clean_name = clean_name.as_str();
 
     if let Some(access) = resolution::access_path_at(&tree, &text, position) {
         if let Some(receiver) = resolution::resolve_expression_type(

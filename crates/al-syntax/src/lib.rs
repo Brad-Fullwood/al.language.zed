@@ -117,6 +117,14 @@ pub fn clean_identifier_text(text: &str) -> Option<String> {
     }
 }
 
+/// [`clean_identifier_text`] with an empty string in place of `None`.
+///
+/// For the call sites that treat an empty name as "no name" rather than
+/// branching on it.
+pub fn clean_identifier(text: &str) -> String {
+    clean_identifier_text(text).unwrap_or_default()
+}
+
 pub fn node_text_or(node: tree_sitter::Node, source: &[u8], fallback: &str) -> String {
     node_text_clean(node, source).unwrap_or_else(|| fallback.to_string())
 }
@@ -224,10 +232,63 @@ pub fn find_ancestor(
     None
 }
 
+/// Byte offsets of the start of every line in a source file.
+///
+/// One scan of the source buys O(1) line lookup. Building it is worth doing
+/// whenever more than a couple of lines are read: `get_source_line` walks from
+/// byte 0 on every call, so a per-symbol or per-token loop over a large file
+/// is quadratic without it.
+pub struct LineIndex {
+    starts: Vec<usize>,
+}
+
+impl LineIndex {
+    pub fn new(source: &[u8]) -> Self {
+        let starts = std::iter::once(0)
+            .chain(
+                source
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, &b)| b == b'\n')
+                    .map(|(i, _)| i + 1),
+            )
+            .collect();
+        Self { starts }
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.starts.len()
+    }
+
+    /// Byte offset of the first byte of line `row`.
+    pub fn line_start(&self, row: usize) -> Option<usize> {
+        self.starts.get(row).copied()
+    }
+
+    /// Bytes of line `row` including its terminator, or an empty slice when
+    /// `row` is past the end.
+    pub fn line_bytes<'a>(&self, source: &'a [u8], row: usize) -> &'a [u8] {
+        let Some(&start) = self.starts.get(row) else {
+            return &[];
+        };
+        let end = self.starts.get(row + 1).copied().unwrap_or(source.len());
+        source.get(start..end).unwrap_or(&[])
+    }
+
+    /// Text of line `row` with its `\n`/`\r` terminator stripped, or `""` when
+    /// `row` is past the end or the bytes are not valid UTF-8.
+    pub fn line<'a>(&self, source: &'a [u8], row: usize) -> &'a str {
+        std::str::from_utf8(self.line_bytes(source, row))
+            .unwrap_or("")
+            .trim_end_matches(['\n', '\r'])
+    }
+}
+
 /// Return the text of a single source line by zero-based `row` index.
 ///
 /// Returns an empty string if `row` is out of range or the bytes are not valid UTF-8.
-/// Uses `splitn` to avoid scanning past the requested line.
+/// Uses `splitn` to avoid scanning past the requested line. Callers that read
+/// many lines of the same file should build a [`LineIndex`] instead.
 pub fn get_source_line(source: &[u8], row: usize) -> &str {
     source
         .splitn(row + 2, |&b| b == b'\n')
@@ -236,29 +297,118 @@ pub fn get_source_line(source: &[u8], row: usize) -> &str {
         .unwrap_or("")
 }
 
+/// UTF-16 code unit column of the position `byte_offset` bytes into `source`,
+/// given tree-sitter's byte `column` for the same position.
+///
+/// A tree-sitter point carries the byte offset of the position and the byte
+/// column within its line, so the line begins at `byte_offset - column` and the
+/// conversion only has to read that one line prefix. Reaching the line by
+/// splitting the file on `\n` instead would walk from byte 0 on every call,
+/// which is what made `documentSymbol` on a large table quadratic in file size.
+fn utf16_col_at(source: &[u8], byte_offset: usize, column: usize) -> u32 {
+    let line_start = byte_offset.saturating_sub(column);
+    let Some(prefix) = source.get(line_start..byte_offset) else {
+        return 0;
+    };
+    match std::str::from_utf8(prefix) {
+        Ok(prefix) => byte_col_to_utf16_col(prefix, prefix.len()),
+        // A position inside a multi-byte character has no UTF-16 column of its
+        // own; the byte column is the closest honest answer.
+        Err(_) => column as u32,
+    }
+}
+
 /// Convert a tree-sitter Range to a transport-agnostic [`types::SyntaxRange`].
 ///
 /// `source` must be the complete source bytes of the file so that tree-sitter byte-offset
 /// columns (`point.column`) can be converted to UTF-16 code unit columns correctly.
 pub fn ts_range_to_syntax(range: &tree_sitter::Range, source: &[u8]) -> types::SyntaxRange {
-    let get_line = |row: usize| -> &str { get_source_line(source, row) };
-
-    let start_line = get_line(range.start_point.row);
-    let end_line = if range.end_point.row == range.start_point.row {
-        start_line
-    } else {
-        get_line(range.end_point.row)
-    };
-
     types::SyntaxRange {
         start: types::SyntaxPosition {
             line: range.start_point.row as u32,
-            character: byte_col_to_utf16_col(start_line, range.start_point.column),
+            character: utf16_col_at(source, range.start_byte, range.start_point.column),
         },
         end: types::SyntaxPosition {
             line: range.end_point.row as u32,
-            character: byte_col_to_utf16_col(end_line, range.end_point.column),
+            character: utf16_col_at(source, range.end_byte, range.end_point.column),
         },
+    }
+}
+
+#[cfg(test)]
+mod range_conversion_tests {
+    use super::{byte_col_to_utf16_col, get_source_line, ts_range_to_syntax};
+
+    /// The conversion `ts_range_to_syntax` replaced: reach the line by
+    /// splitting the file, then count UTF-16 units up to the byte column.
+    fn by_line_scan(range: &tree_sitter::Range, source: &[u8]) -> (u32, u32) {
+        let start_line = get_source_line(source, range.start_point.row);
+        let end_line = get_source_line(source, range.end_point.row);
+        (
+            byte_col_to_utf16_col(start_line, range.start_point.column),
+            byte_col_to_utf16_col(end_line, range.end_point.column),
+        )
+    }
+
+    #[test]
+    fn byte_arithmetic_agrees_with_a_line_scan_including_multibyte_lines() {
+        let mut source = String::new();
+        for row in 0..400 {
+            // Emoji are outside the BMP, so the UTF-16 column differs from both
+            // the byte column and the character column.
+            source.push_str(&format!("    Message('café 🚀 row {row}');\n"));
+        }
+        let bytes = source.as_bytes();
+
+        let parsed = crate::parser::AlParser::parse_quick(&source);
+        let mut checked = 0;
+        crate::walk_tree(parsed.tree.root_node(), &mut |node| {
+            let range = node.range();
+            let expected = by_line_scan(&range, bytes);
+            let actual = ts_range_to_syntax(&range, bytes);
+            assert_eq!(
+                (actual.start.character, actual.end.character),
+                expected,
+                "{} at {:?}",
+                node.kind(),
+                range.start_point
+            );
+            checked += 1;
+        });
+        assert!(
+            checked > 400,
+            "expected a real tree, walked {checked} nodes"
+        );
+    }
+
+    #[test]
+    fn a_range_at_the_end_of_a_large_file_reads_only_its_own_line() {
+        // The conversion cost must not grow with the number of lines before
+        // the range. Ten thousand identical lines, then one range on the last:
+        // a from-byte-0 scan would read the whole file for it.
+        let line = "    Message('x');\n";
+        let source = line.repeat(10_000);
+        let bytes = source.as_bytes();
+        let last_start = source.len() - line.len();
+
+        let range = tree_sitter::Range {
+            start_byte: last_start + 4,
+            end_byte: last_start + 11,
+            start_point: tree_sitter::Point {
+                row: 9_999,
+                column: 4,
+            },
+            end_point: tree_sitter::Point {
+                row: 9_999,
+                column: 11,
+            },
+        };
+
+        let converted = ts_range_to_syntax(&range, bytes);
+
+        assert_eq!(converted.start.line, 9_999);
+        assert_eq!(converted.start.character, 4);
+        assert_eq!(converted.end.character, 11);
     }
 }
 

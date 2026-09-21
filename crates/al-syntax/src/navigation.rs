@@ -153,10 +153,8 @@ pub fn find_procedure_at(tree: &Tree, text: &str, pos: Position) -> Option<Proce
         if current.kind() == "procedure_declaration" || current.kind() == "trigger_declaration" {
             let name = current
                 .child_by_field_name("name")
-                .and_then(|n| n.utf8_text(source).ok())
-                .unwrap_or("")
-                .trim_matches('"')
-                .to_string();
+                .and_then(|n| crate::node_text_clean(n, source))
+                .unwrap_or_default();
 
             let parameters = extract_parameters(current, source);
             let return_type = extract_return_type(current, source);
@@ -255,7 +253,7 @@ fn find_refs_iterative(
     walk_tree(root, &mut |node| {
         if matches!(node.kind(), "identifier" | "quoted_identifier" | "name") {
             if let Ok(text) = node.utf8_text(source) {
-                let text_clean = text.trim_matches('"');
+                let text_clean = crate::clean_identifier(text);
                 if text_clean.eq_ignore_ascii_case(target_name) {
                     refs.push(node.range());
                 }
@@ -305,7 +303,7 @@ pub fn collect_call_site_names(tree: &Tree, text: &str) -> std::collections::Has
         if matches!(node.kind(), "identifier" | "quoted_identifier") {
             if let Ok(t) = node.utf8_text(source) {
                 if is_call_reference(node, source) {
-                    names.insert(t.trim_matches('"').to_ascii_lowercase());
+                    names.insert(crate::clean_identifier(t).to_ascii_lowercase());
                 }
             }
         }
@@ -327,7 +325,10 @@ pub fn collect_call_sites(tree: &Tree, text: &str) -> Vec<(String, tree_sitter::
             && is_call_reference(node, source)
         {
             if let Ok(name) = node.utf8_text(source) {
-                calls.push((name.trim_matches('"').to_ascii_lowercase(), node.range()));
+                calls.push((
+                    crate::clean_identifier(name).to_ascii_lowercase(),
+                    node.range(),
+                ));
             }
         }
     });
@@ -339,7 +340,7 @@ fn count_call_refs_iterative(root: Node, source: &[u8], target_name: &str, count
     walk_tree(root, &mut |node| {
         if matches!(node.kind(), "identifier" | "quoted_identifier") {
             if let Ok(text) = node.utf8_text(source) {
-                let text_clean = text.trim_matches('"');
+                let text_clean = crate::clean_identifier(text);
                 if text_clean.eq_ignore_ascii_case(target_name) && is_call_reference(node, source) {
                     *count += 1;
                 }
@@ -444,10 +445,8 @@ fn extract_parameters(node: Node, source: &[u8]) -> Vec<ParameterInfo> {
 
             let name = child
                 .child_by_field_name("name")
-                .and_then(|n| n.utf8_text(source).ok())
-                .unwrap_or("")
-                .trim_matches('"')
-                .to_string();
+                .and_then(|n| crate::node_text_clean(n, source))
+                .unwrap_or_default();
 
             let type_name = child
                 .child_by_field_name("type")
@@ -586,6 +585,51 @@ pub fn collect_primary_expression_names(
 mod tests {
     use super::*;
     use crate::AlParser;
+
+    /// `"Do ""It"" Now"` names the procedure `Do "It" Now`. A caller that
+    /// strips quote runs instead reports the escaped spelling, so rename and
+    /// find-references miss the declaration.
+    #[test]
+    fn names_containing_a_doubled_quote_are_unescaped() {
+        let src = "codeunit 50100 Test\n\
+                   {\n\
+                   \x20   procedure \"Do \"\"It\"\" Now\"(\"Arg \"\"One\"\"\": Integer)\n\
+                   \x20   begin\n\
+                   \x20   end;\n\
+                   }\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+
+        let info = find_procedure_at(
+            &result.tree,
+            src,
+            Position {
+                line: 2,
+                character: 16,
+            },
+        )
+        .expect("should find the procedure");
+
+        assert_eq!(info.name, r#"Do "It" Now"#);
+        assert_eq!(info.parameters[0].name, r#"Arg "One""#);
+    }
+
+    #[test]
+    fn call_site_names_are_unescaped() {
+        let src = "codeunit 50100 Test\n\
+                   {\n\
+                   \x20   procedure Run()\n\
+                   \x20   begin\n\
+                   \x20       \"Do \"\"It\"\" Now\"();\n\
+                   \x20   end;\n\
+                   }\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+
+        let names = collect_call_site_names(&result.tree, src);
+
+        assert!(names.contains(r#"do "it" now"#), "got {names:?}");
+    }
 
     #[test]
     fn ast_name_collectors_ignore_literals_and_declaration_headers() {

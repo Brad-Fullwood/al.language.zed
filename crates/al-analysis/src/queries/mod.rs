@@ -62,17 +62,15 @@ impl From<crate::workspace_sources::WorkspaceSourceError> for WorkspaceQueryErro
 /// Extract the clean (unquoted) name from a tree-sitter node.
 ///
 /// Returns `None` when the node's text is invalid UTF-8 or empty after stripping
-/// surrounding double-quotes. Callers typically early-return on `None` — this
+/// the surrounding double-quotes. Callers typically early-return on `None` — this
 /// bundles the three-line pattern repeated across hover, definition, references,
 /// rename, and implementation.
-pub fn node_clean_name<'a>(node: tree_sitter::Node<'_>, source: &'a [u8]) -> Option<&'a str> {
-    let text = node.utf8_text(source).ok()?;
-    let clean = text.trim_matches('"');
-    if clean.is_empty() {
-        None
-    } else {
-        Some(clean)
-    }
+///
+/// Delegates to `al_syntax::node_text_clean`, so a name that escapes an embedded
+/// quote by doubling it (`"Cust ""Main"" Rec"`) yields the same key the syntax
+/// layer stores it under. Unescaping allocates, hence the owned `String`.
+pub fn node_clean_name(node: tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
+    al_syntax::node_text_clean(node, source)
 }
 
 /// Parse a procedure detail string such as `"(var SalesHeader: Record; Preview: Boolean): Boolean"`
@@ -426,7 +424,23 @@ mod query_types_tests {
         let result = parser.parse(source);
         let bytes = source.as_bytes();
         let node = first_node_with_text(&result.tree, bytes, "\"My Codeunit\"");
-        assert_eq!(node_clean_name(node, bytes), Some("My Codeunit"));
+        assert_eq!(node_clean_name(node, bytes).as_deref(), Some("My Codeunit"));
+    }
+
+    /// AL doubles an embedded `"` inside a quoted identifier. The lookup key
+    /// has to match the name the syntax layer stores, which is the unescaped
+    /// one, or hover, definition and rename all miss the declaration.
+    #[test]
+    fn node_clean_name_unescapes_doubled_quotes() {
+        let source = "codeunit 50000 \"My \"\"Big\"\" Codeunit\"\n{\n}\n";
+        let mut parser = al_syntax::AlParser::new();
+        let result = parser.parse(source);
+        let bytes = source.as_bytes();
+        let node = first_node_with_text(&result.tree, bytes, "\"My \"\"Big\"\" Codeunit\"");
+        assert_eq!(
+            node_clean_name(node, bytes).as_deref(),
+            Some(r#"My "Big" Codeunit"#)
+        );
     }
 
     #[test]
@@ -436,7 +450,7 @@ mod query_types_tests {
         let result = parser.parse(source);
         let bytes = source.as_bytes();
         let node = first_node_with_text(&result.tree, bytes, "MyCodeunit");
-        assert_eq!(node_clean_name(node, bytes), Some("MyCodeunit"));
+        assert_eq!(node_clean_name(node, bytes).as_deref(), Some("MyCodeunit"));
     }
 
     #[test]

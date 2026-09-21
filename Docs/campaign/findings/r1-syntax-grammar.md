@@ -72,7 +72,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   `language-assets.md:22` and give them a name with content (the `if` condition text,
   the `case` selector) instead of the keyword. If they do not, drop the eight
   patterns and the `executable_scope_metadata` path in symbols.rs.
-- status: open
+- status: fixed e289763d (grammar 38368a0)
 
 ### [GAP] AL-NL001 misses paren-less `FindFirst` / `FindLast`
 - where: crates/al-syntax/src/lint.rs:352
@@ -85,7 +85,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
 - fix: match on `.findfirst` / `.findlast` followed by end-of-token (`;`, whitespace,
   `(`, `)` or `t` of `then`), or drive the rule off `member_call_suffix` nodes instead
   of masked line text.
-- status: open
+- status: fixed 01893af7
 
 ### [SIMPLIFY] `line_range` takes an unused `_line` parameter
 - where: crates/al-syntax/src/lint.rs:117
@@ -94,7 +94,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   reads the third argument. Call sites pass either the real line (lint.rs:358) or `""`
   (lint.rs:397 and elsewhere), which reads as if the two cases behave differently.
 - fix: delete the parameter and update the call sites.
-- status: open
+- status: fixed 333faa60
 
 ### [BUG] `sort_members` moves members between objects in a multi-object file
 - where: crates/al-syntax/src/sort.rs:22-31 and 194-277
@@ -133,7 +133,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   depth 0 (or count `object_declaration` children of the parsed root in
   `sort_members_strict`) and return `None` when it is not 1. The doc comment at
   sort.rs:13-14 already claims this behaviour.
-- status: open
+- status: fixed 24ffeeea
 
 ### [TEST] No sort test covers a file with two objects
 - where: crates/al-syntax/src/sort.rs:350-860 (test module)
@@ -144,7 +144,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   like it would catch it and cannot, because the bug *is* a pure reordering.
 - fix: add a test asserting `sort_members` returns `None` for a two-object source, and
   one asserting each object keeps its own members when the guard is added.
-- status: open
+- status: fixed 24ffeeea
 
 ### [PERF] `ts_range_to_syntax` rescans the file from byte 0 for every range
 - where: crates/al-syntax/src/lib.rs:231-263 (`get_source_line`, `ts_range_to_syntax`)
@@ -160,7 +160,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
 - fix: this crate already builds a line-start table twice; hoist it into a small
   `LineIndex` type and add `ts_range_to_syntax_with(range, source, &LineIndex)` for
   the loop callers, keeping the existing signature for one-off use.
-- status: open
+- status: fixed caa16426
 
 ### [SIMPLIFY] `build_line_starts` is implemented twice, byte for byte
 - where: crates/al-syntax/src/tokens.rs:179-189 and crates/al-syntax/src/type_resolver.rs:237-249
@@ -172,7 +172,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   will add a third copy.
 - fix: one `LineIndex` in lib.rs with both accessors, shared by tokens.rs,
   type_resolver.rs and the `ts_range_to_syntax` fix above.
-- status: open
+- status: fixed caa16426
 
 ### [BUG] `clean_identifier_text` is bypassed by ~20 call sites that still use `trim_matches('"')`
 - where: crates/al-syntax/src/navigation.rs:158,258,308,330,342,449;
@@ -200,7 +200,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
 - fix: route every one of these through `crate::clean_identifier_text` /
   `node_text_clean`, including `al-analysis`'s `node_clean_name`, and delete the
   ad-hoc `trim_matches('"')` calls.
-- status: open
+- status: fixed bce5ec64
 
 ### [TEST] The incremental-parse benchmark never performs an edit
 - where: crates/al-syntax/benches/parser.rs:97-121
@@ -214,7 +214,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   serialize/deserialize, for instance) would not move this benchmark at all.
 - fix: mutate the source (insert one character), call `prev.edit(&InputEdit{…})` with
   the matching byte/point deltas, then `parse_incremental` the edited text.
-- status: open
+- status: fixed 886e00a6
 
 ### [GAP] Benchmarks cap out at 80 lines, below where the hot paths hurt
 - where: crates/al-syntax/benches/parser.rs:15-77
@@ -225,7 +225,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   are invisible at 80 lines. Real AL files in the BC base app run to 10 000+ lines.
 - fix: add a generated large fixture (say a table with 500 fields) and benchmark
   `extract_document_symbols`, `extract_semantic_tokens` and `lint` on it.
-- status: open
+- status: fixed 886e00a6
 
 ### [BUG] `format_range` returns the caller's unclamped `end_line` in the edit
 - where: crates/al-syntax/src/formatting.rs:477 and 536-542
@@ -238,7 +238,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   correctly uses `end as u32 + 1`, so the two exits disagree about which value is the
   end of the edit.
 - fix: return `end as u32` (and the matching `end_character`) in both branches.
-- status: open
+- status: fixed 89643845
 
 ### [BUG][UNVERIFIED] scanner.c hand-rolls `strlen`/`memcpy` for wasm but calls `strcmp`/`strncmp` unguarded
 - where: tree-sitter-al/src/scanner.c:5-32 vs 296-299, 340, 351, 375, 387, 468, 472,
@@ -258,7 +258,16 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
 - fix: add `al_strcmp`/`al_strncmp` next to `al_strlen`/`al_memcpy` and use them
   unconditionally, or include `<string.h>` in both arms. Either way, add a CI step
   that compiles `scanner.c` for a wasm target.
-- status: open
+- status: rejected `scanner.c` includes `keywords.c` at line 234, before the first
+  `strcmp` at line 296, and `keywords.c` includes `<string.h>` unconditionally
+  (keywords.c:7), so every `strcmp`/`strncmp` in the translation unit is declared
+  under `__wasm__` too. Verified by compiling `src/scanner.c` and `src/parser.c`
+  for `wasm32-wasip1` against wasi-sysroot 25 with
+  `-Werror=implicit-function-declaration` (clean, two unused-function warnings),
+  and by `tree-sitter build --wasm`, which produced a 304 KB module. The template
+  at `generator/tools/al-gen/templates/scanner.c.template` has the same include
+  order. The missing wasm coverage was real: the grammar CI now runs
+  `tree-sitter build --wasm` (tree-sitter-al 020b437).
 
 ### [SLOP] Stale comment claims the grammar has no object `name` field
 - where: crates/al-syntax/src/symbols.rs:88-89
@@ -271,7 +280,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   the real one. lib.rs:132-137 describes the same code correctly.
 - fix: delete the stale sentence; `extract_object_name` already documents the field-
   first, scan-as-fallback order.
-- status: open
+- status: fixed 520766fa
 
 ### [BUG] al-gen slices the TextMate XML at raw byte offsets
 - where: tree-sitter-al/generator/tools/al-gen/src/main.rs:659-662
@@ -286,6 +295,51 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   character stops the regeneration.
 - fix: snap both offsets to char boundaries (`xml.floor_char_boundary` / a
   `is_char_boundary` loop) before slicing.
+- status: fixed tree-sitter-al eef111e (gitlink 48cbd3b0)
+
+## Found while fixing
+
+### [BUG] 124 more `trim_matches('"')` identifier cleanups outside al-syntax
+- where: crates/al-analysis/src (102 occurrences, notably resolution.rs:145,389,583,1610,
+  1629,1662,1671; queries/hover.rs:30,193; queries/code_lens.rs:93,98,119,150,409;
+  queries/dead_code.rs:225,520,548; queries/rename.rs:224; queries/implementation.rs:131;
+  queries/obsolete_usage.rs:49; queries/impact.rs:157-161; xliff.rs:328,598) and
+  crates/al-insight (22 occurrences)
+- severity: medium
+- scenario: the same defect the al-syntax fix (bce5ec64) removed. `trim_matches('"')`
+  strips quote *runs* and leaves a doubled `""` in place, so a name written
+  `"Cust ""Main"" Rec"` is keyed as `Cust ""Main"" Rec` while al-syntax now stores
+  `Cust "Main" Rec`. Hover's `clean_name` (hover.rs:30) and the code-lens reference
+  counts are the visible surfaces. A name ending in a quote (`"Name"""`) is
+  over-stripped to `Name` at every one of these sites.
+- fix: route them through `al_syntax::clean_identifier` / `node_text_clean`. The
+  sites that also strip `'` are attribute/property values, not identifiers, and
+  belong with `clean_attr_arg` instead.
+- note: left open deliberately. al-analysis was being edited on another branch
+  while this fix ran, so only `node_clean_name` was changed there.
+- status: open
+
+### [BUG] `clean_attr_arg` does not unescape doubled quotes
+- where: crates/al-syntax/src/lib.rs:52
+- severity: low
+- scenario: `clean_attr_arg` strips `"` runs with `trim_matches`, the same way the
+  identifier sites did before bce5ec64. An attribute argument that names a quoted
+  object (`[EventSubscriber(ObjectType::Codeunit, "My ""Big"" Codeunit", …)]`) keeps
+  its doubled quotes, so it does not match the object name al-syntax reports.
+- fix: strip one quote pair and unescape `""` for the `"` case, keeping the existing
+  `'` handling for string-literal arguments.
+- status: open
+
+### [GAP] `sort_members` leaves a blank line stranded at the end of a body
+- where: crates/al-syntax/src/sort.rs:194-277 (`split_into_members`)
+- severity: low
+- scenario: a member block absorbs the blank line that follows it, so sorting
+  `Zebra` (blank) `Mango` emits `Mango` `Zebra` (blank): the two procedures end up
+  with no separator and a blank line sits against the closing brace. Pre-existing
+  and unrelated to the multi-object fix (24ffeeea) — verified against the code
+  before it. The output is still a pure reordering, so `is_pure_reordering` passes.
+- fix: split trailing blank lines off each member into a separator pool and re-emit
+  one between members, keeping the line multiset intact.
 - status: open
 
 ## Review complete

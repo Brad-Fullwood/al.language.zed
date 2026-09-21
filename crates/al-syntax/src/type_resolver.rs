@@ -81,7 +81,7 @@ pub struct TypeResolver<'a> {
     source: &'a [u8],
     /// Byte offset of the start of each line, built lazily so repeated
     /// position→node lookups don't re-scan the file per call.
-    line_starts: std::cell::OnceCell<Vec<usize>>,
+    line_index: std::cell::OnceCell<crate::LineIndex>,
     /// Memo of `variables_at` results keyed by resolution scope. Bulk
     /// consumers (semantic-token extraction) resolve one receiver per member
     /// token; without this memo every call re-walks the globals, source
@@ -95,7 +95,7 @@ impl<'a> TypeResolver<'a> {
         Self {
             tree,
             source: text.as_bytes(),
-            line_starts: std::cell::OnceCell::new(),
+            line_index: std::cell::OnceCell::new(),
             scope_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
         }
     }
@@ -234,30 +234,14 @@ impl<'a> TypeResolver<'a> {
     }
 
     /// Byte-offset table of line starts, built once per resolver.
-    fn line_starts(&self) -> &[usize] {
-        self.line_starts.get_or_init(|| {
-            std::iter::once(0)
-                .chain(
-                    self.source
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, &b)| b == b'\n')
-                        .map(|(i, _)| i + 1),
-                )
-                .collect()
-        })
+    fn line_index(&self) -> &crate::LineIndex {
+        self.line_index
+            .get_or_init(|| crate::LineIndex::new(self.source))
     }
 
     /// Content of line `row` (without its terminator), or `""` out of range.
     fn source_line(&self, row: usize) -> &'a str {
-        let starts = self.line_starts();
-        let Some(&start) = starts.get(row) else {
-            return "";
-        };
-        let end = starts.get(row + 1).copied().unwrap_or(self.source.len());
-        std::str::from_utf8(&self.source[start..end])
-            .unwrap_or("")
-            .trim_end_matches(['\n', '\r'])
+        self.line_index().line(self.source, row)
     }
 
     /// Find the object declaration enclosing the given position, for
@@ -558,7 +542,7 @@ impl<'a> TypeResolver<'a> {
                 && (kind == "identifier" || kind == "name" || kind == "name_or_keyword")
             {
                 if let Ok(text) = child.utf8_text(self.source) {
-                    type_keyword = text.trim_matches('"').to_string();
+                    type_keyword = crate::clean_identifier(text);
                 }
             } else if !type_keyword.is_empty()
                 && (kind == "name_or_keyword"
@@ -568,7 +552,7 @@ impl<'a> TypeResolver<'a> {
                     || kind == "string")
             {
                 if let Ok(text) = child.utf8_text(self.source) {
-                    let clean = text.trim_matches('"').trim_matches('\'').to_string();
+                    let clean = crate::clean_identifier(text.trim_matches('\''));
                     if !clean.is_empty() {
                         subtype = Some(clean);
                     }
@@ -749,7 +733,7 @@ impl<'a> TypeResolver<'a> {
                 match c.kind() {
                     "identifier" | "quoted_identifier" | "name" | "name_or_keyword" => {
                         if let Ok(text) = c.utf8_text(self.source) {
-                            let name = text.trim_matches('"').to_string();
+                            let name = crate::clean_identifier(text);
                             if !name.is_empty() {
                                 debug!(
                                     object_kind = kind,
@@ -784,11 +768,7 @@ impl<'a> TypeResolver<'a> {
                 let Ok(value_text) = value_node.utf8_text(self.source) else {
                     continue;
                 };
-                let clean = value_text
-                    .trim()
-                    .trim_matches('"')
-                    .trim_matches('\'')
-                    .to_string();
+                let clean = crate::clean_identifier(value_text.trim().trim_matches('\''));
                 if !clean.is_empty() {
                     debug!(
                         object_kind = kind,
@@ -831,17 +811,9 @@ impl<'a> TypeResolver<'a> {
             return;
         }
 
-        // Build a table of (line_start_byte, line_str) pairs so we can compute
-        // accurate start_byte / end_byte for the synthetic VariableDecl ranges.
-        // We need real byte offsets because `str::lines()` strips newlines, so
-        // we walk the raw bytes to find where each line starts.
-        let mut line_starts: Vec<usize> = Vec::new();
-        line_starts.push(0);
-        for (i, &b) in self.source.iter().enumerate() {
-            if b == b'\n' {
-                line_starts.push(i + 1);
-            }
-        }
+        // `str::lines()` strips newlines, so the synthetic VariableDecl ranges
+        // need real byte offsets from the line index.
+        let line_index = self.line_index();
 
         let row_bounds = object.map(|obj| (obj.start_position().row, obj.end_position().row));
 
@@ -865,11 +837,11 @@ impl<'a> TypeResolver<'a> {
             };
             let mut parts = inside_raw.splitn(2, ';');
             let var_name = match parts.next() {
-                Some(n) => n.trim().trim_matches('"'),
+                Some(n) => &crate::clean_identifier(n),
                 None => continue,
             };
             let table_name = match parts.next() {
-                Some(t) => t.trim().trim_matches('"').trim_matches('\''),
+                Some(t) => &crate::clean_identifier(t.trim().trim_matches('\'')),
                 None => continue,
             };
             if var_name.is_empty() || table_name.is_empty() {
@@ -885,7 +857,7 @@ impl<'a> TypeResolver<'a> {
             // Since trimmed_lower starts with "dataitem(", the keyword is at the
             // first non-whitespace character.
             let col = line.len() - line.trim_start().len();
-            let line_start = line_starts.get(line_idx).copied().unwrap_or(0);
+            let line_start = line_index.line_start(line_idx).unwrap_or(0);
             let start_byte = line_start + col;
             // end_byte covers through the end of the line content (excluding newline).
             let end_byte = line_start + line.len();
@@ -925,6 +897,65 @@ mod tests {
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         (result.tree, src.to_string())
+    }
+
+    /// AL escapes a `"` inside a quoted identifier by doubling it, so
+    /// `"Cust ""Main"" Rec"` names `Cust "Main" Rec`. Every name extraction has
+    /// to agree on that, or the lookup key never matches the declared name.
+    #[test]
+    fn resolves_a_name_containing_a_doubled_quote() {
+        let src = "codeunit 50100 Test\n\
+                   {\n\
+                   \x20   procedure DoSomething()\n\
+                   \x20   var\n\
+                   \x20       \"Cust \"\"Main\"\" Rec\": Record Customer;\n\
+                   \x20   begin\n\
+                   \x20       \"Cust \"\"Main\"\" Rec\".Init();\n\
+                   \x20   end;\n\
+                   }\n";
+        let (tree, text) = parse(src);
+        let resolver = TypeResolver::new(&tree, &text);
+
+        let decl = resolver
+            .resolve_type(
+                r#"Cust "Main" Rec"#,
+                Position {
+                    line: 6,
+                    character: 8,
+                },
+            )
+            .expect("should resolve the unescaped name");
+
+        assert_eq!(decl.name, r#"Cust "Main" Rec"#);
+        assert_eq!(decl.type_name, "Record");
+        assert_eq!(decl.type_subtype.as_deref(), Some("Customer"));
+    }
+
+    #[test]
+    fn a_subtype_name_containing_a_doubled_quote_is_unescaped() {
+        let src = "codeunit 50100 Test\n\
+                   {\n\
+                   \x20   procedure DoSomething()\n\
+                   \x20   var\n\
+                   \x20       Rec: Record \"Cust \"\"Main\"\" Table\";\n\
+                   \x20   begin\n\
+                   \x20       Rec.Init();\n\
+                   \x20   end;\n\
+                   }\n";
+        let (tree, text) = parse(src);
+        let resolver = TypeResolver::new(&tree, &text);
+
+        let decl = resolver
+            .resolve_type(
+                "Rec",
+                Position {
+                    line: 6,
+                    character: 8,
+                },
+            )
+            .expect("should resolve Rec");
+
+        assert_eq!(decl.type_subtype.as_deref(), Some(r#"Cust "Main" Table"#));
     }
 
     #[test]

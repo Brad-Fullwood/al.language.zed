@@ -533,10 +533,12 @@ pub fn format_range(
         .map(|l| super::byte_col_to_utf16_col(l, l.len()))
         .unwrap_or(0);
 
+    // `end`, not `end_line`: the caller may have named a line past the end of
+    // the document, and `end_char` is measured on the clamped line.
     Some(vec![FormatTextEdit {
         start_line,
         start_character: 0,
-        end_line,
+        end_line: end as u32,
         end_character: end_char,
         new_text,
     }])
@@ -1489,6 +1491,18 @@ end;
         let input = "codeunit 50100 Test\n{\n}";
         let opts = FormatOptions::default();
         assert!(format_range(input, 10, 15, &opts).is_none());
+    }
+
+    #[test]
+    fn test_format_range_end_line_is_clamped_to_the_document() {
+        // A client that selects "to the end" passes a large end line. The edit
+        // must end on the last real line, not on the line the caller named.
+        let input = "codeunit 50100 Test\n{\nprocedure X()\nbegin\nend;\n}\n";
+        let last = input.lines().count() - 1;
+        let opts = FormatOptions::default();
+        let edits = format_range(input, 0, 9999, &opts).unwrap();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].end_line, last as u32);
     }
 
     #[test]

@@ -87,8 +87,6 @@ fn extract_object_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let kind_str = kind_node.kind();
     let sym_kind = object_kind_to_symbol_kind(kind_str);
 
-    // Grammar doesn't assign a field name to the object name;
-    // use the shared extract_object_name helper.
     let name = super::extract_object_name(node, source).unwrap_or_else(|| "(unnamed)".to_string());
     let name_node_range = {
         let mut found_range = None;
@@ -97,14 +95,10 @@ fn extract_object_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
             if matches!(
                 c.kind(),
                 "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword"
-            ) {
-                if let Ok(n) = c.utf8_text(source) {
-                    let trimmed = n.trim_matches('"').trim();
-                    if !trimmed.is_empty() {
-                        found_range = Some(c.range());
-                        break;
-                    }
-                }
+            ) && crate::node_text_clean(c, source).is_some()
+            {
+                found_range = Some(c.range());
+                break;
             }
         }
         found_range
@@ -266,23 +260,65 @@ fn extract_callable_symbol(
     Some(symbol)
 }
 
-fn executable_scope_metadata(kind: &str) -> Option<(&'static str, &'static str, SymbolKind)> {
+/// Keyword, the node kind of that keyword, the field holding the block's own
+/// expression, and the symbol kind, for each executable scope.
+///
+/// The field is what turns a row of bare `if`/`case` keywords into something
+/// worth reading: `if not Rec.IsEmpty()` instead of `if`. A `begin` block has no
+/// expression of its own, so it keeps the keyword alone.
+fn executable_scope_metadata(
+    kind: &str,
+) -> Option<(&'static str, &'static str, Option<&'static str>, SymbolKind)> {
     match kind {
-        "begin_end_block" => Some(("begin", "kw_begin", SymbolKind::Struct)),
-        "if_statement" => Some(("if", "kw_if", SymbolKind::Operator)),
-        "case_statement" => Some(("case", "kw_case", SymbolKind::Operator)),
-        "for_statement" => Some(("for", "kw_for", SymbolKind::Operator)),
-        "foreach_statement" => Some(("foreach", "kw_foreach", SymbolKind::Operator)),
-        "while_statement" => Some(("while", "kw_while", SymbolKind::Operator)),
-        "repeat_statement" => Some(("repeat", "kw_repeat", SymbolKind::Operator)),
-        "with_statement" => Some(("with", "kw_with", SymbolKind::Operator)),
+        "begin_end_block" => Some(("begin", "kw_begin", None, SymbolKind::Struct)),
+        "if_statement" => Some(("if", "kw_if", Some("condition"), SymbolKind::Operator)),
+        "case_statement" => Some(("case", "kw_case", Some("value"), SymbolKind::Operator)),
+        "for_statement" => Some(("for", "kw_for", Some("iterator"), SymbolKind::Operator)),
+        "foreach_statement" => Some((
+            "foreach",
+            "kw_foreach",
+            Some("iterator"),
+            SymbolKind::Operator,
+        )),
+        "while_statement" => Some(("while", "kw_while", Some("condition"), SymbolKind::Operator)),
+        "repeat_statement" => Some((
+            "repeat",
+            "kw_repeat",
+            Some("condition"),
+            SymbolKind::Operator,
+        )),
+        "with_statement" => Some(("with", "kw_with", Some("value"), SymbolKind::Operator)),
         _ => None,
     }
 }
 
+/// `if` plus the condition text, collapsed to one line and capped so a
+/// multi-line condition cannot push a whole expression into the outline.
+fn executable_scope_name(node: Node, source: &[u8], keyword: &str, field: Option<&str>) -> String {
+    const MAX_LEN: usize = 60;
+
+    let Some(text) = field
+        .and_then(|field| node.child_by_field_name(field))
+        .and_then(|expr| expr.utf8_text(source).ok())
+    else {
+        return keyword.to_string();
+    };
+
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return keyword.to_string();
+    }
+    let truncated = match collapsed.char_indices().nth(MAX_LEN) {
+        Some((byte, _)) => format!("{}…", &collapsed[..byte]),
+        None => collapsed,
+    };
+    format!("{keyword} {truncated}")
+}
+
 fn extract_executable_scope(node: Node, source: &[u8]) -> DocumentSymbol {
-    let (name, keyword_kind, kind) = executable_scope_metadata(node.kind())
+    let (keyword, keyword_kind, field, kind) = executable_scope_metadata(node.kind())
         .expect("extract_executable_scope must receive a supported executable scope");
+    let name = executable_scope_name(node, source, keyword, field);
     let range = ts_range_to_lsp(&node.range(), source);
     let selection_range = {
         let mut cursor = node.walk();
@@ -297,7 +333,7 @@ fn extract_executable_scope(node: Node, source: &[u8]) -> DocumentSymbol {
     collect_immediate_executable_scopes(node, source, &mut children);
 
     DocumentSymbol {
-        name: name.to_string(),
+        name,
         detail: Some("executable scope".to_string()),
         kind,
         range,
@@ -335,9 +371,9 @@ fn collect_immediate_executable_scopes(
 fn extract_procedure_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let name = node
         .child_by_field_name("name")
-        .and_then(|n| n.utf8_text(source).ok())
-        .unwrap_or("(unnamed)")
-        .trim_matches('"');
+        .and_then(|n| crate::node_text_clean(n, source))
+        .unwrap_or_else(|| "(unnamed)".to_string());
+    let name = name.as_str();
 
     if name == "(unnamed)" {
         debug!(
@@ -502,12 +538,9 @@ fn extract_enum_value_from_section(node: Node, source: &[u8]) -> Option<Document
                 ordinal = child.utf8_text(source).unwrap_or("").to_string();
             }
             "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword" => {
-                if let Ok(text) = child.utf8_text(source) {
-                    let trimmed = text.trim_matches('"').trim().to_string();
-                    if !trimmed.is_empty() {
-                        name = trimmed;
-                        name_node_range = child.range();
-                    }
+                if let Some(trimmed) = crate::node_text_clean(child, source) {
+                    name = trimmed;
+                    name_node_range = child.range();
                 }
             }
             _ => {}
@@ -570,7 +603,7 @@ fn extract_dataitem_from_section(node: Node, source: &[u8]) -> Option<DocumentSy
             "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword"
         ) {
             if let Ok(text) = child.utf8_text(source) {
-                name = text.trim_matches('"').trim().to_string();
+                name = crate::clean_identifier(text);
                 name_node_range = child.range();
                 break;
             }
@@ -718,11 +751,7 @@ fn try_extract_inline_trigger(kw_node: Node, source: &[u8]) -> Option<DocumentSy
     ) {
         return None;
     }
-    let name_text = name_node.utf8_text(source).ok()?;
-    let name = name_text.trim_matches('"').to_string();
-    if name.is_empty() {
-        return None;
-    }
+    let name = crate::node_text_clean(name_node, source)?;
     let trigger_kw_range = kw_node.range();
     let range = ts_range_to_lsp(
         &tree_sitter::Range {
@@ -820,7 +849,7 @@ fn extract_control_name(paren: Node, source: &[u8]) -> String {
         match child.kind() {
             "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword" => {
                 if let Ok(text) = child.utf8_text(source) {
-                    return text.trim_matches('"').to_string();
+                    return crate::clean_identifier(text);
                 }
             }
             _ => {}
@@ -1138,22 +1167,16 @@ fn extract_field_name_from_paren(paren: Node, source: &[u8]) -> String {
             "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword"
                 if past_first_semicolon =>
             {
-                if let Ok(text) = child.utf8_text(source) {
-                    let trimmed = text.trim_matches('"').trim().to_string();
-                    if !trimmed.is_empty() {
-                        return trimmed;
-                    }
+                if let Some(trimmed) = crate::node_text_clean(child, source) {
+                    return trimmed;
                 }
             }
             "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword"
                 if !past_first_semicolon =>
             {
                 // Page field: `field("Caption"; ...)` — no integer before semicolon.
-                if let Ok(text) = child.utf8_text(source) {
-                    let trimmed = text.trim_matches('"').trim().to_string();
-                    if !trimmed.is_empty() {
-                        return trimmed;
-                    }
+                if let Some(trimmed) = crate::node_text_clean(child, source) {
+                    return trimmed;
                 }
             }
             _ => {}
@@ -1173,6 +1196,128 @@ fn extract_field_name_from_paren(paren: Node, source: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::AlParser;
+
+    #[test]
+    fn executable_scopes_are_named_by_their_own_expression() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure Post()
+    var
+        Item: Record Item;
+        Index: Integer;
+    begin
+        if not Item.IsEmpty() then
+            case Item.Type of
+                Item.Type::Inventory:
+                    Message('a');
+            end;
+        for Index := 1 to 10 do
+            Message('b');
+        repeat
+            Message('c');
+        until Item.Next() = 0;
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let symbols = extract_document_symbols(&result.tree, src);
+
+        fn all_names(symbols: &[DocumentSymbol], out: &mut Vec<String>) {
+            for symbol in symbols {
+                out.push(symbol.name.clone());
+                if let Some(children) = &symbol.children {
+                    all_names(children, out);
+                }
+            }
+        }
+        let mut names = Vec::new();
+        all_names(&symbols, &mut names);
+
+        assert!(names.iter().any(|n| n == "begin"), "got {names:?}");
+        assert!(
+            names.iter().any(|n| n == "if not Item.IsEmpty()"),
+            "got {names:?}"
+        );
+        assert!(names.iter().any(|n| n == "case Item.Type"), "got {names:?}");
+        assert!(names.iter().any(|n| n == "for Index"), "got {names:?}");
+        assert!(
+            names.iter().any(|n| n == "repeat Item.Next() = 0"),
+            "got {names:?}"
+        );
+    }
+
+    #[test]
+    fn a_multi_line_scope_expression_is_collapsed_and_capped() {
+        let src = "codeunit 50100 Test\n\
+                   {\n\
+                   \x20   procedure Post()\n\
+                   \x20   var\n\
+                   \x20       Item: Record Item;\n\
+                   \x20   begin\n\
+                   \x20       if (Item.\"No.\" <> '') and\n\
+                   \x20          (Item.Description <> '') and\n\
+                   \x20          (Item.Type = Item.Type::Inventory) then\n\
+                   \x20           Message('a');\n\
+                   \x20   end;\n\
+                   }\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let symbols = extract_document_symbols(&result.tree, src);
+
+        fn find_if(symbols: &[DocumentSymbol]) -> Option<String> {
+            for symbol in symbols {
+                if symbol.name.starts_with("if ") {
+                    return Some(symbol.name.clone());
+                }
+                if let Some(found) = symbol.children.as_deref().and_then(find_if) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let name = find_if(&symbols).expect("an if scope");
+
+        assert!(!name.contains('\n'), "{name}");
+        assert!(name.chars().count() <= 64, "{name}");
+        assert!(name.ends_with('…'), "{name}");
+    }
+
+    /// The outline shows the identifier, not its escaped spelling.
+    #[test]
+    fn symbol_names_containing_a_doubled_quote_are_unescaped() {
+        let src = "table 50100 \"My \"\"Big\"\" Table\"\n\
+                   {\n\
+                   \x20   fields\n\
+                   \x20   {\n\
+                   \x20       field(1; \"No. \"\"X\"\" Series\"; Code[20]) { }\n\
+                   \x20   }\n\
+                   \n\
+                   \x20   procedure \"Do \"\"It\"\" Now\"()\n\
+                   \x20   begin\n\
+                   \x20   end;\n\
+                   }\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let symbols = extract_document_symbols(&result.tree, src);
+
+        fn all_names(symbols: &[DocumentSymbol], out: &mut Vec<String>) {
+            for symbol in symbols {
+                out.push(symbol.name.clone());
+                if let Some(children) = &symbol.children {
+                    all_names(children, out);
+                }
+            }
+        }
+        let mut names = Vec::new();
+        all_names(&symbols, &mut names);
+
+        assert_eq!(symbols[0].name, r#"My "Big" Table"#);
+        assert!(
+            names.iter().any(|n| n == r#"No. "X" Series"#),
+            "got {names:?}"
+        );
+        assert!(names.iter().any(|n| n == r#"Do "It" Now"#), "got {names:?}");
+    }
 
     #[test]
     fn test_extract_symbols_codeunit() {
@@ -1242,10 +1387,15 @@ mod tests {
             .iter()
             .find(|symbol| symbol.name == "begin")
             .expect("procedure begin scope");
+        // A scope is named by its keyword plus its own expression.
         let if_scope = begin
             .children
             .as_ref()
-            .and_then(|children| children.iter().find(|symbol| symbol.name == "if"))
+            .and_then(|children| {
+                children
+                    .iter()
+                    .find(|symbol| symbol.name.starts_with("if "))
+            })
             .expect("if scope");
         let if_begin = if_scope
             .children
@@ -1255,7 +1405,11 @@ mod tests {
         let while_scope = if_begin
             .children
             .as_ref()
-            .and_then(|children| children.iter().find(|symbol| symbol.name == "while"))
+            .and_then(|children| {
+                children
+                    .iter()
+                    .find(|symbol| symbol.name.starts_with("while "))
+            })
             .expect("while scope");
         assert!(
             while_scope
@@ -2018,7 +2172,7 @@ report 50102 "R2" { rendering { layout(L) { } } requestpage { layout { } } datas
         while let Some(n) = stack.pop() {
             if n.kind() == kind {
                 if let Ok(t) = n.utf8_text(src.as_bytes()) {
-                    if t.trim_matches('"').eq_ignore_ascii_case(text) {
+                    if crate::clean_identifier(t).eq_ignore_ascii_case(text) {
                         return Some(n);
                     }
                 }
