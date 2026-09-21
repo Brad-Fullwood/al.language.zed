@@ -399,7 +399,7 @@ current code are tagged [STILL-OPEN].
 - fix: skip and log a line that does not deserialize (keeping the strict behaviour behind an
   explicit "verify" entry point), or rewrite the file dropping trailing garbage on the first
   corrupt read.
-- status: open
+- status: fixed 22cc74bc (both: skip on read, repair on the next append, strict `verify`)
 
 ## Review complete
 
