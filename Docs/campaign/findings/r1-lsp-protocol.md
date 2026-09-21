@@ -74,7 +74,7 @@ audit that are still present in current code are tagged [STILL-OPEN].
 - severity: medium
 - scenario: The audit's other half of this item (silent drop at the connection limit) is fixed by `reject_connection_over_limit` (daemon/mod.rs:311). Per-request concurrency is not: the loop awaits `dispatch_request` to completion before reading the next line. A client that pipelines `ping` behind a `tests.run` or `downloadSymbols` on the same connection waits for the long call. `al-explorer`'s `DaemonClient` is one connection per process and the MCP path worked around this separately by spawning `tools/call` tasks (mcp.rs:1400), so the daemon transport is the only surface left without it.
 - fix: Spawn each request into a task, cap the per-connection in-flight count, and serialize writes behind a `tokio::sync::Mutex` on the writer, mirroring `run_mcp`'s `write_mcp_frame`.
-- status: open
+- status: fixed f4fe24a4
 
 ### [SLOP] Incorrect rationale comment on the `newProject` absolute-path check
 - where: crates/al-lsp/src/server/daemon/build_dispatch/codegen.rs:122
