@@ -288,7 +288,9 @@ current code are tagged [STILL-OPEN].
   this staging pattern. Capture `generation_revision()` before `build`, and at publication
   time only store the result if the revision is unchanged. Otherwise take
   `call_graph_build_lock` in the invalidators.
-- status: open
+- status: fixed 8432281a. Uses two dedicated counters bumped by the invalidators rather than
+  `generation_revision`, which the invalidators do not bump, and tags each published graph with
+  the counter read before the build so a stale publication is a cache miss.
 
 ### [BUG] Deleting one `.app` while the daemon runs disables the call graph for every package
 - where: crates/al-workspace/src/lib.rs:484-507 (`dependency_package_fingerprint`)
