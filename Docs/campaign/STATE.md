@@ -15,7 +15,7 @@ Round 1 reviews are complete: 224 verified findings in 11 files. Six of seven fi
 | Fix R1b analysis: rename, resolution, breaking changes, xliff, obsolescence (35 findings) | worktree fix | branch `campaign/fix-r1b-analysis` |
 | Fix R1c analysis: coverage, multi-object files, permission audit, signature help, code lens (29 findings) | worktree fix | branch `campaign/fix-r1c-analysis` |
 | AI tooling daemon work: wrong answers first, then limit, fields, scope, `source --list-procedures`, CLI `location`, index progress, plugin simplification | worktree build | branch `campaign/ai-daemon-projection` |
-| Blog: delete six posts, site cleanup, fact sheet, series plan, draft 1 | blog repo branch `campaign/2026-09-rewrite` | `findings/blog-plan.md` |
+| Blog: write articles 3, 6, 7 (grammar, symbols, one engine four transports) | blog repo branch `campaign/2026-09-rewrite` | `findings/blog-progress.md` |
 
 Queued:
 
@@ -26,6 +26,7 @@ Queued:
 - desloppify fix batches (`findings/desloppify.md` section 4), file splits after the owning fix branch merges.
 - Workstream E (tests): coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis. Start when a build slot frees.
 - Workstream D (security): dedicated review after round 1 fixes are in, covering what changed.
+- README.md line 339 omits `publish` from the CLI list. Rebuild `target/release` before measuring for articles (it predates `publish` and `free-ids`).
 - AI tooling build items 9 and 10: dependency package version diff, persisted symbol index (2.9 GB RSS and 54 s cold index today).
 - Plugin leftovers: `plugin/evals/`, release binary download hook, test on a project with `.alpackages`.
 
@@ -51,7 +52,7 @@ whichever ones pay off most. Record progress per workstream below so gaps are vi
 | F | Grammar: corpus tests, query drift between `languages/al` and `tree-sitter-al/queries` | R1 review running | From R1 findings |
 | G | AI tooling: make this project speed up and sharpen AI work on Business Central (see below) | Inventory, measurements and design done (`findings/ai-tooling-ideas.md`): latency is 4 to 150 ms warm, but 14 of 20 measured answers are too large for an agent (up to 9.4 MB). Plugin build running | Daemon projection work after the LSP fix branch merges |
 | H | Docs: `Docs/`, `README.md`, `ROADMAP.md` match the code, then unsloppify | R1 docs review running | From R1 findings |
-| I | Blog: replace the six articles with a new series on the current project, unsloppify each | inventory done | Outline the series, work on a blog branch, merge to `main` only when ready (Vercel deploys `main`) |
+| I | Blog: replace the six articles with a new series on the current project, unsloppify each | On blog branch `campaign/2026-09-rewrite`: six posts deleted, site cleaned, `pnpm validate` passes (it failed on `main`), fact sheet and nine-article plan in `findings/blog-plan.md`, article 1 drafted, articles 3, 6, 7 being written | Articles 2, 4, 5, 8 after the fix branches settle, article 9 last, final fact pass, merge to `main` |
 
 ### G: AI tooling detail
 
