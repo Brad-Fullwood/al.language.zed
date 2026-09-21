@@ -109,7 +109,7 @@ audit that are still present in current code are tagged [STILL-OPEN].
 - severity: low
 - scenario: A project whose `.vscode/launch.json` lists Sandbox first and Production second gets symbols downloaded from, and CodeLens tests run against, whichever entry happens to be first in the file. There is no parameter to name one, and no message saying which was picked. `al_debug` already accepts a `config` name for exactly this reason (mcp.rs schema `config`: "exact debug configuration name"), so the convention exists and these three paths do not follow it.
 - fix: Accept an optional `config` name on `downloadSymbols` and `al.runTest`, match it against `BcServerConfig::display_name()`, and when it is omitted log or report the chosen configuration's name in the result.
-- status: open
+- status: fixed 4af032d6
 
 ### [BUG] Optimistic staging loops never converge while the user is typing
 - where: crates/al-lsp/src/server/workspace.rs:546 (`refresh_current_symbol_generation`), crates/al-lsp/src/server/lsp.rs:1495-1580 (`did_change_configuration` package-reload loop)
