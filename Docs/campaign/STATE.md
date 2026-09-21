@@ -14,12 +14,11 @@ Round 1: four of seven reviews are done (58 findings) and their fix agents are r
 | Fix R1 emit, compile, BC, explorer (28 findings) | worktree fix | branch `campaign/fix-r1-emit-bc-explorer` |
 | Fix R1 analysis and insight (18 findings) | worktree fix | branch `campaign/fix-r1-analysis-insight` |
 | Fix R1 LSP and protocol (15 findings, 2 security) | worktree fix | branch `campaign/fix-r1-lsp-protocol` |
-| Fix R1 runtime and DAP (13 findings) | worktree fix | branch `campaign/fix-r1-runtime-dap` |
+| Fix R1b runtime, test runner, DAP session, harness (28 findings) | worktree fix | branch `campaign/fix-r1b-runtime-dap` |
 | Build the Claude Code plugin (`plugin/`, marketplace manifest, 8 skills, 2 subagents) | worktree build | branch `campaign/ai-plugin` |
 
 Queued for a free build slot (at most 7 building agents, RAM is the limit):
 
-- Fix `findings/r1b-runtime-dap.md` (28 findings, 1 high: `--filter '*Post'` drops tests from a green summary). Crates: al-test, al-dap, al-test-harness, al-runtime stubs. Start after `campaign/fix-r1-runtime-dap` merges, on a branch from the merged result.
 - AI tooling build list items 1, 2, 3, 5, 7, 8 (`findings/ai-tooling-ideas.md` section 6: limit and fields projection, `scope` parameter, `source --list-procedures`, fix `subscribers` and `impact --table`, index progress, compact JSON). They edit the daemon dispatchers, so start after `campaign/fix-r1-lsp-protocol` merges. Item 4 (free object ID allocator, new file) can start as soon as a build slot frees. Items 9 and 10 (package version diff, persisted symbol index) later in the week.
 - Fix `findings/r1b-analysis-insight.md` (35 findings: quoted identifiers cannot be renamed, rename misses EventSubscriber strings, fields with `)` in the name dropped from resolution). Start after `campaign/fix-r1-analysis-insight` merges.
 - Fix `findings/r1c-analysis-insight.md` (29 findings, 5 high: unreachable coverage pass keyed on node kinds the grammar does not have, multi-object files read as first object only by 14 consumers, permission audit recommends dropping needed permissions, `Table::` where AL needs `Database::`, signature help picks a local procedure over the receiver's). Same crate as the analysis fix branch, start after it merges.
@@ -77,6 +76,7 @@ round on the areas with the most findings.
 
 ## Done
 
+- Merged `campaign/fix-r1-runtime-dap`: 13 of 13 fixed, each cited to Microsoft Learn. Left open: a real `line-rate` for dynamic Cobertura needs a statement-line query in al-analysis (the document now says `line-coverage="unavailable"`), and `Assert.RecordIsEmpty`, `RecordIsNotEmpty`, `TableIsEmpty` still route to live BC.
 - Merged `campaign/fix-r1-syntax-grammar`: 10 fixed, 1 rejected with proof (scanner.c wasm build is clean, CI now builds the grammar to wasm). New open items recorded in `findings/r1-syntax-grammar.md`: 124 more `trim_matches('"')` identifier cleanups in al-analysis (102) and al-insight (22), `clean_attr_arg` does not unescape doubled quotes, `sort_members` strands a blank line.
 - Merged `campaign/fix-r1-extension-ci`: 12 of 12 findings fixed (cargo-deny green, al-lsp upgrades again with offline fallback, extracted binaries verified against `binary-checksums.txt`, theme fixes moved into the generator, toolchain action pinned, release-dryrun runs 16 stages).
 - Campaign branch, protocol docs, watchdog timer, heartbeat hook, desloppify install.

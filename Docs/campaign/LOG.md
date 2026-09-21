@@ -48,3 +48,8 @@ Append-only. Newest entry last.
 ## 2026-09-21 11:50 BST: syntax and grammar fixes merged
 
 - Merged `campaign/fix-r1-syntax-grammar`. Grammar submodule at `38368a0` on AL-Tree-Sitter branch `campaign/2026-09-21`, `extension.toml` rev matches. Gates: fmt, clippy, 413 tests on al-syntax and zed-al. Grammar corpus 46389 of 46389.
+
+## 2026-09-21 12:20 BST: runtime and DAP fixes merged
+
+- Merged `campaign/fix-r1-runtime-dap`. Gates: fmt, clippy, 982 tests on al-runtime, al-test, al-dap. The agent saw 2 al-test-harness cancellation tests fail inside its worktree. They pass in the main checkout, so the cause is the nested worktree environment. `cargo fmt --all` also fails inside nested worktrees for the same reason, agents use `-p` filters there.
+- Corrections the agent made to the findings: `Round` with `<` and `>` moves the magnitude (toward and away from zero), and field capacities such as `Code[20]` were never parsed at all before this fix.
