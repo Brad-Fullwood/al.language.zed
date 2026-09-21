@@ -34,34 +34,77 @@ Question 4 reads a workspace procedure instead. The package-side numbers quoted
 in the skills come from a separate project whose `.alpackages` holds Base
 Application 28.1, measured directly rather than through an agent:
 
-| Call | Bytes | After the skill's `jq` projection |
+| Call | Bytes | The flag that replaced the `jq` projection |
 | --- | --- | --- |
-| `by-id codeunit 80` | 552,710 | 62 |
-| `by-id table 18` | 194,951 | 10,087 |
-| `composed table Item` | 450,532 | ~200 |
-| `suggest-event --table Item` | 484,680 | ~400 |
-| `impact Item` | 342,252 | varies by scope |
+| `by-id codeunit 80` | 552,710 | `--fields kind,id,name,package` |
+| `by-id table 18` | 194,951 | `--fields fields` |
+| `composed table Item` | 450,532 | `--limit 20 --fields name,package,fields` |
+| `suggest-event --table Item` | 484,680 | `--limit 8` |
+| `impact Item` | 342,252 | `--scope workspace` |
+| `source "Sales-Post"` | 837,509 | `--list-procedures`, then `--procedure` |
 | `source "Sales-Post" --procedure RunWithCheck` | 4,758 | read whole |
 | `trace OnAfterPostSalesDoc` | 842 | read whole |
 
+Those figures have not been re-measured since the daemon changes, because this
+machine has no such project. Re-running them is the "agent run against a
+project with `.alpackages`" item in `ROADMAP.md`.
+
 ## Results
 
-| # | Question | Skill or agent | Tool calls | Correct |
-| --- | --- | --- | --- | --- |
-| 1 | Where is the Work Order Staging table defined and what fields does it have? | `bc-symbol-lookup` | `search "Work Order Staging"`, then the skill's `grep -rln 'table 50130'` for the path | Yes. Table 50130, `src/WorkOrderStaging.Table.al`, all five fields with types |
-| 2 | Who calls the SchedulePost procedure on the Work Order Helper codeunit? | `bc-impact-check` | `search`, then `impact "Work Order Helper.SchedulePost"` through the skill's workspace `jq` filter | Yes. `Work Order Helper` (self) and report 50130 `Work Order Process Staging`, and it said no package consumers |
-| 3 | Who subscribes to the OnAfterProcess event? | `bc-event-map` | `trace OnAfterProcess`, one call | Yes. `Work Order Subscribers.OnAfterProcessLogResult`, published by `Test Event Publisher` |
-| 4 | Show me the source of the InsertJournalLine procedure in the Work Order Post Task codeunit. | `bc-base-app-source` | `search`, then `source "Work Order Post Task" --procedure InsertJournalLine` | Yes. Exact body and signature |
-| 5 | What would changing the Amount field on the Work Order Staging table affect? | `bc-symbol-scout` agent | `search`, `impact "Work Order Staging.Amount"`, then several `source --procedure` calls | Yes. `Work Order Helper`, `Work Order Post Task` and the table itself, scope stated |
-| 6 | I want to add a new table to this extension. What is the next free table object ID? | `bc-object-id-allocator` | `jq .idRanges app.json`, the skill's `grep`, then `seq \| grep -vxFf` | Yes. 50101, with 50100 and 50130 named as taken, and `native-check` offered as the confirmation |
-| 7 | Audit this extension before I deploy it. What problems does it have? | `bc-workspace-health` | `native-check`, `sql-scan`, `dead-code`, `arch-lint`, `audit-data`, `permission-audit`, `metrics --all`, `duplicates`, then `daemon-shutdown` | Yes. Seven categories, each with the object and line, ordered by what blocks a deploy |
+Round 3 is the state before the daemon gained `limit`, `offset`, `fields`,
+`scope`, `source --list-procedures`, `location` and `free-ids`. Round 4 is the
+same seven questions after. Bytes are the tool results the session pulled into
+its context, summed across the run.
 
-No run unzipped a `.app`, and none grepped for a symbol except where the skill
-tells it to.
+| # | Question | Skill or agent | Round 3 calls | Round 4 calls | R3 bytes | R4 bytes |
+| --- | --- | --- | --- | --- | ---: | ---: |
+| 1 | Where is the Work Order Staging table defined and what fields does it have? | `bc-symbol-lookup` | `search`, then `grep -rln 'table 50130'` for the path | `search`, `location` | 4,107 | 2,370 |
+| 2 | Who calls the SchedulePost procedure on the Work Order Helper codeunit? | `bc-impact-check` via `bc-symbol-scout` | `search`, `impact` through a workspace `jq` filter | `search`, `impact --scope workspace`, `location`, `Read` | 6,822 | 4,646 |
+| 3 | Who subscribes to the OnAfterProcess event? | `bc-event-map` | `trace OnAfterProcess` | `subscribers OnAfterProcess` | 1,204 | 400 |
+| 4 | Show me the source of the InsertJournalLine procedure in the Work Order Post Task codeunit. | `bc-base-app-source` | `search`, `source --procedure` | `search`, `source --procedure` | 3,110 | 3,148 |
+| 5 | What would changing the Amount field on the Work Order Staging table affect? | `bc-symbol-scout` agent | `search`, `impact`, then several `source --procedure` calls | `search`, `impact --scope workspace` | 9,634 | 2,889 |
+| 6 | I want to add a new table to this extension. What is the next free table object ID? | `bc-object-id-allocator` | `jq .idRanges app.json`, `grep`, `seq \| grep -vxFf` | `free-ids --kind table` | 1,890 | 278 |
+| 7 | Audit this extension before I deploy it. What problems does it have? | `bc-workspace-health` | `native-check`, `sql-scan`, `dead-code`, `arch-lint`, `audit-data`, `permission-audit`, `metrics --all`, `duplicates` | `native-check`, `sql-scan`, `dead-code`, `arch-lint` | 14,286 | 9,111 |
 
-Two of the seven runs still prefixed their first command with a `cd` into the
-toolchain checkout, hit the daemon error and recovered within three calls. The
-`SessionStart` hook now carries the same no-`cd` line the skills do.
+All seven correct in both rounds. The Round 3 byte counts are reconstructed
+from the commands each run made against the same fixture; the Round 4 counts
+are measured from the session streams.
+
+What changed in the answers, not only their size:
+
+- Question 1 asked `location` for the path instead of grepping for the
+  declaration line, and read the fields from the symbol index, which now
+  carries them for workspace objects.
+- Question 3 used `subscribers` in one call. In Round 3 the skill told the
+  agent to use `trace` because `subscribers` returned `[]` for a package
+  event.
+- Question 5 reported the page as `displays`, the two codeunits as `reads` and
+  the table as "Declared by table 50130". Round 3 listed the table alongside
+  the consumers with no way to tell them apart, and everything at
+  `confidence: low`.
+- Question 6 called one command. Round 3 ran three shell steps that
+  reimplemented range arithmetic.
+
+No run unzipped a `.app`, and none grepped for a symbol.
+
+### The same answers with and without the flags
+
+Measured on this fixture, which has no `.alpackages`, so the absolute numbers
+are small. The ratios are what the flags do:
+
+| Call | Bytes |
+| --- | ---: |
+| `by-id table 50130 --json` | 1,115 |
+| `by-id table 50130 --json --fields fields` | 658 |
+| `by-id table 50130 --compact --fields fields` | 339 |
+| `object codeunit "Work Order Helper" --json` | 1,437 |
+| the same with `--fields name,id,package` | 184 |
+| `source "Work Order Helper" --json` | 1,643 |
+| `source "Work Order Helper" --list-procedures` | 1,232 |
+| `intercept --json` | 1,046 |
+| `intercept --json --scope workspace --limit 5` | 203 |
+| `entrypoints --json` | 5,547 |
+| `entrypoints --json --scope workspace --limit 5` | 959 |
 
 ## What each round of failures changed
 
@@ -98,7 +141,12 @@ Two changes:
   without `--procedure` gives `code` but no `range`. The same rule went into
   `agents/bc-symbol-scout.md`, which hit it in question 5.
 
-**Round 3: all five correct**, as recorded above.
+**Round 3: all five correct.**
+
+**Round 4: the same seven questions after the daemon changes**, all correct,
+recorded in the table above. Nothing about triggering changed: every run
+loaded the right skill on its first turn. What changed is how many calls each
+answer took and how much of the result reached the context.
 
 ## Validation
 
@@ -117,9 +165,8 @@ agent carries a `name` and a `description`.
 ## Not covered
 
 - A project with `.alpackages`. The fixture has none, so no agent run exercised
-  a base-app lookup, the dependency source index, or the 30-second timeout the
-  skills tell the agent to retry. Those paths were measured by calling
-  `al-explorer` directly.
+  a base-app lookup or the dependency source index, and the package-side byte
+  counts above predate the daemon changes.
 - `bc-test-locally` and `bc-upgrade-impact` have no agent run yet. Their
   commands were each verified by hand against the fixture. `bc-upgrade-impact`
   needs a project with two versions of an app in `.alpackages` to be worth an
