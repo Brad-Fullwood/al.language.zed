@@ -62,3 +62,11 @@ The watchdog holds `flock` on `.campaign/headless.lock` while a headless session
 interactive session checks `flock -n .campaign/headless.lock true` at the start of each loop
 tick and does nothing when the lock is held, so two orchestrators do not edit the branch at
 once. `touch .campaign/STOP` stops the watchdog from starting new sessions.
+
+## Public repository
+
+This repository is public. Findings, logs and commits must not name customers, customer
+paths, tenant IDs, environment names, or customer object names. Measure on private
+workspaces if needed, and write results with neutral labels ("a private per-tenant
+extension"). Check with `grep -niE 'advania|customers/' Docs/campaign` before every commit
+of campaign docs.
