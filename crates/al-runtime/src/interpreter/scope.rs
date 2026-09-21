@@ -23,9 +23,6 @@ pub struct CallFrame {
     /// values intentionally remain plain strings; MaxStrLen consults this
     /// parallel type metadata through the scope stack.
     pub declared_text_lengths: HashMap<String, usize>,
-    /// Slot for the procedure return value, populated on `exit(value)`
-    /// or by assigning to the procedure name.
-    pub return_slot: Option<Value>,
     /// Source location of the call site (file + line) for stack traces.
     /// `None` for the synthetic top frame.
     pub call_site: Option<(String, u32)>,
@@ -38,7 +35,6 @@ impl CallFrame {
             object: object.into(),
             locals: HashMap::new(),
             declared_text_lengths: HashMap::new(),
-            return_slot: None,
             call_site: None,
         }
     }
