@@ -42,13 +42,22 @@ const MAX_RESPONSE_LINE: usize = 64 * 1024 * 1024;
 /// retried until this instant, preserving any partially-read line bytes.
 /// `None` means a single socket timeout is fatal (legacy behaviour, used
 /// by tests).
+///
+/// `carry` holds the bytes taken from the reader so far. It belongs to the
+/// caller, not to this function, because the bytes are already consumed from
+/// the `BufReader`: dropping them on a deadline that expires mid-frame (a
+/// multi-megabyte `workspace/symbol` or `al_build` result still streaming)
+/// leaves the rest of that JSON line in the socket, so the next request reads
+/// a truncated fragment and reports a parse error for a frame that was well
+/// formed. On a complete frame `carry` is left empty.
 #[cfg(not(windows))]
 fn read_bounded_line<R: BufRead>(
     reader: &mut R,
+    carry: &mut Vec<u8>,
     max_bytes: usize,
     deadline: Option<std::time::Instant>,
 ) -> std::io::Result<Option<String>> {
-    let mut buf: Vec<u8> = Vec::new();
+    let buf = carry;
     loop {
         let available = match reader.fill_buf() {
             Ok(a) => a,
@@ -87,7 +96,7 @@ fn read_bounded_line<R: BufRead>(
             return if buf.is_empty() {
                 Ok(None)
             } else {
-                String::from_utf8(buf)
+                String::from_utf8(std::mem::take(buf))
                     .map(Some)
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
             };
@@ -108,7 +117,7 @@ fn read_bounded_line<R: BufRead>(
         if let Some(pos) = available.iter().position(|&b| b == b'\n') {
             buf.extend_from_slice(&available[..pos]);
             reader.consume(pos + 1);
-            return String::from_utf8(buf)
+            return String::from_utf8(std::mem::take(buf))
                 .map(Some)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e));
         }
@@ -126,13 +135,14 @@ fn read_bounded_line<R: BufRead>(
 #[cfg(windows)]
 fn read_bounded_pipe_line(
     reader: &mut BufReader<Stream>,
+    carry: &mut Vec<u8>,
     max_bytes: usize,
     deadline: std::time::Instant,
 ) -> std::io::Result<Option<String>> {
     use std::os::windows::io::{AsHandle, AsRawHandle};
     use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 
-    let mut buf: Vec<u8> = Vec::new();
+    let buf = carry;
     loop {
         while reader.buffer().is_empty() {
             let Stream::NamedPipe(pipe) = reader.get_ref();
@@ -176,7 +186,7 @@ fn read_bounded_pipe_line(
         if let Some(pos) = available.iter().position(|&byte| byte == b'\n') {
             buf.extend_from_slice(&available[..pos]);
             reader.consume(pos + 1);
-            return String::from_utf8(buf)
+            return String::from_utf8(std::mem::take(buf))
                 .map(Some)
                 .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error));
         }
@@ -186,21 +196,41 @@ fn read_bounded_pipe_line(
     }
 }
 
+/// A frame write that did not complete.
+///
+/// `wrote_any` distinguishes a frame the daemon never saw from one it saw the
+/// start of. In the second case the connection carries half a JSON object and
+/// the next request would append a second one to the same line, which the
+/// daemon reads as one corrupt frame.
+struct FrameWriteError {
+    error: std::io::Error,
+    wrote_any: bool,
+}
+
 /// Write a complete frame without allowing a non-reading daemon to block the
 /// caller forever. Windows named pipes use nonblocking mode; Unix sockets use
 /// their OS send timeout, with this deadline as a platform-independent guard.
 fn write_all_bounded<W: Write>(
     writer: &mut W,
-    mut bytes: &[u8],
+    bytes: &[u8],
     timeout: Duration,
-) -> std::io::Result<()> {
+) -> Result<(), FrameWriteError> {
     let deadline = std::time::Instant::now() + timeout;
+    let total = bytes.len();
+    let mut bytes = bytes;
+    let fail = move |error: std::io::Error, remaining: usize| FrameWriteError {
+        error,
+        wrote_any: remaining != total,
+    };
     while !bytes.is_empty() {
         match writer.write(bytes) {
             Ok(0) => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::WriteZero,
-                    "failed to write complete daemon request",
+                return Err(fail(
+                    std::io::Error::new(
+                        std::io::ErrorKind::WriteZero,
+                        "failed to write complete daemon request",
+                    ),
+                    bytes.len(),
                 ));
             }
             Ok(written) => bytes = &bytes[written..],
@@ -213,7 +243,10 @@ fn write_all_bounded<W: Write>(
             {
                 std::thread::sleep(Duration::from_millis(10));
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                let remaining = bytes.len();
+                return Err(fail(e, remaining));
+            }
         }
     }
     Ok(())
@@ -294,6 +327,14 @@ pub struct DaemonClient {
     /// must drain them instead of mistaking one for the current request's
     /// answer ("Response ID mismatch" on every subsequent call).
     abandoned_ids: std::collections::HashSet<u64>,
+    /// Bytes of a response frame already taken from the socket but not yet
+    /// terminated by a newline. Carried across `request` calls so a deadline
+    /// that expires mid-frame does not truncate the frame for the next reader.
+    partial_frame: Vec<u8>,
+    /// Why this connection can no longer be used, once a half-written request
+    /// frame has reached the daemon. Nothing can undo that, so every later
+    /// request fails with this reason instead of a misleading parse error.
+    desynced: Option<String>,
 }
 
 impl DaemonClient {
@@ -387,6 +428,8 @@ impl DaemonClient {
             init_wait_total: INIT_WAIT_TOTAL,
             init_retry_delay: INIT_RETRY_DELAY,
             abandoned_ids: std::collections::HashSet::new(),
+            partial_frame: Vec::new(),
+            desynced: None,
         })
     }
 
@@ -433,6 +476,12 @@ impl DaemonClient {
         params: Option<serde_json::Value>,
         timeout: Duration,
     ) -> Result<serde_json::Value, String> {
+        if let Some(reason) = &self.desynced {
+            return Err(format!(
+                "Daemon connection is out of sync ({reason}); reconnect before sending more \
+                 requests"
+            ));
+        }
         let init_deadline = std::time::Instant::now() + self.init_wait_total;
         let mut expected_id = self.send_request(method, &params)?;
 
@@ -483,11 +532,18 @@ impl DaemonClient {
             .map_err(|e| format!("Failed to serialize request: {}", e))?;
         json.push('\n');
 
-        write_all_bounded(&mut self.writer, json.as_bytes(), self.write_timeout)
-            .map_err(|e| format!("Failed to send request: {}", e))?;
-        self.writer
-            .flush()
-            .map_err(|e| format!("Failed to flush: {}", e))?;
+        if let Err(failure) =
+            write_all_bounded(&mut self.writer, json.as_bytes(), self.write_timeout)
+        {
+            if failure.wrote_any {
+                self.desynced = Some(format!("a request frame was half sent: {}", failure.error));
+            }
+            return Err(format!("Failed to send request: {}", failure.error));
+        }
+        if let Err(error) = self.writer.flush() {
+            self.desynced = Some(format!("a request frame may be half sent: {error}"));
+            return Err(format!("Failed to flush: {}", error));
+        }
         Ok(id)
     }
 
@@ -515,40 +571,49 @@ impl DaemonClient {
         deadline: std::time::Instant,
     ) -> Result<Response, String> {
         #[cfg(not(windows))]
-        let line = read_bounded_line(&mut self.reader, MAX_RESPONSE_LINE, Some(deadline)).map_err(
-            |e| {
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) {
-                    format!(
-                        "Daemon did not respond within {}s — the operation may still be \
+        let line = read_bounded_line(
+            &mut self.reader,
+            &mut self.partial_frame,
+            MAX_RESPONSE_LINE,
+            Some(deadline),
+        )
+        .map_err(|e| {
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) {
+                format!(
+                    "Daemon did not respond within {}s — the operation may still be \
                          running. Retry with a longer timeout, or check the daemon log at \
                          ~/.local/share/al-lsp/logs/al-lsp.log",
-                        timeout.as_secs()
-                    )
-                } else {
-                    format!("Failed to read response: {}", e)
-                }
-            },
-        )?;
+                    timeout.as_secs()
+                )
+            } else {
+                format!("Failed to read response: {}", e)
+            }
+        })?;
         #[cfg(windows)]
-        let line =
-            read_bounded_pipe_line(&mut self.reader, MAX_RESPONSE_LINE, deadline).map_err(|e| {
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) {
-                    format!(
-                        "Daemon did not respond within {}s — the operation may still be \
+        let line = read_bounded_pipe_line(
+            &mut self.reader,
+            &mut self.partial_frame,
+            MAX_RESPONSE_LINE,
+            deadline,
+        )
+        .map_err(|e| {
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) {
+                format!(
+                    "Daemon did not respond within {}s — the operation may still be \
                          running. Retry with a longer timeout, or check the daemon log at \
                          ~/.local/share/al-lsp/logs/al-lsp.log",
-                        timeout.as_secs()
-                    )
-                } else {
-                    format!("Failed to read response: {}", e)
-                }
-            })?;
+                    timeout.as_secs()
+                )
+            } else {
+                format!("Failed to read response: {}", e)
+            }
+        })?;
         let line = line.ok_or_else(|| "Connection closed by daemon (EOF)".to_string())?;
         serde_json::from_str(line.trim()).map_err(|e| format!("Failed to parse response: {}", e))
     }
@@ -848,6 +913,87 @@ mod tests {
         );
     }
 
+    /// The deadline expiring mid-frame used to drop the bytes already taken
+    /// from the `BufReader`, so the next request read a truncated fragment and
+    /// reported a parse error for a frame that was well formed.
+    #[test]
+    fn a_frame_split_by_a_deadline_is_read_whole_by_the_next_request() {
+        let sock = unique_sock();
+        let listener = UnixListener::bind(&sock).expect("test");
+        let _handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("test");
+            let mut discard = [0_u8; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut discard);
+            // First half of the response frame, then a pause longer than the
+            // socket poll interval (so the caller's deadline is observed
+            // mid-frame), then the rest.
+            stream
+                .write_all(br#"{"jsonrpc":"2.0","id":1,"result":{"value":"#)
+                .expect("test");
+            stream.flush().expect("test");
+            std::thread::sleep(READ_POLL_INTERVAL + Duration::from_millis(500));
+            stream.write_all(b"42}}\n").expect("test");
+            stream.flush().expect("test");
+            std::thread::sleep(Duration::from_secs(2));
+        });
+
+        let stream = UnixStream::connect(&sock).expect("test");
+        let mut client = DaemonClient::from_stream(test_stream(stream)).expect("test");
+        let error = client
+            .request_with_timeout("slow", None, Duration::from_millis(100))
+            .expect_err("the first request must time out mid-frame");
+        assert!(
+            error.contains("did not respond"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            !client.partial_frame.is_empty(),
+            "the bytes already taken from the socket must be kept"
+        );
+
+        // The daemon finishes the frame. Draining it must recognise the whole
+        // JSON object, not a fragment.
+        let error = client
+            .request_with_timeout("next", None, Duration::from_millis(1000))
+            .expect_err("the drained frame belongs to the abandoned request");
+        assert!(
+            !error.to_lowercase().contains("parse"),
+            "a well-formed frame must not surface as a parse error: {error}"
+        );
+    }
+
+    #[test]
+    fn a_half_written_request_poisons_the_connection() {
+        let sock = unique_sock();
+        let listener = UnixListener::bind(&sock).expect("test");
+        let _handle = std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("test");
+            std::thread::sleep(Duration::from_secs(5));
+        });
+
+        let stream = UnixStream::connect(&sock).expect("test");
+        let mut client = DaemonClient::from_stream(test_stream(stream)).expect("test");
+        client.set_write_timeout(Duration::from_millis(200));
+
+        let big = serde_json::json!({ "blob": "x".repeat(64 * 1024) });
+        for _ in 0..2000 {
+            if client
+                .send_request("test/flood", &Some(big.clone()))
+                .is_err()
+            {
+                break;
+            }
+        }
+        assert!(
+            client.desynced.is_some(),
+            "a frame the daemon saw the start of must poison the connection"
+        );
+        let error = client
+            .request("ping", None)
+            .expect_err("a poisoned connection must refuse further requests");
+        assert!(error.contains("out of sync"), "unexpected error: {error}");
+    }
+
     #[test]
     fn write_to_nonreading_daemon_times_out() {
         let sock = unique_sock();
@@ -882,8 +1028,8 @@ mod tests {
     fn bounded_read_accepts_line_at_or_under_cap() {
         let payload = b"hello world\n";
         let mut reader = std::io::BufReader::new(&payload[..]);
-        let result =
-            read_bounded_line(&mut reader, 64, None).expect("under-cap line should succeed");
+        let result = read_bounded_line(&mut reader, &mut Vec::new(), 64, None)
+            .expect("under-cap line should succeed");
         assert_eq!(result.as_deref(), Some("hello world"));
     }
 
@@ -891,7 +1037,8 @@ mod tests {
     fn bounded_read_rejects_line_exceeding_cap() {
         let payload = [b'X'; 100];
         let mut reader = std::io::BufReader::new(&payload[..]);
-        let err = read_bounded_line(&mut reader, 5, None).expect_err("must reject oversized line");
+        let err = read_bounded_line(&mut reader, &mut Vec::new(), 5, None)
+            .expect_err("must reject oversized line");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         assert!(err.to_string().contains("5 byte limit"));
     }
@@ -900,7 +1047,8 @@ mod tests {
     fn bounded_read_returns_none_on_empty_eof() {
         let payload: &[u8] = &[];
         let mut reader = std::io::BufReader::new(payload);
-        let result = read_bounded_line(&mut reader, 64, None).expect("EOF must not error");
+        let result =
+            read_bounded_line(&mut reader, &mut Vec::new(), 64, None).expect("EOF must not error");
         assert!(result.is_none());
     }
 
@@ -909,7 +1057,7 @@ mod tests {
         // 0xC3 is a 2-byte-sequence lead byte; no continuation, no newline.
         let payload: &[u8] = &[b'o', b'k', 0xC3];
         let mut reader = std::io::BufReader::new(payload);
-        let err = read_bounded_line(&mut reader, 64, None)
+        let err = read_bounded_line(&mut reader, &mut Vec::new(), 64, None)
             .expect_err("incomplete UTF-8 at EOF must error");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
@@ -919,7 +1067,7 @@ mod tests {
         // Lead byte 0xC3 followed immediately by the newline terminator.
         let payload: &[u8] = &[b'o', b'k', 0xC3, b'\n'];
         let mut reader = std::io::BufReader::new(payload);
-        let err = read_bounded_line(&mut reader, 64, None)
+        let err = read_bounded_line(&mut reader, &mut Vec::new(), 64, None)
             .expect_err("incomplete UTF-8 before newline must error");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
@@ -928,7 +1076,8 @@ mod tests {
     fn empty_line_yields_empty_string_then_graceful_parse_error() {
         let payload: &[u8] = b"\n";
         let mut reader = std::io::BufReader::new(payload);
-        let result = read_bounded_line(&mut reader, 64, None).expect("bare newline must not error");
+        let result = read_bounded_line(&mut reader, &mut Vec::new(), 64, None)
+            .expect("bare newline must not error");
         assert_eq!(result.as_deref(), Some(""));
 
         let sock = unique_sock();
