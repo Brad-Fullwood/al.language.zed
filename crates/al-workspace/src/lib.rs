@@ -201,6 +201,22 @@ pub struct Workspace {
     /// Without this, the slow path would have to hold the `call_graph` write
     /// lock for the whole build, blocking every reader during initial warmup.
     call_graph_build_lock: std::sync::Mutex<()>,
+    /// Monotonic count of insight-graph invalidations.
+    ///
+    /// A build reads the file index over 100-200 ms without holding a data
+    /// lock, so an edit can land between the read and the publication. Each
+    /// graph is published tagged with the counter value read before the build
+    /// started, and a cached graph is a hit only while its tag still equals
+    /// the counter, so a graph that missed a concurrent edit is rebuilt on the
+    /// next query instead of standing in for the current one.
+    insight_invalidation_revision: std::sync::atomic::AtomicU64,
+    /// Monotonic count of call-graph invalidations. Bumped by both
+    /// invalidators, since dropping the insight graph drops the call graph.
+    call_invalidation_revision: std::sync::atomic::AtomicU64,
+    /// The invalidation revision `insight_graph` was built from.
+    insight_graph_revision: std::sync::RwLock<Option<u64>>,
+    /// The invalidation revision `call_graph` was built from.
+    call_graph_revision: std::sync::RwLock<Option<u64>>,
     /// Parsed Microsoft/third-party object sources extracted from loaded `.app`
     /// packages. The fingerprint makes this cache independent from ordinary
     /// workspace-file graph invalidation while still rebuilding after package
@@ -252,6 +268,10 @@ impl Workspace {
             call_graph: std::sync::RwLock::new(None),
             call_graph_dependency_fingerprint: std::sync::RwLock::new(None),
             call_graph_build_lock: std::sync::Mutex::new(()),
+            insight_invalidation_revision: std::sync::atomic::AtomicU64::new(0),
+            call_invalidation_revision: std::sync::atomic::AtomicU64::new(0),
+            insight_graph_revision: std::sync::RwLock::new(None),
+            call_graph_revision: std::sync::RwLock::new(None),
             dependency_source_index: std::sync::RwLock::new(None),
             profiler_session: std::sync::RwLock::new(None),
             test_results: std::sync::RwLock::new(None),
@@ -298,20 +318,36 @@ impl Workspace {
     /// Get or lazily build the cached insight graph.
     pub fn get_or_build_insight_graph(&self) -> Result<Arc<InsightGraph>, WorkspaceStateError> {
         {
+            let revision = self.insight_revision();
             let guard = self
                 .insight_graph
                 .read()
                 .map_err(|_| WorkspaceStateError::poisoned("insight_graph"))?;
             if let Some(arc) = guard.as_ref() {
-                return Ok(Arc::clone(arc));
+                if self.cached_revision_matches(
+                    &self.insight_graph_revision,
+                    "insight_graph_revision",
+                    revision,
+                )? {
+                    return Ok(Arc::clone(arc));
+                }
             }
         }
         let mut guard = self
             .insight_graph
             .write()
             .map_err(|_| WorkspaceStateError::poisoned("insight_graph"))?;
+        // Invalidation takes this same write lock, so the revision read here
+        // still describes the graph built below.
+        let revision = self.insight_revision();
         if let Some(arc) = guard.as_ref() {
-            return Ok(Arc::clone(arc));
+            if self.cached_revision_matches(
+                &self.insight_graph_revision,
+                "insight_graph_revision",
+                revision,
+            )? {
+                return Ok(Arc::clone(arc));
+            }
         }
         let build = || {
             let mut g = InsightGraph::new();
@@ -326,13 +362,23 @@ impl Workspace {
         };
         let arc = Arc::new(graph);
         *guard = Some(Arc::clone(&arc));
+        *self
+            .insight_graph_revision
+            .write()
+            .map_err(|_| WorkspaceStateError::poisoned("insight_graph_revision"))? = Some(revision);
         Ok(arc)
     }
 
     /// Invalidate both graph caches.
     pub fn invalidate_insight_graph(&self) {
+        self.insight_invalidation_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        self.call_invalidation_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
         reset_optional_cache(&self.insight_graph, "insight_graph");
+        reset_optional_cache(&self.insight_graph_revision, "insight_graph_revision");
         reset_optional_cache(&self.call_graph, "call_graph");
+        reset_optional_cache(&self.call_graph_revision, "call_graph_revision");
         reset_optional_cache(
             &self.call_graph_dependency_fingerprint,
             "call_graph_dependency_fingerprint",
@@ -341,11 +387,39 @@ impl Workspace {
 
     /// Invalidate the call graph while retaining the insight graph.
     pub fn invalidate_call_graph_only(&self) {
+        self.call_invalidation_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
         reset_optional_cache(&self.call_graph, "call_graph");
+        reset_optional_cache(&self.call_graph_revision, "call_graph_revision");
         reset_optional_cache(
             &self.call_graph_dependency_fingerprint,
             "call_graph_dependency_fingerprint",
         );
+    }
+
+    #[inline]
+    fn insight_revision(&self) -> u64 {
+        self.insight_invalidation_revision
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    #[inline]
+    fn call_graph_revision_now(&self) -> u64 {
+        self.call_invalidation_revision
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn cached_revision_matches(
+        &self,
+        lock: &std::sync::RwLock<Option<u64>>,
+        component: &'static str,
+        current: u64,
+    ) -> Result<bool, WorkspaceStateError> {
+        Ok(lock
+            .read()
+            .map_err(|_| WorkspaceStateError::poisoned(component))?
+            .as_ref()
+            == Some(&current))
     }
 
     /// Return a coherent parsed index of every AL object body embedded in the
@@ -526,6 +600,7 @@ impl Workspace {
     > {
         let (dependency_fingerprint, _) = self.get_or_build_dependency_source_generation()?;
         {
+            let revision = self.call_graph_revision_now();
             let insight = self
                 .insight_graph
                 .read()
@@ -540,8 +615,15 @@ impl Workspace {
                 .call_graph_dependency_fingerprint
                 .read()
                 .map_err(|_| WorkspaceStateError::poisoned("call_graph_dependency_fingerprint"))?;
+            let current = self.cached_revision_matches(
+                &self.call_graph_revision,
+                "call_graph_revision",
+                revision,
+            )?;
             if let Some(insight) = insight.filter(|_| {
-                cg_guard.is_some() && fingerprint_guard.as_ref() == Some(&dependency_fingerprint)
+                current
+                    && cg_guard.is_some()
+                    && fingerprint_guard.as_ref() == Some(&dependency_fingerprint)
             }) {
                 drop(fingerprint_guard);
                 return Ok((insight, cg_guard));
@@ -555,6 +637,7 @@ impl Workspace {
         let (dependency_fingerprint, dependency_sources) =
             self.get_or_build_dependency_source_generation()?;
         {
+            let revision = self.call_graph_revision_now();
             let insight = self
                 .insight_graph
                 .read()
@@ -569,14 +652,26 @@ impl Workspace {
                 .call_graph_dependency_fingerprint
                 .read()
                 .map_err(|_| WorkspaceStateError::poisoned("call_graph_dependency_fingerprint"))?;
+            let current = self.cached_revision_matches(
+                &self.call_graph_revision,
+                "call_graph_revision",
+                revision,
+            )?;
             if let Some(insight) = insight.filter(|_| {
-                cg_guard.is_some() && fingerprint_guard.as_ref() == Some(&dependency_fingerprint)
+                current
+                    && cg_guard.is_some()
+                    && fingerprint_guard.as_ref() == Some(&dependency_fingerprint)
             }) {
                 drop(fingerprint_guard);
                 return Ok((insight, cg_guard));
             }
         }
 
+        // Read before the build so an invalidation that lands while the build
+        // runs leaves the published graphs tagged with the older revision, and
+        // the next query rebuilds instead of reusing them.
+        let built_at_insight_revision = self.insight_revision();
+        let built_at_call_revision = self.call_graph_revision_now();
         let build = || {
             let mut graph = InsightGraph::new();
             graph.build_from_index(&self.symbols);
@@ -624,9 +719,21 @@ impl Workspace {
             .call_graph_dependency_fingerprint
             .write()
             .map_err(|_| WorkspaceStateError::poisoned("call_graph_dependency_fingerprint"))?;
+        let mut ig_revision_guard = self
+            .insight_graph_revision
+            .write()
+            .map_err(|_| WorkspaceStateError::poisoned("insight_graph_revision"))?;
+        let mut cg_revision_guard = self
+            .call_graph_revision
+            .write()
+            .map_err(|_| WorkspaceStateError::poisoned("call_graph_revision"))?;
         *ig_guard = Some(Arc::clone(&insight));
         *cg_guard = Some(cg);
         *fingerprint_guard = Some(dependency_fingerprint);
+        *ig_revision_guard = Some(built_at_insight_revision);
+        *cg_revision_guard = Some(built_at_call_revision);
+        drop(cg_revision_guard);
+        drop(ig_revision_guard);
         drop(fingerprint_guard);
         drop(cg_guard);
         drop(ig_guard);
@@ -1040,6 +1147,50 @@ mod workspace_lifecycle_tests {
                 "DCL invariant: all concurrent callers must observe the same Arc<InsightGraph>"
             );
         }
+    }
+
+    /// A build that started before an invalidation must not stand in for the
+    /// current workspace once it publishes. The build is simulated by
+    /// publishing an empty graph tagged with the revision read before the
+    /// invalidation, which is what an in-flight build carries.
+    #[test]
+    fn a_graph_built_before_an_invalidation_is_not_reused() {
+        let workspace = make_workspace();
+        workspace.file_index.add_file(
+            PathBuf::from("/tmp/graph_race/First.Codeunit.al"),
+            r#"codeunit 50100 "First" { procedure Alpha() begin end; }"#.to_string(),
+        );
+        let node_count = {
+            let (_, guard) = workspace.get_or_build_call_graph().unwrap();
+            guard.as_ref().expect("a graph is published").node_count()
+        };
+        assert!(node_count > 0, "the first build must find the procedure");
+
+        // An in-flight build reads the index here.
+        let built_at_insight_revision = workspace.insight_revision();
+        let built_at_call_revision = workspace.call_graph_revision_now();
+
+        workspace.file_index.add_file(
+            PathBuf::from("/tmp/graph_race/Second.Codeunit.al"),
+            r#"codeunit 50101 "Second" { procedure Beta() begin end; }"#.to_string(),
+        );
+        workspace.invalidate_insight_graph();
+
+        // The in-flight build publishes what it read before the edit.
+        let fingerprint = workspace.dependency_package_fingerprint().unwrap();
+        *workspace.insight_graph.write().unwrap() = Some(Arc::new(InsightGraph::new()));
+        *workspace.call_graph.write().unwrap() = Some(CallGraph::new());
+        *workspace.call_graph_dependency_fingerprint.write().unwrap() = Some(fingerprint);
+        *workspace.insight_graph_revision.write().unwrap() = Some(built_at_insight_revision);
+        *workspace.call_graph_revision.write().unwrap() = Some(built_at_call_revision);
+
+        let (_, guard) = workspace.get_or_build_call_graph().unwrap();
+        let rebuilt = guard.as_ref().expect("a graph is published");
+        assert!(
+            rebuilt.node_count() > node_count,
+            "the stale graph was served instead of rebuilding: {} nodes",
+            rebuilt.node_count()
+        );
     }
 
     #[test]
