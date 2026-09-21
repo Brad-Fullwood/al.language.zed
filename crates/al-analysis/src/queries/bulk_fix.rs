@@ -602,6 +602,26 @@ fn normalize_tooltip_text(value: &str) -> String {
     }
 }
 
+/// Give `value` the "Specifies " opening that UICop AA0218 asks for, unless it
+/// already has one.
+///
+/// The sole caller reads the base-app table field's own `ToolTip` property,
+/// which follows that convention already, so prefixing unconditionally wrote
+/// `Specifies Specifies the number of the customer.` across every matching
+/// page field in the project. A value that merely starts with the same letters
+/// ("Specification number") still gets the prefix.
+fn with_specifies_prefix(value: &str) -> String {
+    const PREFIX: &str = "Specifies";
+    let already_prefixed = value.len() > PREFIX.len()
+        && value[..PREFIX.len()].eq_ignore_ascii_case(PREFIX)
+        && value[PREFIX.len()..].starts_with(char::is_whitespace);
+    if already_prefixed {
+        value.to_string()
+    } else {
+        format!("{PREFIX} {value}")
+    }
+}
+
 fn parse_record_field_source(expression: &str) -> Option<String> {
     let (receiver, field) = expression.split_once('.')?;
     if !receiver.trim().eq_ignore_ascii_case("rec") {
@@ -671,11 +691,11 @@ fn inject_tooltips(
         let Some(tooltip) = tooltips.get(&field_name.to_ascii_lowercase()) else {
             continue;
         };
-        let escaped = normalize_tooltip_text(tooltip).replace('\'', "''");
+        let escaped = with_specifies_prefix(&normalize_tooltip_text(tooltip)).replace('\'', "''");
         insertions.push(property_insertion(
             source,
             &section,
-            &format!("ToolTip = 'Specifies {escaped}';"),
+            &format!("ToolTip = '{escaped}';"),
         )?);
     }
     let count = insertions.len();
@@ -971,7 +991,70 @@ mod tests {
         let tooltips = tooltip_map("No.", "the item number");
         let (result, changes) = inject_tooltips(source, &parse(source), &tooltips).unwrap();
         assert_eq!(changes, 1);
-        assert!(result.contains("ToolTip"));
+        assert!(
+            result.contains("                ToolTip = 'Specifies the item number';"),
+            "{result}"
+        );
+        assert!(!parse(&result).root_node().has_error());
+    }
+
+    /// The only caller reads the base-app field's own `ToolTip`, which by the
+    /// UICop AA0218 convention already starts with "Specifies".
+    #[test]
+    fn inject_tooltips_does_not_repeat_an_existing_specifies_prefix() {
+        let source = r#"page 50100 "Test"
+{
+    layout
+    {
+        area(Content)
+        {
+            field(no; Rec."No.")
+            {
+                ApplicationArea = All;
+            }
+        }
+    }
+}
+"#;
+        for value in [
+            "Specifies the number of the customer.",
+            "specifies the number of the customer.",
+        ] {
+            let tooltips = tooltip_map("No.", value);
+            let (result, changes) = inject_tooltips(source, &parse(source), &tooltips).unwrap();
+            assert_eq!(changes, 1);
+            assert!(
+                result.contains(&format!("                ToolTip = '{value}';")),
+                "{value}: {result}"
+            );
+            assert!(!parse(&result).root_node().has_error());
+        }
+    }
+
+    /// "Specification" starts with the same letters but is not the prefix.
+    #[test]
+    fn inject_tooltips_prefixes_a_word_that_merely_starts_with_specifies() {
+        let source = r#"page 50100 "Test"
+{
+    layout
+    {
+        area(Content)
+        {
+            field(no; Rec."No.")
+            {
+                ApplicationArea = All;
+            }
+        }
+    }
+}
+"#;
+        let tooltips = tooltip_map("No.", "Specification number");
+        let (result, _) = inject_tooltips(source, &parse(source), &tooltips).unwrap();
+        assert!(
+            result.contains("                ToolTip = 'Specifies Specification number';"),
+            "{result}"
+        );
+        assert!(!parse(&result).root_node().has_error());
     }
 
     #[test]
