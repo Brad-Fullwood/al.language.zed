@@ -549,4 +549,44 @@ mod tests {
         let enums = runtime_enums();
         assert!(enums.iter().any(|e| e.name == "SecurityFilter"));
     }
+
+    #[test]
+    fn every_object_type_entry_is_populated() {
+        for t in object_types() {
+            assert!(!t.keyword.is_empty(), "keyword must be populated");
+            assert!(!t.display_name.is_empty(), "display_name must be populated");
+            assert!(!t.node_kind.is_empty(), "node_kind must be populated");
+            assert!(
+                !t.lsp_symbol_kind.is_empty(),
+                "lsp_symbol_kind must be populated"
+            );
+        }
+    }
+
+    #[test]
+    fn every_runtime_enum_entry_is_populated() {
+        for e in runtime_enums() {
+            assert!(!e.name.is_empty(), "enum name must be populated");
+            assert!(
+                !e.values.is_empty(),
+                "enum {} must have at least one value",
+                e.name
+            );
+        }
+    }
+
+    #[test]
+    fn object_type_by_keyword_resolves_every_keyword_whatever_the_casing() {
+        for t in object_types() {
+            for spelling in [
+                t.keyword.to_ascii_lowercase(),
+                t.keyword.to_ascii_uppercase(),
+            ] {
+                let resolved = object_type_by_keyword(&spelling)
+                    .unwrap_or_else(|| panic!("keyword {spelling} must resolve"));
+                assert_eq!(resolved.keyword, t.keyword);
+            }
+        }
+        assert!(object_type_by_keyword("").is_none());
+    }
 }

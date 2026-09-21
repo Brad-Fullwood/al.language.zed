@@ -748,7 +748,7 @@ impl SymbolIndex {
         use super::model::{EnumValueSymbol, SymbolEntry};
 
         let mut entries = Vec::new();
-        for re in super::language_data::runtime_enums() {
+        for re in al_syntax::language_data::runtime_enums() {
             if self
                 .get_by_name(&re.name)
                 .iter()
@@ -1913,7 +1913,7 @@ mod tests {
     #[test]
     fn runtime_enum_is_not_shadowed_by_non_enum_with_same_name() {
         let index = SymbolIndex::new();
-        let runtime_name = crate::language_data::runtime_enums()[0].name.clone();
+        let runtime_name = al_syntax::language_data::runtime_enums()[0].name.clone();
         index.add_entries(&[make_entry(ObjectKind::Table, 50_100, &runtime_name)]);
 
         index.load_runtime_enums();

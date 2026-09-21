@@ -119,7 +119,7 @@ impl FromStr for ObjectKind {
 impl ObjectKind {
     /// The primary (first-listed) extension kind for this base kind.
     pub fn extension_kind(&self) -> Option<ObjectKind> {
-        crate::language_data::object_type_by_keyword(self.al_keyword())?
+        al_syntax::language_data::object_type_by_keyword(self.al_keyword())?
             .extensions
             .first()
             .and_then(|kw| kw.parse::<ObjectKind>().ok())
@@ -127,7 +127,7 @@ impl ObjectKind {
 
     pub fn base_kind(&self) -> Option<ObjectKind> {
         let kw = self.al_keyword();
-        crate::language_data::object_types()
+        al_syntax::language_data::object_types()
             .iter()
             .find(|ot| ot.extensions.iter().any(|e| e.eq_ignore_ascii_case(kw)))
             .and_then(|ot| ot.keyword.parse::<ObjectKind>().ok())
