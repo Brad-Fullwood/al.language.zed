@@ -35,7 +35,9 @@ jobs:
         run: ./scripts/check-repo-consistency.sh
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch, 2026-09-03
+        with:
+          toolchain: stable
 
       - name: Check release hygiene
         run: ./scripts/check-release-hygiene.sh --tag "${GITHUB_REF_NAME}" --changed-since auto --require-ci
@@ -88,8 +90,9 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch, 2026-09-03
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       # The semantic feature builds AlBridge.dll with the .NET SDK.
@@ -100,7 +103,7 @@ jobs:
 
       - name: Install cross (Linux aarch64 only)
         if: matrix.cross
-        run: cargo install cross --version 0.2.5
+        run: cargo install cross --version 0.2.5 --locked
 
       - name: Cache cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -202,8 +205,9 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust stable + wasm32-wasip2
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch, 2026-09-03
         with:
+          toolchain: stable
           targets: wasm32-wasip2
 
       - name: Cache cargo registry

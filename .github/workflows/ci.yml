@@ -31,8 +31,9 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch, 2026-09-03
         with:
+          toolchain: stable
           components: rustfmt, clippy
 
       - name: ShellCheck scripts
@@ -112,8 +113,9 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch, 2026-09-03
         with:
+          toolchain: stable
           components: clippy
 
       # al-semantic's build script shells out to `dotnet build` for AlBridge.dll.
@@ -173,8 +175,9 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust stable + wasm32-wasip2
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch, 2026-09-03
         with:
+          toolchain: stable
           targets: wasm32-wasip2
           components: clippy
 
@@ -225,7 +228,9 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch, 2026-09-03
+        with:
+          toolchain: stable
 
       - name: Cache cargo registry and build artifacts
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
