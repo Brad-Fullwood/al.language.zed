@@ -1,0 +1,1798 @@
+{
+  "version": 8,
+  "created": "2026-09-21T00:40:45+00:00",
+  "updated": "2026-09-21T05:04:51+00:00",
+  "queue_order": [
+    "subjective::abstraction_fitness",
+    "subjective::ai_generated_debt",
+    "subjective::api_surface_coherence",
+    "subjective::authorization_consistency",
+    "subjective::contract_coherence",
+    "subjective::convention_outlier",
+    "subjective::cross_module_architecture",
+    "subjective::dependency_health",
+    "subjective::design_coherence",
+    "subjective::error_consistency",
+    "subjective::high_level_elegance",
+    "subjective::incomplete_migration",
+    "subjective::initialization_coupling",
+    "subjective::logic_clarity",
+    "subjective::low_level_elegance",
+    "subjective::mid_level_elegance",
+    "subjective::naming_quality",
+    "subjective::package_organization",
+    "subjective::test_strategy",
+    "subjective::type_safety"
+  ],
+  "deferred": [],
+  "skipped": {},
+  "active_cluster": null,
+  "overrides": {
+    "clippy_warning::crates/al-semantic/build.rs::clippy_warning::1": {
+      "issue_id": "clippy_warning::crates/al-semantic/build.rs::clippy_warning::1",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-snapshot/src/lib.rs::clippy_warning::1": {
+      "issue_id": "clippy_warning::crates/al-snapshot/src/lib.rs::clippy_warning::1",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/socket.rs::clippy_warning::5": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/socket.rs::clippy_warning::5",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/socket.rs::clippy_warning::6": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/socket.rs::clippy_warning::6",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/lib.rs::clippy_warning::1": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/lib.rs::clippy_warning::1",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-semantic/build.rs::clippy_warning::12": {
+      "issue_id": "clippy_warning::crates/al-semantic/build.rs::clippy_warning::12",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-semantic/build.rs::clippy_warning::13": {
+      "issue_id": "clippy_warning::crates/al-semantic/build.rs::clippy_warning::13",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-semantic/build.rs::clippy_warning::15": {
+      "issue_id": "clippy_warning::crates/al-semantic/build.rs::clippy_warning::15",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-semantic/build.rs::clippy_warning::25": {
+      "issue_id": "clippy_warning::crates/al-semantic/build.rs::clippy_warning::25",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-semantic/build.rs::clippy_warning::42": {
+      "issue_id": "clippy_warning::crates/al-semantic/build.rs::clippy_warning::42",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-semantic/build.rs::clippy_warning::43": {
+      "issue_id": "clippy_warning::crates/al-semantic/build.rs::clippy_warning::43",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-semantic/build.rs::clippy_warning::44": {
+      "issue_id": "clippy_warning::crates/al-semantic/build.rs::clippy_warning::44",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-semantic/build.rs::clippy_warning::47": {
+      "issue_id": "clippy_warning::crates/al-semantic/build.rs::clippy_warning::47",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-semantic/build.rs::clippy_warning::52": {
+      "issue_id": "clippy_warning::crates/al-semantic/build.rs::clippy_warning::52",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-semantic/build.rs::clippy_warning::79": {
+      "issue_id": "clippy_warning::crates/al-semantic/build.rs::clippy_warning::79",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-semantic/build.rs::clippy_warning::83": {
+      "issue_id": "clippy_warning::crates/al-semantic/build.rs::clippy_warning::83",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-semantic/build.rs::clippy_warning::91": {
+      "issue_id": "clippy_warning::crates/al-semantic/build.rs::clippy_warning::91",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-snapshot/src/diff.rs::clippy_warning::35": {
+      "issue_id": "clippy_warning::crates/al-snapshot/src/diff.rs::clippy_warning::35",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-snapshot/src/diff.rs::clippy_warning::75": {
+      "issue_id": "clippy_warning::crates/al-snapshot/src/diff.rs::clippy_warning::75",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-snapshot/src/diff.rs::clippy_warning::76": {
+      "issue_id": "clippy_warning::crates/al-snapshot/src/diff.rs::clippy_warning::76",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-snapshot/src/diff.rs::clippy_warning::84": {
+      "issue_id": "clippy_warning::crates/al-snapshot/src/diff.rs::clippy_warning::84",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-snapshot/src/diff.rs::clippy_warning::169": {
+      "issue_id": "clippy_warning::crates/al-snapshot/src/diff.rs::clippy_warning::169",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-snapshot/src/diff.rs::clippy_warning::189": {
+      "issue_id": "clippy_warning::crates/al-snapshot/src/diff.rs::clippy_warning::189",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-snapshot/src/format.rs::clippy_warning::78": {
+      "issue_id": "clippy_warning::crates/al-snapshot/src/format.rs::clippy_warning::78",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-snapshot/src/format.rs::clippy_warning::100": {
+      "issue_id": "clippy_warning::crates/al-snapshot/src/format.rs::clippy_warning::100",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-snapshot/src/format.rs::clippy_warning::129": {
+      "issue_id": "clippy_warning::crates/al-snapshot/src/format.rs::clippy_warning::129",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-snapshot/src/format.rs::clippy_warning::227": {
+      "issue_id": "clippy_warning::crates/al-snapshot/src/format.rs::clippy_warning::227",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::20": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::20",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::207": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::207",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::305": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::305",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::321": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::321",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::332": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::332",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::355": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::355",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::364": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::364",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::377": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::377",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::380": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::380",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::422": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::422",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::430": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::430",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::433": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::433",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::472": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::472",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::483": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::483",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::487": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::487",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::490": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::490",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::531": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::531",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::553": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::553",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::566": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::566",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::598": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::598",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/jsonrpc.rs::clippy_warning::35": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/jsonrpc.rs::clippy_warning::35",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/jsonrpc.rs::clippy_warning::43": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/jsonrpc.rs::clippy_warning::43",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::5": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::5",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/jsonrpc.rs::clippy_warning::116": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/jsonrpc.rs::clippy_warning::116",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::12": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::12",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::19": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::19",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::33": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::33",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::34": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::34",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::46": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::46",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::49": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::49",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::55": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::55",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::69": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::69",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/jsonrpc.rs::clippy_warning::152": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/jsonrpc.rs::clippy_warning::152",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/jsonrpc.rs::clippy_warning::177": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/jsonrpc.rs::clippy_warning::177",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/jsonrpc.rs::clippy_warning::191": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/jsonrpc.rs::clippy_warning::191",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::74": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::74",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::76": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::76",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::85": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::85",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::86": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::86",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::90": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::90",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::99": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::99",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::103": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::103",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::104": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::104",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::36": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::36",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::60": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::60",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::84": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::84",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::85": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::85",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::106": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::106",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::111": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::111",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::124": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::124",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::125": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::125",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/socket.rs::clippy_warning::4": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/socket.rs::clippy_warning::4",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::140": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::140",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/socket.rs::clippy_warning::9": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/socket.rs::clippy_warning::9",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::147": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::147",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/socket.rs::clippy_warning::29": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/socket.rs::clippy_warning::29",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::166": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::166",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/socket.rs::clippy_warning::43": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/socket.rs::clippy_warning::43",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-protocol/src/socket.rs::clippy_warning::62": {
+      "issue_id": "clippy_warning::crates/al-protocol/src/socket.rs::clippy_warning::62",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::204": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::204",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::366": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::366",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::383": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::383",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::397": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::397",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::415": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::415",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::443": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::443",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::469": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::469",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::487": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::487",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::491": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::491",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::502": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::502",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::506": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::506",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::514": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::514",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::518": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::518",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::530": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::530",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::541": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::541",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::548": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::548",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::559": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::559",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::571": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::571",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::582": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::582",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::586": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::586",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::598": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::598",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::609": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::609",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::622": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::622",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::629": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::629",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::630": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::630",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::637": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::637",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::648": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::648",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::652": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::652",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::663": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::663",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::667": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::667",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::674": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::674",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::681": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::681",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::688": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::688",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::700": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::700",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::711": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::711",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::717": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::717",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::724": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::724",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::740": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::740",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::747": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::747",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::762": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::762",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::769": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::769",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::783": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::783",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::794": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::794",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::797": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::797",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::813": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::813",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::817": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::817",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::821": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::821",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::831": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::831",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::832": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::832",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::840": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::840",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::851": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::851",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::854": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::854",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::881": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::881",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::888": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::888",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::902": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::902",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::905": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::905",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::971": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::971",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::979": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::979",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::981": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::981",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1024": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1024",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1025": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1025",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1031": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1031",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1066": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1066",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1041": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1041",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1056": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1056",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1103": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1103",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1153": {
+      "issue_id": "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1153",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/clippy_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-analysis/src/queries/profiler_hints.rs::rustdoc_warning::169": {
+      "issue_id": "rustdoc_warning::crates/al-analysis/src/queries/profiler_hints.rs::rustdoc_warning::169",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-analysis/src/queries/suggest_event.rs::rustdoc_warning::156": {
+      "issue_id": "rustdoc_warning::crates/al-analysis/src/queries/suggest_event.rs::rustdoc_warning::156",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-analysis/src/queries/tests.rs::rustdoc_warning::3": {
+      "issue_id": "rustdoc_warning::crates/al-analysis/src/queries/tests.rs::rustdoc_warning::3",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-analysis/src/queries/tests.rs::rustdoc_warning::63": {
+      "issue_id": "rustdoc_warning::crates/al-analysis/src/queries/tests.rs::rustdoc_warning::63",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-analysis/src/scaffold.rs::rustdoc_warning::41": {
+      "issue_id": "rustdoc_warning::crates/al-analysis/src/scaffold.rs::rustdoc_warning::41",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-bc/src/profiling.rs::rustdoc_warning::335": {
+      "issue_id": "rustdoc_warning::crates/al-bc/src/profiling.rs::rustdoc_warning::335",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-bc/src/launch.rs::rustdoc_warning::45": {
+      "issue_id": "rustdoc_warning::crates/al-bc/src/launch.rs::rustdoc_warning::45",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-dap/src/dap/framing.rs::rustdoc_warning::16": {
+      "issue_id": "rustdoc_warning::crates/al-dap/src/dap/framing.rs::rustdoc_warning::16",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-dap/src/dap/native_dap.rs::rustdoc_warning::1733": {
+      "issue_id": "rustdoc_warning::crates/al-dap/src/dap/native_dap.rs::rustdoc_warning::1733",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-emit/src/lib.rs::rustdoc_warning::9": {
+      "issue_id": "rustdoc_warning::crates/al-emit/src/lib.rs::rustdoc_warning::9",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-emit/src/symbol_reference.rs::rustdoc_warning::5": {
+      "issue_id": "rustdoc_warning::crates/al-emit/src/symbol_reference.rs::rustdoc_warning::5",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-explorer/src/lib.rs::rustdoc_warning::5": {
+      "issue_id": "rustdoc_warning::crates/al-explorer/src/lib.rs::rustdoc_warning::5",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-explorer/src/cli/args.rs::rustdoc_warning::90": {
+      "issue_id": "rustdoc_warning::crates/al-explorer/src/cli/args.rs::rustdoc_warning::90",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-explorer/src/cli/subcommands.rs::rustdoc_warning::18": {
+      "issue_id": "rustdoc_warning::crates/al-explorer/src/cli/subcommands.rs::rustdoc_warning::18",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-explorer/src/cli/args.rs::rustdoc_warning::127": {
+      "issue_id": "rustdoc_warning::crates/al-explorer/src/cli/args.rs::rustdoc_warning::127",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-explorer/src/cli/args.rs::rustdoc_warning::656": {
+      "issue_id": "rustdoc_warning::crates/al-explorer/src/cli/args.rs::rustdoc_warning::656",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-insight/src/index.rs::rustdoc_warning::179": {
+      "issue_id": "rustdoc_warning::crates/al-insight/src/index.rs::rustdoc_warning::179",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-insight/src/graph.rs::rustdoc_warning::118": {
+      "issue_id": "rustdoc_warning::crates/al-insight/src/graph.rs::rustdoc_warning::118",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-project/src/toolchain.rs::rustdoc_warning::37": {
+      "issue_id": "rustdoc_warning::crates/al-project/src/toolchain.rs::rustdoc_warning::37",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-protocol/src/client.rs::rustdoc_warning::417": {
+      "issue_id": "rustdoc_warning::crates/al-protocol/src/client.rs::rustdoc_warning::417",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-protocol/src/client.rs::rustdoc_warning::418": {
+      "issue_id": "rustdoc_warning::crates/al-protocol/src/client.rs::rustdoc_warning::418",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-protocol/src/socket.rs::rustdoc_warning::20": {
+      "issue_id": "rustdoc_warning::crates/al-protocol/src/socket.rs::rustdoc_warning::20",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-runtime/src/interpreter/dispatch.rs::rustdoc_warning::1438": {
+      "issue_id": "rustdoc_warning::crates/al-runtime/src/interpreter/dispatch.rs::rustdoc_warning::1438",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-runtime/src/interpreter/scope.rs::rustdoc_warning::22": {
+      "issue_id": "rustdoc_warning::crates/al-runtime/src/interpreter/scope.rs::rustdoc_warning::22",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-runtime/src/mock/filter.rs::rustdoc_warning::61": {
+      "issue_id": "rustdoc_warning::crates/al-runtime/src/mock/filter.rs::rustdoc_warning::61",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-runtime/src/mock/filter.rs::rustdoc_warning::8": {
+      "issue_id": "rustdoc_warning::crates/al-runtime/src/mock/filter.rs::rustdoc_warning::8",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-source/src/file_index.rs::rustdoc_warning::410": {
+      "issue_id": "rustdoc_warning::crates/al-source/src/file_index.rs::rustdoc_warning::410",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-symbols/src/index.rs::rustdoc_warning::1134": {
+      "issue_id": "rustdoc_warning::crates/al-symbols/src/index.rs::rustdoc_warning::1134",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-symbols/src/bc_server.rs::rustdoc_warning::54": {
+      "issue_id": "rustdoc_warning::crates/al-symbols/src/bc_server.rs::rustdoc_warning::54",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-symbols/src/oauth.rs::rustdoc_warning::1370": {
+      "issue_id": "rustdoc_warning::crates/al-symbols/src/oauth.rs::rustdoc_warning::1370",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-test/src/test_runner.rs::rustdoc_warning::105": {
+      "issue_id": "rustdoc_warning::crates/al-test/src/test_runner.rs::rustdoc_warning::105",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-test-harness/src/lib.rs::rustdoc_warning::10": {
+      "issue_id": "rustdoc_warning::crates/al-test-harness/src/lib.rs::rustdoc_warning::10",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-test-harness/src/lib.rs::rustdoc_warning::1024": {
+      "issue_id": "rustdoc_warning::crates/al-test-harness/src/lib.rs::rustdoc_warning::1024",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::crates/al-test-harness/src/lib.rs::rustdoc_warning::1025": {
+      "issue_id": "rustdoc_warning::crates/al-test-harness/src/lib.rs::rustdoc_warning::1025",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "rustdoc_warning::src/lib.rs::rustdoc_warning::1": {
+      "issue_id": "rustdoc_warning::src/lib.rs::rustdoc_warning::1",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/rustdoc_warning",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "test_coverage::crates/al-lsp/src/server/handlers.rs::transitive_only": {
+      "issue_id": "test_coverage::crates/al-lsp/src/server/handlers.rs::transitive_only",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/test_coverage-transitive_only",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "test_coverage::crates/al-lsp/src/server/definition.rs::transitive_only": {
+      "issue_id": "test_coverage::crates/al-lsp/src/server/definition.rs::transitive_only",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/test_coverage-transitive_only",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "test_coverage::crates/al-explorer/src/cli/commands/insight.rs::transitive_only": {
+      "issue_id": "test_coverage::crates/al-explorer/src/cli/commands/insight.rs::transitive_only",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/test_coverage-transitive_only",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "test_coverage::grammars/al/generator/tools/al-gen/src/zed_language.rs::transitive_only": {
+      "issue_id": "test_coverage::grammars/al/generator/tools/al-gen/src/zed_language.rs::transitive_only",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": null,
+      "updated_at": "2026-09-21T05:04:49+00:00"
+    },
+    "test_coverage::crates/al-emit/src/symbol_extract.rs::transitive_only": {
+      "issue_id": "test_coverage::crates/al-emit/src/symbol_extract.rs::transitive_only",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/test_coverage-transitive_only",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "test_coverage::crates/al-dap/src/dap/mod.rs::transitive_only": {
+      "issue_id": "test_coverage::crates/al-dap/src/dap/mod.rs::transitive_only",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/test_coverage-transitive_only",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "test_coverage::tree-sitter-al/generator/tools/al-gen/src/zed_language.rs::transitive_only": {
+      "issue_id": "test_coverage::tree-sitter-al/generator/tools/al-gen/src/zed_language.rs::transitive_only",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": null,
+      "updated_at": "2026-09-21T05:04:51+00:00"
+    },
+    "test_coverage::crates/al-explorer/src/app/details.rs::transitive_only": {
+      "issue_id": "test_coverage::crates/al-explorer/src/app/details.rs::transitive_only",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/test_coverage-transitive_only",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "test_coverage::crates/al-explorer/src/cli/subcommands.rs::transitive_only": {
+      "issue_id": "test_coverage::crates/al-explorer/src/cli/subcommands.rs::transitive_only",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/test_coverage-transitive_only",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "test_coverage::crates/al-emit/src/symbol_reference.rs::transitive_only": {
+      "issue_id": "test_coverage::crates/al-emit/src/symbol_reference.rs::transitive_only",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/test_coverage-transitive_only",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "test_coverage::src/settings.rs::transitive_only": {
+      "issue_id": "test_coverage::src/settings.rs::transitive_only",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/test_coverage-transitive_only",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "test_coverage::crates/al-lsp/src/server/hover.rs::transitive_only": {
+      "issue_id": "test_coverage::crates/al-lsp/src/server/hover.rs::transitive_only",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/test_coverage-transitive_only",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "test_coverage::crates/al-semantic/build.rs::untested_module": {
+      "issue_id": "test_coverage::crates/al-semantic/build.rs::untested_module",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/test_coverage-untested_module",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "test_coverage::tree-sitter-al/bindings/rust/build.rs::untested_module": {
+      "issue_id": "test_coverage::tree-sitter-al/bindings/rust/build.rs::untested_module",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": null,
+      "updated_at": "2026-09-21T05:04:51+00:00"
+    },
+    "test_coverage::crates/al-test-harness/src/bin/gen-zed-index.rs::untested_module": {
+      "issue_id": "test_coverage::crates/al-test-harness/src/bin/gen-zed-index.rs::untested_module",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/test_coverage-untested_module",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "test_coverage::build.rs::untested_module": {
+      "issue_id": "test_coverage::build.rs::untested_module",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/test_coverage-untested_module",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "test_coverage::crates/al-explorer/src/main.rs::untested_module": {
+      "issue_id": "test_coverage::crates/al-explorer/src/main.rs::untested_module",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/test_coverage-untested_module",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "test_coverage::grammars/al/bindings/rust/build.rs::untested_module": {
+      "issue_id": "test_coverage::grammars/al/bindings/rust/build.rs::untested_module",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": null,
+      "updated_at": "2026-09-21T05:04:49+00:00"
+    },
+    "security::crates/al-dap/src/dap/bc_debug/wire.rs::security::hardcoded_secret_name::crates/al-dap/src/dap/bc_debug/wire.rs::524": {
+      "issue_id": "security::crates/al-dap/src/dap/bc_debug/wire.rs::security::hardcoded_secret_name::crates/al-dap/src/dap/bc_debug/wire.rs::524",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/security-hardcoded_secret_name",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "security::crates/al-symbols/src/oauth.rs::security::hardcoded_secret_name::crates/al-symbols/src/oauth.rs::1011": {
+      "issue_id": "security::crates/al-symbols/src/oauth.rs::security::hardcoded_secret_name::crates/al-symbols/src/oauth.rs::1011",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/security-hardcoded_secret_name",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "security::crates/al-symbols/src/oauth.rs::security::hardcoded_secret_name::crates/al-symbols/src/oauth.rs::1030": {
+      "issue_id": "security::crates/al-symbols/src/oauth.rs::security::hardcoded_secret_name::crates/al-symbols/src/oauth.rs::1030",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/security-hardcoded_secret_name",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "security::crates/al-symbols/src/oauth.rs::security::hardcoded_secret_name::crates/al-symbols/src/oauth.rs::1051": {
+      "issue_id": "security::crates/al-symbols/src/oauth.rs::security::hardcoded_secret_name::crates/al-symbols/src/oauth.rs::1051",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/security-hardcoded_secret_name",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "subjective::abstraction_fitness": {
+      "issue_id": "subjective::abstraction_fitness",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/initial-review",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "subjective::ai_generated_debt": {
+      "issue_id": "subjective::ai_generated_debt",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/initial-review",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "subjective::api_surface_coherence": {
+      "issue_id": "subjective::api_surface_coherence",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/initial-review",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "subjective::authorization_consistency": {
+      "issue_id": "subjective::authorization_consistency",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/initial-review",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "subjective::contract_coherence": {
+      "issue_id": "subjective::contract_coherence",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/initial-review",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "subjective::convention_outlier": {
+      "issue_id": "subjective::convention_outlier",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/initial-review",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "subjective::cross_module_architecture": {
+      "issue_id": "subjective::cross_module_architecture",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/initial-review",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "subjective::dependency_health": {
+      "issue_id": "subjective::dependency_health",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/initial-review",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "subjective::design_coherence": {
+      "issue_id": "subjective::design_coherence",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/initial-review",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "subjective::error_consistency": {
+      "issue_id": "subjective::error_consistency",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/initial-review",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "subjective::high_level_elegance": {
+      "issue_id": "subjective::high_level_elegance",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/initial-review",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "subjective::incomplete_migration": {
+      "issue_id": "subjective::incomplete_migration",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/initial-review",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "subjective::initialization_coupling": {
+      "issue_id": "subjective::initialization_coupling",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/initial-review",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "subjective::logic_clarity": {
+      "issue_id": "subjective::logic_clarity",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/initial-review",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "subjective::low_level_elegance": {
+      "issue_id": "subjective::low_level_elegance",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/initial-review",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "subjective::mid_level_elegance": {
+      "issue_id": "subjective::mid_level_elegance",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/initial-review",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "subjective::naming_quality": {
+      "issue_id": "subjective::naming_quality",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/initial-review",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "subjective::package_organization": {
+      "issue_id": "subjective::package_organization",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/initial-review",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "subjective::test_strategy": {
+      "issue_id": "subjective::test_strategy",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/initial-review",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    },
+    "subjective::type_safety": {
+      "issue_id": "subjective::type_safety",
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "cluster": "auto/initial-review",
+      "updated_at": "2026-09-21T00:40:45+00:00"
+    }
+  },
+  "clusters": {
+    "auto/clippy_warning": {
+      "name": "auto/clippy_warning",
+      "description": "Fix 154 clippy warning issues",
+      "issue_ids": [
+        "clippy_warning::crates/al-semantic/build.rs::clippy_warning::1",
+        "clippy_warning::crates/al-snapshot/src/lib.rs::clippy_warning::1",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1",
+        "clippy_warning::crates/al-protocol/src/socket.rs::clippy_warning::5",
+        "clippy_warning::crates/al-protocol/src/socket.rs::clippy_warning::6",
+        "clippy_warning::crates/al-protocol/src/lib.rs::clippy_warning::1",
+        "clippy_warning::crates/al-semantic/build.rs::clippy_warning::12",
+        "clippy_warning::crates/al-semantic/build.rs::clippy_warning::13",
+        "clippy_warning::crates/al-semantic/build.rs::clippy_warning::15",
+        "clippy_warning::crates/al-semantic/build.rs::clippy_warning::25",
+        "clippy_warning::crates/al-semantic/build.rs::clippy_warning::42",
+        "clippy_warning::crates/al-semantic/build.rs::clippy_warning::43",
+        "clippy_warning::crates/al-semantic/build.rs::clippy_warning::44",
+        "clippy_warning::crates/al-semantic/build.rs::clippy_warning::47",
+        "clippy_warning::crates/al-semantic/build.rs::clippy_warning::52",
+        "clippy_warning::crates/al-semantic/build.rs::clippy_warning::79",
+        "clippy_warning::crates/al-semantic/build.rs::clippy_warning::83",
+        "clippy_warning::crates/al-semantic/build.rs::clippy_warning::91",
+        "clippy_warning::crates/al-snapshot/src/diff.rs::clippy_warning::35",
+        "clippy_warning::crates/al-snapshot/src/diff.rs::clippy_warning::75",
+        "clippy_warning::crates/al-snapshot/src/diff.rs::clippy_warning::76",
+        "clippy_warning::crates/al-snapshot/src/diff.rs::clippy_warning::84",
+        "clippy_warning::crates/al-snapshot/src/diff.rs::clippy_warning::169",
+        "clippy_warning::crates/al-snapshot/src/diff.rs::clippy_warning::189",
+        "clippy_warning::crates/al-snapshot/src/format.rs::clippy_warning::78",
+        "clippy_warning::crates/al-snapshot/src/format.rs::clippy_warning::100",
+        "clippy_warning::crates/al-snapshot/src/format.rs::clippy_warning::129",
+        "clippy_warning::crates/al-snapshot/src/format.rs::clippy_warning::227",
+        "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::20",
+        "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::207",
+        "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::305",
+        "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::321",
+        "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::332",
+        "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::355",
+        "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::364",
+        "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::377",
+        "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::380",
+        "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::422",
+        "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::430",
+        "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::433",
+        "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::472",
+        "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::483",
+        "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::487",
+        "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::490",
+        "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::531",
+        "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::553",
+        "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::566",
+        "clippy_warning::crates/al-protocol/src/client.rs::clippy_warning::598",
+        "clippy_warning::crates/al-protocol/src/jsonrpc.rs::clippy_warning::35",
+        "clippy_warning::crates/al-protocol/src/jsonrpc.rs::clippy_warning::43",
+        "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::5",
+        "clippy_warning::crates/al-protocol/src/jsonrpc.rs::clippy_warning::116",
+        "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::12",
+        "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::19",
+        "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::33",
+        "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::34",
+        "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::46",
+        "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::49",
+        "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::55",
+        "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::69",
+        "clippy_warning::crates/al-protocol/src/jsonrpc.rs::clippy_warning::152",
+        "clippy_warning::crates/al-protocol/src/jsonrpc.rs::clippy_warning::177",
+        "clippy_warning::crates/al-protocol/src/jsonrpc.rs::clippy_warning::191",
+        "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::74",
+        "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::76",
+        "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::85",
+        "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::86",
+        "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::90",
+        "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::99",
+        "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::103",
+        "clippy_warning::crates/al-test-harness/src/protocol.rs::clippy_warning::104",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::36",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::60",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::84",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::85",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::106",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::111",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::124",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::125",
+        "clippy_warning::crates/al-protocol/src/socket.rs::clippy_warning::4",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::140",
+        "clippy_warning::crates/al-protocol/src/socket.rs::clippy_warning::9",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::147",
+        "clippy_warning::crates/al-protocol/src/socket.rs::clippy_warning::29",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::166",
+        "clippy_warning::crates/al-protocol/src/socket.rs::clippy_warning::43",
+        "clippy_warning::crates/al-protocol/src/socket.rs::clippy_warning::62",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::204",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::366",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::383",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::397",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::415",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::443",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::469",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::487",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::491",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::502",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::506",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::514",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::518",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::530",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::541",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::548",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::559",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::571",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::582",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::586",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::598",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::609",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::622",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::629",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::630",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::637",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::648",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::652",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::663",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::667",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::674",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::681",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::688",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::700",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::711",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::717",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::724",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::740",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::747",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::762",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::769",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::783",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::794",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::797",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::813",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::817",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::821",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::831",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::832",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::840",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::851",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::854",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::881",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::888",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::902",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::905",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::971",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::979",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::981",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1024",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1025",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1031",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1066",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1041",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1056",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1103",
+        "clippy_warning::crates/al-test-harness/src/lib.rs::clippy_warning::1153"
+      ],
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "updated_at": "2026-09-21T00:40:45+00:00",
+      "auto": true,
+      "cluster_key": "detector::clippy_warning",
+      "action": "fix Clippy diagnostics or justify narrow suppressions close to the code",
+      "execution_status": "review",
+      "user_modified": false,
+      "action_type": "manual_fix",
+      "execution_policy": "planned_only"
+    },
+    "auto/rustdoc_warning": {
+      "name": "auto/rustdoc_warning",
+      "description": "Fix 35 rustdoc warning issues",
+      "issue_ids": [
+        "rustdoc_warning::crates/al-analysis/src/queries/profiler_hints.rs::rustdoc_warning::169",
+        "rustdoc_warning::crates/al-analysis/src/queries/suggest_event.rs::rustdoc_warning::156",
+        "rustdoc_warning::crates/al-analysis/src/queries/tests.rs::rustdoc_warning::3",
+        "rustdoc_warning::crates/al-analysis/src/queries/tests.rs::rustdoc_warning::63",
+        "rustdoc_warning::crates/al-analysis/src/scaffold.rs::rustdoc_warning::41",
+        "rustdoc_warning::crates/al-bc/src/profiling.rs::rustdoc_warning::335",
+        "rustdoc_warning::crates/al-bc/src/launch.rs::rustdoc_warning::45",
+        "rustdoc_warning::crates/al-dap/src/dap/framing.rs::rustdoc_warning::16",
+        "rustdoc_warning::crates/al-dap/src/dap/native_dap.rs::rustdoc_warning::1733",
+        "rustdoc_warning::crates/al-emit/src/lib.rs::rustdoc_warning::9",
+        "rustdoc_warning::crates/al-emit/src/symbol_reference.rs::rustdoc_warning::5",
+        "rustdoc_warning::crates/al-explorer/src/lib.rs::rustdoc_warning::5",
+        "rustdoc_warning::crates/al-explorer/src/cli/args.rs::rustdoc_warning::90",
+        "rustdoc_warning::crates/al-explorer/src/cli/subcommands.rs::rustdoc_warning::18",
+        "rustdoc_warning::crates/al-explorer/src/cli/args.rs::rustdoc_warning::127",
+        "rustdoc_warning::crates/al-explorer/src/cli/args.rs::rustdoc_warning::656",
+        "rustdoc_warning::crates/al-insight/src/index.rs::rustdoc_warning::179",
+        "rustdoc_warning::crates/al-insight/src/graph.rs::rustdoc_warning::118",
+        "rustdoc_warning::crates/al-project/src/toolchain.rs::rustdoc_warning::37",
+        "rustdoc_warning::crates/al-protocol/src/client.rs::rustdoc_warning::417",
+        "rustdoc_warning::crates/al-protocol/src/client.rs::rustdoc_warning::418",
+        "rustdoc_warning::crates/al-protocol/src/socket.rs::rustdoc_warning::20",
+        "rustdoc_warning::crates/al-runtime/src/interpreter/dispatch.rs::rustdoc_warning::1438",
+        "rustdoc_warning::crates/al-runtime/src/interpreter/scope.rs::rustdoc_warning::22",
+        "rustdoc_warning::crates/al-runtime/src/mock/filter.rs::rustdoc_warning::61",
+        "rustdoc_warning::crates/al-runtime/src/mock/filter.rs::rustdoc_warning::8",
+        "rustdoc_warning::crates/al-source/src/file_index.rs::rustdoc_warning::410",
+        "rustdoc_warning::crates/al-symbols/src/index.rs::rustdoc_warning::1134",
+        "rustdoc_warning::crates/al-symbols/src/bc_server.rs::rustdoc_warning::54",
+        "rustdoc_warning::crates/al-symbols/src/oauth.rs::rustdoc_warning::1370",
+        "rustdoc_warning::crates/al-test/src/test_runner.rs::rustdoc_warning::105",
+        "rustdoc_warning::crates/al-test-harness/src/lib.rs::rustdoc_warning::10",
+        "rustdoc_warning::crates/al-test-harness/src/lib.rs::rustdoc_warning::1024",
+        "rustdoc_warning::crates/al-test-harness/src/lib.rs::rustdoc_warning::1025",
+        "rustdoc_warning::src/lib.rs::rustdoc_warning::1"
+      ],
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "updated_at": "2026-09-21T00:40:45+00:00",
+      "auto": true,
+      "cluster_key": "detector::rustdoc_warning",
+      "action": "fix rustdoc warnings and keep public docs and links valid",
+      "execution_status": "review",
+      "user_modified": false,
+      "action_type": "manual_fix",
+      "execution_policy": "planned_only"
+    },
+    "auto/test_coverage-transitive_only": {
+      "name": "auto/test_coverage-transitive_only",
+      "description": "Fix 12 test coverage issues",
+      "issue_ids": [
+        "test_coverage::crates/al-lsp/src/server/handlers.rs::transitive_only",
+        "test_coverage::crates/al-lsp/src/server/definition.rs::transitive_only",
+        "test_coverage::crates/al-explorer/src/cli/commands/insight.rs::transitive_only",
+        "test_coverage::crates/al-emit/src/symbol_extract.rs::transitive_only",
+        "test_coverage::crates/al-dap/src/dap/mod.rs::transitive_only",
+        "test_coverage::crates/al-explorer/src/app/details.rs::transitive_only",
+        "test_coverage::crates/al-explorer/src/cli/subcommands.rs::transitive_only",
+        "test_coverage::crates/al-emit/src/symbol_reference.rs::transitive_only",
+        "test_coverage::src/settings.rs::transitive_only",
+        "test_coverage::crates/al-lsp/src/server/hover.rs::transitive_only"
+      ],
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "updated_at": "2026-09-21T00:40:45+00:00",
+      "auto": true,
+      "cluster_key": "detector::test_coverage::transitive_only",
+      "action": "review test coverage gaps",
+      "execution_status": "review",
+      "user_modified": false,
+      "action_type": "refactor",
+      "execution_policy": "planned_only"
+    },
+    "auto/test_coverage-untested_module": {
+      "name": "auto/test_coverage-untested_module",
+      "description": "Fix 6 test coverage issues",
+      "issue_ids": [
+        "test_coverage::crates/al-semantic/build.rs::untested_module",
+        "test_coverage::crates/al-test-harness/src/bin/gen-zed-index.rs::untested_module",
+        "test_coverage::build.rs::untested_module",
+        "test_coverage::crates/al-explorer/src/main.rs::untested_module"
+      ],
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "updated_at": "2026-09-21T00:40:45+00:00",
+      "auto": true,
+      "cluster_key": "detector::test_coverage::untested_module",
+      "action": "review test coverage gaps",
+      "execution_status": "review",
+      "user_modified": false,
+      "action_type": "refactor",
+      "execution_policy": "planned_only"
+    },
+    "auto/security-hardcoded_secret_name": {
+      "name": "auto/security-hardcoded_secret_name",
+      "description": "Fix 4 security issues",
+      "issue_ids": [
+        "security::crates/al-dap/src/dap/bc_debug/wire.rs::security::hardcoded_secret_name::crates/al-dap/src/dap/bc_debug/wire.rs::524",
+        "security::crates/al-symbols/src/oauth.rs::security::hardcoded_secret_name::crates/al-symbols/src/oauth.rs::1011",
+        "security::crates/al-symbols/src/oauth.rs::security::hardcoded_secret_name::crates/al-symbols/src/oauth.rs::1030",
+        "security::crates/al-symbols/src/oauth.rs::security::hardcoded_secret_name::crates/al-symbols/src/oauth.rs::1051"
+      ],
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "updated_at": "2026-09-21T00:40:45+00:00",
+      "auto": true,
+      "cluster_key": "detector::security::hardcoded_secret_name",
+      "action": "review and fix security issues",
+      "execution_status": "review",
+      "user_modified": false,
+      "action_type": "manual_fix",
+      "execution_policy": "planned_only"
+    },
+    "auto/initial-review": {
+      "name": "auto/initial-review",
+      "description": "Initial review of 20 unscored subjective dimensions",
+      "issue_ids": [
+        "subjective::abstraction_fitness",
+        "subjective::ai_generated_debt",
+        "subjective::api_surface_coherence",
+        "subjective::authorization_consistency",
+        "subjective::contract_coherence",
+        "subjective::convention_outlier",
+        "subjective::cross_module_architecture",
+        "subjective::dependency_health",
+        "subjective::design_coherence",
+        "subjective::error_consistency",
+        "subjective::high_level_elegance",
+        "subjective::incomplete_migration",
+        "subjective::initialization_coupling",
+        "subjective::logic_clarity",
+        "subjective::low_level_elegance",
+        "subjective::mid_level_elegance",
+        "subjective::naming_quality",
+        "subjective::package_organization",
+        "subjective::test_strategy",
+        "subjective::type_safety"
+      ],
+      "created_at": "2026-09-21T00:40:45+00:00",
+      "updated_at": "2026-09-21T00:40:45+00:00",
+      "auto": true,
+      "cluster_key": "subjective::unscored",
+      "action": "desloppify review --prepare --dimensions abstraction_fitness,ai_generated_debt,api_surface_coherence,authorization_consistency,contract_coherence,convention_outlier,cross_module_architecture,dependency_health,design_coherence,error_consistency,high_level_elegance,incomplete_migration,initialization_coupling,logic_clarity,low_level_elegance,mid_level_elegance,naming_quality,package_organization,test_strategy,type_safety",
+      "execution_status": "review",
+      "user_modified": false,
+      "action_type": "manual_fix",
+      "execution_policy": "planned_only"
+    }
+  },
+  "superseded": {},
+  "promoted_ids": [],
+  "plan_start_scores": {
+    "strict": 20.9,
+    "overall": 20.9,
+    "objective": 83.4,
+    "verified": 83.4
+  },
+  "refresh_state": {
+    "_subjective_migration_pruned": true,
+    "lifecycle_phase": "plan"
+  },
+  "execution_log": [
+    {
+      "timestamp": "2026-09-21T00:40:45+00:00",
+      "action": "sync_subjective",
+      "issue_ids": [],
+      "cluster_name": null,
+      "actor": "system",
+      "note": null,
+      "detail": {
+        "changes": true
+      }
+    },
+    {
+      "timestamp": "2026-09-21T00:40:45+00:00",
+      "action": "auto_cluster",
+      "issue_ids": [],
+      "cluster_name": null,
+      "actor": "system",
+      "note": null,
+      "detail": {
+        "changes": true
+      }
+    },
+    {
+      "timestamp": "2026-09-21T00:40:45+00:00",
+      "action": "sync_lifecycle_phase",
+      "issue_ids": [],
+      "cluster_name": null,
+      "actor": "system",
+      "note": null,
+      "detail": {
+        "phase": "review_initial"
+      }
+    },
+    {
+      "timestamp": "2026-09-21T00:40:45+00:00",
+      "action": "seed_start_scores",
+      "issue_ids": [],
+      "cluster_name": null,
+      "actor": "system",
+      "note": null,
+      "detail": {}
+    }
+  ],
+  "epic_triage_meta": {},
+  "commit_log": [],
+  "uncommitted_issues": [],
+  "commit_tracking_branch": null,
+  "scan_count_at_plan_start": 1
+}

@@ -34,3 +34,8 @@ Append-only. Newest entry last.
 - Merged `campaign/fix-r1-extension-ci` (12 findings). Gates: fmt, clippy and 72 tests on zed-al, `cargo deny` all ok. The grammar submodule now tracks branch `campaign/2026-09-21` of AL-Tree-Sitter at `d8c4cc7`, shared by the extension and syntax fix agents.
 - Review totals for round 1: 224 findings across 11 findings files.
 - The theme was regenerated from AL extension 18.0 because the pinned 17.0 container overlay no longer exists. Output matched the committed file apart from the three hand edits.
+## 2026-09-21 11:00 BST: second usage limit
+
+- Limit hit about 08:05, reset 11:00. Ten agents died. All fix branches were pushed, uncommitted edits remain in the worktrees. Watchdog detected the limit correctly this time and tried Opus, also limited (the session limit is shared across models).
+- Sub-agents spawned by agents died with their parents and their output was lost. Agents are now told to do their own reading.
+- Resumed every agent from its transcript.

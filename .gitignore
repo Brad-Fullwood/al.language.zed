@@ -38,3 +38,9 @@ crates/*/bridge/bin/
 # Improvement campaign runtime state
 /.campaign/
 /scorecard.png
+
+# desloppify: track config, plan and state only
+/.desloppify/*
+!/.desloppify/config.json
+!/.desloppify/plan.json
+!/.desloppify/state-rust.json
