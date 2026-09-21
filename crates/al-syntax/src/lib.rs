@@ -318,6 +318,61 @@ fn utf16_col_at(source: &[u8], byte_offset: usize, column: usize) -> u32 {
     }
 }
 
+/// A source buffer with its line starts precomputed, so looking a line up by
+/// row costs a table index instead of a scan from byte 0.
+///
+/// [`get_source_line`] walks the buffer on every call. A query that asks for
+/// one line per result — inlay hints ask for two per hint, and the client
+/// re-requests them on every scroll — therefore costs
+/// O(results x file_length). Building this once per request makes it linear.
+pub struct SourceLines<'a> {
+    source: &'a [u8],
+    starts: Vec<usize>,
+}
+
+impl<'a> SourceLines<'a> {
+    #[must_use]
+    pub fn new(source: &'a [u8]) -> Self {
+        let starts = std::iter::once(0)
+            .chain(
+                source
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, &byte)| byte == b'\n')
+                    .map(|(index, _)| index + 1),
+            )
+            .collect();
+        Self { source, starts }
+    }
+
+    /// Text of line `row` without its terminator.
+    ///
+    /// Empty for a row past the end of the buffer or for bytes that are not
+    /// valid UTF-8, matching [`get_source_line`].
+    #[must_use]
+    pub fn line(&self, row: usize) -> &'a str {
+        let Some(&start) = self.starts.get(row) else {
+            return "";
+        };
+        let end = self
+            .starts
+            .get(row + 1)
+            .map_or(self.source.len(), |next| next - 1);
+        std::str::from_utf8(&self.source[start..end.max(start)]).unwrap_or("")
+    }
+
+    /// Number of lines, counting a trailing newline as ending the last line.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.starts.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.source.is_empty()
+    }
+}
+
 /// Convert a tree-sitter Range to a transport-agnostic [`types::SyntaxRange`].
 ///
 /// `source` must be the complete source bytes of the file so that tree-sitter byte-offset
@@ -487,5 +542,42 @@ mod delimiter_tests {
         assert_eq!(count_net_delimiters("{ /* } */", '{', '}'), 1);
         // Unterminated `/*` swallows the rest of the line.
         assert_eq!(count_net_delimiters("x; /* (", '(', ')'), 0);
+    }
+}
+
+#[cfg(test)]
+mod source_lines_tests {
+    use super::{get_source_line, SourceLines};
+
+    /// The index must answer exactly what `get_source_line` answers, for every
+    /// row and for the edges: out of range, invalid UTF-8, CRLF, a trailing
+    /// newline and an empty buffer.
+    #[test]
+    fn source_lines_index_matches_the_scanning_lookup() {
+        let buffers: [&[u8]; 6] = [
+            b"line0\nline1\nline2",
+            b"line0\nline1\n",
+            b"only-one-line",
+            b"",
+            b"crlf\r\nsecond\r\n",
+            b"ok\n\xff\xfe\ntail",
+        ];
+        for source in buffers {
+            let index = SourceLines::new(source);
+            for row in 0..10 {
+                assert_eq!(
+                    index.line(row),
+                    get_source_line(source, row),
+                    "row {row} of {source:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn source_lines_reports_its_line_count() {
+        assert_eq!(SourceLines::new(b"a\nb\nc").len(), 3);
+        assert_eq!(SourceLines::new(b"a\nb\n").len(), 3);
+        assert!(SourceLines::new(b"").is_empty());
     }
 }

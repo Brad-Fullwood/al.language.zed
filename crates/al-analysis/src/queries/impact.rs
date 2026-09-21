@@ -303,7 +303,7 @@ fn check_object_consumers(
     target_object: &str,
     results: &mut Vec<ImpactEntry>,
 ) {
-    use al_insight::analysis::{extract_table_relation_table, is_record_of};
+    use al_insight::analysis::{extract_table_relation_tables, is_record_of};
 
     for method in &entry.methods {
         for param in &method.parameters {
@@ -344,9 +344,12 @@ fn check_object_consumers(
 
     for field in &entry.fields {
         for prop in &field.properties {
+            // Every branch of a conditional `TableRelation` is a consumer, not
+            // just the first one.
             if prop.name.eq_ignore_ascii_case("TableRelation")
-                && extract_table_relation_table(&prop.value)
-                    .is_some_and(|t| t.eq_ignore_ascii_case(target_object))
+                && extract_table_relation_tables(&prop.value)
+                    .iter()
+                    .any(|table| table.eq_ignore_ascii_case(target_object))
             {
                 results.push(ImpactEntry {
                     kind: entry.kind,
@@ -792,6 +795,36 @@ mod tests {
             "Expected TableRelation to Customer to be found. Got: {:?}",
             results
         );
+    }
+
+    /// A conditional `TableRelation` names one table per branch. Asking about
+    /// any of them must find the field.
+    #[test]
+    fn impact_finds_every_branch_of_a_conditional_table_relation() {
+        for target in ["Item", "Resource", "G/L Account"] {
+            let ws = Workspace::new();
+            let mut sales_line = make_table(37, "Sales Line");
+            sales_line.fields = vec![FieldSymbol {
+                id: 6,
+                name: "No.".to_string(),
+                type_name: "Code".to_string(),
+                properties: vec![PropertyValue {
+                    name: "TableRelation".to_string(),
+                    value: r#"IF (Type=CONST(Item)) Item."No." ELSE IF (Type=CONST(Resource)) Resource."No." ELSE "G/L Account""#
+                        .to_string(),
+                }],
+            }];
+            ws.symbols
+                .add_entries(&[make_table(27, target), sales_line]);
+
+            let results = impact(&ws, target).unwrap();
+            assert!(
+                results.iter().any(|r| r.name == "Sales Line"
+                    && r.field.as_deref() == Some("No.")
+                    && r.impact_type == ImpactType::Filter),
+                "{target} branch must be found. Got: {results:?}"
+            );
+        }
     }
 
     #[test]

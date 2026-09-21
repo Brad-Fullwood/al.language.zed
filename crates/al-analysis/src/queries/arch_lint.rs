@@ -52,19 +52,40 @@ pub struct ArchRule {
     pub regex: bool,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+/// The shape `.alarch.json` deserializes into before validation.
+///
+/// `ArchConfig` converts from this, so every deserialization runs
+/// [`ArchConfig::validate`] — reaching `arch_lint` with an unvalidated config
+/// used to be possible through plain `serde_json::from_str::<ArchConfig>`.
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
-pub struct ArchConfig {
+struct UncheckedArchConfig {
     #[serde(default)]
+    rules: Vec<ArchRule>,
+}
+
+impl TryFrom<UncheckedArchConfig> for ArchConfig {
+    type Error = String;
+
+    fn try_from(unchecked: UncheckedArchConfig) -> Result<Self, Self::Error> {
+        let config = Self {
+            rules: unchecked.rules,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(try_from = "UncheckedArchConfig")]
+pub struct ArchConfig {
     pub rules: Vec<ArchRule>,
 }
 
 impl ArchConfig {
     pub fn from_json(json: &str) -> Result<Self, String> {
-        let config: Self = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        config.validate()?;
-        Ok(config)
+        serde_json::from_str(json).map_err(|e| e.to_string())
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -306,7 +327,12 @@ fn apply_rule(
         ArchRuleKind::NamingConvention => {
             if let Some(name_pattern) = rule.values.first() {
                 let effective = legacy_naming_regex(name_pattern);
-                let regex = Regex::new(&effective).expect("validated naming regular expression");
+                // `validate` rejects an unusable pattern, but the fields are
+                // public, so a rule built in code can still carry one. Skip it
+                // rather than take the whole lint down.
+                let Ok(regex) = Regex::new(&effective) else {
+                    return;
+                };
                 if !regex.is_match(&obj_info.name) {
                     violations.push(ArchViolation {
                         rule_id: rule.id.clone(),
@@ -326,9 +352,11 @@ fn apply_rule(
                 // Find the first line that actually contains the pattern so
                 // editor jump-to-diagnostic lands somewhere useful, instead
                 // of always reporting line: Some(1).
-                let regex = rule
-                    .regex
-                    .then(|| Regex::new(forbidden).expect("validated forbidden regex"));
+                let regex = match rule.regex.then(|| Regex::new(forbidden)) {
+                    Some(Ok(regex)) => Some(regex),
+                    Some(Err(_)) => continue,
+                    None => None,
+                };
                 let forbidden_lower = (!rule.regex).then(|| forbidden.to_lowercase());
                 let line_no = text.lines().enumerate().find_map(|(idx, line)| {
                     let matches = regex.as_ref().map_or_else(
@@ -361,8 +389,9 @@ fn apply_rule(
                 // than silently parsing `LO` and falling back to u32::MAX for
                 // the upper bound, which would let out-of-range IDs slip past.
                 if let Some((lo, hi)) = range.split_once('-') {
-                    let lo: u32 = lo.parse().expect("validated range");
-                    let hi: u32 = hi.parse().expect("validated range");
+                    let (Ok(lo), Ok(hi)) = (lo.parse::<u32>(), hi.parse::<u32>()) else {
+                        return;
+                    };
                     if !(lo..=hi).contains(&(id as u32)) {
                         violations.push(ArchViolation {
                             rule_id: rule.id.clone(),
@@ -379,12 +408,9 @@ fn apply_rule(
             }
         }
         ArchRuleKind::MaxComplexity => {
-            let max: u32 = rule
-                .values
-                .first()
-                .expect("validated threshold")
-                .parse()
-                .expect("validated threshold");
+            let Some(Ok(max)) = rule.values.first().map(|value| value.parse::<u32>()) else {
+                return;
+            };
             let metrics = al_syntax::complexity::compute_complexity(tree, text);
             for m in &metrics {
                 if m.cyclomatic > max {
@@ -417,6 +443,93 @@ mod tests {
                 .add_file(PathBuf::from(name), content.to_string());
         }
         ws
+    }
+
+    /// `ArchConfig` is public and derives `Deserialize`, so a config could
+    /// reach `arch_lint` without `from_json`'s validation. The `expect`s that
+    /// relied on it then panicked on the next lint.
+    #[test]
+    fn deserializing_an_arch_config_runs_the_same_validation_as_from_json() {
+        let json = r#"{"rules":[{"id":"x","description":"d","kind":"maxComplexity"}]}"#;
+        let error = serde_json::from_str::<ArchConfig>(json)
+            .expect_err("a rule with no threshold must not deserialize");
+        assert!(error.to_string().contains("threshold"), "got: {}", error);
+        assert!(ArchConfig::from_json(json).is_err());
+    }
+
+    /// The fields are public, so a rule can still be built in code without
+    /// values. Lint must skip it rather than take the query down.
+    #[test]
+    fn a_rule_built_without_values_is_skipped_rather_than_panicking() {
+        let ws = workspace_with(vec![(
+            "/src/Some.al",
+            r#"codeunit 50100 "MyCodeunit"
+{
+    procedure DoWork()
+    begin
+        Sleep(1000);
+    end;
+}"#,
+        )]);
+        for kind in [
+            ArchRuleKind::MaxComplexity,
+            ArchRuleKind::NamingConvention,
+            ArchRuleKind::RequiredProperty,
+        ] {
+            let config = ArchConfig {
+                rules: vec![ArchRule {
+                    id: "x".to_string(),
+                    description: "d".to_string(),
+                    kind: kind.clone(),
+                    pattern: String::new(),
+                    values: Vec::new(),
+                    regex: false,
+                }],
+            };
+            assert!(
+                arch_lint(&ws, &config)
+                    .expect("lint must not fail")
+                    .is_empty(),
+                "{kind:?} with no values must be skipped"
+            );
+        }
+    }
+
+    /// A value that is not a usable regex or number must be skipped too.
+    #[test]
+    fn a_rule_with_an_unusable_value_is_skipped_rather_than_panicking() {
+        let ws = workspace_with(vec![(
+            "/src/Some.al",
+            r#"codeunit 50100 "MyCodeunit"
+{
+    procedure DoWork()
+    begin
+        Sleep(1000);
+    end;
+}"#,
+        )]);
+        for (kind, value) in [
+            (ArchRuleKind::MaxComplexity, "not-a-number"),
+            (ArchRuleKind::NamingConvention, "[unclosed"),
+            (ArchRuleKind::RequiredProperty, "lo-hi"),
+        ] {
+            let config = ArchConfig {
+                rules: vec![ArchRule {
+                    id: "x".to_string(),
+                    description: "d".to_string(),
+                    kind: kind.clone(),
+                    pattern: String::new(),
+                    values: vec![value.to_string()],
+                    regex: false,
+                }],
+            };
+            assert!(
+                arch_lint(&ws, &config)
+                    .expect("lint must not fail")
+                    .is_empty(),
+                "{kind:?} with value {value:?} must be skipped"
+            );
+        }
     }
 
     #[test]

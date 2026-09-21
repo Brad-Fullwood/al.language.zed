@@ -110,7 +110,18 @@ pub(super) fn source_action_add_region(
         },
         new_text: format!("{}#region MyRegion\n", indent),
     };
-    let end_line = range.end.line.saturating_add(1);
+    // An editor reports a whole-line selection of lines a..b as
+    // `end = {line: b + 1, character: 0}`, and that line is not part of the
+    // selection. Adding 1 to it wrapped one line the user did not select. A
+    // selection that stops mid-line does include the line it stops on.
+    let selection_end = if range.end.character == 0 && range.end.line > range.start.line {
+        range.end.line
+    } else {
+        range.end.line.saturating_add(1)
+    };
+    // Past the last line the `#endregion` edit has no anchor a client can
+    // apply, so clamp to the end of the document.
+    let end_line = selection_end.min(text.lines().count() as u32);
     let region_end = TextEdit {
         range: Range {
             start: super::Position {
@@ -195,5 +206,86 @@ mod tests {
             !updated.contains("//region"),
             "must not emit a plain comment: {updated}"
         );
+    }
+
+    /// Editors report a whole-line drag of lines 2-4 as
+    /// `end = {line: 5, character: 0}`. Adding 1 to that wraps line 5 too.
+    #[test]
+    fn wrap_in_region_does_not_swallow_the_line_after_a_whole_line_selection() {
+        let al_code =
+            "codeunit 50100 T\n{\n    procedure A()\n    begin\n    end;\n\n    procedure B()\n    begin\n    end;\n}\n";
+        let uri = Url::parse("file:///test/Region3.al").unwrap();
+        let range = Range {
+            start: super::super::Position {
+                line: 2,
+                character: 0,
+            },
+            end: super::super::Position {
+                line: 5,
+                character: 0,
+            },
+        };
+        let action = source_action_add_region(&uri, al_code, range).expect("region action");
+        let updated = super::super::test_support::assert_action_applies_cleanly(
+            al_code,
+            &action,
+            "wrap_in_region whole-line selection",
+        );
+        assert_eq!(
+            updated,
+            "codeunit 50100 T\n{\n    #region MyRegion\n    procedure A()\n    begin\n    end;\n    #endregion\n\n    procedure B()\n    begin\n    end;\n}\n"
+        );
+    }
+
+    /// A selection that stops mid-line still has to include that line.
+    #[test]
+    fn wrap_in_region_includes_the_line_a_partial_selection_ends_on() {
+        let al_code = "codeunit 50100 T\n{\n    procedure A()\n    begin\n    end;\n}\n";
+        let uri = Url::parse("file:///test/Region4.al").unwrap();
+        let range = Range {
+            start: super::super::Position {
+                line: 2,
+                character: 4,
+            },
+            end: super::super::Position {
+                line: 4,
+                character: 8,
+            },
+        };
+        let action = source_action_add_region(&uri, al_code, range).expect("region action");
+        let updated = super::super::test_support::assert_action_applies_cleanly(
+            al_code,
+            &action,
+            "wrap_in_region partial selection",
+        );
+        assert_eq!(
+            updated,
+            "codeunit 50100 T\n{\n    #region MyRegion\n    procedure A()\n    begin\n    end;\n    #endregion\n}\n"
+        );
+    }
+
+    /// A selection running past the end of the document must not place
+    /// `#endregion` beyond the last line, where the edit would be dropped.
+    #[test]
+    fn wrap_in_region_clamps_to_the_document_line_count() {
+        let al_code = "codeunit 50100 T\n{\n    procedure A()\n    begin\n    end;\n}\n";
+        let uri = Url::parse("file:///test/Region5.al").unwrap();
+        let range = Range {
+            start: super::super::Position {
+                line: 2,
+                character: 0,
+            },
+            end: super::super::Position {
+                line: 9_999,
+                character: 0,
+            },
+        };
+        let action = source_action_add_region(&uri, al_code, range).expect("region action");
+        let updated = super::super::test_support::assert_action_applies_cleanly(
+            al_code,
+            &action,
+            "wrap_in_region past the end",
+        );
+        assert!(updated.ends_with("}\n    #endregion\n"), "{updated}");
     }
 }
