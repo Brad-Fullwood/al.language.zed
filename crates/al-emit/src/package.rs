@@ -59,6 +59,42 @@ pub fn random_guid_braced() -> Result<String, EmitError> {
     ))
 }
 
+/// Check an archive entry name before it reaches `ZipWriter::start_file`, which
+/// stores whatever string it is given (only `start_file_from_path` normalises).
+/// A consumer that joins a stored name onto its extraction directory must not be
+/// able to land outside it, so a name has to be relative, `/`-separated, and free
+/// of `.`, `..`, empty, drive-relative and backslash components.
+pub fn checked_entry_name(name: &str) -> Result<&str, EmitError> {
+    let reject = |reason: &str| {
+        Err(EmitError::Project(format!(
+            "invalid archive entry name {name:?}: {reason}"
+        )))
+    };
+    if name.is_empty() {
+        return reject("empty");
+    }
+    if name.contains('\\') {
+        return reject("contains a backslash");
+    }
+    if name.contains('\0') {
+        return reject("contains a NUL byte");
+    }
+    if name.contains(':') {
+        return reject("contains a colon, which is drive-relative on Windows");
+    }
+    if name.starts_with('/') {
+        return reject("is absolute");
+    }
+    for component in name.split('/') {
+        match component {
+            "" => return reject("has an empty path component"),
+            "." | ".." => return reject("has a relative path component"),
+            _ => {}
+        }
+    }
+    Ok(name)
+}
+
 /// Write a plain Deflated ZIP of `entries` (name → bytes), in order. Used both
 /// for the `.app` payload and for nested OPC bundles (e.g. a control add-in's
 /// `addin/<name>.zip`).
@@ -69,7 +105,7 @@ pub fn write_zip(entries: &[(String, Vec<u8>)]) -> Result<Vec<u8>, EmitError> {
         let opts = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
         for (name, bytes) in entries {
-            zw.start_file(name, opts)?;
+            zw.start_file(checked_entry_name(name)?, opts)?;
             zw.write_all(bytes)?;
         }
         zw.finish()?;
