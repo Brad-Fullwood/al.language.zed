@@ -260,23 +260,65 @@ fn extract_callable_symbol(
     Some(symbol)
 }
 
-fn executable_scope_metadata(kind: &str) -> Option<(&'static str, &'static str, SymbolKind)> {
+/// Keyword, the node kind of that keyword, the field holding the block's own
+/// expression, and the symbol kind, for each executable scope.
+///
+/// The field is what turns a row of bare `if`/`case` keywords into something
+/// worth reading: `if not Rec.IsEmpty()` instead of `if`. A `begin` block has no
+/// expression of its own, so it keeps the keyword alone.
+fn executable_scope_metadata(
+    kind: &str,
+) -> Option<(&'static str, &'static str, Option<&'static str>, SymbolKind)> {
     match kind {
-        "begin_end_block" => Some(("begin", "kw_begin", SymbolKind::Struct)),
-        "if_statement" => Some(("if", "kw_if", SymbolKind::Operator)),
-        "case_statement" => Some(("case", "kw_case", SymbolKind::Operator)),
-        "for_statement" => Some(("for", "kw_for", SymbolKind::Operator)),
-        "foreach_statement" => Some(("foreach", "kw_foreach", SymbolKind::Operator)),
-        "while_statement" => Some(("while", "kw_while", SymbolKind::Operator)),
-        "repeat_statement" => Some(("repeat", "kw_repeat", SymbolKind::Operator)),
-        "with_statement" => Some(("with", "kw_with", SymbolKind::Operator)),
+        "begin_end_block" => Some(("begin", "kw_begin", None, SymbolKind::Struct)),
+        "if_statement" => Some(("if", "kw_if", Some("condition"), SymbolKind::Operator)),
+        "case_statement" => Some(("case", "kw_case", Some("value"), SymbolKind::Operator)),
+        "for_statement" => Some(("for", "kw_for", Some("iterator"), SymbolKind::Operator)),
+        "foreach_statement" => Some((
+            "foreach",
+            "kw_foreach",
+            Some("iterator"),
+            SymbolKind::Operator,
+        )),
+        "while_statement" => Some(("while", "kw_while", Some("condition"), SymbolKind::Operator)),
+        "repeat_statement" => Some((
+            "repeat",
+            "kw_repeat",
+            Some("condition"),
+            SymbolKind::Operator,
+        )),
+        "with_statement" => Some(("with", "kw_with", Some("value"), SymbolKind::Operator)),
         _ => None,
     }
 }
 
+/// `if` plus the condition text, collapsed to one line and capped so a
+/// multi-line condition cannot push a whole expression into the outline.
+fn executable_scope_name(node: Node, source: &[u8], keyword: &str, field: Option<&str>) -> String {
+    const MAX_LEN: usize = 60;
+
+    let Some(text) = field
+        .and_then(|field| node.child_by_field_name(field))
+        .and_then(|expr| expr.utf8_text(source).ok())
+    else {
+        return keyword.to_string();
+    };
+
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return keyword.to_string();
+    }
+    let truncated = match collapsed.char_indices().nth(MAX_LEN) {
+        Some((byte, _)) => format!("{}…", &collapsed[..byte]),
+        None => collapsed,
+    };
+    format!("{keyword} {truncated}")
+}
+
 fn extract_executable_scope(node: Node, source: &[u8]) -> DocumentSymbol {
-    let (name, keyword_kind, kind) = executable_scope_metadata(node.kind())
+    let (keyword, keyword_kind, field, kind) = executable_scope_metadata(node.kind())
         .expect("extract_executable_scope must receive a supported executable scope");
+    let name = executable_scope_name(node, source, keyword, field);
     let range = ts_range_to_lsp(&node.range(), source);
     let selection_range = {
         let mut cursor = node.walk();
@@ -291,7 +333,7 @@ fn extract_executable_scope(node: Node, source: &[u8]) -> DocumentSymbol {
     collect_immediate_executable_scopes(node, source, &mut children);
 
     DocumentSymbol {
-        name: name.to_string(),
+        name,
         detail: Some("executable scope".to_string()),
         kind,
         range,
@@ -1155,6 +1197,91 @@ mod tests {
     use super::*;
     use crate::AlParser;
 
+    #[test]
+    fn executable_scopes_are_named_by_their_own_expression() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure Post()
+    var
+        Item: Record Item;
+        Index: Integer;
+    begin
+        if not Item.IsEmpty() then
+            case Item.Type of
+                Item.Type::Inventory:
+                    Message('a');
+            end;
+        for Index := 1 to 10 do
+            Message('b');
+        repeat
+            Message('c');
+        until Item.Next() = 0;
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let symbols = extract_document_symbols(&result.tree, src);
+
+        fn all_names(symbols: &[DocumentSymbol], out: &mut Vec<String>) {
+            for symbol in symbols {
+                out.push(symbol.name.clone());
+                if let Some(children) = &symbol.children {
+                    all_names(children, out);
+                }
+            }
+        }
+        let mut names = Vec::new();
+        all_names(&symbols, &mut names);
+
+        assert!(names.iter().any(|n| n == "begin"), "got {names:?}");
+        assert!(
+            names.iter().any(|n| n == "if not Item.IsEmpty()"),
+            "got {names:?}"
+        );
+        assert!(names.iter().any(|n| n == "case Item.Type"), "got {names:?}");
+        assert!(names.iter().any(|n| n == "for Index"), "got {names:?}");
+        assert!(
+            names.iter().any(|n| n == "repeat Item.Next() = 0"),
+            "got {names:?}"
+        );
+    }
+
+    #[test]
+    fn a_multi_line_scope_expression_is_collapsed_and_capped() {
+        let src = "codeunit 50100 Test\n\
+                   {\n\
+                   \x20   procedure Post()\n\
+                   \x20   var\n\
+                   \x20       Item: Record Item;\n\
+                   \x20   begin\n\
+                   \x20       if (Item.\"No.\" <> '') and\n\
+                   \x20          (Item.Description <> '') and\n\
+                   \x20          (Item.Type = Item.Type::Inventory) then\n\
+                   \x20           Message('a');\n\
+                   \x20   end;\n\
+                   }\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let symbols = extract_document_symbols(&result.tree, src);
+
+        fn find_if(symbols: &[DocumentSymbol]) -> Option<String> {
+            for symbol in symbols {
+                if symbol.name.starts_with("if ") {
+                    return Some(symbol.name.clone());
+                }
+                if let Some(found) = symbol.children.as_deref().and_then(find_if) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let name = find_if(&symbols).expect("an if scope");
+
+        assert!(!name.contains('\n'), "{name}");
+        assert!(name.chars().count() <= 64, "{name}");
+        assert!(name.ends_with('…'), "{name}");
+    }
+
     /// The outline shows the identifier, not its escaped spelling.
     #[test]
     fn symbol_names_containing_a_doubled_quote_are_unescaped() {
@@ -1260,10 +1387,15 @@ mod tests {
             .iter()
             .find(|symbol| symbol.name == "begin")
             .expect("procedure begin scope");
+        // A scope is named by its keyword plus its own expression.
         let if_scope = begin
             .children
             .as_ref()
-            .and_then(|children| children.iter().find(|symbol| symbol.name == "if"))
+            .and_then(|children| {
+                children
+                    .iter()
+                    .find(|symbol| symbol.name.starts_with("if "))
+            })
             .expect("if scope");
         let if_begin = if_scope
             .children
@@ -1273,7 +1405,11 @@ mod tests {
         let while_scope = if_begin
             .children
             .as_ref()
-            .and_then(|children| children.iter().find(|symbol| symbol.name == "while"))
+            .and_then(|children| {
+                children
+                    .iter()
+                    .find(|symbol| symbol.name.starts_with("while "))
+            })
             .expect("while scope");
         assert!(
             while_scope
