@@ -16,6 +16,14 @@ pub struct AlProject {
     pub packages: Vec<PathBuf>,
     /// Server configs from launch.json for downloading symbols from a BC instance.
     pub server_configs: Vec<al_bc::launch::BcServerConfig>,
+    /// Why `server_configs` is empty when a debug configuration file exists but
+    /// could not be read.
+    ///
+    /// A `launch.json` typo used to abort project discovery, so one bad
+    /// `environmentType` took down the symbol index and every symbol query with
+    /// it. Nothing outside the BC connection paths needs that file, so the
+    /// problem is recorded and the project loads.
+    pub launch_config_error: Option<String>,
 }
 
 /// Fully resolved package-cache directory and deterministic `.app` selection
@@ -344,9 +352,13 @@ fn try_load_project(dir: &Path) -> Result<Option<AlProject>, DiscoveryError> {
 
     let packages_dir = dir.join(".alpackages");
     let packages = scan_packages(&packages_dir)?;
-    let server_configs = al_bc::launch::find_launch_config(dir)?
-        .map(|lf| lf.configs)
-        .unwrap_or_default();
+    let (server_configs, launch_config_error) = match al_bc::launch::find_launch_config(dir) {
+        Ok(found) => (found.map(|lf| lf.configs).unwrap_or_default(), None),
+        Err(error) => {
+            tracing::warn!(%error, "AL project loaded without its debug configuration");
+            (Vec::new(), Some(error.to_string()))
+        }
+    };
 
     Ok(Some(AlProject {
         root: dir.to_path_buf(),
@@ -354,6 +366,7 @@ fn try_load_project(dir: &Path) -> Result<Option<AlProject>, DiscoveryError> {
         packages_dir,
         packages,
         server_configs,
+        launch_config_error,
     }))
 }
 
@@ -814,6 +827,7 @@ mod tests {
             packages_dir: PathBuf::from("/tmp/fake/.alpackages"),
             packages: vec![],
             server_configs: vec![],
+            launch_config_error: None,
         };
         assert!(project.all_dependencies().len() >= 5);
     }
@@ -901,6 +915,7 @@ mod tests {
             packages_dir: root.join(".alpackages"),
             packages: vec![],
             server_configs: vec![],
+            launch_config_error: None,
         };
         let config = AlConfig {
             package_cache_path: Some(PathBuf::from("custom-cache")),
@@ -960,6 +975,7 @@ mod tests {
             packages_dir: primary,
             packages: vec![],
             server_configs: vec![],
+            launch_config_error: None,
         };
         project
             .apply_symbol_settings(&AlConfig {
@@ -987,8 +1003,11 @@ mod tests {
         assert_eq!(result, vec![primary_app]);
     }
 
+    /// A debug configuration file is needed to connect to a BC server and by
+    /// nothing else. When it will not parse the project still loads, so symbol
+    /// queries keep working and the problem travels in `launch_config_error`.
     #[test]
-    fn malformed_launch_config_blocks_project_loading() {
+    fn malformed_launch_config_loads_the_project_and_records_the_problem() {
         let root = tempdir();
         std::fs::write(
             root.join("app.json"),
@@ -1003,8 +1022,17 @@ mod tests {
         std::fs::create_dir_all(root.join(".zed")).unwrap();
         std::fs::write(root.join(".zed/debug.json"), "{not json").unwrap();
 
-        let error = try_load_project(&root).expect_err("invalid launch file must fail");
-        assert!(matches!(error, DiscoveryError::LaunchConfiguration(_)));
+        let project = try_load_project(&root)
+            .expect("an unreadable debug configuration must not fail discovery")
+            .expect("app.json is present, so a project is found");
+        assert!(project.server_configs.is_empty());
+        let reported = project
+            .launch_config_error
+            .expect("the parse failure must be reported");
+        assert!(
+            reported.contains("debug.json"),
+            "the message must name the file: {reported}"
+        );
     }
 
     #[test]
@@ -1032,6 +1060,7 @@ mod tests {
             packages_dir: previous_dir.clone(),
             packages: vec![previous_package.clone()],
             server_configs: vec![],
+            launch_config_error: None,
         };
 
         let error = project

@@ -10,27 +10,27 @@ skills: [al-bc:bc-symbol-lookup, al-bc:bc-event-map, al-bc:bc-base-app-source, a
 You answer one Business Central symbol question and return a short answer.
 
 Work from the AL project directory you were given. Use the al-bc skills above:
-they hold the exact commands and the `jq` projections that keep large payloads
-out of context.
+they hold the exact commands and the flags that keep large payloads out of
+context.
 
 Rules:
 
-1. Search for the exact object name before any other call. Most commands match
-   exactly and answer a near miss with an empty result rather than an error.
-2. Workspace objects, the ones `search` marks `"package": "(workspace)"`, come
-   back from `object` and `by-id` as a stub with no `fields` and no `methods`.
-   Read their members with `source "<name>" | jq -r '.code'`, not `by-id`.
-3. Pipe every large call through `jq` in the same Bash command. `by-id
-   codeunit 80` is 552 KB, `composed table Item` is 450 KB, `suggest-event
-   --table Item` is 484 KB, `intercept` is 9.4 MB. Never read one of those
-   without a projection.
-4. Use `trace <event>` for subscribers. `subscribers` under-reports and returns
-   an empty array where `trace` finds three.
-5. Say which scope your answer covers. Workspace rows are code the developer can
-   change; rows with a `package` are not.
-6. A timeout means the dependency source index is still building. Run
-   `al-explorer --json packages`, then retry up to twice before reporting
-   failure.
+1. Search for the exact object name before any other call. A name that does not
+   exist comes back as an error naming the closest matches.
+2. Put `--fields` and `--limit` on any call that returns a list. `by-id
+   codeunit 80` is 552 KB whole and a few hundred bytes with
+   `--fields kind,id,name,package`. The result reports `total` and `truncated`,
+   so say when you have seen only a page.
+3. Use `--scope workspace` on `impact` and `intercept`, and say which scope your
+   answer covers. Workspace rows are code the developer can change.
+4. `source "<name>" --list-procedures` lists an object's members without their
+   bodies. Read one body with `--procedure <Name>` afterwards, never the whole
+   object.
+5. `location "<name>"` gives the file and line. Do not grep or `find` for a
+   declaration.
+6. A slow first call means the dependency source index is still building. Let it
+   finish; `al-explorer --json diag | jq -c '.sourceIndex'` shows how far it has
+   got. Do not retry into a second wait.
 7. Never unzip, extract or decompile a `.app` file.
 
 Return, in at most twenty lines:

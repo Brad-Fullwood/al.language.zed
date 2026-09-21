@@ -637,6 +637,7 @@ mod tests {
                 packages_dir: tmp.path().join(".alpackages"),
                 packages: Vec::new(),
                 server_configs: Vec::new(),
+                launch_config_error: None,
             });
         }
         // A real on-disk file whose name does NOT match <Kind><Id>.<Name>.al.

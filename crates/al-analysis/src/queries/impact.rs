@@ -27,6 +27,10 @@ pub enum ImpactType {
     Extends,
     /// Event subscribed to.
     Subscribe,
+    /// The object that declares the queried member. Reported so the agent can
+    /// find the definition, and kept distinct from a consumer because changing
+    /// a field does not "break" the table that declares it.
+    Declares,
 }
 
 /// How sure the analysis is that the reported consumer really uses the queried
@@ -417,6 +421,11 @@ fn search_workspace_files_for_member(
         let receivers = receiver_bindings(&source.tree, &source.text, &object_lower);
         let declares_target = source.object.info.name.to_lowercase() == object_lower
             || extends_target(&source.text, &object_lower);
+        // A page/report/query bound to the table through `SourceTable` is the
+        // ordinary consumer of a field, and `Rec` inside it is that table. The
+        // survey saw every such page reported as `confidence: low`.
+        let source_table_target =
+            source_table_of(&source.text).is_some_and(|table| table.to_lowercase() == object_lower);
 
         let bound = refs.iter().any(|reference| {
             match receiver_before(&source.text, reference.start_byte) {
@@ -425,22 +434,32 @@ fn search_workspace_files_for_member(
                     lower == object_lower
                         || receivers.contains(&lower)
                         // `Rec`/`xRec` inside the target object (or an
-                        // extension of it) refer to the target itself.
-                        || (declares_target && matches!(lower.as_str(), "rec" | "xrec"))
+                        // extension of it, or a page bound to it) refer to
+                        // the target itself.
+                        || ((declares_target || source_table_target)
+                            && matches!(lower.as_str(), "rec" | "xrec"))
                 }
-                // Unqualified use binds to the enclosing object.
-                None => declares_target,
+                // Unqualified use binds to the enclosing object, or to the
+                // page's source table when the file has one.
+                None => declares_target || source_table_target,
             }
         });
 
         let object = &source.object;
+        let impact_type = if declares_target {
+            ImpactType::Declares
+        } else if source_table_target {
+            ImpactType::Display
+        } else {
+            ImpactType::Read
+        };
         results.push(ImpactEntry {
             kind: object.kind,
             id: object.normalized_id,
             name: object.info.name.clone(),
             proc: None,
             field: None,
-            impact_type: ImpactType::Read,
+            impact_type,
             package: None,
             confidence: if bound {
                 ImpactConfidence::High
@@ -456,6 +475,27 @@ fn search_workspace_files_for_member(
             },
         });
     }
+}
+
+/// The `SourceTable` property value declared in an AL page, report or query
+/// source file, unquoted.
+fn source_table_of(text: &str) -> Option<&str> {
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let mut parts = trimmed.splitn(2, '=');
+        let key = parts.next()?.trim();
+        if !key.eq_ignore_ascii_case("SourceTable") {
+            continue;
+        }
+        let value = parts.next()?.trim().trim_end_matches(';').trim();
+        return Some(
+            value
+                .strip_prefix('"')
+                .and_then(|inner| inner.split('"').next())
+                .unwrap_or(value),
+        );
+    }
+    None
 }
 
 /// Whether the object declared at the top of `text` is an extension of
@@ -1027,5 +1067,91 @@ mod tests {
             "Member query must not report unrelated Record Customer params. Got: {:?}",
             results
         );
+    }
+
+    /// The field's declaring extension and the page that shows it were both
+    /// reported as `Read` with `confidence: low`, so the agent could not tell
+    /// the definition from a consumer, nor a real hit from a name collision.
+    #[test]
+    fn field_impact_separates_the_declaration_from_the_pages_that_show_it() {
+        let ws = workspace_with_files(vec![
+            (
+                "/proj/ItemExt.TableExt.al",
+                r#"tableextension 50100 "Item Ext" extends Item
+{
+    fields
+    {
+        field(50100; "Planning Category"; Code[20])
+        {
+            DataClassification = CustomerContent;
+        }
+    }
+}
+"#,
+            ),
+            (
+                "/proj/ItemPlanning.Page.al",
+                r#"page 50100 "Item Planning"
+{
+    SourceTable = Item;
+    layout
+    {
+        area(content)
+        {
+            field("Planning Category"; Rec."Planning Category") { ApplicationArea = All; }
+        }
+    }
+}
+"#,
+            ),
+        ]);
+        ws.symbols.add_entries(&[make_table(27, "Item")]);
+
+        let results = impact(&ws, "Item.\"Planning Category\"").unwrap();
+
+        let declaration = results
+            .iter()
+            .find(|entry| entry.name == "Item Ext")
+            .expect("the declaring extension must be reported");
+        assert_eq!(declaration.impact_type, ImpactType::Declares);
+
+        let page = results
+            .iter()
+            .find(|entry| entry.name == "Item Planning")
+            .expect("the page showing the field must be reported");
+        assert_eq!(page.impact_type, ImpactType::Display);
+        assert_eq!(
+            page.confidence,
+            ImpactConfidence::High,
+            "Rec inside a page bound to the table resolves to it: {page:?}"
+        );
+        assert!(page.note.is_none());
+    }
+
+    #[test]
+    fn a_page_on_another_table_stays_low_confidence() {
+        let ws = workspace_with_files(vec![(
+            "/proj/VendorCard.Page.al",
+            r#"page 50101 "Vendor Planning"
+{
+    SourceTable = Vendor;
+    layout
+    {
+        area(content)
+        {
+            field("Planning Category"; Rec."Planning Category") { ApplicationArea = All; }
+        }
+    }
+}
+"#,
+        )]);
+        ws.symbols.add_entries(&[make_table(27, "Item")]);
+
+        let results = impact(&ws, "Item.\"Planning Category\"").unwrap();
+        let page = results
+            .iter()
+            .find(|entry| entry.name == "Vendor Planning")
+            .expect("the same-named field elsewhere is still reported");
+        assert_eq!(page.confidence, ImpactConfidence::Low);
     }
 }

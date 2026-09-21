@@ -36,7 +36,7 @@ pub fn cmd_lint(file: Option<&str>, all: bool, analyzers: Option<&str>, json: bo
                 };
             }
             if all {
-                if let Some(files) = result.as_array() {
+                if let Some(files) = list_rows(&result).as_array() {
                     for file_result in files {
                         let fname = file_result
                             .get("file")
@@ -57,7 +57,7 @@ pub fn cmd_lint(file: Option<&str>, all: bool, analyzers: Option<&str>, json: bo
                     );
                 }
             } else {
-                let diagnostics = result.as_array().cloned().unwrap_or_default();
+                let diagnostics = list_rows(&result).as_array().cloned().unwrap_or_default();
                 if diagnostics.is_empty() {
                     eprintln!("No issues found");
                 } else {
@@ -370,7 +370,7 @@ fn print_position_query_human(method: &str, result: &serde_json::Value) {
 
     match method {
         "definition" | "typeDefinition" | "declaration" | "implementation" => {
-            if let Some(locations) = result.as_array() {
+            if let Some(locations) = list_rows(result).as_array() {
                 for loc in locations {
                     if let Some(s) = location_str(loc) {
                         println!("{s}");
@@ -386,7 +386,7 @@ fn print_position_query_human(method: &str, result: &serde_json::Value) {
             }
         }
         "references" => {
-            if let Some(locations) = result.as_array() {
+            if let Some(locations) = list_rows(result).as_array() {
                 for loc in locations {
                     if let Some(s) = location_str(loc) {
                         println!("{s}");

@@ -67,6 +67,81 @@ pub struct OrphanSubscriber {
     node_index: usize,
 }
 
+/// One subscriber found by [`subscribers_of`], with the target it names.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchedSubscriber {
+    pub object_kind: String,
+    pub object_name: String,
+    pub method_name: String,
+    pub target_object: String,
+    pub target_event: String,
+    /// Whether the graph holds a publisher for the named event.
+    pub resolved: bool,
+}
+
+/// Every `[EventSubscriber]` in the graph whose object, method, target object
+/// or target event contains `query`, compared case-insensitively.
+///
+/// Microsoft symbol packages record no `EventSubscriber` attribute on their
+/// methods, so the symbol index alone sees workspace subscribers only. The
+/// graph also carries the subscribers parsed out of each package's extracted AL
+/// source, which is why `trace` found three subscribers for an event that
+/// `subscribers` reported as unsubscribed.
+///
+/// Walks the subscriber keys in the node index rather than the whole graph, so
+/// the cost is the subscriber count, not [`discover_events`]'s full pass.
+pub fn subscribers_of(graph: &InsightGraph, query: &str) -> Vec<MatchedSubscriber> {
+    let query_lower = query.to_lowercase();
+    let mut matches = Vec::new();
+    for (key, indices) in &graph.index {
+        if !matches!(key, NodeKey::Subscriber(..)) {
+            continue;
+        }
+        for &idx in indices {
+            let InsightNode::Subscriber {
+                object_kind,
+                object_name,
+                name,
+                target_object,
+                target_event,
+            } = &graph.graph[idx]
+            else {
+                continue;
+            };
+            let matched = query_lower.is_empty()
+                || [object_name, name, target_object, target_event]
+                    .iter()
+                    .any(|candidate| candidate.to_lowercase().contains(&query_lower));
+            if !matched {
+                continue;
+            }
+            matches.push(MatchedSubscriber {
+                object_kind: object_kind.to_string(),
+                object_name: object_name.clone(),
+                method_name: name.clone(),
+                target_object: target_object.clone(),
+                target_event: target_event.clone(),
+                resolved: graph
+                    .graph
+                    .edges_directed(idx, Direction::Outgoing)
+                    .any(|edge| *edge.weight() == InsightEdge::SubscribesTo),
+            });
+        }
+    }
+    matches.sort_by(|a, b| {
+        a.object_name
+            .to_lowercase()
+            .cmp(&b.object_name.to_lowercase())
+            .then_with(|| {
+                a.method_name
+                    .to_lowercase()
+                    .cmp(&b.method_name.to_lowercase())
+            })
+    });
+    matches
+}
+
 /// Full result of an event discovery query.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -586,5 +661,60 @@ mod tests {
         for ev in &result.events {
             assert_eq!(ev.subscriber_count, 1);
         }
+    }
+
+    #[test]
+    fn subscribers_of_finds_a_subscriber_by_target_event_name() {
+        let mut publisher = base_entry(ObjectKind::Codeunit, 80, "Sales-Post");
+        publisher.methods = vec![integration_event_method("OnAfterPostSalesDoc")];
+        let mut handler = base_entry(ObjectKind::Codeunit, 90, "Booking Manager");
+        handler.methods = vec![subscriber_method(
+            "OnAfterPostSalesDocHandler",
+            "Codeunit",
+            "Sales-Post",
+            "OnAfterPostSalesDoc",
+        )];
+
+        let g = build_graph(&[publisher, handler]);
+        let found = subscribers_of(&g, "OnAfterPostSalesDoc");
+
+        assert_eq!(found.len(), 1, "expected one subscriber: {found:?}");
+        assert_eq!(found[0].object_name, "Booking Manager");
+        assert_eq!(found[0].target_event, "OnAfterPostSalesDoc");
+        assert!(found[0].resolved, "the publisher is in the graph");
+    }
+
+    #[test]
+    fn subscribers_of_marks_an_unpublished_target_unresolved() {
+        let mut handler = base_entry(ObjectKind::Codeunit, 91, "Stale Handler");
+        handler.methods = vec![subscriber_method(
+            "OnGoneHandler",
+            "Codeunit",
+            "Sales-Post",
+            "OnEventThatWasRemoved",
+        )];
+
+        let g = build_graph(&[handler]);
+        let found = subscribers_of(&g, "OnEventThatWasRemoved");
+
+        assert_eq!(found.len(), 1);
+        assert!(
+            !found[0].resolved,
+            "no publisher declares this event: {found:?}"
+        );
+    }
+
+    #[test]
+    fn subscribers_of_ignores_unrelated_events() {
+        let mut handler = base_entry(ObjectKind::Codeunit, 92, "Other Handler");
+        handler.methods = vec![subscriber_method(
+            "OnSomethingElse",
+            "Codeunit",
+            "Sales-Post",
+            "OnBeforePostSalesDoc",
+        )];
+
+        let g = build_graph(&[handler]);
+        assert!(subscribers_of(&g, "OnAfterRun").is_empty());
     }
 }

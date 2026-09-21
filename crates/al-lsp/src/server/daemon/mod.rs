@@ -18,6 +18,11 @@ mod containment;
 mod debug_dispatch;
 mod insight_dispatch;
 mod lsp_dispatch;
+mod projection;
+mod scope;
+
+pub(crate) use projection::list_target;
+pub(crate) use scope::accepts_scope;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -143,6 +148,17 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
     }));
 
     initialize_daemon_workspace(&workspace, &project_root).await?;
+
+    // Warm the dependency AL source index and the graphs built on it now,
+    // rather than inside whichever query needs them first. The build takes
+    // about a minute on Base Application; paid here it overlaps with the
+    // agent's first few symbol queries, and `status` can report its progress
+    // from the start instead of only once something is already blocked on it.
+    let warm_workspace = Arc::clone(&workspace);
+    tokio::task::spawn_blocking(move || match warm_workspace.get_or_build_call_graph() {
+        Ok(_) => tracing::info!("daemon: dependency source index and call graph warm"),
+        Err(error) => tracing::warn!(%error, "daemon: background index warm-up failed"),
+    });
 
     // stored as millis-since-`DAEMON_EPOCH` in an AtomicU64 so
     // the hot per-connection-accept + per-dispatch update is lock-free.
@@ -642,6 +658,21 @@ pub(crate) async fn dispatch_request(
     req: Request,
     shutdown: &Notify,
 ) -> Response {
+    let method = req.method.clone();
+    let params = req.params.clone().unwrap_or(serde_json::Value::Null);
+    let response = dispatch_method(workspace, req, shutdown).await;
+    // `scope` first, so a `limit` counts the rows that survive it rather than
+    // the rows it was about to drop. Both are applied once, here, for every
+    // method that takes them. See `scope` and `projection`.
+    let response = scope::apply(workspace, &method, &params, response);
+    projection::apply(&method, &params, response)
+}
+
+async fn dispatch_method(
+    workspace: &std::sync::Arc<Workspace>,
+    req: Request,
+    shutdown: &Notify,
+) -> Response {
     // Dispatch is keyed on u64; string/null ids dispatch under 0 and the
     // connection loop restores the original id on the wire.
     let id = req.dispatch_id();
@@ -832,6 +863,14 @@ pub(crate) async fn dispatch_request(
             }
         }
         "status" => {
+            // Read the project before taking the std RwLock guards below: a
+            // guard held across an await makes this dispatch future non-Send.
+            let launch_config_error = workspace
+                .project
+                .read()
+                .await
+                .as_ref()
+                .and_then(|project| project.launch_config_error.clone());
             let semantic_cache = match workspace.semantic_cache.read() {
                 Ok(cache) => cache,
                 Err(_) => {
@@ -864,6 +903,14 @@ pub(crate) async fn dispatch_request(
                 "workspaceObjects": workspace.file_index.object_count(),
                 "builtinTypes": builtins.len(),
                 "semanticCache": cache_stats,
+                // Present only when the project's debug configuration file
+                // could not be read. Symbol queries are unaffected; the BC
+                // connection commands are the ones that need it.
+                "launchConfigError": launch_config_error,
+                // `subscribers`, `composed`, `events`, `lint`, `trace`,
+                // `impact` and `entrypoints` all wait for this. A client that
+                // sees `building` should keep waiting rather than retry.
+                "sourceIndex": workspace.dependency_source_progress(),
             });
             Response {
                 id,
@@ -911,12 +958,28 @@ fn dispatch_diag(workspace: &Workspace, id: u64, params: &serde_json::Value) -> 
                 }
             };
             match serde_json::to_value(&stats) {
-                Ok(value) => Response {
-                    id,
-                    result: Some(value),
-                    error: None,
-                    ..Default::default()
-                },
+                Ok(mut value) => {
+                    if let Some(object) = value.as_object_mut() {
+                        match serde_json::to_value(workspace.dependency_source_progress()) {
+                            Ok(progress) => {
+                                object.insert("sourceIndex".into(), progress);
+                            }
+                            Err(error) => {
+                                return rpc_error(
+                                    id,
+                                    error_codes::INTERNAL_ERROR,
+                                    &format!("diag/summary source-index progress: {error}"),
+                                );
+                            }
+                        }
+                    }
+                    Response {
+                        id,
+                        result: Some(value),
+                        error: None,
+                        ..Default::default()
+                    }
+                }
                 Err(e) => Response {
                     id,
                     result: None,
@@ -1486,6 +1549,7 @@ pub(crate) fn set_test_project_root(workspace: &Workspace, root: &Path) {
             packages_dir: root.join(".alpackages"),
             packages: Vec::new(),
             server_configs: Vec::new(),
+            launch_config_error: None,
         });
 }
 
@@ -2125,6 +2189,58 @@ mod tests {
                 .get("semanticCache")
                 .is_some_and(serde_json::Value::is_object),
             "a healthy cache must report concrete statistics"
+        );
+    }
+
+    /// A client whose request is blocked on the dependency source index needs
+    /// to be able to see that from a second connection, or a timeout carries
+    /// no reason and the natural response is a retry into the next one.
+    #[tokio::test]
+    async fn status_reports_dependency_source_index_progress() {
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+        let shutdown = Notify::new();
+        let resp = dispatch_request(&ws, Request::new(4, "status", None), &shutdown).await;
+        let result = resp.result.expect("status must return a result");
+        let source_index = result
+            .get("sourceIndex")
+            .expect("status must carry sourceIndex");
+        assert_eq!(
+            source_index.get("state").and_then(|v| v.as_str()),
+            Some("idle"),
+            "nothing has needed the index yet: {source_index}"
+        );
+        for key in ["packagesDone", "packagesTotal", "filesDone", "elapsedMs"] {
+            assert!(
+                source_index.get(key).is_some_and(|v| v.is_u64()),
+                "sourceIndex must report {key}: {source_index}"
+            );
+        }
+
+        // Building it on a workspace with no packages is instant and must
+        // leave the counters in the ready state a client waits for.
+        let _graph = ws.get_or_build_call_graph().expect("empty graph builds");
+        let after = dispatch_request(&ws, Request::new(5, "status", None), &shutdown)
+            .await
+            .result
+            .expect("result");
+        assert_eq!(
+            after
+                .get("sourceIndex")
+                .and_then(|index| index.get("state"))
+                .and_then(|v| v.as_str()),
+            Some("ready")
+        );
+    }
+
+    #[tokio::test]
+    async fn diag_summary_reports_dependency_source_index_progress() {
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+        let shutdown = Notify::new();
+        let resp = dispatch_request(&ws, Request::new(6, "diag", None), &shutdown).await;
+        let result = resp.result.expect("diag must return a result");
+        assert!(
+            result.get("sourceIndex").is_some(),
+            "diag/summary must carry sourceIndex: {result}"
         );
     }
 

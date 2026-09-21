@@ -2556,6 +2556,7 @@ mod tests {
             packages_dir: root.join(".alpackages"),
             packages: Vec::new(),
             server_configs: Vec::new(),
+            launch_config_error: None,
         });
     }
 
@@ -2773,6 +2774,7 @@ mod tests {
                 packages_dir: tmp.path().join(".alpackages"),
                 packages: Vec::new(),
                 server_configs: Vec::new(),
+                launch_config_error: None,
             });
         }
         // A pure-logic test codeunit: 2 [Test] procedures, one passing and
@@ -2894,6 +2896,7 @@ mod tests {
                 packages_dir: tmp.path().join(".alpackages"),
                 packages: Vec::new(),
                 server_configs: Vec::new(),
+                launch_config_error: None,
             });
         }
 
@@ -3024,6 +3027,7 @@ mod tests {
                 packages_dir: tmp.path().join(".alpackages"),
                 packages: Vec::new(),
                 server_configs: Vec::new(),
+                launch_config_error: None,
             });
         }
         let src_path = tmp.path().join("CovBatch.Codeunit.al");
@@ -3208,6 +3212,7 @@ mod tests {
                 packages_dir: tmp.path().join(".alpackages"),
                 packages: Vec::new(),
                 server_configs: Vec::new(),
+                launch_config_error: None,
             });
         }
         let resp = dispatch_tests_run_batch(&ws, 4, &serde_json::json!({})).await;
@@ -3248,6 +3253,7 @@ mod tests {
                 packages_dir: tmp.path().join(".alpackages"),
                 packages: Vec::new(),
                 server_configs: Vec::new(),
+                launch_config_error: None,
             });
         }
         let resp = dispatch_tests_run_batch(
@@ -3357,6 +3363,7 @@ mod tests {
                 packages_dir: tmp.path().join(".alpackages"),
                 packages: Vec::new(),
                 server_configs: Vec::new(),
+                launch_config_error: None,
             });
         }
         let resp = dispatch_tests_last_results(&ws, 5, &serde_json::json!({})).await;
@@ -3394,6 +3401,7 @@ mod tests {
             packages_dir: tmp.path().join(".alpackages"),
             packages: Vec::new(),
             server_configs: Vec::new(),
+            launch_config_error: None,
         });
         drop(guard);
         install_test_result_store(&ws, tmp).await;
@@ -3590,6 +3598,7 @@ mod tests {
                 packages_dir: tmp.path().join(".alpackages"),
                 packages: Vec::new(),
                 server_configs: Vec::new(),
+                launch_config_error: None,
             });
         }
 
@@ -3807,6 +3816,7 @@ mod tests {
                 packages_dir: tmp.path().join(".alpackages"),
                 packages: Vec::new(),
                 server_configs: Vec::new(),
+                launch_config_error: None,
             });
         }
         let bulk = dispatch_tests_last_results(&ws, 100, &serde_json::json!({})).await;

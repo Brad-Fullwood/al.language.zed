@@ -11,7 +11,7 @@ pub fn cmd_tests_discover(json: bool) -> ExitCode {
         json,
         None,
         |result| {
-            let tests = result.as_array().cloned().unwrap_or_default();
+            let tests = list_rows(result).as_array().cloned().unwrap_or_default();
             if tests.is_empty() {
                 eprintln!("No test codeunits found");
             } else {

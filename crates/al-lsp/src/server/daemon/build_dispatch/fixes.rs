@@ -1045,6 +1045,7 @@ mod tests {
             packages_dir: tmp.path().join(".alpackages"),
             packages: Vec::new(),
             server_configs: Vec::new(),
+            launch_config_error: None,
         });
 
         let response = dispatch_arch_lint(&workspace, 4).await;
