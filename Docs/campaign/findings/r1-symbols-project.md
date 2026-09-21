@@ -258,7 +258,7 @@ current code are tagged [STILL-OPEN].
   `load_packages_cached_lenient`, which returns failures in `CoreInitResult`, and nothing else
   in `al-workspace` produces a `PackageLoadError`. The variant and its `#[from]` remain.
 - fix: remove the variant.
-- status: open
+- status: fixed 58645d20
 
 ### [BUG] [STILL-OPEN] The dependency source index is still all-or-nothing per package
 - where: crates/al-workspace/src/lib.rs:407-419
@@ -272,7 +272,7 @@ current code are tagged [STILL-OPEN].
   features go dark for every package rather than for that one.
 - fix: collect per-package failures into a list the way `load_packages_cached_lenient` does
   and index the packages that succeed.
-- status: open
+- status: fixed 58645d20
 
 ### [BUG] A call-graph build in flight republishes a stale graph over a concurrent invalidation
 - where: crates/al-workspace/src/lib.rs:518-637 (`get_or_build_call_graph`), :331-340
@@ -306,7 +306,7 @@ current code are tagged [STILL-OPEN].
   even though every other package is still present and indexed.
 - fix: skip a package whose metadata cannot be read, record it, and build from the rest; the
   fingerprint change alone already forces the rebuild.
-- status: open
+- status: fixed 58645d20
 
 ### [SLOP] Two `DependencySourceError` variants are never constructed
 - where: crates/al-workspace/src/lib.rs:102-117 (`ParseSource`, `MissingObjectDeclaration`)
@@ -316,7 +316,7 @@ current code are tagged [STILL-OPEN].
   `DependencySourceError::ParseSource` / `::MissingObjectDeclaration` finds no construction
   site. The variants and their format strings remain as dead surface on a public enum.
 - fix: remove both variants.
-- status: open
+- status: fixed 58645d20
 
 ### [BUG] One unrecognized `al.*` key in `.vscode/settings.json` fails daemon and CLI startup
 - where: crates/al-project/src/config.rs:414 (`key.starts_with("al.")`), :595-598
