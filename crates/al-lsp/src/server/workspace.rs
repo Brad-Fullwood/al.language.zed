@@ -1454,76 +1454,12 @@ fn zed_settings_path() -> Option<PathBuf> {
 fn strip_jsonc_comments_and_parse(
     input: &str,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
-    let mut result = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    let mut in_string = false;
-    let mut escape_next = false;
-
-    while let Some(c) = chars.next() {
-        if escape_next {
-            result.push(c);
-            escape_next = false;
-            continue;
-        }
-
-        if in_string {
-            result.push(c);
-            if c == '\\' {
-                escape_next = true;
-            } else if c == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-
-        match c {
-            '"' => {
-                in_string = true;
-                result.push(c);
-            }
-            '/' => {
-                if chars.peek() == Some(&'/') {
-                    // Line comment — skip to end of line (handle both LF and CRLF).
-                    for c2 in chars.by_ref() {
-                        if c2 == '\n' || c2 == '\r' {
-                            result.push('\n');
-                            if c2 == '\r' && chars.peek() == Some(&'\n') {
-                                // Consume trailing \n after \r (CRLF)
-                                chars.next();
-                            }
-                            break;
-                        }
-                    }
-                } else if chars.peek() == Some(&'*') {
-                    chars.next(); // consume `*`
-                    loop {
-                        match chars.next() {
-                            Some('*') if chars.peek() == Some(&'/') => {
-                                chars.next(); // consume `/`
-                                break;
-                            }
-                            Some('\n') => result.push('\n'), // preserve line numbers
-                            None => break,
-                            _ => {}
-                        }
-                    }
-                } else {
-                    result.push(c);
-                }
-            }
-            _ => result.push(c),
-        }
-    }
-
-    // Zed's settings.json is JSONC: it permits trailing commas (e.g. the comma
-    // after the last property in an object). serde_json is strict and rejects
-    // them ("trailing comma at line N"), so strip them before parsing — exactly
-    // as Zed itself tolerates them. Delegate to the canonical byte-safe
-    // implementation in `dap::json_util` so multi-byte UTF-8 (e.g. emoji in a
-    // theme name or comment) is never corrupted by `byte as char` casting.
-    let result = al_dap::dap::json_util::strip_trailing_commas(&result);
-
-    Ok(serde_json::from_str(&result)?)
+    // Zed's settings.json is JSONC: comments and a trailing comma after the
+    // last property are both legal there and both rejected by serde_json. The
+    // one stripper for the workspace lives in `al_types::jsonc`.
+    Ok(serde_json::from_str(
+        &al_types::jsonc::strip_json_comments(input),
+    )?)
 }
 
 /// Objects are merged recursively; all other value types are replaced by

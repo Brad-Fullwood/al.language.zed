@@ -60,11 +60,8 @@ pub fn get_composed(index: &SymbolIndex, kind: ObjectKind, name: &str) -> Option
     Some(compose(base, relevant_extensions))
 }
 
-/// Whether an entry was contributed by the open workspace rather than a
-/// loaded `.app` package (see `source_availability::classify`).
 fn is_workspace_entry(entry: &SymbolEntry) -> bool {
-    entry.package.eq_ignore_ascii_case("workspace")
-        || entry.package.eq_ignore_ascii_case("(workspace)")
+    super::source_availability::is_workspace_package(&entry.package)
 }
 
 /// Compose a base object with a set of extensions.

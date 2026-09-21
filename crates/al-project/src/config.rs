@@ -861,88 +861,12 @@ fn read_editor_settings_file(path: &Path) -> Result<Option<serde_json::Value>, C
 }
 
 /// Remove JSONC comments and trailing commas without altering string contents.
+/// Strip JSONC comments and trailing commas.
+///
+/// One implementation for the whole workspace lives in `al_types::jsonc`;
+/// this wrapper keeps the local call sites short.
 fn strip_jsonc(source: &str) -> String {
-    let mut without_comments = String::with_capacity(source.len());
-    let mut chars = source.chars().peekable();
-    let mut in_string = false;
-    let mut escaped = false;
-    while let Some(ch) = chars.next() {
-        if in_string {
-            without_comments.push(ch);
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-        if ch == '"' {
-            in_string = true;
-            without_comments.push(ch);
-            continue;
-        }
-        if ch == '/' && chars.peek() == Some(&'/') {
-            chars.next();
-            for comment in chars.by_ref() {
-                if comment == '\n' {
-                    without_comments.push('\n');
-                    break;
-                }
-            }
-            continue;
-        }
-        if ch == '/' && chars.peek() == Some(&'*') {
-            chars.next();
-            let mut previous = '\0';
-            for comment in chars.by_ref() {
-                if comment == '\n' {
-                    without_comments.push('\n');
-                }
-                if previous == '*' && comment == '/' {
-                    break;
-                }
-                previous = comment;
-            }
-            continue;
-        }
-        without_comments.push(ch);
-    }
-
-    let chars = without_comments.chars().collect::<Vec<_>>();
-    let mut cleaned = String::with_capacity(without_comments.len());
-    let mut in_string = false;
-    let mut escaped = false;
-    for (index, ch) in chars.iter().copied().enumerate() {
-        if in_string {
-            cleaned.push(ch);
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-        if ch == '"' {
-            in_string = true;
-            cleaned.push(ch);
-            continue;
-        }
-        if ch == ',' {
-            let next = chars[index + 1..]
-                .iter()
-                .copied()
-                .find(|next| !next.is_whitespace());
-            if matches!(next, Some('}') | Some(']')) {
-                continue;
-            }
-        }
-        cleaned.push(ch);
-    }
-    cleaned
+    al_types::jsonc::strip_json_comments(source)
 }
 
 fn merge_bool(obj: &serde_json::Map<String, serde_json::Value>, key: &str, target: &mut bool) {
