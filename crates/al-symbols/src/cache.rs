@@ -162,35 +162,6 @@ impl SymbolCache {
         Some(pkg)
     }
 
-    /// Deletes stale temporary cache files.
-    fn cleanup_stale_tmp(&self) {
-        let entries = match fs::read_dir(&self.cache_dir) {
-            Ok(e) => e,
-            Err(error) => {
-                debug!(%error, path = %self.cache_dir.display(), "Could not scan symbol cache");
-                return;
-            }
-        };
-        let cutoff = Duration::from_secs(60);
-        let now = SystemTime::now();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if !name.contains(".tmp.") {
-                continue;
-            }
-            if let Ok(meta) = fs::metadata(&path) {
-                if let Ok(age) = now.duration_since(meta.modified().unwrap_or(now)) {
-                    if age > cutoff {
-                        if let Err(error) = fs::remove_file(&path) {
-                            debug!(%error, path = %path.display(), "Could not remove stale cache file");
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     pub fn save(&self, app_path: &Path, pkg: &SymbolPackage) -> Result<(), std::io::Error> {
         let cache_path = self.cache_path_for(app_path);
         let meta = fs::metadata(app_path)?;
@@ -253,7 +224,6 @@ impl SymbolCache {
         }
         #[cfg(not(unix))]
         fs::create_dir_all(&self.cache_dir)?;
-        self.cleanup_stale_tmp();
 
         // Write to a temp file in the same directory, then atomically rename.
         // This prevents concurrent readers from seeing a partial write and
@@ -312,7 +282,18 @@ impl SymbolCache {
         if GC_RAN.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return;
         }
-        self.gc(MAX_CACHE_ENTRY_AGE, MAX_CACHE_TOTAL_BYTES);
+        // The callers are on the LSP `initialize` path, and the sweep is a
+        // `read_dir` plus a `metadata` per entry over a directory allowed to
+        // hold 4 GiB. Nothing waits on the result: a deleted entry is
+        // rebuilt on demand, so a sweep that never finishes is harmless.
+        let cache_dir = self.cache_dir.clone();
+        if let Err(error) = std::thread::Builder::new()
+            .name("al-symbol-cache-gc".to_string())
+            .spawn(move || gc_directory(&cache_dir, MAX_CACHE_ENTRY_AGE, MAX_CACHE_TOTAL_BYTES))
+        {
+            debug!(%error, "symbol cache GC: could not spawn the sweep, running it inline");
+            self.gc(MAX_CACHE_ENTRY_AGE, MAX_CACHE_TOTAL_BYTES);
+        }
     }
 
     /// Bounded garbage collection for the symbol cache directory.
@@ -326,57 +307,7 @@ impl SymbolCache {
     /// exceed `max_total_bytes` the oldest are deleted until under the cap.
     /// All failures are logged and ignored — GC is strictly best-effort.
     pub fn gc(&self, max_age: Duration, max_total_bytes: u64) {
-        let entries = match fs::read_dir(&self.cache_dir) {
-            Ok(entries) => entries,
-            Err(error) => {
-                debug!(%error, path = %self.cache_dir.display(), "symbol cache GC: cannot scan directory");
-                return;
-            }
-        };
-        let now = SystemTime::now();
-        let mut survivors: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
-        let mut removed = 0usize;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if !name.ends_with(".cache") {
-                continue; // stale .tmp files are handled by cleanup_stale_tmp
-            }
-            let Ok(meta) = fs::metadata(&path) else {
-                continue;
-            };
-            let modified = meta.modified().unwrap_or(now);
-            let age = now.duration_since(modified).unwrap_or(Duration::ZERO);
-            if age > max_age {
-                if fs::remove_file(&path).is_ok() {
-                    removed += 1;
-                }
-                continue;
-            }
-            survivors.push((modified, meta.len(), path));
-        }
-
-        let mut total: u64 = survivors.iter().map(|(_, size, _)| size).sum();
-        if total > max_total_bytes {
-            // Delete oldest-first until under the size cap.
-            survivors.sort_unstable_by_key(|(modified, _, _)| *modified);
-            for (_, size, path) in &survivors {
-                if total <= max_total_bytes {
-                    break;
-                }
-                if fs::remove_file(path).is_ok() {
-                    removed += 1;
-                    total = total.saturating_sub(*size);
-                }
-            }
-        }
-        if removed > 0 {
-            debug!(
-                removed,
-                path = %self.cache_dir.display(),
-                "symbol cache GC: deleted stale entries"
-            );
-        }
+        gc_directory(&self.cache_dir, max_age, max_total_bytes);
     }
 
     fn cache_path_for(&self, app_path: &Path) -> PathBuf {
@@ -386,6 +317,75 @@ impl SymbolCache {
             .unwrap_or("unknown");
         let hash = simple_hash(app_path);
         self.cache_dir.join(format!("{filename}.{hash:016x}.cache"))
+    }
+}
+
+/// Temporary files older than this were left by a killed writer.
+const MAX_TMP_FILE_AGE: Duration = Duration::from_secs(60);
+
+fn gc_directory(cache_dir: &Path, max_age: Duration, max_total_bytes: u64) {
+    let entries = match fs::read_dir(cache_dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            debug!(%error, path = %cache_dir.display(), "symbol cache GC: cannot scan directory");
+            return;
+        }
+    };
+    let now = SystemTime::now();
+    let mut survivors: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let Ok(meta) = fs::metadata(&path) else {
+            continue;
+        };
+        // A temporary file left by a killed writer is swept here rather
+        // than on every `save`: each save ran a full directory scan, and
+        // a cold start saves once per package from a rayon pool.
+        if name.contains(".tmp.") {
+            let age = now
+                .duration_since(meta.modified().unwrap_or(now))
+                .unwrap_or(Duration::ZERO);
+            if age > MAX_TMP_FILE_AGE && fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+            continue;
+        }
+        if !name.ends_with(".cache") {
+            continue;
+        }
+        let modified = meta.modified().unwrap_or(now);
+        let age = now.duration_since(modified).unwrap_or(Duration::ZERO);
+        if age > max_age {
+            if fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+            continue;
+        }
+        survivors.push((modified, meta.len(), path));
+    }
+
+    let mut total: u64 = survivors.iter().map(|(_, size, _)| size).sum();
+    if total > max_total_bytes {
+        // Delete oldest-first until under the size cap.
+        survivors.sort_unstable_by_key(|(modified, _, _)| *modified);
+        for (_, size, path) in &survivors {
+            if total <= max_total_bytes {
+                break;
+            }
+            if fs::remove_file(path).is_ok() {
+                removed += 1;
+                total = total.saturating_sub(*size);
+            }
+        }
+    }
+    if removed > 0 {
+        debug!(
+            removed,
+            path = %cache_dir.display(),
+            "symbol cache GC: deleted stale entries"
+        );
     }
 }
 
@@ -622,6 +622,38 @@ mod tests {
         assert!(
             cache.load(&new_app).is_none(),
             "entries beyond the size cap must be deleted oldest-first"
+        );
+    }
+
+    /// A cold start saves one entry per package from a rayon pool, and each
+    /// save used to scan the whole cache directory for temporary files. The
+    /// sweep belongs to the once-per-process GC instead.
+    #[test]
+    fn stale_temporary_files_are_swept_by_gc_not_by_every_save() {
+        let dir = TempDir::new().unwrap();
+        let cache = SymbolCache::at(dir.path().join("cache"));
+        let (app, pkg) = make_test_app(dir.path(), "Pkg");
+        cache.save(&app, &pkg).unwrap();
+
+        let stale_tmp = cache.cache_dir.join("Other.app.0123.cache.tmp.1.1");
+        fs::write(&stale_tmp, b"partial").unwrap();
+        let long_ago = SystemTime::now() - Duration::from_secs(600);
+        let file = fs::OpenOptions::new().write(true).open(&stale_tmp).unwrap();
+        file.set_times(fs::FileTimes::new().set_modified(long_ago))
+            .unwrap();
+        drop(file);
+
+        cache.save(&app, &pkg).unwrap();
+        assert!(
+            stale_tmp.exists(),
+            "save must not scan the directory for temporary files"
+        );
+
+        cache.gc(Duration::from_secs(30 * 24 * 60 * 60), u64::MAX);
+        assert!(!stale_tmp.exists(), "GC must sweep stale temporary files");
+        assert!(
+            cache.load(&app).is_some(),
+            "a live entry survives the sweep"
         );
     }
 
