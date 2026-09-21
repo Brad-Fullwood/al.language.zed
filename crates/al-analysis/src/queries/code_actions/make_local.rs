@@ -14,39 +14,57 @@ use al_workspace::Workspace;
 /// are preferable to silently breaking call sites.
 fn external_caller_exists(workspace: &Workspace, current_uri: &Url, proc_name: &str) -> bool {
     let current_path = current_uri.to_file_path().ok();
-    let needle_lower = proc_name.to_lowercase();
+    let needle = proc_name.as_bytes();
     for entry in workspace.file_index.files.iter() {
         if current_path.as_ref().is_some_and(|p| entry.key() == p) {
             continue;
         }
-        let text_lower = entry.value().to_lowercase();
-        if !text_lower.contains(&needle_lower) {
+        if contains_identifier_ignore_ascii_case(entry.value().as_bytes(), needle) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether `haystack` contains `needle` as a whole identifier, comparing
+/// ASCII case-insensitively.
+///
+/// Called for every indexed file on every `textDocument/codeAction` request,
+/// which editors fire as the cursor moves. Lowercasing each file first — as
+/// this used to — allocated a fresh copy of the whole workspace source per
+/// cursor move. This reads the indexed bytes in place.
+///
+/// A match must not be part of a longer identifier (`Foo` inside `FooBar`).
+/// It deliberately does *not* also require a following `(`: AL lets a
+/// parameterless procedure be called bare (`Helper;`), and demanding parens
+/// missed those callers, letting "make local" break them. Over-detecting only
+/// withholds the refactor, which is the safe direction for a guard.
+fn contains_identifier_ignore_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {
+    let is_ident = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    let Some(&first) = needle.first() else {
+        return false;
+    };
+    let first = first.to_ascii_lowercase();
+    let Some(last_start) = haystack.len().checked_sub(needle.len()) else {
+        return false;
+    };
+    for start in 0..=last_start {
+        if haystack[start].to_ascii_lowercase() != first {
             continue;
         }
-        // Require the match to be a whole identifier (not a substring of a
-        // longer one like `Foo` in `FooBar`). We deliberately do NOT also
-        // require a following `(`: AL lets a parameterless procedure be called
-        // bare (`Helper;`), so demanding parens missed those callers and let
-        // "make local" silently break them. Over-detecting here only withholds
-        // the refactor conservatively, which is the safe direction for a guard.
-        let mut start = 0;
-        while let Some(off) = text_lower[start..].find(&needle_lower) {
-            let pos = start + off;
-            let end = pos + needle_lower.len();
-            // Identifier-char before pos? Then it's a substring of a longer ident.
-            let prev_is_ident = pos > 0
-                && text_lower
-                    .as_bytes()
-                    .get(pos - 1)
-                    .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_');
-            let identifier_continues = text_lower
-                .as_bytes()
-                .get(end)
-                .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_');
-            if !prev_is_ident && !identifier_continues {
-                return true;
-            }
-            start = end;
+        if start > 0 && is_ident(haystack[start - 1]) {
+            continue;
+        }
+        let end = start + needle.len();
+        if haystack.get(end).copied().is_some_and(is_ident) {
+            continue;
+        }
+        if haystack[start..end]
+            .iter()
+            .zip(needle)
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+        {
+            return true;
         }
     }
     false
@@ -351,6 +369,31 @@ mod tests {
             !actions.iter().any(|a| a.title == "Make procedure local"),
             "external caller in another file must suppress the action"
         );
+    }
+
+    /// The scan replaced a lowercase-the-whole-file pass; it has to answer the
+    /// same question, including the identifier boundaries and non-ASCII bytes
+    /// it must leave alone.
+    #[test]
+    fn identifier_scan_matches_whole_identifiers_case_insensitively() {
+        let hit = |haystack: &str, needle: &str| {
+            contains_identifier_ignore_ascii_case(haystack.as_bytes(), needle.as_bytes())
+        };
+
+        assert!(hit("    Helper();", "Helper"));
+        assert!(hit("    helper;", "Helper"), "bare parameterless call");
+        assert!(hit("HELPER", "Helper"), "match at the very end of the text");
+        assert!(hit("x := Rec.Helper();", "helper"));
+
+        assert!(!hit("    HelperBar();", "Helper"), "longer identifier");
+        assert!(!hit("    MyHelper();", "Helper"), "longer identifier");
+        assert!(!hit("    My_Helper();", "Helper"), "underscore continues");
+        assert!(!hit("    Help();", "Helper"), "needle longer than the text");
+        assert!(!hit("", "Helper"));
+        assert!(!hit("Helper", ""), "an empty needle matches nothing");
+        // A multi-byte character next to the match is not an ASCII identifier
+        // byte, so the occurrence still counts.
+        assert!(hit("Ü Helper Ü", "Helper"));
     }
 
     fn make_local_action(al_code: &str, uri_str: &str, line: u32) -> Option<CodeActionEntry> {
