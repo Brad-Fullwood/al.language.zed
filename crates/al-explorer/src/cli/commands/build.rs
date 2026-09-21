@@ -4,7 +4,10 @@ use serde_json::Value;
 
 use super::super::XlfCommands;
 
-use super::{connect, print_json, project_root, report_error, request_checked, run_command};
+use super::{
+    connect, print_json, project_root, report_error, request_checked, run_command,
+    run_command_with_exit,
+};
 
 /// Print a build/package result in human-readable form and return the exit code.
 ///
@@ -269,11 +272,6 @@ fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()>
     Ok(())
 }
 
-/// Compile `dir` with the Microsoft AL compiler (alc) and,
-/// if it reports errors (or no toolchain is available), return an exit code so
-/// the caller refuses to emit. Returns `None` when validation passes and the
-/// native emit should proceed. Runs in a temp copy of the project so alc's
-/// output never pollutes the user's tree.
 /// Create a private, per-invocation temp dir for `--validate`'s alc copy.
 ///
 /// `tempfile::tempdir()` creates the directory with owner-only permissions and
@@ -288,6 +286,11 @@ fn create_validation_tempdir() -> std::io::Result<tempfile::TempDir> {
     tempfile::tempdir()
 }
 
+/// Compile `dir` with the Microsoft AL compiler (alc) and, if it reports
+/// errors (or no toolchain is available), return an exit code so the caller
+/// refuses to emit. Returns `None` when validation passes and the native emit
+/// should proceed. Runs in a temp copy of the project so alc's output never
+/// pollutes the user's tree.
 fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
     let toolchain = match al_project::toolchain::find_toolchain() {
         Ok(t) => t,
@@ -424,6 +427,15 @@ fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
     }
 }
 
+/// The `.g.xlf` path an `xlf.generate` response reports, if it wrote one.
+pub(crate) fn xlf_generated_path(result: &serde_json::Value) -> Option<&str> {
+    result
+        .get("path")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+}
+
 pub fn cmd_xlf(subcmd: &XlfCommands, json: bool) -> ExitCode {
     match subcmd {
         XlfCommands::Generate { project } => {
@@ -432,20 +444,29 @@ pub fn cmd_xlf(subcmd: &XlfCommands, json: bool) -> ExitCode {
                 Err(error) => return report_error(&error, json),
             };
             let params = serde_json::json!({ "project": proj_root.to_string_lossy().as_ref() });
-            run_command(
+            // Writing no `.g.xlf` is a failed gate, not a success: the project
+            // asked for a translation file and did not get one. `path` is null
+            // when the daemon found nothing translatable.
+            run_command_with_exit(
                 "xlf.generate",
                 Some(params),
                 json,
                 project.as_deref(),
                 |result| {
-                    let path = result.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                    let path = xlf_generated_path(result);
                     let units = result.get("units").and_then(|v| v.as_u64()).unwrap_or(0);
-                    if path.is_empty() || path == "null" {
-                        eprintln!(
+                    match path {
+                        Some(path) => println!("Generated: {path}  ({units} units)"),
+                        None => eprintln!(
                             "No translatable texts found (check features.TranslationFile in app.json)"
-                        );
+                        ),
+                    }
+                },
+                |result| {
+                    if xlf_generated_path(result).is_some() {
+                        ExitCode::SUCCESS
                     } else {
-                        println!("Generated: {path}  ({units} units)");
+                        ExitCode::FAILURE
                     }
                 },
             )

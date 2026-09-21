@@ -112,14 +112,10 @@ pub fn cmd_organize_files(dry_run: bool, json: bool) -> ExitCode {
                     for f in &files {
                         let from = f.get("from").and_then(|v| v.as_str()).unwrap_or("?");
                         let to = f.get("to").and_then(|v| v.as_str()).unwrap_or("?");
-                        let renamed = f.get("renamed").and_then(|v| v.as_bool()).unwrap_or(false);
-                        let status = if dry_run {
-                            "[dry-run]"
-                        } else if renamed {
-                            "[renamed]"
-                        } else {
-                            "[failed]"
-                        };
+                        // The daemon reports `renamed: !dryRun` and turns a
+                        // failed rename into an RPC error, so a listed file in
+                        // a non-dry run was renamed.
+                        let status = if dry_run { "[dry-run]" } else { "[renamed]" };
                         println!("{status} {from} -> {to}");
                     }
                 }
@@ -191,7 +187,7 @@ fn report_snapshot_comparison(
 /// The daemon runs the test to record the snapshot and returns its
 /// `TestCodeunitResult` under `testResult`. A baseline captured from a red test
 /// is worthless, so it must not report success.
-fn captured_test_failures(result: &serde_json::Value) -> u64 {
+pub(crate) fn captured_test_failures(result: &serde_json::Value) -> u64 {
     result
         .get("testResult")
         .and_then(|value| value.get("failed"))

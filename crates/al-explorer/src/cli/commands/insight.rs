@@ -101,6 +101,21 @@ pub fn cmd_insight_stats(json: bool) -> ExitCode {
     })
 }
 
+/// Any finding fails the `dead-code` gate.
+///
+/// Gating on high confidence alone let a workspace whose findings are all
+/// `Confidence::Medium` — what al-analysis emits for an unreferenced object —
+/// print the whole "possibly unused" table and exit 0, against the contract in
+/// `Docs/reference/cli-commands.md`.
+pub(crate) fn dead_code_exit_code(result: &serde_json::Value) -> ExitCode {
+    let empty = result.as_array().is_none_or(|findings| findings.is_empty());
+    if empty {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
 pub fn cmd_dead_code(json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
@@ -109,14 +124,7 @@ pub fn cmd_dead_code(json: bool) -> ExitCode {
 
     match request_checked(&mut client, "deadCode", None) {
         Ok(result) => {
-            let has_high_confidence = result.as_array().is_some_and(|findings| {
-                findings.iter().any(|finding| {
-                    finding
-                        .get("confidence")
-                        .and_then(|value| value.as_str())
-                        .is_some_and(|confidence| confidence.eq_ignore_ascii_case("high"))
-                })
-            });
+            let exit = dead_code_exit_code(&result);
             if json {
                 print_json(&result);
             } else {
@@ -177,11 +185,7 @@ pub fn cmd_dead_code(json: bool) -> ExitCode {
                     );
                 }
             }
-            if has_high_confidence {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            }
+            exit
         }
         Err(e) => report_error(&e, json),
     }
