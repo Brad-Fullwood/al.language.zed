@@ -66,7 +66,9 @@ current code are tagged [STILL-OPEN].
   cold `load_packages_cached` pays two seek-heavy scans per package on top of the JSON parse.
 - fix: iterate `archive.file_names()` (index-only, no local-header read) to resolve the
   entry name, and resolve both wanted names in a single pass.
-- status: open
+- status: fixed 96d7c300, severity overstated. Measured on a 30 000-entry archive read from
+  disk, the two `by_index` passes cost about the same as opening the archive, so the win is
+  simplification rather than time. The single pass landed anyway.
 
 ### [SIMPLIFY] `read_app_file` and `read_app_bytes` locate the ZIP payload by different rules
 - where: crates/al-symbols/src/app_reader.rs:57-91
