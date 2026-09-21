@@ -81,7 +81,7 @@ pub struct TypeResolver<'a> {
     source: &'a [u8],
     /// Byte offset of the start of each line, built lazily so repeated
     /// position→node lookups don't re-scan the file per call.
-    line_starts: std::cell::OnceCell<Vec<usize>>,
+    line_index: std::cell::OnceCell<crate::LineIndex>,
     /// Memo of `variables_at` results keyed by resolution scope. Bulk
     /// consumers (semantic-token extraction) resolve one receiver per member
     /// token; without this memo every call re-walks the globals, source
@@ -95,7 +95,7 @@ impl<'a> TypeResolver<'a> {
         Self {
             tree,
             source: text.as_bytes(),
-            line_starts: std::cell::OnceCell::new(),
+            line_index: std::cell::OnceCell::new(),
             scope_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
         }
     }
@@ -234,30 +234,14 @@ impl<'a> TypeResolver<'a> {
     }
 
     /// Byte-offset table of line starts, built once per resolver.
-    fn line_starts(&self) -> &[usize] {
-        self.line_starts.get_or_init(|| {
-            std::iter::once(0)
-                .chain(
-                    self.source
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, &b)| b == b'\n')
-                        .map(|(i, _)| i + 1),
-                )
-                .collect()
-        })
+    fn line_index(&self) -> &crate::LineIndex {
+        self.line_index
+            .get_or_init(|| crate::LineIndex::new(self.source))
     }
 
     /// Content of line `row` (without its terminator), or `""` out of range.
     fn source_line(&self, row: usize) -> &'a str {
-        let starts = self.line_starts();
-        let Some(&start) = starts.get(row) else {
-            return "";
-        };
-        let end = starts.get(row + 1).copied().unwrap_or(self.source.len());
-        std::str::from_utf8(&self.source[start..end])
-            .unwrap_or("")
-            .trim_end_matches(['\n', '\r'])
+        self.line_index().line(self.source, row)
     }
 
     /// Find the object declaration enclosing the given position, for
@@ -831,17 +815,9 @@ impl<'a> TypeResolver<'a> {
             return;
         }
 
-        // Build a table of (line_start_byte, line_str) pairs so we can compute
-        // accurate start_byte / end_byte for the synthetic VariableDecl ranges.
-        // We need real byte offsets because `str::lines()` strips newlines, so
-        // we walk the raw bytes to find where each line starts.
-        let mut line_starts: Vec<usize> = Vec::new();
-        line_starts.push(0);
-        for (i, &b) in self.source.iter().enumerate() {
-            if b == b'\n' {
-                line_starts.push(i + 1);
-            }
-        }
+        // `str::lines()` strips newlines, so the synthetic VariableDecl ranges
+        // need real byte offsets from the line index.
+        let line_index = self.line_index();
 
         let row_bounds = object.map(|obj| (obj.start_position().row, obj.end_position().row));
 
@@ -885,7 +861,7 @@ impl<'a> TypeResolver<'a> {
             // Since trimmed_lower starts with "dataitem(", the keyword is at the
             // first non-whitespace character.
             let col = line.len() - line.trim_start().len();
-            let line_start = line_starts.get(line_idx).copied().unwrap_or(0);
+            let line_start = line_index.line_start(line_idx).unwrap_or(0);
             let start_byte = line_start + col;
             // end_byte covers through the end of the line content (excluding newline).
             let end_byte = line_start + line.len();
