@@ -130,6 +130,24 @@ pub enum BcClientError {
     Timeout { secs: u64 },
     #[error(".app file too large to upload: {bytes} bytes exceeds {limit} byte limit")]
     AppFileTooLarge { bytes: u64, limit: u64 },
+    #[error("app.json `id` must be a GUID, got {0:?}")]
+    InvalidAppId(String),
+}
+
+/// Whether `value` is a GUID in the form BC requires for an extension id:
+/// 8-4-4-4-12 hex digits, optionally brace-wrapped.
+pub fn is_guid(value: &str) -> bool {
+    let trimmed = value
+        .trim()
+        .strip_prefix('{')
+        .and_then(|rest| rest.strip_suffix('}'))
+        .unwrap_or(value.trim());
+    let groups: Vec<&str> = trimmed.split('-').collect();
+    groups.len() == 5
+        && [8, 4, 4, 4, 12]
+            .iter()
+            .zip(&groups)
+            .all(|(len, group)| group.len() == *len && group.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 /// Maximum size of a `.app` file we'll buffer into memory for upload.
@@ -358,7 +376,17 @@ impl BcClient {
         app_id: &str,
         app_path: &Path,
     ) -> Result<ApplicationStateResponse, BcClientError> {
-        let url = format!("{}/dev/applications/{}", self.base_url, app_id);
+        // `app_id` comes from the repository's own app.json. Unencoded it
+        // steers the authenticated PATCH: `../../../admin/SomeEndpoint`
+        // normalises away in `Url::parse` and a `?` or `#` truncates the path.
+        if !is_guid(app_id) {
+            return Err(BcClientError::InvalidAppId(app_id.to_string()));
+        }
+        let url = format!(
+            "{}/dev/applications/{}",
+            self.base_url,
+            urlencoding::encode(app_id)
+        );
         let app_bytes = read_app_capped(app_path).await?;
 
         debug!(url = %url, app_id = %app_id, bytes = app_bytes.len(), "RAD incremental deploy");
@@ -683,6 +711,27 @@ mod tests {
             "raw bearer token must not survive sanitisation"
         );
         assert!(out.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn only_a_guid_can_reach_the_rad_request_path() {
+        // The id comes from the repository's app.json and is interpolated into
+        // an authenticated PATCH path, so a cloned repo must not be able to
+        // choose the endpoint.
+        assert!(is_guid("22222222-3333-4444-5555-666666666666"));
+        assert!(is_guid("{22222222-3333-4444-5555-666666666666}"));
+        assert!(is_guid("  22222222-3333-4444-5555-666666666666  "));
+        for bad in [
+            "",
+            "../../../admin/SomeEndpoint",
+            "22222222-3333-4444-5555-666666666666/../admin",
+            "22222222-3333-4444-5555-666666666666?x=1",
+            "22222222-3333-4444-5555-66666666666",
+            "2222222g-3333-4444-5555-666666666666",
+            "not a guid",
+        ] {
+            assert!(!is_guid(bad), "{bad:?} must be refused");
+        }
     }
 
     #[test]
@@ -1326,10 +1375,12 @@ mod tests {
 
     #[tokio::test]
     async fn rad_publish_uses_patch_and_application_id_path() {
-        let body = r#"{"appId":"guid-42","status":"Completed","version":"3.0.0.0"}"#;
+        let body = r#"{"appId":"11111111-2222-3333-4444-555555555542","status":"Completed","version":"3.0.0.0"}"#;
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("PATCH"))
-            .and(wiremock::matchers::path("/BC/dev/applications/guid-42"))
+            .and(wiremock::matchers::path(
+                "/BC/dev/applications/11111111-2222-3333-4444-555555555542",
+            ))
             .respond_with(
                 wiremock::ResponseTemplate::new(200)
                     .insert_header("Content-Length", body.len().to_string().as_str())
@@ -1345,20 +1396,25 @@ mod tests {
         tokio::fs::write(&app, b"app-bytes").await.unwrap();
 
         let resp = client
-            .rad_publish("guid-42", &app)
+            .rad_publish("11111111-2222-3333-4444-555555555542", &app)
             .await
             .expect("PATCH to the app-id path must match the mock");
-        assert_eq!(resp.app_id.as_deref(), Some("guid-42"));
+        assert_eq!(
+            resp.app_id.as_deref(),
+            Some("11111111-2222-3333-4444-555555555542")
+        );
         assert_eq!(resp.version.as_deref(), Some("3.0.0.0"));
         assert_eq!(resp.status.as_deref(), Some("Completed"));
     }
 
     #[tokio::test]
     async fn rad_publish_sends_tenant_as_query_param() {
-        let body = r#"{"appId":"guid-7","status":"Completed"}"#;
+        let body = r#"{"appId":"11111111-2222-3333-4444-555555555507","status":"Completed"}"#;
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("PATCH"))
-            .and(wiremock::matchers::path("/BC/dev/applications/guid-7"))
+            .and(wiremock::matchers::path(
+                "/BC/dev/applications/11111111-2222-3333-4444-555555555507",
+            ))
             .and(wiremock::matchers::query_param("tenant", "contoso"))
             .respond_with(
                 wiremock::ResponseTemplate::new(200)
@@ -1387,7 +1443,7 @@ mod tests {
         tokio::fs::write(&app, b"app-bytes").await.unwrap();
 
         client
-            .rad_publish("guid-7", &app)
+            .rad_publish("11111111-2222-3333-4444-555555555507", &app)
             .await
             .expect("tenant must be sent as a query param the mock matches on");
     }
@@ -1396,7 +1452,9 @@ mod tests {
     async fn rad_publish_server_error_maps_to_server_error() {
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("PATCH"))
-            .and(wiremock::matchers::path("/BC/dev/applications/guid-9"))
+            .and(wiremock::matchers::path(
+                "/BC/dev/applications/11111111-2222-3333-4444-555555555509",
+            ))
             .respond_with(wiremock::ResponseTemplate::new(500).set_body_string("boom"))
             .mount(&server)
             .await;
@@ -1407,7 +1465,7 @@ mod tests {
         tokio::fs::write(&app, b"app-bytes").await.unwrap();
 
         let err = client
-            .rad_publish("guid-9", &app)
+            .rad_publish("11111111-2222-3333-4444-555555555509", &app)
             .await
             .expect_err("500 must error");
         match err {
