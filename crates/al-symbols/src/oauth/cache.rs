@@ -291,8 +291,8 @@ pub fn invalidate_cached_token(tenant: &str) -> bool {
 }
 
 /// Return the cached token's `expires_at` (unix secs) for `tenant` if one is
-/// cached in either the OS keyring or the legacy file. Read-only — unlike
-/// [`load_cached_token`] it never migrates or deletes — for the auth `status`
+/// cached in either the OS keyring or the legacy file. Read-only, unlike
+/// `load_cached_token`, which migrates and deletes: this is for the auth `status`
 /// command. Keyring-aware so status is correct after a token migrates off disk.
 pub fn cached_token_expiry(tenant: &str) -> Option<u64> {
     if let Some(json) = keyring_get(tenant) {

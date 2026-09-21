@@ -215,17 +215,17 @@ struct DeviceCodeResponse {
     /// URL with code embedded — user just clicks Continue instead of typing.
     #[serde(default)]
     verification_uri_complete: Option<String>,
-    #[serde(default = "default_900")]
+    #[serde(default = "default_device_code_lifetime_secs")]
     expires_in: u64,
-    #[serde(default = "default_5")]
+    #[serde(default = "default_device_code_poll_secs")]
     interval: u64,
 }
 
-fn default_900() -> u64 {
+fn default_device_code_lifetime_secs() -> u64 {
     900
 }
 
-fn default_5() -> u64 {
+fn default_device_code_poll_secs() -> u64 {
     5
 }
 

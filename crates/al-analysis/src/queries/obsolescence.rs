@@ -292,7 +292,7 @@ fn extract_attr_arg(text: &str, idx: usize) -> Option<String> {
 fn count_references_in_files(all_files: &[(&str, &str, &tree_sitter::Tree)], name: &str) -> u32 {
     all_files
         .iter()
-        .map(|(_, text, tree)| al_syntax::find_call_references(tree, text, name) as u32)
+        .map(|(_, text, tree)| al_syntax::count_call_references(tree, text, name) as u32)
         .sum()
 }
 

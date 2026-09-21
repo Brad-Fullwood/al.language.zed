@@ -278,7 +278,7 @@ fn find_refs_iterative(
 /// - `Rec.Name` (field access via `member_suffix`, not `member_call_suffix`)
 /// - The `name` node inside `procedure_declaration` (the declaration itself)
 /// - Variable declarations, parameter lists, type references, etc.
-pub fn find_call_references(tree: &Tree, text: &str, name: &str) -> usize {
+pub fn count_call_references(tree: &Tree, text: &str, name: &str) -> usize {
     let root = tree.root_node();
     let source = text.as_bytes();
     let mut count = 0usize;
@@ -288,10 +288,10 @@ pub fn find_call_references(tree: &Tree, text: &str, name: &str) -> usize {
 
 /// Collect every call-site identifier name (lowercased) reachable from `tree`.
 ///
-/// Single-pass companion to `find_call_references`: instead of asking
+/// Single-pass companion to `count_call_references`: instead of asking
 /// "is this one name called here?" N times, walk the tree once and collect
 /// the full set of called names. Call-site classification is the same as
-/// `find_call_references` (bare/member/scope calls only — field access is
+/// `count_call_references` (bare/member/scope calls only — field access is
 /// excluded). Names are lowercased so callers can do case-insensitive
 /// membership checks without per-query allocation.
 ///
@@ -929,7 +929,7 @@ mod tests {
     }
 
     #[test]
-    fn test_find_call_references_bare_call() {
+    fn count_call_references_bare_call() {
         let src = r#"codeunit 50100 Test
 {
     procedure Caller()
@@ -943,13 +943,13 @@ mod tests {
 }"#;
         let mut parser = AlParser::new();
         let result = parser.parse(src);
-        let count = find_call_references(&result.tree, src, "DoSomething");
+        let count = count_call_references(&result.tree, src, "DoSomething");
         // One call site; the declaration must NOT be counted
         assert_eq!(count, 1, "Expected 1 call reference, got {}", count);
     }
 
     #[test]
-    fn test_find_call_references_member_call() {
+    fn count_call_references_member_call() {
         let src = r#"codeunit 50100 Test
 {
     procedure Caller()
@@ -961,12 +961,12 @@ mod tests {
 }"#;
         let mut parser = AlParser::new();
         let result = parser.parse(src);
-        let count = find_call_references(&result.tree, src, "DoSomething");
+        let count = count_call_references(&result.tree, src, "DoSomething");
         assert_eq!(count, 1, "Expected 1 member call reference, got {}", count);
     }
 
     #[test]
-    fn test_find_call_references_field_access_not_counted() {
+    fn count_call_references_field_access_not_counted() {
         // Rec.Name is a field access (member_suffix), not a call (member_call_suffix).
         // A procedure named "Name" with only field accesses should report 0 call refs.
         let src = r#"codeunit 50100 Test
@@ -982,7 +982,7 @@ mod tests {
 }"#;
         let mut parser = AlParser::new();
         let result = parser.parse(src);
-        let count = find_call_references(&result.tree, src, "Name");
+        let count = count_call_references(&result.tree, src, "Name");
         assert_eq!(
             count, 0,
             "Field access Rec.Name must not count as call reference; got {}",
@@ -991,7 +991,7 @@ mod tests {
     }
 
     #[test]
-    fn test_find_call_references_declaration_not_counted() {
+    fn count_call_references_declaration_not_counted() {
         let src = r#"codeunit 50100 Test
 {
     procedure Init()
@@ -1000,7 +1000,7 @@ mod tests {
 }"#;
         let mut parser = AlParser::new();
         let result = parser.parse(src);
-        let count = find_call_references(&result.tree, src, "Init");
+        let count = count_call_references(&result.tree, src, "Init");
         assert_eq!(
             count, 0,
             "Procedure declaration must not be counted as a call; got {}",
@@ -1009,7 +1009,7 @@ mod tests {
     }
 
     #[test]
-    fn test_find_call_references_common_name_no_false_negatives() {
+    fn count_call_references_common_name_no_false_negatives() {
         // A procedure named "Name" with multiple Rec.Name field accesses must remain
         // detectable as unreferenced — field accesses must not suppress dead code detection.
         let src = r#"codeunit 50100 Test
@@ -1026,7 +1026,7 @@ mod tests {
 }"#;
         let mut parser = AlParser::new();
         let result = parser.parse(src);
-        let count = find_call_references(&result.tree, src, "Name");
+        let count = count_call_references(&result.tree, src, "Name");
         assert_eq!(
             count, 0,
             "Field accesses must not prevent dead code detection; got {}",
@@ -1035,7 +1035,7 @@ mod tests {
     }
 
     #[test]
-    fn test_find_call_references_scope_call() {
+    fn count_call_references_scope_call() {
         let src = r#"codeunit 50100 Test
 {
     procedure Caller()
@@ -1045,12 +1045,12 @@ mod tests {
 }"#;
         let mut parser = AlParser::new();
         let result = parser.parse(src);
-        let count = find_call_references(&result.tree, src, "Run");
+        let count = count_call_references(&result.tree, src, "Run");
         assert_eq!(count, 1, "Expected 1 scope call reference, got {}", count);
     }
 
     #[test]
-    fn test_find_call_references_case_insensitive() {
+    fn count_call_references_case_insensitive() {
         let src = r#"codeunit 50100 Test
 {
     procedure Caller()
@@ -1064,7 +1064,7 @@ mod tests {
 }"#;
         let mut parser = AlParser::new();
         let result = parser.parse(src);
-        let count = find_call_references(&result.tree, src, "dosomething");
+        let count = count_call_references(&result.tree, src, "dosomething");
         assert_eq!(
             count, 1,
             "Case-insensitive call reference expected; got {}",

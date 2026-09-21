@@ -307,12 +307,10 @@ fn gc_cache(cache_root: &Path, max_age: std::time::Duration) {
 /// can delete it.
 fn clear_readonly(path: &Path) -> std::io::Result<()> {
     let mut perms = fs::metadata(path)?.permissions();
-    // Clippy warns about the platform-portability footgun of calling
-    // `set_readonly(false)` — on unix it sets mode 0o666 rather than
-    // restoring the original mode. That is precisely the behaviour we
-    // want here: a cached virtual file we are about to delete, where
-    // any writable mode is fine and we don't care about preserving
-    // umask-specific bits.
+    // On unix `set_readonly(false)` sets mode 0o666 rather than restoring
+    // the original mode, which is what clippy warns about and what this
+    // call wants: the file is a cached virtual file about to be deleted, so
+    // any writable mode does, and no umask bits need preserving.
     #[allow(clippy::permissions_set_readonly_false)]
     perms.set_readonly(false);
     fs::set_permissions(path, perms)

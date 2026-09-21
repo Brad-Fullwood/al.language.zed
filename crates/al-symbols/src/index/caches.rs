@@ -37,7 +37,7 @@ impl SymbolIndex {
 
     /// Get a composed view with caching. Returns Arc for zero-copy sharing.
     ///
-    /// Cached results are returned on repeat calls. Use [`invalidate_composed`]
+    /// Cached results are returned on repeat calls. Use [`SymbolIndex::invalidate_composed`]
     /// when workspace files change to clear stale entries.
     pub fn get_composed_cached(
         &self,

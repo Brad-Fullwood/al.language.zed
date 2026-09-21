@@ -4,9 +4,7 @@
 use super::indent::format_al;
 use super::options::{BlankLinesBetweenProcedures, FormatOptions};
 
-/// Format a range of lines within AL source code.
-///
-/// Transport-agnostic text edit emitted by `format_range`.
+/// Transport-agnostic text edit emitted by [`format_range`].
 ///
 /// Lines are 0-based; `end_character` is in UTF-16 code units. Callers
 /// (al-lsp) convert to `tower_lsp::lsp_types::TextEdit` at the boundary.
