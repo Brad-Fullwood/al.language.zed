@@ -1549,12 +1549,14 @@ fn builtin_round(args: &[Value]) -> Eval {
     let Some(quotient) = number.checked_div(precision) else {
         return simple_error("Round: arithmetic overflow");
     };
+    // '<' and '>' move the magnitude, not the signed value: the System.Round
+    // page rounds -1234.56789 to -1234.567 with '<' and to -1234.568 with '>'.
     let rounded = match direction.as_str() {
         "=" => {
-            quotient.round_dp_with_strategy(0, rust_decimal::RoundingStrategy::MidpointNearestEven)
+            quotient.round_dp_with_strategy(0, rust_decimal::RoundingStrategy::MidpointAwayFromZero)
         }
-        "<" => quotient.floor(),
-        ">" => quotient.ceil(),
+        "<" => quotient.round_dp_with_strategy(0, rust_decimal::RoundingStrategy::ToZero),
+        ">" => quotient.round_dp_with_strategy(0, rust_decimal::RoundingStrategy::AwayFromZero),
         other => {
             return simple_error(format!(
                 "Round: direction must be '=', '<' or '>', got '{other}'"
@@ -2634,24 +2636,24 @@ mod tests {
     }
 
     #[test]
-    fn round_uses_bankers_rounding_and_directions() {
+    fn round_matches_the_documented_bc_directions() {
         use rust_decimal_macros::dec;
         let mut ctx = ctx();
         let round =
             |ctx: &mut DispatchCtx, args: Vec<Value>| dispatch_call(None, "Round", args, ctx);
 
-        // Default precision 0.01, banker's midpoint: 2.675 → 2.68 (268 even).
+        // Default precision 0.01: 2.675 → 2.68.
         assert_eq!(
             ok(round(&mut ctx, vec![Value::Decimal(dec!(2.675))])),
             Value::Decimal(dec!(2.68))
         );
-        // Midpoints round to the EVEN multiple: 2.5 → 2, 1.5 → 2.
+        // '=' takes midpoints away from zero: 2.5 → 3, 1.5 → 2, -2.5 → -3.
         assert_eq!(
             ok(round(
                 &mut ctx,
                 vec![Value::Decimal(dec!(2.5)), Value::Integer(1)]
             )),
-            Value::Decimal(dec!(2))
+            Value::Decimal(dec!(3))
         );
         assert_eq!(
             ok(round(
@@ -2660,6 +2662,51 @@ mod tests {
             )),
             Value::Decimal(dec!(2))
         );
+        assert_eq!(
+            ok(round(
+                &mut ctx,
+                vec![Value::Decimal(dec!(-2.5)), Value::Integer(1)]
+            )),
+            Value::Decimal(dec!(-3))
+        );
+        assert_eq!(
+            ok(round(
+                &mut ctx,
+                vec![Value::Decimal(dec!(0.125)), Value::Decimal(dec!(0.01))]
+            )),
+            Value::Decimal(dec!(0.13))
+        );
+        // Every row of the example table on the System.Round reference page,
+        // except Round(-1234.56789, 1, '='), which the page prints as -1234
+        // while every neighbouring row rounds the magnitude away from zero.
+        for (number, precision, direction, expected) in [
+            (dec!(1234.56789), dec!(100), "=", dec!(1200)),
+            (dec!(1234.56789), dec!(10), "=", dec!(1230)),
+            (dec!(1234.56789), dec!(1), "=", dec!(1235)),
+            (dec!(1234.56789), dec!(0.1), "=", dec!(1234.6)),
+            (dec!(1234.56789), dec!(0.001), "=", dec!(1234.568)),
+            (dec!(1234.56789), dec!(0.001), "<", dec!(1234.567)),
+            (dec!(1234.56789), dec!(0.001), ">", dec!(1234.568)),
+            (dec!(-1234.56789), dec!(100), "=", dec!(-1200)),
+            (dec!(-1234.56789), dec!(10), "=", dec!(-1230)),
+            (dec!(-1234.56789), dec!(0.1), "=", dec!(-1234.6)),
+            (dec!(-1234.56789), dec!(0.001), "=", dec!(-1234.568)),
+            (dec!(-1234.56789), dec!(0.001), "<", dec!(-1234.567)),
+            (dec!(-1234.56789), dec!(0.001), ">", dec!(-1234.568)),
+        ] {
+            assert_eq!(
+                ok(round(
+                    &mut ctx,
+                    vec![
+                        Value::Decimal(number),
+                        Value::Decimal(precision),
+                        Value::Text(direction.into())
+                    ]
+                )),
+                Value::Decimal(expected),
+                "Round({number}, {precision}, '{direction}')"
+            );
+        }
         // Explicit directions.
         assert_eq!(
             ok(round(
