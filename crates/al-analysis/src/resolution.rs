@@ -1028,8 +1028,8 @@ type ProcDocs = std::sync::Arc<std::collections::HashMap<String, String>>;
 /// in the `documentation` field of the completion items. The extracted source
 /// only changes when the package does, which is what the generation tracks.
 static SYMBOL_PACKAGE_DOCS: std::sync::LazyLock<
-    std::sync::RwLock<(u64, std::collections::HashMap<PathBuf, ProcDocs>)>,
-> = std::sync::LazyLock::new(|| std::sync::RwLock::new((0, std::collections::HashMap::new())));
+    std::sync::RwLock<std::collections::HashMap<PathBuf, (u64, ProcDocs)>>,
+> = std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::HashMap::new()));
 
 /// The documentation map for one already-extracted symbol-package source file.
 fn proc_docs_for_file(path: &Path, generation: u64) -> ProcDocs {
@@ -1037,8 +1037,8 @@ fn proc_docs_for_file(path: &Path, generation: u64) -> ProcDocs {
         let cache = SYMBOL_PACKAGE_DOCS
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if cache.0 == generation {
-            if let Some(docs) = cache.1.get(path) {
+        if let Some((cached_generation, docs)) = cache.get(path) {
+            if *cached_generation == generation {
                 return std::sync::Arc::clone(docs);
             }
         }
@@ -1067,13 +1067,10 @@ fn proc_docs_for_file(path: &Path, generation: u64) -> ProcDocs {
     let mut cache = SYMBOL_PACKAGE_DOCS
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if cache.0 != generation {
-        cache.1.clear();
-        cache.0 = generation;
-    }
-    cache
-        .1
-        .insert(path.to_path_buf(), std::sync::Arc::clone(&docs));
+    cache.insert(
+        path.to_path_buf(),
+        (generation, std::sync::Arc::clone(&docs)),
+    );
     docs
 }
 
