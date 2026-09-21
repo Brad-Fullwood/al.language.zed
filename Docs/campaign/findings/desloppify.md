@@ -2,13 +2,14 @@
 
 Tool: desloppify (https://github.com/peteromallet/desloppify), `--lang rust`, state in `.desloppify/`.
 Branch: `campaign/fix-r1-extension-ci`. Review, triage and planning only. No source file was edited
-in this pass: six fix agents hold `crates/`, `src/`, `tree-sitter-al/` and `scripts/` in other worktrees.
+in this pass: seven fix branches hold `crates/`, `src/`, `tree-sitter-al/` and `scripts/` in other
+worktrees.
 
 Repo at scan time: 315 files, 231K LOC, 60 dirs, 1243 open issues.
+The eight subjective dimensions the batch agents did not reach were scored in this session after a
+session limit killed those runs. See "How the last eight were scored".
 
-## Scores
-
-(filled in below, see "All scores")
+Result: strict 20.9 -> 80.2. Full tables under "All scores".
 
 ## 1. Security issues
 
@@ -51,7 +52,7 @@ carries 2 phantom dependency edges (al-snapshot has no `al-*` dependencies at al
 misstated ones. The 21-crate graph itself is acyclic and enforced by Cargo, and `tower_lsp` really is
 confined to al-lsp plus al-analysis's default-off `lsp` feature.
 
-**Residue from the al-core crate split.** `al-core` and `al-cli` names survive in 18 files of
+**Residue from the al-core crate split.** `al-core` and `al-cli` names survive in 17 files of
 cross-crate docs. `crates/al-lsp/Cargo.toml` declares 14 production dependencies the crate never
 references, including verbatim copies of al-symbols' 5-feature `keyring` block and al-dap's
 `tokio-tungstenite` block, under section headers that still read "Folded in from al-symbols
@@ -168,9 +169,11 @@ it was parsing. Fixing the underlying metadata gap resolves them, so they stay o
 
 ## 4. Fix batches
 
-After the excludes, rezones and suppressions in section 3, **963 scored issues** remain (down from
-1243). They split into 12 batches. Each is self-contained: one agent can take it after the seven
-`campaign/fix-r1-*` branches merge, without waiting on the others.
+After the excludes, rezones and suppressions in section 3, **963 scored mechanical issues** remain
+(down from 1243). The review import then added **112 design findings**, so the open total is 1245.
+The mechanical issues split into 12 batches. Each is self-contained: one agent can take it after the
+seven `campaign/fix-r1-*` branches merge, without waiting on the others. The 112 review findings
+attach to those same batches rather than forming new ones (mapping after the table).
 
 Batch totals by detector: file health 160 (`structural` 147 + `responsibility_cohesion` 13),
 duplication 301 (`boilerplate_duplication` 280 + `dupes` 21), correctness lints 86, hygiene 110,
@@ -239,6 +242,35 @@ fixes, so it gets its own batches.
 
 Total estimate: about 198 hours across the 12 batches.
 
+### Where the 112 review findings attach
+
+They are design findings, not detector noise, and the whole execution queue is now made of them. By
+the crates their `related_files` touch: al-lsp 54, al-analysis 36, al-symbols 15, al-explorer 15,
+al-workspace 13, al-runtime 12, al-test 9, al-syntax 8, al-source 8, al-dap 8, al-test-harness 7,
+al-protocol 6, al-emit 6, al-bc 6, al-insight 5.
+
+Most fold into the existing batches. Three themes cut across several and are worth taking as units,
+because each one deletes more code than it adds:
+
+1. **Type the daemon RPC boundary.** Feeds batches 2, 8 and 11. Derive `Serialize`/`Deserialize`
+   params and response structs per method in al-protocol, use them on both sides. That removes the
+   131 hand-rolled `extract_*` calls, shrinks the three longest functions in the workspace, and
+   makes most of the 1451-line `response_contract.rs` unnecessary. This is the single largest
+   quality move available and it is why `type_safety` scored 72.0 and `mid_level_elegance` 76.5.
+2. **Finish the al-core split.** Feeds batches 3, 4 and 11. Delete
+   `crates/al-symbols/src/language_data.rs` in favour of `al_syntax::language_data` (it already
+   depends on it); delete the single-caller `crates/al-dap/src/dap/json_util.rs` facade; remove the
+   17 unreferenced dependency entries and add a cargo-machete step to the CI job that already runs
+   cargo-deny; replace the `al-core`/`al-cli` names in the 17 files that still carry them.
+3. **Collapse the stringly-typed error seam.** Feeds batches 1, 7 and 11. Convert the 177
+   `Result<_, String>` signatures to the `thiserror` enums that already exist in the same modules,
+   starting with `crates/al-analysis/src/queries/bulk_fix.rs` because it is the write path, and
+   delete the `bulk_fix.rs:154` pass-through that erases `ScanError`.
+
+Two of these three were found independently by more than one review batch, and the al-symbols
+duplicate loader was found by the cross-module batch agent and again during the direct review of
+`incomplete_migration`, `contract_coherence` and `initialization_coupling`.
+
 ### Suggested order
 
 1. Batches 11, 5, 6 first. Low conflict risk, they can start before the fix branches merge.
@@ -252,15 +284,20 @@ Total estimate: about 198 hours across the 12 batches.
 
 ### Headline
 
-| Score | First scan (before triage) | After excludes, rezones and suppressions |
-|---|---|---|
-| Overall (lenient) | 20.9 | 21.2 |
-| Objective (mechanical only) | 83.4 | 84.7 |
-| Strict (wontfix penalized) | 20.9 | 21.2 |
-| Verified (scan-confirmed only) | 83.4 | 84.7 |
+| Score | First scan | After excludes, rezones, suppressions | After the review import |
+|---|---|---|---|
+| Overall (lenient) | 20.9 | 21.2 | **80.2** |
+| Objective (mechanical only) | 83.4 | 84.7 | **84.7** |
+| Strict (wontfix penalized) | 20.9 | 21.2 | **80.2** |
+| Verified (scan-confirmed only) | 83.4 | 84.7 | **84.7** |
 
-Overall is `25% mechanical + 75% subjective`, and the subjective pool sat at 0.0% because no review
-had been recorded. That is the whole reason strict was 20.9 against an objective 83.4.
+Overall is `25% mechanical + 75% subjective`. The subjective pool sat at 0.0% because no review had
+been recorded, which is the whole reason strict was 20.9 against an objective 83.4. Recording the
+review moved the subjective pool to 78.7% and strict to 80.2, against the configured target of 85.
+
+Pool averages after the import: mechanical 84.7%, subjective 78.7%. The import added 112 review
+issues to the queue, so the tool declines to rescan until that queue is worked. The recorded
+scores above are what it holds now.
 
 ### Objective dimensions
 
@@ -277,4 +314,139 @@ subjective-review placeholder). File health is the weak dimension and stays the 
 
 ### Subjective dimensions
 
-(filled in after the review import)
+All 20 scored. The first 12 came from separate context-isolated batch agents against the blind
+packet. Batches 13 to 17 were killed mid-run by a session limit, so dimensions 13 to 20 were scored
+in this session directly against the same rubrics and the same blind packet, gathering evidence per
+dimension from source. Both routes read code, not the packet summary.
+
+| # | Dimension (tool label) | Score | Issues | Route |
+|---|---|---|---|---|
+| 5 | Naming quality | 87.0 | 8 | batch agent |
+| 10 | Test strategy | 86.0 | 7 | batch agent |
+| 2 | High elegance | 84.5 | 7 | batch agent |
+| 4 | Error consistency | 81.5 | 4 | batch agent |
+| 11 | API coherence | 81.5 | 9 | batch agent |
+| 3 | Convention drift | 80.0 | 9 | batch agent |
+| 1 | Cross-module arch | 79.5 | 7 | batch agent |
+| 6 | Abstraction fit | 79.0 | 8 | batch agent |
+| 7 | Dep health | 78.5 | 5 | batch agent |
+| 12 | Auth consistency | 78.5 | 7 | batch agent |
+| 8 | Low elegance | 78.0 | 9 | batch agent |
+| 9 | Mid elegance | 76.5 | 8 | batch agent |
+| 16 | Init coupling | 88.0 | 2 | this session |
+| 13 | AI generated debt | 83.0 | 3 | this session |
+| 19 | Logic clarity | 86.0 | 2 | this session |
+| 15 | Structure nav (package_organization) | 77.0 | 3 | this session |
+| 17 | Design coherence | 76.0 | 3 | this session |
+| 18 | Contracts (contract_coherence) | 75.0 | 4 | this session |
+| 14 | Stale migration (incomplete_migration) | 74.0 | 4 | this session |
+| 20 | Type safety | 72.0 | 3 | this session |
+
+Ordered by score, all 20:
+
+| Dimension (tool label) | Score | Open review issues |
+|---|---|---|
+| Init coupling | 88.0 | 2 |
+| Naming quality | 87.0 | 8 |
+| Logic clarity | 86.0 | 2 |
+| Test strategy | 86.0 | 7 |
+| High elegance | 84.5 | (24 across the three elegance bands) |
+| AI generated debt | 83.0 | 3 |
+| API coherence | 81.5 | 9 |
+| Error consistency | 81.5 | 4 |
+| Convention drift | 80.0 | 9 |
+| Cross-module arch | 79.5 | 7 |
+| Abstraction fit | 79.0 | 8 |
+| Auth consistency | 78.5 | 7 |
+| Dep health | 78.5 | 5 |
+| Low elegance | 78.0 | (in the elegance band above) |
+| Structure nav | 77.0 | 3 |
+| Design coherence | 76.0 | 3 |
+| Mid elegance | 76.5 | (in the elegance band above) |
+| Contracts | 75.0 | 4 |
+| Stale migration | 74.0 | 4 |
+| Type safety | 72.0 | 3 |
+
+The tool collapses the three elegance dimensions into one "Elegance" row at 79.7% on the dashboard
+while keeping High 84.5, Mid 76.5 and Low 78.0 separately in state.
+
+`abstraction_fitness` sub-axes: abstraction_leverage 77.0, indirection_cost 88.0, interface_honesty
+74.0, delegation_density 84.0, definition_directness 85.0, type_discipline 70.0.
+
+### How the last eight were scored
+
+Batches 13 to 17 were killed mid-run by a session limit and batches 18 to 20 had not started, so
+those eight were scored in this session against the same rubrics and the same blind packet. Evidence
+was measured rather than estimated. Two measurements are worth recording because they corrected a
+first attempt:
+
+A naive brace counter reported `parse_member_block` at 1018 lines and `find_object_range` at 707.
+Both were wrong: the counter treated the `'{'` char literal in
+`crates/al-analysis/src/xliff.rs:298` as an opening brace. Measured properly the two functions are
+41 and 38 lines. The corrected pass gives 152 of 3254 production functions over 100 lines, 18 over
+250 and 5 over 400, with the five longest all daemon dispatchers or entry points. That agrees with
+the independent count the low-elegance batch agent reached (176 over 100, 16 over 250).
+
+The `if true` matches that a dead-condition search turns up are all AL source inside Rust string
+literals used as parser test input (`crates/al-syntax/src/parser.rs:135-139`,
+`crates/al-syntax/src/tokens.rs:1303`), not Rust conditions.
+
+Findings that decided the lower scores:
+
+- **Type safety 72.0.** Zero `#[derive(Deserialize)]` params types across roughly 90 daemon RPC
+  methods, 131 hand-rolled `extract_*` calls against 5 `serde_json::from_value`, about 504 raw
+  `.get("field")` reads in al-explorer against 2, and a 1451-line hand-maintained
+  `response_contract.rs` validating 60 of 84 methods at runtime. The same payload contract is
+  stated in three places with nothing keeping them in step.
+- **Stale migration 74.0.** `crates/al-symbols/src/language_data.rs:3` says "crate::symbols cannot
+  depend on crate::syntax (dependency rule)" and uses that as the reason for a duplicate
+  object-type loader, while `crates/al-symbols/Cargo.toml:10` declares exactly that dependency. The
+  duplicate reads the JSON through `include_str!("../../../tree-sitter-al/data/object_types.json")`,
+  a path reaching three directories out of the crate, and its `ObjectType` struct is narrower than
+  al-syntax's.
+- **Contracts 75.0.** `simple_error` is defined three times inside
+  `crates/al-runtime/src/interpreter`, returning `Eval` at `dispatch.rs:1146` and `ErrorInfo` at
+  `eval_expr.rs:154` and `eval_stmt.rs:1185`. One name, one crate, two return types.
+- **Design coherence 76.0.** `crates/al-analysis/src/queries/code_lens.rs::record_file` takes 11
+  parameters, and 37 production functions take more than six.
+- **Structure nav 77.0.** `crates/al-analysis/src/queries` is 38 flat files splitting cleanly into
+  LSP features, lint families and batch reports. `lib.rs` is a thin manifest in 15 crates and the
+  entire implementation in 4 (al-compile 1695 LOC as the crate's only file, al-publish 869 likewise).
+
+And the two high ones, both because the dimension barely bites in Rust and nothing was done to make
+it bite:
+
+- **Init coupling 88.0.** No module-level executable code, so import-time side effects are
+  structurally impossible. All 17 `OnceLock`/`LazyLock` statics are lazy and order-free, every other
+  static is function-local, all 74 `std::env::var` reads sit inside functions, and the four test
+  modules that mutate process environment each take an explicit lock first
+  (`crates/al-project/src/toolchain.rs:961`, `crates/al-protocol/src/client.rs:1011`,
+  `crates/al-compile/src/lib.rs:1163`,
+  `crates/al-lsp/src/server/daemon/build_dispatch/build/compile.rs:460`).
+- **Logic clarity 86.0.** Zero `#[allow(dead_code)]`, no always-true or always-false Rust
+  conditions, one `Err(_) => {}` in all of `crates/*/src` and it is in a test, 376 `let ... else`
+  guards. The 6 of 283 production async functions that never await are all daemon handlers bound to
+  the dispatcher's uniform async signature, which the rubric explicitly skips.
+
+Total review issues imported: 112.
+
+## Tool state changed by this pass
+
+Recorded in `.desloppify/config.json`, all reversible:
+
+| Change | Command | Effect |
+|---|---|---|
+| Exclude the gitignored grammar copy | `exclude grammars` | 82 issues removed, 78 of them false duplicates |
+| Exclude the submodule | `exclude tree-sitter-al` | 4 issues removed, deferred to its own scan |
+| Rezone the test harness | `zone set crates/al-test-harness/src/{lib,protocol}.rs test` | 112 issues out of scoring |
+| Rezone three extension test files | `zone set src/{merge_json,repo_consistency,settings}_test.rs test` | 1 issue out of scoring |
+| Suppress 4 test-literal security hits | `suppress <exact id>` x4, with attestation | Security 99.1% -> 100.0% |
+| Import the subjective review | `review --import-run .desloppify/subagents/runs/20260921_050147` | 20 dimensions scored, 112 findings added, strict 21.2 -> 80.2 |
+
+No file under `crates/`, `src/`, `tree-sitter-al/` or `scripts/` was edited, no cargo command was
+run, and nothing was committed.
+
+The review run artifacts are kept at `.desloppify/subagents/runs/20260921_050147/`: the 20 prompts,
+the 20 `results/batch-N.raw.txt` outputs and the immutable packet.
+
+## Triage complete

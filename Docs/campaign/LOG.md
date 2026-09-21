@@ -39,3 +39,8 @@ Append-only. Newest entry last.
 - Limit hit about 08:05, reset 11:00. Ten agents died. All fix branches were pushed, uncommitted edits remain in the worktrees. Watchdog detected the limit correctly this time and tried Opus, also limited (the session limit is shared across models).
 - Sub-agents spawned by agents died with their parents and their output was lost. Agents are now told to do their own reading.
 - Resumed every agent from its transcript.
+
+## 2026-09-21 11:25 BST: desloppify triage
+
+- Subjective review imported: strict score 20.9 to 80.2, objective 84.7. All 4 security hits are test literals, suppressed by issue ID. Excluded `grammars/` (ignored copy of the submodule, 79% of duplication hits) and rezoned al-test-harness as test code.
+- 12 fix batches in `findings/desloppify.md`. Highest value single finding: `al-symbols/src/language_data.rs:3` justifies a duplicate data loader with a dependency rule that `al-symbols/Cargo.toml:10` does not follow.
