@@ -258,7 +258,16 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
 - fix: add `al_strcmp`/`al_strncmp` next to `al_strlen`/`al_memcpy` and use them
   unconditionally, or include `<string.h>` in both arms. Either way, add a CI step
   that compiles `scanner.c` for a wasm target.
-- status: open
+- status: rejected `scanner.c` includes `keywords.c` at line 234, before the first
+  `strcmp` at line 296, and `keywords.c` includes `<string.h>` unconditionally
+  (keywords.c:7), so every `strcmp`/`strncmp` in the translation unit is declared
+  under `__wasm__` too. Verified by compiling `src/scanner.c` and `src/parser.c`
+  for `wasm32-wasip1` against wasi-sysroot 25 with
+  `-Werror=implicit-function-declaration` (clean, two unused-function warnings),
+  and by `tree-sitter build --wasm`, which produced a 304 KB module. The template
+  at `generator/tools/al-gen/templates/scanner.c.template` has the same include
+  order. The missing wasm coverage was real: the grammar CI now runs
+  `tree-sitter build --wasm` (tree-sitter-al 020b437).
 
 ### [SLOP] Stale comment claims the grammar has no object `name` field
 - where: crates/al-syntax/src/symbols.rs:88-89
@@ -286,7 +295,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   character stops the regeneration.
 - fix: snap both offsets to char boundaries (`xml.floor_char_boundary` / a
   `is_char_boundary` loop) before slicing.
-- status: open
+- status: fixed tree-sitter-al eef111e (gitlink 48cbd3b0)
 
 ## Review complete
 
