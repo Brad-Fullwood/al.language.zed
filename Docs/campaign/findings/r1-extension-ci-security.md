@@ -92,7 +92,7 @@ fixed in current code are not repeated. Still-open backlog items are tagged `[ST
 - fix: pin `dtolnay/rust-toolchain` to a commit SHA with a version comment like the rest, and add a
   renovate/dependabot entry (or a line in `check-release-hygiene.sh`) that fails when any `uses:` in
   `.github/workflows/` is not a 40-character SHA.
-- status: open
+- status: fixed af051aa3
 
 ### [GAP] `cargo install cross` in the release build runs without `--locked`
 - where: .github/workflows/release.yml:103
@@ -104,7 +104,7 @@ fixed in current code are not repeated. Still-open backlog items are tagged `[ST
   `cargo install tree-sitter-cli --version … --locked` in verify-generated-assets.yml:40 already does
   this correctly, so the inconsistency is not deliberate.
 - fix: add `--locked` to the `cross` install.
-- status: open
+- status: fixed af051aa3
 
 ### [GAP] `make release-dryrun` does not run two gates that actually block a release
 - where: Makefile:291-350 (target header claim on line 292), .github/workflows/ci.yml:38-49 (ShellCheck), .github/workflows/ci.yml:145-162 (cargo-deny), .github/workflows/ci.yml:95-143 (semantic job)
@@ -122,7 +122,7 @@ fixed in current code are not repeated. Still-open backlog items are tagged `[ST
   the semantic-feature clippy/test to `release-dryrun`, renumbering the stages and the matching list
   in Docs/testing-guide.md:296-320. Otherwise soften the header comment to say which CI gates it does
   not cover.
-- status: open
+- status: fixed 96e4945c
 
 ### [TEST] Nothing checks the reverse direction of the debug-schema contract, and `acceptInvalidCerts` sits in that hole
 - where: crates/al-dap/src/dap/bc_debug/session_config.rs:325-343, crates/al-dap/src/dap/bc_debug/session_config.rs:830-877 (`every_advertised_debug_schema_field_has_an_owner`), debug_adapter_schemas/al.json
@@ -142,7 +142,7 @@ fixed in current code are not repeated. Still-open backlog items are tagged `[ST
   description naming the security effect), or add a test that extracts the string literals
   `from_dap_args` passes to `optional_*`/`args.get` and asserts each one is a schema property or in
   an explicit, commented deliberate-omission list.
-- status: open
+- status: fixed 6648ba17
 
 ### [DOCS] Docs/roadmap.md is an orphaned pointer stub
 - where: Docs/roadmap.md:1-12, Docs/README.md:8-21
@@ -153,7 +153,7 @@ fixed in current code are not repeated. Still-open backlog items are tagged `[ST
   Docs/README.md lists `../ROADMAP.md` directly under "Completion roadmap". The file is reachable
   only by browsing the directory, and a reader who lands on it has to follow one more hop.
 - fix: delete `Docs/roadmap.md`. The index already points at the real roadmap.
-- status: open
+- status: fixed cded938e
 
 ### [SECURITY] Two RUSTSEC advisories are live in Cargo.lock, so the cargo-deny CI job fails and blocks any release today
 - where: Cargo.lock (`h2` 0.4.14, `rustls` 0.23.40), deny.toml:9-10, .github/workflows/ci.yml:145-162
@@ -174,7 +174,7 @@ fixed in current code are not repeated. Still-open backlog items are tagged `[ST
 - fix: `cargo update -p h2 -p rustls` and commit the lock change. `check_versions` in
   check-release-hygiene.sh already pins the product crates' lock entries, so the update is safe for
   the version gate.
-- status: open
+- status: fixed f1aa7659
 
 ### [BUG] The theme accessibility fixes were applied to the generated file, so the next regeneration silently reverts them
 - where: themes/bc-themes.json:1-40, tree-sitter-al/generator/tools/al-gen/src/main.rs:2664-2681 (`players`), :2855-2860 (output object), scripts/check-release-hygiene.sh:470-483
