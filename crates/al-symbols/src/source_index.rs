@@ -517,10 +517,15 @@ pub fn clear_source_index_cache() {
     }
 }
 
+/// The first declaration only. The indexer takes every declaration through
+/// [`parse_object_headers`]; this single-result form is what the scanner's own
+/// tests assert against.
+#[cfg(test)]
 fn parse_object_header(bytes: &[u8]) -> Option<(ObjectKind, i32, String)> {
     parse_object_header_inner(bytes, false)
 }
 
+#[cfg(test)]
 fn parse_object_header_inner(
     bytes: &[u8],
     reject_name_at_end: bool,
