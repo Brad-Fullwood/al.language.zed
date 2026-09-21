@@ -333,7 +333,10 @@ current code are tagged [STILL-OPEN].
 - fix: treat an unknown `al.*` key from an editor settings file as a warning: log it, keep the
   keys that did parse, and reserve the hard error for a key whose *value shape* is wrong. Keep
   the strict behaviour for `AlConfig::load` of this project's own persisted settings file.
-- status: open
+- status: fixed db935d62. A wrong value shape is also a warning, not an error: Microsoft types
+  `al.backgroundCodeAnalysis` as an enum string and `al.compilationOptions` as an object, so a
+  real settings file hits that path too. Only an unreadable settings root still fails.
+
 
 ### [PERF] [STILL-OPEN] Substring search still scans the whole name catalogue
 - where: crates/al-symbols/src/index.rs:960-969
