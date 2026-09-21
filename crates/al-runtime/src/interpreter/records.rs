@@ -55,6 +55,9 @@ pub struct RecordStore {
     /// this default (BC zero-initialises every field); fields with types the
     /// interpreter cannot default are absent.
     field_defaults: HashMap<FieldNo, Value>,
+    /// Field number → the declared `Text[N]`/`Code[N]` capacity. A longer
+    /// value assigned to the field is a runtime error, as on BC.
+    field_lengths: HashMap<FieldNo, usize>,
     /// Per-record-variable view state (filters/cursor/buffer), keyed by the
     /// variable's handle. BC gives each record variable independent state over
     /// the shared physical table.
@@ -92,7 +95,9 @@ impl RecordStore {
     /// types store the value as-is.
     fn coerce_to_field(&self, field: FieldNo, value: Value) -> Result<Value, String> {
         match self.field_defaults.get(&field) {
-            Some(default) => Value::coerce_into_slot(default, value),
+            Some(default) => {
+                Value::coerce_into_slot(default, value, self.field_lengths.get(&field).copied())
+            }
             None => Ok(value),
         }
     }
@@ -105,6 +110,7 @@ struct TableMeta {
     field_by_name: HashMap<String, FieldNo>,
     flowfields: HashMap<FieldNo, CalcFormula>,
     field_defaults: HashMap<FieldNo, Value>,
+    field_lengths: HashMap<FieldNo, usize>,
     pk_fields: Vec<FieldNo>,
 }
 
@@ -173,6 +179,7 @@ fn ensure_store(ctx: &mut DispatchCtx, table: &TableRef) -> Result<String, Strin
         field_by_name: meta.field_by_name,
         flowfields: meta.flowfields,
         field_defaults: meta.field_defaults,
+        field_lengths: meta.field_lengths,
         views: HashMap::new(),
     };
     ctx.records.insert(key.clone(), store);
@@ -334,6 +341,7 @@ fn parse_table_meta(
     let mut field_by_name: HashMap<String, FieldNo> = HashMap::new();
     let mut flowfields: HashMap<FieldNo, CalcFormula> = HashMap::new();
     let mut field_defaults: HashMap<FieldNo, Value> = HashMap::new();
+    let mut field_lengths: HashMap<FieldNo, usize> = HashMap::new();
 
     let fields_body = section_body(body, "fields", source)
         .ok_or_else(|| "fields section is missing".to_string())?;
@@ -358,6 +366,9 @@ fn parse_table_meta(
                 .next()
                 .unwrap_or(&type_text)
                 .trim();
+            if let Some(length) = crate::interpreter::dispatch::declared_text_length(&type_text) {
+                field_lengths.insert(no, length);
+            }
             if let Some(default) = Value::default_for(base) {
                 field_defaults.insert(no, default);
             } else if let Some(default) =
@@ -407,6 +418,7 @@ fn parse_table_meta(
         field_by_name,
         flowfields,
         field_defaults,
+        field_lengths,
         pk_fields,
     })
 }
@@ -529,6 +541,7 @@ fn parse_field_def(
     let mut number: Option<FieldNo> = None;
     let mut name: Option<String> = None;
     let mut type_text: Option<String> = None;
+    let mut type_start: Option<usize> = None;
     let mut segment = 0_u8;
     let mut bc = pblock.walk();
     for child in pblock.children(&mut bc) {
@@ -559,9 +572,13 @@ fn parse_field_def(
                         .to_string(),
                 );
             }
-            2 if type_text.is_none() => {
-                type_text = child
-                    .utf8_text(source)
+            // The declared type can span several children of the generic
+            // parenthesized block (`Code` + `[20]`), so slice the source from
+            // the first to the last rather than taking only the first.
+            2 => {
+                let end = child.end_byte();
+                let start = type_start.get_or_insert(child.start_byte());
+                type_text = std::str::from_utf8(source.get(*start..end).unwrap_or_default())
                     .ok()
                     .map(|text| text.trim().to_string());
             }

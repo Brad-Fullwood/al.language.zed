@@ -861,10 +861,11 @@ fn eval_expression_node(
             }
         };
 
+        let capacity = stack.declared_text_length(&lhs_name);
         if let Some(slot) = stack.lookup_mut(&lhs_name) {
             // Preserve the slot's declared type (Code caselessness / integer
             // width) rather than adopting the RHS's — see `coerce_into_slot`.
-            match Value::coerce_into_slot(slot, new_val) {
+            match Value::coerce_into_slot(slot, new_val, capacity) {
                 Ok(value) => *slot = value,
                 Err(message) => return Eval::Error(simple_error(&message)),
             }

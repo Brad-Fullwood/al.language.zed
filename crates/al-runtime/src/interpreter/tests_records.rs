@@ -1980,3 +1980,79 @@ fn setfilter_accepts_option_placeholders() {
     );
     assert_eq!(ok(r), Value::Integer(2));
 }
+
+#[test]
+fn assigning_past_a_code_field_capacity_is_an_error() {
+    // "No." is Code[20]. BC traps the overflow at the assignment.
+    let cu = r#"codeunit 50139 "Field Length Tests"
+{
+    procedure Overflow(): Integer
+    var
+        Item: Record "Item";
+    begin
+        Item.Init();
+        Item."No." := 'THIS-CODE-IS-WAY-LONGER-THAN-TWENTY';
+        exit(1);
+    end;
+}
+"#;
+    let message = error_message(run(
+        &[("/ws/Item.al", ITEM_TABLE), ("/ws/FieldLength.al", cu)],
+        "Field Length Tests",
+        "Overflow",
+        vec![],
+    ));
+    assert!(
+        message.contains("35") && message.contains("20"),
+        "expected a length overflow naming both lengths, got: {message}"
+    );
+}
+
+#[test]
+fn assigning_past_a_local_text_capacity_is_an_error() {
+    let cu = r#"codeunit 50140 "Local Length Tests"
+{
+    procedure Overflow(): Integer
+    var
+        Short: Text[5];
+    begin
+        Short := 'abcdefgh';
+        exit(1);
+    end;
+}
+"#;
+    let message = error_message(run(
+        &[("/ws/LocalLength.al", cu)],
+        "Local Length Tests",
+        "Overflow",
+        vec![],
+    ));
+    assert!(
+        message.contains('8') && message.contains('5'),
+        "expected a length overflow naming both lengths, got: {message}"
+    );
+}
+
+#[test]
+fn a_code_value_is_trimmed_and_fits_its_capacity() {
+    // A Code variable's length is the text without leading or trailing spaces,
+    // so '  ABCDE  ' is five characters and fits Code[5].
+    let cu = r#"codeunit 50141 "Code Trim Tests"
+{
+    procedure Trimmed(): Text
+    var
+        Short: Code[5];
+    begin
+        Short := '  abcde  ';
+        exit(Short);
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/CodeTrim.al", cu)],
+        "Code Trim Tests",
+        "Trimmed",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Code("ABCDE".to_string()));
+}

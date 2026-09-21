@@ -1145,7 +1145,7 @@ fn bind_regular_var_decl(reg: tree_sitter::Node<'_>, source: &[u8], frame: &mut 
     }
 }
 
-fn declared_text_length(type_text: &str) -> Option<usize> {
+pub(crate) fn declared_text_length(type_text: &str) -> Option<usize> {
     let trimmed = type_text.trim();
     let base = trimmed.split('[').next()?.trim();
     if !matches!(base.to_ascii_lowercase().as_str(), "text" | "code") {
