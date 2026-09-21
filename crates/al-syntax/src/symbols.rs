@@ -87,8 +87,6 @@ fn extract_object_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let kind_str = kind_node.kind();
     let sym_kind = object_kind_to_symbol_kind(kind_str);
 
-    // Grammar doesn't assign a field name to the object name;
-    // use the shared extract_object_name helper.
     let name = super::extract_object_name(node, source).unwrap_or_else(|| "(unnamed)".to_string());
     let name_node_range = {
         let mut found_range = None;
