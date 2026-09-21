@@ -123,14 +123,14 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - scenario: `xliff_xml` emits units only for object/field captions, page control and action Caption/ToolTip, and page-extension control changes. It has no handling of `Label` declarations. `al-analysis`'s extractor does (crates/al-analysis/src/xliff.rs:221-236 emits `"{Kind} {hash} - NamedType {hash}"`), and `Docs/features/xliff-translation.md` documents `Codeunit 1535166296 - NamedType 3010734695` as a real alc id shape. So for `codeunit 50100 X { var GreetingLbl: Label 'Hello'; }` the packaged `TextData/<App>.TextData.en-US.xliff` contains no unit for `GreetingLbl`, and every `Error`/`Message`/`Confirm` string in a natively built app is untranslatable. `crates/al-explorer xlf generate` (the al-analysis path) *does* produce that unit, so the two XLIFF surfaces of this toolchain disagree about the same project.
   Microsoft's own description of the generated file is "all the labels, label properties, and report labels that you're using in the extension" (devenv-work-with-translation-files), so report `labels { ... }` sections are missing too.
 - fix: extract `Label` declarations and report `labels` sections in `symbol_extract` and emit `{root_kind} {hash} - NamedType {hash}` units from `xliff_xml`, matching what `al-analysis/src/xliff.rs` already produces. Honour `Locked = true` while doing it (`TextConst` is correctly excluded: Microsoft documents it as never appearing in the .xlf).
-- status: open
+- status: rejected. The packaged `TextData/<App>.TextData.en-US.xliff` and the generated `Translations/<App>.g.xlf` are two artifacts with different rules, and the finding applies one file's rules to the other. alc 17.0.34.45391 was run on a project holding a `Label`, a `Locked` label, a report `labels` section, a `TextConst` and a locked field caption. Its packaged TextData XLIFF carries no `NamedType` and no `ReportLabel` unit at all; only the `.g.xlf` does. The emitter already matches alc here. Pinned by `crates/al-test-harness/tests/xliff_id_contract.rs` (0f5e6470) so neither file drifts toward the other.
 
 ### [TEST] no test pins the two independent XLIFF id implementations to each other
 - where: crates/al-emit/src/assemble.rs:149 and crates/al-analysis/src/xliff.rs:438, corpus at crates/al-test-harness/tests/emit_differential.rs:100-130
 - severity: medium
 - scenario: `name_hash` is implemented twice, deliberately (the al-analysis copy says so at xliff.rs:434-437), and the two crates run separate extractors over the same AL source to produce trans-unit ids that must match byte for byte or `xlf refresh` matches zero ids. Nothing asserts they agree. The one test that could have caught the missing-Label gap above, `emit_differential`, compares `TextData/DiffCorpus.TextData.en-US.xliff` against real alc output (line 352) but its corpus declares no `Label` anywhere, and it needs a local Microsoft toolchain to run at all.
 - fix: add a test in `al-test-harness` that runs both extractors over one fixture containing a table caption, a page control ToolTip and a `Label`, and asserts the two id sets are equal; add a `Label` to the differential corpus.
-- status: open
+- status: fixed 0f5e6470. `crates/al-test-harness/tests/xliff_id_contract.rs` runs both extractors over one fixture and asserts both match the ids alc 17.0.34.45391 wrote for the same declarations, rather than only each other. The differential corpus gained a locked field caption instead of a `Label`, because a `Label` in the corpus fails the alc comparison on a separate gap (see the new `Variables` finding below).
 
 ### [BUG] the emitted `.app` is written with owner-only permissions
 - where: crates/al-explorer/src/cli/commands/build.rs:209-215 and crates/al-compile/src/lib.rs:630-634
@@ -165,7 +165,7 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - severity: medium
 - scenario: `caption_value` and `property_value` return the property value with no check for the `Locked` attribute, so `Caption = 'SEPA CT', Locked = true;` or a `ToolTip` marked `Locked` is emitted into `TextData/<App>.TextData.en-US.xliff` as a translatable `<trans-unit translate="yes">`. Microsoft documents `Locked = true` as "the label shouldn't be translated" and gates locked trans-units behind the opt-in `GenerateLockedTranslations` feature. `al-analysis`'s extractor already handles this (`property_is_locked`, xliff.rs:222), so the two XLIFF surfaces of this toolchain disagree again, and a translator is handed strings that must not change.
 - fix: parse the property attribute list in `symbol_extract` so `Locked` reaches `PropertyValue`, and skip locked properties in `xliff_xml` unless the app.json `features` array contains `GenerateLockedTranslations`.
-- status: open
+- status: rejected as written, and a worse bug fixed in its place (0f5e6470). alc 17.0.34.45391 writes a locked caption and a locked ToolTip into the packaged TextData XLIFF as `translate="yes"`, so skipping them would make the emitter disagree with the compiler. Locked strings are excluded from the `.g.xlf`, which is the file the finding's Microsoft citation describes. What the probe did expose is that the whole attribute list reached the value: the emitter recorded `Caption` as `'SEPA CT',Locked=true` in both SymbolReference.json and the XLIFF source. Fixed, with the locked caption added to the differential corpus.
 
 ### [SLOP] the whole publish pipeline is unreachable from any shipped surface
 - where: crates/al-publish/src/lib.rs (869 lines), crates/al-bc/src/bc_client.rs (1409 lines), crates/al-lsp/Cargo.toml:33
@@ -233,6 +233,22 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - scenario: the `authenticate` help text tells users to "prefer reading credentials from a file or environment variable", and `bc_server_params`' comment repeats the claim as settled. No credentials-file reader exists anywhere in the repo; only `BC_USERNAME`/`BC_PASSWORD` do, so half of the advice is unactionable. In `build.rs` the doc comment describing `validate_with_alc` ("Compile `dir` with the Microsoft AL compiler … Returns `None` when validation passes") sits above `create_validation_tempdir`, which only makes a temp dir; the real `validate_with_alc` at line 291 has no doc comment. `cmd_test_run_all`'s doc says it "streams a per-codeunit summary" when it makes one blocking `request_checked` call at tests.rs:385 and prints only after the whole response arrives. Two smaller dead branches belong here too: `path == "null"` at build.rs:445 can never fire because `path` comes from `as_str().unwrap_or("")`, and the `[failed]` arm at lsp/refactor.rs:116-122 is unreachable because the daemon sets `"renamed": !dry_run` and turns real failures into RPC errors (build/organize.rs:439-459).
 - fix: implement `--password-file` or reword the help and the comment to name only the env vars; move the `validate_with_alc` doc down to the function it describes; reword the `test-run-all` doc; delete the two dead branches.
 - status: open
+
+## Findings added while fixing (alc 17.0.34.45391 probes)
+
+### [BUG] `SymbolReference.json` carries no `Variables` array for global variables
+- where: crates/al-emit/src/symbol_extract.rs (object extraction), crates/al-emit/src/symbol_reference.rs
+- severity: medium
+- scenario: alc records every global variable of an object under `Variables`, with the same `TypeDefinition` shape as a field, including a resolved `Subtype` for `Record`/`Enum`/`Codeunit` types. For `codeunit 50100 Hello { var GreetingLbl: Label 'x'; Counter: Integer; Cust: Record Widget; }` alc 17.0.34.45391 writes three entries; the native emitter writes none. Adding a `Label` to the differential corpus fails `native_emit_matches_alc` on exactly this. Consumers that read global state out of a symbol package (the indexer, go-to-definition into a dependency) see nothing.
+- fix: extract object-level `var` sections in `symbol_extract` and emit `Variables` from `symbol_reference`, reusing the field `TypeDefinition`/`Subtype` resolver. Then add the `Label` codeunit back to the differential corpus.
+- status: open
+
+### [BUG] `xlf generate` drops every property declared on a one-line member block
+- where: crates/al-analysis/src/xliff.rs:158-247 (`extract_from_file`), 582-597 (`parse_property_value`)
+- severity: medium
+- scenario: `parse_property_value` requires the trimmed line to *start* with `Caption =`, and the anchor stack only gains the member after the line's `{` is consumed. So `field(1; "No."; Code[20]) { Caption = 'No.'; }` — legal AL, and the compact style the differential corpus itself uses — produces no unit at all. Worse, if the scan is made to see it without fixing the anchor, the caption keys onto the enclosing object and collides with the object's own `Caption`, where the duplicate-id filter drops one of the two. alc emits `Table 4006738456 - Field 4200184881 - Property 2879900210` for that declaration. Found by `crates/al-test-harness/tests/xliff_id_contract.rs`, whose fixture had to be written multi-line to pass.
+- fix: scan properties across the whole line rather than from its start, and anchor a property that follows an opening `{` on the same line to the member that `{` opened.
+- status: open (in al-analysis, which another agent holds on another branch)
 
 ## Backlog re-verification (2026-07-31 "Emit, BC & Explorer" section)
 
