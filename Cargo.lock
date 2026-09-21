@@ -157,6 +157,7 @@ dependencies = [
  "al-project",
  "al-protocol",
  "al-symbols",
+ "al-types",
  "clap",
  "clap_complete",
  "crossterm",

@@ -98,6 +98,7 @@ fn run_app<B: Backend<Error = io::Error>>(
 ) -> io::Result<()> {
     loop {
         app.poll_init();
+        app.test_runner.poll_run();
         terminal.draw(|f| ui(f, &mut app))?;
 
         if event::poll(std::time::Duration::from_millis(250))? {
