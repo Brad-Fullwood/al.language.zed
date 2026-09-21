@@ -656,6 +656,9 @@ pub struct MemberList {
     pub n: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pkg: Option<String>,
+    /// Spelled as `SourceResult` spells it, because the CLI's response
+    /// contract for `source` checks this field whichever mode answered.
+    #[serde(rename = "source_availability")]
     pub source_availability: SourceAvailability,
     pub members: Vec<MemberOutline>,
     pub total: usize,
@@ -727,7 +730,11 @@ pub fn member_candidates(source: &str, wanted: &str) -> Vec<String> {
         .iter()
         .filter(|outline| {
             let lower = outline.name.to_lowercase();
-            lower.contains(&wanted_lower) || wanted_lower.contains(&lower)
+            lower.contains(&wanted_lower)
+                || wanted_lower.contains(&lower)
+                // A wrong guess is usually right about the first word:
+                // `PostSalesDoc` for `PostSalesLines`.
+                || shared_prefix_len(&lower, &wanted_lower) >= 4
         })
         .map(|outline| outline.name.clone())
         .collect();
@@ -740,6 +747,14 @@ pub fn member_candidates(source: &str, wanted: &str) -> Vec<String> {
     }
     close.truncate(8);
     close
+}
+
+/// How many leading bytes two lowercased names share.
+fn shared_prefix_len(left: &str, right: &str) -> usize {
+    left.bytes()
+        .zip(right.bytes())
+        .take_while(|(a, b)| a == b)
+        .count()
 }
 
 fn extract_member_from_text(source: &str, member: SourceMember<'_>) -> Option<(String, String)> {
@@ -1393,6 +1408,62 @@ mod tests {
         let text = "procedure Foo(a: Integer) // comment\nbegin\nend;";
         let sig = extract_signature_from_text(text);
         assert_eq!(sig, "procedure Foo(a: Integer)");
+    }
+
+    /// `source` answers with either shape, and the CLI's response contract
+    /// checks `source_availability` on both. A camelCase rename here made
+    /// `--list-procedures` fail that check at runtime.
+    #[test]
+    fn member_list_spells_source_availability_the_way_source_does() {
+        let list = MemberList {
+            k: ObjectKind::Codeunit,
+            id: 80,
+            n: "Sales-Post".to_string(),
+            pkg: Some("Base Application".to_string()),
+            source_availability: SourceAvailability::EmbeddedSource,
+            members: Vec::new(),
+            total: 0,
+        };
+        let value = serde_json::to_value(&list).expect("serializable");
+        assert!(
+            value.get("source_availability").is_some(),
+            "wire name must match SourceResult: {value}"
+        );
+        assert!(value.get("sourceAvailability").is_none());
+    }
+
+    #[test]
+    fn member_outlines_carry_signatures_and_line_ranges_without_bodies() {
+        let source = "codeunit 50100 Helper\n{\n    procedure Alpha()\n    begin\n    end;\n\n    trigger OnRun()\n    begin\n    end;\n}\n";
+        let outlines = member_outlines(source);
+        assert_eq!(outlines.len(), 2, "{outlines:?}");
+        assert_eq!(outlines[0].name, "Alpha");
+        assert_eq!(outlines[0].kind, "procedure");
+        assert_eq!(outlines[0].signature, "procedure Alpha()");
+        assert_eq!(outlines[0].start_line, 3);
+        assert_eq!(outlines[0].end_line, 5);
+        assert_eq!(outlines[1].kind, "trigger");
+        assert!(
+            !outlines
+                .iter()
+                .any(|outline| outline.signature.contains("begin")),
+            "a signature must not carry the body: {outlines:?}"
+        );
+    }
+
+    #[test]
+    fn member_candidates_offer_close_names_then_fall_back_to_the_first_few() {
+        let source = "codeunit 80 \"Sales-Post\"\n{\n    procedure RunWithCheck()\n    begin\n    end;\n\n    procedure PostSalesLines()\n    begin\n    end;\n}\n";
+        assert_eq!(
+            member_candidates(source, "PostSalesDoc"),
+            vec!["PostSalesLines".to_string()],
+            "the shared prefix must win"
+        );
+        assert_eq!(
+            member_candidates(source, "zzzz").len(),
+            2,
+            "nothing close means offer what there is"
+        );
     }
 
     #[test]

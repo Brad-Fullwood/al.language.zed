@@ -415,14 +415,7 @@ pub(super) fn validate(method: &str, params: Option<&Value>, result: &Value) -> 
                 ("source_availability", Kind::String),
             ],
         ),
-        "source" => fields(
-            result,
-            "source",
-            &[
-                ("source_availability", Kind::String),
-                ("code", Kind::String),
-            ],
-        ),
+        "source" => validate_source(params, result),
         "location" => validate_source_location(result),
         "events" => validate_events(result),
         "subscribers" => validate_subscribers(result),
@@ -871,6 +864,46 @@ fn validate_download_symbols(result: &Value) -> Result<(), String> {
         result,
         "results",
         &[("name", Kind::String), ("status", Kind::String)],
+    )
+}
+
+/// `source` answers with one of two shapes. `listProcedures` returns an
+/// object's members without bodies, so there is no `code` to check; the
+/// ordinary lookup returns the source itself.
+fn validate_source(params: Option<&Value>, result: &Value) -> Result<(), String> {
+    let list_procedures = params
+        .and_then(|value| value.get("listProcedures"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if list_procedures {
+        fields(
+            result,
+            "source --list-procedures",
+            &[
+                ("source_availability", Kind::String),
+                ("members", Kind::Array),
+                ("total", Kind::Unsigned),
+            ],
+        )?;
+        return named_array_objects(
+            result,
+            "members",
+            &[
+                ("name", Kind::String),
+                ("kind", Kind::String),
+                ("signature", Kind::String),
+                ("startLine", Kind::Unsigned),
+                ("endLine", Kind::Unsigned),
+            ],
+        );
+    }
+    fields(
+        result,
+        "source",
+        &[
+            ("source_availability", Kind::String),
+            ("code", Kind::String),
+        ],
     )
 }
 
