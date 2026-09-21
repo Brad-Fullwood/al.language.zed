@@ -774,9 +774,10 @@ fn tools() -> &'static [ToolDef] {
                           given starting point, by tracing the call/event graph. \
                           Args: query (object) with a `source` discriminated by `type`: \
                           {type:'procedure', object, procedure?}, {type:'table', table}, \
-                          or {type:'event', object, event}; optional `filterTable` / \
-                          `filterField` restrict results to events exposing that table \
-                          (field) as a `var` parameter.",
+                          or {type:'event', object, event}; optional `filterTable` \
+                          restricts results to events taking that table as a `var` \
+                          parameter, and `filterField` to events whose `var` record \
+                          parameter's table declares a field of that name.",
             schema: || {
                 obj_schema(
                     serde_json::json!({

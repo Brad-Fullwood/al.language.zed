@@ -279,7 +279,7 @@ Listed by neither checklist:
 - severity: medium
 - scenario: the bare-call branch requires the `postfix_expression` parent to have a `call_suffix` child. AL permits a parameterless call with no parentheses (`MyProc;`, `Init;`, `CurrPage.Update;`), which produces no `call_suffix`, so those sites are never recorded in `seen`. A procedure that every caller invokes in that form gets `reference_count_for_declaration` = 0 and its lens reads "0 references", which is what a developer uses to decide the procedure is dead. The codebase knows the form exists: `code_actions/add_parens.rs` is entirely about offering to add the missing parentheses (AL0604), and the existing r1 finding on that file is about which of those calls it recognises.
 - fix: also accept an identifier whose `postfix_expression` parent has no suffix at all when it stands alone as a statement, mirroring `add_parens::is_callable_identifier_path`.
-- status: open
+- status: fixed 93c0f49d — `is_call_site` accepts the bare form in statement position (`is_bare_statement_expression`), including the trailing `member_suffix` of `CurrPage.Update;`. An assignment target has the same shape but a three-child `expression`, so it stays out.
 
 ### [BUG] `node_clean_name` mangles a quoted identifier containing an escaped quote
 - where: crates/al-analysis/src/queries/mod.rs:68-76, used by hover, definition, references, rename and implementation
