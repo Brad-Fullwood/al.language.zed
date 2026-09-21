@@ -21,7 +21,7 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - [x] crates/al-bc/src/profiling.rs
 - [x] crates/al-publish/src/lib.rs
 - [x] crates/al-snapshot/src/diff.rs + format.rs
-- [ ] crates/al-explorer/src/cli/args.rs + subcommands.rs + mod.rs
+- [~] crates/al-explorer/src/cli/args.rs + subcommands.rs + mod.rs (delegated read in progress)
 - [ ] crates/al-explorer/src/cli/commands/mod.rs
 - [ ] crates/al-explorer/src/cli/commands/build.rs
 - [x] crates/al-explorer/src/cli/commands/debug.rs
@@ -176,5 +176,12 @@ No item is carried forward as [STILL-OPEN]. Findings above are new.
 - severity: medium
 - scenario: `load_profile` does `std::fs::read(&path)` on whatever the user types into the profiler pane, then `serde_json::from_slice` over the whole buffer, on the TUI's single thread. `al_bc::profiling::analyze_profile_file` guards the same input with `MAX_PROFILE_FILE_BYTES` (500 MB, profiling.rs:469-481) and every other BC input path in the workspace has an explicit cap. Entering the path of a multi-gigabyte file (a stray core dump, a mistyped path to a large log) freezes the TUI with no redraw and no way to cancel, then OOMs. The module comment at lines 17-23 claims this port keeps "this view's TUI safeguards (node cap, BOM strip, GC filter)", and the node cap does exist at line 200, but the size cap that would prevent the freeze is the one that was not ported.
 - fix: `std::fs::metadata(&path)` first and refuse anything over the same 500 MB bound with a status message, mirroring `analyze_profile_file`.
+- status: open
+
+### [BUG] the TUI test runner blocks the event loop and times out real test runs after 30 seconds
+- where: crates/al-explorer/src/views/test_runner.rs:114, 132 (also 66, 75)
+- severity: medium
+- scenario: `run_selected` and `run_all` call `request_checked` synchronously from inside the key handler, which runs inside `run_app`'s loop (tui.rs:80-159). While the daemon runs the suite the TUI does not redraw and does not read events, so Ctrl+C is ignored. Neither call raises the deadline, so it uses `DEFAULT_REQUEST_TIMEOUT` (30 s, al-protocol/src/client.rs:24) whose own doc comment names "test runs" as a case that must override it. The CLI path does exactly that (`cli/commands/lsp/tests.rs:383` sets 1800 s). Pressing `R` in the Tests view on any project whose suite takes longer than 30 s freezes the UI for 30 s, then shows `Daemon error (run_auto): …` and drops the client, while the daemon keeps running the tests.
+- fix: call `client.set_request_timeout` with the same bound the CLI uses before `tests.run_batch`/`tests.run_auto`, and move the call off the event loop the way `App::start_init_workspace` already does for indexing.
 - status: open
 

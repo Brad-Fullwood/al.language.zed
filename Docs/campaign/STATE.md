@@ -10,8 +10,8 @@ Round 1: four of seven reviews are done (58 findings) and their fix agents are r
 
 | Item | Kind | Output |
 |------|------|--------|
-| R1 review: syntax and grammar | review | `findings/r1-syntax-grammar.md` |
-| R1 review: symbols and project layer | review | `findings/r1-symbols-project.md` |
+| Fix R1 syntax and grammar (11 findings) | worktree fix | branch `campaign/fix-r1-syntax-grammar` |
+| Fix R1 symbols and project layer (24 findings) | worktree fix | branch `campaign/fix-r1-symbols-project` |
 | R1 review: emit, compile, BC, explorer | review | `findings/r1-emit-bc-explorer.md` |
 | R1b review: al-analysis and al-insight modules the first pass skipped | review | `findings/r1b-analysis-insight.md` |
 | R1b review: runtime stubs, live BC, al-dap session, al-test-harness | review | `findings/r1b-runtime-dap.md` |
