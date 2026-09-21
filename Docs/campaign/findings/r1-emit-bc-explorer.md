@@ -73,7 +73,7 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - severity: medium
 - scenario: `extract_app_id_from_manifest` accepts any non-empty string from `app.json`'s `id` field and `rad_publish` builds `format!("{}/dev/applications/{}", self.base_url, app_id)` with no percent-encoding and no GUID check (contrast `dev_packages_url`, which percent-encodes `server_instance` for exactly this reason, and has a test for it). A cloned repo whose `app.json` has `"id": "../../../admin/SomeEndpoint"` makes `Url::parse` normalize the `..` segments away, so an incremental publish sends an authenticated PATCH with the whole `.app` body to a path the repo chose. A `?` or `#` in the id truncates the path instead. Not user-reachable today (see the unreachable-publish-pipeline finding below), which makes it cheap to fix now.
 - fix: validate the id parses as a GUID in `extract_app_id_from_manifest` (BC requires one), or at minimum `urlencoding::encode` it in `rad_publish` and reject any id containing `/`, `?` or `#`.
-- status: open
+- status: fixed 6f89b72d
 
 ### [SECURITY] control add-in resource paths bypass the project-containment check used for every other resource
 - where: crates/al-emit/src/assemble.rs:602-606, 793-797, 825-829
