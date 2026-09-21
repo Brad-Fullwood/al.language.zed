@@ -223,7 +223,7 @@ Listed by neither checklist:
 - severity: low
 - scenario: the module doc says "These impls live in `server` — the LSP transport boundary — so that the `queries` module stays greppably free of `lsp_types`; the architecture rule is that queries never speak a wire format)." The file is `crates/al-analysis/src/lsp.rs`, not `server`, and the sentence ends with an unmatched `)`. `flatten_document_symbols`'s doc says each emitted symbol carries "the parent's `range` as its `location` range". The code at line 168 uses `sym.range`, the symbol's own range, which is the correct behaviour and what the test asserts.
 - fix: correct both comments to describe the current layout and the actual range.
-- status: open
+- status: fixed 129f1232
 
 ### [BUG] Signature help for `Receiver.Method(` prefers a same-named procedure in the current file
 - where: crates/al-analysis/src/queries/signature.rs:185-206, which runs before `resolve_receiver_signature` at 208
@@ -250,21 +250,21 @@ Listed by neither checklist:
 - scenario: in a type position (`var Cust: Record `), the query pushes `workspace.symbols.get_by_kind(kind).iter().take(50)` for Table, Enum, Codeunit and Interface. `get_by_kind` (crates/al-symbols/src/index.rs:1065-1070) returns the per-kind vector in index insertion order, so the 50 are simply the first 50 tables loaded, not the 50 most relevant, and the Base Application has thousands. `Customer` is almost certainly not among them. There is no filtering by the prefix the user has typed, because the server does not look at it, so the client cannot recover what was never sent.
   The labels compound it: `label: format!("\"{}\"", arc.name)` always adds the quotes, so a user who has typed `Cust` gets no match from a client doing prefix filtering against `"Customer"`. The keyword completions on the same path are unquoted and do match.
 - fix: read the partially-typed prefix at the cursor (`detect_context` already has the line) and filter the symbol index by it before capping, and quote the label only when the name needs quoting. The `insert_text` field, left `None` here, is the place for the quoted form.
-- status: open
+- status: open — `queries/completions.rs` belongs to a concurrent fix branch, so this one was left for it.
 
 ### [GAP] Go-to-implementations skips the current file entirely and lists one implementor per file
 - where: crates/al-analysis/src/queries/implementation.rs:52-71 and 78-107
 - severity: low
 - scenario: the workspace scan does `if current_path.as_ref() == Some(&file_path) { continue; }`, so invoking go-to-implementation on `interface "IPostHandler"` in a file that also declares `codeunit 50100 "Sales Post Handler" implements "IPostHandler"` never lists that codeunit. `find_codeunit_implementing_interface` also `return`s on the first matching object declaration in a file, so a file with two implementing codeunits contributes one. Neither the package results nor the workspace results are sorted (both come from DashMap iteration), so the picker's order changes between identical requests.
 - fix: exclude only the node under the cursor rather than the whole file, collect every matching object per file, and sort the result by object name.
-- status: open
+- status: fixed 129f1232 — the cursor's declaration is excluded by range, `find_codeunits_implementing_interface` returns every match in a file, and the result is sorted by URI and position.
 
 ### [SLOP] `.alformat.json` ignores misspelled keys, and one of the two loaders is dead
 - where: crates/al-analysis/src/queries/format.rs:29-31 (no `deny_unknown_fields`), 124-129 (`load_options`)
 - severity: low
 - scenario: `load_options_strict`'s doc says it loads options "without hiding an unreadable or invalid `.alformat.json`", and `validate` checks every value it knows about. But the struct has no `#[serde(deny_unknown_fields)]`, so `{"tabsize": 2}` or `{"keywordCase": "upper"}` parses into an all-default config and the strict loader returns `Ok` with defaults. A user who misspells a key gets no signal that the file was ignored. Separately, `load_options` (the swallowing variant, `_ => FormatOptions::default()`) has no caller outside this module, and `crates/al-lsp/src/server/daemon/build_dispatch/fixes.rs:152` uses the strict one. `to_format_options` also accepts a `tab_size` of 17 that `validate` rejects, so the two entry points disagree about what is valid.
 - fix: add `deny_unknown_fields`, delete `load_options`, and route the range checks through one place.
-- status: open
+- status: fixed 129f1232 — all three; `MAX_TAB_SIZE` is the single bound `validate` and `to_format_options` share.
 
 ### [PERF] Every codeLens request runs an uncached go-to-definition for every call site in the workspace
 - where: crates/al-analysis/src/queries/code_lens.rs:359-661 (`build_reference_counts`), calling `super::binding::decl_loc` at 403 and 471, plus 349 per lens
@@ -293,7 +293,7 @@ Listed by neither checklist:
 - severity: low
 - scenario: the doc opens "Extracted from al-core" and the comment above `pub mod resolution` says it was promoted to `pub` "so it can be re-exported from al-core (`pub use al_analysis::resolution;`)". There is no `al-core` crate in `crates/`, because the split renamed it to `al-lsp`. A reader following that instruction has nowhere to put the re-export. The same stale name survives in Cargo.toml comments (crates/al-analysis/Cargo.toml:34, crates/al-dap/Cargo.toml:19, crates/al-workspace/Cargo.toml:29-30).
 - fix: name the current crate in each comment, or drop the migration note now that the split has landed.
-- status: open
+- status: fixed 129f1232 for the sites named here. `al-core` still appears in comments elsewhere (al-insight/graph.rs, al-source/file_index.rs, al-symbols/bc_server.rs, al-protocol/client.rs, and two test-fixture name prefixes), outside this review's scope.
 
 ## Opened while fixing
 
