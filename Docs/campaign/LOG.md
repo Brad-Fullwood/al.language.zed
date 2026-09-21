@@ -90,3 +90,7 @@ Append-only. Newest entry last.
 
 - Limit hit about 18:25, reset 21:00. Six agents resumed.
 - PR #30 CI: cargo-deny, WASM and the .NET bridge pass. Ubuntu, macOS and Windows each fail one test that passes locally. macOS shows a real bug (1.9.0 chosen over 1.10.0, selection depends on directory enumeration order). Windows fails the new out-of-project refusal test, probably path form. Ubuntu fails a harness test strengthened today, so something it needs exists on this machine and not on a clean runner. A fix agent has its own draft PR to iterate on real runners.
+
+## 2026-09-21 21:50 BST: analysis second pass merged
+
+- Merged `campaign/fix-r1b-analysis`. Two agents had changed `resolve_object_path` for different reasons (prefer the referring app, prefer the matching AL type). Combined through a new `FileIndex::object_path_where`. Gates: fmt, clippy, 2290 tests on al-source, al-analysis, al-insight, al-lsp and the whole harness suite.
