@@ -136,14 +136,14 @@ Listed by neither checklist:
 - severity: medium
 - scenario: `insight.index` is a `HashMap<NodeKey, Vec<NodeIndex>>` (crates/al-insight/src/graph.rs:125). `query_procedure` without a procedure name iterates its keys and traces from each match, and `visited` is shared across all of those traces while `max_depth` is 10. A procedure node X reached first at depth 9 is inserted into `visited`, its own callees are then refused at depth 10, and a later start that reaches X at depth 1 hits `if visited.contains(&edge.to) { continue; }` and skips it, so every event below X is missing from the result. Which start goes first is HashMap order, so the same query over the same unchanged workspace can return different sets of integration points on different runs of the process, and `partial` stays `false` because the depth cut-off never sets it. Even when the set is stable, `points` is never sorted, so the JSON array order changes run to run and `dedup_points` keeps whichever duplicate arrived first, which decides the `path` breadcrumb the user is shown.
 - fix: iterate the index through a sorted key list, sort `integration_points` before returning (by object then event, case-insensitively), track the best depth per node instead of a plain visited set, and set `partial = true` when the depth limit prunes a branch.
-- status: open
+- status: fixed 9e2fff59 — all four: `NodeKey` derives `Ord` and both index walks sort, `visited` holds the best depth per node, the depth cut-off sets `partial`, and `dedup_points` sorts by object, event and path length so the breadcrumb shown is the shortest trace.
 
 ### [GAP] `filterField` matches parameter names and type names, not fields
 - where: crates/al-analysis/src/queries/suggest_event.rs:712-720 (`apply_filters`), described at crates/al-lsp/src/server/mcp.rs:722-724
 - severity: medium
 - scenario: the MCP tool description says `filterTable` / `filterField` "restrict results to events exposing that table (field) as a `var` parameter", and `al-explorer`'s `--field` feeds it. The implementation is `param.name.to_lowercase().contains(fld) || param.type_name.to_lowercase().contains(fld)`, with no `is_var` check and no notion of a table field at all, since `ParamInfo` carries only a name, a type and `is_var`. So `--field Amount` against `OnAfterPostSalesDoc(var SalesHeader: Record "Sales Header")` returns nothing, although `Sales Header` has an `Amount` field, while `--field Record` returns every event with any record parameter and `--field e` returns nearly everything. The filter cannot do what it says without resolving the record type's fields through the symbol index.
 - fix: resolve each `Record "T"` parameter's fields through `workspace.symbols` and match the field name, or drop `filterField` and the documentation that promises it.
-- status: open
+- status: fixed 9e2fff59 — `param_exposes_field` resolves each `var Record "T"` parameter's table through the symbol index and matches its declared field names, including fields a tableextension adds. The MCP tool description now states what each filter does.
 
 ### [BUG] A profiler hint on an attributed procedure resolves to the attribute line
 - where: crates/al-analysis/src/queries/profiler_hints.rs:456 (`collect_procs`), against the module's stated rule at line 34

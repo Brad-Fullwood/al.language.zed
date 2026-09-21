@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::queries::tests::{collect_test_procedures, TestCodeunit};
+use crate::queries::tests::TestCodeunit;
 use al_types::{TestCodeunitResult, TestStatus};
 use al_workspace::Workspace;
 
@@ -30,8 +30,15 @@ pub enum DiagnosticSeverity {
 pub struct TestDiagnostic {
     /// Absolute file path containing the test procedure.
     pub file: String,
-    /// 1-based line number of the procedure declaration.
-    pub line: u32,
+    /// 1-based line of the procedure declaration, or `None` when the run
+    /// results name a test the static discovery did not see.
+    ///
+    /// A numeric sentinel does not survive the LSP boundary: `line` is 1-based
+    /// and the conversion subtracts one, so both `0` and `1` became LSP line 0
+    /// and the editor drew the squiggle on the codeunit header — the exact
+    /// outcome the sentinel existed to avoid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
     /// Severity: failed tests → Error, skipped tests → Warning.
     pub severity: DiagnosticSeverity,
     /// Human-readable message (the error/assertion message from BC, or a
@@ -65,7 +72,7 @@ pub fn results_to_diagnostics_with_codeunits(
 /// - Passing tests produce no diagnostics.
 ///
 /// If the source file for a codeunit cannot be found in the workspace, the
-/// diagnostic `file` is set to an empty string and `line` to 0.
+/// diagnostic `file` is empty and `line` is `None`.
 pub fn results_to_diagnostics(
     results: &[TestCodeunitResult],
     workspace: &Workspace,
@@ -88,23 +95,18 @@ fn results_to_diagnostics_inner(
                 continue;
             }
 
+            // A method present in the run results but missing from static
+            // discovery (added since the last index, or a file whose parse
+            // failed) has no line. Say so rather than pick one.
             let (file, line) = if let Some(cu) = cu_info {
-                // Find the exact line for this test procedure. If the method
-                // is in the run results but was not seen during static
-                // discovery (added after the last scan, stale cache, or a
-                // discovery parse failure), fall back to line 0 — matching the
-                // documented "unknown location" contract and the
-                // codeunit-not-found case below. Line 1 would point at the
-                // codeunit header, misleading jump-to-diagnostic.
                 let proc_line = cu
                     .tests
                     .iter()
                     .find(|p| p.name.eq_ignore_ascii_case(&method.name))
-                    .map(|p| p.line)
-                    .unwrap_or(0);
+                    .map(|p| p.line);
                 (cu.file.clone(), proc_line)
             } else {
-                (String::new(), 0)
+                (String::new(), None)
             };
 
             let (severity, message) = match &method.status {
@@ -133,35 +135,6 @@ fn results_to_diagnostics_inner(
     diagnostics
 }
 
-pub fn clear_diagnostics() -> Vec<TestDiagnostic> {
-    Vec::new()
-}
-
-/// Build "not run" informational diagnostics for all discovered test
-/// procedures in a workspace. Useful for showing which tests exist but
-/// have no run results yet.
-pub fn unrun_test_hints(
-    workspace: &Workspace,
-) -> Result<Vec<TestDiagnostic>, crate::queries::tests::TestQueryError> {
-    let discovered = crate::queries::tests::discover_tests(workspace)?;
-    let mut hints = Vec::new();
-
-    for cu in &discovered {
-        for proc in &cu.tests {
-            hints.push(TestDiagnostic {
-                file: cu.file.clone(),
-                line: proc.line,
-                severity: DiagnosticSeverity::Hint,
-                message: format!("Test '{}' has not been run", proc.name),
-                test_name: proc.name.clone(),
-                codeunit: cu.name.clone(),
-            });
-        }
-    }
-
-    Ok(hints)
-}
-
 pub fn group_by_file(
     diagnostics: Vec<TestDiagnostic>,
 ) -> std::collections::HashMap<String, Vec<TestDiagnostic>> {
@@ -171,21 +144,6 @@ pub fn group_by_file(
         map.entry(d.file.clone()).or_default().push(d);
     }
     map
-}
-
-/// Given a source string, find the 1-based line number of a procedure
-/// declaration by name.  Used when the workspace file index is not available
-/// (e.g., in tests).
-pub fn find_proc_line(source: &str, proc_name: &str) -> Option<u32> {
-    use al_syntax::AlParser;
-    let result = AlParser::parse_quick(source);
-    let root = result.tree.root_node();
-    let source_bytes = source.as_bytes();
-    let procs = collect_test_procedures(root, source_bytes);
-    procs
-        .iter()
-        .find(|p| p.name.eq_ignore_ascii_case(proc_name))
-        .map(|p| p.line)
 }
 
 #[cfg(test)]
@@ -229,6 +187,54 @@ mod tests {
             failed,
             skipped,
         }
+    }
+
+    /// The module's stated job is to point a failing test at its procedure
+    /// declaration inside the source file. Every other test here builds an
+    /// empty workspace, so discovery returns nothing, `file` comes out empty
+    /// and `line` unset — the lookup could return a constant and they would
+    /// all still pass. At the LSP boundary an empty `file` fails
+    /// `Url::from_file_path`, so those diagnostics never reach the editor.
+    #[test]
+    fn a_failing_test_resolves_to_its_source_line() {
+        let workspace = al_workspace::Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/src/MyTests.al"),
+            "codeunit 50100 \"My Tests\"\n\
+             {\n\
+             \x20   Subtype = Test;\n\
+             \n\
+             \x20   [Test]\n\
+             \x20   procedure TestOne()\n\
+             \x20   begin\n\
+             \x20   end;\n\
+             \n\
+             \x20   [Test]\n\
+             \x20   procedure TestTwo()\n\
+             \x20   begin\n\
+             \x20   end;\n\
+             }\n"
+            .to_string(),
+        );
+
+        let results = vec![make_result(
+            50100,
+            "My Tests",
+            vec![
+                ("TestOne", TestStatus::Pass, None),
+                ("TestTwo", TestStatus::Fail, Some("boom")),
+            ],
+        )];
+
+        let diags = results_to_diagnostics(&results, &workspace).unwrap();
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].test_name, "TestTwo");
+        assert_eq!(diags[0].file, "/src/MyTests.al");
+        assert_eq!(
+            diags[0].line,
+            Some(11),
+            "line 10 is the [Test] attribute, line 11 is the procedure"
+        );
     }
 
     #[test]
@@ -291,17 +297,11 @@ mod tests {
     }
 
     #[test]
-    fn clear_diagnostics_returns_empty() {
-        let cleared = clear_diagnostics();
-        assert!(cleared.is_empty());
-    }
-
-    #[test]
     fn group_by_file_groups_correctly() {
         let diagnostics = vec![
             TestDiagnostic {
                 file: "FileA.al".to_string(),
-                line: 10,
+                line: Some(10),
                 severity: DiagnosticSeverity::Error,
                 message: "fail".to_string(),
                 test_name: "T1".to_string(),
@@ -309,7 +309,7 @@ mod tests {
             },
             TestDiagnostic {
                 file: "FileB.al".to_string(),
-                line: 20,
+                line: Some(20),
                 severity: DiagnosticSeverity::Warning,
                 message: "skip".to_string(),
                 test_name: "T2".to_string(),
@@ -317,7 +317,7 @@ mod tests {
             },
             TestDiagnostic {
                 file: "FileA.al".to_string(),
-                line: 30,
+                line: Some(30),
                 severity: DiagnosticSeverity::Error,
                 message: "fail2".to_string(),
                 test_name: "T3".to_string(),
@@ -330,47 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn unrun_test_hints_returns_hints_for_empty_workspace() {
-        let workspace = al_workspace::Workspace::new();
-        let hints = unrun_test_hints(&workspace).unwrap();
-        assert!(hints.is_empty());
-    }
-
-    #[test]
-    fn find_proc_line_locates_test_procedure() {
-        let source = r#"codeunit 50100 "My Tests"
-{
-    Subtype = Test;
-
-    [Test]
-    procedure TestFoo()
-    begin
-    end;
-}
-"#;
-        let line = find_proc_line(source, "TestFoo");
-        assert!(line.is_some(), "Should find TestFoo");
-        assert!(line.unwrap() > 0);
-    }
-
-    #[test]
-    fn find_proc_line_returns_none_for_missing() {
-        let source = r#"codeunit 50100 "My Tests"
-{
-    Subtype = Test;
-
-    [Test]
-    procedure TestFoo()
-    begin
-    end;
-}
-"#;
-        let line = find_proc_line(source, "NoSuchProc");
-        assert!(line.is_none());
-    }
-
-    #[test]
-    fn discovered_codeunit_undiscovered_method_falls_back_to_line_zero() {
+    fn an_undiscovered_method_has_no_line() {
         let results = vec![make_result(
             50100,
             "MyTests",
@@ -390,8 +350,8 @@ mod tests {
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].test_name, "TestGhost");
         assert_eq!(
-            diags[0].line, 0,
-            "Undiscovered method must fall back to line 0, not the codeunit header"
+            diags[0].line, None,
+            "an undiscovered method has no line; a 0 sentinel became the codeunit header at the LSP boundary"
         );
         assert_eq!(diags[0].file, "/src/MyTests.al");
         assert_eq!(diags[0].severity, DiagnosticSeverity::Error);
@@ -401,7 +361,7 @@ mod tests {
     fn test_diagnostic_serializes() {
         let d = TestDiagnostic {
             file: "Tests.al".to_string(),
-            line: 42,
+            line: Some(42),
             severity: DiagnosticSeverity::Error,
             message: "Test failed".to_string(),
             test_name: "TestSomething".to_string(),

@@ -746,7 +746,14 @@ pub fn lint_to_diagnostic(lint: &al_syntax::LintDiagnostic, source: &[u8]) -> Di
 /// Convert a `TestDiagnostic` from the test runner to an LSP `Diagnostic`.
 ///
 /// Lines in `TestDiagnostic` are 1-based; LSP positions are 0-based.
-pub fn test_diag_to_lsp(td: &al_analysis::queries::test_diagnostics::TestDiagnostic) -> Diagnostic {
+///
+/// `None` for a diagnostic with no line: the run results named a test the
+/// static discovery did not see, so there is nowhere to put the squiggle.
+/// Anchoring it at line 0 drew a red mark on the `codeunit` header, which
+/// reads as a fault in the declaration.
+pub fn test_diag_to_lsp(
+    td: &al_analysis::queries::test_diagnostics::TestDiagnostic,
+) -> Option<Diagnostic> {
     use al_analysis::queries::test_diagnostics::DiagnosticSeverity as TDSev;
 
     let severity = match td.severity {
@@ -756,8 +763,8 @@ pub fn test_diag_to_lsp(td: &al_analysis::queries::test_diagnostics::TestDiagnos
         TDSev::Hint => DiagnosticSeverity::HINT,
     };
 
-    let line = td.line.saturating_sub(1); // 1-based → 0-based
-    Diagnostic {
+    let line = td.line?.saturating_sub(1); // 1-based → 0-based
+    Some(Diagnostic {
         range: Range {
             start: Position { line, character: 0 },
             end: Position { line, character: 0 },
@@ -767,13 +774,24 @@ pub fn test_diag_to_lsp(td: &al_analysis::queries::test_diagnostics::TestDiagnos
         source: Some("al-test-runner".to_string()),
         message: format!("[{}] {}", td.test_name, td.message),
         ..Default::default()
-    }
+    })
 }
+
+/// Files the previous [`publish_test_diagnostics`] call published to.
+///
+/// LSP clears diagnostics by publishing an empty list to a URI, so a caller
+/// that only wants to clear has no file list to work from. Remembering the
+/// previous set is what makes "pass an empty slice to clear" actually clear;
+/// without it an empty slice grouped to an empty map and the publish loop
+/// never ran.
+static LAST_TEST_DIAGNOSTIC_FILES: std::sync::Mutex<Vec<Url>> = std::sync::Mutex::new(Vec::new());
 
 /// Publish test-result diagnostics for all affected files.
 ///
 /// Groups the flat list by file and calls `publishDiagnostics` once per file.
-/// Pass an empty `diagnostics` slice to clear test diagnostics.
+/// A file that had diagnostics on the previous call and has none now is
+/// published an empty list, so passing an empty `diagnostics` slice clears
+/// every file the last call touched.
 pub async fn publish_test_diagnostics(
     client: &tower_lsp::Client,
     diagnostics: &[al_analysis::queries::test_diagnostics::TestDiagnostic],
@@ -782,6 +800,7 @@ pub async fn publish_test_diagnostics(
 
     let grouped = group_by_file(diagnostics.to_vec());
 
+    let mut published: Vec<Url> = Vec::new();
     for (file, tds) in grouped {
         let uri = match Url::from_file_path(&file) {
             Ok(u) => u,
@@ -790,8 +809,27 @@ pub async fn publish_test_diagnostics(
                 continue;
             }
         };
-        let lsp_diags: Vec<Diagnostic> = tds.iter().map(test_diag_to_lsp).collect();
-        client.publish_diagnostics(uri, lsp_diags, None).await;
+        let lsp_diags: Vec<Diagnostic> = tds.iter().filter_map(test_diag_to_lsp).collect();
+        client
+            .publish_diagnostics(uri.clone(), lsp_diags, None)
+            .await;
+        published.push(uri);
+    }
+
+    let stale: Vec<Url> = match LAST_TEST_DIAGNOSTIC_FILES.lock() {
+        Ok(mut last) => {
+            let stale = last
+                .iter()
+                .filter(|uri| !published.contains(uri))
+                .cloned()
+                .collect();
+            *last = published;
+            stale
+        }
+        Err(_) => Vec::new(),
+    };
+    for uri in stale {
+        client.publish_diagnostics(uri, Vec::new(), None).await;
     }
 }
 
@@ -1011,13 +1049,13 @@ mod tests {
         use al_analysis::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
         let td = TestDiagnostic {
             file: "/src/Tests.al".to_string(),
-            line: 10,
+            line: Some(10),
             severity: TDSev::Error,
             message: "Assert.AreEqual failed".to_string(),
             test_name: "TestSomething".to_string(),
             codeunit: "MyTests".to_string(),
         };
-        let diag = test_diag_to_lsp(&td);
+        let diag = test_diag_to_lsp(&td).expect("a located diagnostic");
         assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
         assert_eq!(diag.range.start.line, 9); // 1-based → 0-based
         assert_eq!(diag.source, Some("al-test-runner".to_string()));
@@ -1030,30 +1068,32 @@ mod tests {
         use al_analysis::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
         let td = TestDiagnostic {
             file: "/src/Tests.al".to_string(),
-            line: 5,
+            line: Some(5),
             severity: TDSev::Warning,
             message: "Test was skipped".to_string(),
             test_name: "TestSkipped".to_string(),
             codeunit: "MyTests".to_string(),
         };
-        let diag = test_diag_to_lsp(&td);
+        let diag = test_diag_to_lsp(&td).expect("a located diagnostic");
         assert_eq!(diag.severity, Some(DiagnosticSeverity::WARNING));
         assert_eq!(diag.range.start.line, 4);
     }
 
+    /// A diagnostic with no line is not published. Line 0 used to render as
+    /// a red squiggle on the `codeunit` header, which reads as a fault in the
+    /// declaration rather than a test whose source could not be located.
     #[test]
-    fn test_diag_line_zero_stays_zero() {
+    fn a_diagnostic_without_a_line_is_not_published() {
         use al_analysis::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
         let td = TestDiagnostic {
-            file: "".to_string(),
-            line: 0,
+            file: "/src/Tests.al".to_string(),
+            line: None,
             severity: TDSev::Error,
             message: "fail".to_string(),
             test_name: "T".to_string(),
             codeunit: "CU".to_string(),
         };
-        let diag = test_diag_to_lsp(&td);
-        assert_eq!(diag.range.start.line, 0); // saturating_sub(1) on 0 stays 0
+        assert!(test_diag_to_lsp(&td).is_none());
     }
 
     fn sample_diag(msg: &str) -> Diagnostic {
@@ -1289,18 +1329,22 @@ mod tests {
         use al_analysis::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
         let mk = |sev: TDSev| TestDiagnostic {
             file: "/src/Tests.al".to_string(),
-            line: 3,
+            line: Some(3),
             severity: sev,
             message: "m".to_string(),
             test_name: "T".to_string(),
             codeunit: "CU".to_string(),
         };
         assert_eq!(
-            test_diag_to_lsp(&mk(TDSev::Information)).severity,
+            test_diag_to_lsp(&mk(TDSev::Information))
+                .expect("a located diagnostic")
+                .severity,
             Some(DiagnosticSeverity::INFORMATION)
         );
         assert_eq!(
-            test_diag_to_lsp(&mk(TDSev::Hint)).severity,
+            test_diag_to_lsp(&mk(TDSev::Hint))
+                .expect("a located diagnostic")
+                .severity,
             Some(DiagnosticSeverity::HINT)
         );
     }
@@ -1310,13 +1354,13 @@ mod tests {
         use al_analysis::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
         let td = TestDiagnostic {
             file: "/src/Tests.al".to_string(),
-            line: 7,
+            line: Some(7),
             severity: TDSev::Error,
             message: "expected 1 got 2".to_string(),
             test_name: "MyTest".to_string(),
             codeunit: "MyTests".to_string(),
         };
-        let diag = test_diag_to_lsp(&td);
+        let diag = test_diag_to_lsp(&td).expect("a located diagnostic");
         assert_eq!(diag.message, "[MyTest] expected 1 got 2");
         assert_eq!(
             diag.code,
