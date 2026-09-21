@@ -731,6 +731,29 @@ Examples:
         #[arg(long)]
         dry_run: bool,
     },
+    /// Let this project's own files supply settings that load code, run
+    /// programs or receive Business Central credentials
+    #[command(after_help = "\
+Settings in .vscode/settings.json, .zed/settings.json and .vscode/launch.json ship
+inside the repository. Analyzer assemblies, raw alc switches, probing paths, package
+feeds and Business Central servers are ignored until the project is trusted.
+
+Examples:
+  al-explorer trust --show
+  al-explorer trust
+  al-explorer trust --revoke ~/src/SomeApp
+
+See Docs/features/project-trust.md.")]
+    Trust {
+        /// Project directory (default: current dir)
+        project: Option<String>,
+        /// List the settings that need trust and the current state
+        #[arg(long, conflicts_with = "revoke")]
+        show: bool,
+        /// Remove this project from the trusted list
+        #[arg(long)]
+        revoke: bool,
+    },
 }
 
 #[cfg(test)]

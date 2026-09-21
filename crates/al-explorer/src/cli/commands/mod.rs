@@ -3,6 +3,7 @@ pub mod debug;
 pub mod insight;
 pub mod lsp;
 mod response_contract;
+pub mod trust;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

@@ -1122,6 +1122,20 @@ async fn agent_diagnostics(
 
 /// Handle one parsed MCP message. Returns the response to write, or `None`
 /// for notifications (which get no response).
+/// The `instructions` an MCP client shows the agent, plus the trust advisory
+/// when this project asked for privileged settings it did not get.
+///
+/// An agent that is told what was ignored can relay it. A log line cannot
+/// reach the conversation the agent is in.
+fn mcp_instructions(workspace: &Arc<Workspace>) -> String {
+    let base = "Use the named tools for validated common operations. Use al_call only for \
+                daemon methods without a named tool.";
+    match workspace.trust_advisory.get().and_then(Option::as_ref) {
+        Some(advisory) => format!("{base}\n\n{advisory}"),
+        None => base.to_string(),
+    }
+}
+
 pub(crate) async fn handle_mcp_message(
     workspace: &Arc<Workspace>,
     shutdown: &Notify,
@@ -1166,7 +1180,7 @@ pub(crate) async fn handle_mcp_message(
                     "version": env!("CARGO_PKG_VERSION"),
                     "description": "Business Central AL analysis, build, test, and debug tools."
                 },
-                "instructions": "Use the named tools for validated common operations. Use al_call only for daemon methods without a named tool."
+                "instructions": mcp_instructions(workspace)
             }))
         }
         "ping" => respond(serde_json::json!({})),
@@ -1428,7 +1442,12 @@ async fn write_mcp_frame(
 /// Run the MCP server on stdio: newline-delimited JSON-RPC 2.0.
 pub async fn run_mcp(project_root: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let workspace = Arc::new(Workspace::new());
-    *workspace.config.write().await = al_project::config::AlConfig::load_effective(&project_root)?;
+    let evaluated = al_project::trust::evaluate(&project_root)?;
+    *workspace.config.write().await = evaluated.config;
+    if let Some(advisory) = evaluated.decision.advisory() {
+        tracing::warn!("mcp: {advisory}");
+    }
+    let _ = workspace.trust_advisory.set(evaluated.decision.advisory());
     let _ = workspace.notify_sink.set(Arc::new(|msg: &str| {
         tracing::warn!("mcp: {msg}");
     }));

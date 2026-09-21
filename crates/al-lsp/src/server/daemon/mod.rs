@@ -136,7 +136,12 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
     // CLI/TUI daemon clients do not send LSP initializationOptions. Merge the
     // persisted config with project-local VS Code/Zed settings so compiler
     // backend and symbol-package paths match the editor.
-    *workspace.config.write().await = al_project::config::AlConfig::load_effective(&project_root)?;
+    let evaluated = al_project::trust::evaluate(&project_root)?;
+    *workspace.config.write().await = evaluated.config;
+    if let Some(advisory) = evaluated.decision.advisory() {
+        tracing::warn!("daemon: {advisory}");
+    }
+    let _ = workspace.trust_advisory.set(evaluated.decision.advisory());
 
     let _ = workspace.notify_sink.set(std::sync::Arc::new(|msg: &str| {
         tracing::warn!("daemon: {msg}");

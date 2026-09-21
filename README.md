@@ -496,6 +496,16 @@ SetLoadFields rule. Microsoft's CodeAnalysis bridge is optional and additive.
 
 On Zed Dev/Nightly (extension API >= 0.8) the `lsp.al-lsp.settings` keys autocomplete and validate as you type; on Stable Zed the settings still apply, just without in-editor autocomplete (use the template above). This lights up on Stable automatically once the 0.8 extension API reaches the registry.
 
+### Settings that need project trust
+
+Settings a repository carries in its own `.vscode/settings.json`, `.zed/settings.json` or
+`.vscode/launch.json` apply on a clone, which makes a few of them a way to choose what runs on
+your machine: analyzer assemblies, raw `alc` switches, assembly probing paths, package feeds, and
+the Business Central server a cached token is sent to. Those apply only after
+`al-explorer trust`. Everything else applies as before. See
+[project trust](Docs/features/project-trust.md) for the full list, the message you get when
+something is ignored, and how agents are treated.
+
 ### Project-file schemas (app.json, rulesets)
 
 This extension ships JSON Schemas for the AL project files you edit by hand: `app.json`,
