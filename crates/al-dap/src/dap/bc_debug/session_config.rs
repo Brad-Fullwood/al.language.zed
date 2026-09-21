@@ -843,6 +843,7 @@ mod tests {
         // parsed above and consumed by the native debug session.
         let zed_owned = ["adapter", "build", "label", "request"];
         let native_owned = [
+            "acceptInvalidCerts",
             "authentication",
             "breakOnError",
             "breakOnNext",
@@ -874,6 +875,84 @@ mod tests {
         assert_eq!(
             actual, owned,
             "schema fields must never advertise native no-ops"
+        );
+    }
+
+    /// Fields `from_dap_args` reads but the schema does not declare, with the
+    /// reason each is deliberately undeclared. An entry here gets no
+    /// completion, no description and no validation signal in `.zed/debug.json`,
+    /// so adding one is a decision, not a default.
+    const UNDECLARED_BY_DESIGN: [&str; 0] = [];
+
+    /// Collect every literal key `from_dap_args` looks up in the DAP argument
+    /// object: `optional_*(args, "key", …)` and `args.get("key")`.
+    fn keys_read_by_from_dap_args(source: &str) -> BTreeSet<&str> {
+        let start = source
+            .find("pub fn from_dap_args")
+            .expect("from_dap_args must exist");
+        // The function body ends at the first `\n    }\n` after it, which is the
+        // closing brace of an `impl`-level fn (four-space indent).
+        let end = start
+            + source[start..]
+                .find("\n    }\n")
+                .expect("from_dap_args must be closed at impl indentation");
+        let body = &source[start..end];
+
+        let mut keys = BTreeSet::new();
+        for (marker, rest_after_marker) in [("args,", true), ("args.get(", false)] {
+            let mut cursor = 0usize;
+            while let Some(hit) = body[cursor..].find(marker) {
+                let after = cursor + hit + marker.len();
+                cursor = after;
+                let mut tail = &body[after..];
+                if rest_after_marker {
+                    tail = tail.trim_start();
+                }
+                let Some(quoted) = tail.strip_prefix('"') else {
+                    continue;
+                };
+                let Some(close) = quoted.find('"') else {
+                    continue;
+                };
+                keys.insert(&quoted[..close]);
+            }
+        }
+        assert!(
+            keys.len() > 20,
+            "the key scanner found only {} keys, so it no longer matches how \
+             from_dap_args reads its arguments",
+            keys.len()
+        );
+        keys
+    }
+
+    #[test]
+    fn every_field_from_dap_args_reads_is_declared_by_the_debug_schema() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../../debug_adapter_schemas/al.json"))
+                .expect("debug adapter schema must be valid JSON");
+        let declared = schema["properties"]
+            .as_object()
+            .expect("debug adapter schema must expose properties")
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+
+        let read = keys_read_by_from_dap_args(include_str!("session_config.rs"));
+        let exempt = UNDECLARED_BY_DESIGN.into_iter().collect::<BTreeSet<_>>();
+
+        let undeclared = read
+            .difference(&declared)
+            .filter(|key| !exempt.contains(*key))
+            .copied()
+            .collect::<Vec<_>>();
+
+        assert!(
+            undeclared.is_empty(),
+            "from_dap_args reads {undeclared:?}, which debug_adapter_schemas/al.json does not \
+             declare. The schema has no additionalProperties: false, so an undeclared field \
+             takes effect in .zed/debug.json with no completion, no description and no \
+             validation error. Declare it, or add it to UNDECLARED_BY_DESIGN with a reason."
         );
     }
 
