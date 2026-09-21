@@ -99,3 +99,8 @@ Append-only. Newest entry last.
 
 - 8 findings in `findings/r2-security.md`. Critical: a cloned repository can ship `.vscode/settings.json` with `al.codeAnalyzers` pointing at its own DLL, which a build loads into the compiler process. High: `launch.json` is both the allowlist for cached tokens and a place a repository can name a server. High: a dangling symlink inside the project defeats path containment for output files. Held up under attack: archive entry checks, `safe_join`, decompression caps, the `text` parameter, redirect handling, the token cache, the plugin scripts.
 - Decision: project trust. Privileged repository settings apply only after the user runs `al-explorer trust`. Trust is stored outside the repository and keyed to a hash of the privileged values. MCP and daemon callers cannot grant it.
+
+## 2026-09-21 22:40 BST: test depth merged, daemon projection merging
+
+- Merged `campaign/test-depth`. Full gates: clippy clean, 90 suites, 4688 passed, 0 failed, 10 ignored.
+- Merged `campaign/ai-daemon-projection` locally, full gates running. Haiku context bytes on the seven plugin questions fell on six of seven (for example 9634 to 2889 for a field impact question).
