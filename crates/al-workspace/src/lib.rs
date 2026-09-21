@@ -774,6 +774,16 @@ impl Workspace {
             })
             .sum();
         drop(packages);
+        let dependency_source = self
+            .dependency_source_index
+            .read()
+            .map_err(|_| WorkspaceStateError::poisoned("dependency_source_index"))?
+            .as_ref()
+            .map(|cache| (cache.index.memory_stats(), cache.index.len()));
+        let (dependency_source_index_memory, dependency_source_files) = match dependency_source {
+            Some((stats, files)) => (Some(stats), files),
+            None => (None, 0),
+        };
         let insight_graph_memory = self
             .insight_graph
             .read()
@@ -799,6 +809,8 @@ impl Workspace {
             document_store_memory,
             file_index_memory,
             package_metadata_bytes,
+            dependency_source_index_memory,
+            dependency_source_files,
             insight_graph_memory,
             call_graph_memory,
         })
@@ -852,6 +864,12 @@ pub struct WorkspaceMemoryStats {
     pub document_store_memory: al_source::documents::DocumentStoreMemoryStats,
     pub file_index_memory: al_source::file_index::FileIndexMemoryStats,
     pub package_metadata_bytes: usize,
+    /// The parsed AL source of every loaded package, when that index is built.
+    /// It holds one text plus one tree-sitter tree per embedded `.al`, so for
+    /// a source-bearing Base Application it is the largest single allocation
+    /// in the process.
+    pub dependency_source_index_memory: Option<al_source::file_index::FileIndexMemoryStats>,
+    pub dependency_source_files: usize,
     pub insight_graph_memory: Option<al_insight::graph::InsightGraphMemoryStats>,
     pub call_graph_memory: Option<al_insight::index::CallGraphMemoryStats>,
 }
@@ -1190,6 +1208,45 @@ mod workspace_lifecycle_tests {
             rebuilt.node_count() > node_count,
             "the stale graph was served instead of rebuilding: {} nodes",
             rebuilt.node_count()
+        );
+    }
+
+    /// The diagnostics endpoint reported a small `tracked_bytes` while the
+    /// dependency source index and the package source indexes, the two
+    /// largest allocations for a source-bearing Base Application, were not
+    /// counted at all.
+    #[test]
+    fn memory_stats_report_the_dependency_and_package_source_indexes() {
+        let workspace = make_workspace();
+        let stats = workspace.memory_stats().unwrap();
+        assert!(
+            stats.dependency_source_index_memory.is_none(),
+            "nothing is built yet"
+        );
+        assert_eq!(stats.dependency_source_files, 0);
+
+        let index = Arc::new(FileIndex::new());
+        index.add_file(
+            PathBuf::from("/__al_dependency_sources__/pkg/Obj.al"),
+            r#"codeunit 50100 "Dep" { procedure Gamma() begin end; }"#.to_string(),
+        );
+        *workspace.dependency_source_index.write().unwrap() = Some(DependencySourceCache {
+            fingerprint: Vec::new(),
+            index,
+            skipped_files: 0,
+        });
+
+        let stats = workspace.memory_stats().unwrap();
+        assert_eq!(stats.dependency_source_files, 1);
+        let dependency = stats
+            .dependency_source_index_memory
+            .expect("a built dependency index is reported");
+        assert!(dependency.tracked_bytes > 0);
+        // The package source-index cache is process-global, so it is reported
+        // through the symbol index rather than owned here.
+        assert_eq!(
+            stats.symbol_index_memory.package_source_index_count,
+            al_symbols::source_index::cached_index_count()
         );
     }
 
