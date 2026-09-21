@@ -159,7 +159,7 @@ item that file left unticked, plus the files its checklist does not name.
 - severity: low
 - scenario: `NativeDebugSession::stop` logs a warning and returns `Ok(())` unconditionally, and `stop_debugging` one layer down does the same, so `shutdown_result` is always `Ok`. Two of the four match arms and the whole `CaptureAndShutdown` error variant are unreachable, and the code reads as if a failed teardown discards a good snapshot when in fact a failed teardown is invisible to the caller. A BC session that refuses `StopDebugging` leaves an attached debugger on the server and the snapshot path reports complete success.
 - fix: decide which behaviour is wanted. Either have `stop()` return the error, in which case keep the match but return the snapshot rather than dropping it on a teardown failure, or delete the two dead arms and `CaptureAndShutdown`.
-- status: open
+- status: fixed 61b20718 (`stop()` returns the error; a good snapshot survives a failed teardown with a warning)
 
 ### [GAP] Snapshot capture rejects two breakpoints on the same line number when BC does not report the object
 - where: crates/al-test/src/backends/snapshot.rs:191-210 (`candidates` filter and the `_ =>` arm)
@@ -173,21 +173,21 @@ item that file left unticked, plus the files its checklist does not name.
 - severity: medium
 - scenario: `object_matches` exists because BC silently coerces a camelCase `ApplicationObjectIdWrapper` to object 0/0 (session.rs:743 documents exactly that). When it is false the code still has a live `bp_id` from BC, reports `verified: false` to the client, and then does not record the id in `self.breakpoints`. Nothing ever calls `remove_breakpoint` for it, so the breakpoint stays armed on the server for the life of the session. Execution then stops at a location the DAP client believes has no breakpoint. In snapshot capture that stop reaches `capture_with_session`, matches no configured breakpoint, and the whole capture fails with `UnexpectedStop`. The existing test asserts only `!infos[0].verified` and never checks that a `RemoveBreakpoint` frame was sent.
 - fix: call `self.session.remove_breakpoint(bp_id)` in the mismatch branch before pushing the unverified info, and extend `set_breakpoints_rejects_silently_coerced_object_id` to assert the removal frame.
-- status: open
+- status: fixed 61b20718
 
 ### [BUG] A rejected configurationDone is retried on every debug command with a 120-second budget and no backoff
 - where: crates/al-dap/src/native_debug.rs:222-232 (`if !self.configured && self.session.is_attached()`), budget from crates/al-dap/src/dap/bc_debug/wire.rs:45
 - severity: medium
 - scenario: `drain_events` runs at the head of `state`, `stack`, `variables`, `globals`, `expand`, `continue_exec` and `step`. Once `OnAttachedToConnection` has arrived, every one of those calls retries `configuration_done` until it succeeds, and `DebugAdapterConfigurationDone` carries a 120-second invoke budget. A BC server that rejects the options by timing out (rather than by returning an error) makes each retry cost up to 240 seconds, because `configuration_done` also falls back to the no-args form on failure. The user's next "step" in the editor blocks for four minutes, and `capture_with_session`, which calls `state()` on a 20 ms interval, blocks the whole interval arm for the same period until its own deadline fires. The warn text "will retry" reads as a cheap retry.
 - fix: cap the attempts (say three) or back off, and mark the session failed once the cap is reached so the adapter reports a clear configuration error rather than stalling each command.
-- status: open
+- status: fixed 61b20718
 
 ### [GAP] `BreakpointHit.breakpoint_id` is always zero, so debug history cannot be tied back to a breakpoint
 - where: crates/al-dap/src/native_debug.rs:205, field declared at crates/al-dap/src/dap/types.rs:92, surfaced in the CLI response contract at crates/al-explorer/src/cli/commands/response_contract.rs:1049
 - severity: low
 - scenario: the only production write of the field is the literal `breakpoint_id: 0`. `set_breakpoints` already knows every BC id it registered per file, and a Break event carries the object identity, so the id could be resolved, but nothing does. Every entry the `debug history` surface returns reports `breakpoint_id: 0`, and a caller that groups hits by breakpoint gets one bucket. The snapshot backend had to rebuild its own `(object_type, object_id, line)` to id map at snapshot.rs:131 for exactly this reason.
 - fix: resolve the id from the stored `breakpoints` map using the Break event's object and line, or drop the field from the response contract so consumers stop trusting it.
-- status: open
+- status: fixed 61b20718
 
 ### [FALSE-GREEN] `spawn_echo_and_kill` passes whether or not the subprocess spawns
 - where: crates/al-dap/src/dap/client.rs:237-244
@@ -208,7 +208,7 @@ item that file left unticked, plus the files its checklist does not name.
 - severity: low
 - scenario: `grep -rn` across `crates/` finds each name only at its declaration. None has a `#[from]`, so none can be produced implicitly by `?` either. `DapError::SessionNotPaused` in particular advertises a guard the adapter does not have: `native_debug::variables` and `eval` query BC whatever the session state is, and the "not paused" case surfaces as whatever the hub happens to answer.
 - fix: delete the four variants, or implement the guard `SessionNotPaused` describes in `variables`/`stack`/`eval` and construct it there.
-- status: open
+- status: fixed 61b20718 (all four deleted)
 
 ### [FALSE-GREEN] A cluster of harness tests named after a capability assert nothing about that capability
 - where: crates/al-test-harness/tests/real_world.rs:613 (`test_completion_after_dot`), :756 (`test_formatting_idempotent`), :957 (`test_hover_on_keyword`), :971 (`test_hover_on_string_literal`), :985 (`test_empty_file`); crates/al-test-harness/tests/zed_simulation.rs:208 (`test_fixture_diagnostics_on_real_files`), :227 (`test_fixture_cross_file_goto_definition`), :1547 (`test_fixture_code_actions_no_crash`); crates/al-test-harness/tests/edit_lifecycle.rs:634 (`test_edit_h02_edit_to_invalid_al`)
