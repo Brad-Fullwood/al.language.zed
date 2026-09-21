@@ -84,7 +84,8 @@ current code are tagged [STILL-OPEN].
   `find_zip_offset` from `read_app_bytes` too, or make `read_app_file` memory-map/read and
   go through the same probe. Keeping both means a package that loads from disk may fail
   when the same bytes arrive over the wire.
-- status: open
+- status: fixed 229e8bbf. Both paths read the trailer and share the entry-count refusal; the
+  byte path falls back to the zip reader's own prefix inference.
 
 ### [BUG] `render_outline` quotes object/field/enum names but not key, method, parameter or variable names
 - where: crates/al-symbols/src/virtual_file.rs:546-575 (method + parameters), :605-612 (keys),
