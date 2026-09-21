@@ -2150,3 +2150,57 @@ fn flowfield_min_counts_rows_that_never_assigned_the_field() {
     );
     assert_eq!(ok(r), Value::Decimal(dec!(0)));
 }
+
+const EXPECTED_ERROR_CODEUNIT: &str = r#"codeunit 50146 "Expected Error Tests"
+{
+    var
+        Assert: Codeunit "Library Assert";
+
+    procedure Boom()
+    begin
+        Error('The order must have a customer');
+    end;
+
+    procedure Matching(): Integer
+    begin
+        asserterror Boom();
+        Assert.ExpectedError('must have a customer');
+        exit(1);
+    end;
+
+    procedure Mismatched(): Integer
+    begin
+        asserterror Boom();
+        Assert.ExpectedError('a completely different message');
+        exit(1);
+    end;
+
+    procedure NoErrorAtAll(): Integer
+    begin
+        Assert.ExpectedError('anything');
+        exit(1);
+    end;
+}
+"#;
+
+#[test]
+fn assert_expected_error_matches_a_substring_of_the_caught_error() {
+    let files = [("/ws/ExpectedError.al", EXPECTED_ERROR_CODEUNIT)];
+    assert_eq!(
+        ok(run(&files, "Expected Error Tests", "Matching", vec![])),
+        Value::Integer(1)
+    );
+
+    let mismatch = error_message(run(&files, "Expected Error Tests", "Mismatched", vec![]));
+    assert!(
+        mismatch.contains("Assert.ExpectedError failed")
+            && mismatch.contains("The order must have a customer"),
+        "expected the BC failure message naming both texts, got: {mismatch}"
+    );
+
+    let none = error_message(run(&files, "Expected Error Tests", "NoErrorAtAll", vec![]));
+    assert!(
+        none.contains("has not been thrown") || none.contains("Assert.ExpectedError failed"),
+        "expected a thrown-nothing failure, got: {none}"
+    );
+}

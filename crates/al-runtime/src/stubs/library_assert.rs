@@ -126,6 +126,40 @@ pub fn fail(args: &[Value]) -> Eval {
     err(msg)
 }
 
+/// `Assert.ExpectedError(Expected: Text)` — the last error's text must contain
+/// `Expected`.
+///
+/// Ported from the Library Assert codeunit in BCApps, which compares with
+/// `StrPos(GetLastErrorText(), Expected) = 0` and reports
+/// `Assert.ExpectedError failed. Expected: %1. Actual: %2.` on a miss. An empty
+/// `Expected` with no error raised is the codeunit's "The error has not been
+/// thrown." case; this runtime has no error callstack, so an absent
+/// `ctx.last_error` stands in for an empty one.
+///
+/// Unlike the other members this one reads the interpreter context, so it is
+/// dispatched in `dispatch_call_scoped` rather than through a `StubFn`.
+pub fn expected_error(args: &[Value], last_error: Option<&ErrorInfo>) -> Eval {
+    let expected = match args {
+        [Value::Text(expected)] | [Value::Code(expected)] => expected.as_str(),
+        [] => return err("Assert.ExpectedError expects (Text)"),
+        _ => return err("Assert.ExpectedError expects (Text)"),
+    };
+    let actual = last_error.map(|error| error.message.as_str()).unwrap_or("");
+    if actual.is_empty() && expected.is_empty() {
+        return match last_error {
+            Some(_) => ok(),
+            None => err("The error has not been thrown."),
+        };
+    }
+    if actual.contains(expected) {
+        ok()
+    } else {
+        err(format!(
+            "Assert.ExpectedError failed. Expected: {expected}. Actual: {actual}."
+        ))
+    }
+}
+
 fn render_value(v: &Value) -> String {
     use Value::*;
     match v {
@@ -133,7 +167,11 @@ fn render_value(v: &Value) -> String {
         Decimal(n) => n.normalize().to_string(),
         Boolean(b) => b.to_string(),
         Text(s) | Code(s) => format!("\"{s}\""),
-        Date(d) | Time(d) | DateTime(d) => d.to_string(),
+        // A second renderer used to print these as their day and millisecond
+        // carriers, so `expected 739068 but got 739069` named no date.
+        Date(_) | Time(_) | DateTime(_) | Option { .. } => {
+            crate::interpreter::dispatch::render_value(v)
+        }
         Null => "null".into(),
         Empty => "<empty>".into(),
         other => format!("<{}>", other.type_name()),
@@ -307,6 +345,45 @@ mod tests {
                 Value::Decimal(dec!(0.001)),
             ]),
             "AreNearlyEqual failed",
+        );
+    }
+
+    #[test]
+    fn failure_messages_name_dates_not_day_carriers() {
+        let july_first = crate::interpreter::value::al_days_from_ymd(2024, 7, 1);
+        assert_fail_contains(
+            are_equal(&[
+                Value::Date(july_first),
+                Value::Date(july_first + 1),
+                Value::Text("date".into()),
+            ]),
+            "07/01/2024",
+        );
+        assert_fail_contains(
+            are_equal(&[Value::Time(45_296_000), Value::Time(0)]),
+            "12:34:56",
+        );
+    }
+
+    #[test]
+    fn expected_error_matches_a_substring_and_reports_both_texts() {
+        let raised = ErrorInfo {
+            message: "The order must have a customer".to_string(),
+            error_type: None,
+            source: None,
+        };
+        assert_pass(expected_error(
+            &[Value::Text("must have a customer".into())],
+            Some(&raised),
+        ));
+        assert_fail_contains(
+            expected_error(&[Value::Text("something else".into())], Some(&raised)),
+            "Assert.ExpectedError failed. Expected: something else. Actual: The order must have a \
+             customer.",
+        );
+        assert_fail_contains(
+            expected_error(&[Value::Text(String::new())], None),
+            "The error has not been thrown.",
         );
     }
 }

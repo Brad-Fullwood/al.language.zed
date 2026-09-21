@@ -355,6 +355,9 @@ pub(crate) fn dispatch_call_scoped(
     // a callee's body.
     ctx.stmt_position = false;
     if let Some(recv) = receiver {
+        if stubs::is_context_member(recv, procedure) {
+            return dispatch_stub_with_context(recv, procedure, &args, ctx);
+        }
         if let Some(stub_fn) = stubs::resolve(recv, procedure) {
             return stub_fn(&args);
         }
@@ -539,6 +542,23 @@ pub(crate) fn dispatch_call_scoped(
     }
 
     dispatch_workspace_procedure(receiver, procedure, args, stack, ctx)
+}
+
+/// Run a stub member that reads the interpreter context, which a context-free
+/// [`stubs::StubFn`] cannot. `stubs::is_context_member` decides membership, so
+/// an unmatched name here means the two lists drifted apart.
+fn dispatch_stub_with_context(
+    receiver: &str,
+    procedure: &str,
+    args: &[Value],
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    if procedure.eq_ignore_ascii_case("ExpectedError") {
+        return crate::stubs::library_assert::expected_error(args, ctx.last_error.as_ref());
+    }
+    simple_error(format!(
+        "stub member '{receiver}.{procedure}' is listed as context-aware but has no implementation"
+    ))
 }
 
 /// Look up a procedure in the workspace and execute it.
@@ -2051,7 +2071,7 @@ pub(crate) fn clock_current_datetime() -> i64 {
 /// (`MM/DD/YYYY`, `HH:MM:SS`), not their raw integer carriers; the undefined
 /// values (0D/0T and the zero DateTime) render as the empty string, matching
 /// BC.
-fn render_value(v: &Value) -> String {
+pub(crate) fn render_value(v: &Value) -> String {
     match v {
         Value::Integer(n) | Value::BigInteger(n) => n.to_string(),
         Value::Decimal(n) => n.normalize().to_string(),
