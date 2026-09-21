@@ -579,7 +579,7 @@ fn find_member_node<'a>(
         if kind == member.kind.declaration_kind() {
             if let Some(name_node) = node.child_by_field_name("name") {
                 let node_name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
-                let clean = node_name.trim_matches('"');
+                let clean = al_syntax::clean_identifier(node_name);
                 if clean.eq_ignore_ascii_case(member.name) {
                     return Some((node, member_signature(node, source)));
                 }
@@ -908,7 +908,7 @@ fn find_procedure_decl_line(
             if child.kind() == "procedure_declaration" || child.kind() == "trigger_declaration" {
                 if let Some(name_node) = child.child_by_field_name("name") {
                     if let Ok(text) = name_node.utf8_text(source.as_bytes()) {
-                        let clean = text.trim_matches('"');
+                        let clean = al_syntax::clean_identifier(text);
                         if clean.eq_ignore_ascii_case(name) {
                             let row = name_node.start_position().row;
                             let sig = source
@@ -1558,6 +1558,29 @@ table 50101 "Shipment Line"
     end;
 }
 "#;
+
+    /// AL escapes an embedded `"` in a quoted name by doubling it, so
+    /// `"Do ""It"" Now"` names the procedure `Do "It" Now`. Stripping quote
+    /// runs yields `Do ""It"" Now` with its outer quotes gone but the doubling
+    /// left in, which matches neither the symbol index nor another occurrence.
+    #[test]
+    fn source_finds_a_member_whose_name_contains_an_escaped_quote() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/project/Quoted.al"),
+            "codeunit 50100 \"Quoted CU\"\n\
+             {\n\
+             \x20   procedure \"Do \"\"It\"\" Now\"()\n\
+             \x20   begin\n\
+             \x20   end;\n\
+             }\n"
+            .to_string(),
+        );
+
+        let result = source(&ws, "Quoted CU", None, None, procedure("Do \"It\" Now"))
+            .expect("the doubled quote is an escape, not part of the name");
+        assert_eq!(result.proc_name.as_deref(), Some("Do \"It\" Now"));
+    }
 
     /// The grammar nests attributes inside `procedure_declaration`, so a text
     /// scan for the first balanced `(...)` found the attribute's argument list

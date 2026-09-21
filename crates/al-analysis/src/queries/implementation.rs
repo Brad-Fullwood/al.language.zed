@@ -128,7 +128,7 @@ fn find_implements_clause_match(
                 continue;
             };
             if let Ok(t) = token.utf8_text(source) {
-                if t.trim_matches('"').to_lowercase() == interface_lower {
+                if al_syntax::clean_identifier(t).to_lowercase() == interface_lower {
                     return true;
                 }
             }

@@ -27,7 +27,8 @@ pub fn hover(
     };
     let source = text.as_bytes();
     let node_text = node.utf8_text(source).unwrap_or("");
-    let clean_name = node_text.trim_matches('"');
+    let clean_name = al_syntax::clean_identifier(node_text);
+    let clean_name = clean_name.as_str();
 
     if clean_name.is_empty() {
         tracing::debug!("hover: empty clean_name, returning None");
@@ -190,7 +191,8 @@ pub fn hover(
             if n.kind() == "parameter" {
                 if let Some(name_node) = n.child_by_field_name("name") {
                     if let Ok(name_text) = name_node.utf8_text(source) {
-                        let pname = name_text.trim_matches('"');
+                        let pname = al_syntax::clean_identifier(name_text);
+                        let pname = pname.as_str();
                         for param in &proc_info.parameters {
                             if param.name.eq_ignore_ascii_case(pname) {
                                 let content = format!("```al\n{}\n```\n*(parameter)*", param);

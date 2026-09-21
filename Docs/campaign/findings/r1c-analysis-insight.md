@@ -191,7 +191,7 @@ Listed by neither checklist:
   ```
   It is not `local` (the framework requires it be reachable), nothing calls it, so it lands in `untested` on every run, alongside `[ConfirmHandler]`, `[ModalPageHandler]`, `[PageHandler]`, `[ReportHandler]`, `[RequestPageHandler]` and `[SendNotificationHandler]`. A test suite of any size therefore has its handlers reported as untested production code. The suite's own test (744-750) blesses the generic helper case but says nothing about handlers, which cannot be covered by construction.
 - fix: treat the handler attributes the same way `[Test]` is treated. `crate::queries::tests::is_test_attribute` is the obvious place for a sibling `is_test_handler_attribute`.
-- status: open
+- status: fixed ee8d1ffa — `queries::tests::is_framework_invoked_attribute` names the thirteen documented UI handlers plus `[TestInitialize]`/`[TestCleanup]`, and test_coverage uses it.
 
 ### [BUG] `object_infos` has no consumer, so every query still sees one object per file
 - where: crates/al-source/src/file_index.rs:167 (the map) against its readers in crates/al-analysis/src/workspace_sources.rs:181 and crates/al-analysis/src/queries/{search.rs:47, diagnostics.rs:486, transaction_lint.rs:351, tests.rs:390, hover.rs:301, definition.rs:145, source.rs:247, suggest_event.rs:59}, crates/al-analysis/src/resolution.rs:941 and 1373, crates/al-insight/src/calls.rs:1053, 1142, 1842, 1916
