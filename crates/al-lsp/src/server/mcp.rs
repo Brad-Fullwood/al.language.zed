@@ -106,6 +106,49 @@ fn result_schema(tool_name: &str) -> serde_json::Value {
         ),
         "al_symbolsearch" | "al_getdiagnostics" | "al_deadcode" | "al_sqlscan"
         | "al_entrypoints" | "al_trace_event" => object_array(),
+        "al_freeids" => object_result_schema(
+            serde_json::json!({
+                "mode": {"type": "string", "enum": ["object", "summary", "field", "value"]},
+                "kind": {"type": "string"},
+                "object": {"type": "string"},
+                "baseObject": {"type": "string"},
+                "ranges": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "from": {"type": "integer"},
+                            "to": {"type": "integer"},
+                            "used": {"type": "integer"},
+                            "free": {"type": "integer"},
+                        },
+                        "required": ["from", "to", "used", "free"],
+                    }
+                },
+                "kinds": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"type": "string"},
+                            "used": {"type": "integer"},
+                            "free": {"type": "integer"},
+                            "nextFree": {"type": "integer"},
+                        },
+                        "required": ["kind", "used", "free"],
+                    }
+                },
+                "nextFree": {"type": "integer"},
+                "free": {"type": "array", "items": {"type": "integer"}},
+                "usedCount": {"type": "integer"},
+                "freeCount": {"type": "integer"},
+                "sources": {"type": "array", "items": {"type": "string"}},
+                "used": {"type": "array", "items": {"type": "integer"}},
+                "truncated": {"type": "boolean"},
+                "warnings": {"type": "array", "items": {"type": "string"}},
+            }),
+            &["mode", "usedCount"],
+        ),
         "al_runtests" => object_result_schema(
             serde_json::json!({
                 "summaries": {"type": "array", "items": {"type": "object"}},
@@ -838,6 +881,55 @@ fn tools() -> &'static [ToolDef] {
                         "timeoutMs": {"type": "integer", "minimum": 1}
                     }),
                     &["snapshotPath", "bcVersion"],
+                )
+            },
+        },
+        ToolDef {
+            name: "al_freeids",
+            method: "freeIds",
+            description: "Pick the next free object ID, table field number or enum value ordinal \
+                          inside the idRanges declared in app.json. Use before creating any new \
+                          table, page, codeunit, report, query, xmlport, enum, permission set or \
+                          extension object, and before adding a field to a table extension or a \
+                          value to an enum extension. Counts every object in the workspace \
+                          (including the second and later objects in a multi-object file) and \
+                          every dependency package object inside the same range. Args: kind (an \
+                          object-kind keyword such as table or tableextension; omit for a \
+                          per-kind summary), object (a table, tableextension, enum or \
+                          enumextension whose next free field number or ordinal is wanted, which \
+                          takes precedence over kind), count (1 to 100, default 1) and \
+                          includeUsed (default false; the answer carries counts, not the whole \
+                          used list). An exhausted range is an error naming the range.",
+            schema: || {
+                obj_schema(
+                    serde_json::json!({
+                        "kind": {
+                            "type": "string",
+                            "enum": [
+                                "table", "tableextension", "page", "pageextension", "codeunit",
+                                "report", "reportextension", "xmlport", "query", "enum",
+                                "enumextension", "permissionset", "permissionsetextension"
+                            ],
+                            "description": "Object kind to allocate an ID for. Omit for a summary of every kind in use."
+                        },
+                        "object": {
+                            "type": "string",
+                            "description": "Table, tableextension, enum or enumextension to allocate a field number or enum ordinal in. Wins over kind, which then only disambiguates a shared name."
+                        },
+                        "count": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "default": 1,
+                            "description": "How many free numbers to return, in ascending order."
+                        },
+                        "includeUsed": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Add the full used-number list. Off by default because the answer is otherwise a few hundred bytes."
+                        }
+                    }),
+                    &[],
                 )
             },
         },
@@ -1622,6 +1714,62 @@ mod tests {
         assert!(text.contains("Hello World"), "search must find it: {text}");
     }
 
+    /// The allocator's whole point is one call that an agent can read inline,
+    /// so the tool call is pinned against the fixture project end to end.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tools_call_freeids_returns_the_next_free_id_for_a_kind() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../al-test-harness/data/test_al_project");
+        let workspace = ws();
+        al_workspace::initialize_core_workspace(&workspace, &root)
+            .await
+            .expect("fixture project must initialize");
+
+        let resp = handle_mcp_message(
+            &workspace,
+            &Notify::new(),
+            serde_json::json!({
+                "jsonrpc":"2.0","id":31,"method":"tools/call",
+                "params": {"name": "al_freeids", "arguments": {"kind": "table"}}
+            }),
+        )
+        .await
+        .expect("response");
+        assert_eq!(resp["result"]["isError"], false, "resp: {resp}");
+        let result = &resp["result"]["structuredContent"]["result"];
+        assert_eq!(result["nextFree"].as_i64(), Some(50101), "{result}");
+        validate_schema_value(result, &result_schema("al_freeids"), "result")
+            .expect("free-ids output must match its advertised result schema");
+
+        let text = resp["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text content");
+        assert!(
+            text.len() < 400,
+            "an agent must be able to read this inline: {} bytes, {text}",
+            text.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn tools_call_freeids_rejects_an_unknown_kind_at_the_schema() {
+        let resp = handle_mcp_message(
+            &ws(),
+            &Notify::new(),
+            serde_json::json!({
+                "jsonrpc":"2.0","id":32,"method":"tools/call",
+                "params": {"name": "al_freeids", "arguments": {"kind": "tabel"}}
+            }),
+        )
+        .await
+        .expect("response");
+        let message = resp["error"]["message"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a misspelt kind must be refused: {resp}"));
+        assert!(message.contains("arguments.kind"), "{message}");
+        assert!(message.contains("tableextension"), "{message}");
+    }
+
     #[tokio::test]
     async fn agent_diagnostics_explain_all_four_actionable_environment_gaps() {
         let workspace = ws();
@@ -1971,6 +2119,7 @@ mod tests {
             "al_testsnapshot",
             "al_testsnapshotreplay",
             "al_depgraph",
+            "al_freeids",
         ] {
             assert!(names.contains(&expected), "missing {expected}: {names:?}");
         }

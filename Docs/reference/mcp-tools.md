@@ -28,6 +28,7 @@ MCP without a way to invoke it.
 | `al_testsnapshot` | `tests.snapshot_capture` | `codeunitId`, `codeunitName`, `methodName`, `bcVersion`, `breakpoints`, `outputPath`; optional `config`, `timeoutMs` | live BC breakpoint-variable capture for one exact test method |
 | `al_testsnapshotreplay` | `tests.snapshot_replay` | `snapshotPath`, `bcVersion`; optional `config`, `timeoutMs` | re-run the recorded method on live BC and return field-level divergences |
 | `al_depgraph` | `deps.graph` | `format: json \| dot = json` | GUID-keyed direct/transitive package graph with missing/version-conflict reporting |
+| `al_freeids` | `freeIds` | `kind: object-kind keyword` (omit for a per-kind summary), `object: string` (table/tableextension/enum/enumextension, wins over `kind`), `count: number = 1` (max 100), `includeUsed: boolean = false` | next free object ID, table field number or enum ordinal inside the `app.json` idRanges, with per-range used/free counts |
 
 The complete method names accepted by `al_call`, grouped by capability, are in the
 [daemon method reference](./daemon-methods.md). Its `params` object is passed unchanged to the same
