@@ -112,7 +112,7 @@ pub enum SnapshotCommands {
         #[arg(long, default_value = "http://localhost:7049/BC")]
         server: String,
         /// Company name
-        #[arg(long, default_value = "")]
+        #[arg(long, required = true)]
         company: String,
         /// Optional description for the snapshot
         #[arg(long)]
@@ -133,7 +133,7 @@ pub enum SnapshotCommands {
         #[arg(long, default_value = "http://localhost:7049/BC")]
         server: String,
         /// Company name
-        #[arg(long, default_value = "")]
+        #[arg(long, required = true)]
         company: String,
         /// Username for BC Basic auth
         #[arg(long)]
@@ -150,7 +150,7 @@ pub enum SnapshotCommands {
         #[arg(long, default_value = "http://localhost:7049/BC")]
         server: String,
         /// Company name
-        #[arg(long, default_value = "")]
+        #[arg(long, required = true)]
         company: String,
         /// Username for BC Basic auth
         #[arg(long)]
@@ -172,7 +172,7 @@ pub enum ProfileCommands {
         #[arg(long, default_value = "http://localhost:7049/BC")]
         server: String,
         /// Company name
-        #[arg(long, default_value = "")]
+        #[arg(long, required = true)]
         company: String,
         /// Username for BC Basic auth
         #[arg(long)]
@@ -193,7 +193,7 @@ pub enum ProfileCommands {
         #[arg(long, default_value = "http://localhost:7049/BC")]
         server: String,
         /// Company name
-        #[arg(long, default_value = "")]
+        #[arg(long, required = true)]
         company: String,
         /// Username for BC Basic auth
         #[arg(long)]

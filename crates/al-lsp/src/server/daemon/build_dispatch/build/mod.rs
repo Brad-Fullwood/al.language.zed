@@ -5,12 +5,14 @@ mod compile;
 mod file_refresh;
 mod metrics;
 mod organize;
+mod publish;
 mod snapshot_profiling;
 mod source_lookup;
 
 pub(in crate::server::daemon) use compile::{dispatch_compile, dispatch_package};
 pub(in crate::server::daemon) use metrics::{dispatch_metrics, dispatch_profiler_hints};
 pub(in crate::server::daemon) use organize::{dispatch_organize_files, dispatch_sort_members};
+pub(in crate::server::daemon) use publish::dispatch_publish;
 pub(in crate::server::daemon) use snapshot_profiling::{dispatch_profiling, dispatch_snapshot};
 pub(in crate::server::daemon) use source_lookup::{
     dispatch_event_source, dispatch_location, dispatch_source,

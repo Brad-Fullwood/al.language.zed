@@ -255,6 +255,7 @@ pub(crate) fn verify_project_objects(
     let mut diagnostics = Vec::new();
     verify_dependencies(app_json, external, &mut diagnostics);
     verify_object_identity(app_json, objects, &mut diagnostics);
+    verify_metadata_name_collisions(objects, &mut diagnostics);
     verify_members(objects, &mut diagnostics);
     verify_page_change_contracts(objects, &mut diagnostics);
     verify_bindings(objects, external, &mut diagnostics);
@@ -1380,6 +1381,52 @@ fn verify_object_identity(
                 "ALN1002",
                 format!(
                     "Duplicate {} name '{}' (also declared in {others})",
+                    object.entry.kind, object.entry.name
+                ),
+            ));
+        }
+    }
+}
+
+/// Two objects whose names fold to the same `metadata_name` collide on their
+/// archive path (`ProfileSymbolReferences/<meta>.json`, `addin/<meta>.zip`).
+///
+/// The whole-package duplicate-path check in `assemble_app` catches that, but
+/// only as "multiple package parts resolve to the same archive path:
+/// ProfileSymbolReferences/_rsbokslut.json" — an internal package path, with no
+/// AL file, line, or object name to act on. Report it here, where both objects
+/// are known.
+fn verify_metadata_name_collisions(objects: &[EmitObject], out: &mut Vec<VerificationDiagnostic>) {
+    let mut folded: HashMap<(ObjectKind, String), Vec<&EmitObject>> = HashMap::new();
+    for object in objects {
+        if !matches!(
+            object.entry.kind,
+            ObjectKind::Profile | ObjectKind::ProfileExtension | ObjectKind::ControlAddIn
+        ) {
+            continue;
+        }
+        folded
+            .entry((
+                object.entry.kind,
+                crate::symbol_reference::metadata_name(&object.entry.name),
+            ))
+            .or_default()
+            .push(object);
+    }
+    for ((_kind, metadata), group) in folded.into_iter().filter(|(_, group)| group.len() > 1) {
+        for object in &group {
+            let others = group
+                .iter()
+                .filter(|candidate| !std::ptr::eq::<EmitObject>(**candidate, *object))
+                .map(|candidate| format!("'{}' in {}", candidate.entry.name, candidate.source_file))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push(VerificationDiagnostic::error_for_object(
+                object,
+                "ALN1008",
+                format!(
+                    "{} '{}' and {others} both resolve to the package name '{metadata}' \
+                     (non-identifier characters become '_')",
                     object.entry.kind, object.entry.name
                 ),
             ));

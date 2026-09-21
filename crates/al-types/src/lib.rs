@@ -13,7 +13,7 @@ pub use bc::{AuthMethod, EnvironmentType};
 pub use filename::{app_package_filename, sanitize_filename_component};
 pub use jsonc::{strip_json_comments, strip_trailing_commas};
 pub use procedure::ProcedureSource;
-pub use profiler::{ProfilerHint, ProfilerSession};
+pub use profiler::{ProfilerHint, ProfilerSession, MAX_PROFILE_FILE_BYTES};
 pub use test_result::{
     PersistenceError, TestCodeunitResult, TestMethodResult, TestRunRecord, TestStatus,
 };

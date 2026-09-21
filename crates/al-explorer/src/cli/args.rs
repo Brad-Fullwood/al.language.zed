@@ -3,12 +3,36 @@
 //! Split out of `cli/mod.rs`; the command routing that consumes these lives in
 //! `cli::run`. Re-exported from `cli` (`pub use args::*;`).
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
 use super::subcommands::{
     DebugCommands, ProfileCommands, SnapshotCommands, TestSnapshotCommands, XlfCommands,
 };
+
+/// `al-explorer authenticate <cmd>`.
+///
+/// A free-form `String` here meant `al authenticate clera` fell through the
+/// daemon's dispatch to the login branch and started a real browser or
+/// device-code flow, then failed the response contract after the login had
+/// already happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AuthenticateCommand {
+    Login,
+    Status,
+    Clear,
+}
+
+impl AuthenticateCommand {
+    /// The wire value the daemon dispatches on.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AuthenticateCommand::Login => "login",
+            AuthenticateCommand::Status => "status",
+            AuthenticateCommand::Clear => "clear",
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -329,6 +353,19 @@ Examples:
     },
     /// Compile AL project into .app file
     Package,
+    /// Compile the project and publish the .app to the Business Central dev API
+    ///
+    /// Reads the server from `.vscode/launch.json` or `.zed/debug.json`.
+    /// Credentials come from `BC_ACCESS_TOKEN` (AAD) or
+    /// `BC_USERNAME`/`BC_PASSWORD` (UserPassword, Windows).
+    Publish {
+        /// Launch configuration name (the first AL configuration if omitted)
+        #[arg(long)]
+        config: Option<String>,
+        /// Deploy incrementally through the RAD API instead of a full upload
+        #[arg(long)]
+        incremental: bool,
+    },
     /// Create a new AL project
     New {
         /// Directory for the new project
@@ -355,12 +392,12 @@ Examples:
     /// For non-interactive environments (CI, scripting) consider using
     /// `--password` on snapshot/profile commands instead. Note that passwords
     /// supplied via `--password` are visible in shell history and
-    /// `/proc/<pid>/cmdline`. Prefer reading credentials from a file or
-    /// environment variable when possible.
+    /// `/proc/<pid>/cmdline`. `BC_USERNAME` and `BC_PASSWORD` are read as a
+    /// fallback and keep the credential out of both.
     Authenticate {
         /// Subcommand: login (default), status, clear
-        #[arg(default_value = "login")]
-        cmd: String,
+        #[arg(value_enum, default_value_t = AuthenticateCommand::Login)]
+        cmd: AuthenticateCommand,
         /// Tenant ID or domain (auto-detected from project if omitted)
         #[arg(short, long)]
         tenant: Option<String>,
@@ -422,7 +459,7 @@ Examples:
         #[arg(long)]
         field: Option<String>,
         /// Event name to trace downstream (requires --object)
-        #[arg(long)]
+        #[arg(long, requires = "object")]
         event: Option<String>,
     },
     /// AL debug session commands
@@ -570,7 +607,7 @@ Examples:
         #[arg(long, default_value = "NewObject")]
         name: String,
         /// Source table name (required for page/report)
-        #[arg(long)]
+        #[arg(long, required_if_eq_any = [("kind", "page"), ("kind", "report")])]
         table: Option<String>,
         /// Page type: List, Card, Document (for page kind)
         #[arg(long)]

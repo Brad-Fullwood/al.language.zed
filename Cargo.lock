@@ -157,6 +157,7 @@ dependencies = [
  "al-project",
  "al-protocol",
  "al-symbols",
+ "al-types",
  "clap",
  "clap_complete",
  "crossterm",
@@ -413,8 +414,10 @@ dependencies = [
 name = "al-test-harness"
 version = "0.3.0"
 dependencies = [
+ "al-analysis",
  "al-bc",
  "al-compile",
+ "al-emit",
  "al-project",
  "al-publish",
  "al-test",

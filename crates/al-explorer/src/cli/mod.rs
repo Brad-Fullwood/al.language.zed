@@ -181,6 +181,10 @@ pub fn run(cli: Cli) -> ExitCode {
             role_id,
         } => lsp::cmd_permissions(&format, &name, id, &role_id, cli.json),
         Commands::Package => build::cmd_package(cli.json),
+        Commands::Publish {
+            config,
+            incremental,
+        } => build::cmd_publish(config.as_deref(), incremental, cli.json),
         Commands::New {
             dir,
             name,
@@ -193,7 +197,7 @@ pub fn run(cli: Cli) -> ExitCode {
             Err(error) => commands::report_error(&error, cli.json),
         },
         Commands::Authenticate { cmd, tenant } => {
-            lsp::cmd_authenticate(&cmd, tenant.as_deref(), cli.json)
+            lsp::cmd_authenticate(cmd.as_str(), tenant.as_deref(), cli.json)
         }
         Commands::Trace { event, depth, tree } => insight::cmd_trace(&event, depth, tree, cli.json),
         Commands::Intercept => insight::cmd_intercept(cli.json),

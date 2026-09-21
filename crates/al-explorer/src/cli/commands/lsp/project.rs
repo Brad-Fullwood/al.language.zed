@@ -251,6 +251,7 @@ pub fn cmd_authenticate(cmd: &str, tenant: Option<&str>, json: bool) -> ExitCode
 
     match request_checked(&mut client, "authenticate", Some(params)) {
         Ok(result) => {
+            let usable = cmd != "status" || any_tenant_authenticated(&result);
             if json {
                 print_json(&result);
             } else {
@@ -301,10 +302,37 @@ pub fn cmd_authenticate(cmd: &str, tenant: Option<&str>, json: bool) -> ExitCode
                     }
                 }
             }
-            ExitCode::SUCCESS
+            if usable {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
         }
         Err(e) => report_error(&e, json),
     }
+}
+
+/// Whether at least one tenant has a token that is present and unexpired.
+///
+/// `authenticate status` printed `not authenticated` for every tenant and
+/// still exited 0, so `al authenticate status && al download-symbols --source
+/// server` went on to run unauthenticated.
+pub(crate) fn any_tenant_authenticated(result: &serde_json::Value) -> bool {
+    result
+        .get("tenants")
+        .and_then(|value| value.as_array())
+        .is_some_and(|tenants| {
+            tenants.iter().any(|tenant| {
+                tenant
+                    .get("authenticated")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false)
+                    && !tenant
+                        .get("expired")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(true)
+            })
+        })
 }
 
 pub fn cmd_init_debug(project_root: &std::path::Path, json: bool) -> ExitCode {

@@ -49,6 +49,7 @@ pub(super) fn handles(method: &str) -> bool {
         method,
         "compile"
             | "package"
+            | "publish"
             | "debug"
             | "snapshot"
             | "profiling"
@@ -117,6 +118,17 @@ pub(super) fn handles(method: &str) -> bool {
 pub(super) fn validate(method: &str, params: Option<&Value>, result: &Value) -> Result<(), String> {
     let validation = match method {
         "compile" | "package" => validate_build(result),
+        "publish" => fields(
+            result,
+            "publish",
+            &[
+                ("success", Kind::Boolean),
+                ("server", Kind::String),
+                ("method", Kind::String),
+                ("diagnostics", Kind::Array),
+                ("steps", Kind::Array),
+            ],
+        ),
         "debug" => validate_debug(params, result),
         "snapshot" => validate_snapshot(params, result),
         "profiling" => validate_profiling(params, result),

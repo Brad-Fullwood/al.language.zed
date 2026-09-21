@@ -216,19 +216,14 @@ pub async fn compile_project_with_analyzers(
     let project_root_buf = std::fs::canonicalize(project_root)?;
     let project_root = project_root_buf.as_path();
 
-    static BUILD_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let seq = BUILD_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let build_tmp = project_root.join(format!(".al-build-tmp.{}.{seq}", std::process::id()));
-    std::fs::create_dir(&build_tmp)?;
-
-    struct TmpDirGuard(PathBuf);
-    impl Drop for TmpDirGuard {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let tmp_guard = TmpDirGuard(build_tmp.clone());
-    let out_dir = build_tmp.as_path();
+    // A random name, not `<pid>.<seq>`: a SIGKILL during an alc compile leaves
+    // the directory behind, and `create_dir` then failed with a bare
+    // `File exists` for the next process assigned that pid, with no hint about
+    // what to delete.
+    let tmp_guard = tempfile::Builder::new()
+        .prefix(".al-build-tmp.")
+        .tempdir_in(project_root)?;
+    let out_dir = tmp_guard.path();
 
     let mut cmd = al_project::toolchain::dotnet_command_async(&toolchain.alc);
     cmd.arg(format!("/project:{}", project_root.display()));
@@ -573,8 +568,6 @@ pub fn native_compile_with_packages(
     project_root: &Path,
     dependency_packages: Option<&[PathBuf]>,
 ) -> CompileResult {
-    use std::io::Write;
-
     let compile_started = std::time::Instant::now();
     let timestamp = al_emit::now_timestamp();
     let version = concat!("native-emit/", env!("CARGO_PKG_VERSION"));
@@ -626,12 +619,7 @@ pub fn native_compile_with_packages(
             };
             let out = project_root.join(&built.file_name);
             let write_started = std::time::Instant::now();
-            let write_result =
-                tempfile::NamedTempFile::new_in(project_root).and_then(|mut temp| {
-                    temp.write_all(&built.bytes)?;
-                    temp.as_file_mut().sync_all()?;
-                    temp.persist(&out).map(|_| ()).map_err(|error| error.error)
-                });
+            let write_result = al_emit::package::write_artifact_atomically(&out, &built.bytes);
             timings.output_write_ns =
                 u64::try_from(write_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
             timings.total_ns =

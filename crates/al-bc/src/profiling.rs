@@ -457,16 +457,7 @@ pub fn analyze_profile(
     })
 }
 
-/// Maximum size of an on-disk `.alcpuprofile` file `analyze_profile_file` will
-/// read into memory. A profile downloaded via `stop_profiling` is already
-/// bounded on the way in by `bc_client::MAX_BC_BINARY_RESPONSE_BYTES` (500
-/// MB); `analyze_profile_file` reads an arbitrary caller-supplied path
-/// directly off disk with no equivalent bound, unlike every other BC input
-/// path (`MAX_UPLOADABLE_APP_BYTES`, `MAX_BC_JSON_RESPONSE_BYTES`,
-/// `MAX_LAUNCH_FILE_BYTES`, …). Mirrors that same 500 MB cap so a hostile or
-/// mistakenly huge file can't be buffered wholesale into the daemon's address
-/// space before `serde_json` even starts parsing it.
-const MAX_PROFILE_FILE_BYTES: u64 = 500 * 1024 * 1024;
+pub use al_types::MAX_PROFILE_FILE_BYTES;
 
 pub async fn analyze_profile_file(
     path: &std::path::Path,

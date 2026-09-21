@@ -402,13 +402,37 @@ pub fn build_verified_app_from_project_with_packages(
     let mut sources: Vec<SourceFile> = Vec::new();
     let mut diagnostics: Vec<VerificationDiagnostic> = Vec::new();
     for f in &files {
-        let content = std::fs::read_to_string(f)
-            .map_err(|e| EmitError::Project(format!("reading {}: {e}", f.display())))?;
         let rel = f
             .strip_prefix(project_dir)
             .unwrap_or(f)
             .to_string_lossy()
             .replace('\\', "/");
+        let bytes = std::fs::read(f)
+            .map_err(|e| EmitError::Project(format!("reading {}: {e}", f.display())))?;
+        // A file saved as Windows-1252 (common in code ported from older NAV,
+        // where captions carry accented characters) used to fail the whole
+        // build with one ALN0000 on app.json, naming the wrong file and no
+        // line. Everything else in this pipeline reports a per-file problem as
+        // a diagnostic, so this does too.
+        let content = match String::from_utf8(bytes) {
+            Ok(content) => content,
+            Err(error) => {
+                let at = error.utf8_error().valid_up_to();
+                diagnostics.push(VerificationDiagnostic {
+                    file: rel.clone(),
+                    line: 1,
+                    column: 1,
+                    end_line: 1,
+                    end_column: 1,
+                    severity: VerificationSeverity::Error,
+                    code: "ALN0002",
+                    message: format!(
+                        "file is not valid UTF-8 (first invalid byte at offset {at});                          AL source must be UTF-8"
+                    ),
+                });
+                continue;
+            }
+        };
         let parsed = AlParser::parse_quick(&content);
         for error in &parsed.errors {
             let range = al_syntax::ts_range_to_syntax(&error.range, content.as_bytes());
@@ -879,6 +903,90 @@ mod tests {
         assert_eq!(diagnostic.file, "app.json");
         assert!(diagnostic.line > 1);
         assert!(diagnostic.end_column > diagnostic.column);
+    }
+
+    #[test]
+    fn a_non_utf8_source_file_is_one_diagnostic_not_a_dead_build() {
+        // A Windows-1252 file used to fail the whole build with a single
+        // ALN0000 on app.json reading "native verification failed to run:
+        // reading …: stream did not contain valid UTF-8" — the wrong file and
+        // no line, for a per-file problem.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{"id":"aaaaaaaa-1111-2222-3333-444444444444","name":"App","publisher":"P",
+                "version":"1.0.0.0","runtime":"15.0","idRanges":[{"from":50100,"to":50199}]}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/Good.al"),
+            "codeunit 50100 Good { procedure P() begin end; }",
+        )
+        .unwrap();
+        // `Caption = 'Årsavslutning';` in Windows-1252: 0xC5 is not valid UTF-8.
+        let mut latin1 = b"codeunit 50101 Bad { procedure P() begin Message('".to_vec();
+        latin1.push(0xC5);
+        latin1.extend_from_slice(b"rsavslutning'); end; }");
+        std::fs::write(dir.path().join("src/Bad.al"), &latin1).unwrap();
+
+        let result =
+            build_verified_app_from_project(dir.path(), "test", "2026-01-01T00:00:00Z").unwrap();
+
+        let diagnostic = result
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "ALN0002")
+            .expect("a UTF-8 diagnostic naming the offending file");
+        assert_eq!(diagnostic.file, "src/Bad.al");
+        assert_eq!(diagnostic.line, 1);
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.file == "app.json"),
+            "the error must not be attributed to app.json: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn colliding_metadata_names_name_both_objects() {
+        // "Ärsbokslut" and "Årsbokslut" both fold to "_rsbokslut", so both
+        // profiles want `ProfileSymbolReferences/_rsbokslut.json`. That used
+        // to abort the build with an internal package path and no AL file,
+        // line, or object name to act on.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{"id":"aaaaaaaa-1111-2222-3333-444444444444","name":"App","publisher":"P",
+                "version":"1.0.0.0","runtime":"15.0","idRanges":[{"from":50100,"to":50199}]}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/Profiles.al"),
+            "profile \"Ärsbokslut\" { Caption = 'A'; }\n\
+             profile \"Årsbokslut\" { Caption = 'B'; }\n",
+        )
+        .unwrap();
+
+        let result =
+            build_verified_app_from_project(dir.path(), "test", "2026-01-01T00:00:00Z").unwrap();
+
+        let diagnostic = result
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "ALN1008")
+            .unwrap_or_else(|| panic!("expected ALN1008, got {:?}", result.diagnostics));
+        assert_eq!(diagnostic.file, "src/Profiles.al");
+        assert!(
+            diagnostic.message.contains("_rsbokslut")
+                && diagnostic.message.contains("Ärsbokslut")
+                && diagnostic.message.contains("Årsbokslut"),
+            "both object names and the folded name must be in: {}",
+            diagnostic.message
+        );
     }
 
     #[test]
