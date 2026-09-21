@@ -62,3 +62,9 @@ Append-only. Newest entry last.
 ## 2026-09-21 13:30 BST: LSP and protocol fixes merged
 
 - Merged `campaign/fix-r1-lsp-protocol`, 15 findings including both security ones. Gates: fmt, clippy, 769 tests on al-lsp and al-protocol. Four of seven round 1 fix branches are in.
+
+## 2026-09-21 15:00 BST: analysis, emit and ID allocator merged
+
+- Merged `campaign/fix-r1-analysis-insight`, `campaign/fix-r1-emit-bc-explorer`, `campaign/ai-free-ids`. Merge conflicts: two line-table types added to `al-syntax/src/lib.rs` by two agents (kept both, queued a unification), and the daemon dispatch match in `daemon/mod.rs` twice.
+- The combined merge failed two catalog tests that no single branch could see: the daemon reference did not list `publish`, and the CLI smoke catalog had no `publish` case and used `snapshot list` without the new required `--company`. Fixed on the campaign branch.
+- Full workspace clippy and tests started.
