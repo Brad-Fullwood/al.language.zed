@@ -133,6 +133,7 @@ Current MCP tools:
 - `al_testsnapshot` - capture breakpoint-sampled variables while one exact test method runs on live BC.
 - `al_testsnapshotreplay` - re-run the exact test recorded by a baseline snapshot on live BC and return field-level divergences.
 - `al_depgraph` - build a GUID-keyed graph from the current `app.json` and loaded `.app` manifests, including implicit/transitive dependencies, missing packages, and real minimum-version conflicts, as JSON or Graphviz `dot`.
+- `al_freeids` - pick the next free object ID, table field number or enum value ordinal inside the `app.json` idRanges, counting every object in the workspace and every dependency package object in the same range. A table extension's fields are checked against the base table and the other extensions of it.
 
 The named tools intentionally mirror Microsoft's AL agent tool surface where possible, while adding analysis tools the official surface does not expose. They are ergonomic aliases, not an availability boundary: `al_call` forwards any method and parameter object to the same daemon JSON-RPC dispatcher used by the CLI and contributor tasks. Native LSP requests and execute commands use LSP server handlers, while sharing lower-level workspace, query, build, symbol, and test code.
 
@@ -275,7 +276,7 @@ The CLI command surface includes:
 - LSP-style queries: `hover`, `definition`, `references`, `signature`, `completions`, `symbols`, `folding`, `tokens`, `parse`, `rename`, `hints`.
 - Symbols and objects: `search`, `object`, `by-id`, `source`, `composed`, `builtins`, `rules`, `error-codes`, `generate-completions`, `version`.
 - Events and insight: `events`, `subscribers`, `event-source`, `trace`, `intercept`, `entrypoints`, `graph`, `impact`, `suggest-event`, `insight-stats`.
-- Analysis: `metrics`, `dead-code`, `sql-scan`, `duplicates`, `arch-lint`, `native-check`, `breaking`, `upgrade`, `obsolete`, `audit-data`, `permission-audit`, `profiler-hints`.
+- Analysis: `metrics`, `dead-code`, `sql-scan`, `duplicates`, `arch-lint`, `native-check`, `free-ids`, `breaking`, `upgrade`, `obsolete`, `audit-data`, `permission-audit`, `profiler-hints`.
 - Formatting/refactoring/codegen: `format`, `lint`, `fix`, `permissions`, `generate`, `add-application-area`, `add-tooltips`, `add-data-classification`, `sort-members`, `organize-files`.
 - Debug/profiling: `debug`, `snapshot`, `profile`.
 - Tests: `tests`, `test-run`, `test-run-all`, `test-coverage`, `test-mutate`, `test-affected`, `test-classify`, `test-snapshot`, `test-results`.

@@ -59,6 +59,7 @@ published input schema, including `minItems`/`maxItems` on array arguments.
 | `al_testsnapshot` | `tests.snapshot_capture` | — | Capture explicit breakpoint samples while one exact test method runs on live BC. |
 | `al_testsnapshotreplay` | `tests.snapshot_replay` | — | Re-run a baseline snapshot's exact test method on live BC and return divergences. |
 | `al_depgraph` | `deps.graph` | `format` (`json` or `dot`) | Return the GUID-keyed current-manifest/package dependency graph. |
+| `al_freeids` | `freeIds` | `kind` (object-kind keyword, omit for a per-kind summary), `object` (table/tableextension/enum/enumextension, wins over `kind`), `count` (1 to 100, default 1), `includeUsed` (default false) | Pick the next free object ID, table field number or enum value ordinal inside the `app.json` idRanges. |
 
 `al_debug` is intentionally stateful: the MCP process retains the workspace's `NativeDebugSession`
 between calls. This lets an agent execute a continuous debugging loop instead of launching isolated
