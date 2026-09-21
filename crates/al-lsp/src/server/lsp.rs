@@ -1593,9 +1593,14 @@ impl LanguageServer for AlServer {
                 continue;
             }
 
+            // Both guards are taken before the first swap, so the publication
+            // sequence below has no await point that a cancelled handler could
+            // unwind from with the indexes and the project disagreeing.
+            let mut published_project = self.workspace.project.write().await;
+            let mut published_config = self.workspace.config.write().await;
             self.workspace.symbols.replace_with(&symbols);
-            *self.workspace.project.write().await = Some(project);
-            *self.workspace.config.write().await = staged_config.clone();
+            *published_project = Some(project);
+            *published_config = staged_config.clone();
             self.workspace.replace_package_info(
                 loaded
                     .iter()
@@ -1610,6 +1615,8 @@ impl LanguageServer for AlServer {
             self.workspace.invalidate_insight_graph();
             self.workspace.mark_package_generation_changed();
             self.workspace.mark_generation_changed();
+            drop(published_config);
+            drop(published_project);
             self.semantic_diagnostic_cache.lock().await.clear();
             let symbol_count = self.workspace.symbols.len();
             drop(publication);

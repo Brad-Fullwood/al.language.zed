@@ -525,6 +525,14 @@ async fn publish_complete_generation(
     // acquired, the document store and its corresponding file-index overlays
     // cannot advance until publication finishes.
     let _publication = workspace.generation_lock.write().await;
+    // The project guard is taken before the first index swap, so the mutation
+    // sequence below contains no await point. `al.reindex` aborts any previous
+    // reindex task, and an await between swapping the file and symbol indexes
+    // and swapping the project left the two disagreeing, with the revision
+    // never bumped: every optimistic publisher then concluded nothing had
+    // changed and `require_project_root` handed out the old root against the
+    // new file index.
+    let mut published_project = workspace.project.write().await;
     for uri in workspace.documents.open_uris() {
         let (Ok(path), Some(text)) = (uri.to_file_path(), workspace.documents.get_text(&uri))
         else {
@@ -535,7 +543,7 @@ async fn publish_complete_generation(
 
     workspace.file_index.replace_with(staged_files);
     workspace.symbols.replace_with(staged_symbols);
-    *workspace.project.write().await = project;
+    *published_project = project;
     set_package_info(workspace, packages);
     workspace.invalidate_insight_graph();
     workspace.mark_package_generation_changed();
@@ -589,8 +597,11 @@ async fn refresh_current_symbol_generation(
             drop(publication);
             continue;
         }
+        // As in `publish_complete_generation`: no await between the first swap
+        // and the revision bump.
+        let mut published_project = workspace.project.write().await;
         workspace.symbols.replace_with(&symbols);
-        *workspace.project.write().await = Some(project);
+        *published_project = Some(project);
         set_package_info(workspace, &loaded);
         workspace.invalidate_insight_graph();
         workspace.mark_package_generation_changed();
@@ -2757,5 +2768,76 @@ mod tests {
         .expect("staging succeeds for an empty package set");
         assert_eq!(loaded, 0);
         assert!(workspace.package_revision() > packages_before);
+    }
+
+    /// `al.reindex` aborts the previous reindex task. Publication used to await
+    /// the project lock between swapping the file and symbol indexes and
+    /// swapping the project, so a cancel landing there left the indexes ahead
+    /// of the project with the revision never bumped. Publication must be
+    /// all-or-nothing under cancellation.
+    #[tokio::test]
+    async fn an_aborted_publication_never_leaves_a_half_swapped_generation() {
+        let workspace = std::sync::Arc::new(Workspace::new());
+        let root = tempfile::tempdir().unwrap();
+        let project = al_project::project::AlProject {
+            root: root.path().to_path_buf(),
+            app_json: al_project::project::AppManifest {
+                id: "test".to_string(),
+                name: "Test".to_string(),
+                publisher: "Test".to_string(),
+                version: "1.0.0.0".to_string(),
+                dependencies: Vec::new(),
+                application: None,
+                platform: None,
+                runtime: None,
+            },
+            packages_dir: root.path().join(".alpackages"),
+            packages: Vec::new(),
+            server_configs: Vec::new(),
+        };
+
+        // A reader holding the project lock is what the publication used to
+        // await on, which is where the abort landed.
+        let reader = workspace.project.read().await;
+
+        let staged_files = al_source::file_index::FileIndex::new();
+        staged_files.add_file(
+            root.path().join("Staged.Codeunit.al"),
+            "codeunit 50100 Staged\n{\n}\n".to_string(),
+        );
+        let staged_symbols = al_symbols::SymbolIndex::new();
+        let publisher = tokio::spawn({
+            let workspace = std::sync::Arc::clone(&workspace);
+            async move {
+                publish_complete_generation(
+                    &workspace,
+                    staged_files,
+                    &staged_symbols,
+                    Some(project),
+                    &[],
+                )
+                .await;
+            }
+        });
+
+        tokio::task::yield_now().await;
+        publisher.abort();
+        let _ = publisher.await;
+        drop(reader);
+
+        assert_eq!(
+            workspace.generation_revision(),
+            0,
+            "an aborted publication must not be observable"
+        );
+        assert!(
+            workspace.project.read().await.is_none(),
+            "the project must not be replaced without the indexes"
+        );
+        assert_eq!(
+            workspace.file_index.files.len(),
+            0,
+            "the file index must not be replaced without the project"
+        );
     }
 }
