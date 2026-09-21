@@ -5,14 +5,14 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 
 ## Coverage
 
-- [ ] crates/al-emit/src/assemble.rs
+- [x] crates/al-emit/src/assemble.rs
 - [x] crates/al-emit/src/project.rs
-- [ ] crates/al-emit/src/manifest.rs
+- [x] crates/al-emit/src/manifest.rs
 - [x] crates/al-emit/src/package.rs
-- [ ] crates/al-emit/src/symbol_extract.rs
-- [ ] crates/al-emit/src/symbol_reference.rs
-- [ ] crates/al-emit/src/method_id.rs
-- [ ] crates/al-emit/src/verification.rs
+- [x] crates/al-emit/src/symbol_extract.rs
+- [x] crates/al-emit/src/symbol_reference.rs
+- [x] crates/al-emit/src/method_id.rs
+- [x] crates/al-emit/src/verification.rs
 - [x] crates/al-compile/src/lib.rs
 - [x] crates/al-bc/src/bc_client.rs
 - [x] crates/al-bc/src/http_auth.rs
@@ -20,7 +20,7 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - [x] crates/al-bc/src/snapshot.rs
 - [x] crates/al-bc/src/profiling.rs
 - [x] crates/al-publish/src/lib.rs
-- [ ] crates/al-snapshot/src/diff.rs + format.rs
+- [x] crates/al-snapshot/src/diff.rs + format.rs
 - [ ] crates/al-explorer/src/cli/args.rs + subcommands.rs + mod.rs
 - [ ] crates/al-explorer/src/cli/commands/mod.rs
 - [ ] crates/al-explorer/src/cli/commands/build.rs
@@ -29,7 +29,7 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - [ ] crates/al-explorer/src/cli/commands/insight.rs
 - [ ] crates/al-explorer/src/cli/commands/lsp/*.rs
 - [x] crates/al-explorer/src/tui.rs + app/ + views/
-- [ ] Backlog re-verification pass (which 2026-07-31 items are still open)
+- [x] Backlog re-verification pass (which 2026-07-31 items are still open)
 
 ## Findings
 
@@ -101,5 +101,73 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - severity: medium
 - scenario: the native build reads each collected source with `std::fs::read_to_string` and maps any failure to `EmitError::Project`, which `native_compile` turns into a single `ALN0000` diagnostic on `app.json` reading "native verification failed to run: reading …: stream did not contain valid UTF-8". An AL file saved as Windows-1252 (common in code ported from older NAV, where captions and comments carry accented characters) therefore kills the entire build with an error pointing at the wrong file and no line information, instead of one diagnostic on the offending file. Everything else in this pipeline reports per-file problems as diagnostics.
 - fix: read the bytes, and on invalid UTF-8 push a `VerificationDiagnostic` for that file (line 1, a dedicated ALN code) and skip it, so the rest of the project still verifies and the message names the real file.
+- status: open
+
+### [BUG] the native manifest reads a `resourceExposurePolicy` key that no AL project ever writes
+- where: crates/al-emit/src/manifest.rs:156 (and 25, 32, 251-253)
+- severity: high
+- scenario: `from_app_json` reads `resourceExposurePolicy.includeSourceInPackageFile`. Microsoft's documented keys are `applyToDevExtension`, `allowDebugging`, `allowDownloadingSource` and `includeSourceInSymbolFile` (devenv-security-settings-and-ip-protection). This repo agrees with Microsoft and not with the emitter: `schemas/app.json:198-201` declares `applyToDevExtension` and `includeSourceInSymbolFile`, and `crates/al-analysis/src/scaffold.rs:679` writes `"includeSourceInSymbolFile": true` into every scaffolded project. So an app.json written by this toolchain's own `new` command, or by Microsoft's AL: Go! template, produces a native `.app` whose `<ResourceExposurePolicy>` silently omits that flag, and `applyToDevExtension` is never read at all. An IP-protection setting the developer believes they set is dropped from the shipped package.
+- fix: read `includeSourceInSymbolFile` (keeping `includeSourceInPackageFile` only if a real alc manifest is confirmed to use that name on the output side), add `applyToDevExtension`, and add a test that round-trips the exact `resourceExposurePolicy` block `scaffold.rs` generates.
+- status: open
+
+### [BUG] two object names that fold to the same `metadata_name` fail the build with an internal-path error
+- where: crates/al-emit/src/symbol_reference.rs:382-392, used at symbol_reference.rs:360-363 and assemble.rs:759, 806
+- severity: low
+- scenario: `metadata_name` replaces every non-`[A-Za-z0-9_]` character with `_`, and the result is used verbatim as an archive path (`ProfileSymbolReferences/<meta>.json`, `addin/<meta>.zip`). Two profiles named `"Ärsbokslut"` and `"Årsbokslut"`, or `"Sales Order"` and `"Sales_Order"`, both fold to one name, so `assemble_app`'s duplicate check (assemble.rs:1076-1080) aborts the whole build with `multiple package parts resolve to the same archive path: ProfileSymbolReferences/_rsbokslut.json` — an internal package path, with no AL file, line, or object name to act on. The same applies to two control add-ins whose names differ only in punctuation.
+- fix: detect the fold collision where the objects are known (in `build_profile_symbol_references` and `control_addin_bundle`) and emit a `VerificationDiagnostic` naming both objects and their source files, or disambiguate the metadata name with a suffix.
+- status: open
+
+### [BUG] the native emitter omits every `Label` translation unit from the packaged XLIFF
+- where: crates/al-emit/src/assemble.rs:305-381 (`xliff_xml`)
+- severity: high
+- scenario: `xliff_xml` emits units only for object/field captions, page control and action Caption/ToolTip, and page-extension control changes. It has no handling of `Label` declarations. `al-analysis`'s extractor does (crates/al-analysis/src/xliff.rs:221-236 emits `"{Kind} {hash} - NamedType {hash}"`), and `Docs/features/xliff-translation.md` documents `Codeunit 1535166296 - NamedType 3010734695` as a real alc id shape. So for `codeunit 50100 X { var GreetingLbl: Label 'Hello'; }` the packaged `TextData/<App>.TextData.en-US.xliff` contains no unit for `GreetingLbl`, and every `Error`/`Message`/`Confirm` string in a natively built app is untranslatable. `crates/al-explorer xlf generate` (the al-analysis path) *does* produce that unit, so the two XLIFF surfaces of this toolchain disagree about the same project.
+- fix: extract `Label`/`TextConst` declarations in `symbol_extract` and emit `{root_kind} {hash} - NamedType {hash}` units from `xliff_xml`, matching what `al-analysis/src/xliff.rs` already produces.
+- status: open
+
+### [TEST] no test pins the two independent XLIFF id implementations to each other
+- where: crates/al-emit/src/assemble.rs:149 and crates/al-analysis/src/xliff.rs:438, corpus at crates/al-test-harness/tests/emit_differential.rs:100-130
+- severity: medium
+- scenario: `name_hash` is implemented twice, deliberately (the al-analysis copy says so at xliff.rs:434-437), and the two crates run separate extractors over the same AL source to produce trans-unit ids that must match byte for byte or `xlf refresh` matches zero ids. Nothing asserts they agree. The one test that could have caught the missing-Label gap above, `emit_differential`, compares `TextData/DiffCorpus.TextData.en-US.xliff` against real alc output (line 352) but its corpus declares no `Label` anywhere, and it needs a local Microsoft toolchain to run at all.
+- fix: add a test in `al-test-harness` that runs both extractors over one fixture containing a table caption, a page control ToolTip and a `Label`, and asserts the two id sets are equal; add a `Label` to the differential corpus.
+- status: open
+
+## Backlog re-verification (2026-07-31 "Emit, BC & Explorer" section)
+
+Checked every item in that section against current code. All of them are fixed, most with a
+regression test and a comment naming the old behaviour:
+
+- XLIFF (al-analysis/src/xliff.rs): ids are now FNV `name_hash` (line 438), obsolete units are
+  sorted before append (line 947-951), `Locked` is honoured, empty captions are emitted,
+  page controls get distinct ids (test at line 2048).
+- xlf refresh dispatch (al-lsp/.../build_dispatch/xliff.rs): app name comes from the `original`
+  attribute (line 131), the write is a temp-file `persist` (line 164), and an ambiguous
+  `*.g.xlf` set is a hard error instead of an arbitrary pick (line 100).
+- al-bc: `Windows` auth is documented as Basic with a no-credentials warning, tenant is a
+  `?tenant=` query param with a mock test, `build_base_url` enforces `is_safe_http_server` and the
+  7049 default, `sanitize_error_body` is case-insensitive, snapshot errors preserve the HTTP
+  status, `rad_publish` has wiremock coverage in both al-bc and al-publish, and
+  `analyze_profile_file` has a 500 MB cap.
+- al-explorer: `bc_server_params` requires `--company` and falls back to `BC_USERNAME`/
+  `BC_PASSWORD`, `resolve_lint_targets` handles multi-file lint, `validate_with_alc` uses
+  `tempfile::tempdir()`, `debug stop` exits non-zero when nothing was stopped, mouse hit-testing
+  uses the last rendered area.
+- al-emit: `collect_al_files` is iterative with a canonicalized visited set,
+  `control_addin_bundle` de-duplicates outer `addin/src/` entries.
+- Docs: the `generate-completions` and XLIFF-id claims both match the code now.
+
+No item is carried forward as [STILL-OPEN]. Findings above are new.
+
+### [BUG] the emitted `.app` is written with owner-only permissions
+- where: crates/al-explorer/src/cli/commands/build.rs:209-215 and crates/al-compile/src/lib.rs:630-634
+- severity: low
+- scenario: both native write paths use `tempfile::NamedTempFile::new_in(...)` and `persist`. `NamedTempFile` creates its file with mode 0600, and `persist` is a rename, so the permission bits carry over: the produced `.app` ends up 0600 instead of the umask default (0644 for a normal `alc` or `fs::write`). A CI job that builds as one user and uploads or copies the artifact as another (a container step, a different agent user, a `docker COPY`) gets a permission-denied that the build itself reported as success.
+- fix: after `persist`, set the mode from the process umask (or call `std::fs::set_permissions` to 0644 on unix) so the artifact matches what `alc` and `fs::write` produce.
+- status: open
+
+### [PERF] native emission holds the whole project and the whole package in memory at once
+- where: crates/al-emit/src/project.rs:401-430, crates/al-emit/src/assemble.rs:1006-1013, crates/al-emit/src/package.rs:65-78
+- severity: low
+- scenario: `build_verified_app_from_project_with_packages` reads every `.al` file into `sources` and keeps the same text again inside `objects`; `assemble_app` then copies each source into `entries` (a third copy, `s.content.clone().into_bytes()`), `write_zip` builds the whole compressed archive in a `Vec<u8>`, and `write_app_package` allocates a fourth buffer for header plus zip. For a Base Application sized project this is several times the source size resident at peak, in a long-lived daemon. Every BC *input* path in this workspace has an explicit cap (`MAX_UPLOADABLE_APP_BYTES`, `MAX_BC_JSON_RESPONSE_BYTES`, `MAX_LAUNCH_FILE_BYTES`, `MAX_PROFILE_FILE_BYTES`); the emitter's own working set has none.
+- fix: at minimum drop `sources` content after `entries` is built (move rather than clone at assemble.rs:1012), and consider streaming `write_zip` into the output file instead of a `Vec`.
 - status: open
 

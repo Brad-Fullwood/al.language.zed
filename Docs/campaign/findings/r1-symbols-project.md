@@ -22,16 +22,16 @@ current code are tagged [STILL-OPEN].
 - [ ] al-symbols/src/oauth.rs
 - [x] al-symbols/src/source_availability.rs + language_data.rs + lib.rs
 - [ ] al-semantic/src/bridge.rs
-- [ ] al-semantic/src/host.rs + cache.rs + lifecycle.rs
-- [ ] al-types (jsonc.rs, filename.rs, rest)
-- [ ] al-source/src/file_index.rs
-- [ ] al-source/src/documents.rs + parsing.rs
-- [ ] al-project/src/project.rs
-- [ ] al-project/src/config.rs
-- [ ] al-project/src/toolchain.rs
+- [x] al-semantic/src/host.rs + cache.rs + lifecycle.rs
+- [x] al-types (jsonc.rs, filename.rs, rest)
+- [x] al-source/src/file_index.rs
+- [x] al-source/src/documents.rs + parsing.rs
+- [x] al-project/src/project.rs
+- [x] al-project/src/config.rs
+- [x] al-project/src/toolchain.rs
 - [ ] al-project/src/analyzers.rs + errors.rs
-- [ ] al-workspace/src/lib.rs
-- [ ] al-workspace/src/semantic_lifecycle.rs
+- [x] al-workspace/src/lib.rs
+- [x] al-workspace/src/semantic_lifecycle.rs
 - [ ] al-workspace/src/test_results.rs + doctor.rs
 
 ## Findings
@@ -199,5 +199,166 @@ current code are tagged [STILL-OPEN].
   availability reporting but not both.
 - fix: export one `pub fn is_workspace_package(package: &str) -> bool` from
   `source_availability` and call it from `composition`.
+- status: open
+
+### [BUG] The workspace file index keeps only one owner per (object name, kind), across all files
+- where: crates/al-source/src/file_index.rs:540-547
+- severity: medium
+- scenario: `owners.retain(|e| e.path != path && !e.kind.eq_ignore_ascii_case(&info.kind))`
+  keeps an existing owner only when it differs in *both* path and kind, so an existing owner
+  of the same kind in a **different file** is evicted. In a multi-app workspace (an app plus
+  its test app, or several customer apps under one root — the ordinary Zed/VS Code layout)
+  both apps commonly declare `codeunit "Install"`, `codeunit "Upgrade"` or
+  `page "Setup"`. Whichever file is indexed last wins: go-to-definition from app A's code on
+  `Install` jumps into app B's file, `object_paths` returns one path although its doc comment
+  promises "every file that declares an object named `name`", and `object_count` under-reports
+  the workspace. Object names are only unique within one extension in AL, not across them.
+- fix: keep one owner per (path, kind) rather than one per kind — `retain(|e| e.path != path
+  || !e.kind.eq_ignore_ascii_case(&info.kind))` — and make `object_path`/`object_path_of_kind`
+  prefer the owner under the same project root as the referring file.
+- status: open
+
+### [BUG] A dangling symlink or unreadable subdirectory aborts the whole toolchain search
+- where: crates/al-project/src/toolchain.rs:409-448 (`search_dir_recursive`)
+- severity: low
+- scenario: the walk propagates every `read_dir`, `file_type` and `canonicalize` failure with
+  `?`. `canonicalize` fails on a dangling symlink, which a `dotnet tool` store routinely
+  contains after a version is removed, and `read_dir` fails on a subdirectory the user cannot
+  read. Either one makes the entire package directory report `Err` — `search_dotnet_tool_store`
+  then logs it and skips that package directory, so a single broken link inside the only
+  installed AL toolchain hides that toolchain and the workspace reports `has_toolchain: false`.
+- fix: skip an entry whose `canonicalize`/`file_type` fails and continue the walk, the same
+  way `search_dotnet_tool_store` already tolerates a failing package directory. Only an error
+  reading `root` itself should abort.
+- status: open
+
+### [SIMPLIFY] Three separate JSONC strippers
+- where: crates/al-types/src/jsonc.rs:11 (`strip_json_comments`),
+  crates/al-project/src/config.rs:759 (`strip_jsonc`),
+  crates/al-lsp/src/server/workspace.rs:1454 (`strip_jsonc_comments_and_parse`)
+- severity: low
+- scenario: `al-project` already depends on `al-types`, and `config.rs:759` is a near
+  character-for-character copy of the `al-types` version with its own comment/string state
+  machine. The old audit item was fixed by adding block-comment support to `al-types::jsonc`;
+  the two other copies were not part of that fix, so a future correction (for example the
+  quotes-inside-block-comments desynchronisation the `al-types` tests cover) has to be made
+  three times.
+- fix: delete `al-project::config::strip_jsonc` and the al-lsp copy's stripper and call
+  `al_types::jsonc::strip_json_comments`.
+- status: open
+
+### [SLOP] `CoreInitError::SymbolPackages` is unreachable
+- where: crates/al-workspace/src/lib.rs:775
+- severity: low
+- scenario: the variant wraps `al_symbols::PackageLoadError`, which was produced by the old
+  all-or-nothing `load_packages_cached` call. `initialize_core_workspace` now uses
+  `load_packages_cached_lenient`, which returns failures in `CoreInitResult`, and nothing else
+  in `al-workspace` produces a `PackageLoadError`. The variant and its `#[from]` remain.
+- fix: remove the variant.
+- status: open
+
+### [BUG] [STILL-OPEN] The dependency source index is still all-or-nothing per package
+- where: crates/al-workspace/src/lib.rs:407-419
+- severity: low
+- scenario: the audit's per-file fix landed (a `.al` that does not parse is skipped with a
+  warning), but the two package-level calls still use `?`:
+  `source_index::get_or_build(app_path)?` and `source_index.extract_all_sources()?`. One
+  package whose embedded source trips a limit in `source_index` (a single `.al` over 32 MiB,
+  1 GiB total, a non-UTF-8 embedded file, or an archive entry that disappeared because the
+  `.app` was rewritten mid-build) fails the whole generation, so call-graph and insight
+  features go dark for every package rather than for that one.
+- fix: collect per-package failures into a list the way `load_packages_cached_lenient` does
+  and index the packages that succeed.
+- status: open
+
+### [BUG] A call-graph build in flight republishes a stale graph over a concurrent invalidation
+- where: crates/al-workspace/src/lib.rs:518-637 (`get_or_build_call_graph`), :331-340
+  (`invalidate_insight_graph`), :341-349 (`invalidate_call_graph_only`)
+- severity: medium
+- scenario: the build reads `self.file_index` inside `build`, which runs for 100-200 ms, and
+  publishes afterwards. `invalidate_insight_graph` sets the caches to `None` without taking
+  `call_graph_build_lock`. Sequence: thread A takes the build lock and starts building from
+  the file index as of t0; the user saves a file, so `file_refresh.rs:172-174` calls
+  `file_index.add_file` and then `invalidate_insight_graph` (caches → `None`); thread A then
+  writes its t0 graph and a dependency fingerprint that still matches, because the fingerprint
+  covers only `.app` paths/sizes/mtimes and says nothing about workspace files. Every later
+  query hits the cache and gets a call graph that does not contain the saved edit, until an
+  unrelated invalidation happens.
+- fix: `Workspace` already has `generation_revision` and `mark_generation_changed` for exactly
+  this staging pattern. Capture `generation_revision()` before `build`, and at publication
+  time only store the result if the revision is unchanged. Otherwise take
+  `call_graph_build_lock` in the invalidators.
+- status: open
+
+### [BUG] Deleting one `.app` while the daemon runs disables the call graph for every package
+- where: crates/al-workspace/src/lib.rs:484-507 (`dependency_package_fingerprint`)
+- severity: low
+- scenario: the fingerprint walks `symbols.loaded_package_paths()` and propagates the first
+  `fs::metadata` failure as `DependencySourceError::InspectPackage`. `loaded_package_paths`
+  reflects what was indexed at load time, so deleting or renaming one `.app` in `.alpackages`
+  (a symbol re-download, a `git clean`) makes `get_or_build_dependency_source_index` and
+  `get_or_build_call_graph` return `Err` for the whole workspace until packages are reloaded,
+  even though every other package is still present and indexed.
+- fix: skip a package whose metadata cannot be read, record it, and build from the rest; the
+  fingerprint change alone already forces the rebuild.
+- status: open
+
+### [SLOP] Two `DependencySourceError` variants are never constructed
+- where: crates/al-workspace/src/lib.rs:102-117 (`ParseSource`, `MissingObjectDeclaration`)
+- severity: low
+- scenario: both were produced by the pre-fix all-or-nothing dependency-source build. The
+  current code logs and `continue`s for those two cases (:425-458), and a repo-wide grep for
+  `DependencySourceError::ParseSource` / `::MissingObjectDeclaration` finds no construction
+  site. The variants and their format strings remain as dead surface on a public enum.
+- fix: remove both variants.
+- status: open
+
+### [BUG] One unrecognized `al.*` key in `.vscode/settings.json` fails daemon and CLI startup
+- where: crates/al-project/src/config.rs:414 (`key.starts_with("al.")`), :595-598
+  (`_ => unknown_keys.push(key)`), :371-380 (`load_effective` turns issues into
+  `ConfigLoadError::InvalidSettings`)
+- severity: medium
+- scenario: `merge_editor_settings` filters bare keys through `is_al_setting_key` but admits
+  **any** key beginning with `al.`, and `merge_in_place` then reports every key it does not
+  model as unknown. `load_effective` converts a non-empty issue list into a hard error, and
+  `merge` is atomic, so the whole settings file is discarded as well. A `.vscode/settings.json`
+  that carries an `al.` setting this crate does not model — a Microsoft AL Language extension
+  setting outside the 23-key list, a forward-compatible key, or a plain typo such as
+  `"al.enablecodeanalysis": true` — makes `al-explorer build`
+  (crates/al-explorer/src/cli/commands/build.rs:128), the daemon
+  (crates/al-lsp/src/server/daemon/mod.rs:130), the MCP server
+  (crates/al-lsp/src/server/mcp.rs:1327) and `al-lsp` startup
+  (crates/al-lsp/src/bin/al-lsp.rs:380) all fail to start. The settings file is shared with
+  Microsoft's extension, so keys this project does not know about are the normal case.
+- fix: treat an unknown `al.*` key from an editor settings file as a warning: log it, keep the
+  keys that did parse, and reserve the hard error for a key whose *value shape* is wrong. Keep
+  the strict behaviour for `AlConfig::load` of this project's own persisted settings file.
+- status: open
+
+### [PERF] [STILL-OPEN] Substring search still scans the whole name catalogue
+- where: crates/al-symbols/src/index.rs:960-969
+- severity: low
+- scenario: after the exact and prefix stages the third stage iterates every unique lowercase
+  object name and runs `contains` on each. With a Base Application-scale index that is roughly
+  50 000 `contains` calls per query, and it runs whenever the prefix stage produced fewer than
+  `limit` hits — the ordinary case for a workspace-symbol query like `xyz` or any mid-identifier
+  fragment. The companion `search_in_package` half of the old audit item is fixed (it now uses
+  the `by_package` bucket).
+- fix: if this shows up on the hot path, add a trigram or suffix-start index over
+  `sorted_names`; otherwise cap the substring stage at a fixed scan budget.
+- status: open
+
+### [GAP] Dependency source index and package source indexes are missing from memory stats
+- where: crates/al-workspace/src/lib.rs:640-696 (`memory_stats`), :180-186
+  (`dependency_source_index`)
+- severity: low
+- scenario: `WorkspaceMemoryStats` reports the symbol index, document store, file index,
+  package metadata and both graphs, but not `dependency_source_index`, which holds a whole
+  `FileIndex` over every embedded `.al` of every loaded package (text plus tree-sitter tree
+  per file — the largest single allocation in the process for a source-bearing Base
+  Application), and not the global `source_index::SOURCE_INDEX_CACHE`. The diagnostics
+  endpoint therefore reports a small `tracked_bytes` while RSS is dominated by these two.
+- fix: add a `FileIndexMemoryStats` for the dependency index and an accessor on
+  `source_index` that sums its cached indexes.
 - status: open
 
