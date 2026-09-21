@@ -162,14 +162,14 @@ Listed by neither checklist:
 - severity: low
 - scenario: `start_us`, `end_us` and `duration_ms` are read from the profile and the next line is `let _ = duration_ms; // total recording duration, kept for context only`. Nothing else in the function or the crate uses any of the three. `ProfilerHint` has no duration field and `ProfilerSession::new` takes only a path and the hints.
 - fix: delete the three bindings, or put the duration on `ProfilerSession` where a percentage-of-total hint could use it.
-- status: open
+- status: fixed 80308305 — the three bindings are deleted.
 
 ### [SLOP] The code lens reports sample counts as call counts
 - where: crates/al-analysis/src/queries/profiler_hints.rs:584-589 (`profiler_lens_title`)
 - severity: low
 - scenario: the lens renders `⏱ {ms}ms · {calls} {call_word}` from `hint.hit_count`, which `parse_profile` reads straight from the profile node's `hitCount` (line 215-218). In a Chrome-format CPU profile, and in the `.alcpuprofile` the module header documents, `hitCount` is the number of *samples* whose top frame was this node, not the number of invocations. A procedure called once that runs for 300 ms shows as "300 calls"; a procedure called a million times that never lands on a sample shows as "0 calls" and is skipped entirely by the `hit_count == 0 && self_time_ms == 0.0` filter at line 235.
 - fix: label it "samples", or drop the count from the lens and show self time only.
-- status: open
+- status: fixed 80308305 — the lens says "samples" and `ProfilerHint::hit_count` documents what it holds.
 
 ### [BUG] The "conservative direct pass" matches four node kinds the grammar never produces, so it is dead
 - where: crates/al-analysis/src/queries/test_coverage.rs:548-551, and everything it feeds: `collect_called_identifiers` (512-531), `collect_identifiers_recursive` (533-618), `find_callee_name` (620-633)
