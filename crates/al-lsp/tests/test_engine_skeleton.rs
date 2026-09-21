@@ -1,6 +1,8 @@
 // Compile-time guards for canonical test-engine types and workspace state.
 
-use al_test::result::{TestCodeunitResult, TestMethodResult, TestRunnerError, TestStatus};
+use al_test::result::{
+    TestCodeunitResult, TestFailureKind, TestMethodResult, TestRunnerError, TestStatus,
+};
 use al_workspace::Workspace;
 
 #[test]
@@ -25,6 +27,7 @@ fn test_method_result_serde_round_trip() {
         status: TestStatus::Fail,
         error: Some("Assert failed".to_string()),
         duration_ms: Some(42),
+        failure_kind: Some(TestFailureKind::Timeout),
     };
     let json = serde_json::to_string(&original).expect("serialize");
 
@@ -39,6 +42,7 @@ fn test_method_result_serde_round_trip() {
     assert_eq!(roundtripped.status, TestStatus::Fail);
     assert_eq!(roundtripped.error.as_deref(), Some("Assert failed"));
     assert_eq!(roundtripped.duration_ms, Some(42));
+    assert_eq!(roundtripped.failure_kind, Some(TestFailureKind::Timeout));
 }
 
 #[test]
@@ -49,18 +53,21 @@ fn test_codeunit_result_from_methods_computes_summary() {
             status: TestStatus::Pass,
             error: None,
             duration_ms: None,
+            failure_kind: None,
         },
         TestMethodResult {
             name: "B".into(),
             status: TestStatus::Fail,
             error: Some("err".into()),
             duration_ms: None,
+            failure_kind: None,
         },
         TestMethodResult {
             name: "C".into(),
             status: TestStatus::Skip,
             error: None,
             duration_ms: None,
+            failure_kind: None,
         },
     ];
     let result = TestCodeunitResult::from_methods("MyTests".into(), 50100, methods);

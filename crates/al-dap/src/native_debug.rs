@@ -22,6 +22,9 @@ pub struct NativeDebugSession {
     pub config: BcDebugConfig,
     /// file path → list of BC breakpoint IDs
     breakpoints: HashMap<String, Vec<i64>>,
+    /// (object type, object number, zero-based server line) → BC breakpoint id,
+    /// so a Break event can name the breakpoint it came from.
+    armed: HashMap<(i32, i32, i64), i64>,
     history: VecDeque<BreakpointHit>,
     last_stack: Vec<serde_json::Value>,
     /// Object identity from the most recent Break callback. Kept separately
@@ -33,7 +36,16 @@ pub struct NativeDebugSession {
     /// the debug-context browser URL is opened, so configuration is deferred
     /// from `start` until event draining observes that callback.
     configured: bool,
+    /// configurationDone attempts spent. `DebugAdapterConfigurationDone`
+    /// carries a two-minute invoke budget and falls back to a second,
+    /// no-arguments call on failure, so a server that rejects the options by
+    /// timing out costs four minutes per retry. `drain_events` runs at the
+    /// head of every debug command, so an uncapped retry stalls each one.
+    configure_attempts: u32,
 }
+
+/// configurationDone attempts before the session is declared misconfigured.
+const MAX_CONFIGURE_ATTEMPTS: u32 = 3;
 
 /// Append a Break event to history with the configured cap. Pure (no `self`
 /// dependency) so it unit-tests without standing up a `BcDebugSession`.
@@ -60,10 +72,12 @@ impl NativeDebugSession {
             session,
             config,
             breakpoints: HashMap::new(),
+            armed: HashMap::new(),
             history: VecDeque::new(),
             last_stack: Vec::new(),
             last_object: None,
             configured: false,
+            configure_attempts: 0,
         })
     }
 
@@ -89,6 +103,7 @@ impl NativeDebugSession {
                     warn!(bp_id, error = %e, "Failed to remove old breakpoint");
                 }
             }
+            self.armed.retain(|_, id| !old_ids.contains(id));
         }
 
         let mut results = Vec::new();
@@ -132,6 +147,20 @@ impl NativeDebugSession {
                     });
                     if bp_id != 0 && object_matches {
                         new_ids.push(bp_id);
+                        self.armed
+                            .insert((object_type, object_id, server_line), bp_id);
+                    } else if bp_id != 0 {
+                        // BC coerces a camelCase ApplicationObjectIdWrapper to
+                        // object 0/0 and still arms a live breakpoint. Leaving
+                        // it on the server stops execution at a place the
+                        // client believes has no breakpoint.
+                        warn!(
+                            bp_id,
+                            line, "BC armed the breakpoint for a different object; removing it"
+                        );
+                        if let Err(e) = self.session.remove_breakpoint(bp_id).await {
+                            warn!(bp_id, error = %e, "Failed to remove mis-targeted breakpoint");
+                        }
                     }
                     results.push(make_bp_info(
                         file,
@@ -160,7 +189,12 @@ impl NativeDebugSession {
     /// before stateful queries run. Without this, `state()` sees
     /// `is_stopped == false` and an empty `history` even though a Break
     /// event landed in the SignalR pending queue between commands.
-    async fn drain_events(&mut self) {
+    ///
+    /// Returns an error once configurationDone has been rejected
+    /// [`MAX_CONFIGURE_ATTEMPTS`] times: breakpoints never bind after that, so
+    /// every command reports the configuration failure instead of behaving as
+    /// if the session were healthy.
+    async fn drain_events(&mut self) -> Result<()> {
         // First, anything `invoke()` buffered while we were busy.
         let pending = self.session.flush_pending_events().await;
         // Then anything that arrived on the SignalR channel since.
@@ -198,11 +232,19 @@ impl NativeDebugSession {
                         procedure: None,
                     },
                 };
+                let breakpoint_id = self
+                    .last_object
+                    .and_then(|(object_type, object_id)| {
+                        self.armed
+                            .get(&(object_type, object_id, i64::from(location.line) - 1))
+                            .copied()
+                    })
+                    .unwrap_or(0);
                 push_with_cap(
                     &mut self.history,
                     BreakpointHit {
                         seq: next_seq,
-                        breakpoint_id: 0,
+                        breakpoint_id,
                         timestamp: format_event_timestamp(std::time::SystemTime::now()),
                         location,
                         variables: Vec::new(),
@@ -219,21 +261,43 @@ impl NativeDebugSession {
         // configurationDone before OnAttachedToConnection, leaving accepted
         // breakpoints inert. Complete configuration exactly once after that
         // callback has been processed above.
-        if !self.configured && self.session.is_attached().await {
+        if !self.configured
+            && self.configure_attempts < MAX_CONFIGURE_ATTEMPTS
+            && self.session.is_attached().await
+        {
+            self.configure_attempts += 1;
             match self.session.configuration_done(&self.config).await {
                 Ok(()) => {
                     self.configured = true;
                     info!("Native debug session configured after client attach");
                 }
+                Err(error) if self.configure_attempts < MAX_CONFIGURE_ATTEMPTS => {
+                    warn!(
+                        %error,
+                        attempt = self.configure_attempts,
+                        "configurationDone rejected after client attach; will retry"
+                    );
+                }
                 Err(error) => {
-                    warn!(%error, "configurationDone rejected after client attach; will retry");
+                    warn!(
+                        %error,
+                        attempts = self.configure_attempts,
+                        "configurationDone rejected on every attempt; breakpoints stay inert"
+                    );
                 }
             }
         }
+
+        if !self.configured && self.configure_attempts >= MAX_CONFIGURE_ATTEMPTS {
+            return Err(crate::dap::DapError::ConfigurationFailed {
+                attempts: self.configure_attempts,
+            });
+        }
+        Ok(())
     }
 
     pub async fn state(&mut self) -> Result<DebugState> {
-        self.drain_events().await;
+        self.drain_events().await?;
         let is_stopped = self.session.is_stopped().await;
         let status = if is_stopped {
             SessionStatus::Paused
@@ -276,7 +340,7 @@ impl NativeDebugSession {
     /// agent can feed a selected frame straight into variables/globals/expand
     /// or eval without reverse-engineering the DAP frontend's mapping.
     pub async fn stack(&mut self) -> Result<serde_json::Value> {
-        self.drain_events().await;
+        self.drain_events().await?;
         let mut frames = serde_json::Value::Array(self.last_stack.clone());
         if let Some(array) = frames.as_array_mut() {
             for (frame_id, frame) in array.iter_mut().enumerate() {
@@ -290,21 +354,21 @@ impl NativeDebugSession {
 
     /// Return locals for a specific BC stack frame.
     pub async fn variables(&mut self, frame_id: i64) -> Result<Vec<Variable>> {
-        self.drain_events().await;
+        self.drain_events().await?;
         let value = self.session.get_variables(frame_id).await?;
         Ok(parse_bc_variables(&value))
     }
 
     /// Return globals for a specific BC stack frame.
     pub async fn globals(&mut self, frame_id: i64) -> Result<Vec<Variable>> {
-        self.drain_events().await;
+        self.drain_events().await?;
         let value = self.session.get_globals(frame_id).await?;
         Ok(parse_bc_variables(&value))
     }
 
     /// Expand a structured variable path for a specific BC stack frame.
     pub async fn expand(&mut self, frame_id: i64, path: &str) -> Result<Vec<Variable>> {
-        self.drain_events().await;
+        self.drain_events().await?;
         let value = self.session.expand_node(frame_id, path).await?;
         Ok(parse_bc_variables(&value))
     }
@@ -345,7 +409,7 @@ impl NativeDebugSession {
         // drain pending events so any Break that fired between the
         // user's last command and `continue` is recorded in history before
         // we tell BC to resume.
-        self.drain_events().await;
+        self.drain_events().await?;
         self.session
             .continue_execution(serde_json::json!(0))
             .await?;
@@ -363,7 +427,7 @@ impl NativeDebugSession {
     /// BC's `SetBreakpointResponse` controls step type via BreakpointExitReason:
     /// 0=Continue, 1=StepOver, 2=StepIn, 3=StepOut.
     pub async fn step(&mut self, step_type: &str) -> Result<DebugState> {
-        self.drain_events().await;
+        self.drain_events().await?;
         match step_type {
             "in" => self.session.step_in().await?,
             "out" => self.session.step_out().await?,
@@ -394,10 +458,14 @@ impl NativeDebugSession {
         }
     }
 
+    /// Detach the debug session.
+    ///
+    /// A failure here means BC still has a debugger attached, so it reaches the
+    /// caller instead of being logged and discarded.
     pub async fn stop(&mut self) -> Result<()> {
-        if let Err(e) = self.session.stop_debugging().await {
-            warn!(error = %e, "stop_debugging failed during shutdown");
-        }
+        self.session.stop_debugging().await.inspect_err(|error| {
+            warn!(%error, "stop_debugging failed during shutdown");
+        })?;
         info!("Native debug session stopped");
         Ok(())
     }
@@ -415,10 +483,12 @@ impl NativeDebugSession {
             session,
             config,
             breakpoints: HashMap::new(),
+            armed: HashMap::new(),
             history: VecDeque::new(),
             last_stack: Vec::new(),
             last_object: None,
             configured: false,
+            configure_attempts: 0,
         }
     }
 
@@ -1012,12 +1082,57 @@ mod native_session_tests {
             json!({ "Id": 5, "Verified": true, "ObjectId": { "ObjectType": 0, "ObjectNumber": 0 } }),
         );
 
+        fake.reply_ok("RemoveBreakpoint", json!(null));
+
         let infos = nds
             .set_breakpoints("src/A.al", &[(3, None)], 8, 70200)
             .await
             .unwrap();
 
         assert!(!infos[0].verified, "BC accepted the wrong object identity");
+        // The id is live on the server. Leaving it armed stops execution at a
+        // place the client believes has no breakpoint, and in snapshot capture
+        // that stop matches nothing and fails the whole run.
+        let frames = fake.sent_frames();
+        assert_eq!(
+            frames
+                .iter()
+                .map(|f| f["target"].as_str().unwrap_or("").to_string())
+                .collect::<Vec<_>>(),
+            vec!["AddBreakpoint", "RemoveBreakpoint"],
+        );
+        assert_eq!(frames[1]["arguments"][0], 5, "removes the id BC returned");
+    }
+
+    /// A Break event must name the breakpoint that produced it, so a caller
+    /// can group history by breakpoint. The field was a hard-coded 0.
+    #[tokio::test]
+    async fn break_history_names_the_breakpoint_it_came_from() {
+        let (mut nds, fake) = session("c1");
+        fake.reply_ok("AddBreakpoint", json!({ "Id": 91, "Verified": true }));
+        nds.set_breakpoints("src/Foo.al", &[(42, None)], 5, 50100)
+            .await
+            .unwrap();
+
+        fake.push_callback(
+            "Break",
+            json!([
+                null,
+                [{
+                    "DisplayName": "OnRun",
+                    "SourcePosition": { "Line": 41, "Column": 0 },
+                    "ApplicationObjectId": { "ObjectType": 5, "ObjectNumber": 50100 }
+                }],
+                ""
+            ]),
+        );
+        fake.reply_ok("GetVariables", json!([]));
+        nds.state().await.unwrap();
+
+        let history = nds.history(None);
+        assert_eq!(history.len(), 1, "expected one recorded hit");
+        assert_eq!(history[0].breakpoint_id, 91);
+        assert_eq!(history[0].location.line, 42);
     }
 
     #[tokio::test]
@@ -1152,6 +1267,45 @@ mod native_session_tests {
             .filter(|frame| frame["target"] == "DebugAdapterConfigurationDone")
             .count();
         assert_eq!(configured, 1, "configurationDone is deferred and sent once");
+    }
+
+    /// DebugAdapterConfigurationDone carries a two-minute invoke budget and
+    /// falls back to a no-arguments call on failure, so an uncapped retry at
+    /// the head of every command stalls each one for up to four minutes.
+    #[tokio::test]
+    async fn configuration_done_stops_retrying_and_reports_the_failure() {
+        let (mut nds, fake) = session("c");
+        fake.push_callback("OnAttachedToConnection", json!(null));
+        for _ in 0..12 {
+            fake.reply_err("DebugAdapterConfigurationDone", "options rejected");
+        }
+        fake.reply_ok("GetVariables", json!([]));
+
+        for attempt in 1..MAX_CONFIGURE_ATTEMPTS {
+            nds.state()
+                .await
+                .unwrap_or_else(|error| panic!("attempt {attempt} must still run: {error}"));
+        }
+        let error = nds
+            .state()
+            .await
+            .expect_err("the session is misconfigured once the attempts are spent");
+        assert!(
+            matches!(error, crate::dap::DapError::ConfigurationFailed { .. }),
+            "got: {error}"
+        );
+
+        // Further commands report the same failure without another attempt.
+        assert!(nds.state().await.is_err());
+        let attempts = fake
+            .sent_frames()
+            .into_iter()
+            .filter(|frame| frame["target"] == "DebugAdapterConfigurationDone")
+            .count();
+        assert!(
+            attempts <= (MAX_CONFIGURE_ATTEMPTS as usize) * 2,
+            "each attempt sends at most the options call plus its no-args fallback, got {attempts}"
+        );
     }
 
     #[tokio::test]
@@ -1449,12 +1603,19 @@ mod native_session_tests {
         assert_eq!(targets, vec!["StopDebugging"]);
     }
 
+    /// A BC session that refuses StopDebugging keeps an attached debugger, so
+    /// the caller has to hear about it. stop() used to return Ok regardless,
+    /// which made snapshot capture's shutdown handling unreachable.
     #[tokio::test]
-    async fn stop_tolerates_stop_debugging_errors() {
+    async fn stop_reports_a_failed_teardown() {
         let (mut nds, fake) = session("c");
         fake.reply_err("StopDebugging", "already gone");
 
-        nds.stop().await.expect("stop tolerates teardown errors");
+        let error = nds
+            .stop()
+            .await
+            .expect_err("a refused StopDebugging must reach the caller");
+        assert!(error.to_string().contains("already gone"), "got: {error}");
 
         let targets: Vec<String> = fake
             .sent_frames()

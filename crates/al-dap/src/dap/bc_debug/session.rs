@@ -23,6 +23,12 @@ use super::wire::{
     resolve_negotiate_connection, validate_signalr_handshake_response, SignalRMessage,
 };
 
+/// Capacity of the channel carrying SignalR completion replies to `invoke`.
+///
+/// Exactly one `invoke` consumes from it at a time and it discards any
+/// invocation id it did not ask for, so replies queued beyond the one in
+/// flight are stale by construction. The reader never waits on this channel:
+/// see [`route_signalr_message`].
 const COMPLETION_CHANNEL_CAPACITY: usize = 32;
 
 /// Capacity of the SignalR event channel that the reader task forwards
@@ -153,9 +159,25 @@ async fn route_signalr_message(
     }
 
     if msg.type_ == 3 {
-        // Completion replies are correctness-critical. Back-pressure the WS
-        // reader rather than dropping a reply and timing out its invocation.
-        return completion_tx.send(msg).await.is_ok();
+        // One reader task routes everything, so waiting here stops Break,
+        // OnDetachedFromConnection and IsAlive as well. A hub that answers an
+        // invocation twice, or answers one the client already timed out on,
+        // fills the channel with replies nobody is waiting for, and the
+        // session used to go silent with no error: the DAP client simply never
+        // saw another `stopped` event. Dropping the surplus costs at worst one
+        // invoke timeout.
+        return match completion_tx.try_send(msg) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(msg)) => {
+                warn!(
+                    invocation_id = ?msg.invocation_id,
+                    cap = COMPLETION_CHANNEL_CAPACITY,
+                    "SignalR completion channel full — dropping a reply nothing is waiting on"
+                );
+                true
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
+        };
     }
 
     match event_tx.try_send(msg) {
@@ -807,10 +829,13 @@ impl BcDebugSession {
         self.continue_execution(serde_json::json!(3)).await
     }
 
+    /// Detach the debugger on the server.
+    ///
+    /// The error is returned rather than logged: a BC session that refuses
+    /// StopDebugging keeps an attached debugger, and swallowing that here left
+    /// the caller reporting a clean teardown.
     pub async fn stop_debugging(&self) -> Result<()> {
-        if let Err(e) = self.invoke("StopDebugging", vec![]).await {
-            tracing::warn!("StopDebugging failed (non-fatal): {e}");
-        }
+        self.invoke("StopDebugging", vec![]).await?;
         Ok(())
     }
 
@@ -1209,6 +1234,44 @@ mod tests {
     fn next_frame(rx: &mut mpsc::Receiver<String>) -> serde_json::Value {
         let raw = rx.try_recv().expect("session should have sent a frame");
         serde_json::from_str(&raw).expect("sent frame is valid JSON")
+    }
+
+    /// One task routes every SignalR message, so waiting on the completion
+    /// channel stops Break too. A hub that answers invocations nobody is
+    /// waiting for used to fill the 32 slots and the session went silent: no
+    /// further `stopped` event reached the DAP client, with no error anywhere.
+    #[tokio::test]
+    async fn a_full_completion_channel_still_lets_break_through() {
+        let (event_tx, _event_rx) = mpsc::channel::<SignalRMessage>(EVENT_CHANNEL_CAPACITY);
+        let (completion_tx, _completion_rx) =
+            mpsc::channel::<SignalRMessage>(COMPLETION_CHANNEL_CAPACITY);
+        let (break_event_tx, mut break_event_rx) = mpsc::unbounded_channel::<bool>();
+
+        // Nothing consumes completions, so the channel fills and stays full.
+        for index in 0..COMPLETION_CHANNEL_CAPACITY + 8 {
+            let routed = route_signalr_message(
+                completion(&format!("stale-{index}"), None, None),
+                &event_tx,
+                &completion_tx,
+                &break_event_tx,
+            )
+            .await;
+            assert!(routed, "the reader must keep running at message {index}");
+        }
+
+        let routed = route_signalr_message(
+            invocation(Some("Break"), None),
+            &event_tx,
+            &completion_tx,
+            &break_event_tx,
+        )
+        .await;
+        assert!(routed);
+        assert_eq!(
+            break_event_rx.try_recv().ok(),
+            Some(true),
+            "Break must still reach its dedicated channel"
+        );
     }
 
     #[test]
