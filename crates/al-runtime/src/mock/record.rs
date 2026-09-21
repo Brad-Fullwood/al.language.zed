@@ -7,7 +7,7 @@
 //! This module does **not** wire into the interpreter's `Value::Record(handle)`
 //! semantics — the handle mapping is the interpreter's responsibility.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use thiserror::Error;
 
 use crate::interpreter::value::{Decimal, Value};
@@ -246,6 +246,10 @@ pub struct MockRecord {
     pub table_name: String,
     primary_key_fields: Vec<FieldNo>,
     rows: BTreeMap<PrimaryKey, Row>,
+    /// Field number → the declared type's zero value. Used where BC reads a
+    /// field that was never assigned, notably the primary key of a row
+    /// inserted straight after `Init`.
+    field_defaults: HashMap<FieldNo, Value>,
     /// Built-in view backing the plain (view-less) API.
     view: RecordView,
 }
@@ -263,11 +267,19 @@ impl MockRecord {
             table_name,
             primary_key_fields: primary_key_fields.clone(),
             rows: BTreeMap::new(),
+            field_defaults: HashMap::new(),
             view: RecordView {
                 sort_key,
                 ..RecordView::default()
             },
         }
+    }
+
+    /// Attach the table's per-field zero values, recovered from the workspace
+    /// table definition.
+    pub fn with_field_defaults(mut self, field_defaults: HashMap<FieldNo, Value>) -> Self {
+        self.field_defaults = field_defaults;
+        self
     }
 
     /// A fresh, unfiltered view of this table sorted by the primary key —
@@ -318,12 +330,19 @@ impl MockRecord {
         &self.primary_key_fields
     }
 
+    /// The current buffer's primary key.
+    ///
+    /// A key field with no value in the buffer falls back to the field's
+    /// declared zero: BC inserts a row under the blank key rather than
+    /// refusing, and only rejects a second such insert as a duplicate. The
+    /// error remains for a table whose zero values could not be recovered.
     fn current_primary_key(&self, view: &RecordView) -> Result<PrimaryKey, RecordError> {
         self.primary_key_fields
             .iter()
             .map(|&f| {
                 view.current
                     .get(&f)
+                    .or_else(|| self.field_defaults.get(&f))
                     .map(normalize_key_value)
                     .ok_or(RecordError::MissingKeyField(f))
             })
@@ -827,8 +846,16 @@ impl MockRecord {
                 }
             }
             FlowAgg::Min | FlowAgg::Max => {
+                // Unlike Sum, Min and Max are changed by a row whose cell was
+                // never assigned: BC aggregates the field's zero for it, so a
+                // set of 5 and unassigned has minimum 0. The substitute is
+                // available only when the field's declared zero is known.
+                let zero = target.and_then(|t| self.field_defaults.get(&t));
                 let mut best: Option<&Value> = None;
-                for cell in target_cells() {
+                for cell in matching
+                    .iter()
+                    .filter_map(|row| target.and_then(|t| row.get(&t)).or(zero))
+                {
                     let Some(cur) = as_number(cell) else { continue };
                     best = match best {
                         None => Some(cell),

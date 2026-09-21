@@ -2056,3 +2056,97 @@ fn a_code_value_is_trimmed_and_fits_its_capacity() {
     );
     assert_eq!(ok(r), Value::Code("ABCDE".to_string()));
 }
+
+#[test]
+fn insert_without_a_primary_key_assignment_stores_the_blank_key() {
+    // BC inserts a row whose Code key is '' and only rejects the second such
+    // insert as a duplicate.
+    let cu = r#"codeunit 50142 "Blank Key Tests"
+{
+    procedure BlankThenDuplicate(): Integer
+    var
+        Item: Record "Item";
+        Found: Integer;
+    begin
+        Item.Init();
+        Item.Description := 'blank key row';
+        Item.Insert();
+        Item.Reset();
+        Found := Item.Count() * 10;
+        Item.Init();
+        if not Item.Insert(false) then
+            Found := Found + 1;
+        exit(Found);
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/Item.al", ITEM_TABLE), ("/ws/BlankKey.al", cu)],
+        "Blank Key Tests",
+        "BlankThenDuplicate",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Integer(11));
+}
+
+const AMT_LINE_TABLE: &str = r#"table 50143 "Amt Line"
+{
+    fields
+    {
+        field(1; "Id"; Integer) { }
+        field(2; Amount; Decimal) { }
+    }
+    keys
+    {
+        key(PK; "Id") { }
+    }
+}
+"#;
+
+const AMT_HDR_TABLE: &str = r#"table 50144 "Amt Hdr"
+{
+    fields
+    {
+        field(1; "Id"; Integer) { }
+        field(2; MinAmount; Decimal)
+        {
+            FieldClass = FlowField;
+            CalcFormula = Min("Amt Line".Amount);
+        }
+    }
+    keys
+    {
+        key(PK; "Id") { }
+    }
+}
+"#;
+
+#[test]
+fn flowfield_min_counts_rows_that_never_assigned_the_field() {
+    // A row inserted without assigning Amount holds the field's zero, so Min
+    // over rows with Amount = 5 and Amount unassigned is 0, not 5.
+    let cu = r#"codeunit 50145 "Min Zero Tests"
+{
+    procedure MinAmount(): Decimal
+    var
+        Line: Record "Amt Line";
+        Hdr: Record "Amt Hdr";
+    begin
+        Line.Init(); Line."Id" := 1; Line.Amount := 5; Line.Insert();
+        Line.Init(); Line."Id" := 2; Line.Insert();
+        exit(Hdr.MinAmount);
+    end;
+}
+"#;
+    let r = run(
+        &[
+            ("/ws/AmtLine.al", AMT_LINE_TABLE),
+            ("/ws/AmtHdr.al", AMT_HDR_TABLE),
+            ("/ws/MinZero.al", cu),
+        ],
+        "Min Zero Tests",
+        "MinAmount",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Decimal(dec!(0)));
+}

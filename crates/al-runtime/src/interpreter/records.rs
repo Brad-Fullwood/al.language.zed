@@ -175,7 +175,8 @@ fn ensure_store(ctx: &mut DispatchCtx, table: &TableRef) -> Result<String, Strin
     let source = Arc::clone(&ctx.source);
     let meta = load_table_meta(&*source, &table.name)?;
     let store = RecordStore {
-        record: MockRecord::new(meta.table_id, meta.table_name, meta.pk_fields),
+        record: MockRecord::new(meta.table_id, meta.table_name, meta.pk_fields)
+            .with_field_defaults(meta.field_defaults.clone()),
         field_by_name: meta.field_by_name,
         flowfields: meta.flowfields,
         field_defaults: meta.field_defaults,
