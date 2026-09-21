@@ -84,7 +84,7 @@ Insight:
   ```
   `line_text` is the attribute line, `lower[declaration_col..].find("procedure")` matches the `Procedure` inside `'OnAfterPostProcedure'`, and the edit replaces those nine characters with `local procedure`. The file becomes `'OnAfterPostlocal procedure'` and the procedure is still global. The same happens with any attribute containing the word "procedure", such as `[Obsolete('Use the other procedure instead', '25.0')]`. For an attribute *without* the word (`[NonDebuggable]`), `find("procedure")?` returns None and the action is silently never offered on attributed procedures.
 - fix: locate the `kw_procedure`/`kw_function` child node of the declaration (or the first `member_modifier`) and derive `proc_line`/columns from that node rather than from `node.start_position().row` and a substring search.
-- status: open
+- status: fixed 0108b968
 
 ### [PERF] Make-local lowercases every indexed workspace file on every code-action request
 - where: crates/al-analysis/src/queries/code_actions/make_local.rs:15-53, called unconditionally from mod.rs:93
