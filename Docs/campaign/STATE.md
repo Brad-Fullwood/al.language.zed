@@ -13,7 +13,6 @@ Round 1: four of seven reviews are done (58 findings) and their fix agents are r
 | Fix R1 syntax and grammar (11 findings) | worktree fix | branch `campaign/fix-r1-syntax-grammar` |
 | Fix R1 symbols and project layer (24 findings) | worktree fix | branch `campaign/fix-r1-symbols-project` |
 | Fix R1 emit, compile, BC, explorer (28 findings) | worktree fix | branch `campaign/fix-r1-emit-bc-explorer` |
-| Fix R1 extension, CI, docs (12 findings) | worktree fix | branch `campaign/fix-r1-extension-ci` |
 | Fix R1 analysis and insight (18 findings) | worktree fix | branch `campaign/fix-r1-analysis-insight` |
 | Fix R1 LSP and protocol (15 findings, 2 security) | worktree fix | branch `campaign/fix-r1-lsp-protocol` |
 | Fix R1 runtime and DAP (13 findings) | worktree fix | branch `campaign/fix-r1-runtime-dap` |
@@ -80,6 +79,7 @@ round on the areas with the most findings.
 
 ## Done
 
+- Merged `campaign/fix-r1-extension-ci`: 12 of 12 findings fixed (cargo-deny green, al-lsp upgrades again with offline fallback, extracted binaries verified against `binary-checksums.txt`, theme fixes moved into the generator, toolchain action pinned, release-dryrun runs 16 stages).
 - Campaign branch, protocol docs, watchdog timer, heartbeat hook, desloppify install.
 
 ## Baseline (2026-09-21)
