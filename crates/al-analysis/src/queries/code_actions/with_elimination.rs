@@ -153,30 +153,50 @@ pub(super) fn source_action_eliminate_with(
 
     let body_node = with_node.child_by_field_name("body")?;
 
-    let (body_text, _is_begin_end) = extract_with_body(body_node, source);
+    let (body_text, is_begin_end) = extract_with_body(body_node, source);
 
     let indent = detect_indent(text, with_node.start_position().row as u32);
 
     let field_names = resolve_with_field_names(workspace, &tree, text, &record_var);
     let own_procedures = collect_own_procedure_names(root, source);
 
+    let keep_block = is_begin_end && fills_a_single_statement_slot(with_node);
+    // Only a flattened block hands its last `;` back to the source; a kept
+    // block ends with `end`, which the source `;` then terminates.
+    let drop_trailing_semicolon =
+        is_begin_end && !keep_block && followed_by_semicolon(text, with_node);
     let qualified_body = qualify_with_references(
         &body_text,
         &record_var,
         &indent,
         &field_names,
         &own_procedures,
+        keep_block,
+        drop_trailing_semicolon,
     );
 
+    let start_row = with_node.start_position().row;
+    let end_row = with_node.end_position().row;
+    let start_line_text = text.lines().nth(start_row).unwrap_or("");
+    let end_line_text = text.lines().nth(end_row).unwrap_or("");
+    // The replaced span is the node's own, so the statement's `;` — which the
+    // grammar keeps outside `with_statement` — and anything before `with` on
+    // its line survive the edit.
     let edit = TextEdit {
         range: Range {
             start: super::Position {
-                line: with_node.start_position().row as u32,
-                character: 0,
+                line: start_row as u32,
+                character: al_syntax::byte_col_to_utf16_col(
+                    start_line_text,
+                    with_node.start_position().column,
+                ),
             },
             end: super::Position {
-                line: with_node.end_position().row as u32 + 1,
-                character: 0,
+                line: end_row as u32,
+                character: al_syntax::byte_col_to_utf16_col(
+                    end_line_text,
+                    with_node.end_position().column,
+                ),
             },
         },
         new_text: qualified_body,
@@ -188,6 +208,35 @@ pub(super) fn source_action_eliminate_with(
         edit: Some(single_edit_ws(uri, vec![edit])),
         is_preferred: false,
     })
+}
+
+/// Whether the `with` occupies a slot that accepts exactly one statement —
+/// the consequence of an `if`, a loop body, and so on.
+///
+/// Inside a `statement_list` a `begin`/`end` body can be flattened: its
+/// statements simply join the list. In a single-statement slot they cannot, or
+/// only the first one stays under the `if`/loop, so the block has to stay.
+fn fills_a_single_statement_slot(with_node: tree_sitter::Node) -> bool {
+    let Some(statement) = with_node.parent() else {
+        return false;
+    };
+    if statement.kind() != "statement" {
+        return false;
+    }
+    statement
+        .parent()
+        .is_some_and(|parent| parent.kind() != "statement_list")
+}
+
+/// Whether the next non-whitespace byte after the `with` statement is its
+/// terminating `;`.
+///
+/// A `begin`/`end` body already carries a `;` on its last statement, so when
+/// the source supplies one too the emitted text must drop its own.
+fn followed_by_semicolon(text: &str, with_node: tree_sitter::Node) -> bool {
+    text.get(with_node.end_byte()..)
+        .map(str::trim_start)
+        .is_some_and(|rest| rest.starts_with(';'))
 }
 
 fn find_with_at_point(
@@ -228,35 +277,83 @@ fn extract_with_body(body_node: tree_sitter::Node, source: &[u8]) -> (String, bo
     (text, false)
 }
 
-/// Qualify field references in with-body text by prepending the record variable.
+/// Render the replacement for the whole `with` statement: its body with every
+/// field reference qualified by the record variable.
 ///
-/// Two-pass approach:
-/// 1. Structural: if a line starts with an unqualified identifier followed by `:=` or `(`,
-///    prepend `record_var.` to the whole line.
-/// 2. Field-name: for each known field name, substitute unqualified occurrences with
-///    `record_var.field` anywhere in the line (word-boundary, not already qualified).
+/// The result replaces the `with_statement` node's own span, so the first line
+/// carries no indentation (it starts where `with` started) and there is no
+/// trailing newline.
+///
+/// Each body line keeps its indentation *relative to the block*: the body is
+/// copied out of the source, where every line but the first still carries its
+/// original file indentation, so each continuation line is shifted by its
+/// offset from the block's minimum. Emitting `indent + line.trim()` for every
+/// line — as this used to — collapsed nested `begin`/`if` structure into one
+/// column.
 fn qualify_with_references(
     body: &str,
     record_var: &str,
     indent: &str,
     field_names: &[String],
     own_procedures: &std::collections::HashSet<String>,
+    keep_block: bool,
+    drop_trailing_semicolon: bool,
 ) -> String {
-    let mut result = String::new();
+    let lines: Vec<&str> = body.trim_end().lines().collect();
+    let min_indent = lines
+        .iter()
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    let body_indent = if keep_block {
+        format!("{indent}    ")
+    } else {
+        indent.to_string()
+    };
 
-    for line in body.lines() {
+    let mut rendered: Vec<String> = Vec::with_capacity(lines.len() + 2);
+    for (index, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with("//") {
-            result.push_str(&format!("{}{}\n", indent, trimmed));
+        if trimmed.is_empty() {
+            rendered.push(String::new());
             continue;
         }
-
-        let qualified_line =
-            qualify_line_with_procs(trimmed, record_var, field_names, own_procedures);
-        result.push_str(&format!("{}{}\n", indent, qualified_line));
+        let extra = if index == 0 {
+            0
+        } else {
+            (line.len() - line.trim_start().len()).saturating_sub(min_indent)
+        };
+        let qualified = if trimmed.starts_with("//") {
+            trimmed.to_string()
+        } else {
+            qualify_line_with_procs(trimmed, record_var, field_names, own_procedures)
+        };
+        // Line 0 starts at the `with` column, which the edit range already
+        // covers, so it must not re-emit the statement's indentation.
+        let prefix = if index == 0 && !keep_block {
+            String::new()
+        } else {
+            format!("{body_indent}{}", " ".repeat(extra))
+        };
+        rendered.push(format!("{prefix}{qualified}"));
     }
 
-    result
+    if drop_trailing_semicolon {
+        if let Some(last) = rendered.iter_mut().rev().find(|line| !line.is_empty()) {
+            if last.ends_with(';') {
+                last.pop();
+            }
+        }
+    }
+
+    if keep_block {
+        rendered.insert(0, "begin".to_string());
+        rendered.push(format!("{indent}end"));
+    }
+
+    rendered.join("\n")
 }
 
 /// Names of procedures/triggers declared by the object that contains the
@@ -872,6 +969,178 @@ mod tests {
         assert!(
             updated.contains("Cust.\"Loyalty Points\""),
             "tableextension field must be qualified: {updated}"
+        );
+    }
+
+    fn customer_workspace() -> Workspace {
+        let ws = Workspace::new();
+        ws.symbols.add_entries(&[table_entry(
+            al_symbols::ObjectKind::Table,
+            "Customer",
+            None,
+            vec![field("Name"), field("No."), field("Blocked")],
+        )]);
+        ws
+    }
+
+    fn eliminate_with_at(
+        ws: &Workspace,
+        name: &str,
+        al_code: &str,
+        line: u32,
+        character: u32,
+    ) -> String {
+        let uri = Url::parse(&format!("file:///test/{name}.al")).unwrap();
+        open_doc(ws, &uri, al_code);
+        let range = Range {
+            start: super::super::Position { line, character },
+            end: super::super::Position { line, character },
+        };
+        let action = source_action_eliminate_with(ws, &uri, al_code, range)
+            .expect("eliminate-with action should be offered");
+        super::super::test_support::assert_action_applies_cleanly(al_code, &action, name)
+    }
+
+    /// The grammar keeps a statement's `;` outside the `with_statement` node,
+    /// so a whole-line replacement range deletes it.
+    #[test]
+    fn with_elimination_keeps_the_terminating_semicolon_of_a_single_statement_body() {
+        let al_code = r#"codeunit 50100 "My Codeunit"
+{
+    procedure DoStuff()
+    var
+        Cust: Record Customer;
+    begin
+        with Cust do Name := 'X';
+        Message('done');
+    end;
+}
+"#;
+        let updated = eliminate_with_at(&customer_workspace(), "WithSingle", al_code, 6, 8);
+        assert_eq!(
+            updated,
+            r#"codeunit 50100 "My Codeunit"
+{
+    procedure DoStuff()
+    var
+        Cust: Record Customer;
+    begin
+        Cust.Name := 'X';
+        Message('done');
+    end;
+}
+"#
+        );
+    }
+
+    /// The edit must start at the node's own column, not at column 0, or every
+    /// `with` that shares a line with other code loses that code.
+    #[test]
+    fn with_elimination_keeps_code_before_the_with_on_the_same_line() {
+        let al_code = r#"codeunit 50100 "My Codeunit"
+{
+    procedure DoStuff(Found: Boolean)
+    var
+        Cust: Record Customer;
+    begin
+        if Found then with Cust do Name := 'X';
+        Message('done');
+    end;
+}
+"#;
+        let updated = eliminate_with_at(&customer_workspace(), "WithPrefix", al_code, 6, 22);
+        assert_eq!(
+            updated,
+            r#"codeunit 50100 "My Codeunit"
+{
+    procedure DoStuff(Found: Boolean)
+    var
+        Cust: Record Customer;
+    begin
+        if Found then Cust.Name := 'X';
+        Message('done');
+    end;
+}
+"#
+        );
+    }
+
+    /// A `begin`/`end` body used as a control statement's single-statement slot
+    /// has to keep its block, otherwise only the first statement stays
+    /// conditional.
+    #[test]
+    fn with_elimination_keeps_the_block_when_the_with_is_an_if_consequence() {
+        let al_code = r#"codeunit 50100 "My Codeunit"
+{
+    procedure DoStuff(Found: Boolean)
+    var
+        Cust: Record Customer;
+    begin
+        if Found then with Cust do begin
+            Name := 'X';
+            Blocked := 1;
+        end;
+        Message('done');
+    end;
+}
+"#;
+        let updated = eliminate_with_at(&customer_workspace(), "WithIfBlock", al_code, 6, 22);
+        assert_eq!(
+            updated,
+            r#"codeunit 50100 "My Codeunit"
+{
+    procedure DoStuff(Found: Boolean)
+    var
+        Cust: Record Customer;
+    begin
+        if Found then begin
+            Cust.Name := 'X';
+            Cust.Blocked := 1;
+        end;
+        Message('done');
+    end;
+}
+"#
+        );
+    }
+
+    /// Emitting every body line at the `with` statement's own indent flattens
+    /// nested `begin`/`if` structure into one column.
+    #[test]
+    fn with_elimination_preserves_relative_indentation_of_a_nested_body() {
+        let al_code = r#"codeunit 50100 "My Codeunit"
+{
+    procedure DoStuff()
+    var
+        Cust: Record Customer;
+    begin
+        with Cust do begin
+            if Blocked = 0 then begin
+                Name := 'X';
+                Modify();
+            end;
+        end;
+        Message('done');
+    end;
+}
+"#;
+        let updated = eliminate_with_at(&customer_workspace(), "WithNested", al_code, 6, 8);
+        assert_eq!(
+            updated,
+            r#"codeunit 50100 "My Codeunit"
+{
+    procedure DoStuff()
+    var
+        Cust: Record Customer;
+    begin
+        if Cust.Blocked = 0 then begin
+            Cust.Name := 'X';
+            Cust.Modify();
+        end;
+        Message('done');
+    end;
+}
+"#
         );
     }
 
