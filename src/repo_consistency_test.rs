@@ -737,3 +737,66 @@ fn readme_task_count_matches_the_shipped_language_package() {
         tasks.len()
     );
 }
+
+/// The extension refuses to run a downloaded binary whose digest does not
+/// match the release's `binary-checksums.txt`. That asset only exists because
+/// `release.yml` builds and uploads it, so the two must move together: a
+/// rename on either side turns the integrity check into a silent no-op (the
+/// asset looks absent, which is how pre-2026 releases are handled).
+#[test]
+fn binary_checksum_asset_is_produced_by_the_release_workflow() {
+    let lib = include_str!("lib.rs");
+    let workflow = include_str!("../.github/workflows/release.yml");
+
+    assert!(
+        lib.contains("const BINARY_CHECKSUMS_ASSET: &str = \"binary-checksums.txt\""),
+        "src/lib.rs must name the per-binary checksum asset it verifies against"
+    );
+    assert!(
+        workflow.contains("binary-checksums.txt"),
+        "release.yml must produce binary-checksums.txt, or src/lib.rs would \
+         find no asset and skip the integrity check on every release"
+    );
+    assert!(
+        workflow.contains("artifacts/binary-checksums.txt"),
+        "release.yml must upload binary-checksums.txt as a release asset; \
+         building it without uploading leaves the check unreachable"
+    );
+    for leg in ["sha256sum al-lsp al-explorer", "Get-FileHash"] {
+        assert!(
+            workflow.contains(leg),
+            "release.yml must hash the staged binaries on every platform \
+             (missing: {leg:?})"
+        );
+    }
+
+    // The keys the extension looks up are `<asset>/<binary>`. Both packaging
+    // legs must write that shape, or every lookup misses and the download is
+    // rejected as uncovered.
+    assert!(
+        workflow.contains(r#"sed "s|  |  $OUT.tar.gz/|""#),
+        "the Unix packaging step must key digests by <archive>/<binary>"
+    );
+    assert!(
+        workflow.contains(r#""$hash  $archive/$name""#),
+        "the Windows packaging step must key digests by <archive>/<binary>"
+    );
+}
+
+/// The integrity check must run before anything is made executable. Reversing
+/// the order would leave a rejected binary executable on disk.
+#[test]
+fn binaries_are_verified_before_they_are_made_executable() {
+    let lib = include_str!("lib.rs");
+    let verify = lib
+        .find("Self::verify_extracted_binaries(")
+        .expect("find_or_download_binary must verify the extracted binaries");
+    let make_executable = lib
+        .find("zed::make_file_executable(path)")
+        .expect("find_or_download_binary must make the binaries executable");
+    assert!(
+        verify < make_executable,
+        "src/lib.rs calls make_file_executable before verify_extracted_binaries, \
+         so a binary whose digest does not match is made executable anyway"
+    );
+}

@@ -364,10 +364,19 @@ GitHub release assets are binary/update artifacts:
 - `extension.wasm`
 - `extension.toml`
 - `checksums.txt`
+- `binary-checksums.txt`
 
 The Zed extension archive also includes tracked repository assets such as `languages/al`, `snippets/*.json`, and `themes/bc-themes.json`. These are not separate GitHub release assets; Zed packages them as part of the extension install archive.
 
 Every native archive includes `al-lsp`, `al-explorer`, and the semantic bridge files (`.exe` binaries on Windows). Daemon IPC uses Unix-domain sockets on Linux/macOS and named pipes on Windows.
+
+The two checksum assets cover different things. `checksums.txt` lists a SHA-256 per released asset
+and is what `sha256sum -c` verifies after a manual download. `binary-checksums.txt` lists a SHA-256
+per executable inside each archive, keyed `<archive>/<binary>`, and is what the extension checks on
+the automatic download path: it extracts `al-lsp` and `al-explorer`, compares both against that
+listing, and only then makes them executable. A mismatch deletes the directory and reports the
+expected and actual digests. See [Current limitations](./Docs/current-limitations.md#releases) for
+why the archive itself cannot be checked there.
 
 Zed auto-resolves or downloads `al-lsp` for LSP, DAP, and the MCP context server. Release archives
 also ship `al-explorer`, but stable Zed cannot address an extension-private sidecar from static task

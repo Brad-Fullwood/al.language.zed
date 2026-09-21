@@ -6198,6 +6198,7 @@ name = "zed-al"
 version = "0.4.0"
 dependencies = [
  "serde_json",
+ "sha2 0.10.9",
  "zed_extension_api",
 ]
 

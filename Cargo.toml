@@ -30,6 +30,9 @@ crate-type = ["cdylib"]
 # Dev/Nightly; use scripts/use-api.sh for local API experiments.
 zed_extension_api = "0.7.0"
 serde_json = "1.0"
+# SHA-256 for the release-asset integrity check in find_or_download_binary.
+# no_std, no C, so it cross-compiles to wasm32-wasip2 like the rest.
+sha2 = { version = "0.10", default-features = false }
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive", "rc"] }
