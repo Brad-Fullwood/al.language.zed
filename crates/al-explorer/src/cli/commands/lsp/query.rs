@@ -4,18 +4,26 @@ use std::process::ExitCode;
 
 use crate::cli::commands::*;
 
-pub fn cmd_search(query: &str, limit: usize, json: bool) -> ExitCode {
+/// `limit` is the global `--limit`. For `search` it is the index's own search
+/// bound as well as the page size, which is why it is passed rather than left
+/// to the projection layer: a bound of 20 keeps the index from ranking every
+/// symbol in Base Application before the page is cut.
+pub fn cmd_search(query: &str, limit: Option<usize>, json: bool) -> ExitCode {
+    const DEFAULT_SEARCH_LIMIT: usize = 20;
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    let params = serde_json::json!({ "query": query, "limit": limit });
+    let params = serde_json::json!({
+        "query": query,
+        "limit": limit.unwrap_or(DEFAULT_SEARCH_LIMIT),
+    });
     match request_checked(&mut client, "search", Some(params)) {
         Ok(result) => {
             if json {
                 print_json(&result);
             } else {
-                let entries = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+                let entries = list_rows(&result).as_array().map(|v| &v[..]).unwrap_or(&[]);
                 if entries.is_empty() {
                     eprintln!("No results for '{query}'");
                     return ExitCode::SUCCESS;
@@ -70,12 +78,14 @@ pub fn cmd_by_id(kind: &str, id: i32, json: bool) -> ExitCode {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_source(
     name: &str,
     kind: Option<&str>,
     package: Option<&str>,
     procedure: Option<&str>,
     trigger: Option<&str>,
+    list_procedures: bool,
     json: bool,
 ) -> ExitCode {
     let mut client = match connect(None) {
@@ -96,6 +106,9 @@ pub fn cmd_source(
     if let Some(trigger) = trigger {
         params.insert("trigger".into(), trigger.into());
     }
+    if list_procedures {
+        params.insert("listProcedures".into(), true.into());
+    }
 
     match request_checked(
         &mut client,
@@ -105,6 +118,25 @@ pub fn cmd_source(
         Ok(result) => {
             if json {
                 print_json(&result);
+            } else if list_procedures {
+                let members = result
+                    .get("members")
+                    .and_then(|value| value.as_array())
+                    .map(|value| &value[..])
+                    .unwrap_or(&[]);
+                println!("{} members of '{name}':", members.len());
+                for member in members {
+                    let start = member
+                        .get("startLine")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let end = member.get("endLine").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let signature = member
+                        .get("signature")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    println!("  {start:>6}-{end:<6} {signature}");
+                }
             } else {
                 let availability = result
                     .get("source_availability")
@@ -129,6 +161,56 @@ pub fn cmd_source(
     }
 }
 
+/// Where an object is declared, over the daemon's existing `location` method.
+///
+/// The method had no CLI subcommand and no MCP tool, so agents asked for a
+/// whole object's source and read the path off it, or fell back to `find`.
+pub fn cmd_location(name: &str, kind: Option<&str>, package: Option<&str>, json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(client) => client,
+        Err(error) => return report_error(&error, json),
+    };
+    let mut params = serde_json::Map::new();
+    params.insert("name".into(), name.into());
+    if let Some(kind) = kind {
+        params.insert("kind".into(), kind.into());
+    }
+    if let Some(package) = package {
+        params.insert("package".into(), package.into());
+    }
+    match request_checked(
+        &mut client,
+        "location",
+        Some(serde_json::Value::Object(params)),
+    ) {
+        Ok(result) => {
+            if json {
+                print_json(&result);
+            } else {
+                // A package object is materialised as a virtual .al file, so
+                // there is a real path either way.
+                let path = result
+                    .get("path")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("?");
+                let line = result
+                    .get("line")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(1);
+                println!("{path}:{line}");
+                if let Some(availability) = result
+                    .get("source_availability")
+                    .and_then(|value| value.as_str())
+                {
+                    eprintln!("Source: {}", availability.replace('_', " "));
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => report_error(&error, json),
+    }
+}
+
 pub fn cmd_events(name: &str, json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
@@ -140,7 +222,7 @@ pub fn cmd_events(name: &str, json: bool) -> ExitCode {
             if json {
                 print_json(&result);
             } else {
-                let events = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+                let events = list_rows(&result).as_array().map(|v| &v[..]).unwrap_or(&[]);
                 if events.is_empty() {
                     eprintln!("No event publishers matching '{name}'");
                     return ExitCode::SUCCESS;
@@ -237,7 +319,7 @@ pub fn cmd_subscribers(event: &str, json: bool) -> ExitCode {
             if json {
                 print_json(&result);
             } else {
-                let subs = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+                let subs = list_rows(&result).as_array().map(|v| &v[..]).unwrap_or(&[]);
                 if subs.is_empty() {
                     eprintln!("No subscribers for '{event}'");
                     return ExitCode::SUCCESS;
@@ -403,7 +485,7 @@ pub fn cmd_packages(json: bool) -> ExitCode {
             if json {
                 print_json(&result);
             } else {
-                let pkgs = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+                let pkgs = list_rows(&result).as_array().map(|v| &v[..]).unwrap_or(&[]);
                 if pkgs.is_empty() {
                     eprintln!("No packages loaded (is .alpackages/ empty?)");
                     return ExitCode::SUCCESS;

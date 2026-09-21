@@ -357,6 +357,12 @@ pub struct Workspace {
     /// caller's only observation is a timeout, and the natural response to a
     /// timeout is a retry into the next one.
     dependency_source_progress: DependencySourceProgress,
+    /// How many times the call graph has actually been built.
+    ///
+    /// Exists so single-flight is testable: a cold build is 86 s on a project
+    /// with Base Application, and concurrent or retried callers running their
+    /// own copy of it is the difference between one wait and several.
+    call_graph_builds: std::sync::atomic::AtomicU64,
     /// Active profiler session loaded from a `.alcpuprofile` file.
     ///
     /// When a profile is loaded the hints are stored here so that `code_lens`
@@ -410,6 +416,7 @@ impl Workspace {
             call_graph_revision: std::sync::RwLock::new(None),
             dependency_source_index: std::sync::RwLock::new(None),
             dependency_source_progress: DependencySourceProgress::default(),
+            call_graph_builds: std::sync::atomic::AtomicU64::new(0),
             profiler_session: std::sync::RwLock::new(None),
             test_results: std::sync::RwLock::new(None),
             last_compile_affected: tokio::sync::Mutex::new(std::collections::HashSet::new()),
@@ -762,6 +769,13 @@ impl Workspace {
         self.dependency_source_progress.snapshot()
     }
 
+    /// How many times the call graph has been built since this workspace was
+    /// created. Callers that join an in-flight build do not add to it.
+    pub fn call_graph_build_count(&self) -> u64 {
+        self.call_graph_builds
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// The fingerprint plus one message per loaded package that could not be
     /// inspected.
     ///
@@ -892,6 +906,11 @@ impl Workspace {
         // the next query rebuilds instead of reusing them.
         let built_at_insight_revision = self.insight_revision();
         let built_at_call_revision = self.call_graph_revision_now();
+        // Counted so single-flight can be asserted: concurrent callers block
+        // on `call_graph_build_lock` above, find the published graph in the
+        // re-check, and never reach here.
+        self.call_graph_builds
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let build = || {
             let mut graph = InsightGraph::new();
             graph.build_from_index(&self.symbols);

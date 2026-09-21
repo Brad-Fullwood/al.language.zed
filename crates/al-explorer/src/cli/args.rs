@@ -52,6 +52,29 @@ pub struct Cli {
     /// that index makes progress, whatever this is set to.
     #[arg(long, global = true, value_name = "MS")]
     pub timeout_ms: Option<u64>,
+
+    /// Print JSON on one line instead of indented. Implies --json.
+    #[arg(long, global = true)]
+    pub compact: bool,
+
+    /// Return at most N rows from a list-returning command. The response
+    /// reports `total` and `truncated`.
+    #[arg(long, global = true, value_name = "N")]
+    pub limit: Option<usize>,
+
+    /// Skip the first N rows, for paging with --limit.
+    #[arg(long, global = true, value_name = "N")]
+    pub offset: Option<usize>,
+
+    /// Keep only these fields on each row, comma separated
+    /// (for example --fields kind,id,name).
+    #[arg(long, global = true, value_name = "NAMES", value_delimiter = ',')]
+    pub fields: Vec<String>,
+
+    /// Which part of the loaded symbol space to report on: workspace,
+    /// packages or all. Applies to impact, entrypoints and event-map.
+    #[arg(long, global = true, value_name = "SCOPE")]
+    pub scope: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -75,11 +98,7 @@ Examples:
   al search Customer
   al search \"Sales Post\" --limit 5
   al search Customer --json")]
-    Search {
-        query: String,
-        #[arg(short, long, default_value = "20")]
-        limit: usize,
-    },
+    Search { query: String },
     /// Look up object by type and name
     #[command(after_help = "\
 Examples:
@@ -112,6 +131,24 @@ Examples:
         /// Return one trigger declaration/body
         #[arg(long, conflicts_with = "procedure")]
         trigger: Option<String>,
+        /// List the object's procedures and triggers with signatures and line
+        /// ranges, without their bodies
+        #[arg(long, conflicts_with_all = ["procedure", "trigger"])]
+        list_procedures: bool,
+    },
+    /// Show the file and line where an object is declared
+    #[command(after_help = "\
+Examples:
+  al-explorer location \"Sales-Post\"
+  al-explorer location \"Customer Card\" --kind page --json")]
+    Location {
+        name: String,
+        /// Narrow the lookup to one AL object kind
+        #[arg(long)]
+        kind: Option<String>,
+        /// Narrow the lookup to one symbol package (or "workspace")
+        #[arg(long)]
+        package: Option<String>,
     },
     /// Find event publishers matching a name
     Events { name: String },

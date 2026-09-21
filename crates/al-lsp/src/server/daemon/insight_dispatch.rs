@@ -761,6 +761,49 @@ mod tests {
         );
     }
 
+    /// A cold call-graph build is 86 s on a project with Base Application
+    /// loaded. Two `trace` calls arriving before it finishes must join the
+    /// same build: running a second copy is the difference between one wait
+    /// and two, and a client that retried after its deadline used to be the
+    /// second caller.
+    #[test]
+    fn concurrent_cold_traces_share_one_call_graph_build() {
+        let ws = std::sync::Arc::new(Workspace::new());
+        for index in 0..40 {
+            ws.file_index.add_file(
+                std::path::PathBuf::from(format!("/proj/Object{index}.al")),
+                format!(
+                    "codeunit {} \"Object {index}\"\n{{\n    [IntegrationEvent(false, false)]\n    procedure OnThing{index}()\n    begin\n    end;\n}}\n",
+                    50_100 + index
+                ),
+            );
+        }
+        assert_eq!(ws.call_graph_build_count(), 0, "nothing built yet");
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                let ws = std::sync::Arc::clone(&ws);
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let response =
+                        dispatch_trace(&ws, 70, &serde_json::json!({ "event": "OnThing0" }));
+                    assert!(response.error.is_none(), "{:?}", response.error);
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().expect("trace worker finished");
+        }
+
+        assert_eq!(
+            ws.call_graph_build_count(),
+            1,
+            "four concurrent cold traces must share one build"
+        );
+    }
+
     #[test]
     fn dispatch_trace_valid_event_returns_result() {
         let ws = Workspace::new();

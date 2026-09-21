@@ -33,7 +33,7 @@ pub fn cmd_profiler_hints(hotspots: &[String], json: bool) -> ExitCode {
             if json {
                 print_json(&result);
             } else {
-                let hints = result.as_array().cloned().unwrap_or_default();
+                let hints = list_rows(&result).as_array().cloned().unwrap_or_default();
                 if hints.is_empty() {
                     println!("No profiler hints found.");
                 } else {

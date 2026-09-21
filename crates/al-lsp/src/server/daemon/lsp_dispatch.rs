@@ -556,6 +556,25 @@ fn resolve_unique_kind_by_name(
     }
 }
 
+/// Run the call-graph enrichment pass so workspace objects carry their fields
+/// and methods, and carry on if it cannot.
+///
+/// `object` and `byId` answered a workspace object with kind, id, name and
+/// nothing else, because members only enter the symbol index through this
+/// pass. A Haiku run asked `by-id codeunit 50130` for `.methods[0].name` and
+/// got null. The pass is an enrichment here rather than a requirement: a file
+/// the index cannot parse must still not stop the lookup from answering with
+/// the object's identity.
+fn enrich_workspace_members(workspace: &Workspace, method: &str) {
+    if let Err(error) = workspace.get_or_build_call_graph() {
+        tracing::warn!(
+            method,
+            %error,
+            "workspace members are unavailable for this lookup; answering with object identity"
+        );
+    }
+}
+
 pub(super) fn dispatch_object(
     workspace: &Workspace,
     id: u64,
@@ -581,6 +600,7 @@ pub(super) fn dispatch_object(
             None => return invalid_params(id),
         },
     };
+    enrich_workspace_members(workspace, "object");
     let candidates = workspace.symbols.get_by_name(name);
     let mut matches: Vec<serde_json::Value> = match candidates
         .iter()
@@ -728,6 +748,7 @@ pub(super) fn dispatch_by_id(
         Ok(k) => k,
         Err(e) => return e,
     };
+    enrich_workspace_members(workspace, "byId");
     let results = workspace.symbols.get_by_id(kind, obj_id);
     let mut value: Vec<serde_json::Value> = match results
         .iter()

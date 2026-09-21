@@ -1,6 +1,6 @@
 use std::process::ExitCode;
 
-use super::{connect, print_json, report_error, request_checked, run_command};
+use super::{connect, list_rows, print_json, report_error, request_checked, run_command};
 
 pub fn cmd_trace(event: &str, depth: usize, tree: bool, json: bool) -> ExitCode {
     if tree {
@@ -16,7 +16,7 @@ pub fn cmd_trace(event: &str, depth: usize, tree: bool, json: bool) -> ExitCode 
         Ok(result) => {
             if json {
                 print_json(&result);
-            } else if let Some(steps) = result.as_array() {
+            } else if let Some(steps) = list_rows(&result).as_array() {
                 if steps.is_empty() {
                     // be explicit when the input isn't an event rather
                     // than silently printing nothing.
@@ -47,7 +47,7 @@ pub fn cmd_trace(event: &str, depth: usize, tree: bool, json: bool) -> ExitCode 
 
 pub fn cmd_entrypoints(json: bool) -> ExitCode {
     run_command("entrypoints", None, json, None, |result| {
-        if let Some(entries) = result.as_array() {
+        if let Some(entries) = list_rows(result).as_array() {
             println!("Entry points ({} found):", entries.len());
             for e in entries {
                 let obj = e.get("object_name").and_then(|v| v.as_str()).unwrap_or("?");
@@ -108,7 +108,9 @@ pub fn cmd_insight_stats(json: bool) -> ExitCode {
 /// print the whole "possibly unused" table and exit 0, against the contract in
 /// `Docs/reference/cli-commands.md`.
 pub(crate) fn dead_code_exit_code(result: &serde_json::Value) -> ExitCode {
-    let empty = result.as_array().is_none_or(|findings| findings.is_empty());
+    let empty = list_rows(result)
+        .as_array()
+        .is_none_or(|findings| findings.is_empty());
     if empty {
         ExitCode::SUCCESS
     } else {
@@ -128,7 +130,7 @@ pub fn cmd_dead_code(json: bool) -> ExitCode {
             if json {
                 print_json(&result);
             } else {
-                let unused = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+                let unused = list_rows(&result).as_array().map(|v| &v[..]).unwrap_or(&[]);
                 if unused.is_empty() {
                     println!("No dead code found.");
                 } else {

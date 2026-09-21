@@ -18,6 +18,11 @@ mod containment;
 mod debug_dispatch;
 mod insight_dispatch;
 mod lsp_dispatch;
+mod projection;
+mod scope;
+
+pub(crate) use projection::list_target;
+pub(crate) use scope::accepts_scope;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -649,6 +654,21 @@ where
 }
 
 pub(crate) async fn dispatch_request(
+    workspace: &std::sync::Arc<Workspace>,
+    req: Request,
+    shutdown: &Notify,
+) -> Response {
+    let method = req.method.clone();
+    let params = req.params.clone().unwrap_or(serde_json::Value::Null);
+    let response = dispatch_method(workspace, req, shutdown).await;
+    // `scope` first, so a `limit` counts the rows that survive it rather than
+    // the rows it was about to drop. Both are applied once, here, for every
+    // method that takes them. See `scope` and `projection`.
+    let response = scope::apply(workspace, &method, &params, response);
+    projection::apply(&method, &params, response)
+}
+
+async fn dispatch_method(
     workspace: &std::sync::Arc<Workspace>,
     req: Request,
     shutdown: &Notify,

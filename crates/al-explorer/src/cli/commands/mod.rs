@@ -11,8 +11,25 @@ use serde::Serialize;
 
 use al_protocol::DaemonClient;
 
+/// Whether `--compact` was passed, set once by `cli::run`.
+static COMPACT_JSON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Print JSON on one line from here on.
+///
+/// Indentation was 43% of the bytes of the largest measured answer:
+/// `by-id codeunit 80` was 552,710 bytes pretty-printed and 315,393 compact,
+/// for the same content.
+pub fn set_compact_json(compact: bool) {
+    COMPACT_JSON.store(compact, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn print_json<T: Serialize>(value: &T) {
-    match serde_json::to_string_pretty(value) {
+    let rendered = if COMPACT_JSON.load(std::sync::atomic::Ordering::Relaxed) {
+        serde_json::to_string(value)
+    } else {
+        serde_json::to_string_pretty(value)
+    };
+    match rendered {
         Ok(json) => println!("{json}"),
         Err(e) => eprintln!("{{\"error\":\"serialization failed: {e}\"}}"),
     }
@@ -299,7 +316,7 @@ fn collect_al_files_for_extension(
 }
 
 pub fn print_symbol_entries(result: &serde_json::Value) {
-    let entries = match result.as_array() {
+    let entries = match list_rows(result).as_array() {
         Some(arr) => arr.clone(),
         None => vec![result.clone()],
     };
@@ -443,17 +460,87 @@ where
     }
 }
 
+/// The global `--limit`, `--offset`, `--fields` and `--scope` for this
+/// process, set once by `cli::run`.
+///
+/// Held globally for the same reason as the request deadline: they apply to
+/// every list-returning command and none of the ~80 command functions should
+/// have to thread them through.
+static PROJECTION_OVERRIDE: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+
+/// Record the projection the caller asked for, as the params the daemon reads.
+pub fn set_projection_override(
+    limit: Option<usize>,
+    offset: Option<usize>,
+    fields: &[String],
+    scope: Option<&str>,
+) {
+    let mut params = serde_json::Map::new();
+    if let Some(limit) = limit {
+        params.insert("limit".into(), serde_json::json!(limit));
+    }
+    if let Some(offset) = offset {
+        params.insert("offset".into(), serde_json::json!(offset));
+    }
+    if !fields.is_empty() {
+        params.insert("fields".into(), serde_json::json!(fields));
+    }
+    if let Some(scope) = scope {
+        params.insert("scope".into(), serde_json::json!(scope));
+    }
+    if !params.is_empty() {
+        let _ = PROJECTION_OVERRIDE.set(serde_json::Value::Object(params));
+    }
+}
+
+/// Add the process-wide projection to one request's params.
+///
+/// A command that sets one of these itself keeps its own value: `search`
+/// passes a `limit` that is the search bound, not a page size.
+fn with_projection(params: Option<serde_json::Value>) -> Option<serde_json::Value> {
+    let Some(serde_json::Value::Object(overrides)) = PROJECTION_OVERRIDE.get() else {
+        return params;
+    };
+    let mut merged = match params {
+        Some(serde_json::Value::Object(object)) => object,
+        Some(other) => return Some(other),
+        None => serde_json::Map::new(),
+    };
+    for (key, value) in overrides {
+        merged.entry(key.clone()).or_insert_with(|| value.clone());
+    }
+    Some(serde_json::Value::Object(merged))
+}
+
+/// The rows of a list result, whether or not it came back projected.
+///
+/// A projected root-array method answers `{items, total, returned, offset,
+/// truncated}` instead of a bare array, so the human formatters ask for the
+/// rows through this rather than each knowing about the envelope. `--json`
+/// prints the whole envelope, because `total` and `truncated` are the part an
+/// agent needs.
+pub fn list_rows(result: &serde_json::Value) -> &serde_json::Value {
+    match result.get("items") {
+        Some(items) if items.is_array() && result.get("total").is_some() => items,
+        _ => result,
+    }
+}
+
 pub fn request_checked(
     client: &mut DaemonClient,
     method: &str,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
+    let params = with_projection(params);
     let contract_params = params.clone();
     let result = client.request(method, params)?;
+    // The contracts describe the method's own result shape, so validate the
+    // rows rather than the projection envelope wrapped around them.
+    let checked = list_rows(&result).clone();
     if response_contract::handles(method) {
-        response_contract::validate(method, contract_params.as_ref(), &result)?;
+        response_contract::validate(method, contract_params.as_ref(), &checked)?;
     } else {
-        validate_run_command_result(method, &result)?;
+        validate_run_command_result(method, &checked)?;
     }
     Ok(result)
 }

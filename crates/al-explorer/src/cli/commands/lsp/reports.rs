@@ -48,7 +48,7 @@ pub fn cmd_obsolete(json: bool) -> ExitCode {
         json,
         None,
         |result| {
-            let entries = result.as_array().cloned().unwrap_or_default();
+            let entries = list_rows(result).as_array().cloned().unwrap_or_default();
             if entries.is_empty() {
                 println!("No obsolete symbols found.");
             } else {
@@ -73,7 +73,7 @@ pub fn cmd_audit_data_classification(json: bool) -> ExitCode {
         json,
         None,
         |result| {
-            let entries = result.as_array().cloned().unwrap_or_default();
+            let entries = list_rows(result).as_array().cloned().unwrap_or_default();
             if entries.is_empty() {
                 println!("No table fields found to audit.");
             } else {
@@ -99,7 +99,7 @@ pub fn cmd_audit_data_classification(json: bool) -> ExitCode {
             }
         },
         |result| {
-            if result.as_array().is_some_and(|entries| {
+            if list_rows(result).as_array().is_some_and(|entries| {
                 entries.iter().any(|entry| {
                     entry.get("risk").and_then(|value| value.as_str()) == Some("unclassified")
                 })
@@ -288,7 +288,7 @@ pub fn cmd_breaking_changes(baseline_app: Option<&str>, json: bool) -> ExitCode 
         json,
         None,
         |result| {
-            let changes = result.as_array().cloned().unwrap_or_default();
+            let changes = list_rows(result).as_array().cloned().unwrap_or_default();
             if changes.is_empty() {
                 println!("No breaking changes detected (against {baseline_app}).");
             } else {
@@ -312,7 +312,7 @@ pub fn cmd_arch_lint(json: bool) -> ExitCode {
         json,
         None,
         |result| {
-            let violations = result.as_array().cloned().unwrap_or_default();
+            let violations = list_rows(result).as_array().cloned().unwrap_or_default();
             if violations.is_empty() {
                 println!("No architecture violations found.");
             } else {
@@ -336,7 +336,7 @@ pub fn cmd_native_check(json: bool) -> ExitCode {
         json,
         None,
         |result| {
-            let findings = result.as_array().cloned().unwrap_or_default();
+            let findings = list_rows(result).as_array().cloned().unwrap_or_default();
             if findings.is_empty() {
                 println!("No native semantic issues found.");
             } else {
@@ -356,7 +356,7 @@ pub fn cmd_native_check(json: bool) -> ExitCode {
             }
         },
         |result| {
-            if result.as_array().is_some_and(|findings| {
+            if list_rows(result).as_array().is_some_and(|findings| {
                 findings.iter().any(|finding| {
                     finding
                         .get("severity")
@@ -402,7 +402,7 @@ pub fn cmd_duplicates(min_tokens: usize, min_similarity: f32, json: bool) -> Exi
             if json {
                 print_json(&result);
             } else {
-                let dups = result.as_array().cloned().unwrap_or_default();
+                let dups = list_rows(&result).as_array().cloned().unwrap_or_default();
                 if dups.is_empty() {
                     println!("No duplicate code blocks found.");
                 } else {
@@ -450,7 +450,7 @@ pub fn cmd_upgrade_report(baseline_app: Option<&str>, json: bool) -> ExitCode {
         json,
         None,
         |result| {
-            let issues = result.as_array().cloned().unwrap_or_default();
+            let issues = list_rows(result).as_array().cloned().unwrap_or_default();
             if issues.is_empty() {
                 println!("No upgrade issues found (against {baseline_app}).");
             } else {
