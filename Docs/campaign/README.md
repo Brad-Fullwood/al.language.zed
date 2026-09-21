@@ -81,3 +81,10 @@ cherry-pick any commit that landed on the placeholder branch.
 
 Agents do their own reading and do not spawn sub-agents. A sub-agent dies with its parent at
 a usage limit and its output is lost.
+
+## Disk
+
+`/home` has little free space. The orchestrator runs gates with
+`CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=4`.
+When free space drops under 15 GB, delete `target/debug` in the main checkout (keep
+`target/release`, the plugin tests and agents use those binaries) and remove merged worktrees.
