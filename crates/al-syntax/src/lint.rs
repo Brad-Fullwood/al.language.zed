@@ -261,6 +261,31 @@ fn drain_awaiting_bodies(frames: &mut Vec<LoopFrame>) {
     }
 }
 
+/// True when the masked, lower-cased `line` calls `.FindFirst` or `.FindLast`.
+///
+/// AL lets an argument-less call drop its parentheses, so `Rec.FindFirst;` and
+/// `Rec.FindFirst( )` are the same call as `Rec.FindFirst()`. The only
+/// requirement is that the method name ends there: `Helper.FindFirstMatch(…)`
+/// is a different method.
+fn calls_find_first_or_last(line: &str) -> bool {
+    ["findfirst", "findlast"]
+        .iter()
+        .any(|method| calls_method(line, method))
+}
+
+fn calls_method(line: &str, method: &str) -> bool {
+    let needle = format!(".{method}");
+    let mut from = 0;
+    while let Some(relative) = line[from..].find(&needle) {
+        let end = from + relative + needle.len();
+        match line[end..].chars().next() {
+            Some(c) if c.is_ascii_alphanumeric() || c == '_' => from = end,
+            _ => return true,
+        }
+    }
+    false
+}
+
 fn scan_procedure_for_find_in_loop(
     file_text: &str,
     proc_text: &str,
@@ -349,7 +374,7 @@ fn scan_procedure_for_find_in_loop(
         }
 
         let in_loop = line_in_loop || !frames.is_empty();
-        if in_loop && (lower.contains(".findfirst()") || lower.contains(".findlast()")) {
+        if in_loop && calls_find_first_or_last(&lower) {
             out.push(LintDiagnostic {
                 code: "AL-NL001".to_string(),
                 message: "FindFirst()/FindLast() inside a loop causes N+1 queries; use \
@@ -839,6 +864,57 @@ mod tests {
         assert!(
             diags.iter().any(|d| d.code == "AL-NL001"),
             "expected AL-NL001, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn lint_flags_paren_less_findfirst_in_loop() {
+        // AL accepts an argument-less call without parentheses, and with a
+        // space between them.
+        for call in ["Item2.FindFirst;", "Item2.FindLast;", "Item2.FindFirst( );"] {
+            let src = format!(
+                r#"codeunit 50100 Test
+{{
+    procedure ProcessItems()
+    var
+        Item: Record Item;
+        Item2: Record Item;
+    begin
+        repeat
+            {call}
+        until Item.Next() = 0;
+    end;
+}}"#
+            );
+            let result = AlParser::parse_quick(&src);
+            let diags = lint(&result.tree, &src);
+            assert!(
+                diags.iter().any(|d| d.code == "AL-NL001"),
+                "expected AL-NL001 for `{call}`, got {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lint_does_not_flag_names_that_merely_start_with_findfirst() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure ProcessItems()
+    var
+        Item: Record Item;
+        Helper: Codeunit Helper;
+    begin
+        repeat
+            Helper.FindFirstMatch(Item);
+            Helper.FindLastly();
+        until Item.Next() = 0;
+    end;
+}"#;
+        let result = AlParser::parse_quick(src);
+        let diags = lint(&result.tree, src);
+        assert!(
+            !diags.iter().any(|d| d.code == "AL-NL001"),
+            "did not expect AL-NL001, got {diags:?}"
         );
     }
 
