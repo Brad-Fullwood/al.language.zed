@@ -48,7 +48,16 @@ pub fn get_or_create_with_availability(
     let pkg_dir = cache_root.join(sanitize_filename(&entry.package));
     let file_path = pkg_dir.join(cache_filename(entry, app_path));
 
-    ensure_readonly_settings(&cache_root)?;
+    // The settings file only makes the editor mark generated files read only.
+    // A hand edit that left it malformed is not a reason to refuse every
+    // package navigation, and overwriting someone's file is worse.
+    if let Err(error) = ensure_readonly_settings(&cache_root) {
+        tracing::warn!(
+            path = %cache_root.join(".zed").join("settings.json").display(),
+            %error,
+            "leaving the virtual-source editor settings alone; generated files stay writable"
+        );
+    }
 
     fs::create_dir_all(&pkg_dir)?;
 
@@ -62,53 +71,24 @@ pub fn get_or_create_with_availability(
         }
     }
 
-    if !file_path.is_file() {
-        // Generate before publishing and rename into place. Creating the final
-        // path first allowed a concurrent navigation request to observe a
-        // partially-written AL file.
-        let extracted = match app_path {
-            Some(path) => extract_source_from_app(path, entry)?,
-            None => None,
-        };
-        let source = match extracted {
-            Some(source) => source,
-            None => match classify_metadata(entry) {
-                SourceAvailability::GeneratedOutline => render_outline_with_note(entry),
-                SourceAvailability::MetadataOnly => render_metadata_only_with_note(entry),
-                SourceAvailability::WorkspaceSource | SourceAvailability::EmbeddedSource => {
-                    render_outline_with_note(entry)
-                }
-            },
-        };
-        let tmp_path = virtual_file_temp_path(&file_path);
-        let write_result = (|| -> std::io::Result<()> {
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&tmp_path)?;
-            file.write_all(source.as_bytes())?;
-            file.flush()?;
-            file.sync_all()?;
-            Ok(())
-        })();
-        if let Err(error) = write_result {
-            let _ = fs::remove_file(&tmp_path);
-            return Err(error);
+    // Two attempts: the background sweep deletes cached `.al` files older than
+    // 30 days, so a request that reuses an existing file can find it gone
+    // between the existence check and the read that follows. A second pass
+    // regenerates it instead of failing the navigation.
+    let mut attempt = 0;
+    let availability = loop {
+        attempt += 1;
+        if !file_path.is_file() {
+            write_virtual_file(entry, app_path, &file_path)?;
         }
-        if let Err(error) = fs::rename(&tmp_path, &file_path) {
-            // On Windows rename does not replace an existing destination. If a
-            // racing writer won, its complete file is equally valid.
-            if file_path.is_file() {
-                let _ = fs::remove_file(&tmp_path);
-            } else {
-                let _ = fs::remove_file(&tmp_path);
-                return Err(error);
-            }
-        }
-    }
+        simulate_sweep_for_test(&file_path);
 
-    enforce_readonly(&file_path)?;
-    let availability = materialized_availability(&file_path)?;
+        match enforce_readonly(&file_path).and_then(|()| materialized_availability(&file_path)) {
+            Ok(availability) => break availability,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && attempt == 1 => continue,
+            Err(error) => return Err(error),
+        }
+    };
 
     // Sweep the cache only after this request's file is safely in place, so the
     // background GC can never race the create/write above (an empty, freshly
@@ -120,6 +100,71 @@ pub fn get_or_create_with_availability(
         availability,
     })
 }
+
+/// Generate the virtual source and publish it by rename.
+///
+/// Writing the final path directly let a concurrent navigation request read a
+/// half-written AL file.
+fn write_virtual_file(
+    entry: &SymbolEntry,
+    app_path: Option<&Path>,
+    file_path: &Path,
+) -> std::io::Result<()> {
+    let extracted = match app_path {
+        Some(path) => extract_source_from_app(path, entry)?,
+        None => None,
+    };
+    let source = match extracted {
+        Some(source) => source,
+        None => match classify_metadata(entry) {
+            SourceAvailability::GeneratedOutline => render_outline_with_note(entry),
+            SourceAvailability::MetadataOnly => render_metadata_only_with_note(entry),
+            SourceAvailability::WorkspaceSource | SourceAvailability::EmbeddedSource => {
+                render_outline_with_note(entry)
+            }
+        },
+    };
+    let tmp_path = virtual_file_temp_path(file_path);
+    let write_result = (|| -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)?;
+        file.write_all(source.as_bytes())?;
+        file.flush()?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&tmp_path, file_path) {
+        // On Windows rename does not replace an existing destination. If a
+        // racing writer won, its complete file is equally valid.
+        let _ = fs::remove_file(&tmp_path);
+        if !file_path.is_file() {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+/// Stands in for the background sweep deleting a cache entry at the worst
+/// moment, which is otherwise a timing window a test cannot hit.
+#[cfg(test)]
+pub(crate) static SWEEP_BEFORE_READ: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+fn simulate_sweep_for_test(file_path: &Path) {
+    if SWEEP_BEFORE_READ.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        let _ = remove_readonly_file_if_exists(file_path);
+    }
+}
+
+#[cfg(not(test))]
+fn simulate_sweep_for_test(_file_path: &Path) {}
 
 fn materialized_availability(path: &Path) -> std::io::Result<SourceAvailability> {
     let mut file = fs::File::open(path)?;
@@ -1466,6 +1511,64 @@ mod tests {
         );
         assert!(content.contains("codeunit 80 \"Sales-Post\""));
         assert!(!content.to_ascii_lowercase().contains("begin"));
+    }
+
+    /// A hand-edited or half-written `.zed/settings.json` in the symbol cache
+    /// used to fail every package navigation. The file only makes the editor
+    /// mark generated files read only.
+    #[test]
+    #[serial_test::serial]
+    fn a_malformed_editor_settings_file_does_not_block_navigation() {
+        let cache = tempfile::tempdir().unwrap();
+        let previous_cache = std::env::var_os("XDG_CACHE_HOME");
+        std::env::set_var("XDG_CACHE_HOME", cache.path());
+
+        let settings_dir = cache_dir().join(".zed");
+        fs::create_dir_all(&settings_dir).unwrap();
+        let settings_path = settings_dir.join("settings.json");
+        fs::write(&settings_path, b"{ definitely not valid json").unwrap();
+
+        let result = get_or_create(&package_codeunit(), None);
+
+        match previous_cache {
+            Some(value) => std::env::set_var("XDG_CACHE_HOME", value),
+            None => std::env::remove_var("XDG_CACHE_HOME"),
+        }
+
+        let path = result.expect("navigation must not depend on the editor settings file");
+        assert!(fs::read_to_string(path).unwrap().contains("codeunit 80"));
+        assert_eq!(
+            fs::read(&settings_path).unwrap(),
+            b"{ definitely not valid json",
+            "someone's settings file is not ours to rewrite"
+        );
+    }
+
+    /// The background sweep deletes cached files older than 30 days. A request
+    /// that reuses an existing file must not fail when the sweep removes it
+    /// between the existence check and the read.
+    #[test]
+    #[serial_test::serial]
+    fn a_swept_cache_entry_is_regenerated_rather_than_reported_missing() {
+        let cache = tempfile::tempdir().unwrap();
+        let previous_cache = std::env::var_os("XDG_CACHE_HOME");
+        std::env::set_var("XDG_CACHE_HOME", cache.path());
+
+        let entry = package_codeunit();
+        let first = get_or_create(&entry, None).expect("first materialization");
+        assert!(first.is_file());
+
+        SWEEP_BEFORE_READ.store(true, std::sync::atomic::Ordering::SeqCst);
+        let result = get_or_create(&entry, None);
+        SWEEP_BEFORE_READ.store(false, std::sync::atomic::Ordering::SeqCst);
+
+        match previous_cache {
+            Some(value) => std::env::set_var("XDG_CACHE_HOME", value),
+            None => std::env::remove_var("XDG_CACHE_HOME"),
+        }
+
+        let path = result.expect("a swept entry must be regenerated, not reported missing");
+        assert!(fs::read_to_string(path).unwrap().contains("codeunit 80"));
     }
 
     #[test]
