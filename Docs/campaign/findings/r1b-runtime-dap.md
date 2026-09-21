@@ -22,8 +22,8 @@ item that file left unticked, plus the files its checklist does not name.
 - [x] al-dap/src/dap/bc_debug/rest.rs
 - [x] al-dap/src/native_debug.rs
 - [x] al-dap/src/dap/client.rs + protocol.rs + types.rs + config.rs + json_util.rs
-- [ ] al-test-harness/src/lib.rs + protocol.rs + bin/gen-zed-index.rs
-- [ ] al-test-harness/tests/* (harness suites)
+- [x] al-test-harness/src/lib.rs + protocol.rs (gen-zed-index.rs not read)
+- [x] al-test-harness/tests/* (every file surveyed; real_world, zed_simulation, tui_smoke, cli_smoke, mcp_stdio, transport, live_bc_contract, pack_native_validate, emit_differential, edit_lifecycle read in detail)
 - [x] al-runtime/src/test_support.rs
 
 ## Findings
@@ -209,3 +209,65 @@ item that file left unticked, plus the files its checklist does not name.
 - scenario: `grep -rn` across `crates/` finds each name only at its declaration. None has a `#[from]`, so none can be produced implicitly by `?` either. `DapError::SessionNotPaused` in particular advertises a guard the adapter does not have: `native_debug::variables` and `eval` query BC whatever the session state is, and the "not paused" case surfaces as whatever the hub happens to answer.
 - fix: delete the four variants, or implement the guard `SessionNotPaused` describes in `variables`/`stack`/`eval` and construct it there.
 - status: open
+
+### [FALSE-GREEN] A cluster of harness tests named after a capability assert nothing about that capability
+- where: crates/al-test-harness/tests/real_world.rs:613 (`test_completion_after_dot`), :756 (`test_formatting_idempotent`), :957 (`test_hover_on_keyword`), :971 (`test_hover_on_string_literal`), :985 (`test_empty_file`); crates/al-test-harness/tests/zed_simulation.rs:208 (`test_fixture_diagnostics_on_real_files`), :227 (`test_fixture_cross_file_goto_definition`), :1547 (`test_fixture_code_actions_no_crash`); crates/al-test-harness/tests/edit_lifecycle.rs:634 (`test_edit_h02_edit_to_invalid_al`)
+- severity: medium
+- scenario: each binds the response to `_completions`, `_edits`, `_hover`, `_diags` or `_def` and then calls `shutdown`. They do detect a server crash or a request timeout, because the harness methods `.expect(...)` on a failed request and `open_file` asserts that diagnostics arrive, so they are not entirely inert. What they cannot detect is the more likely regression: `test_completion_after_dot` stays green when member completion after `Staging.` returns an empty list, which is exactly the symptom the name promises to catch. `test_formatting_idempotent` never formats twice, so it does not test idempotence at all. `test_fixture_diagnostics_on_real_files` carries the comment "Real AL code should compile cleanly (no syntax errors)" and then drains the diagnostics without looking at them.
+- fix: give each one the assertion its name implies (`assert!(!completions.is_empty())`, format twice and compare, assert the fixture file publishes zero error-severity diagnostics), or rename them to `..._does_not_crash` so the coverage they provide is stated honestly.
+- status: open
+
+### [FALSE-GREEN] `test_fixture_builtin_method_hover` extracts the hover text and never checks it
+- where: crates/al-test-harness/tests/zed_simulation.rs:1008-1032
+- severity: medium
+- scenario: the body resolves `Record.FindSet`, calls `hover_content(&findset_hover).unwrap_or("")`, prints the result with `eprintln!` and shuts down. `unwrap_or("")` means even a hover whose `contents` shape the harness cannot read passes. Its two siblings in the same file (`test_fixture_builtin_type_method_hover` at :929 and the `GetLastErrorText` test at :915) both assert `text.contains(...)`, so the omission is local to this test. The doc comment says the test covers "(Record.FindSet, JsonObject.ReadFrom)" and `JsonObject.ReadFrom` appears nowhere in the body. The test runs only under `make microsoft-contracts`, which is the suite most likely to be trusted as the built-in-catalog gate.
+- fix: assert the FindSet hover names `TableClass` and `FindSet` the way the sibling tests do, and either add the `JsonObject.ReadFrom` case the comment promises or drop it from the comment.
+- status: open
+
+### [GAP] The harness suite runs against whatever `al-lsp` and `al-explorer` binaries happen to be in target/debug
+- where: crates/al-test-harness/Cargo.toml (no `al-lsp` or `al-explorer` dependency), crates/al-test-harness/src/lib.rs:51 (`find_binary`) and :84 (`workspace_binary`)
+- severity: low
+- scenario: both helpers probe `target/debug` then `target/release` then fall back to the bare name. Nothing in the crate's manifest makes cargo rebuild those binaries, so a plain `cargo test -p al-test-harness`, which is what the crate doc at lib.rs:15 shows, measures the last binary anyone built. A developer who edits al-lsp and runs the harness directly sees the previous build's behaviour, green or red. The Makefile targets at Makefile:134 and :325 do `cargo build --workspace` first, so the documented workflow is safe and the hazard is confined to the direct invocation. The `stop_project_daemon` doc at lib.rs:115 describes the neighbouring version of this problem for the resident daemon but not for the binary on disk.
+- fix: add `artifact = "bin"` dependencies on al-lsp and al-explorer (or assert in `find_binary` that the binary is newer than the crate sources), and say in the crate doc that the harness does not build what it runs.
+- status: open
+
+### [FLAKY] The TUI smoke test polls on a 2-second granularity and cannot finish in under 4 seconds
+- where: crates/al-test-harness/tests/tui_smoke.rs:63-73 (`poll`) and :90-96
+- severity: low
+- scenario: `poll` sleeps 2 seconds *before* its first render, so even an instant TUI start costs 2 seconds, and the two loops together allow 15 × 2 + 6 × 2 + 0.8 = about 43 seconds of sleeping in one test. The comment at line 55 says "A fixed sleep is flaky because daemon cold-start time varies", which is the reason the polling loop exists, yet the loop's own granularity is a fixed 2-second sleep, so a daemon that takes 30.1 seconds still fails while one that takes 0.1 seconds still waits 2.
+- fix: render before the first sleep and poll on a 100 ms granularity against a single wall-clock deadline, so a fast start returns fast and a slow one gets the same total budget.
+- status: open
+
+### [SLOP] `Lifecycle` is a one-variant enum and every match on it is irrefutable
+- where: crates/al-test-harness/src/lib.rs:134 (`enum Lifecycle { Stdio(Child) }`), matched at :846 and :872, with the boxed `type Writer` at :138
+- severity: low
+- scenario: the module doc at lib.rs:6-12 explains that socket transport was removed and daemon tests drive `DaemonClient` directly. What is left is an enum with one variant, two `let Lifecycle::Stdio(child) = ...` bindings that can never fail, and a `Box<dyn AsyncWrite + Unpin + Send>` that only ever holds a `ChildStdin`. `from_transport` is generic over the reader for the same removed reason and has one caller.
+- fix: store the `Child` directly, make `writer` an `Option<ChildStdin>`, and drop the generic from `from_transport`, or keep the seam and say in the doc which second transport it is being kept for.
+- status: open
+
+### [GAP] Environment-gated suites get this right, and the pattern is worth keeping
+- where: crates/al-test-harness/tests/pack_native_validate.rs:52, emit_differential.rs:262/:366/:471, semantic_bridge.rs:48, live_bc_contract.rs:914, zed_simulation.rs:930/:1009/:1166
+- severity: low
+- scenario: not a defect. Every suite that needs `AL_TOOL_PATH`, `AL_PACKAGE_CACHE_PATH`, a live BC tenant or the Microsoft built-in catalog is `#[ignore]`d and then *asserts* the prerequisite inside the body (`assert!(alc_available(), ...)`, `required_env` returning an `UNAVAILABLE:` error). A missing environment is therefore a red test in an `--ignored` run, never a silent pass, which is the opposite of the usual "skip when the tool is missing" anti-pattern. Recorded so a later refactor does not replace these asserts with early returns.
+- fix: none. Keep the pattern, and apply it if a new environment-dependent suite is added.
+- status: open
+
+## Review complete
+
+Round 1b covered every file round 1 left unread and found 28 open items: one high, ten medium,
+seventeen low.
+
+1. `method_name_matches` fails to match a trailing pattern that also occurs earlier in the name, so
+   `--filter '*Post'` silently drops `TestPostPost` and the run still reports green.
+2. Three al-runtime stub divergences split local and BC results: an unquoted table name in a
+   `Sum`/`Lookup` CalcFormula fails to parse and takes the whole table with it, a third copy of the
+   value renderer prints Dates as day carriers, and `Any.DecimalInRange` rejects its own declared
+   Decimal signature.
+3. The live-BC backend runs a codeunit twice when a request names both the codeunit and one of its
+   methods, fans out unbounded in parallel mode, and reports a timeout to CI as an `AssertionError`.
+4. The BC debug session can stall: a full 32-slot completion channel blocks the single SignalR
+   reader so Break events stop arriving, a rejected configurationDone is retried on every command
+   with a 120-second budget, and a breakpoint BC armed for the wrong object is never removed.
+5. The harness suite has one assertion-free test named after each capability it does not check, and
+   `test_fixture_builtin_method_hover` prints the hover text instead of asserting on it, while the
+   environment-gated suites get the skip question right and are worth keeping as the pattern.
