@@ -581,9 +581,7 @@ fn find_member_node<'a>(
                 let node_name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
                 let clean = node_name.trim_matches('"');
                 if clean.eq_ignore_ascii_case(member.name) {
-                    let text = node.utf8_text(source.as_bytes()).unwrap_or("");
-                    let sig = extract_signature_from_text(text);
-                    return Some((node, sig));
+                    return Some((node, member_signature(node, source)));
                 }
             }
         }
@@ -598,39 +596,61 @@ fn find_member_node<'a>(
     None
 }
 
-fn extract_signature_from_text(text: &str) -> String {
-    // Take text up to and including the first closing paren that completes the signature
-    let mut depth = 0i32;
-    let mut end = 0;
-    for (i, ch) in text.char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    end = i + 1;
-                    let rest = &text[end..];
-                    let same_line = rest.split('\n').next().unwrap_or("");
-                    if let Some(colon_pos) = same_line.find(':') {
-                        // Include the return type (everything after ':' on same line)
-                        let return_part = same_line[colon_pos..].trim_end_matches(';').trim_end();
-                        end = end + colon_pos + return_part.len();
-                    }
-                    break;
-                }
-            }
-            '\n' if depth == 0 => {
-                end = i;
-                break;
-            }
-            _ => {}
+/// The signature line of a procedure/trigger declaration node.
+///
+/// Built from the declaration's own children rather than by scanning its text:
+/// the grammar nests `repeat($.attribute)` inside `procedure_declaration`, so a
+/// text scan for the first balanced `(...)` finds the *attribute's* argument
+/// list. Every `[EventSubscriber]`, `[IntegrationEvent]` and `[Test]`
+/// procedure reported its attribute, truncated before the closing `]`, as its
+/// signature.
+fn member_signature(node: tree_sitter::Node<'_>, source: &str) -> String {
+    let bytes = source.as_bytes();
+    let keyword_row = al_syntax::procedure_keyword_row(node);
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return signature_from_row(node, source, keyword_row);
+    };
+    let mut cursor = node.walk();
+    let keyword = node
+        .children(&mut cursor)
+        .find(|child| matches!(child.kind(), "kw_procedure" | "kw_function"))
+        .and_then(|child| child.utf8_text(bytes).ok())
+        .unwrap_or("procedure")
+        .to_string();
+    let name = name_node.utf8_text(bytes).unwrap_or("");
+    let parameters = node
+        .child_by_field_name("parameters")
+        .and_then(|child| child.utf8_text(bytes).ok())
+        .unwrap_or("()");
+    let return_type = node
+        .child_by_field_name("return_type")
+        .and_then(|child| child.utf8_text(bytes).ok());
+    let return_var = node
+        .child_by_field_name("return_var")
+        .and_then(|child| child.utf8_text(bytes).ok());
+
+    let mut signature = format!("{keyword} {name}{parameters}");
+    if let Some(return_type) = return_type {
+        // AL names an optional return variable before the colon:
+        // `procedure Total(Amount: Decimal) Result: Decimal`.
+        match return_var {
+            Some(return_var) => signature.push_str(&format!(" {}: ", return_var.trim())),
+            None => signature.push_str(": "),
         }
+        signature.push_str(return_type.trim());
     }
-    if end == 0 {
-        text.lines().next().unwrap_or(text).to_string()
-    } else {
-        text[..end].trim().to_string()
-    }
+    signature
+}
+
+/// The declaration's first non-attribute line, for a node whose fields the
+/// parser did not populate.
+fn signature_from_row(
+    node: tree_sitter::Node<'_>,
+    source: &str,
+    keyword_row: Option<usize>,
+) -> String {
+    let row = keyword_row.unwrap_or_else(|| node.start_position().row);
+    source.lines().nth(row).unwrap_or("").trim().to_string()
 }
 
 fn extract_member_from_text(source: &str, member: SourceMember<'_>) -> Option<(String, String)> {
@@ -1188,20 +1208,6 @@ mod tests {
     }
 
     #[test]
-    fn extract_signature_from_simple_procedure() {
-        let text = "procedure DoWork(x: Integer)\nvar\n    y: Text;\nbegin\nend;";
-        let sig = extract_signature_from_text(text);
-        assert_eq!(sig, "procedure DoWork(x: Integer)");
-    }
-
-    #[test]
-    fn extract_signature_with_return_type() {
-        let text = "procedure GetValue(): Decimal\nbegin\nend;";
-        let sig = extract_signature_from_text(text);
-        assert_eq!(sig, "procedure GetValue(): Decimal");
-    }
-
-    #[test]
     fn render_outline_empty_object() {
         let entry = SymbolEntry {
             synthetic: false,
@@ -1256,33 +1262,6 @@ mod tests {
             result.is_some(),
             "Target procedure should be found in deeply nested source"
         );
-    }
-
-    #[test]
-    fn extract_signature_no_parens_falls_back_to_first_line() {
-        let text = "trigger OnInsert\nbegin\nend;";
-        let sig = extract_signature_from_text(text);
-        assert_eq!(sig, "trigger OnInsert");
-    }
-
-    #[test]
-    fn extract_signature_strips_trailing_semicolon_on_return_type() {
-        let text = "procedure GetValue(): Decimal;\nbegin\nend;";
-        let sig = extract_signature_from_text(text);
-        assert_eq!(sig, "procedure GetValue(): Decimal");
-    }
-
-    #[test]
-    fn extract_signature_empty_input_returns_empty() {
-        let sig = extract_signature_from_text("");
-        assert_eq!(sig, "");
-    }
-
-    #[test]
-    fn extract_signature_no_return_type_after_close_paren() {
-        let text = "procedure Foo(a: Integer) // comment\nbegin\nend;";
-        let sig = extract_signature_from_text(text);
-        assert_eq!(sig, "procedure Foo(a: Integer)");
     }
 
     #[test]
@@ -1579,6 +1558,44 @@ table 50101 "Shipment Line"
     end;
 }
 "#;
+
+    /// The grammar nests attributes inside `procedure_declaration`, so a text
+    /// scan for the first balanced `(...)` found the attribute's argument list
+    /// and reported `[EventSubscriber(...` as the signature.
+    #[test]
+    fn source_reports_the_signature_of_an_attributed_procedure() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/project/Sub.al"),
+            r#"codeunit 50100 "Ship Sub"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Sales-Post", 'OnAfterPost', '', false, false)]
+    local procedure MyHandler(var SalesHeader: Record "Sales Header")
+    begin
+    end;
+
+    procedure Total(Amount: Decimal) Result: Decimal
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+
+        let handler = source(&ws, "Ship Sub", None, None, procedure("MyHandler"))
+            .expect("attributed procedure");
+        assert_eq!(
+            handler.sig.as_deref(),
+            Some("procedure MyHandler(var SalesHeader: Record \"Sales Header\")")
+        );
+
+        let total = source(&ws, "Ship Sub", None, None, procedure("Total"))
+            .expect("return-typed procedure");
+        assert_eq!(
+            total.sig.as_deref(),
+            Some("procedure Total(Amount: Decimal) Result: Decimal")
+        );
+    }
 
     #[test]
     fn source_returns_the_named_object_in_a_multi_object_file() {

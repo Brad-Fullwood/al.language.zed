@@ -493,8 +493,8 @@ pub fn collect_procedures_with_attribute(
                     .and_then(|name| name.utf8_text(source).ok())
                 {
                     procedures.push(TestProcedure {
-                        name: name.trim_matches('"').to_string(),
-                        line: node.start_position().row as u32 + 1,
+                        name: al_syntax::clean_identifier(name),
+                        line: procedure_line(node),
                         handler_functions: Vec::new(),
                     });
                 }
@@ -506,6 +506,14 @@ pub fn collect_procedures_with_attribute(
     }
     procedures.sort_by_key(|procedure| procedure.line);
     procedures
+}
+
+/// The 1-based line of a declaration's `procedure` keyword.
+///
+/// Not the node's own start: the grammar nests a procedure's attributes inside
+/// the declaration, and a `[Test]` procedure always has one.
+fn procedure_line(node: tree_sitter::Node<'_>) -> u32 {
+    al_syntax::procedure_keyword_row(node).unwrap_or_else(|| node.start_position().row) as u32 + 1
 }
 
 fn has_exact_attribute(proc_node: tree_sitter::Node, source: &[u8], wanted: &str) -> bool {
@@ -554,8 +562,8 @@ fn collect_test_procs_iterative(
                     if let Some(name_node) = node.child_by_field_name("name") {
                         if let Ok(name) = name_node.utf8_text(source) {
                             procs.push(TestProcedure {
-                                name: name.trim_matches('"').to_string(),
-                                line: node.start_position().row as u32 + 1,
+                                name: al_syntax::clean_identifier(name),
+                                line: procedure_line(node),
                                 handler_functions: handler_functions(node, source),
                             });
                         }
@@ -668,6 +676,30 @@ pub fn is_test_attribute(text: &str) -> bool {
 mod test_discovery {
     use super::*;
     use al_syntax::AlParser;
+
+    /// A `[Test]` procedure always carries an attribute, and the grammar nests
+    /// it inside the declaration, so the node's own row is the attribute's
+    /// line. Every reported test line was one line high.
+    #[test]
+    fn a_test_procedure_reports_its_procedure_keyword_line() {
+        let source = "codeunit 50100 \"My Tests\"\n\
+                      {\n\
+                      \x20   Subtype = Test;\n\
+                      \n\
+                      \x20   [Test]\n\
+                      \x20   procedure TestSomething()\n\
+                      \x20   begin\n\
+                      \x20   end;\n\
+                      }\n";
+        let parsed = AlParser::parse_quick(source);
+        let procs = collect_test_procedures(parsed.tree.root_node(), source.as_bytes());
+        assert_eq!(procs.len(), 1);
+        assert_eq!(procs[0].name, "TestSomething");
+        assert_eq!(
+            procs[0].line, 6,
+            "line 5 is the [Test] attribute, line 6 is the procedure"
+        );
+    }
 
     #[test]
     fn test_attribute_detection() {

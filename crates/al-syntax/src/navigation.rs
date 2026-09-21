@@ -63,6 +63,43 @@ fn is_object_type_kind(kind: &str) -> bool {
     super::language_data::is_object_keyword_node(kind)
 }
 
+/// The 0-based row of the `procedure`/`function` keyword in a declaration node.
+///
+/// tree-sitter-al puts `repeat($.attribute)` inside `procedure_declaration`
+/// (grammar.js, `procedure_declaration`), so the node's own `start_position()`
+/// is the first attribute's line. For
+///
+/// ```al
+/// [EventSubscriber(ObjectType::Codeunit, Codeunit::"Sales-Post", 'OnAfterPost', '', false, false)]
+/// procedure HandlePost()
+/// ```
+///
+/// the node starts on the attribute line, one above the signature — and with
+/// several attributes, further above still. Subscribers and `[Test]`
+/// procedures are exactly the ones that carry attributes, so anything
+/// reporting "the procedure's line" has to ask for the keyword.
+///
+/// `None` for a node that is not a procedure-like declaration.
+pub fn procedure_keyword_row(node: Node) -> Option<usize> {
+    let mut cursor = node.walk();
+    let keyword = node
+        .children(&mut cursor)
+        .find(|child| matches!(child.kind(), "kw_procedure" | "kw_function"));
+    if let Some(keyword) = keyword {
+        return Some(keyword.start_position().row);
+    }
+    // `procedure_declaration` wraps `event_procedure_declaration`, which holds
+    // the keyword.
+    let mut inner_cursor = node.walk();
+    let nested = node
+        .children(&mut inner_cursor)
+        .find(|child| child.kind() == "event_procedure_declaration");
+    match nested {
+        Some(inner) => procedure_keyword_row(inner),
+        None => None,
+    }
+}
+
 /// Read one `object_declaration` node into an [`ObjectInfo`].
 fn object_declaration_info(node: Node, source: &[u8]) -> ObjectInfo {
     let mut kind = String::new();
@@ -603,6 +640,44 @@ pub fn collect_primary_expression_names(
 mod tests {
     use super::*;
     use crate::AlParser;
+
+    /// The grammar nests `repeat($.attribute)` inside `procedure_declaration`,
+    /// so the node's own row is the first attribute's line. Subscribers and
+    /// `[Test]` procedures always carry one.
+    #[test]
+    fn procedure_keyword_row_skips_the_attributes() {
+        let src = "codeunit 50100 \"Subs\"\n\
+                   {\n\
+                   \x20   [EventSubscriber(ObjectType::Codeunit, Codeunit::\"Sales-Post\", 'OnAfterPost', '', false, false)]\n\
+                   \x20   [Obsolete('gone')]\n\
+                   \x20   local procedure HandlePost()\n\
+                   \x20   begin\n\
+                   \x20   end;\n\
+                   \x20\n\
+                   \x20   procedure Plain()\n\
+                   \x20   begin\n\
+                   \x20   end;\n\
+                   }\n";
+        let parsed = AlParser::parse_quick(src);
+        let mut rows = Vec::new();
+        crate::walk_tree(parsed.tree.root_node(), &mut |node| {
+            if node.kind() == "procedure_declaration" {
+                rows.push((node.start_position().row, procedure_keyword_row(node)));
+            }
+        });
+        assert_eq!(
+            rows,
+            vec![(2, Some(4)), (8, Some(8))],
+            "the attributed procedure's node starts two lines above its keyword"
+        );
+    }
+
+    #[test]
+    fn procedure_keyword_row_is_none_for_a_non_procedure_node() {
+        let src = "codeunit 50100 \"X\" { }\n";
+        let parsed = AlParser::parse_quick(src);
+        assert_eq!(procedure_keyword_row(parsed.tree.root_node()), None);
+    }
 
     /// `"Do ""It"" Now"` names the procedure `Do "It" Now`. A caller that
     /// strips quote runs instead reports the escaped spelling, so rename and

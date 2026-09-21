@@ -132,35 +132,41 @@ pub fn test_coverage(workspace: &Workspace) -> Result<CoverageReport, TestCovera
 
     for source_file in &sources {
         let path = source_file.path.to_string_lossy().to_string();
-        if !al_syntax::language_data::is_test_container_kind(&source_file.object.info.kind) {
-            continue;
-        }
-
-        let root = source_file.tree.root_node();
         let source = source_file.text.as_bytes();
-        if !has_test_subtype(root, source) {
-            continue;
+        for object in &source_file.objects {
+            if !al_syntax::language_data::is_test_container_kind(&object.info.kind) {
+                continue;
+            }
+            let range = object.info.range;
+            let Some(object_node) = source_file
+                .tree
+                .root_node()
+                .descendant_for_byte_range(range.start_byte, range.end_byte)
+            else {
+                continue;
+            };
+            if !has_test_subtype(object_node, source) {
+                continue;
+            }
+
+            let test_procs = collect_test_procedures(object_node, source);
+            if test_procs.is_empty() {
+                continue;
+            }
+
+            let mut cursor = object_node.walk();
+            collect_coverage_from_tree(
+                object_node,
+                source,
+                &object.info.name,
+                &path,
+                &test_procs,
+                &proc_by_name,
+                &mut coverage,
+                &mut covered_proc_keys,
+                &mut cursor,
+            );
         }
-
-        let test_procs = collect_test_procedures(root, source);
-        if test_procs.is_empty() {
-            continue;
-        }
-
-        let codeunit_name = source_file.object.info.name.clone();
-
-        let mut cursor = root.walk();
-        collect_coverage_from_tree(
-            root,
-            source,
-            &codeunit_name,
-            &path,
-            &test_procs,
-            &proc_by_name,
-            &mut coverage,
-            &mut covered_proc_keys,
-            &mut cursor,
-        );
     }
 
     // Supplement uniquely resolved bare calls with the qualified, transitive
@@ -353,15 +359,31 @@ fn collect_all_procedures(sources: &[crate::workspace_sources::WorkspaceSource])
 
     for source_file in sources {
         let path = source_file.path.to_string_lossy().to_string();
-        let object_name = source_file.object.info.name.clone();
-
-        let root = source_file.tree.root_node();
         let source = source_file.text.as_bytes();
-        let is_test_cu =
-            al_syntax::language_data::is_test_container_kind(&source_file.object.info.kind)
-                && has_test_subtype(root, source);
+        // Per object declaration: a procedure used to be labelled with the
+        // file's *first* object's name, so in a multi-object file every
+        // `ProcKey`, `covers` and `untested` row named the wrong object.
+        for object in &source_file.objects {
+            let range = object.info.range;
+            let Some(object_node) = source_file
+                .tree
+                .root_node()
+                .descendant_for_byte_range(range.start_byte, range.end_byte)
+            else {
+                continue;
+            };
+            let is_test_cu = al_syntax::language_data::is_test_container_kind(&object.info.kind)
+                && has_test_subtype(object_node, source);
 
-        collect_procs_recursive(root, source, &object_name, &path, is_test_cu, &mut result);
+            collect_procs_recursive(
+                object_node,
+                source,
+                &object.info.name,
+                &path,
+                is_test_cu,
+                &mut result,
+            );
+        }
     }
 
     result
@@ -386,11 +408,18 @@ fn collect_procs_recursive(
 
                 if let Some(name_node) = node.child_by_field_name("name") {
                     if let Ok(name) = name_node.utf8_text(source) {
+                        // The declaration node starts at its first attribute,
+                        // so a `[Test]` procedure's own node row is the
+                        // attribute's line.
+                        let line = al_syntax::procedure_keyword_row(node)
+                            .unwrap_or_else(|| node.start_position().row)
+                            as u32
+                            + 1;
                         result.push(ProcDef {
-                            name: name.trim_matches('"').to_string(),
+                            name: al_syntax::clean_identifier(name),
                             object: object.to_string(),
                             file: file.to_string(),
-                            line: node.start_position().row as u32 + 1,
+                            line,
                             is_local,
                             is_test,
                         });

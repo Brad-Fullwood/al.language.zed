@@ -384,16 +384,36 @@ fn resolve_source_locations(
     let mut ambiguous = std::collections::HashSet::new();
 
     for source in sources {
-        let object_name = source.object.info.name.to_lowercase();
-        collect_procedure_locations(
-            &source.tree,
-            &source.text,
-            &source.path.to_string_lossy(),
-            &object_name,
-            &mut qualified,
-            &mut fallback,
-            &mut ambiguous,
-        );
+        // Per object declaration: in a multi-object file every procedure used
+        // to be qualified with the first object's name, so a hint for the
+        // second object's procedure never matched.
+        let bytes = source.text.as_bytes();
+        let file_path = source.path.to_string_lossy();
+        let mut declarations = Vec::new();
+        al_syntax::walk_tree(source.tree.root_node(), &mut |node| {
+            if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
+                declarations.push((node.start_byte(), node.range()));
+            }
+        });
+        for (start_byte, range) in declarations {
+            let Some(node) = source
+                .tree
+                .root_node()
+                .descendant_for_byte_range(range.start_byte, range.end_byte)
+            else {
+                continue;
+            };
+            let object_name = source.object_at_byte(start_byte).info.name.to_lowercase();
+            collect_proc_location(
+                node,
+                bytes,
+                &file_path,
+                &object_name,
+                &mut qualified,
+                &mut fallback,
+                &mut ambiguous,
+            );
+        }
     }
 
     for hint in hints.iter_mut() {
@@ -416,29 +436,10 @@ fn resolve_source_locations(
     Ok(())
 }
 
-fn collect_procedure_locations(
-    tree: &tree_sitter::Tree,
-    text: &str,
-    file_path: &str,
-    object_name: &str,
-    qualified: &mut std::collections::HashMap<(String, String), (String, u32)>,
-    fallback: &mut std::collections::HashMap<String, (String, u32)>,
-    ambiguous: &mut std::collections::HashSet<String>,
-) {
-    let source = text.as_bytes();
-    collect_procs(
-        tree.root_node(),
-        source,
-        file_path,
-        object_name,
-        qualified,
-        fallback,
-        ambiguous,
-    );
-}
-
-fn collect_procs(
-    root: tree_sitter::Node,
+/// Record one procedure/trigger declaration's file and line under both the
+/// object-qualified key and the bare name.
+fn collect_proc_location(
+    node: tree_sitter::Node<'_>,
     source: &[u8],
     file_path: &str,
     object_name: &str,
@@ -446,40 +447,35 @@ fn collect_procs(
     fallback: &mut std::collections::HashMap<String, (String, u32)>,
     ambiguous: &mut std::collections::HashSet<String>,
 ) {
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
-        if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                if let Ok(name_text) = name_node.utf8_text(source) {
-                    let name = name_text.trim_matches('"').trim().to_string();
-                    if !name.is_empty() {
-                        let line = node.start_position().row as u32 + 1; // 1-based
-                        let loc = (file_path.to_string(), line);
-                        let name_key = name.to_lowercase();
-                        if !object_name.is_empty() {
-                            qualified
-                                .insert((object_name.to_string(), name_key.clone()), loc.clone());
-                        }
-                        if !ambiguous.contains(&name_key) {
-                            if fallback
-                                .get(&name_key)
-                                .is_some_and(|existing| existing != &loc)
-                            {
-                                fallback.remove(&name_key);
-                                ambiguous.insert(name_key);
-                            } else {
-                                fallback.entry(name_key).or_insert(loc);
-                            }
-                        }
-                    }
-                }
-            }
-            // Don't recurse into procedure body
-            continue;
-        }
-
-        let mut cursor = node.walk();
-        stack.extend(node.children(&mut cursor));
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
+    let Ok(name_text) = name_node.utf8_text(source) else {
+        return;
+    };
+    let name = al_syntax::clean_identifier(name_text);
+    if name.is_empty() {
+        return;
+    }
+    let line = al_syntax::procedure_keyword_row(node).unwrap_or_else(|| node.start_position().row)
+        as u32
+        + 1;
+    let loc = (file_path.to_string(), line);
+    let name_key = name.to_lowercase();
+    if !object_name.is_empty() {
+        qualified.insert((object_name.to_string(), name_key.clone()), loc.clone());
+    }
+    if ambiguous.contains(&name_key) {
+        return;
+    }
+    if fallback
+        .get(&name_key)
+        .is_some_and(|existing| existing != &loc)
+    {
+        fallback.remove(&name_key);
+        ambiguous.insert(name_key);
+    } else {
+        fallback.entry(name_key).or_insert(loc);
     }
 }
 

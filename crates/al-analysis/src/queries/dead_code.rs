@@ -222,8 +222,11 @@ fn collect_procedures(
         ) {
             if let Some(name_node) = node.child_by_field_name("name") {
                 if let Ok(name) = name_node.utf8_text(source) {
-                    let name = name.trim_matches('"').to_string();
-                    let line = node.start_position().row as u32 + 1;
+                    let name = al_syntax::clean_identifier(name);
+                    let line = al_syntax::procedure_keyword_row(node)
+                        .unwrap_or_else(|| node.start_position().row)
+                        as u32
+                        + 1;
 
                     let is_event = is_framework_invoked_procedure(node, source);
 
@@ -545,9 +548,12 @@ fn collect_event_subscribers(
                 if text.to_lowercase().contains("eventsubscriber") {
                     if let Some(name_node) = node.child_by_field_name("name") {
                         if let Ok(proc_name) = name_node.utf8_text(source) {
-                            let proc_name = proc_name.trim_matches('"').to_string();
+                            let proc_name = al_syntax::clean_identifier(proc_name);
                             let (target_object, target_event) = parse_subscriber_args(text);
-                            let line = node.start_position().row as u32 + 1;
+                            let line = al_syntax::procedure_keyword_row(node)
+                                .unwrap_or_else(|| node.start_position().row)
+                                as u32
+                                + 1;
                             subscribers.push((proc_name, target_object, target_event, line));
                         }
                     }

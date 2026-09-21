@@ -374,6 +374,23 @@ pub(crate) fn collect_ast_sections(
     Ok(sections)
 }
 
+/// [`collect_ast_sections`] restricted to one subtree.
+///
+/// A file declaring two tables would otherwise hand both tables' fields to a
+/// caller asking about one of them.
+pub(crate) fn collect_ast_sections_in(
+    node: tree_sitter::Node<'_>,
+    source: &str,
+    target_keywords: &[&str],
+) -> Result<Vec<AstObjectSection>, String> {
+    if node.has_error() {
+        return Err("cannot inspect sections in malformed AL source".to_string());
+    }
+    let mut sections = Vec::new();
+    collect_ast_sections_from_node(node, source, target_keywords, &mut sections)?;
+    Ok(sections)
+}
+
 fn collect_ast_sections_from_node(
     node: tree_sitter::Node<'_>,
     source: &str,

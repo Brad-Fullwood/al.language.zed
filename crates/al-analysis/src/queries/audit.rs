@@ -77,14 +77,19 @@ pub fn data_classification_audit(
     let mut results = Vec::new();
 
     for source in sources {
-        if !matches!(
-            source.object.kind,
-            al_symbols::ObjectKind::Table | al_symbols::ObjectKind::TableExtension
-        ) {
-            continue;
-        }
+        // Every table in the file, not only the first object: a file declaring
+        // a setup table then its card page, or two tables, used to be skipped
+        // or audited under the wrong table's name.
+        for object in &source.objects {
+            if !matches!(
+                object.kind,
+                al_symbols::ObjectKind::Table | al_symbols::ObjectKind::TableExtension
+            ) {
+                continue;
+            }
 
-        scan_table_fields(&source, &mut results)?;
+            scan_table_fields(&source, object, &mut results)?;
+        }
     }
 
     Ok(results)
@@ -92,9 +97,16 @@ pub fn data_classification_audit(
 
 fn scan_table_fields(
     source: &WorkspaceSource,
+    object: &crate::workspace_sources::WorkspaceObjectDeclaration,
     results: &mut Vec<DataClassificationEntry>,
 ) -> Result<(), AuditError> {
-    let sections = super::bulk_fix::collect_ast_sections(&source.tree, &source.text, &["field"])
+    let range = object.info.range;
+    let object_node = source
+        .tree
+        .root_node()
+        .descendant_for_byte_range(range.start_byte, range.end_byte)
+        .unwrap_or_else(|| source.tree.root_node());
+    let sections = super::bulk_fix::collect_ast_sections_in(object_node, &source.text, &["field"])
         .map_err(|reason| AuditError::InvalidSource {
             path: source.path.clone(),
             reason,
@@ -137,7 +149,7 @@ fn scan_table_fields(
         };
         let risk = classify_gdpr_risk(&classification);
         results.push(DataClassificationEntry {
-            table: source.object.info.name.clone(),
+            table: object.info.name.clone(),
             field,
             classification,
             risk,
@@ -293,16 +305,23 @@ pub fn permission_set_audit(workspace: &Workspace) -> Result<PermissionAuditRepo
     let mut parse_issues: Vec<PermissionParseIssue> = Vec::new();
 
     for source in &sources {
-        if matches!(
-            source.object.kind,
-            al_symbols::ObjectKind::PermissionSet | al_symbols::ObjectKind::PermissionSetExtension
-        ) {
-            let (grants, issues) = extract_permission_grants(source)?;
-            parse_issues.extend(issues);
-            perm_sets.push((source.object.info.name.clone(), grants));
-            perm_set_paths.insert(source.path.clone());
-        } else {
-            declared_names.insert(source.object.info.name.to_lowercase());
+        // Per object declaration, not per file: a `permissionset` declared
+        // after a codeunit in the same file used to be classified as that
+        // codeunit, so its Permissions property was never read and its own
+        // grant clauses counted as *usage* of the objects they grant.
+        for object in &source.objects {
+            if matches!(
+                object.kind,
+                al_symbols::ObjectKind::PermissionSet
+                    | al_symbols::ObjectKind::PermissionSetExtension
+            ) {
+                let (grants, issues) = extract_permission_grants(source, object)?;
+                parse_issues.extend(issues);
+                perm_sets.push((object.info.name.clone(), grants));
+                perm_set_paths.insert(source.path.clone());
+            } else {
+                declared_names.insert(object.info.name.to_lowercase());
+            }
         }
     }
 
@@ -339,34 +358,31 @@ fn compute_coverage(
     let mut results = Vec::new();
 
     for source in sources {
-        let kind = source.object.info.kind.to_lowercase();
-        // Only audit tables, pages, codeunits, reports (primary access objects)
-        if !matches!(kind.as_str(), "table" | "page" | "codeunit" | "report") {
-            continue;
-        }
+        for object in &source.objects {
+            let kind = object.info.kind.to_lowercase();
+            // Only audit tables, pages, codeunits, reports (primary access objects)
+            if !matches!(kind.as_str(), "table" | "page" | "codeunit" | "report") {
+                continue;
+            }
 
-        let covered_by: Vec<String> = perm_sets
-            .iter()
-            .filter(|(_, grants)| {
-                grants.iter().any(|grant| {
-                    grant_covers_object(
-                        grant,
-                        &kind,
-                        source.object.normalized_id,
-                        &source.object.info.name,
-                    )
+            let covered_by: Vec<String> = perm_sets
+                .iter()
+                .filter(|(_, grants)| {
+                    grants.iter().any(|grant| {
+                        grant_covers_object(grant, &kind, object.normalized_id, &object.info.name)
+                    })
                 })
-            })
-            .map(|(n, _)| n.clone())
-            .collect();
+                .map(|(n, _)| n.clone())
+                .collect();
 
-        results.push(PermissionCoverageEntry {
-            kind: source.object.info.kind.clone(),
-            id: source.object.normalized_id,
-            name: source.object.info.name.clone(),
-            covered: !covered_by.is_empty(),
-            covered_by,
-        });
+            results.push(PermissionCoverageEntry {
+                kind: object.info.kind.clone(),
+                id: object.normalized_id,
+                name: object.info.name.clone(),
+                covered: !covered_by.is_empty(),
+                covered_by,
+            });
+        }
     }
 
     results
@@ -695,9 +711,16 @@ fn write_right_for_method(method: &str) -> Option<char> {
 #[allow(clippy::type_complexity)]
 fn extract_permission_grants(
     source: &WorkspaceSource,
+    object: &crate::workspace_sources::WorkspaceObjectDeclaration,
 ) -> Result<(Vec<PermissionGrant>, Vec<PermissionParseIssue>), AuditError> {
+    let object_range = object.info.range;
+    let object_node = source
+        .tree
+        .root_node()
+        .descendant_for_byte_range(object_range.start_byte, object_range.end_byte)
+        .unwrap_or_else(|| source.tree.root_node());
     let mut permission_properties = Vec::new();
-    let mut stack = vec![source.tree.root_node()];
+    let mut stack = vec![object_node];
     while let Some(node) = stack.pop() {
         if node.kind() == "property_assignment" {
             let name = node
@@ -783,7 +806,7 @@ fn extract_permission_grants(
         match parse_permission_clause(&clause) {
             Ok(grant) => grants.push(grant),
             Err(reason) => issues.push(PermissionParseIssue {
-                permission_set: source.object.info.name.clone(),
+                permission_set: object.info.name.clone(),
                 file: source.path.display().to_string(),
                 clause: index + 1,
                 text: clause.join(" "),
@@ -1176,6 +1199,78 @@ mod tests {
                 .iter()
                 .any(|entry| entry.object_type.eq_ignore_ascii_case("system")),
             "a system grant names a platform capability, not a workspace object"
+        );
+    }
+
+    /// A permission set declared after a codeunit in the same file used to be
+    /// classified as that codeunit: its Permissions property was never read,
+    /// and the file took part in the usage scan, so its own grant clauses
+    /// counted as references to the objects they grant.
+    #[test]
+    fn a_permission_set_declared_second_in_a_file_is_still_audited() {
+        let ws = workspace_with(vec![
+            (
+                "/src/Unused.al",
+                r#"table 50100 "Unused Table" { fields { field(1; Name; Text[10]) { } } }"#,
+            ),
+            (
+                "/src/Ship.al",
+                r#"codeunit 50101 "Ship Mgt"
+{
+    procedure Run()
+    begin
+    end;
+}
+
+permissionset 50102 "Ship Perms"
+{
+    Permissions = tabledata "Unused Table" = RIMD;
+}"#,
+            ),
+        ]);
+
+        let report = permission_set_audit(&ws).unwrap();
+        assert!(
+            report
+                .over_broad
+                .iter()
+                .any(|entry| entry.object == "Unused Table"
+                    && entry.permission_set == "Ship Perms"),
+            "the second object's Permissions property must be read: {:?}",
+            report.over_broad
+        );
+    }
+
+    /// The same shape for the data-classification audit: a table declared
+    /// after another object was skipped because only the file's first object
+    /// was inspected.
+    #[test]
+    fn a_table_declared_second_in_a_file_is_still_classified() {
+        let ws = workspace_with(vec![(
+            "/src/Setup.al",
+            r#"codeunit 50100 "Ship Mgt"
+{
+    procedure Run()
+    begin
+    end;
+}
+
+table 50101 "Ship Setup"
+{
+    fields
+    {
+        field(1; "Primary Key"; Code[10]) { }
+    }
+}"#,
+        )]);
+
+        let entries = data_classification_audit(&ws).unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (entry.table.as_str(), entry.field.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("Ship Setup", "Primary Key")]
         );
     }
 
