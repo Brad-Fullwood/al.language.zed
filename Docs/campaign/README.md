@@ -70,3 +70,14 @@ paths, tenant IDs, environment names, or customer object names. Measure on priva
 workspaces if needed, and write results with neutral labels ("a private per-tenant
 extension"). Check with `grep -niE 'advania|customers/' Docs/campaign` before every commit
 of campaign docs.
+
+## Main checkout guard
+
+Creating an agent worktree has switched the main checkout onto the agent's placeholder
+branch (`worktree-agent-<id>`) at least twice. Before every orchestrator commit run
+`git branch --show-current` and confirm it prints `campaign/2026-09-21`. If it does not:
+`git checkout campaign/2026-09-21`, `git submodule update --init tree-sitter-al`, and
+cherry-pick any commit that landed on the placeholder branch.
+
+Agents do their own reading and do not spawn sub-agents. A sub-agent dies with its parent at
+a usage limit and its output is lost.
