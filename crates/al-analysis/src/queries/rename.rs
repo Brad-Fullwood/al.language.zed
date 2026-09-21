@@ -14,6 +14,7 @@ pub fn prepare_rename(
 
     let node = al_syntax::find_node_at_position(&tree, &text, position.into())?;
     let clean_name = super::node_clean_name(node, text.as_bytes())?;
+    let clean_name = clean_name.as_str();
     if !matches!(
         node.kind(),
         "identifier" | "quoted_identifier" | "name" | "name_or_keyword"
@@ -49,6 +50,7 @@ pub fn rename(
     let Some(clean_name) = super::node_clean_name(node, text.as_bytes()) else {
         return Ok(None);
     };
+    let clean_name = clean_name.as_str();
 
     let mut changes: Vec<(Url, Vec<TextEdit>)> = Vec::new();
     let source_bytes = text.as_bytes();

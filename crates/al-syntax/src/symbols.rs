@@ -95,14 +95,10 @@ fn extract_object_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
             if matches!(
                 c.kind(),
                 "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword"
-            ) {
-                if let Ok(n) = c.utf8_text(source) {
-                    let trimmed = n.trim_matches('"').trim();
-                    if !trimmed.is_empty() {
-                        found_range = Some(c.range());
-                        break;
-                    }
-                }
+            ) && crate::node_text_clean(c, source).is_some()
+            {
+                found_range = Some(c.range());
+                break;
             }
         }
         found_range
@@ -333,9 +329,9 @@ fn collect_immediate_executable_scopes(
 fn extract_procedure_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let name = node
         .child_by_field_name("name")
-        .and_then(|n| n.utf8_text(source).ok())
-        .unwrap_or("(unnamed)")
-        .trim_matches('"');
+        .and_then(|n| crate::node_text_clean(n, source))
+        .unwrap_or_else(|| "(unnamed)".to_string());
+    let name = name.as_str();
 
     if name == "(unnamed)" {
         debug!(
@@ -500,12 +496,9 @@ fn extract_enum_value_from_section(node: Node, source: &[u8]) -> Option<Document
                 ordinal = child.utf8_text(source).unwrap_or("").to_string();
             }
             "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword" => {
-                if let Ok(text) = child.utf8_text(source) {
-                    let trimmed = text.trim_matches('"').trim().to_string();
-                    if !trimmed.is_empty() {
-                        name = trimmed;
-                        name_node_range = child.range();
-                    }
+                if let Some(trimmed) = crate::node_text_clean(child, source) {
+                    name = trimmed;
+                    name_node_range = child.range();
                 }
             }
             _ => {}
@@ -568,7 +561,7 @@ fn extract_dataitem_from_section(node: Node, source: &[u8]) -> Option<DocumentSy
             "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword"
         ) {
             if let Ok(text) = child.utf8_text(source) {
-                name = text.trim_matches('"').trim().to_string();
+                name = crate::clean_identifier(text);
                 name_node_range = child.range();
                 break;
             }
@@ -716,11 +709,7 @@ fn try_extract_inline_trigger(kw_node: Node, source: &[u8]) -> Option<DocumentSy
     ) {
         return None;
     }
-    let name_text = name_node.utf8_text(source).ok()?;
-    let name = name_text.trim_matches('"').to_string();
-    if name.is_empty() {
-        return None;
-    }
+    let name = crate::node_text_clean(name_node, source)?;
     let trigger_kw_range = kw_node.range();
     let range = ts_range_to_lsp(
         &tree_sitter::Range {
@@ -818,7 +807,7 @@ fn extract_control_name(paren: Node, source: &[u8]) -> String {
         match child.kind() {
             "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword" => {
                 if let Ok(text) = child.utf8_text(source) {
-                    return text.trim_matches('"').to_string();
+                    return crate::clean_identifier(text);
                 }
             }
             _ => {}
@@ -1136,22 +1125,16 @@ fn extract_field_name_from_paren(paren: Node, source: &[u8]) -> String {
             "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword"
                 if past_first_semicolon =>
             {
-                if let Ok(text) = child.utf8_text(source) {
-                    let trimmed = text.trim_matches('"').trim().to_string();
-                    if !trimmed.is_empty() {
-                        return trimmed;
-                    }
+                if let Some(trimmed) = crate::node_text_clean(child, source) {
+                    return trimmed;
                 }
             }
             "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword"
                 if !past_first_semicolon =>
             {
                 // Page field: `field("Caption"; ...)` — no integer before semicolon.
-                if let Ok(text) = child.utf8_text(source) {
-                    let trimmed = text.trim_matches('"').trim().to_string();
-                    if !trimmed.is_empty() {
-                        return trimmed;
-                    }
+                if let Some(trimmed) = crate::node_text_clean(child, source) {
+                    return trimmed;
                 }
             }
             _ => {}
@@ -1171,6 +1154,43 @@ fn extract_field_name_from_paren(paren: Node, source: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::AlParser;
+
+    /// The outline shows the identifier, not its escaped spelling.
+    #[test]
+    fn symbol_names_containing_a_doubled_quote_are_unescaped() {
+        let src = "table 50100 \"My \"\"Big\"\" Table\"\n\
+                   {\n\
+                   \x20   fields\n\
+                   \x20   {\n\
+                   \x20       field(1; \"No. \"\"X\"\" Series\"; Code[20]) { }\n\
+                   \x20   }\n\
+                   \n\
+                   \x20   procedure \"Do \"\"It\"\" Now\"()\n\
+                   \x20   begin\n\
+                   \x20   end;\n\
+                   }\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let symbols = extract_document_symbols(&result.tree, src);
+
+        fn all_names(symbols: &[DocumentSymbol], out: &mut Vec<String>) {
+            for symbol in symbols {
+                out.push(symbol.name.clone());
+                if let Some(children) = &symbol.children {
+                    all_names(children, out);
+                }
+            }
+        }
+        let mut names = Vec::new();
+        all_names(&symbols, &mut names);
+
+        assert_eq!(symbols[0].name, r#"My "Big" Table"#);
+        assert!(
+            names.iter().any(|n| n == r#"No. "X" Series"#),
+            "got {names:?}"
+        );
+        assert!(names.iter().any(|n| n == r#"Do "It" Now"#), "got {names:?}");
+    }
 
     #[test]
     fn test_extract_symbols_codeunit() {
@@ -2016,7 +2036,7 @@ report 50102 "R2" { rendering { layout(L) { } } requestpage { layout { } } datas
         while let Some(n) = stack.pop() {
             if n.kind() == kind {
                 if let Ok(t) = n.utf8_text(src.as_bytes()) {
-                    if t.trim_matches('"').eq_ignore_ascii_case(text) {
+                    if crate::clean_identifier(t).eq_ignore_ascii_case(text) {
                         return Some(n);
                     }
                 }

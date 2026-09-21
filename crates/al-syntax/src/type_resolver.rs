@@ -542,7 +542,7 @@ impl<'a> TypeResolver<'a> {
                 && (kind == "identifier" || kind == "name" || kind == "name_or_keyword")
             {
                 if let Ok(text) = child.utf8_text(self.source) {
-                    type_keyword = text.trim_matches('"').to_string();
+                    type_keyword = crate::clean_identifier(text);
                 }
             } else if !type_keyword.is_empty()
                 && (kind == "name_or_keyword"
@@ -552,7 +552,7 @@ impl<'a> TypeResolver<'a> {
                     || kind == "string")
             {
                 if let Ok(text) = child.utf8_text(self.source) {
-                    let clean = text.trim_matches('"').trim_matches('\'').to_string();
+                    let clean = crate::clean_identifier(text.trim_matches('\''));
                     if !clean.is_empty() {
                         subtype = Some(clean);
                     }
@@ -733,7 +733,7 @@ impl<'a> TypeResolver<'a> {
                 match c.kind() {
                     "identifier" | "quoted_identifier" | "name" | "name_or_keyword" => {
                         if let Ok(text) = c.utf8_text(self.source) {
-                            let name = text.trim_matches('"').to_string();
+                            let name = crate::clean_identifier(text);
                             if !name.is_empty() {
                                 debug!(
                                     object_kind = kind,
@@ -768,11 +768,7 @@ impl<'a> TypeResolver<'a> {
                 let Ok(value_text) = value_node.utf8_text(self.source) else {
                     continue;
                 };
-                let clean = value_text
-                    .trim()
-                    .trim_matches('"')
-                    .trim_matches('\'')
-                    .to_string();
+                let clean = crate::clean_identifier(value_text.trim().trim_matches('\''));
                 if !clean.is_empty() {
                     debug!(
                         object_kind = kind,
@@ -841,11 +837,11 @@ impl<'a> TypeResolver<'a> {
             };
             let mut parts = inside_raw.splitn(2, ';');
             let var_name = match parts.next() {
-                Some(n) => n.trim().trim_matches('"'),
+                Some(n) => &crate::clean_identifier(n),
                 None => continue,
             };
             let table_name = match parts.next() {
-                Some(t) => t.trim().trim_matches('"').trim_matches('\''),
+                Some(t) => &crate::clean_identifier(t.trim().trim_matches('\'')),
                 None => continue,
             };
             if var_name.is_empty() || table_name.is_empty() {
@@ -901,6 +897,65 @@ mod tests {
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         (result.tree, src.to_string())
+    }
+
+    /// AL escapes a `"` inside a quoted identifier by doubling it, so
+    /// `"Cust ""Main"" Rec"` names `Cust "Main" Rec`. Every name extraction has
+    /// to agree on that, or the lookup key never matches the declared name.
+    #[test]
+    fn resolves_a_name_containing_a_doubled_quote() {
+        let src = "codeunit 50100 Test\n\
+                   {\n\
+                   \x20   procedure DoSomething()\n\
+                   \x20   var\n\
+                   \x20       \"Cust \"\"Main\"\" Rec\": Record Customer;\n\
+                   \x20   begin\n\
+                   \x20       \"Cust \"\"Main\"\" Rec\".Init();\n\
+                   \x20   end;\n\
+                   }\n";
+        let (tree, text) = parse(src);
+        let resolver = TypeResolver::new(&tree, &text);
+
+        let decl = resolver
+            .resolve_type(
+                r#"Cust "Main" Rec"#,
+                Position {
+                    line: 6,
+                    character: 8,
+                },
+            )
+            .expect("should resolve the unescaped name");
+
+        assert_eq!(decl.name, r#"Cust "Main" Rec"#);
+        assert_eq!(decl.type_name, "Record");
+        assert_eq!(decl.type_subtype.as_deref(), Some("Customer"));
+    }
+
+    #[test]
+    fn a_subtype_name_containing_a_doubled_quote_is_unescaped() {
+        let src = "codeunit 50100 Test\n\
+                   {\n\
+                   \x20   procedure DoSomething()\n\
+                   \x20   var\n\
+                   \x20       Rec: Record \"Cust \"\"Main\"\" Table\";\n\
+                   \x20   begin\n\
+                   \x20       Rec.Init();\n\
+                   \x20   end;\n\
+                   }\n";
+        let (tree, text) = parse(src);
+        let resolver = TypeResolver::new(&tree, &text);
+
+        let decl = resolver
+            .resolve_type(
+                "Rec",
+                Position {
+                    line: 6,
+                    character: 8,
+                },
+            )
+            .expect("should resolve Rec");
+
+        assert_eq!(decl.type_subtype.as_deref(), Some(r#"Cust "Main" Table"#));
     }
 
     #[test]

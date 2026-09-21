@@ -513,7 +513,7 @@ fn is_builtin_record_member(
     let Ok(member_name) = member.utf8_text(source) else {
         return false;
     };
-    if !is_record_builtin_method(member_name.trim_matches('"')) {
+    if !is_record_builtin_method(&crate::clean_identifier(member_name)) {
         return false;
     }
 
@@ -532,7 +532,7 @@ fn is_builtin_record_member(
     let Ok(receiver) = primary.utf8_text(source) else {
         return false;
     };
-    let receiver = receiver.trim().trim_matches('"');
+    let receiver = crate::clean_identifier(receiver);
     if receiver.is_empty()
         || !receiver
             .chars()
@@ -551,7 +551,7 @@ fn is_builtin_record_member(
         character: super::byte_col_to_utf16_col(line, member.start_position().column),
     };
     type_resolver
-        .resolve_type(receiver, position)
+        .resolve_type(&receiver, position)
         .is_some_and(|declaration| declaration.type_name.eq_ignore_ascii_case("Record"))
 }
 

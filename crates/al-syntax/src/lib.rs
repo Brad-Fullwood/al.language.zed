@@ -117,6 +117,14 @@ pub fn clean_identifier_text(text: &str) -> Option<String> {
     }
 }
 
+/// [`clean_identifier_text`] with an empty string in place of `None`.
+///
+/// For the call sites that treat an empty name as "no name" rather than
+/// branching on it.
+pub fn clean_identifier(text: &str) -> String {
+    clean_identifier_text(text).unwrap_or_default()
+}
+
 pub fn node_text_or(node: tree_sitter::Node, source: &[u8], fallback: &str) -> String {
     node_text_clean(node, source).unwrap_or_else(|| fallback.to_string())
 }
