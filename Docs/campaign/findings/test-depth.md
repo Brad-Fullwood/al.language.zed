@@ -187,4 +187,61 @@ At `PROPTEST_CASES=20000` over generated objects and mutated fixtures, with the 
 
 ## Coverage
 
-(filled in during step 2)
+`cargo llvm-cov --summary-only`, one run per batch of crates, on this branch with the new
+property tests in place (`PROPTEST_CASES=32`). Line coverage, not region coverage.
+
+| Crate | Lines | Line coverage |
+| --- | ---: | ---: |
+| al-types | 223 | 77.1% |
+| al-protocol | 1259 | 86.6% |
+| al-source | 2822 | 94.3% |
+| al-project | 2966 | 88.8% |
+| al-workspace | 2616 | 89.8% |
+| al-snapshot | 510 | 86.3% |
+| al-syntax | 10721 | 93.0% |
+| al-semantic | 1162 | 61.4% |
+| al-emit | 6851 | 89.4% |
+| al-symbols | 10797 | 87.4% |
+| al-bc | 3276 | 96.8% |
+| al-compile | 1140 | 83.0% |
+| al-publish | 643 | 84.3% |
+| al-insight | 5875 | 94.2% |
+| al-runtime | 16059 | 90.4% |
+| al-test | 9495 | 87.8% |
+| al-dap | 8296 | 87.8% |
+
+Workspace aggregate over the batches measured: about 89% of lines.
+
+### The five least-covered files over 100 lines
+
+| File | Lines | Line coverage | Reachable from user input |
+| --- | ---: | ---: | --- |
+| `crates/al-semantic/src/lifecycle.rs` | 107 | 0.0% | no, it drives the external .NET semantic host process |
+| `crates/al-test/src/backends/snapshot.rs` | 209 | 18.2% | yes, it reads a user's recorded snapshot files |
+| `crates/al-project/src/analyzers.rs` | 278 | 62.6% | yes, it resolves analyzer paths out of `app.json` and settings |
+| `crates/al-semantic/src/bridge.rs` | 723 | 63.2% | no, it is the wire protocol to that same external host |
+| `crates/al-symbols/src/oauth.rs` | 1260 | 73.0% | partly, but the uncovered half is network and OS-keystore calls |
+
+Next by absolute uncovered lines, all user-input driven:
+`crates/al-emit/src/verification.rs` (1616 lines, 76.1%, 387 uncovered),
+`crates/al-dap/src/dap/native_dap.rs` (2803 lines, 77.7%, 626 uncovered),
+`crates/al-runtime/src/interpreter/records.rs` (1480 lines, 73.0%, 400 uncovered).
+
+Per-crate worst files, for the record:
+
+- al-types: `profiler.rs` 0% (12 lines), `test_result.rs` 0% (27 lines), both under 100 lines
+- al-protocol: `client.rs` 85.8%
+- al-source: `parsing.rs` 88.2%, `file_index.rs` 94.1%
+- al-project: `analyzers.rs` 62.6%, `toolchain.rs` 87.5%, `config.rs` 90.6%
+- al-workspace: `semantic_lifecycle.rs` 80.2%, `doctor.rs` 81.0%
+- al-snapshot: `diff.rs` 84.6%, `format.rs` 88.3%
+- al-syntax: `navigation.rs` 86.1%, `type_resolver.rs` 88.2%, `language_data.rs` 88.3%
+- al-semantic: `lifecycle.rs` 0%, `bridge.rs` 63.2%, `host.rs` 83.3%
+- al-emit: `verification.rs` 76.1%, `project.rs` 85.9%
+- al-symbols: `oauth.rs` 73.0%, `nuget.rs` 79.1%, `app_inspect.rs` 80.6%, `virtual_file.rs` 84.1%
+- al-compile: `lib.rs` 83.0%
+- al-publish: `lib.rs` 84.3%
+- al-insight: `graph.rs` 93.5%, `discovery.rs` 93.9%
+- al-runtime: `records.rs` 73.0%, `eval_stmt.rs` 81.3%, `library_variable_storage.rs` 82.5%
+- al-test: `backends/snapshot.rs` 18.2%, `router.rs` 84.1%, `mutate.rs` 85.9%
+- al-dap: `native_dap.rs` 77.7%, `bc_debug/session.rs` 84.0%
