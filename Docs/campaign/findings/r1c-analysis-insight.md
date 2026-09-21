@@ -92,21 +92,21 @@ Listed by neither checklist:
 - severity: medium
 - scenario: the comment at test_diagnostics.rs:92-98 explains the choice of `0` for a test method that the static discovery did not see: "fall back to line 0 — matching the documented 'unknown location' contract ... Line 1 would point at the codeunit header, misleading jump-to-diagnostic." But `line` is documented as 1-based and `test_diag_to_lsp` converts with `td.line.saturating_sub(1)`, so `0` and `1` both become LSP line 0, the codeunit header. A test method present in the BC run results but missing from discovery (added since the last index, or a file whose parse failed) produces `file: "/src/MyTests.al", line: 0`, which the editor renders as a red squiggle on `codeunit 50100 "My Tests"`. The exact outcome the comment says it is avoiding. `discovered_codeunit_undiscovered_method_falls_back_to_line_zero` (373-398) asserts the sentinel and never follows it through the conversion.
 - fix: make the unknown-location case explicit rather than numeric, for example `line: Option<u32>`, and have the LSP layer skip publishing (or attach to the file with no range) when it is `None`.
-- status: open
+- status: fixed ec3cb172 — `TestDiagnostic::line` is `Option<u32>` and `test_diag_to_lsp` returns `Option<Diagnostic>`, so an unlocatable diagnostic is not published.
 
 ### [TEST] No test asserts that a failing test resolves to its source line
 - where: crates/al-analysis/src/queries/test_diagnostics.rs:234-291, 332-337
 - severity: medium
 - scenario: the module's stated job is "Failing tests become error-severity diagnostics pointing at the procedure declaration line inside the source file" (lines 5-6). Every `results_to_diagnostics` test builds `al_workspace::Workspace::new()`, an empty workspace, so `discover_tests` returns nothing, `cu_info` is `None` and every diagnostic comes out with `file: ""` and `line: 0`. The tests then assert only severity, message and `test_name`. `unrun_test_hints_returns_hints_for_empty_workspace` likewise asserts that an empty workspace produces no hints. The lookup at lines 91-105, which is the only logic in the module, could return a constant and every test would still pass. At the LSP boundary `file: ""` fails `Url::from_file_path` (crates/al-lsp/src/server/diagnostics.rs:776-781), so those diagnostics are dropped with a warning and never reach the editor.
 - fix: build a workspace holding a `[Test]` codeunit, run `results_to_diagnostics` against a `TestCodeunitResult` with the matching id, and assert the returned `file` and `line` point at the procedure.
-- status: open
+- status: fixed ec3cb172 — `a_failing_test_resolves_to_its_source_line` does exactly that.
 
 ### [SLOP] Three of the module's six public functions have no caller
 - where: crates/al-analysis/src/queries/test_diagnostics.rs:136-138 (`clear_diagnostics`), 143-163 (`unrun_test_hints`), 179-189 (`find_proc_line`)
 - severity: low
 - scenario: a workspace-wide grep finds callers only for `group_by_file` and `results_to_diagnostics`. `clear_diagnostics` is `pub fn clear_diagnostics() -> Vec<TestDiagnostic> { Vec::new() }` with a test that asserts the empty vec is empty. `find_proc_line`'s own doc says it is "Used when the workspace file index is not available (e.g., in tests)", and that is its only use. The clearing path the dead function was presumably for is also broken on the consumer side: `publish_test_diagnostics` (crates/al-lsp/src/server/diagnostics.rs:766-786) says "Pass an empty `diagnostics` slice to clear test diagnostics", but an empty slice makes `group_by_file` return an empty map, so the publish loop never runs and no file is ever cleared.
 - fix: delete the three functions, and if clearing is wanted, have the LSP layer track the files it last published to and publish an empty diagnostic list to each.
-- status: open
+- status: fixed ec3cb172 — the three are deleted, and `publish_test_diagnostics` remembers the files it published to and clears the ones that drop out.
 
 ### [TEST] The shared apply-and-reparse helper covers seven of eleven code actions, and would mis-apply a multi-file edit
 - where: crates/al-analysis/src/queries/code_actions/test_support.rs:10-11 (the claim) and 125-128 (the loop)

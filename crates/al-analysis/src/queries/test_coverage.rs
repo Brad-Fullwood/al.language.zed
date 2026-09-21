@@ -91,6 +91,10 @@ struct ProcDef {
     file: String,
     line: u32,
     is_local: bool,
+    /// True for a declaration the test framework invokes by attribute — a
+    /// `[Test]` method, a UI handler, or a `[TestInitialize]`/`[TestCleanup]`.
+    /// Such a procedure is test code, so it is neither creditable as covered
+    /// production code nor reportable as untested.
     is_test: bool,
 }
 
@@ -404,7 +408,7 @@ fn collect_procs_recursive(
             let node = cursor.node();
             if node.kind() == "procedure_declaration" {
                 let is_local = has_local_modifier(node, source);
-                let is_test = in_test_codeunit && has_test_attr_child(node, source);
+                let is_test = in_test_codeunit && has_framework_attr_child(node, source);
 
                 if let Some(name_node) = node.child_by_field_name("name") {
                     if let Ok(name) = name_node.utf8_text(source) {
@@ -465,12 +469,21 @@ fn has_local_modifier(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
     false
 }
 
-fn has_test_attr_child(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
+/// True when a declaration inside a test codeunit carries an attribute that
+/// makes the test framework invoke it.
+///
+/// Not only `[Test]`: AL's test framework invokes a `[MessageHandler]`,
+/// `[ConfirmHandler]`, `[ModalPageHandler]` and the rest by attribute, never by
+/// a call. A handler has to be reachable by the framework, so it is not
+/// `local`, and nothing calls it — which put every handler in a test suite into
+/// the `untested` list as production code that cannot be covered by
+/// construction.
+fn has_framework_attr_child(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
     let mut cursor = proc_node.walk();
     for child in proc_node.children(&mut cursor) {
         if child.kind() == "attribute" {
             if let Ok(text) = child.utf8_text(source) {
-                if crate::queries::tests::is_test_attribute(text) {
+                if crate::queries::tests::is_framework_invoked_attribute(text) {
                     return true;
                 }
             }
@@ -986,6 +999,67 @@ mod tests {
             is_local: false,
             is_test: false,
         }
+    }
+
+    /// AL's test framework invokes a handler by attribute, never by a call, so
+    /// a handler is not `local` and nothing calls it. It used to land in
+    /// `untested` on every run, alongside `[TestInitialize]` and
+    /// `[TestCleanup]`.
+    #[test]
+    fn test_handlers_are_not_reported_as_untested_production_code() {
+        let ws = workspace_with(&[(
+            "/src/Tests.al",
+            r#"codeunit 50100 "My Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestOne()
+    begin
+    end;
+
+    [MessageHandler]
+    procedure HandleMessage(Message: Text)
+    begin
+    end;
+
+    [ConfirmHandler]
+    procedure HandleConfirm(Question: Text; var Reply: Boolean)
+    begin
+    end;
+
+    [ModalPageHandler]
+    procedure HandleModalPage(var Page: TestPage "Some Page")
+    begin
+    end;
+
+    [TestInitialize]
+    procedure Init()
+    begin
+    end;
+
+    [TestCleanup]
+    procedure Cleanup()
+    begin
+    end;
+
+    procedure PlainHelper()
+    begin
+    end;
+}"#,
+        )]);
+
+        let report = test_coverage(&ws).unwrap();
+        let untested: Vec<&str> = report
+            .untested
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(
+            untested,
+            vec!["PlainHelper"],
+            "only the plain helper is production code"
+        );
     }
 
     #[test]

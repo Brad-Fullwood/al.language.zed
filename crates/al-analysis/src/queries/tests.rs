@@ -666,10 +666,59 @@ fn has_test_attribute(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
 
 /// Return true if the attribute text is `[Test]` (case-insensitive, not TestPermissions etc.).
 pub fn is_test_attribute(text: &str) -> bool {
-    let inner = text.trim().trim_start_matches('[').trim_end_matches(']');
-    inner
+    attribute_names(text).any(|name| name.eq_ignore_ascii_case("test"))
+}
+
+/// The AL attributes that make the test framework invoke a procedure without
+/// anything calling it.
+///
+/// The thirteen UI handlers Microsoft documents under "Create handler methods",
+/// plus the per-test lifecycle pair. A handler must be reachable by the
+/// framework, so it is never `local` and nothing calls it by name.
+const FRAMEWORK_INVOKED_ATTRIBUTES: &[&str] = &[
+    "test",
+    "testinitialize",
+    "testcleanup",
+    "messagehandler",
+    "confirmhandler",
+    "strmenuhandler",
+    "pagehandler",
+    "modalpagehandler",
+    "reporthandler",
+    "requestpagehandler",
+    "sendnotificationhandler",
+    "hyperlinkhandler",
+    "recallnotificationhandler",
+    "sessionsettingshandler",
+    "filterpagehandler",
+    "httpclienthandler",
+];
+
+/// True for an attribute that makes the test framework invoke the procedure.
+///
+/// Reporting these as untested production code was a false positive on every
+/// test suite of any size: a `[MessageHandler]` is not `local`, nothing calls
+/// it, and it cannot be covered by construction.
+///
+/// <https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/devenv-creating-handler-methods>
+pub fn is_framework_invoked_attribute(text: &str) -> bool {
+    attribute_names(text).any(|name| {
+        FRAMEWORK_INVOKED_ATTRIBUTES
+            .iter()
+            .any(|known| name.eq_ignore_ascii_case(known))
+    })
+}
+
+/// The attribute names in one `[A; B(x)]` block, without arguments.
+fn attribute_names(text: &str) -> impl Iterator<Item = &str> {
+    text.trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
         .split(';')
-        .any(|part| part.trim().eq_ignore_ascii_case("test"))
+        .map(|part| {
+            let part = part.trim();
+            part.split_once('(').map_or(part, |(name, _)| name).trim()
+        })
 }
 
 #[cfg(test)]
