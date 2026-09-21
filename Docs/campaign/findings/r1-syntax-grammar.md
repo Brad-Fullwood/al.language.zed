@@ -72,7 +72,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   `language-assets.md:22` and give them a name with content (the `if` condition text,
   the `case` selector) instead of the keyword. If they do not, drop the eight
   patterns and the `executable_scope_metadata` path in symbols.rs.
-- status: open
+- status: fixed e289763d (grammar 38368a0)
 
 ### [GAP] AL-NL001 misses paren-less `FindFirst` / `FindLast`
 - where: crates/al-syntax/src/lint.rs:352
