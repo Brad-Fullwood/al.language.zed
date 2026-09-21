@@ -626,9 +626,41 @@ impl DaemonClient {
             .arg(project_root)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            // Keep the startup error. Discarding it left the caller with an
+            // exit status and an instruction to read a log file, which an agent
+            // cannot act on.
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| format!("Failed to start al-lsp daemon: {}", e))
+    }
+
+    /// The last non-empty line the daemon wrote to stderr before exiting.
+    ///
+    /// Reads at most `MAX_STARTUP_STDERR` bytes: the pipe is already closed
+    /// when the child has exited, so this returns immediately.
+    fn startup_stderr(child: &mut std::process::Child) -> Option<String> {
+        const MAX_STARTUP_STDERR: u64 = 64 * 1024;
+        use std::io::Read;
+        let mut captured = String::new();
+        child
+            .stderr
+            .take()?
+            .take(MAX_STARTUP_STDERR)
+            .read_to_string(&mut captured)
+            .ok()?;
+        captured
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(|line| {
+                // tracing writes "<timestamp> ERROR target: message"; the
+                // message is what the caller needs.
+                line.rsplit_once(": ")
+                    .map(|(_, message)| message)
+                    .unwrap_or(line)
+                    .to_string()
+            })
     }
 
     fn wait_for_daemon(
@@ -644,10 +676,15 @@ impl DaemonClient {
                     .try_wait()
                     .map_err(|error| format!("Failed to inspect al-lsp daemon process: {error}"))?
                 {
-                    return Err(format!(
-                        "al-lsp daemon exited before opening its endpoint ({status}); \
-                         inspect ~/.local/share/al-lsp/logs/al-lsp.log for the startup error"
-                    ));
+                    return Err(match Self::startup_stderr(child) {
+                        Some(reason) => format!(
+                            "al-lsp daemon exited before opening its endpoint ({status}): {reason}"
+                        ),
+                        None => format!(
+                            "al-lsp daemon exited before opening its endpoint ({status}); \
+                             inspect ~/.local/share/al-lsp/logs/al-lsp.log for the startup error"
+                        ),
+                    });
                 }
             }
             std::thread::sleep(Duration::from_millis(100));

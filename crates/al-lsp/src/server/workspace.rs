@@ -2767,6 +2767,7 @@ mod tests {
             packages_dir: root.path().join(".alpackages"),
             packages: Vec::new(),
             server_configs: Vec::new(),
+            launch_config_error: None,
         });
 
         let uri = url::Url::parse("file:///proj/Foo.Codeunit.al").unwrap();
@@ -2822,6 +2823,7 @@ mod tests {
             packages_dir: root.path().join(".alpackages"),
             packages: Vec::new(),
             server_configs: Vec::new(),
+            launch_config_error: None,
         };
 
         // A reader holding the project lock is what the publication used to

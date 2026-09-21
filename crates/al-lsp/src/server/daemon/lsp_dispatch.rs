@@ -852,34 +852,107 @@ pub(super) fn dispatch_subscribers(
     };
     // see dispatch_events — workspace subscribers need the
     // enrichment pass too.
-    if let Err(error) = workspace.get_or_build_call_graph() {
-        return rpc_error(
-            id,
-            error_codes::INTERNAL_ERROR,
-            &format!("subscriber query could not build a complete workspace graph: {error}"),
-        );
-    }
+    let (graph, _cg_guard) = match workspace.get_or_build_call_graph() {
+        Ok(graph) => graph,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("subscriber query could not build a complete workspace graph: {error}"),
+            );
+        }
+    };
     let results = workspace.symbols.get_events(event);
-    let subscribers: Vec<serde_json::Value> = results
+    let mut subscribers: Vec<serde_json::Value> = results
         .subscribers
         .iter()
         .map(|s| {
             serde_json::json!({
+                "objectKind": s.object.kind.to_string(),
                 "objectName": s.object.name,
                 "methodName": s.method.name,
                 "targetObjectType": s.target_object_type,
                 "targetObjectName": s.target_object_name,
                 "targetEventName": s.target_event_name,
+                "package": s.object.package,
+                "resolved": true,
                 "source_availability": workspace.symbols.source_availability(&s.object),
             })
         })
         .collect();
+
+    // Microsoft symbol packages carry no EventSubscriber attribute, so the
+    // symbol index sees workspace subscribers only. The insight graph also
+    // holds the subscribers parsed out of each package's extracted AL source,
+    // which is the set `trace` was reporting while this method returned [].
+    for matched in al_insight::discovery::subscribers_of(&graph, event) {
+        subscribers.push(serde_json::json!({
+            "objectKind": matched.object_kind,
+            "objectName": matched.object_name,
+            "methodName": matched.method_name,
+            "targetObjectType": "",
+            "targetObjectName": matched.target_object,
+            "targetEventName": matched.target_event,
+            "package": package_of_object(workspace, &matched.object_name),
+            "resolved": matched.resolved,
+        }));
+    }
+    dedup_subscribers(&mut subscribers);
+
     Response {
         id,
         result: Some(serde_json::json!(subscribers)),
         error: None,
         ..Default::default()
     }
+}
+
+/// The package that owns an object name, for rows whose source carries no
+/// package of its own (insight-graph nodes). Workspace objects win over a
+/// same-named package object because the workspace copy is the one a developer
+/// can change.
+fn package_of_object(workspace: &Workspace, object_name: &str) -> String {
+    if workspace
+        .file_index
+        .object_info
+        .iter()
+        .any(|entry| entry.value().name.eq_ignore_ascii_case(object_name))
+    {
+        return WORKSPACE_PACKAGE.to_string();
+    }
+    workspace
+        .symbols
+        .get_by_name(object_name)
+        .first()
+        .map(|entry| entry.package.clone())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Collapse rows that name the same handler. The symbol index and the insight
+/// graph both see a workspace subscriber, so the merge above lists it twice.
+fn dedup_subscribers(subscribers: &mut Vec<serde_json::Value>) {
+    let mut seen = std::collections::HashSet::new();
+    let mut unique = Vec::with_capacity(subscribers.len());
+    for row in subscribers.drain(..) {
+        let key = (
+            row.get("objectName")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_lowercase(),
+            row.get("methodName")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_lowercase(),
+            row.get("targetEventName")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_lowercase(),
+        );
+        if seen.insert(key) {
+            unique.push(row);
+        }
+    }
+    *subscribers = unique;
 }
 
 pub(super) fn dispatch_composed(
@@ -1822,6 +1895,64 @@ mod tests {
         let resp = dispatch_subscribers(&ws, 23, &serde_json::json!({ "event": "OnAfterPost" }));
         assert!(resp.error.is_none());
         assert_eq!(resp.result, Some(serde_json::json!([])));
+    }
+
+    /// `subscribers` read the symbol index only, and Microsoft symbol packages
+    /// carry no `EventSubscriber` attribute, so it answered `[]` for events
+    /// `trace` could follow to three handlers. Both now read the same graph.
+    #[test]
+    fn dispatch_subscribers_agrees_with_trace() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/Publisher.Codeunit.al"),
+            r#"codeunit 50100 "Test Event Publisher"
+{
+    [IntegrationEvent(false, false)]
+    procedure OnAfterProcess()
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/Handler.Codeunit.al"),
+            r#"codeunit 50101 "Work Order Subscribers"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Test Event Publisher", 'OnAfterProcess', '', false, false)]
+    local procedure OnAfterProcessLogResult()
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+
+        let subscribers =
+            dispatch_subscribers(&ws, 25, &serde_json::json!({ "event": "OnAfterProcess" }))
+                .result
+                .expect("subscribers must carry a result");
+        let rows = subscribers.as_array().expect("an array of subscribers");
+        assert!(
+            rows.iter()
+                .any(|row| row.get("objectName").and_then(|v| v.as_str())
+                    == Some("Work Order Subscribers")),
+            "the handler must be listed: {subscribers}"
+        );
+        assert_eq!(
+            rows.len(),
+            1,
+            "the symbol-index and graph views must be merged, not doubled: {subscribers}"
+        );
+        let package = rows[0]
+            .get("package")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            package.eq_ignore_ascii_case("workspace")
+                || package.eq_ignore_ascii_case(WORKSPACE_PACKAGE),
+            "a workspace handler must be labelled as such, got '{package}'"
+        );
     }
 
     #[test]

@@ -928,6 +928,29 @@ async fn agent_diagnostics(
         ));
     }
 
+    // A debug configuration that will not parse no longer stops the daemon, so
+    // the agent has to be told why the BC-facing commands are unavailable while
+    // symbol queries answer normally.
+    if let Some(reason) = workspace
+        .project
+        .read()
+        .await
+        .as_ref()
+        .and_then(|project| project.launch_config_error.clone())
+    {
+        diagnostics.push(agent_diagnostic(
+            "AL_AGENT_INVALID_LAUNCH_CONFIGURATION",
+            "warning",
+            "The project's debug configuration file could not be read",
+            reason,
+            &[
+                "Symbol, source, event and impact queries are unaffected; keep using them.",
+                "Fix the reported field in .vscode/launch.json or .zed/debug.json before running compile, downloadSymbols, tests against live BC, or debug.",
+                "Call al_call with method 'status' to see the message again after editing the file.",
+            ],
+        ));
+    }
+
     let has_declared_dependencies = workspace
         .project
         .read()
@@ -1461,6 +1484,7 @@ mod tests {
             packages_dir: root.join(".alpackages"),
             packages: Vec::new(),
             server_configs: Vec::new(),
+            launch_config_error: None,
         });
     }
 

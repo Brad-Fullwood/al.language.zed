@@ -830,6 +830,14 @@ pub(crate) async fn dispatch_request(
             }
         }
         "status" => {
+            // Read the project before taking the std RwLock guards below: a
+            // guard held across an await makes this dispatch future non-Send.
+            let launch_config_error = workspace
+                .project
+                .read()
+                .await
+                .as_ref()
+                .and_then(|project| project.launch_config_error.clone());
             let semantic_cache = match workspace.semantic_cache.read() {
                 Ok(cache) => cache,
                 Err(_) => {
@@ -862,6 +870,10 @@ pub(crate) async fn dispatch_request(
                 "workspaceObjects": workspace.file_index.object_count(),
                 "builtinTypes": builtins.len(),
                 "semanticCache": cache_stats,
+                // Present only when the project's debug configuration file
+                // could not be read. Symbol queries are unaffected; the BC
+                // connection commands are the ones that need it.
+                "launchConfigError": launch_config_error,
             });
             Response {
                 id,
@@ -1299,6 +1311,7 @@ pub(crate) fn set_test_project_root(workspace: &Workspace, root: &Path) {
             packages_dir: root.join(".alpackages"),
             packages: Vec::new(),
             server_configs: Vec::new(),
+            launch_config_error: None,
         });
 }
 

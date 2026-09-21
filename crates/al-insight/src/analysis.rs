@@ -25,6 +25,8 @@ pub enum TableOperationKind {
     Relation,
     /// This object is a TableExtension that extends the target table.
     Extends,
+    /// A page, report, query or XMLport whose `SourceTable` is this table.
+    SourceTable,
 }
 
 impl std::fmt::Display for TableOperationKind {
@@ -34,6 +36,7 @@ impl std::fmt::Display for TableOperationKind {
             TableOperationKind::RecordParameter => write!(f, "record_parameter"),
             TableOperationKind::Relation => write!(f, "relation"),
             TableOperationKind::Extends => write!(f, "extends"),
+            TableOperationKind::SourceTable => write!(f, "source_table"),
         }
     }
 }
@@ -102,6 +105,34 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
                     impacts.push(TableImpact {
                         operation: TableOperationKind::Extends,
                         location_hint: Some(format!("extends {}", ext_target)),
+                    });
+                }
+            }
+        }
+
+        // A page listing the table as its SourceTable is the most common way a
+        // workspace object consumes a table, and leaving it out reported
+        // `totalImpacts: 0` for tables that were plainly in use.
+        if matches!(
+            entry.kind,
+            ObjectKind::Page
+                | ObjectKind::PageExtension
+                | ObjectKind::Report
+                | ObjectKind::ReportExtension
+                | ObjectKind::Query
+                | ObjectKind::XmlPort
+        ) {
+            for prop in &entry.properties {
+                if prop.name.eq_ignore_ascii_case("SourceTable")
+                    && prop
+                        .value
+                        .trim()
+                        .trim_matches('"')
+                        .eq_ignore_ascii_case(table_name)
+                {
+                    impacts.push(TableImpact {
+                        operation: TableOperationKind::SourceTable,
+                        location_hint: Some(format!("SourceTable = {}", prop.value.trim())),
                     });
                 }
             }
@@ -432,6 +463,51 @@ mod tests {
             .impacts
             .iter()
             .any(|i| i.operation == TableOperationKind::Extends));
+    }
+
+    #[test]
+    fn detects_a_page_source_table() {
+        let index = SymbolIndex::new();
+
+        let staging = base_entry(ObjectKind::Table, 50130, "Work Order Staging");
+        let mut card = base_entry(ObjectKind::Page, 50130, "Work Order Card");
+        card.properties = vec![al_symbols::PropertyValue {
+            name: "SourceTable".to_string(),
+            value: "\"Work Order Staging\"".to_string(),
+        }];
+
+        index.add_entries(&[staging, card]);
+
+        let result = table_impact(&index, "Work Order Staging");
+        assert_eq!(
+            result.total_impacts, 1,
+            "a page using the table as SourceTable is an impact: {result:?}"
+        );
+        let page = result
+            .objects
+            .iter()
+            .find(|o| o.object_name == "Work Order Card")
+            .expect("the page must appear in the result");
+        assert!(page
+            .impacts
+            .iter()
+            .any(|i| i.operation == TableOperationKind::SourceTable));
+    }
+
+    #[test]
+    fn a_page_on_another_table_is_not_an_impact() {
+        let index = SymbolIndex::new();
+        let mut card = base_entry(ObjectKind::Page, 50131, "Item Card");
+        card.properties = vec![al_symbols::PropertyValue {
+            name: "SourceTable".to_string(),
+            value: "Item".to_string(),
+        }];
+        index.add_entries(&[
+            base_entry(ObjectKind::Table, 50130, "Work Order Staging"),
+            card,
+        ]);
+
+        assert_eq!(table_impact(&index, "Work Order Staging").total_impacts, 0);
     }
 
     #[test]
