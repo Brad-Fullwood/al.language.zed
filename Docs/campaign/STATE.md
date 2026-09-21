@@ -10,7 +10,6 @@ Round 1: four of seven reviews are done (58 findings) and their fix agents are r
 
 | Item | Kind | Output |
 |------|------|--------|
-| Fix R1 syntax and grammar (11 findings) | worktree fix | branch `campaign/fix-r1-syntax-grammar` |
 | Fix R1 symbols and project layer (24 findings) | worktree fix | branch `campaign/fix-r1-symbols-project` |
 | Fix R1 emit, compile, BC, explorer (28 findings) | worktree fix | branch `campaign/fix-r1-emit-bc-explorer` |
 | Fix R1 analysis and insight (18 findings) | worktree fix | branch `campaign/fix-r1-analysis-insight` |
@@ -78,6 +77,7 @@ round on the areas with the most findings.
 
 ## Done
 
+- Merged `campaign/fix-r1-syntax-grammar`: 10 fixed, 1 rejected with proof (scanner.c wasm build is clean, CI now builds the grammar to wasm). New open items recorded in `findings/r1-syntax-grammar.md`: 124 more `trim_matches('"')` identifier cleanups in al-analysis (102) and al-insight (22), `clean_attr_arg` does not unescape doubled quotes, `sort_members` strands a blank line.
 - Merged `campaign/fix-r1-extension-ci`: 12 of 12 findings fixed (cargo-deny green, al-lsp upgrades again with offline fallback, extracted binaries verified against `binary-checksums.txt`, theme fixes moved into the generator, toolchain action pinned, release-dryrun runs 16 stages).
 - Campaign branch, protocol docs, watchdog timer, heartbeat hook, desloppify install.
 
