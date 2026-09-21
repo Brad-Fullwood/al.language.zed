@@ -123,7 +123,7 @@ audit that are still present in current code are tagged [STILL-OPEN].
 - severity: medium
 - scenario: `publish_complete_generation` holds `generation_lock.write()` and then runs `file_index.replace_with`, `symbols.replace_with`, `*workspace.project.write().await = project`, `set_package_info`, `invalidate_insight_graph`, and finally the `generation_revision` bump. The `project.write().await` in the middle is a cancellation point. `al.reindex` aborts any previous reindex task (commands.rs:225), so clicking Reindex twice while a request holds `project.read()` cancels the first task exactly there: the file index and symbol index have been replaced, the project has not, the revision was never bumped, and the write guard is released on unwind. Every optimistic publisher that compares `generation_revision` then concludes nothing changed, and `require_project_root` hands out the previous project root against the new file index.
 - fix: Make the publication section free of await points (take the project lock with `blocking_write` inside a `spawn_blocking`, or hold a pre-acquired guard), or replace the abort with a cooperative cancel flag checked before publication starts.
-- status: open
+- status: fixed 8981419e
 
 ### [PERF] Four insight dispatchers still build the workspace call graph on the async connection task [STILL-OPEN]
 - where: crates/al-lsp/src/server/daemon/mod.rs:645 (`insightStats`), 674 (`tableImpact`), 683 (`traceChain`), 684 (`eventMap`); implementations at insight_dispatch.rs:140, 268, 281, 310
