@@ -80,7 +80,7 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - severity: high
 - scenario: report layouts and the app logo go through `read_project_resource` (assemble.rs:872-898), which canonicalizes and asserts `resolved.starts_with(&root)` and rejects `..`/absolute paths via `project_relative_resource_path`. Control add-in resources do not: `resolve_addin_resources`'s `read` closure and both `control_addin_bundle` loops do a bare `std::fs::read(root.join(rel))`. An AL source file with `controladdin "X" { Scripts = '../../../../etc/passwd'; StartupScript = '../../.ssh/id_rsa'; }` makes a native build read those files and (a) embed their contents in the shipped `.app` and (b) write the outer archive entry at the literal path `addin/src/../../../../etc/passwd`. `write_zip` uses `zip::ZipWriter::start_file`, which stores the name verbatim (only `start_file_from_path` normalizes), so the traversal survives into the package and any consumer that extracts it naively writes outside the extraction directory. `Scripts = '/etc/passwd'` works the same way, since `Path::join` with an absolute path discards the root.
 - fix: route all three reads through `read_project_resource` (or at least `project_relative_resource_path`) so add-in resources get the same containment and the same named error as layouts.
-- status: open
+- status: fixed 16731e97
 
 ### [BUG] TUI panics on a non-ASCII member name (byte index is not a char boundary)
 - where: crates/al-explorer/src/app/details.rs:503
