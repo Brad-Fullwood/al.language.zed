@@ -383,7 +383,7 @@ current code are tagged [STILL-OPEN].
   `Component::Prefix`.
 - fix: replace the string checks with the existing `safe_join` helper, or require
   `Path::new(raw_filename).components()` to be exactly one `Component::Normal`.
-- status: open
+- status: fixed 5e4dc1e6
 
 ### [BUG] One truncated line permanently bricks the test result store
 - where: crates/al-workspace/src/test_results.rs:44-84 (`append`), :88-91 (`read_all`),
