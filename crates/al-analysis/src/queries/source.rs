@@ -1069,7 +1069,8 @@ mod tests {
         assert!(outline.starts_with("table 18 Customer\n{\n"));
         assert!(outline.contains("field(1; \"No.\"; Code[20]) { }"));
         assert!(outline.contains("field(2; Name; Text[100]) { }"));
-        assert!(outline.contains("key(PK; No.)"));
+        // Key field names are quoted: `No.` is not a plain AL identifier.
+        assert!(outline.contains("key(PK; \"No.\")"), "{outline}");
         assert!(outline.contains("procedure SetFilter(FilterStr: Text)"));
         assert!(outline.contains("procedure GetBalance(): Decimal"));
         assert!(outline.ends_with("}\n"));
