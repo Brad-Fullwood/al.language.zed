@@ -185,8 +185,10 @@ pub enum FreeIdsError {
     NoProject,
     #[error("{0}")]
     Manifest(String),
-    #[error("unknown object kind '{kind}': {reason}")]
-    UnknownKind { kind: String, reason: String },
+    /// Carries the `ObjectKind` parse error, which already names the input and
+    /// lists the valid kinds.
+    #[error("{0}")]
+    UnknownKind(String),
     #[error(
         "{kind} declarations are name-scoped and carry no object ID, so there is nothing to allocate"
     )]

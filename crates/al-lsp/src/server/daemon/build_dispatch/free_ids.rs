@@ -58,23 +58,18 @@ fn invalid_params(message: String) -> ResponseFactory {
 }
 
 fn parse_query(params: &serde_json::Value) -> Result<FreeIdsQuery, ResponseFactory> {
-    let kind = match params.get("kind") {
-        None | Some(serde_json::Value::Null) => None,
-        Some(value) => {
-            let text = value.as_str().ok_or_else(|| {
-                invalid_params("'kind' must be an object-kind string".to_string())
-            })?;
-            Some(text.parse::<ObjectKind>().map_err(|reason| {
-                invalid_params(
-                    FreeIdsError::UnknownKind {
-                        kind: text.to_string(),
-                        reason,
-                    }
-                    .to_string(),
-                )
-            })?)
-        }
-    };
+    let kind =
+        match params.get("kind") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => {
+                let text = value.as_str().ok_or_else(|| {
+                    invalid_params("'kind' must be an object-kind string".to_string())
+                })?;
+                Some(text.parse::<ObjectKind>().map_err(|reason| {
+                    invalid_params(FreeIdsError::UnknownKind(reason).to_string())
+                })?)
+            }
+        };
 
     let object = match params.get("object") {
         None | Some(serde_json::Value::Null) => None,
