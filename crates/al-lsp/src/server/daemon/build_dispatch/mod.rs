@@ -4,6 +4,7 @@
 mod build;
 mod codegen;
 mod fixes;
+mod free_ids;
 mod symbols_auth;
 mod tests_dispatch;
 mod xliff;
@@ -11,6 +12,7 @@ mod xliff;
 pub(super) use build::*;
 pub(super) use codegen::*;
 pub(super) use fixes::*;
+pub(super) use free_ids::*;
 pub(super) use symbols_auth::*;
 pub(super) use tests_dispatch::*;
 pub(super) use xliff::*;
