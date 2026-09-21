@@ -58,21 +58,21 @@ Insight:
 - severity: high
 - scenario: `with Cust do Name := 'X';` followed by `Message('done');`. `tree-sitter-al/grammar.js:981` defines `with_statement` without a trailing semicolon (the `;` is consumed by `statement_list`, grammar.js:860-866), so `with_node` ends at `'X'`. `extract_with_body` returns the body text `Name := 'X'` with no `;`, and the edit replaces the whole line range `(start_row, 0)..(end_row + 1, 0)`, which deletes the `;` that lived outside the node. Result is `Cust.Name := 'X'` followed by `Message('done');`, a parse error. The begin/end form happens to work because each inner statement carries its own `;`. if_to_case.rs:65-68 was fixed for exactly this and with_elimination was not.
 - fix: use the node's own start/end columns for the edit range as if_to_case.rs:74-92 does, and append `;` to the last emitted line when the source form was a single statement (`extract_with_body` already returns `is_begin_end`, currently discarded at line 156 as `_is_begin_end`).
-- status: open
+- status: fixed cc9f231b
 
 ### [BUG] Eliminate-with deletes any code before `with` on the same line
 - where: crates/al-analysis/src/queries/code_actions/with_elimination.rs:172-181
 - severity: high
 - scenario: `if Found then with Cust do begin` ... `end;`. The edit range starts at `character: 0` of `with_node.start_position().row`, not at the node's own column, so applying the action deletes the `if Found then ` prefix. The body statements are then emitted unconditionally, changing control flow as well as breaking the parse if the `if` had an `else`.
 - fix: start the edit at `byte_col_to_utf16_col(start_line, with_node.start_position().column)` and end at the node's end column, the same pattern if_to_case.rs:74-92 uses.
-- status: open
+- status: fixed cc9f231b
 
 ### [BUG] Eliminate-with flattens all nesting inside the with body to one indent level
 - where: crates/al-analysis/src/queries/code_actions/with_elimination.rs:247-258
 - severity: medium
 - scenario: `with Cust do begin if Amount > 0 then begin Name := 'X'; Modify(); end; end;`. `qualify_with_references` emits `format!("{}{}\n", indent, trimmed)` for every line, where `indent` is the `with` statement's own indent. Every nested `begin`/`if` body comes back at the same column, so a 3-level-deep body is returned as a flat block. The same defect was fixed in if_to_case.rs:117-154 (`push_branch_body` preserves relative indentation); with_elimination still has the original code.
 - fix: reuse the relative-indent logic from `push_branch_body`: measure the minimum indentation across continuation lines and shift each line by its offset from that minimum.
-- status: open
+- status: fixed cc9f231b
 
 ### [BUG] Make-local edits the attribute line when a procedure has attributes, rewriting text inside the attribute
 - where: crates/al-analysis/src/queries/code_actions/make_local.rs:82-133
