@@ -706,7 +706,7 @@ fn extract_permission_grants(source: &WorkspaceSource) -> Result<Vec<PermissionG
             }
             continue;
         }
-        if matches!(child.kind(), "comment" | "line_comment" | "block_comment") {
+        if child.kind() == "comment" {
             continue;
         }
         if child.kind() == "semicolon" || token == ";" {

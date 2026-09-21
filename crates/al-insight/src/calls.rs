@@ -666,40 +666,50 @@ fn parse_run_trigger_arg(
         None => return false, // no arg list → RunTrigger defaults to false
     };
 
-    let mut cursor = arg_list.walk();
-    for child in arg_list.children(&mut cursor) {
-        // argument_list: '(' [expression (',' expression)*] ')'
-        // We look for the first expression-like child (not '(' or ')')
-        let kind = child.kind();
-        if kind != "(" && kind != ")" && kind != "," {
-            if let Ok(text) = child.utf8_text(source) {
-                let trimmed = text.trim().to_lowercase();
-                if trimmed == "false" {
-                    return false;
-                }
-                if trimmed == "true" {
-                    return true;
-                }
-                // Complex expression — we cannot evaluate it statically. The
-                // developer wrote an explicit argument, so the trigger may
-                // fire; producing the edge is the safe over-approximation
-                // (false-positive edges show up as extra entries in
-                // deadcode/impact, not missed dependencies). This is
-                // deliberately *not* the no-argument case, whose documented
-                // default is `false`. Logged at debug so the false-positive
-                // rate is observable when investigating dead-code reports.
-                tracing::debug!(
-                    expr = %text.trim(),
-                    op = ?op,
-                    "parse_run_trigger_arg: non-literal RunTrigger expression — assuming true"
-                );
-                return true;
-            }
+    // argument_list is `'(' [expression_list] ')'`, and expression_list holds
+    // the `expression` nodes separated by `comma` nodes. RunTrigger is the
+    // first expression.
+    let Some(first_argument) = first_argument_node(arg_list) else {
+        // Empty argument list (`Insert()`): RunTrigger defaults to false.
+        return false;
+    };
+    let Ok(text) = first_argument.utf8_text(source) else {
+        return false;
+    };
+    match text.trim().to_lowercase().as_str() {
+        "false" => false,
+        "true" => true,
+        _ => {
+            // Complex expression — we cannot evaluate it statically. The
+            // developer wrote an explicit argument, so the trigger may
+            // fire; producing the edge is the safe over-approximation
+            // (false-positive edges show up as extra entries in
+            // deadcode/impact, not missed dependencies). This is
+            // deliberately *not* the no-argument case, whose documented
+            // default is `false`. Logged at debug so the false-positive
+            // rate is observable when investigating dead-code reports.
+            tracing::debug!(
+                expr = %text.trim(),
+                op = ?op,
+                "parse_run_trigger_arg: non-literal RunTrigger expression — assuming true"
+            );
+            true
         }
     }
+}
 
-    // Empty argument list (`Insert()`): RunTrigger defaults to false.
-    false
+/// The first argument expression below an `argument_list`, or `None` for `()`.
+fn first_argument_node(arg_list: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    let mut cursor = arg_list.walk();
+    let list = arg_list
+        .children(&mut cursor)
+        .find(|child| child.kind() == "expression_list");
+    let container = list.unwrap_or(arg_list);
+    let mut inner = container.walk();
+    let first = container
+        .children(&mut inner)
+        .find(|child| child.is_named() && child.kind() != "comma");
+    first
 }
 
 /// True for the BC built-ins that launch a codeunit by reference: `Run` and
@@ -1508,14 +1518,19 @@ fn extract_single_parameter(
 /// `:`") was aspirational and not implemented; the grammar's child ordering
 /// makes that check unnecessary in practice.
 fn extract_return_type(proc_node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    // `return_type` is a *field* on procedure_declaration, not a node kind; its
+    // value is a `type_reference`. The direct-child scan stays as a fallback
+    // for a procedure the parser recovered without the field, and is safe
+    // because parameter type references are nested under `parameter_list`.
+    if let Some(field) = proc_node.child_by_field_name("return_type") {
+        let text = field.utf8_text(source).ok()?.trim().to_string();
+        if !text.is_empty() {
+            return Some(text);
+        }
+    }
     let mut cursor = proc_node.walk();
     for child in proc_node.children(&mut cursor) {
-        // `return_type` is a dedicated grammar node when present; the legacy
-        // `type_reference` fallback exists for grammars that emitted a bare
-        // type reference without the wrapper. Either path is the return type
-        // because parameter type references are nested under `parameter_list`,
-        // not direct children of the procedure node.
-        if child.kind() == "return_type" || child.kind() == "type_reference" {
+        if child.kind() == "type_reference" {
             let text = child.utf8_text(source).ok()?.trim().to_string();
             if !text.is_empty() {
                 return Some(text);

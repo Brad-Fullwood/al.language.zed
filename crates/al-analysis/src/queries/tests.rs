@@ -444,7 +444,7 @@ pub fn has_test_subtype(root: tree_sitter::Node, source: &[u8]) -> bool {
     loop {
         if !did_visit {
             let node = cursor.node();
-            if node.kind() == "property" || node.kind() == "property_assignment" {
+            if node.kind() == "property_assignment" {
                 if let Ok(text) = node.utf8_text(source) {
                     if let Some((key, value)) = text.split_once('=') {
                         let k = key.trim();
@@ -519,15 +519,15 @@ fn has_exact_attribute(proc_node: tree_sitter::Node, source: &[u8], wanted: &str
     let mut cursor = proc_node.walk();
     if proc_node
         .children(&mut cursor)
-        .any(|child| matches!(child.kind(), "attribute" | "attribute_list") && matches(child))
+        .any(|child| child.kind() == "attribute" && matches(child))
     {
         return true;
     }
     let mut sibling = proc_node.prev_sibling();
     while let Some(node) = sibling {
         match node.kind() {
-            "attribute" | "attribute_list" if matches(node) => return true,
-            "attribute" | "attribute_list" | "comment" => {}
+            "attribute" if matches(node) => return true,
+            "attribute" | "comment" => {}
             _ => break,
         }
         sibling = node.prev_sibling();
@@ -588,12 +588,12 @@ fn handler_functions(proc_node: tree_sitter::Node, source: &[u8]) -> Vec<String>
     attributes.extend(
         proc_node
             .children(&mut cursor)
-            .filter(|node| matches!(node.kind(), "attribute" | "attribute_list")),
+            .filter(|node| node.kind() == "attribute"),
     );
     let mut sibling = proc_node.prev_sibling();
     while let Some(node) = sibling {
         match node.kind() {
-            "attribute" | "attribute_list" => attributes.push(node),
+            "attribute" => attributes.push(node),
             "comment" => {}
             _ => break,
         }
@@ -630,7 +630,7 @@ fn has_test_attribute(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
     // In AL tree-sitter grammar, attributes are children of procedure_declaration
     let mut cursor = proc_node.walk();
     for child in proc_node.children(&mut cursor) {
-        if child.kind() == "attribute" || child.kind() == "attribute_list" {
+        if child.kind() == "attribute" {
             if let Ok(text) = child.utf8_text(source) {
                 if is_test_attribute(text) {
                     return true;
@@ -641,7 +641,7 @@ fn has_test_attribute(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
     let mut sibling = proc_node.prev_sibling();
     while let Some(s) = sibling {
         match s.kind() {
-            "attribute" | "attribute_list" => {
+            "attribute" => {
                 if let Ok(text) = s.utf8_text(source) {
                     if is_test_attribute(text) {
                         return true;

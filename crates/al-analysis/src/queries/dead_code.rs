@@ -293,7 +293,7 @@ fn is_framework_invoked_procedure(node: tree_sitter::Node, source: &[u8]) -> boo
 
     let mut sibling = node.prev_sibling();
     while let Some(s) = sibling {
-        if s.kind() == "attribute" || s.kind() == "attribute_list" {
+        if s.kind() == "attribute" {
             if let Ok(text) = s.utf8_text(source) {
                 if attr_is_framework(text) {
                     return true;
@@ -308,7 +308,7 @@ fn is_framework_invoked_procedure(node: tree_sitter::Node, source: &[u8]) -> boo
     // Also check children (some grammars nest attributes inside the procedure node)
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "attribute" || child.kind() == "attribute_list" {
+        if child.kind() == "attribute" {
             if let Ok(text) = child.utf8_text(source) {
                 if attr_is_framework(text) {
                     return true;
@@ -565,7 +565,7 @@ fn collect_event_subscribers(
 fn get_preceding_attribute(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
     let mut sibling = node.prev_sibling();
     while let Some(s) = sibling {
-        if s.kind() == "attribute" || s.kind() == "attribute_list" {
+        if s.kind() == "attribute" {
             return s.utf8_text(source).ok().map(|s| s.to_string());
         }
         if s.kind() != "comment" {
@@ -576,7 +576,7 @@ fn get_preceding_attribute(node: tree_sitter::Node, source: &[u8]) -> Option<Str
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "attribute" || child.kind() == "attribute_list" {
+        if child.kind() == "attribute" {
             return child.utf8_text(source).ok().map(|s| s.to_string());
         }
     }
