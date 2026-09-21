@@ -1514,21 +1514,16 @@ impl LanguageServer for AlServer {
 
         loop {
             let generation = self.workspace.generation_lock.read().await;
-            let revision = self
-                .workspace
-                .generation_revision
-                .load(std::sync::atomic::Ordering::Acquire);
+            // Keyed on the package revision: staging re-reads every `.app` in
+            // the cache, and a retry keyed on `generation_revision` restarted
+            // on every keystroke and never published the new settings.
+            let revision = self.workspace.package_revision();
             let project = self.workspace.project.read().await.clone();
 
             let Some(mut project) = project else {
                 drop(generation);
                 let publication = self.workspace.generation_lock.write().await;
-                if self
-                    .workspace
-                    .generation_revision
-                    .load(std::sync::atomic::Ordering::Acquire)
-                    != revision
-                {
+                if self.workspace.package_revision() != revision {
                     drop(publication);
                     continue;
                 }
@@ -1593,12 +1588,7 @@ impl LanguageServer for AlServer {
             };
 
             let publication = self.workspace.generation_lock.write().await;
-            if self
-                .workspace
-                .generation_revision
-                .load(std::sync::atomic::Ordering::Acquire)
-                != revision
-            {
+            if self.workspace.package_revision() != revision {
                 drop(publication);
                 continue;
             }
@@ -1618,6 +1608,7 @@ impl LanguageServer for AlServer {
                     .collect(),
             );
             self.workspace.invalidate_insight_graph();
+            self.workspace.mark_package_generation_changed();
             self.workspace.mark_generation_changed();
             self.semantic_diagnostic_cache.lock().await.clear();
             let symbol_count = self.workspace.symbols.len();
@@ -3504,6 +3495,65 @@ mod workspace_diagnostic_tests {
             files.is_empty(),
             "clean workspace must report no files, got: {:?}",
             files.iter().map(|f| f.uri.as_str()).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[cfg(test)]
+mod project_diagnostics_convergence_tests {
+    use super::*;
+
+    /// The project-scope push pass staged under the generation read guard and
+    /// restarted whenever `generation_revision` moved, which every keystroke
+    /// does. On a project where the pass outlasts the typing gaps it never
+    /// published. The retry is now bounded, so continuous edits still end in a
+    /// publication.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn project_diagnostics_publish_while_the_workspace_keeps_changing() {
+        let (service, _socket) = LspService::new(AlServer::new);
+        let server = service.inner();
+        server
+            .workspace_init_state
+            .send_replace(WorkspaceInitState::Ready);
+
+        let uri = Url::parse("file:///proj/Foo.Codeunit.al").unwrap();
+        server
+            .workspace
+            .documents
+            .open(uri.clone(), "codeunit 50100 Foo\n{\n}\n".to_string())
+            .unwrap();
+
+        let churn_workspace = Arc::clone(&server.workspace);
+        let churn_uri = uri.clone();
+        let churn = tokio::spawn(async move {
+            loop {
+                // Mirror `did_change`: the edit takes the generation write
+                // guard, so the pass never sees a half-applied mutation.
+                let generation = churn_workspace.generation_lock.write().await;
+                if let Some(text) = churn_workspace.documents.get_text(&churn_uri) {
+                    al_workspace::on_document_change(&churn_workspace, &churn_uri, &text);
+                }
+                drop(generation);
+                tokio::task::yield_now().await;
+            }
+        });
+
+        let published = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            diagnostics::publish_workspace_diagnostics_parts(
+                Arc::clone(&server.workspace),
+                server.client.clone(),
+                Arc::clone(&server.semantic_diagnostic_cache),
+                Arc::clone(&server.workspace_diagnostic_uris),
+                None,
+                &server.session,
+            ),
+        )
+        .await;
+        churn.abort();
+        assert!(
+            published.expect("the staging loop must converge, not retry forever"),
+            "the pass must publish rather than give up silently"
         );
     }
 }

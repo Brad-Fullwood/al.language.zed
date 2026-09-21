@@ -538,6 +538,7 @@ async fn publish_complete_generation(
     *workspace.project.write().await = project;
     set_package_info(workspace, packages);
     workspace.invalidate_insight_graph();
+    workspace.mark_package_generation_changed();
     workspace
         .generation_revision
         .fetch_add(1, std::sync::atomic::Ordering::Release);
@@ -548,9 +549,11 @@ async fn refresh_current_symbol_generation(
 ) -> Result<(usize, usize), String> {
     loop {
         let generation = workspace.generation_lock.read().await;
-        let revision = workspace
-            .generation_revision
-            .load(std::sync::atomic::Ordering::Acquire);
+        // Keyed on the package revision, not the source revision: staging
+        // re-reads every `.app` in the cache, which takes seconds on a real
+        // project, and a retry keyed on `generation_revision` restarted on
+        // every keystroke and never published.
+        let revision = workspace.package_revision();
         let project = workspace.project.read().await.clone();
         let config = workspace.config.read().await.clone();
         let Some(mut project) = project else {
@@ -582,11 +585,7 @@ async fn refresh_current_symbol_generation(
         };
 
         let publication = workspace.generation_lock.write().await;
-        if workspace
-            .generation_revision
-            .load(std::sync::atomic::Ordering::Acquire)
-            != revision
-        {
+        if workspace.package_revision() != revision {
             drop(publication);
             continue;
         }
@@ -594,6 +593,7 @@ async fn refresh_current_symbol_generation(
         *workspace.project.write().await = Some(project);
         set_package_info(workspace, &loaded);
         workspace.invalidate_insight_graph();
+        workspace.mark_package_generation_changed();
         workspace
             .generation_revision
             .fetch_add(1, std::sync::atomic::Ordering::Release);
@@ -2702,5 +2702,60 @@ mod tests {
         let merged = deep_merge(&json!({}), &recommended_al_settings());
         assert!(merged["lsp"]["al-lsp"]["settings"].is_object());
         assert_eq!(merged["languages"]["AL"]["language_servers"][0], "al-lsp");
+    }
+
+    /// `refresh_current_symbol_generation` used to retry whenever
+    /// `generation_revision` moved, which every keystroke bumps, so on a
+    /// project where staging outlasts the typing gaps it never published.
+    /// Document edits must not restart it.
+    #[tokio::test]
+    async fn symbol_staging_converges_while_documents_are_edited() {
+        let workspace = Workspace::new();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".alpackages")).unwrap();
+        *workspace.project.write().await = Some(al_project::project::AlProject {
+            root: root.path().to_path_buf(),
+            app_json: al_project::project::AppManifest {
+                id: "test".to_string(),
+                name: "Test".to_string(),
+                publisher: "Test".to_string(),
+                version: "1.0.0.0".to_string(),
+                dependencies: Vec::new(),
+                application: None,
+                platform: None,
+                runtime: None,
+            },
+            packages_dir: root.path().join(".alpackages"),
+            packages: Vec::new(),
+            server_configs: Vec::new(),
+        });
+
+        let uri = url::Url::parse("file:///proj/Foo.Codeunit.al").unwrap();
+        workspace
+            .documents
+            .open(uri.clone(), "codeunit 50100 Foo\n{\n}\n".to_string())
+            .unwrap();
+
+        let packages_before = workspace.package_revision();
+        // Simulate the keystrokes that arrive while staging runs.
+        for _ in 0..50 {
+            let text = workspace.documents.get_text(&uri).unwrap();
+            al_workspace::on_document_change(&workspace, &uri, &text);
+        }
+        assert_eq!(
+            workspace.package_revision(),
+            packages_before,
+            "document edits must not move the package generation"
+        );
+
+        let (loaded, _symbols) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            refresh_current_symbol_generation(&workspace),
+        )
+        .await
+        .expect("staging must converge, not retry forever")
+        .expect("staging succeeds for an empty package set");
+        assert_eq!(loaded, 0);
+        assert!(workspace.package_revision() > packages_before);
     }
 }
