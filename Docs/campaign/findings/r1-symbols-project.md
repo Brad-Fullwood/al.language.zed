@@ -17,11 +17,11 @@ current code are tagged [STILL-OPEN].
 - [x] al-symbols/src/model.rs
 - [x] al-symbols/src/events.rs
 - [x] al-symbols/src/composition.rs
-- [ ] al-symbols/src/nuget.rs
-- [ ] al-symbols/src/bc_server.rs
-- [ ] al-symbols/src/oauth.rs
+- [x] al-symbols/src/nuget.rs
+- [~] al-symbols/src/bc_server.rs (auth/download paths + panic scan only)
+- [~] al-symbols/src/oauth.rs (panic + encoding scan only)
 - [x] al-symbols/src/source_availability.rs + language_data.rs + lib.rs
-- [ ] al-semantic/src/bridge.rs
+- [~] al-semantic/src/bridge.rs (panic scan only)
 - [x] al-semantic/src/host.rs + cache.rs + lifecycle.rs
 - [x] al-types (jsonc.rs, filename.rs, rest)
 - [x] al-source/src/file_index.rs
@@ -29,10 +29,10 @@ current code are tagged [STILL-OPEN].
 - [x] al-project/src/project.rs
 - [x] al-project/src/config.rs
 - [x] al-project/src/toolchain.rs
-- [ ] al-project/src/analyzers.rs + errors.rs
+- [x] al-project/src/analyzers.rs + errors.rs (analyzers read; errors.rs skimmed)
 - [x] al-workspace/src/lib.rs
 - [x] al-workspace/src/semantic_lifecycle.rs
-- [ ] al-workspace/src/test_results.rs + doctor.rs
+- [x] al-workspace/src/test_results.rs + doctor.rs
 
 ## Findings
 
@@ -362,3 +362,56 @@ current code are tagged [STILL-OPEN].
   `source_index` that sums its cached indexes.
 - status: open
 
+### [SECURITY] nupkg `.app` extraction misses the Windows drive-relative ZIP-slip case
+- where: crates/al-symbols/src/nuget.rs:700-721
+- severity: low
+- scenario: the guard strips path separators and rejects `..`, empty names and embedded
+  separators, then does `dest.join(raw_filename)`. A nupkg entry named `C:evil.app` survives
+  every check (no `/`, no `\`, no `..`), and on Windows `PathBuf::push` replaces the whole
+  path when the argument carries a drive prefix, so the file is written to `C:evil.app` in the
+  current directory of drive C rather than under `dest`. A malicious or compromised NuGet feed
+  configured through `al.nugetFeeds` is the delivery path. `app_inspect::safe_join`
+  (crates/al-symbols/src/app_inspect.rs:340-353) already handles this correctly by rejecting
+  `Component::Prefix`.
+- fix: replace the string checks with the existing `safe_join` helper, or require
+  `Path::new(raw_filename).components()` to be exactly one `Component::Normal`.
+- status: open
+
+### [BUG] One truncated line permanently bricks the test result store
+- where: crates/al-workspace/src/test_results.rs:44-84 (`append`), :88-91 (`read_all`),
+  `read_records_no_lock`
+- severity: low
+- scenario: `append` opens the file in append mode, does `write_all` + `flush` (tokio's
+  `flush` is a userspace flush, not `sync_all`), so a kill or crash between the write and
+  writeback can leave a partial JSON line. `append` then calls `read_records_no_lock` to
+  build its bucket counts, and that function returns `PersistenceError::CorruptRecord` for
+  any line that does not deserialize. From that point on every `append` and every `read_all`
+  fails, so no further test runs can be recorded and the whole history is unreadable — the
+  file has no repair path short of deleting it by hand.
+- fix: skip and log a line that does not deserialize (keeping the strict behaviour behind an
+  explicit "verify" entry point), or rewrite the file dropping trailing garbage on the first
+  corrupt read.
+- status: open
+
+## Review complete
+
+Twenty-four findings. The five that matter most:
+
+1. `al-source/src/file_index.rs:540` keeps one object owner per (name, kind) across the whole
+   workspace, so in a multi-app root the second app's `codeunit "Install"` evicts the first
+   and go-to-definition jumps into the wrong app.
+2. `al-project/src/config.rs:414` admits any `al.*` key from `.vscode/settings.json` and then
+   reports it as unknown, and `load_effective` turns that into a hard error — one setting
+   meant for Microsoft's AL extension stops the daemon, MCP server, CLI build and `al-lsp`
+   from starting.
+3. `al-workspace/src/lib.rs:518` publishes a call graph built before a concurrent
+   `invalidate_insight_graph`, so a saved edit can be silently missing from the cached graph
+   until the next unrelated invalidation. The `generation_revision` counter that would fix it
+   already exists and is not used here.
+4. `al-symbols/src/virtual_file.rs:605-612` renders key field names, procedure names,
+   parameters and variables without `format_name`, so navigating to a package table with no
+   embedded source produces `key(Key1; No.)` — not valid AL, against the function's own
+   contract.
+5. `al-symbols/src/source_index.rs:30` never evicts its process-global `.app` source-index
+   cache outside tests, and `al-workspace`'s `memory_stats` counts neither it nor the
+   dependency source index, so the daemon's largest allocations grow unbounded and invisibly.
