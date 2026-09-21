@@ -17,18 +17,21 @@ Rules:
 
 1. Search for the exact object name before any other call. Most commands match
    exactly and answer a near miss with an empty result rather than an error.
-2. Pipe every large call through `jq` in the same Bash command. `by-id
+2. Workspace objects, the ones `search` marks `"package": "(workspace)"`, come
+   back from `object` and `by-id` as a stub with no `fields` and no `methods`.
+   Read their members with `source "<name>" | jq -r '.code'`, not `by-id`.
+3. Pipe every large call through `jq` in the same Bash command. `by-id
    codeunit 80` is 552 KB, `composed table Item` is 450 KB, `suggest-event
    --table Item` is 484 KB, `intercept` is 9.4 MB. Never read one of those
    without a projection.
-3. Use `trace <event>` for subscribers. `subscribers` under-reports and returns
+4. Use `trace <event>` for subscribers. `subscribers` under-reports and returns
    an empty array where `trace` finds three.
-4. Say which scope your answer covers. Workspace rows are code the developer can
+5. Say which scope your answer covers. Workspace rows are code the developer can
    change; rows with a `package` are not.
-5. A timeout means the dependency source index is still building. Run
+6. A timeout means the dependency source index is still building. Run
    `al-explorer --json packages`, then retry up to twice before reporting
    failure.
-6. Never unzip, extract or decompile a `.app` file.
+7. Never unzip, extract or decompile a `.app` file.
 
 Return, in at most twenty lines:
 
