@@ -13,7 +13,7 @@ Round 1: four of seven reviews are done (58 findings) and their fix agents are r
 | Fix R1 symbols and project layer (24 findings) | worktree fix | branch `campaign/fix-r1-symbols-project` |
 | Fix R1 emit, compile, BC, explorer (28 findings) | worktree fix | branch `campaign/fix-r1-emit-bc-explorer` |
 | Fix R1 analysis and insight (18 findings) | worktree fix | branch `campaign/fix-r1-analysis-insight` |
-| Fix R1 LSP and protocol (15 findings, 2 security) | worktree fix | branch `campaign/fix-r1-lsp-protocol` |
+| AI tooling daemon work: limit and fields projection, scope, `source --list-procedures`, fix `subscribers` and `impact --table`, errors an agent can act on, compact JSON, CLI `location`, workspace object members, index progress | worktree build | branch `campaign/ai-daemon-projection` |
 | Fix R1b runtime, test runner, DAP session, harness (28 findings) | worktree fix | branch `campaign/fix-r1b-runtime-dap` |
 
 Queued for a free build slot (at most 7 building agents, RAM is the limit):
@@ -75,6 +75,7 @@ round on the areas with the most findings.
 
 ## Done
 
+- Merged `campaign/fix-r1-lsp-protocol`: 15 of 15 fixed. Cached tokens only reach hosts the project's launch configuration names. Every daemon path parameter goes through `daemon/containment.rs`. No generation read guard is held across a long await. Behavior change: a relative `file` parameter resolves against the project root.
 - Merged `campaign/ai-plugin`: Claude Code plugin `al-bc` under `plugin/` with 8 skills, 2 subagents, a SessionStart hook, `.claude-plugin/marketplace.json`, and `make plugin-validate`. 7 of 7 Haiku test questions answered correctly on the fixture project (`plugin/TESTING.md`). Left: agent runs for `bc-test-locally`, `bc-upgrade-impact`, `bc-cop-fixer`, a test on a project with `.alpackages`, `plugin/evals/`, a setup hook that downloads release binaries. `plugin/ROADMAP.md` lists the workarounds to remove once the daemon projection work lands.
 - Merged `campaign/fix-r1-runtime-dap`: 13 of 13 fixed, each cited to Microsoft Learn. Left open: a real `line-rate` for dynamic Cobertura needs a statement-line query in al-analysis (the document now says `line-coverage="unavailable"`), and `Assert.RecordIsEmpty`, `RecordIsNotEmpty`, `TableIsEmpty` still route to live BC.
 - Merged `campaign/fix-r1-syntax-grammar`: 10 fixed, 1 rejected with proof (scanner.c wasm build is clean, CI now builds the grammar to wasm). New open items recorded in `findings/r1-syntax-grammar.md`: 124 more `trim_matches('"')` identifier cleanups in al-analysis (102) and al-insight (22), `clean_attr_arg` does not unescape doubled quotes, `sort_members` strands a blank line.

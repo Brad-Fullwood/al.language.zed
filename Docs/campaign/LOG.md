@@ -58,3 +58,7 @@ Append-only. Newest entry last.
 
 - Merged `campaign/ai-plugin`. `plugin/.mcp.json` was missing from the branch because the root `.gitignore` ignored every `.mcp.json`. Recreated it, anchored the rule to `/.mcp.json`, and confirmed a Haiku session lists the `mcp__plugin_al-bc_al__*` tools.
 - New gaps the plugin agent found: no object to file mapping on the CLI (`location` is daemon only), workspace objects return a stub without fields and methods, skill descriptions alone did not trigger on Haiku among 60 other skills.
+
+## 2026-09-21 13:30 BST: LSP and protocol fixes merged
+
+- Merged `campaign/fix-r1-lsp-protocol`, 15 findings including both security ones. Gates: fmt, clippy, 769 tests on al-lsp and al-protocol. Four of seven round 1 fix branches are in.
