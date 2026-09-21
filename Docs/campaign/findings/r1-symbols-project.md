@@ -175,7 +175,7 @@ current code are tagged [STILL-OPEN].
   `gc_once`, which the three cached entry points call before the batch.
 - fix: drop `cleanup_stale_tmp` from `save` and fold the `.tmp.` sweep into `gc`, which is
   already once-per-process.
-- status: open
+- status: fixed 936bc5c7
 
 ### [PERF] Symbol cache GC runs synchronously on the workspace initialization path
 - where: crates/al-symbols/src/cache.rs:310-380, called from
@@ -189,7 +189,7 @@ current code are tagged [STILL-OPEN].
   this reason.
 - fix: spawn the sweep like `virtual_file::gc_cache_once` does, or run it after the batch
   completes rather than before it.
-- status: open
+- status: fixed 936bc5c7
 
 ### [SLOP] `is_workspace_entry` duplicates the workspace-package test from `source_availability`
 - where: crates/al-symbols/src/composition.rs:65-68 vs
