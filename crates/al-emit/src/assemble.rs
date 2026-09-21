@@ -1033,7 +1033,11 @@ pub fn assemble_app(
         package_manifest.to_navx_xml().into_bytes(),
     ));
     for s in sources {
-        entries.push((s.archive_path.clone(), s.content.clone().into_bytes()));
+        // `as_bytes().to_vec()` rather than `content.clone().into_bytes()`:
+        // the clone made a second String and then moved it, so peak memory
+        // held the project's source twice over on top of the copies already
+        // in `sources` and `objects`.
+        entries.push((s.archive_path.clone(), s.content.as_bytes().to_vec()));
     }
     entries.push((
         "DocComments.xml".to_string(),

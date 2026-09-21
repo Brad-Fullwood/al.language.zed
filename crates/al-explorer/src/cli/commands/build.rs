@@ -110,8 +110,6 @@ pub fn cmd_pack_native(
     validate: bool,
     json: bool,
 ) -> ExitCode {
-    use std::io::Write;
-
     let dir = match project_dir {
         Some(d) => std::path::PathBuf::from(d),
         None => match std::env::current_dir() {
@@ -212,13 +210,7 @@ pub fn cmd_pack_native(
         return report_error(&format!("creating {}: {e}", parent.display()), json);
     }
     let write_started = std::time::Instant::now();
-    let write_result = tempfile::NamedTempFile::new_in(parent).and_then(|mut temp| {
-        temp.write_all(&built.bytes)?;
-        temp.as_file_mut().sync_all()?;
-        temp.persist(&out_path)
-            .map(|_| ())
-            .map_err(|error| error.error)
-    });
+    let write_result = al_emit::package::write_artifact_atomically(&out_path, &built.bytes);
     timings.output_write_ns = u64::try_from(write_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
     timings.total_ns = timings.total_ns.saturating_add(timings.output_write_ns);
     if let Err(e) = write_result {

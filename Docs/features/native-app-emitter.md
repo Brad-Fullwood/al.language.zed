@@ -99,7 +99,7 @@ The shipped verifier performs:
 | Layer | Checks | Build behaviour |
 | --- | --- | --- |
 | Project input | parseable `app.json`; non-empty identity fields; valid app/dependency GUIDs and four-part versions; valid `idRanges`; unique dependency IDs; readable source files; declared dependency packages present in the exact configured package paths; object IDs inside `idRanges` | `ALN01xx` and project diagnostics block before emission. |
-| Syntax | tree-sitter `ERROR` and missing nodes in every `.al` file, including truncated constructs | `ALN0001` carries file and exact 1-based UTF-16 start/end range and always blocks. |
+| Syntax | tree-sitter `ERROR` and missing nodes in every `.al` file, including truncated constructs | `ALN0001` carries file and exact 1-based UTF-16 start/end range and always blocks. A file that is not valid UTF-8 blocks with `ALN0002` on that file rather than failing the build. |
 | Declarations | duplicate object IDs/names; duplicate field IDs/names; duplicate enum ordinals/names; duplicate procedure signatures/parameter names; unknown key/field-group fields | `ALN1xxx` diagnostics point at the complete object declaration range and block emission. |
 | Declared bindings and contracts | extension targets, implemented interfaces, declared object subtypes (`Record`, `Page`, `Codeunit`, `Report`, `XmlPort`, `Query`, `Enum`, `Interface`) and `SourceTable` references resolve against project plus dependency symbols; locally declared interface methods must be implemented | `ALN2xxx` diagnostics block emission. |
 | Permissions | permission object kinds/flags are validated and permission targets resolve against project plus dependency symbols | `ALN21xx` diagnostics block emission. |
@@ -116,7 +116,7 @@ remain `null`; native diagnostics preserve both endpoints.
 
 | Codes | Meaning |
 | --- | --- |
-| `ALN0000`–`ALN0001` | Native build infrastructure failure or AL syntax error. |
+| `ALN0000`–`ALN0002` | Native build infrastructure failure, AL syntax error, or a source file that is not valid UTF-8. |
 | `ALN0100`–`ALN0106` | Invalid JSON, missing/invalid identity fields, invalid ranges/dependencies, or duplicate dependency IDs. |
 | `ALN1001`–`ALN1007` | Duplicate/out-of-range object identity or missing dependency package. |
 | `ALN1101`–`ALN1107` | Duplicate fields, enum values, procedures/parameters, or invalid key/field-group field references. |
