@@ -116,7 +116,13 @@ const APP_JSON: &str = r#"{
   "target": "Cloud",
   "logo": "res/logo.png",
   "idRanges": [{ "from": 50100, "to": 50199 }],
-  "dependencies": []
+  "dependencies": [],
+  "resourceExposurePolicy": {
+    "applyToDevExtension": true,
+    "allowDebugging": true,
+    "allowDownloadingSource": false,
+    "includeSourceInSymbolFile": true
+  }
 }"#;
 
 /// Locate `alc.dll` from `AL_TOOL_PATH`, returning the dll path if a live run is

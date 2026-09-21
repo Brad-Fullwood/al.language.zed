@@ -16,21 +16,22 @@ pub struct Dependency {
 }
 
 /// The IP-protection policy recorded in the manifest. Server-enforced — the
-/// source still ships in the `.app`; the server refuses to serve it. `None`
-/// fields are omitted, yielding an empty `<ResourceExposurePolicy />`.
+/// source still ships in the `.app`; the server refuses to serve it.
+///
+/// The four flags are the ones `app.json` documents: `allowDebugging`,
+/// `allowDownloadingSource`, `includeSourceInSymbolFile` and
+/// `applyToDevExtension` (devenv-security-settings-and-ip-protection). Each
+/// defaults to `false`. alc 17.0.34.45391 writes all four attributes, in the
+/// order below, whenever `app.json` declares the object at all, and a
+/// self-closing `<ResourceExposurePolicy />` when it does not — which is why
+/// `declared` is tracked separately from the flags.
 #[derive(Debug, Clone, Default)]
 pub struct ResourceExposurePolicy {
-    pub allow_debugging: Option<bool>,
-    pub allow_downloading_source: Option<bool>,
-    pub include_source_in_package_file: Option<bool>,
-}
-
-impl ResourceExposurePolicy {
-    fn is_empty(&self) -> bool {
-        self.allow_debugging.is_none()
-            && self.allow_downloading_source.is_none()
-            && self.include_source_in_package_file.is_none()
-    }
+    pub declared: bool,
+    pub allow_debugging: bool,
+    pub allow_downloading_source: bool,
+    pub include_source_in_symbol_file: bool,
+    pub apply_to_dev_extension: bool,
 }
 
 /// Inputs for `NavxManifest.xml`, mostly mirroring `app.json`.
@@ -121,8 +122,14 @@ impl AppManifest {
                     .collect()
             })
             .unwrap_or_default();
-        let rep = app.get("resourceExposurePolicy");
-        let rep_bool = |k: &str| rep.and_then(|r| r.get(k)).and_then(|v| v.as_bool());
+        let rep = app
+            .get("resourceExposurePolicy")
+            .filter(|value| value.is_object());
+        let rep_bool = |k: &str| {
+            rep.and_then(|r| r.get(k))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        };
         AppManifest {
             id: s("id"),
             name: s("name"),
@@ -151,9 +158,11 @@ impl AppManifest {
             id_ranges,
             dependencies,
             resource_exposure_policy: ResourceExposurePolicy {
+                declared: rep.is_some(),
                 allow_debugging: rep_bool("allowDebugging"),
                 allow_downloading_source: rep_bool("allowDownloadingSource"),
-                include_source_in_package_file: rep_bool("includeSourceInPackageFile"),
+                include_source_in_symbol_file: rep_bool("includeSourceInSymbolFile"),
+                apply_to_dev_extension: rep_bool("applyToDevExtension"),
             },
             compiler_version: compiler_version.to_string(),
             build_timestamp: build_timestamp.to_string(),
@@ -233,25 +242,17 @@ impl AppManifest {
         x.push_str("  <Features />\n  <PreprocessorSymbols />\n  <SuppressWarnings />\n");
 
         let rep = &self.resource_exposure_policy;
-        if rep.is_empty() {
-            x.push_str("  <ResourceExposurePolicy />\n");
+        if rep.declared {
+            x.push_str(&format!(
+                "  <ResourceExposurePolicy AllowDebugging=\"{}\" AllowDownloadingSource=\"{}\" \
+                 IncludeSourceInSymbolFile=\"{}\" ApplyToDevExtension=\"{}\" />\n",
+                rep.allow_debugging,
+                rep.allow_downloading_source,
+                rep.include_source_in_symbol_file,
+                rep.apply_to_dev_extension,
+            ));
         } else {
-            x.push_str("  <ResourceExposurePolicy");
-            let b = |v: Option<bool>| match v {
-                Some(true) => Some("true"),
-                Some(false) => Some("false"),
-                None => None,
-            };
-            if let Some(v) = b(rep.allow_debugging) {
-                x.push_str(&format!(" AllowDebugging=\"{v}\""));
-            }
-            if let Some(v) = b(rep.allow_downloading_source) {
-                x.push_str(&format!(" AllowDownloadingSource=\"{v}\""));
-            }
-            if let Some(v) = b(rep.include_source_in_package_file) {
-                x.push_str(&format!(" IncludeSourceInPackageFile=\"{v}\""));
-            }
-            x.push_str(" />\n");
+            x.push_str("  <ResourceExposurePolicy />\n");
         }
 
         x.push_str("  <KeyVaultUrls />\n  <Source />\n");
@@ -341,19 +342,82 @@ mod tests {
         assert!(xml.contains("<Dependencies />"));
     }
 
+    /// Build a manifest from `sample()`'s app.json plus a `resourceExposurePolicy`.
+    fn with_policy(policy: serde_json::Value) -> AppManifest {
+        AppManifest::from_app_json(
+            &serde_json::json!({
+                "id": "aaaaaaaa-1111-2222-3333-444444444444",
+                "name": "Min App", "publisher": "Spike", "version": "1.0.0.0",
+                "runtime": "15.0", "target": "Cloud",
+                "idRanges": [{ "from": 50100, "to": 50149 }],
+                "resourceExposurePolicy": policy,
+            }),
+            "17.0.34.45391",
+            "2026-06-15T20:58:33.0000000Z",
+        )
+    }
+
     #[test]
-    fn resource_exposure_policy_emitted_when_set() {
-        let mut m = sample();
-        m.resource_exposure_policy = ResourceExposurePolicy {
-            allow_debugging: Some(false),
-            allow_downloading_source: Some(false),
-            include_source_in_package_file: Some(false),
-        };
-        let xml = m.to_navx_xml();
-        assert!(xml.contains(
-            "<ResourceExposurePolicy AllowDebugging=\"false\" AllowDownloadingSource=\"false\" \
-             IncludeSourceInPackageFile=\"false\" />"
-        ));
+    fn resource_exposure_policy_reads_every_documented_key() {
+        // Pinned against alc 17.0.34.45391 output for the same app.json: all
+        // four attributes, in this order, whenever the object is declared.
+        // `includeSourceInSymbolFile` used to be read under the name
+        // `includeSourceInPackageFile`, which no app.json writes, so the flag
+        // the developer set was dropped from the package.
+        let xml = with_policy(serde_json::json!({
+            "applyToDevExtension": true,
+            "allowDebugging": true,
+            "allowDownloadingSource": false,
+            "includeSourceInSymbolFile": true,
+        }))
+        .to_navx_xml();
+        assert!(
+            xml.contains(
+                "<ResourceExposurePolicy AllowDebugging=\"true\" AllowDownloadingSource=\"false\" \
+                 IncludeSourceInSymbolFile=\"true\" ApplyToDevExtension=\"true\" />"
+            ),
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn resource_exposure_policy_defaults_unset_keys_to_false() {
+        let xml = with_policy(serde_json::json!({ "allowDebugging": true })).to_navx_xml();
+        assert!(
+            xml.contains(
+                "<ResourceExposurePolicy AllowDebugging=\"true\" AllowDownloadingSource=\"false\" \
+                 IncludeSourceInSymbolFile=\"false\" ApplyToDevExtension=\"false\" />"
+            ),
+            "{xml}"
+        );
+        let empty = with_policy(serde_json::json!({})).to_navx_xml();
+        assert!(
+            empty.contains("<ResourceExposurePolicy AllowDebugging=\"false\""),
+            "a declared but empty policy still writes all four attributes:\n{empty}"
+        );
+    }
+
+    #[test]
+    fn every_schema_resource_exposure_policy_key_reaches_the_manifest() {
+        // schemas/app.json is what the editor validates against, so a key it
+        // offers that the emitter ignores is a setting silently dropped.
+        let schema: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../schemas/app.json"
+        )))
+        .expect("schemas/app.json parses");
+        let keys = schema["properties"]["resourceExposurePolicy"]["properties"]
+            .as_object()
+            .expect("resourceExposurePolicy declares properties");
+        assert!(!keys.is_empty());
+        for key in keys.keys() {
+            let xml = with_policy(serde_json::json!({ key.as_str(): true })).to_navx_xml();
+            let attribute = format!("{}{}=\"true\"", key[..1].to_uppercase(), &key[1..]);
+            assert!(
+                xml.contains(&attribute),
+                "schemas/app.json key {key} never reaches the manifest as {attribute}:\n{xml}"
+            );
+        }
     }
 
     #[test]
