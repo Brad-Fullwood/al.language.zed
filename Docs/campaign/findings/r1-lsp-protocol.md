@@ -38,7 +38,7 @@ audit that are still present in current code are tagged [STILL-OPEN].
 - severity: high
 - scenario: The audit's fix for this class went only into `hover`/`completion`/`inlay_hint`, which now use `snapshot_after_ready` to drop the guard (lsp.rs:622). The five handlers above still do `let _generation = self.await_ready().await?;` and then `tokio::task::spawn_blocking(...).await`, so the `generation_lock` read guard is alive for the whole blocking walk. `tokio::sync::RwLock` is fair, so a queued writer blocks all later readers. Sequence: invoke "Find All References" on a symbol in a large workspace (the walk in `al_analysis::queries::references::references` runs seconds); type a key, so `did_change` (lsp.rs:1222) calls `generation_lock.write().await` and queues; every following `hover`, `completion`, `diagnostic`, `code_lens` calls `await_ready`, whose final line is `self.workspace.generation_lock.read().await` (lsp.rs:525) and queues behind the writer. That read is not covered by the 30 s `timeout` above it, so the requests hang with no deadline until the walk finishes. The document store is not updated in the meantime, so the editor's text and the server's text diverge for the duration.
 - fix: Capture what the handler needs under the guard, drop it before the `spawn_blocking(...).await`, and revalidate with `generation_revision()` / the document snapshot afterwards, as `diagnostic` (lsp.rs:1902) and `workspace_diagnostic` (lsp.rs:1944) already do. A shared helper would make the pattern uniform.
-- status: open
+- status: fixed 92da8dd9
 
 ### [PERF] did_change parses and re-indexes the whole file on the async executor under the write lock
 - where: crates/al-lsp/src/server/lsp.rs:1256 (`al_workspace::on_document_change`), implementation at crates/al-workspace/src/lib.rs:918
@@ -88,7 +88,7 @@ audit that are still present in current code are tagged [STILL-OPEN].
 - severity: high
 - scenario: `execute_command` takes the guard with `let mut generation = Some(self.await_ready().await?)` and drops it only for `al.downloadSymbols*` and `al.reindex`. `al.compile` keeps it. `commands::compile` then runs `native_workspace_compile_diagnostics` (a whole-workspace semantic pass, synchronous, on the async task) and awaits `al_compile::build`, which for `al.useOfficialCompiler=true` spawns `dotnet alc` and waits for it. On a real project that is tens of seconds. For the whole time the read guard is held, so the first keystroke after clicking Compile blocks in `did_change`'s `generation_lock.write().await`, and every later request queues behind that writer. The editor stops accepting AL edits until the build finishes. The same holds for `al.findReferences`, `al.lintFile` and `al.runTest`, which also keep the guard across their awaits.
 - fix: Invert the list: drop the guard for every command and let the few that genuinely need a stable generation re-acquire it around the short read they depend on. `commands::compile` already clones everything it needs (root, packages_dir, packages, config) before doing the work, so it does not need the guard at all.
-- status: open
+- status: fixed 92da8dd9
 
 ### [BUG] Project-scope push diagnostics can spin without ever publishing, stalling edits each pass
 - where: crates/al-lsp/src/server/diagnostics.rs:249 (`publish_workspace_diagnostics_parts` retry loop)
