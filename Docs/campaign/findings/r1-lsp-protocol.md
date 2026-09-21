@@ -60,7 +60,7 @@ audit that are still present in current code are tagged [STILL-OPEN].
 - scenario: `file_uri_from_params` validates that the path canonicalizes to an existing regular file and nothing else. No check ties it to the daemon's `project_root`. `al-lsp mcp` publishes `al_call`, which forwards any `method`/`params` pair to `dispatch_request` (mcp.rs:1114). So an MCP client sends `{"name":"al_call","arguments":{"method":"format","params":{"file":"/home/user/.bashrc"}}}`. `dispatch_format` loads that file through `ensure_document` (no extension check, only the size cap in `validate_size`), runs `al_syntax::format_al` over it, and because `check` defaults to false and the formatter output differs from shell script text, `write_al_file_and_refresh` atomically overwrites the user's `.bashrc` with mangled content. The read direction is the same: `{"method":"source","params":{"file":"…/id_rsa"}}` or `format` with `check:true` discloses file content and existence outside the project. `dispatch_new_project` takes a `dir` and creates a project tree at any absolute path; its comment claims requiring `is_absolute()` "prevents path traversal", which it does not.
 - note: The containment helper already exists and is well tested: `resolve_output_path_within_project` (build_dispatch/tests_dispatch.rs:248) normalizes `..`, canonicalizes the project root, and resolves symlinked parents, with tests covering parent-dir escape, absolute-outside, and symlink escape (tests_dispatch.rs:2733-2768). It is only wired into the three snapshot/JUnit output-path parameters. The gap is that `file_uri_from_params`, which every other file-taking dispatcher uses, does not call it.
 - fix: Promote `resolve_output_path_within_project` to the daemon module and call it from `file_uri_from_params` and `dispatch_new_project`, allowing the configured package cache and `appLocalFolderPaths` as extra permitted roots. At minimum apply it to the write paths (`format`, `fix*`, `sortMembers`, `organizeFiles`, `tests.mutate`, `xlf.*`, `newProject`) before the MCP surface is exposed to an agent.
-- status: open
+- status: fixed 0949a7ae
 
 ### [BUG] `dispatch_format` calls `block_in_place` without the current-thread-runtime guard every other call site has
 - where: crates/al-lsp/src/server/daemon/build_dispatch/fixes.rs:191
@@ -81,7 +81,7 @@ audit that are still present in current code are tagged [STILL-OPEN].
 - severity: low
 - scenario: The comment says requiring an absolute `dir` prevents path traversal, giving the example `"../../etc/malicious-dir"`. Rejecting relative paths does not prevent traversal: `/etc/malicious-dir` is absolute and passes. The check is still worth keeping (a relative path would resolve against the daemon's cwd, which is not the project), but the stated reason misleads the next reader into thinking containment is handled.
 - fix: Rewrite the comment to say what the check actually buys ("a relative path would resolve against the daemon process cwd, not the project") and add the real containment check described in the SECURITY finding above.
-- status: open
+- status: fixed 0949a7ae
 
 ### [BUG] `al.compile` holds the generation read guard for the whole build
 - where: crates/al-lsp/src/server/lsp.rs:2049-2060 (`execute_command`), crates/al-lsp/src/server/commands.rs:242 (`compile`)
