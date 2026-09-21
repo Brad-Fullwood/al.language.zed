@@ -91,7 +91,7 @@ Insight:
 - severity: medium
 - scenario: `source_actions` runs on every `textDocument/codeAction` request, which editors fire as the cursor moves. With the cursor anywhere inside a procedure body, `external_caller_exists` iterates `workspace.file_index.files` and calls `entry.value().to_lowercase()` on the full text of every file, allocating a fresh lowercase copy of the entire workspace source each time. On a 47k-line project that is megabytes of allocation per cursor move.
 - fix: hold a per-file lowercase cache (or a lowercase identifier set) in `FileIndex`, or at minimum use `entry.value().len()` and a case-insensitive substring scan that does not allocate. `make_local` could also reuse the reference index instead of a raw text scan.
-- status: open
+- status: fixed c4a9839f
 
 ### [BUG] Move-ToolTip computes the table-side edit against the on-disk text, not the open buffer
 - where: crates/al-analysis/src/queries/code_actions/events.rs:55-69
@@ -112,7 +112,7 @@ Insight:
 - severity: low
 - scenario: `find_rendering_insert_line` only looks for `requestpage` or the last bare `}`. A report that already has a `rendering { }` section plus one legacy `WordLayout = '...';` property gets a *second* `rendering` block inserted, which alc rejects as a duplicate section. The conversion should merge the new `layout(...)` into the existing section.
 - fix: scan for an existing `rendering` header first and, when found, insert the `layout(...)` entries inside it rather than emitting a new `rendering` block.
-- status: open
+- status: fixed 8dc777f2
 
 ### [BUG] Bulk tooltip fix prepends "Specifies" to text that already starts with "Specifies"
 - where: crates/al-analysis/src/queries/bulk_fix.rs:674-679
@@ -175,35 +175,35 @@ Insight:
 - severity: low
 - scenario: the `match inner.kind()` has a named arm for `"name" | "name_or_keyword" | "identifier" | "quoted_identifier"` and a `_` arm whose body is character-identical. The match documents a distinction the code does not make.
 - fix: drop the match and keep the single expression.
-- status: open
+- status: fixed 744a98d4
 
 ### [SLOP] Stale comment block describing a test that does not exist
 - where: crates/al-analysis/src/queries/code_actions/events.rs:802-808
 - severity: low
 - scenario: the `mod tests` block ends with eight lines of comment beginning "if_to_case UTF-16 column vs byte offset ... A simpler but valid test: verify the action is still offered when the procedure contains a non-ASCII comment" followed by the closing brace. There is no such test, and the comment is about if_to_case, not events.
 - fix: delete it, or write the test it describes (if_to_case.rs:645-672 already has an equivalent one).
-- status: open
+- status: fixed 744a98d4
 
 ### [BUG] `arch_lint` panics on an `ArchConfig` that did not go through `from_json`
 - where: crates/al-analysis/src/queries/arch_lint.rs:309, 331, 364-365, 383-387
 - severity: low
 - scenario: the four `expect("validated ...")` calls rely on `ArchConfig::validate`, which only runs inside `from_json`. `ArchConfig` is `pub` with a `pub rules` field and derives `Deserialize`, so `serde_json::from_str::<ArchConfig>(r#"{"rules":[{"id":"x","description":"d","kind":"maxComplexity"}]}"#)` produces a rule with empty `values`, and the next `arch_lint` call panics at `rule.values.first().expect("validated threshold")`. Every in-tree caller currently uses `from_json` or `default()`, so this is a latent invariant hole rather than a live crash, but nothing in the type enforces it.
 - fix: make the fields private behind `from_json`/`builtin_rules`, or add `#[serde(try_from = ...)]` so deserialization always runs `validate`, or replace the `expect`s with a skip-and-warn.
-- status: open
+- status: fixed 19ffa134
 
 ### [BUG] Wrap-in-region includes one line past the selection when whole lines are selected
 - where: crates/al-analysis/src/queries/code_actions/doc_region.rs:113-126
 - severity: low
 - scenario: `end_line = range.end.line.saturating_add(1)`. Editors report a whole-line drag selection of lines 5-7 as `end = {line: 8, character: 0}`, so `end_line` becomes 9 and `#endregion` is inserted before line 9, wrapping line 8 which the user did not select. The `+1` is only correct when the selection ends mid-line.
 - fix: use `range.end.line` when `range.end.character == 0` and `range.end.line > range.start.line`, otherwise `range.end.line + 1`. Also clamp against the document's line count.
-- status: open
+- status: fixed 9337d32c
 
 ### [BUG] Add-parentheses is never offered for `Rec.` / `CurrPage.` member calls
 - where: crates/al-analysis/src/queries/code_actions/add_parens.rs:73-110
 - severity: low
 - scenario: `CurrPage.Update;` or `Rec.Modify;` — both are bare parameterless calls that AL0604 asks you to parenthesise. `is_callable_identifier_path` splits on `.` and rejects the whole path if *any* segment is in `NON_CALL_STATEMENT_WORDS`, which contains `rec`, `xrec`, `currpage`, `currreport`, `currxmlport`. Those words are only non-calls when they stand alone, so the guard added to stop `end();` also suppresses the action on the most common real targets.
 - fix: only reject those words when the path has a single segment (`segments == 1`), or check the list against the full `body` rather than each segment.
-- status: open
+- status: fixed 1c892298
 
 
 ## Audit items re-checked and confirmed fixed
