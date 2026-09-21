@@ -1,17 +1,20 @@
 //! AL object member sorting.
 //!
-//! Sorts the members of an AL object in a canonical order:
+//! Sorts the members of each AL object in a file into a canonical order:
 //!   1. var block (unchanged)
 //!   2. triggers (alphabetically)
 //!   3. procedures / local procedures (alphabetically)
 //!
-//! This is a text-based transformation that does not require tree-sitter.
-//! It preserves the object header and footer verbatim.
+//! Object bodies are located with the syntax tree; splitting a body into
+//! members is a line-based transformation. Everything outside a body — the
+//! headers, the braces, and whatever sits between two objects — is preserved
+//! verbatim.
 
 /// Sort AL object members in canonical order.
 ///
-/// Returns `None` if the text does not look like a single AL object or if
-/// the structure cannot be parsed reliably (e.g. nested objects, syntax errors).
+/// Every object in the file is sorted independently. Returns `None` if the
+/// text does not look like AL objects, or if the structure cannot be handled
+/// reliably (syntax errors, a brace sharing a line with other code).
 /// Returns the sorted text (may equal the input if already sorted).
 pub fn sort_members(text: &str) -> Option<String> {
     let lines: Vec<&str> = text.lines().collect();
@@ -19,17 +22,88 @@ pub fn sort_members(text: &str) -> Option<String> {
         return None;
     }
 
-    let body_open = lines.iter().position(|l| l.trim() == "{")?;
-    let body_close = lines.iter().rposition(|l| l.trim() == "}")?;
+    let bodies = object_body_spans(text, &lines)?;
 
-    if body_close <= body_open {
+    let mut result_lines: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut cursor = 0usize;
+    for body in &bodies {
+        // The header, the opening brace, and anything between this object and
+        // the previous one.
+        result_lines.extend_from_slice(&lines[cursor..=body.open]);
+        result_lines.extend(sort_body(&lines[body.open + 1..body.close]));
+        cursor = body.close;
+    }
+    result_lines.extend_from_slice(&lines[cursor..]);
+
+    // Sorting is a pure reordering: every input line must appear in the output
+    // exactly as many times as it did on the way in. Bail out (no edit) rather
+    // than hand back a mangled object if the member split ever mis-segments —
+    // this runs behind an editor command, so a silent drop is lost user code.
+    if !is_pure_reordering(&lines, &result_lines) {
         return None;
     }
 
-    let header = &lines[..=body_open];
-    let footer = &lines[body_close..];
-    let body_lines = &lines[body_open + 1..body_close];
+    let mut out = result_lines.join("\n");
+    if text.ends_with('\n') {
+        out.push('\n');
+    }
+    // `str::lines` strips both LF and CRLF terminators, so rejoining with `\n`
+    // would silently rewrite a Windows checkout's line endings and turn a
+    // member sort into a whole-file diff. Mirror `format_al`'s `uses_crlf`
+    // handling so the two transformations agree.
+    if text.contains("\r\n") {
+        out = out.replace('\n', "\r\n");
+    }
+    Some(out)
+}
 
+/// The rows of one object body's opening and closing brace.
+struct BodySpan {
+    open: usize,
+    close: usize,
+}
+
+/// Locate every top-level object body in `text`.
+///
+/// The syntax tree gives the exact extent of each `object_body`, which is what
+/// keeps a two-object file from being read as one body running from the first
+/// `{` to the last `}`. Returns `None` when the file holds no object, when a
+/// brace shares its line with other code (the member split works on whole
+/// lines), or when the bodies are not disjoint and in source order.
+fn object_body_spans(text: &str, lines: &[&str]) -> Option<Vec<BodySpan>> {
+    let parsed = crate::parser::AlParser::parse_quick(text);
+    let root = parsed.tree.root_node();
+
+    let mut spans: Vec<BodySpan> = Vec::new();
+    let mut cursor = root.walk();
+    for object in root.children(&mut cursor) {
+        if object.kind() != "object_declaration" {
+            continue;
+        }
+        let body = object.child_by_field_name("body")?;
+        let open = body.start_position().row;
+        let close = body.end_position().row;
+        if close <= open {
+            return None;
+        }
+        if lines.get(open)?.trim() != "{" || lines.get(close)?.trim() != "}" {
+            return None;
+        }
+        if spans.last().is_some_and(|prev| prev.close >= open) {
+            return None;
+        }
+        spans.push(BodySpan { open, close });
+    }
+
+    if spans.is_empty() {
+        None
+    } else {
+        Some(spans)
+    }
+}
+
+/// Reorder the lines strictly inside one object body.
+fn sort_body<'a>(body_lines: &[&'a str]) -> Vec<&'a str> {
     // Split body into members. A member starts when we see:
     //   - `var` (at indent level 0 of body — 4 spaces)
     //   - `trigger <name>` ...
@@ -38,7 +112,7 @@ pub fn sort_members(text: &str) -> Option<String> {
 
     let members = split_into_members(body_lines);
     if members.is_empty() {
-        return Some(text.to_string());
+        return body_lines.to_vec();
     }
 
     // `var` and `protected var` blocks all hoist to the top, keeping their
@@ -80,56 +154,20 @@ pub fn sort_members(text: &str) -> Option<String> {
     triggers.sort_by_key(|a| a.0.to_lowercase());
     procedures.sort_by_key(|a| a.0.to_lowercase());
 
-    let mut result_lines: Vec<&str> = header.to_vec();
-
-    for vb in var_blocks {
-        for l in vb {
-            result_lines.push(l);
-        }
+    let mut sorted: Vec<&str> = Vec::with_capacity(body_lines.len());
+    for member in var_blocks {
+        sorted.extend(member);
     }
-
     for (_, member) in triggers {
-        for l in member {
-            result_lines.push(l);
-        }
+        sorted.extend(member);
     }
-
     for (_, member) in procedures {
-        for l in member {
-            result_lines.push(l);
-        }
+        sorted.extend(member);
     }
-
     for member in other {
-        for l in member {
-            result_lines.push(l);
-        }
+        sorted.extend(member);
     }
-
-    for l in footer {
-        result_lines.push(l);
-    }
-
-    // Sorting is a pure reordering: every input line must appear in the output
-    // exactly as many times as it did on the way in. Bail out (no edit) rather
-    // than hand back a mangled object if the member split ever mis-segments —
-    // this runs behind an editor command, so a silent drop is lost user code.
-    if !is_pure_reordering(&lines, &result_lines) {
-        return None;
-    }
-
-    let mut out = result_lines.join("\n");
-    if text.ends_with('\n') {
-        out.push('\n');
-    }
-    // `str::lines` strips both LF and CRLF terminators, so rejoining with `\n`
-    // would silently rewrite a Windows checkout's line endings and turn a
-    // member sort into a whole-file diff. Mirror `format_al`'s `uses_crlf`
-    // handling so the two transformations agree.
-    if text.contains("\r\n") {
-        out = out.replace('\n', "\r\n");
-    }
-    Some(out)
+    sorted
 }
 
 /// True if `code` contains `begin` as a standalone word outside any string
@@ -347,6 +385,250 @@ fn extract_member_name_procedure(line: &str) -> String {
         .next()
         .unwrap_or("")
         .to_string()
+}
+
+#[cfg(test)]
+mod multi_object_tests {
+    use super::sort_members;
+
+    /// Re-parsing the sorted text must yield the same object count with no
+    /// syntax errors: a member moved across an object boundary shows up here
+    /// even when the line multiset is unchanged.
+    fn assert_reparses_with(source: &str, objects: usize) {
+        let parsed = crate::parser::AlParser::parse_quick(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "re-parse errors: {:?}",
+            parsed.errors
+        );
+        let mut cursor = parsed.tree.root_node().walk();
+        let found = parsed
+            .tree
+            .root_node()
+            .children(&mut cursor)
+            .filter(|node| node.kind() == "object_declaration")
+            .count();
+        assert_eq!(found, objects, "object count changed");
+    }
+
+    #[test]
+    fn two_objects_each_keep_their_own_members() {
+        let input = "codeunit 50100 A\n\
+                     {\n\
+                     \x20   procedure Zebra()\n\
+                     \x20   begin\n\
+                     \x20   end;\n\
+                     \n\
+                     \x20   procedure Mango()\n\
+                     \x20   begin\n\
+                     \x20   end;\n\
+                     }\n\
+                     \n\
+                     codeunit 50101 B\n\
+                     {\n\
+                     \x20   procedure Delta()\n\
+                     \x20   begin\n\
+                     \x20   end;\n\
+                     \n\
+                     \x20   procedure Alpha()\n\
+                     \x20   begin\n\
+                     \x20   end;\n\
+                     }\n";
+        // A member owns the blank line that follows it, so the separator
+        // travels with the member that moved.
+        let expected = "codeunit 50100 A\n\
+                        {\n\
+                        \x20   procedure Mango()\n\
+                        \x20   begin\n\
+                        \x20   end;\n\
+                        \x20   procedure Zebra()\n\
+                        \x20   begin\n\
+                        \x20   end;\n\
+                        \n\
+                        }\n\
+                        \n\
+                        codeunit 50101 B\n\
+                        {\n\
+                        \x20   procedure Alpha()\n\
+                        \x20   begin\n\
+                        \x20   end;\n\
+                        \x20   procedure Delta()\n\
+                        \x20   begin\n\
+                        \x20   end;\n\
+                        \n\
+                        }\n";
+
+        let sorted = sort_members(input).expect("should sort");
+
+        assert_eq!(sorted, expected);
+        assert_reparses_with(&sorted, 2);
+    }
+
+    #[test]
+    fn three_objects_are_sorted_independently() {
+        let input = "codeunit 50100 A\n\
+                     {\n\
+                     \x20   procedure Zulu()\n\
+                     \x20   begin\n\
+                     \x20   end;\n\
+                     }\n\
+                     \n\
+                     codeunit 50101 B\n\
+                     {\n\
+                     \x20   procedure Yankee()\n\
+                     \x20   begin\n\
+                     \x20   end;\n\
+                     \n\
+                     \x20   procedure Bravo()\n\
+                     \x20   begin\n\
+                     \x20   end;\n\
+                     }\n\
+                     \n\
+                     codeunit 50102 C\n\
+                     {\n\
+                     \x20   procedure Xray()\n\
+                     \x20   begin\n\
+                     \x20   end;\n\
+                     \n\
+                     \x20   procedure Charlie()\n\
+                     \x20   begin\n\
+                     \x20   end;\n\
+                     }\n";
+        let expected = "codeunit 50100 A\n\
+                        {\n\
+                        \x20   procedure Zulu()\n\
+                        \x20   begin\n\
+                        \x20   end;\n\
+                        }\n\
+                        \n\
+                        codeunit 50101 B\n\
+                        {\n\
+                        \x20   procedure Bravo()\n\
+                        \x20   begin\n\
+                        \x20   end;\n\
+                        \x20   procedure Yankee()\n\
+                        \x20   begin\n\
+                        \x20   end;\n\
+                        \n\
+                        }\n\
+                        \n\
+                        codeunit 50102 C\n\
+                        {\n\
+                        \x20   procedure Charlie()\n\
+                        \x20   begin\n\
+                        \x20   end;\n\
+                        \x20   procedure Xray()\n\
+                        \x20   begin\n\
+                        \x20   end;\n\
+                        \n\
+                        }\n";
+
+        let sorted = sort_members(input).expect("should sort");
+
+        assert_eq!(sorted, expected);
+        assert_reparses_with(&sorted, 3);
+    }
+
+    #[test]
+    fn braces_in_strings_and_comments_do_not_move_an_object_boundary() {
+        let input = "codeunit 50100 A\n\
+                     {\n\
+                     \x20   procedure Zebra()\n\
+                     \x20   begin\n\
+                     \x20       Message('}');\n\
+                     \x20   end;\n\
+                     \n\
+                     \x20   procedure Alpha()\n\
+                     \x20   begin\n\
+                     \x20       // }\n\
+                     \x20   end;\n\
+                     }\n\
+                     \n\
+                     codeunit 50101 B\n\
+                     {\n\
+                     \x20   procedure Yankee()\n\
+                     \x20   begin\n\
+                     \x20       Message('{');\n\
+                     \x20   end;\n\
+                     \n\
+                     \x20   procedure Bravo()\n\
+                     \x20   begin\n\
+                     \x20   end;\n\
+                     }\n";
+        let expected = "codeunit 50100 A\n\
+                        {\n\
+                        \x20   procedure Alpha()\n\
+                        \x20   begin\n\
+                        \x20       // }\n\
+                        \x20   end;\n\
+                        \x20   procedure Zebra()\n\
+                        \x20   begin\n\
+                        \x20       Message('}');\n\
+                        \x20   end;\n\
+                        \n\
+                        }\n\
+                        \n\
+                        codeunit 50101 B\n\
+                        {\n\
+                        \x20   procedure Bravo()\n\
+                        \x20   begin\n\
+                        \x20   end;\n\
+                        \x20   procedure Yankee()\n\
+                        \x20   begin\n\
+                        \x20       Message('{');\n\
+                        \x20   end;\n\
+                        \n\
+                        }\n";
+
+        let sorted = sort_members(input).expect("should sort");
+
+        assert_eq!(sorted, expected);
+        assert_reparses_with(&sorted, 2);
+    }
+
+    #[test]
+    fn a_table_and_a_page_in_one_file_keep_their_sections() {
+        let input = "table 50100 MyTable\n\
+                     {\n\
+                     \x20   fields\n\
+                     \x20   {\n\
+                     \x20       field(1; Code; Code[20]) { }\n\
+                     \x20   }\n\
+                     \n\
+                     \x20   procedure Zebra()\n\
+                     \x20   begin\n\
+                     \x20   end;\n\
+                     \n\
+                     \x20   procedure Alpha()\n\
+                     \x20   begin\n\
+                     \x20   end;\n\
+                     }\n\
+                     \n\
+                     page 50100 MyPage\n\
+                     {\n\
+                     \x20   procedure Yankee()\n\
+                     \x20   begin\n\
+                     \x20   end;\n\
+                     \n\
+                     \x20   procedure Bravo()\n\
+                     \x20   begin\n\
+                     \x20   end;\n\
+                     }\n";
+
+        let sorted = sort_members(input).expect("should sort");
+
+        let table_end = sorted.find("page 50100").expect("page missing");
+        let alpha = sorted.find("procedure Alpha").expect("Alpha missing");
+        let zebra = sorted.find("procedure Zebra").expect("Zebra missing");
+        let bravo = sorted.find("procedure Bravo").expect("Bravo missing");
+        let yankee = sorted.find("procedure Yankee").expect("Yankee missing");
+        assert!(alpha < zebra && zebra < table_end, "{sorted}");
+        assert!(table_end < bravo && bravo < yankee, "{sorted}");
+        // `fields` sorts into the trailing group, still inside the table.
+        let fields = sorted.find("fields").expect("fields missing");
+        assert!(zebra < fields && fields < table_end, "{sorted}");
+        assert_reparses_with(&sorted, 2);
+    }
 }
 
 #[cfg(test)]
