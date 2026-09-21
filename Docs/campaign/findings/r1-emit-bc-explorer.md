@@ -66,7 +66,7 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - severity: low
 - scenario: `build_tmp` is `<project_root>/.al-build-tmp.<pid>.<seq>` and is created with `std::fs::create_dir`, which errors on `AlreadyExists`. `TmpDirGuard` cleans up on every normal return, but a SIGKILL (or a machine crash) during an `alc` compile leaves the directory behind. A later process that is assigned the same pid and starts at `seq = 0` gets `File exists` from `create_dir` and `compile_project_with_analyzers` returns `AlError::Io` with no hint about what to delete. The daemon is long-lived, so `seq` keeps advancing within one process, but a fresh `al-explorer build` is a fresh process at `seq = 0`.
 - fix: use `tempfile::Builder::new().prefix(".al-build-tmp.").tempdir_in(project_root)` so the name is random and the collision cannot happen, or sweep stale `.al-build-tmp.*` before creating.
-- status: open
+- status: fixed 530ef33b
 
 ### [SECURITY] RAD publish interpolates an unvalidated `app.json` `id` into the request path
 - where: crates/al-publish/src/lib.rs:350-363 and crates/al-bc/src/bc_client.rs:352
@@ -101,7 +101,7 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - severity: medium
 - scenario: the native build reads each collected source with `std::fs::read_to_string` and maps any failure to `EmitError::Project`, which `native_compile` turns into a single `ALN0000` diagnostic on `app.json` reading "native verification failed to run: reading …: stream did not contain valid UTF-8". An AL file saved as Windows-1252 (common in code ported from older NAV, where captions and comments carry accented characters) therefore kills the entire build with an error pointing at the wrong file and no line information, instead of one diagnostic on the offending file. Everything else in this pipeline reports per-file problems as diagnostics.
 - fix: read the bytes, and on invalid UTF-8 push a `VerificationDiagnostic` for that file (line 1, a dedicated ALN code) and skip it, so the rest of the project still verifies and the message names the real file.
-- status: open
+- status: fixed 530ef33b
 
 ### [BUG] the native manifest reads a `resourceExposurePolicy` key that no AL project ever writes
 - where: crates/al-emit/src/manifest.rs:156 (and 25, 32, 251-253)
@@ -115,7 +115,7 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - severity: low
 - scenario: `metadata_name` replaces every non-`[A-Za-z0-9_]` character with `_`, and the result is used verbatim as an archive path (`ProfileSymbolReferences/<meta>.json`, `addin/<meta>.zip`). Two profiles named `"Ärsbokslut"` and `"Årsbokslut"`, or `"Sales Order"` and `"Sales_Order"`, both fold to one name, so `assemble_app`'s duplicate check (assemble.rs:1076-1080) aborts the whole build with `multiple package parts resolve to the same archive path: ProfileSymbolReferences/_rsbokslut.json` — an internal package path, with no AL file, line, or object name to act on. The same applies to two control add-ins whose names differ only in punctuation.
 - fix: detect the fold collision where the objects are known (in `build_profile_symbol_references` and `control_addin_bundle`) and emit a `VerificationDiagnostic` naming both objects and their source files, or disambiguate the metadata name with a suffix.
-- status: open
+- status: fixed 530ef33b
 
 ### [BUG] the native emitter omits every `Label` translation unit from the packaged XLIFF
 - where: crates/al-emit/src/assemble.rs:305-381 (`xliff_xml`)
@@ -137,28 +137,28 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - severity: low
 - scenario: both native write paths use `tempfile::NamedTempFile::new_in(...)` and `persist`. `NamedTempFile` creates its file with mode 0600, and `persist` is a rename, so the permission bits carry over: the produced `.app` ends up 0600 instead of the umask default (0644 for a normal `alc` or `fs::write`). A CI job that builds as one user and uploads or copies the artifact as another (a container step, a different agent user, a `docker COPY`) gets a permission-denied that the build itself reported as success.
 - fix: after `persist`, set the mode from the process umask (or call `std::fs::set_permissions` to 0644 on unix) so the artifact matches what `alc` and `fs::write` produce.
-- status: open
+- status: fixed 530ef33b
 
 ### [PERF] native emission holds the whole project and the whole package in memory at once
 - where: crates/al-emit/src/project.rs:401-430, crates/al-emit/src/assemble.rs:1006-1013, crates/al-emit/src/package.rs:65-78
 - severity: low
 - scenario: `build_verified_app_from_project_with_packages` reads every `.al` file into `sources` and keeps the same text again inside `objects`; `assemble_app` then copies each source into `entries` (a third copy, `s.content.clone().into_bytes()`), `write_zip` builds the whole compressed archive in a `Vec<u8>`, and `write_app_package` allocates a fourth buffer for header plus zip. For a Base Application sized project this is several times the source size resident at peak, in a long-lived daemon. Every BC *input* path in this workspace has an explicit cap (`MAX_UPLOADABLE_APP_BYTES`, `MAX_BC_JSON_RESPONSE_BYTES`, `MAX_LAUNCH_FILE_BYTES`, `MAX_PROFILE_FILE_BYTES`); the emitter's own working set has none.
 - fix: at minimum drop `sources` content after `entries` is built (move rather than clone at assemble.rs:1012), and consider streaming `write_zip` into the output file instead of a `Vec`.
-- status: open
+- status: fixed 530ef33b
 
 ### [BUG] the TUI profiler reads a profile with no size cap, contradicting its own parity comment
 - where: crates/al-explorer/src/views/profiler.rs:160-164 (comment at 17-23)
 - severity: medium
 - scenario: `load_profile` does `std::fs::read(&path)` on whatever the user types into the profiler pane, then `serde_json::from_slice` over the whole buffer, on the TUI's single thread. `al_bc::profiling::analyze_profile_file` guards the same input with `MAX_PROFILE_FILE_BYTES` (500 MB, profiling.rs:469-481) and every other BC input path in the workspace has an explicit cap. Entering the path of a multi-gigabyte file (a stray core dump, a mistyped path to a large log) freezes the TUI with no redraw and no way to cancel, then OOMs. The module comment at lines 17-23 claims this port keeps "this view's TUI safeguards (node cap, BOM strip, GC filter)", and the node cap does exist at line 200, but the size cap that would prevent the freeze is the one that was not ported.
 - fix: `std::fs::metadata(&path)` first and refuse anything over the same 500 MB bound with a status message, mirroring `analyze_profile_file`.
-- status: open
+- status: fixed f841abd5
 
 ### [BUG] the TUI test runner blocks the event loop and times out real test runs after 30 seconds
 - where: crates/al-explorer/src/views/test_runner.rs:114, 132 (also 66, 75)
 - severity: medium
 - scenario: `run_selected` and `run_all` call `request_checked` synchronously from inside the key handler, which runs inside `run_app`'s loop (tui.rs:80-159). While the daemon runs the suite the TUI does not redraw and does not read events, so Ctrl+C is ignored. Neither call raises the deadline, so it uses `DEFAULT_REQUEST_TIMEOUT` (30 s, al-protocol/src/client.rs:24) whose own doc comment names "test runs" as a case that must override it. The CLI path does exactly that (`cli/commands/lsp/tests.rs:383` sets 1800 s). Pressing `R` in the Tests view on any project whose suite takes longer than 30 s freezes the UI for 30 s, then shows `Daemon error (run_auto): …` and drops the client, while the daemon keeps running the tests.
 - fix: call `client.set_request_timeout` with the same bound the CLI uses before `tests.run_batch`/`tests.run_auto`, and move the call off the event loop the way `App::start_init_workspace` already does for indexing.
-- status: open
+- status: fixed f841abd5
 
 ### [BUG] the packaged XLIFF ignores `Locked = true` on captions and tooltips
 - where: crates/al-emit/src/assemble.rs:153-158, 222-256, 339-370
