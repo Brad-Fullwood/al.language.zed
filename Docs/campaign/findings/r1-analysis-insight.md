@@ -17,7 +17,7 @@ Code actions (edit user files) — highest priority:
 - [ ] queries/code_actions/namespace.rs
 - [ ] queries/code_actions/doc_region.rs
 - [ ] queries/code_actions/test_support.rs
-- [ ] queries/bulk_fix.rs
+- [x] queries/bulk_fix.rs
 - [ ] queries/rename.rs
 - [ ] generators.rs / scaffold.rs (file-writing)
 - [ ] xliff.rs (writes user .xlf)
@@ -33,21 +33,21 @@ Diagnostics:
 - [ ] queries/breaking_changes.rs
 - [ ] queries/obsolescence.rs / obsolete_usage.rs
 - [ ] queries/test_diagnostics.rs
-- [ ] queries/duplicates.rs
+- [x] queries/duplicates.rs
 - [ ] queries/upgrade.rs
-- [ ] queries/impact.rs
-- [ ] permissions.rs
-- [ ] workspace_sources.rs
+- [x] queries/impact.rs
+- [x] permissions.rs
+- [x] workspace_sources.rs
 - [ ] resolution.rs
 - [ ] queries/source.rs
 - [ ] queries/inlay_hints.rs, code_lens.rs, hover.rs, completions.rs, signature.rs
 - [ ] queries/suggest_event.rs, profiler_hints.rs, test_coverage.rs
 
 Insight:
-- [ ] al-insight/src/graph.rs
+- [x] al-insight/src/graph.rs
 - [ ] al-insight/src/calls.rs
 - [ ] al-insight/src/search.rs
-- [ ] al-insight/src/analysis.rs
+- [x] al-insight/src/analysis.rs
 - [ ] al-insight/src/index.rs
 - [ ] al-insight/src/discovery.rs
 
@@ -112,6 +112,41 @@ Insight:
 - severity: low
 - scenario: `find_rendering_insert_line` only looks for `requestpage` or the last bare `}`. A report that already has a `rendering { }` section plus one legacy `WordLayout = '...';` property gets a *second* `rendering` block inserted, which alc rejects as a duplicate section. The conversion should merge the new `layout(...)` into the existing section.
 - fix: scan for an existing `rendering` header first and, when found, insert the `layout(...)` entries inside it rather than emitting a new `rendering` block.
+- status: open
+
+### [BUG] Bulk tooltip fix prepends "Specifies" to text that already starts with "Specifies"
+- where: crates/al-analysis/src/queries/bulk_fix.rs:674-679
+- severity: high
+- scenario: `inject_tooltips` emits `format!("ToolTip = 'Specifies {escaped}';")`, hardcoding the "Specifies " prefix. The only production caller (crates/al-lsp/src/server/daemon/build_dispatch/fixes.rs:681-691, driven by `al-explorer fix tooltips --from-table Customer`) takes the *base-app table field's own `ToolTip` property value*, which by Microsoft's own convention (UICop AA0218) already reads `Specifies the number of the customer.`. Running `fix.tooltips` non-dry-run writes `ToolTip = 'Specifies Specifies the number of the customer.';` into every matching page field across the project, atomically and with no undo. The doc comment at bulk_fix.rs:77-81 describes `tooltips` as "tooltip text", not a sentence fragment.
+- fix: emit the tooltip value verbatim and leave prefixing to the caller, or prepend "Specifies " only when the value does not already begin with it (case-insensitive).
+- status: open
+
+### [TEST] The bulk tooltip test never asserts the generated text
+- where: crates/al-analysis/src/queries/bulk_fix.rs:956-975 (`inject_tooltips_adds_missing_tooltip`)
+- severity: medium
+- scenario: the test passes the tooltip `"the item number"` and asserts only `result.contains("ToolTip")`. Because it never compares the emitted string, the hardcoded `Specifies ` prefix above is invisible to the suite. Every other bulk-fix test asserts the re-parse, not the content.
+- fix: assert the full emitted line, and add a case whose input already starts with "Specifies".
+- status: open
+
+### [GAP] Impact analysis still misses conditional `TableRelation` branches
+- where: crates/al-analysis/src/queries/impact.rs:346-349, calling crates/al-insight/src/analysis.rs:200-202
+- severity: medium
+- scenario: the audit's conditional-`TableRelation` fix added `extract_table_relation_tables` (plural), but `check_object_consumers` still calls the singular `extract_table_relation_table`, which is `extract_table_relation_tables(value).into_iter().next()`. Line 250 of analysis.rs sorts the branch tables alphabetically before returning them, so for `Sales Line."No."` with `TableRelation = IF (Type=CONST(Item)) Item."No." ELSE IF (Type=CONST(Resource)) Resource."No."` the singular helper returns `Item`. An impact query on `Resource` never lists `Sales Line` as a `Filter` consumer, and a query on `Item` succeeds only by alphabetical accident.
+- fix: have `check_object_consumers` call `extract_table_relation_tables` and test every branch with `eq_ignore_ascii_case`.
+- status: open
+
+### [BUG] `extract_table_relation_tables` sorts its result while its doc says declaration order
+- where: crates/al-insight/src/analysis.rs:204 (doc) vs 250-252 (code)
+- severity: low
+- scenario: the doc comment says "Every table referenced by a `TableRelation` value, **in declaration order**", but the function ends with `tables.sort_unstable(); tables.dedup();`. `extract_table_relation_table` then documents itself as the "single-table helper" while actually returning the alphabetically first branch. Any caller that treats element 0 as the primary relation gets the wrong table.
+- fix: either drop the sort and dedup while preserving order, or correct both doc comments and make the singular helper explicit about which table it returns.
+- status: open
+
+### [GAP] One unparseable `.al` file aborts the whole permission-set generation
+- where: crates/al-analysis/src/permissions.rs:66-92
+- severity: medium
+- scenario: `collect_permissions` walks every indexed file and returns `Err(PermissionCollectionError::ParseSource)` on the first file whose cached tree has an error node. A single scratch or work-in-progress `.al` in the workspace therefore blocks permission generation for the entire project. `workspace_sources::snapshot_with_skipped` (workspace_sources.rs:88-113) was changed to *skip* such files and report them, but permissions.rs keeps its own whole-workspace failure.
+- fix: route `collect_permissions` through `workspace_sources::snapshot_with_skipped`, or apply the same skip-and-report policy so one broken file does not take the query down.
 - status: open
 
 ### [BUG] Add-parentheses is never offered for `Rec.` / `CurrPage.` member calls

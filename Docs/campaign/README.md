@@ -7,7 +7,7 @@ resumes from the files in this directory.
 
 ## Files
 
-- `STATE.md`: current phase, the work queue, agents in flight. Read this first.
+- `STATE.md`: current phase, the workstreams with progress, agents in flight. Read this first.
 - `LOG.md`: append-only journal, newest entry last. One entry per completed unit of work.
 - `findings/`: one file per review. Review agents write here as they go, so a session that
   dies mid-review keeps what was found.
@@ -19,7 +19,8 @@ resumes from the files in this directory.
    from a dead session after checking it builds.
 2. Read `STATE.md`. Items marked `in-flight` with no live agent are re-queued. Check
    `git worktree list` for agent worktrees with unmerged commits first.
-3. Take the top queue item. Dispatch subagents for the work. The orchestrator plans,
+3. Pick work across the workstreams in `STATE.md`: advance at least three per session and
+   choose by useful output. Dispatch subagents for the work. The orchestrator plans,
    verifies, merges and records. It does not do bulk edits itself.
 4. After each unit: run the gates below, commit, push, update `STATE.md`, append to `LOG.md`.
 

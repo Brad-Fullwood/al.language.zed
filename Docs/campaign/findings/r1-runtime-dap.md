@@ -23,7 +23,7 @@ that are still open are tagged [STILL-OPEN].
 - [ ] al-test/src/mutate.rs
 - [ ] al-test/src/backends/interp.rs
 - [ ] al-test/src/backends/live_bc.rs + snapshot.rs
-- [ ] al-test/src/output/cobertura.rs + junit.rs
+- [x] al-test/src/output/cobertura.rs + junit.rs
 - [ ] al-test/src/test_runner.rs + session.rs + persistence.rs
 - [ ] al-dap/src/dap/native_dap.rs
 - [ ] al-dap/src/dap/bc_debug/session.rs + session_config.rs
@@ -75,9 +75,35 @@ that are still open are tagged [STILL-OPEN].
 - fix: have `current_primary_key` fall back to the field's declared zero value rather than erroring. The field defaults already exist one layer up in `RecordStore::field_defaults`; either pass them into `MockRecord` at construction or resolve the key in `records::run_record_method` before calling `insert_in`.
 - status: open
 
+### [BUG] Round uses banker's rounding where BC rounds midpoints away from zero
+- where: crates/al-runtime/src/interpreter/dispatch.rs:1554, pinned by the test at dispatch.rs:2637
+- severity: high
+- scenario: `builtin_round` applies `RoundingStrategy::MidpointNearestEven`. Microsoft's `System.Round` reference states the `'='` direction as "Values of 5 or greater are rounded up. Values less than 5 are rounded down", which is round-half-away-from-zero, not round-half-to-even.
+  ```al
+  Assert.AreEqual(2, Round(2.5, 1), '');       // local: passes (banker's -> 2). BC: Round gives 3
+  Assert.AreEqual(0.12, Round(0.125, 0.01), ''); // local: passes. BC: 0.13
+  ```
+  This is the most dangerous shape in the repo: a money-rounding test that goes green locally and red on the build agent. The unit test `round_uses_bankers_rounding_and_directions` currently locks the wrong behaviour in.
+- fix: switch to `RoundingStrategy::MidpointAwayFromZero` and rewrite the unit test to the documented cases (`Round(2.5, 1) = 3`, `Round(1.5, 1) = 2`, `Round(-2.5, 1) = -3`). Keep `'<'` as floor and `'>'` as ceil.
+- status: open
+
 ### [BUG] FlowField Min/Max ignore rows whose target field was never assigned
 - where: crates/al-runtime/src/mock/record.rs:763 (`target_cells`) and record.rs:820 (`FlowAgg::Min | FlowAgg::Max`)
 - severity: low
 - scenario: `target_cells` is `matching.iter().filter_map(|row| target.and_then(|t| row.get(&t)))`, so a row inserted without ever assigning the aggregated field contributes nothing. For `Sum` that is the same answer BC gives (adding 0). For `Min` it is not: with rows `Amount = 5` and `Amount` unassigned, `CalcFields(MinAmount)` returns 5 locally and 0 on BC.
 - fix: in the `Min`/`Max` arm, substitute the field's typed zero for rows in `matching` that have no cell for `target`, or pass the field default into `calc_flow`.
+- status: open
+
+### [BUG] Static Cobertura double-counts a procedure covered by more than one test
+- where: crates/al-test/src/output/cobertura.rs:52 (`group_by_object`), used at cobertura.rs:165
+- severity: medium
+- scenario: `group_by_object` iterates `report.coverage` (one entry per test) and pushes a `ProcLine` for every `cov` it sees, with no dedupe. The top-level `<coverage line-rate>` is computed from a deduped `HashSet` at cobertura.rs:96, but the per-class rate at cobertura.rs:165 is `class.lines.iter().filter(hits > 0).count() / class.lines.len()`. A codeunit with one procedure reached by three tests and one untested procedure emits four `<line>` elements, three of them the same line number, and reports `line-rate="0.7500"` where the true figure is 0.5. The `<class>` and `<coverage>` rates disagree in the same document, and dashboards that aggregate per class get the inflated number.
+- fix: dedupe by `(object, file, line)` in `group_by_object` the same way `write_cobertura` already dedupes for the overall rate, keeping `hits` as the number of covering tests rather than repeating the line.
+- status: open
+
+### [GAP] Dynamic Cobertura always reports line-rate 1.0, so a coverage gate on it is inert
+- where: crates/al-test/src/output/cobertura.rs:225 and :285 (`lines-valid` set equal to `lines-covered`)
+- severity: medium
+- scenario: the interpreter records hits only, so the writer sets `line-rate="1.0"` and `lines-valid == lines-covered` whenever anything ran. A CI step that fails the build below, say, 80 percent line coverage passes unconditionally on this file. The doc comment discloses the limitation, but the emitted document does not: a consumer sees a valid Cobertura file claiming 100 percent.
+- fix: the denominator is available — `al-analysis` already knows every statement line per file. Feed the executable-line set into `write_cobertura_dynamic` and emit real misses as `hits="0"`, or (cheaper) drop `line-rate`/`lines-valid` from the dynamic document and keep only `branch-rate` and the MC/DC attributes, which do have honest denominators.
 - status: open

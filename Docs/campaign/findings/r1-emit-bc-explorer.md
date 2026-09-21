@@ -6,7 +6,7 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 ## Coverage
 
 - [ ] crates/al-emit/src/assemble.rs
-- [ ] crates/al-emit/src/project.rs
+- [x] crates/al-emit/src/project.rs
 - [ ] crates/al-emit/src/manifest.rs
 - [x] crates/al-emit/src/package.rs
 - [ ] crates/al-emit/src/symbol_extract.rs
@@ -17,18 +17,18 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - [x] crates/al-bc/src/bc_client.rs
 - [x] crates/al-bc/src/http_auth.rs
 - [x] crates/al-bc/src/launch.rs
-- [ ] crates/al-bc/src/snapshot.rs
-- [ ] crates/al-bc/src/profiling.rs
+- [x] crates/al-bc/src/snapshot.rs
+- [x] crates/al-bc/src/profiling.rs
 - [x] crates/al-publish/src/lib.rs
 - [ ] crates/al-snapshot/src/diff.rs + format.rs
 - [ ] crates/al-explorer/src/cli/args.rs + subcommands.rs + mod.rs
 - [ ] crates/al-explorer/src/cli/commands/mod.rs
 - [ ] crates/al-explorer/src/cli/commands/build.rs
-- [ ] crates/al-explorer/src/cli/commands/debug.rs
+- [x] crates/al-explorer/src/cli/commands/debug.rs
 - [ ] crates/al-explorer/src/cli/commands/response_contract.rs
 - [ ] crates/al-explorer/src/cli/commands/insight.rs
 - [ ] crates/al-explorer/src/cli/commands/lsp/*.rs
-- [ ] crates/al-explorer/src/tui.rs + app/ + views/
+- [x] crates/al-explorer/src/tui.rs + app/ + views/
 - [ ] Backlog re-verification pass (which 2026-07-31 items are still open)
 
 ## Findings
@@ -80,5 +80,26 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - severity: high
 - scenario: report layouts and the app logo go through `read_project_resource` (assemble.rs:872-898), which canonicalizes and asserts `resolved.starts_with(&root)` and rejects `..`/absolute paths via `project_relative_resource_path`. Control add-in resources do not: `resolve_addin_resources`'s `read` closure and both `control_addin_bundle` loops do a bare `std::fs::read(root.join(rel))`. An AL source file with `controladdin "X" { Scripts = '../../../../etc/passwd'; StartupScript = '../../.ssh/id_rsa'; }` makes a native build read those files and (a) embed their contents in the shipped `.app` and (b) write the outer archive entry at the literal path `addin/src/../../../../etc/passwd`. `write_zip` uses `zip::ZipWriter::start_file`, which stores the name verbatim (only `start_file_from_path` normalizes), so the traversal survives into the package and any consumer that extracts it naively writes outside the extraction directory. `Scripts = '/etc/passwd'` works the same way, since `Path::join` with an absolute path discards the root.
 - fix: route all three reads through `read_project_resource` (or at least `project_relative_resource_path`) so add-in resources get the same containment and the same named error as layouts.
+- status: open
+
+### [BUG] TUI panics on a non-ASCII member name (byte index is not a char boundary)
+- where: crates/al-explorer/src/app/details.rs:503
+- severity: medium
+- scenario: `find_member_line_in_file` advances its scan with `start = abs + 1`, where `abs` is a byte offset into `line_lower`. When the searched name starts with a multi-byte character the next byte is a UTF-8 continuation byte, and the next iteration's `line_lower[start..]` panics with "byte index N is not a char boundary". Concrete input: a table with `field(1; "Ärsredovisning"; Text[30])` and a source line such as `xÄrsredovisning := 1;` (any line where the name appears preceded by an identifier byte, so the whole-word check rejects the first hit and the loop continues). The user presses Enter on that member in the object browser and the TUI dies. Quoted non-ASCII identifiers are ordinary in Nordic and German BC code.
+- fix: advance by the matched character's width, e.g. `start = abs + line_lower[abs..].chars().next().map_or(1, char::len_utf8);`, and add a unit test with a non-ASCII member name preceded by an identifier character.
+- status: open
+
+### [BUG] the TUI panic hook leaves mouse capture enabled
+- where: crates/al-explorer/src/tui.rs:44-49
+- severity: low
+- scenario: `run_tui` enables mouse capture at line 53 and disables it on the normal exit path at line 69. The panic hook disables raw mode and leaves the alternate screen but never sends `DisableMouseCapture`. After any TUI panic (see the finding above) the terminal keeps SGR mouse tracking on, so the user's shell prints escape sequences on every mouse move until they run `reset`. The same gap applies if `execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?` partially succeeds and then the `Terminal::new` at line 55 fails: that `?` returns with raw mode and mouse capture still on.
+- fix: add `DisableMouseCapture` to the panic hook's `execute!` list, and move the teardown into a guard type whose `Drop` runs on every exit path.
+- status: open
+
+### [BUG] one non-UTF-8 `.al` file aborts the whole native build with an infrastructure error
+- where: crates/al-emit/src/project.rs:405-406
+- severity: medium
+- scenario: the native build reads each collected source with `std::fs::read_to_string` and maps any failure to `EmitError::Project`, which `native_compile` turns into a single `ALN0000` diagnostic on `app.json` reading "native verification failed to run: reading …: stream did not contain valid UTF-8". An AL file saved as Windows-1252 (common in code ported from older NAV, where captions and comments carry accented characters) therefore kills the entire build with an error pointing at the wrong file and no line information, instead of one diagnostic on the offending file. Everything else in this pipeline reports per-file problems as diagnostics.
+- fix: read the bytes, and on invalid UTF-8 push a `VerificationDiagnostic` for that file (line 1, a dedicated ALN code) and skip it, so the rest of the project still verifies and the message names the real file.
 - status: open
 

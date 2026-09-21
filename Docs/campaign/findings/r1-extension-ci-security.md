@@ -13,33 +13,33 @@ fixed in current code are not repeated. Still-open backlog items are tagged `[ST
 - [x] src/lib.rs
 - [x] src/dap.rs
 - [x] src/settings.rs
-- [ ] src/settings_test.rs, src/merge_json_test.rs
-- [ ] src/repo_consistency_test.rs
-- [ ] extension.toml
-- [ ] build.rs
-- [ ] Makefile
-- [ ] scripts/check-doc-paths.sh
-- [ ] scripts/check-release-hygiene.sh
-- [ ] scripts/check-repo-consistency.sh
-- [ ] scripts/check-zed-wasm-component.sh
-- [ ] scripts/dev-watch.sh
+- [x] src/settings_test.rs, src/merge_json_test.rs
+- [x] src/repo_consistency_test.rs
+- [x] extension.toml
+- [x] build.rs
+- [x] Makefile
+- [x] scripts/check-doc-paths.sh
+- [x] scripts/check-release-hygiene.sh
+- [x] scripts/check-repo-consistency.sh
+- [x] scripts/check-zed-wasm-component.sh
+- [x] scripts/dev-watch.sh
 - [ ] scripts/live-bc-contracts.sh
 - [ ] scripts/use-api.sh, scripts/test-use-api.sh
-- [ ] .github/workflows/ci.yml
-- [ ] .github/workflows/release.yml
-- [ ] .github/workflows/verify-generated-assets.yml
-- [ ] deny.toml + cargo deny / cargo audit run
+- [x] .github/workflows/ci.yml
+- [x] .github/workflows/release.yml
+- [x] .github/workflows/verify-generated-assets.yml
+- [x] deny.toml + cargo deny / cargo audit run
 - [ ] schemas/*.json
 - [ ] snippets/*.json
-- [ ] debug_adapter_schemas/al.json
+- [x] debug_adapter_schemas/al.json
 - [ ] themes/bc-themes.json
 - [ ] languages/al/config.toml + tasks.json + runnables.scm
-- [ ] .zed/tasks.json
+- [x] .zed/tasks.json
 - [ ] README.md
-- [ ] ROADMAP.md vs Docs/roadmap.md
-- [ ] BENCHMARKS.md vs Docs/benchmarks.md
+- [x] ROADMAP.md vs Docs/roadmap.md
+- [x] BENCHMARKS.md vs Docs/benchmarks.md
 - [ ] CONTRIBUTING.md
-- [ ] Docs/README.md and Docs/ index links
+- [x] Docs/README.md and Docs/ index links
 
 ## Findings
 
@@ -122,4 +122,56 @@ fixed in current code are not repeated. Still-open backlog items are tagged `[ST
   the semantic-feature clippy/test to `release-dryrun`, renumbering the stages and the matching list
   in Docs/testing-guide.md:296-320. Otherwise soften the header comment to say which CI gates it does
   not cover.
+- status: open
+
+### [TEST] Nothing checks the reverse direction of the debug-schema contract, and `acceptInvalidCerts` sits in that hole
+- where: crates/al-dap/src/dap/bc_debug/session_config.rs:325-343, crates/al-dap/src/dap/bc_debug/session_config.rs:830-877 (`every_advertised_debug_schema_field_has_an_owner`), debug_adapter_schemas/al.json
+- severity: low
+- scenario: three tests guard the debug configuration contract, and all three run schema -> consumer:
+  `every_advertised_debug_schema_field_has_an_owner` asserts the schema's property set equals a
+  hand-maintained owner list, `debug_snippet_fields_are_declared_by_debug_schema`
+  (src/repo_consistency_test.rs:654) asserts snippet fields are declared, and
+  `assert_scenario_validates_against_schema` (src/dap.rs:243) asserts scenario keys are declared.
+  None goes consumer -> schema. `BcDebugConfig::from_dap_args` parses `acceptInvalidCerts`, which
+  sets `accept_invalid_certs` and makes al-bc emit "TLS certificate verification is DISABLED"
+  (crates/al-bc/src/http_auth.rs:59-62). The schema does not declare it, and has no
+  `additionalProperties: false`, so a `.zed/debug.json` containing `"acceptInvalidCerts": true`
+  disables certificate checking with no completion entry, no schema description and no validation
+  signal. Any future key added to `from_dap_args` lands the same way.
+- fix: either declare `acceptInvalidCerts` in the schema next to `validateServerCertificate` (with a
+  description naming the security effect), or add a test that extracts the string literals
+  `from_dap_args` passes to `optional_*`/`args.get` and asserts each one is a schema property or in
+  an explicit, commented deliberate-omission list.
+- status: open
+
+### [DOCS] Docs/roadmap.md is an orphaned pointer stub
+- where: Docs/roadmap.md:1-12, Docs/README.md:8-21
+- severity: low
+- scenario: `Docs/roadmap.md` contains nothing but redirections to `../ROADMAP.md`,
+  `./gaps-and-future-work.md` and `./current-limitations.md`. A repo-wide grep for links to it
+  (`Docs/roadmap`, `(./roadmap.md)`, `(roadmap.md)`) finds no referrer, and the Docs index at
+  Docs/README.md lists `../ROADMAP.md` directly under "Completion roadmap". The file is reachable
+  only by browsing the directory, and a reader who lands on it has to follow one more hop.
+- fix: delete `Docs/roadmap.md`. The index already points at the real roadmap.
+- status: open
+
+### [SECURITY] Two RUSTSEC advisories are live in Cargo.lock, so the cargo-deny CI job fails and blocks any release today
+- where: Cargo.lock (`h2` 0.4.14, `rustls` 0.23.40), deny.toml:9-10, .github/workflows/ci.yml:145-162
+- severity: high
+- scenario: `cargo deny --workspace check` on the current tree reports
+  `advisories FAILED, bans ok, licenses ok, sources ok` (cargo-deny 0.20.2, run 2026-09-21):
+  - RUSTSEC-2026-0258, h2 unbounded empty DATA frames (GHSA-q83h-524g-xf6h), locked at `h2 0.4.14`,
+    patched in 0.4.16. Reached through `hyper` -> `reqwest 0.12.28` -> `al-bc`, so it is on the path
+    every Business Central REST call and symbol download takes.
+  - RUSTSEC-2026-0285, TLS 1.3 handshake messages accepted across encryption level boundaries
+    (GHSA-2mjx-qc3c-rqvc), locked at `rustls 0.23.40`, patched in 0.23.45. Reached through
+    `tokio-rustls`/`hyper-rustls`/`tokio-tungstenite`, which is the transport for the native DAP's
+    SignalR connection as well as REST.
+  `deny.toml:9-10` has an empty `ignore` list, so nothing suppresses either. The `cargo-deny` job in
+  ci.yml is therefore failing on every push and PR right now, and `check-release-hygiene.sh
+  --require-ci` waits for that whole workflow to conclude `success`, so no tag can currently be
+  released.
+- fix: `cargo update -p h2 -p rustls` and commit the lock change. `check_versions` in
+  check-release-hygiene.sh already pins the product crates' lock entries, so the update is safe for
+  the version gate.
 - status: open

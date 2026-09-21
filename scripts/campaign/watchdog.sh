@@ -28,7 +28,7 @@ if [ -e "$HEARTBEAT" ]; then
     [ "$age" -lt "$STALE_SECONDS" ] && exit 0
 fi
 
-PROMPT='You are the headless orchestrator of the 7-day improvement campaign for this repository. No user is watching. Read Docs/campaign/README.md and follow its resume protocol exactly: recover stray work, read Docs/campaign/STATE.md, take queue items, dispatch subagents, run the gates, commit, push, update STATE.md and LOG.md. Keep working through queue items until the queue is empty or you are cut off. When the queue runs low, run a new review round and refill it. Follow ~/.claude/CLAUDE.md for all text.'
+PROMPT='You are the headless orchestrator of the 7-day improvement campaign for this repository. No user is watching. Read Docs/campaign/README.md and follow its resume protocol exactly: recover stray work, read Docs/campaign/STATE.md, pick work across the workstreams, dispatch subagents, run the gates, commit, push, update STATE.md and LOG.md. Keep working across the workstreams until you are cut off. When findings run low, run a new review round. Follow ~/.claude/CLAUDE.md for all text.'
 
 cd "$REPO" || exit 1
 for model in "${MODELS[@]}"; do
