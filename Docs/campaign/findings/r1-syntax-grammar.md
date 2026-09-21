@@ -85,7 +85,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
 - fix: match on `.findfirst` / `.findlast` followed by end-of-token (`;`, whitespace,
   `(`, `)` or `t` of `then`), or drive the rule off `member_call_suffix` nodes instead
   of masked line text.
-- status: open
+- status: fixed 01893af7
 
 ### [SIMPLIFY] `line_range` takes an unused `_line` parameter
 - where: crates/al-syntax/src/lint.rs:117
@@ -94,7 +94,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   reads the third argument. Call sites pass either the real line (lint.rs:358) or `""`
   (lint.rs:397 and elsewhere), which reads as if the two cases behave differently.
 - fix: delete the parameter and update the call sites.
-- status: open
+- status: fixed 333faa60
 
 ### [BUG] `sort_members` moves members between objects in a multi-object file
 - where: crates/al-syntax/src/sort.rs:22-31 and 194-277
@@ -238,7 +238,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   correctly uses `end as u32 + 1`, so the two exits disagree about which value is the
   end of the edit.
 - fix: return `end as u32` (and the matching `end_character`) in both branches.
-- status: open
+- status: fixed 89643845
 
 ### [BUG][UNVERIFIED] scanner.c hand-rolls `strlen`/`memcpy` for wasm but calls `strcmp`/`strncmp` unguarded
 - where: tree-sitter-al/src/scanner.c:5-32 vs 296-299, 340, 351, 375, 387, 468, 472,
@@ -271,7 +271,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   the real one. lib.rs:132-137 describes the same code correctly.
 - fix: delete the stale sentence; `extract_object_name` already documents the field-
   first, scan-as-fallback order.
-- status: open
+- status: fixed 520766fa
 
 ### [BUG] al-gen slices the TextMate XML at raw byte offsets
 - where: tree-sitter-al/generator/tools/al-gen/src/main.rs:659-662
