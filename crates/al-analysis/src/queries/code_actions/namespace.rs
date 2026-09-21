@@ -342,9 +342,15 @@ codeunit 50100 "My Codeunit"
         assert!(!using_actions.is_empty(), "Should offer 'Add using' action");
         assert!(using_actions[0].title.contains("Microsoft.Sales"));
 
-        let edit = using_actions[0].edit.as_ref().expect("should have edit");
-        let (_, edits) = &edit.changes[0];
-        assert!(edits[0].new_text.contains("using Microsoft.Sales;"));
+        let updated = super::super::test_support::assert_action_applies_cleanly(
+            al_code,
+            using_actions[0],
+            "add using",
+        );
+        assert!(
+            updated.contains("using Microsoft.Sales;"),
+            "the directive must land in the file: {updated}"
+        );
     }
 
     #[test]

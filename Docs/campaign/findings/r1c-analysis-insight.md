@@ -85,7 +85,7 @@ Listed by neither checklist:
 - severity: medium
 - scenario: `count_object_refs` runs `al_syntax::find_variable_references` over every non-permissionset file, which is a full tree walk each. `compute_over_broad` calls it once per unique grant; `compute_over_granted_rights` then calls it again with the same argument for every `tabledata` grant, recomputing a number the first pass already had. A permission set with 300 tabledata grants over a 2000-file project is 300 x 2000 walks for the first check plus another 300 x 2000 for the second. `collect_observed_writes` (570-611) adds its own quadratic term: for each file it calls `extract_procedure_var_types` and `extract_call_sites` once per procedure name, and each of those re-walks that file's tree from the root to find the procedure.
 - fix: collect every referenced identifier name per file once (`al_syntax::collect_call_site_names` has the same shape and its doc, navigation.rs:291-303, argues exactly this point) into one multiset, then look each grant up in it. Pass the counts from `compute_over_broad` into `compute_over_granted_rights` rather than recomputing them.
-- status: open
+- status: fixed 97c12124 — `al_syntax::count_identifier_occurrences` builds the multiset in one walk and both checks share it. `collect_observed_writes`'s own quadratic term went with 5996424f, which visits each declaration node once.
 
 ### [BUG] The "unknown location" line-0 sentinel lands on the codeunit header anyway
 - where: crates/al-analysis/src/queries/test_diagnostics.rs:92-105, consumed by crates/al-lsp/src/server/diagnostics.rs:749-754 (`test_diag_to_lsp`)
