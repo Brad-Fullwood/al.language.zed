@@ -181,7 +181,7 @@ fn collect_tokens(
     tokens: &mut Vec<(u32, u32, u32, u32)>,
 ) {
     // Pre-build line offsets once so every per-token line lookup is O(1).
-    let line_index = crate::LineIndex::new(source);
+    let line_index = crate::SourceLines::new(source);
 
     let mut stack = Vec::new();
     stack.push(node);
@@ -193,7 +193,7 @@ fn collect_tokens(
             let end = current.end_position();
 
             if start.row == end.row {
-                let line_bytes = line_index.line_bytes(source, start.row);
+                let line_bytes = line_index.line_bytes(start.row);
                 let line_str = std::str::from_utf8(line_bytes).unwrap_or("");
                 let utf16_col = super::byte_col_to_utf16_col(line_str, start.column);
                 let utf16_end = super::byte_col_to_utf16_col(line_str, end.column);
@@ -216,7 +216,7 @@ fn collect_tokens(
                     for (i, line) in text.lines().enumerate() {
                         let row = start.row + i;
                         let byte_col = if i == 0 { start.column } else { 0 };
-                        let line_bytes = line_index.line_bytes(source, row);
+                        let line_bytes = line_index.line_bytes(row);
                         let source_line = std::str::from_utf8(line_bytes).unwrap_or(line);
                         let utf16_col = super::byte_col_to_utf16_col(source_line, byte_col);
                         let utf16_len = line.encode_utf16().count() as u32;

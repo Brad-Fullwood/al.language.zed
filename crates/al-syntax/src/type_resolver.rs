@@ -81,7 +81,7 @@ pub struct TypeResolver<'a> {
     source: &'a [u8],
     /// Byte offset of the start of each line, built lazily so repeated
     /// position→node lookups don't re-scan the file per call.
-    line_index: std::cell::OnceCell<crate::LineIndex>,
+    line_index: std::cell::OnceCell<crate::SourceLines<'a>>,
     /// Memo of `variables_at` results keyed by resolution scope. Bulk
     /// consumers (semantic-token extraction) resolve one receiver per member
     /// token; without this memo every call re-walks the globals, source
@@ -234,14 +234,14 @@ impl<'a> TypeResolver<'a> {
     }
 
     /// Byte-offset table of line starts, built once per resolver.
-    fn line_index(&self) -> &crate::LineIndex {
+    fn line_index(&self) -> &crate::SourceLines<'a> {
         self.line_index
-            .get_or_init(|| crate::LineIndex::new(self.source))
+            .get_or_init(|| crate::SourceLines::new(self.source))
     }
 
     /// Content of line `row` (without its terminator), or `""` out of range.
     fn source_line(&self, row: usize) -> &'a str {
-        self.line_index().line(self.source, row)
+        self.line_index().line(row)
     }
 
     /// Find the object declaration enclosing the given position, for

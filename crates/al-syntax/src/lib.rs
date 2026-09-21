@@ -10,6 +10,7 @@ pub mod lint;
 pub mod navigation;
 pub mod parser;
 pub mod sort;
+pub mod source_lines;
 pub mod symbols;
 pub mod tokens;
 pub mod traversal;
@@ -30,6 +31,7 @@ pub use navigation::{
 };
 pub use parser::{AlParser, ParseResult, SyntaxError};
 pub use sort::sort_members;
+pub use source_lines::{get_source_line, SourceLines};
 pub use symbols::extract_document_symbols;
 pub use tokens::{extract_semantic_tokens, SemanticToken};
 pub use traversal::{walk_tree, walk_tree_until};
@@ -232,71 +234,6 @@ pub fn find_ancestor(
     None
 }
 
-/// Byte offsets of the start of every line in a source file.
-///
-/// One scan of the source buys O(1) line lookup. Building it is worth doing
-/// whenever more than a couple of lines are read: `get_source_line` walks from
-/// byte 0 on every call, so a per-symbol or per-token loop over a large file
-/// is quadratic without it.
-pub struct LineIndex {
-    starts: Vec<usize>,
-}
-
-impl LineIndex {
-    pub fn new(source: &[u8]) -> Self {
-        let starts = std::iter::once(0)
-            .chain(
-                source
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, &b)| b == b'\n')
-                    .map(|(i, _)| i + 1),
-            )
-            .collect();
-        Self { starts }
-    }
-
-    pub fn line_count(&self) -> usize {
-        self.starts.len()
-    }
-
-    /// Byte offset of the first byte of line `row`.
-    pub fn line_start(&self, row: usize) -> Option<usize> {
-        self.starts.get(row).copied()
-    }
-
-    /// Bytes of line `row` including its terminator, or an empty slice when
-    /// `row` is past the end.
-    pub fn line_bytes<'a>(&self, source: &'a [u8], row: usize) -> &'a [u8] {
-        let Some(&start) = self.starts.get(row) else {
-            return &[];
-        };
-        let end = self.starts.get(row + 1).copied().unwrap_or(source.len());
-        source.get(start..end).unwrap_or(&[])
-    }
-
-    /// Text of line `row` with its `\n`/`\r` terminator stripped, or `""` when
-    /// `row` is past the end or the bytes are not valid UTF-8.
-    pub fn line<'a>(&self, source: &'a [u8], row: usize) -> &'a str {
-        std::str::from_utf8(self.line_bytes(source, row))
-            .unwrap_or("")
-            .trim_end_matches(['\n', '\r'])
-    }
-}
-
-/// Return the text of a single source line by zero-based `row` index.
-///
-/// Returns an empty string if `row` is out of range or the bytes are not valid UTF-8.
-/// Uses `splitn` to avoid scanning past the requested line. Callers that read
-/// many lines of the same file should build a [`LineIndex`] instead.
-pub fn get_source_line(source: &[u8], row: usize) -> &str {
-    source
-        .splitn(row + 2, |&b| b == b'\n')
-        .nth(row)
-        .and_then(|b| std::str::from_utf8(b).ok())
-        .unwrap_or("")
-}
-
 /// UTF-16 code unit column of the position `byte_offset` bytes into `source`,
 /// given tree-sitter's byte `column` for the same position.
 ///
@@ -315,61 +252,6 @@ fn utf16_col_at(source: &[u8], byte_offset: usize, column: usize) -> u32 {
         // A position inside a multi-byte character has no UTF-16 column of its
         // own; the byte column is the closest honest answer.
         Err(_) => column as u32,
-    }
-}
-
-/// A source buffer with its line starts precomputed, so looking a line up by
-/// row costs a table index instead of a scan from byte 0.
-///
-/// [`get_source_line`] walks the buffer on every call. A query that asks for
-/// one line per result — inlay hints ask for two per hint, and the client
-/// re-requests them on every scroll — therefore costs
-/// O(results x file_length). Building this once per request makes it linear.
-pub struct SourceLines<'a> {
-    source: &'a [u8],
-    starts: Vec<usize>,
-}
-
-impl<'a> SourceLines<'a> {
-    #[must_use]
-    pub fn new(source: &'a [u8]) -> Self {
-        let starts = std::iter::once(0)
-            .chain(
-                source
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, &byte)| byte == b'\n')
-                    .map(|(index, _)| index + 1),
-            )
-            .collect();
-        Self { source, starts }
-    }
-
-    /// Text of line `row` without its terminator.
-    ///
-    /// Empty for a row past the end of the buffer or for bytes that are not
-    /// valid UTF-8, matching [`get_source_line`].
-    #[must_use]
-    pub fn line(&self, row: usize) -> &'a str {
-        let Some(&start) = self.starts.get(row) else {
-            return "";
-        };
-        let end = self
-            .starts
-            .get(row + 1)
-            .map_or(self.source.len(), |next| next - 1);
-        std::str::from_utf8(&self.source[start..end.max(start)]).unwrap_or("")
-    }
-
-    /// Number of lines, counting a trailing newline as ending the last line.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.starts.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.source.is_empty()
     }
 }
 
@@ -542,42 +424,5 @@ mod delimiter_tests {
         assert_eq!(count_net_delimiters("{ /* } */", '{', '}'), 1);
         // Unterminated `/*` swallows the rest of the line.
         assert_eq!(count_net_delimiters("x; /* (", '(', ')'), 0);
-    }
-}
-
-#[cfg(test)]
-mod source_lines_tests {
-    use super::{get_source_line, SourceLines};
-
-    /// The index must answer exactly what `get_source_line` answers, for every
-    /// row and for the edges: out of range, invalid UTF-8, CRLF, a trailing
-    /// newline and an empty buffer.
-    #[test]
-    fn source_lines_index_matches_the_scanning_lookup() {
-        let buffers: [&[u8]; 6] = [
-            b"line0\nline1\nline2",
-            b"line0\nline1\n",
-            b"only-one-line",
-            b"",
-            b"crlf\r\nsecond\r\n",
-            b"ok\n\xff\xfe\ntail",
-        ];
-        for source in buffers {
-            let index = SourceLines::new(source);
-            for row in 0..10 {
-                assert_eq!(
-                    index.line(row),
-                    get_source_line(source, row),
-                    "row {row} of {source:?}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn source_lines_reports_its_line_count() {
-        assert_eq!(SourceLines::new(b"a\nb\nc").len(), 3);
-        assert_eq!(SourceLines::new(b"a\nb\n").len(), 3);
-        assert!(SourceLines::new(b"").is_empty());
     }
 }
