@@ -235,6 +235,12 @@ pub struct SymbolIndexMemoryStats {
     pub lookup_index_bytes: usize,
     pub path_cache_bytes: usize,
     pub composed_cache_bytes: usize,
+    /// Process-global `.app` source indexes. Not owned by this index, but
+    /// filled and emptied by package loading, and large enough for a
+    /// source-bearing Base Application that leaving it out made the report
+    /// understate the process by more than it reported.
+    pub package_source_index_bytes: usize,
+    pub package_source_index_count: usize,
     pub tracked_bytes: usize,
 }
 
@@ -504,15 +510,19 @@ impl SymbolIndex {
             })
             .sum::<usize>();
 
+        let package_source_index_bytes = super::source_index::cached_memory_bytes();
         SymbolIndexMemoryStats {
             symbol_payload_bytes,
             lookup_index_bytes,
             path_cache_bytes,
             composed_cache_bytes,
+            package_source_index_bytes,
+            package_source_index_count: super::source_index::cached_index_count(),
             tracked_bytes: symbol_payload_bytes
                 + lookup_index_bytes
                 + path_cache_bytes
-                + composed_cache_bytes,
+                + composed_cache_bytes
+                + package_source_index_bytes,
         }
     }
 
@@ -1221,6 +1231,7 @@ impl SymbolIndex {
         if package_names.is_empty() {
             return;
         }
+        self.drop_source_indexes(|record| package_names.contains(&record.1));
         let to_remove: Vec<(usize, Arc<SymbolEntry>)> = self
             .all
             .iter()
@@ -1247,6 +1258,7 @@ impl SymbolIndex {
         if identities.is_empty() {
             return;
         }
+        self.drop_source_indexes(|record| identities.contains(&record.0));
         let to_remove: Vec<(usize, Arc<SymbolEntry>)> = self
             .all
             .iter()
@@ -1280,6 +1292,21 @@ impl SymbolIndex {
             !removed_names.contains(package) || surviving_names.contains(package)
         });
         self.remove_selected_entries(to_remove);
+    }
+
+    /// Release the process-global `.app` source index of every package this
+    /// removal drops. Without this the index outlives the symbols it belongs
+    /// to for the life of the process.
+    fn drop_source_indexes(&self, selected: impl Fn(&(String, String)) -> bool) {
+        let paths: Vec<std::path::PathBuf> = self
+            .app_paths
+            .iter()
+            .filter(|record| selected(&(record.key().clone(), record.value().name_key.clone())))
+            .map(|record| record.value().path.clone())
+            .collect();
+        for path in paths {
+            super::source_index::remove_source_index(&path);
+        }
     }
 
     /// Shared core of both removal flavors: prune the primary map and every

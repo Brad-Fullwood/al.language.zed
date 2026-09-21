@@ -27,8 +27,24 @@ const MAX_TOTAL_EXTRACTED_SOURCE_BYTES: u64 = 1_073_741_824; // 1 GiB
 /// concurrent callers for the **same** path serialise on building the index
 /// (double-checked locking) while callers for **different** paths remain
 /// independent.
+///
+/// The cache is process-global and keyed by canonical path, so a session that
+/// re-points `al.packageCachePath` or downloads successive symbol versions
+/// would otherwise accumulate one full index per path ever seen. It is
+/// bounded: [`MAX_CACHED_SOURCE_INDEXES`] entries, least recently used first
+/// out, and a workspace that drops packages removes their entries outright.
 static SOURCE_INDEX_CACHE: OnceLock<DashMap<PathBuf, Arc<AppSourceIndex>>> = OnceLock::new();
 static SOURCE_BUILD_LOCKS: OnceLock<DashMap<PathBuf, Arc<Mutex<()>>>> = OnceLock::new();
+static SOURCE_INDEX_CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A workspace loads its `.alpackages` plus the Microsoft base symbols, so the
+/// working set is tens of packages. The cap is what keeps a long session from
+/// holding an index per package version it has ever seen.
+pub const MAX_CACHED_SOURCE_INDEXES: usize = 64;
+
+fn next_tick() -> u64 {
+    SOURCE_INDEX_CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Acquire a payload-free source-index build lock.
 ///
@@ -52,6 +68,8 @@ fn lock_source_build(lock: &Mutex<()>) -> std::sync::MutexGuard<'_, ()> {
 pub struct AppSourceIndex {
     modified: SystemTime,
     file_size: u64,
+    /// Tick of the last `get_or_build`/`get_cached` hit, for eviction order.
+    last_used: std::sync::atomic::AtomicU64,
     app_path: PathBuf,
     by_kind_id: HashMap<(ObjectKind, i32), String>,
     by_kind_name: HashMap<(ObjectKind, String), String>,
@@ -181,11 +199,47 @@ impl AppSourceIndex {
         Ok(Self {
             modified,
             file_size,
+            last_used: std::sync::atomic::AtomicU64::new(next_tick()),
             app_path: app_path.to_path_buf(),
             by_kind_id,
             by_kind_name,
             source_paths,
         })
+    }
+
+    fn touch(&self) {
+        self.last_used
+            .store(next_tick(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn last_used(&self) -> u64 {
+        self.last_used.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Heap held by this index: both lookup maps and the archive path list.
+    pub fn owned_bytes(&self) -> usize {
+        let by_kind_id: usize = self
+            .by_kind_id
+            .iter()
+            .map(|(key, value)| std::mem::size_of_val(key) + value.capacity())
+            .sum();
+        let by_kind_name: usize = self
+            .by_kind_name
+            .iter()
+            .map(|((_, name), value)| {
+                std::mem::size_of::<(ObjectKind, String)>() + name.capacity() + value.capacity()
+            })
+            .sum();
+        let source_paths: usize = self
+            .source_paths
+            .iter()
+            .map(|path| std::mem::size_of::<String>() + path.capacity())
+            .sum();
+        std::mem::size_of::<Self>()
+            + self.app_path.as_os_str().len()
+            + by_kind_id
+            + by_kind_name
+            + source_paths
     }
 
     pub fn source_path_for_entry(&self, entry: &SymbolEntry) -> Option<&str> {
@@ -352,6 +406,7 @@ pub fn get_or_build(app_path: &Path) -> io::Result<Arc<AppSourceIndex>> {
     };
 
     if let Some(index) = fresh()? {
+        index.touch();
         return Ok(index);
     }
 
@@ -367,12 +422,74 @@ pub fn get_or_build(app_path: &Path) -> io::Result<Arc<AppSourceIndex>> {
     let _guard = lock_source_build(&lock_arc);
 
     if let Some(index) = fresh()? {
+        index.touch();
         return Ok(index);
     }
 
     let built = Arc::new(AppSourceIndex::from_app_path(app_path)?);
+    built.touch();
     cache.insert(app_path.to_path_buf(), built.clone());
+    evict_until_within_cap(cache, app_path);
     Ok(built)
+}
+
+/// Drop least recently used entries until the cache is back within its cap.
+/// `keep` is the entry the caller just built, which must survive its own
+/// insertion however full the cache was.
+fn evict_until_within_cap(cache: &DashMap<PathBuf, Arc<AppSourceIndex>>, keep: &Path) {
+    while cache.len() > MAX_CACHED_SOURCE_INDEXES {
+        let victim = cache
+            .iter()
+            .filter(|entry| entry.key() != keep)
+            .min_by_key(|entry| entry.value().last_used())
+            .map(|entry| entry.key().clone());
+        let Some(victim) = victim else {
+            return;
+        };
+        cache.remove(&victim);
+        if let Some(locks) = SOURCE_BUILD_LOCKS.get() {
+            locks.remove(&victim);
+        }
+        tracing::debug!(
+            path = %victim.display(),
+            "evicted least recently used .app source index"
+        );
+    }
+}
+
+/// Drop the cached index for one `.app`, if any.
+///
+/// Called when a workspace unloads or replaces a package: the index holds two
+/// maps plus one archive path per embedded `.al`, which for a source-bearing
+/// Base Application is tens of thousands of entries.
+pub fn remove_source_index(app_path: &Path) {
+    let canonical = std::fs::canonicalize(app_path).unwrap_or_else(|_| app_path.to_path_buf());
+    for key in [canonical, app_path.to_path_buf()] {
+        if let Some(cache) = SOURCE_INDEX_CACHE.get() {
+            cache.remove(&key);
+        }
+        if let Some(locks) = SOURCE_BUILD_LOCKS.get() {
+            locks.remove(&key);
+        }
+    }
+}
+
+/// Bytes held by every cached source index, for memory reporting.
+pub fn cached_memory_bytes() -> usize {
+    SOURCE_INDEX_CACHE
+        .get()
+        .map(|cache| {
+            cache
+                .iter()
+                .map(|entry| entry.key().as_os_str().len() + entry.value().owned_bytes())
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// Number of cached source indexes.
+pub fn cached_index_count() -> usize {
+    SOURCE_INDEX_CACHE.get().map(DashMap::len).unwrap_or(0)
 }
 
 /// Return an already-built source index without touching the filesystem.
@@ -381,10 +498,12 @@ pub fn get_or_build(app_path: &Path) -> io::Result<Arc<AppSourceIndex>> {
 /// index. User-facing search and package-summary requests use this lookup so a
 /// cold request can never trigger an archive scan on the daemon thread.
 pub fn get_cached(app_path: &Path) -> Option<Arc<AppSourceIndex>> {
-    SOURCE_INDEX_CACHE
+    let index = SOURCE_INDEX_CACHE
         .get()?
         .get(app_path)
-        .map(|entry| Arc::clone(entry.value()))
+        .map(|entry| Arc::clone(entry.value()))?;
+    index.touch();
+    Some(index)
 }
 
 pub fn clear_source_index_cache() {
@@ -849,6 +968,7 @@ mod tests {
         AppSourceIndex {
             modified: SystemTime::UNIX_EPOCH,
             file_size: 1,
+            last_used: std::sync::atomic::AtomicU64::new(0),
             app_path: PathBuf::new(),
             by_kind_id,
             by_kind_name,
@@ -1349,6 +1469,56 @@ mod tests {
             second.source_path_for_entry(&entry(ObjectKind::Codeunit, 1, "V1")),
             None,
             "stale V1 object must be gone after rebuild"
+        );
+
+        clear_source_index_cache();
+    }
+
+    /// A long session that re-points the package cache path, or downloads
+    /// successive symbol versions, must not accumulate one index per path.
+    #[test]
+    #[serial_test::serial]
+    fn the_source_index_cache_is_bounded() {
+        clear_source_index_cache();
+
+        let mut paths = Vec::new();
+        for i in 0..(MAX_CACHED_SOURCE_INDEXES + 8) {
+            let path = write_app(&[(
+                "src/Obj.al",
+                Box::leak(format!("codeunit {} Obj{}\n{{\n}}", i + 1, i).into_boxed_str()),
+            )]);
+            get_or_build(&path).unwrap();
+            paths.push(path);
+        }
+
+        assert!(
+            cached_index_count() <= MAX_CACHED_SOURCE_INDEXES,
+            "cache grew to {} entries",
+            cached_index_count()
+        );
+        assert!(
+            get_cached(&std::fs::canonicalize(paths.last().unwrap()).unwrap()).is_some(),
+            "the most recently built index must survive"
+        );
+
+        clear_source_index_cache();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn removing_a_package_releases_its_source_index() {
+        clear_source_index_cache();
+
+        let path = write_app(&[("src/Gone.al", "codeunit 7 Gone\n{\n}")]);
+        let canonical = std::fs::canonicalize(&path).unwrap();
+        get_or_build(&path).unwrap();
+        assert!(get_cached(&canonical).is_some());
+        assert!(cached_memory_bytes() > 0);
+
+        remove_source_index(&path);
+        assert!(
+            get_cached(&canonical).is_none(),
+            "an unloaded package must not keep its source index"
         );
 
         clear_source_index_cache();
