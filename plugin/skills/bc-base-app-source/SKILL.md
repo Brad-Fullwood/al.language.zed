@@ -1,6 +1,6 @@
 ---
 name: bc-base-app-source
-description: Read the real AL source of a Business Central procedure, trigger or object, including code that only exists inside a dependency .app package such as Base Application, System Application or a third-party app. Use when asked what a standard BC procedure does, how Microsoft implements something, or to see the body of a procedure the workspace does not contain. Never decompile or unzip a .app file.
+description: Use whenever you need to read the AL source or body of a Business Central procedure, trigger or object - what a standard BC procedure does, how Microsoft implements something, show me the code for procedure P. Works for workspace code and for code that only exists inside a .app package such as Base Application, System Application or a third-party app. Use it instead of unzipping or decompiling a .app, and instead of grepping .al files for a procedure body.
 ---
 
 # Read AL source, including from .app packages

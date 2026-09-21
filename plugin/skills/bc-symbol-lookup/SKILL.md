@@ -1,6 +1,6 @@
 ---
 name: bc-symbol-lookup
-description: Find where a Business Central table, field, page, codeunit, enum, interface or procedure is defined, which app defines object N, what fields a table has, or what values an enum accepts, including inside dependency .app packages. Use whenever you need to locate a BC or AL symbol, instead of unzipping .app files, grepping .alpackages, or searching the workspace for an object declaration.
+description: Use for any question about where an AL or Business Central object lives - where a table, field, page, codeunit, enum, interface or procedure is defined, which app or extension defines object N, what fields a table has, what values an enum accepts, what procedures a codeunit has. Answers from the al-lsp symbol index in milliseconds, for workspace objects and for dependency .app packages alike. Use it instead of find, grep, ripgrep, Glob, unzipping a .app, or opening .al files to locate a declaration.
 ---
 
 # Find an AL symbol

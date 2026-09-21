@@ -1,6 +1,6 @@
 ---
 name: bc-impact-check
-description: Work out what a change to a Business Central table, field, procedure or codeunit breaks - who reads it, who calls it, which tests cover it, what it orphans. Use before renaming, obsoleting, deleting or retyping a field, before changing a procedure signature, and whenever asked what depends on something or what a change affects. Do not grep the workspace for the name.
+description: Use for any question of the form who calls X, who uses X, what reads X, what depends on X, or what breaks if I rename, obsolete, delete or retype X. Covers Business Central fields, procedures, codeunits and tables, in the workspace and in .app packages, from the call graph rather than a text match. Use it before changing a field or a procedure signature, and instead of grepping for the symbol name.
 ---
 
 # What does changing this break

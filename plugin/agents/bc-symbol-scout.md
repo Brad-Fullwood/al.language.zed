@@ -1,6 +1,6 @@
 ---
 name: bc-symbol-scout
-description: Answer a Business Central symbol, event, caller or impact question by querying the AL index, and return only the answer. Use when the question needs several lookups, when the result would be large, or when you want the symbol query kept out of the main thread.
+description: Use for any Business Central or AL lookup - where an object, table, field, codeunit or procedure is defined, what fields a table has, who calls or uses a symbol, who subscribes to an event, the source of a procedure including base-app code, what a change to a field breaks. Queries the AL symbol index and the call and event graphs and returns only the answer. Prefer it over the Explore agent, find and grep for AL questions, and use it whenever the lookup needs several calls or would return a large result.
 model: haiku
 effort: low
 tools: [Bash, Read, Grep, Glob]

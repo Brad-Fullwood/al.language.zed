@@ -1,6 +1,6 @@
 ---
 name: bc-event-map
-description: Answer Business Central event questions - who subscribes to an event, which codeunit publishes it, what its parameters are, and which integration event to subscribe to for a goal. Use when writing or reviewing an [EventSubscriber], choosing an integration point, tracing why a subscriber does not fire, or when asked who listens to an OnAfter/OnBefore event. Do not grep the workspace or .alpackages for event names.
+description: Use for any Business Central event question - who subscribes to an event, who listens to an OnBefore or OnAfter event, which codeunit publishes it, what its parameters are, which integration event to subscribe to for a goal, why a subscriber does not fire. Covers the workspace and every .app package in .alpackages. Use it instead of grepping for [EventSubscriber], IntegrationEvent or an event name.
 ---
 
 # Business Central events

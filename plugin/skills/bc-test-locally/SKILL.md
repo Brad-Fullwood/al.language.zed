@@ -1,6 +1,6 @@
 ---
 name: bc-test-locally
-description: Run, write or check Business Central AL tests without a BC server, using the built-in Rust interpreter. Use when asked to run AL tests, to find which tests cover a change or an object, to see which tests need a live BC tenant, or to check test coverage of an extension. Do not tell the user tests need a published app before checking the routing.
+description: Use for any AL or Business Central test request - run the tests, write a test, find which tests cover a change or an object, check test coverage, or find out which tests need a live BC tenant. Most AL tests run locally on a built-in Rust interpreter with no BC server and no published app. Use it instead of telling the user a test needs a deployed extension, and instead of running a compile to check a test.
 ---
 
 # Run AL tests locally

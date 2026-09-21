@@ -1,6 +1,6 @@
 ---
 name: bc-upgrade-impact
-description: Find what a Business Central dependency upgrade breaks - removed or obsoleted symbols, changed signatures, subscribers pointing at events that no longer exist, version conflicts between .app packages. Use when moving to a new BC release, when .alpackages holds more than one version of an app, when a compile starts failing after a symbol download, or when asked what a version bump breaks.
+description: Use when moving a Business Central extension to a new BC release or dependency version, and whenever asked what a version bump breaks. Finds removed or obsoleted symbols, changed signatures, subscribers pointing at events that no longer exist, and version conflicts between the .app packages in .alpackages. Use it when a compile starts failing after a symbol download, or when .alpackages holds two versions of the same app, instead of diffing .app files by hand.
 ---
 
 # What a dependency upgrade breaks

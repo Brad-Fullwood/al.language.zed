@@ -1,6 +1,6 @@
 ---
 name: bc-object-id-allocator
-description: Pick the next free Business Central object ID inside the app's declared idRanges, or the next free field number in a table or table extension. Use before creating any new table, page, codeunit, report, query, xmlport, enum, interface or permission set, and before adding fields to a table or table extension. A duplicate or out-of-range ID fails the compile or the deploy.
+description: Use before creating any new Business Central object or adding a field, and whenever asked which object ID or field number is free. Picks the next free ID inside app.json's idRanges for a table, page, codeunit, report, query, xmlport, enum, interface, permission set or any extension kind, and the next free field number in a table or table extension. A duplicate or out-of-range ID fails the compile or the deploy, so do not guess one.
 ---
 
 # Pick a free object ID or field number

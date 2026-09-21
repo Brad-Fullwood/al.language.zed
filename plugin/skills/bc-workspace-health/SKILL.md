@@ -1,6 +1,6 @@
 ---
 name: bc-workspace-health
-description: Audit a Business Central extension before a build or deploy - duplicate or out-of-range object IDs, SQL anti-patterns, dead code, missing ApplicationArea, DataClassification or tooltips, permission set coverage, complexity and duplicate code. Use before compiling, before deploying, when asked to clean up or review an AL app, or when a cop or analyzer warning needs fixing.
+description: Use before compiling or deploying a Business Central extension, and whenever asked to clean up, audit or review an AL app. Checks duplicate or out-of-range object IDs, SQL anti-patterns, dead code, missing ApplicationArea, DataClassification or tooltips, permission set coverage, complexity and duplicate code, in milliseconds and without a compile. Use it when a lint, cop or analyzer warning needs fixing.
 ---
 
 # Audit an AL extension
