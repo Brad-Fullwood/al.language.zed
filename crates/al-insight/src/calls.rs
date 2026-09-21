@@ -181,6 +181,46 @@ pub fn extract_procedure_var_types(
     result
 }
 
+/// [`extract_procedure_var_types`] for a declaration node the caller already
+/// holds.
+///
+/// AL repeats declaration names constantly — every field has its own
+/// `trigger OnValidate()`, every page action its own `trigger OnAction()`. A
+/// name-keyed lookup answers for the first one only, so a caller that must
+/// visit every declaration walks the declarations itself and passes each node
+/// here.
+pub fn procedure_var_types_in_node(
+    proc_node: tree_sitter::Node<'_>,
+    source: &str,
+) -> HashMap<String, String> {
+    let mut result = HashMap::new();
+    collect_record_vars_from_procedure_node(proc_node, source.as_bytes(), &mut result);
+    result
+}
+
+/// Every `procedure_declaration`, `trigger_declaration` and
+/// `event_procedure_declaration` node in the tree, in no particular order.
+///
+/// Unlike a name-keyed lookup this returns repeated names separately, so a
+/// write inside the second `OnValidate` of a table is visible.
+pub fn collect_declaration_nodes<'a>(tree: &'a tree_sitter::Tree) -> Vec<tree_sitter::Node<'a>> {
+    let mut declarations = Vec::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration" => {
+                declarations.push(node);
+                // AL has no nested procedures, so the body holds no more.
+            }
+            _ => {
+                let mut cursor = node.walk();
+                stack.extend(node.children(&mut cursor));
+            }
+        }
+    }
+    declarations
+}
+
 fn find_procedure_node<'a>(
     tree: &'a tree_sitter::Tree,
     source: &[u8],
@@ -516,6 +556,21 @@ pub fn extract_call_sites(
         }
     }
 
+    sites
+}
+
+/// [`extract_call_sites`] for a declaration node the caller already holds.
+///
+/// See [`procedure_var_types_in_node`] for why the node-taking form exists.
+pub fn call_sites_in_node(proc_node: tree_sitter::Node<'_>, source: &str) -> Vec<CallSite> {
+    let source_bytes = source.as_bytes();
+    let mut sites = Vec::new();
+    let mut cursor = proc_node.walk();
+    for child in proc_node.children(&mut cursor) {
+        if child.kind() == "begin_end_block" {
+            collect_call_sites_from_block(child, source_bytes, &mut sites);
+        }
+    }
     sites
 }
 

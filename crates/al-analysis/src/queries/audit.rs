@@ -21,7 +21,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
-use al_insight::calls::{extract_call_sites, extract_procedure_var_types, CallSite, RecordOp};
+use al_insight::calls::{CallSite, RecordOp};
 
 use serde::Serialize;
 
@@ -204,9 +204,10 @@ pub struct OverBroadGrantEntry {
 /// **Precision: write-site over-approximation in the safe direction.** A right
 /// (I/M/D) is reported as over-granted only when **no** matching write site is
 /// found anywhere in the workspace — `Insert` for `I`; `Modify`/`ModifyAll`/
-/// `Rename` for `M`; `Delete`/`DeleteAll` for `D`. Writes via `RecordRef`,
-/// dynamically-dispatched code, base-app/other-extension code, or
-/// repeated-named triggers the per-procedure scan does not revisit are **not**
+/// `Rename` for `M`; `Delete`/`DeleteAll` for `D`. Every trigger and procedure
+/// declaration is scanned, including repeated names such as a per-field
+/// `OnValidate` or a per-action `OnAction`. Writes via `RecordRef`,
+/// dynamically-dispatched code, or base-app/other-extension code are **not**
 /// detected, so the over-grant set is a lower bound (false negatives possible,
 /// false positives avoided). Read (`R`) is never flagged: a read cannot be
 /// disproven statically, and the table is referenced by construction.
@@ -497,7 +498,7 @@ fn compute_over_granted_rights(
     scan_files: &[(String, tree_sitter::Tree)],
     perm_sets: &[(String, Vec<PermissionGrant>)],
     declared_names: &HashSet<String>,
-    observed_writes: &HashMap<String, BTreeSet<char>>,
+    observed_writes: &ObservedWrites,
 ) -> Vec<OverGrantedRightsEntry> {
     let mut out = Vec::new();
     for (set_name, grants) in perm_sets {
@@ -543,10 +544,18 @@ fn compute_over_granted_rights(
             }
 
             let observed = observed_writes
+                .by_table
                 .get(&object_lower)
                 .cloned()
                 .unwrap_or_default();
-            let over: BTreeSet<char> = granted_imd.difference(&observed).copied().collect();
+            // A right exercised through an unresolvable receiver might be
+            // exercised on this table. Keep it rather than recommend its
+            // removal.
+            let over: BTreeSet<char> = granted_imd
+                .difference(&observed)
+                .filter(|right| !observed_writes.unresolved.contains(right))
+                .copied()
+                .collect();
             if over.is_empty() {
                 continue;
             }
@@ -600,18 +609,32 @@ fn compute_over_granted_rights(
 /// `Rename` variants (not in `al_insight`'s `RecordOp`) arrive as
 /// `CallSite::MemberCall` and are classified here. `Validate` and read ops
 /// (`Get`/`Find*`) are not persistence writes and are ignored.
-fn collect_observed_writes(
-    scan_files: &[(String, tree_sitter::Tree)],
-) -> HashMap<String, BTreeSet<char>> {
-    let mut writes: HashMap<String, BTreeSet<char>> = HashMap::new();
+///
+/// A write whose receiver has no resolvable `Record "T"` type — a `RecordRef`,
+/// or a variable declared in a form the type scan does not read — names an
+/// unknown table. Its right goes into [`ObservedWrites::unresolved`] and is
+/// then never reported as removable for *any* table: the audit must not tell a
+/// developer to drop a permission the code might be using.
+#[derive(Debug, Default)]
+struct ObservedWrites {
+    /// Lowercase table name -> rights with a write site resolved to that table.
+    by_table: HashMap<String, BTreeSet<char>>,
+    /// Rights exercised through a receiver whose table could not be resolved.
+    unresolved: BTreeSet<char>,
+}
+
+fn collect_observed_writes(scan_files: &[(String, tree_sitter::Tree)]) -> ObservedWrites {
+    let mut writes = ObservedWrites::default();
 
     for (text, tree) in scan_files {
-        for proc_name in collect_procedure_names(tree, text) {
-            let var_types = extract_procedure_var_types(tree, text, &proc_name);
-            if var_types.is_empty() {
-                continue;
-            }
-            for site in extract_call_sites(tree, text, &proc_name) {
+        // Every declaration node, not every distinct declaration *name*. AL
+        // repeats trigger names constantly (one `OnValidate` per field, one
+        // `OnAction` per action), and a name-keyed lookup answers for the first
+        // one only, so a write in any later one was invisible and its right was
+        // then reported as removable.
+        for proc_node in al_insight::calls::collect_declaration_nodes(tree) {
+            let var_types = al_insight::calls::procedure_var_types_in_node(proc_node, text);
+            for site in al_insight::calls::call_sites_in_node(proc_node, text) {
                 let (variable, right) = match &site {
                     CallSite::RecordOp { variable, op, .. } => match op {
                         RecordOp::Insert => (variable, 'I'),
@@ -630,11 +653,17 @@ fn collect_observed_writes(
                     _ => continue,
                 };
 
-                if let Some(table) = var_types.get(&variable.to_lowercase()) {
-                    writes
-                        .entry(table.to_lowercase())
-                        .or_default()
-                        .insert(right);
+                match var_types.get(&variable.to_lowercase()) {
+                    Some(table) => {
+                        writes
+                            .by_table
+                            .entry(table.to_lowercase())
+                            .or_default()
+                            .insert(right);
+                    }
+                    None => {
+                        writes.unresolved.insert(right);
+                    }
                 }
             }
         }
@@ -654,39 +683,6 @@ fn write_right_for_method(method: &str) -> Option<char> {
         "deleteall" => Some('D'),
         _ => None,
     }
-}
-
-/// Collect the names of all procedure/trigger declarations in a parse tree.
-///
-/// Names feed the per-procedure `al_insight::calls` extractors. Duplicate names
-/// (e.g. repeated `OnValidate` / `OnAction` triggers) are de-duplicated; the
-/// name-keyed extractors only revisit the first occurrence, which is the
-/// documented precision limit of the right-level check.
-fn collect_procedure_names(tree: &tree_sitter::Tree, text: &str) -> Vec<String> {
-    let bytes = text.as_bytes();
-    let mut names = Vec::new();
-    let mut seen = HashSet::new();
-    let mut stack = vec![tree.root_node()];
-    while let Some(node) = stack.pop() {
-        match node.kind() {
-            "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration" => {
-                if let Some(name_node) = node.child_by_field_name("name") {
-                    if let Ok(t) = name_node.utf8_text(bytes) {
-                        let clean = t.trim_matches('"').trim().to_string();
-                        if !clean.is_empty() && seen.insert(clean.to_lowercase()) {
-                            names.push(clean);
-                        }
-                    }
-                }
-                // Do not descend into the body — no nested procedures in AL.
-            }
-            _ => {
-                let mut cursor = node.walk();
-                stack.extend(node.children(&mut cursor));
-            }
-        }
-    }
-    names
 }
 
 /// Read the `Permissions` property of a permission-set object.
@@ -1378,6 +1374,188 @@ mod tests {
     }
 
     // ---- right-level (RIMDX) over-grant ----------------------
+
+    /// AL repeats trigger names: every page action declares its own
+    /// `OnAction`. A write in any of them must count, or the audit tells the
+    /// developer to drop a permission the page needs and the action fails at
+    /// runtime.
+    #[test]
+    fn a_write_in_a_repeated_trigger_name_is_observed() {
+        let ws = workspace_with(vec![
+            (
+                "/src/ShipLog.al",
+                r#"table 50100 "Ship Log"
+{
+    fields { field(1; "Entry No."; Integer) { } }
+}"#,
+            ),
+            (
+                "/src/ShipCard.al",
+                r#"page 50101 "Ship Card"
+{
+    PageType = Card;
+
+    actions
+    {
+        area(Processing)
+        {
+            action(Preview)
+            {
+                trigger OnAction()
+                var
+                    L: Record "Ship Log";
+                begin
+                    if L.FindFirst() then
+                        Message('x');
+                end;
+            }
+            action(Post)
+            {
+                trigger OnAction()
+                var
+                    L: Record "Ship Log";
+                begin
+                    L.Insert();
+                end;
+            }
+        }
+    }
+}"#,
+            ),
+            (
+                "/src/Perms.al",
+                r#"permissionset 50102 "Ship Perms"
+{
+    Permissions = tabledata "Ship Log" = RIMD;
+}"#,
+            ),
+        ]);
+
+        let report = permission_set_audit(&ws).unwrap();
+        let entry = report
+            .over_granted_rights
+            .iter()
+            .find(|entry| entry.object == "Ship Log")
+            .expect("M and D are genuinely unused, so the table is still reported");
+        assert!(
+            !entry.over_granted.contains('I'),
+            "the Insert in the second OnAction is a write site: {entry:?}"
+        );
+        assert!(entry.observed_rights.contains('I'));
+    }
+
+    #[test]
+    fn a_write_in_a_repeated_field_trigger_is_observed() {
+        let ws = workspace_with(vec![
+            (
+                "/src/Audit.al",
+                r#"table 50100 "Change Audit"
+{
+    fields { field(1; "Entry No."; Integer) { } }
+}"#,
+            ),
+            (
+                "/src/Doc.al",
+                r#"table 50101 "Ship Doc"
+{
+    fields
+    {
+        field(1; "No."; Code[20])
+        {
+            trigger OnValidate()
+            var
+                A: Record "Change Audit";
+            begin
+                if A.FindLast() then
+                    Message('x');
+            end;
+        }
+        field(2; Status; Integer)
+        {
+            trigger OnValidate()
+            var
+                A: Record "Change Audit";
+            begin
+                A.DeleteAll();
+            end;
+        }
+    }
+}"#,
+            ),
+            (
+                "/src/Perms.al",
+                r#"permissionset 50102 "Doc Perms"
+{
+    Permissions = tabledata "Change Audit" = RD;
+}"#,
+            ),
+        ]);
+
+        let report = permission_set_audit(&ws).unwrap();
+        assert!(
+            report
+                .over_granted_rights
+                .iter()
+                .all(|entry| entry.object != "Change Audit"),
+            "the DeleteAll in the second OnValidate covers D: {:?}",
+            report.over_granted_rights
+        );
+    }
+
+    /// A `RecordRef` write names a table the scan cannot resolve, so the right
+    /// it exercises must not be recommended for removal anywhere.
+    #[test]
+    fn a_write_through_an_unresolvable_receiver_keeps_the_right() {
+        let ws = workspace_with(vec![
+            (
+                "/src/SalesDoc.al",
+                r#"table 50100 "Sales Doc"
+{
+    fields { field(1; "No."; Code[20]) { } }
+}"#,
+            ),
+            (
+                "/src/Writer.al",
+                r#"codeunit 50101 "Doc Writer"
+{
+    procedure ReadIt()
+    var
+        Rec: Record "Sales Doc";
+    begin
+        if Rec.Get('X') then
+            Message(Rec."No.");
+    end;
+
+    procedure WriteBlind()
+    var
+        RRef: RecordRef;
+    begin
+        RRef.Open(50100);
+        RRef.Insert();
+    end;
+}"#,
+            ),
+            (
+                "/src/Perms.al",
+                r#"permissionset 50102 "Doc Perms"
+{
+    Permissions = TableData "Sales Doc" = RIMD;
+}"#,
+            ),
+        ]);
+
+        let report = permission_set_audit(&ws).unwrap();
+        let entry = report
+            .over_granted_rights
+            .iter()
+            .find(|entry| entry.object == "Sales Doc")
+            .expect("M and D have no write site at all, so the table is still reported");
+        assert!(
+            !entry.over_granted.contains('I'),
+            "the RecordRef Insert could be this table: {entry:?}"
+        );
+        assert_eq!(entry.over_granted, "MD");
+    }
 
     /// A table granted `RIMD` that the workspace only *reads* (via `Get`) must
     /// have its Insert/Modify/Delete rights flagged as over-granted — and `R`

@@ -62,7 +62,7 @@ Listed by neither checklist:
 - severity: high
 - scenario: AL's `Permissions` property accepts `system` as an object type alongside tabledata/table/report/codeunit/xmlport/page/query, and real permission sets use it: `Permissions = tabledata Customer = RIMD, system "Tools, Debugger" = X;`. `parse_permission_clause` matches the lowercased type against a seven-entry list with no `system` arm, so the `other` arm returns `unsupported permission object type 'system'`. `extract_permission_grants` turns that into `AuditError::InvalidSource`, and `permission_set_audit` returns `Err` on the `?` at line 277. One `system` grant anywhere in the project therefore takes down coverage, over-broad and over-granted-rights for the entire workspace, not just that one clause. The rights check makes it worse: `system` grants are written `= X`, which the non-tabledata branch would accept, so only the type list is in the way.
 - fix: add `"system" => "System"` to the type match and skip system grants in the usage scans (they have no workspace object to reference). More generally, collect per-clause parse failures into the report instead of aborting the audit, the way `whole_workspace_audits_skip_malformed_source` (audit.rs:1116-1135) already does for unparsable files.
-- status: open
+- status: fixed 401e5022 — `system` parses and is skipped in the usage scans, and any clause that still fails degrades on its own into a new `parseIssues` report section instead of aborting the audit.
 
 ### [BUG] Over-granted-rights reports rights that are in use when the write sits in a repeated-name trigger
 - where: crates/al-analysis/src/queries/audit.rs:570-611 (`collect_observed_writes`) and 626-657 (`collect_procedure_names`)
