@@ -147,7 +147,7 @@ Insight:
 - severity: medium
 - scenario: `collect_permissions` walks every indexed file and returns `Err(PermissionCollectionError::ParseSource)` on the first file whose cached tree has an error node. A single scratch or work-in-progress `.al` in the workspace therefore blocks permission generation for the entire project. `workspace_sources::snapshot_with_skipped` (workspace_sources.rs:88-113) was changed to *skip* such files and report them, but permissions.rs keeps its own whole-workspace failure.
 - fix: route `collect_permissions` through `workspace_sources::snapshot_with_skipped`, or apply the same skip-and-report policy so one broken file does not take the query down.
-- status: open
+- status: fixed 9d02c3b4
 
 ### [PERF] `source_line` rescans the file from byte 0 for every hint position
 - where: crates/al-analysis/src/queries/inlay_hints.rs:658-664, called at 124, 583, 591 and 640
