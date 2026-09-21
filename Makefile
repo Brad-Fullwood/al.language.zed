@@ -34,7 +34,7 @@ endif
 ALSEMANTIC_PROJ := "$(ROOT)/crates/al-semantic/bridge/AlBridge.csproj"
 WASM_BIN := $(ROOT)/target/wasm32-wasip2/release/zed_al.wasm
 
-.PHONY: build install install-lsp dev-setup watch rust wasm bridges grammar language record-methods check-record-methods repro-artifacts microsoft-contracts live-bc-contracts release-dryrun crates-publish-dryrun clean
+.PHONY: build install install-lsp dev-setup watch rust wasm bridges grammar language record-methods check-record-methods repro-artifacts shellcheck deny microsoft-contracts live-bc-contracts release-dryrun crates-publish-dryrun clean
 
 # Crates that are NOT published to crates.io (publish = false): the root wasm
 # extension plus the binary/harness crates. Everything else under crates/* is a
@@ -252,6 +252,30 @@ repro-artifacts:
 	fi
 	@echo "Reproducible-artifact check passed."
 
+# ShellCheck over the same file set as the `test` job in .github/workflows/ci.yml.
+# CI installs shellcheck; locally it may be absent, so say so rather than
+# reporting a pass the tool never produced.
+shellcheck:
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		shellcheck \
+			scripts/*.sh \
+			crates/al-test-harness/editor-e2e/*.sh \
+			crates/al-test-harness/editor-e2e/container/*.sh \
+			tree-sitter-al/tests/*.sh \
+		&& echo "  shellcheck: OK"; \
+	else \
+		echo "  SKIPPED: shellcheck is not installed — CI still runs it (see ci.yml). Install it with your package manager."; \
+	fi
+
+# The deny.toml license, advisory, source and banned-crate policy, matching the
+# `cargo-deny` job in .github/workflows/ci.yml. zed-al is included deliberately.
+deny:
+	@if command -v cargo-deny >/dev/null 2>&1; then \
+		cargo deny --workspace check; \
+	else \
+		echo "  SKIPPED: cargo-deny is not installed — CI still runs it (see ci.yml). Install it with 'cargo install cargo-deny --locked'."; \
+	fi
+
 # ── Microsoft toolchain contract profile ─────────────────────────
 # This profile is deliberately strict: an absent compiler, bridge, or coherent
 # dependency package cache is UNAVAILABLE/non-zero, never a successful skipped
@@ -291,46 +315,59 @@ live-bc-contracts:
 # ── Release readiness dry-run (READ-ONLY, never publishes) ────────
 # Runs every self-contained gate a release would, without uploading anything:
 # grammar/generator/corpus/package checks, repository and generated-artifact
-# invariants, formatting and clippy, native and WASM builds, host/WASM-extension
-# tests, the full native workspace test suite, and local package-manifest audits.
+# invariants, ShellCheck, formatting and clippy, the cargo-deny dependency
+# policy, native and WASM builds, host/WASM-extension tests, the full native
+# workspace test suite, the semantic-feature clippy and tests, and local
+# package-manifest audits. A tag push additionally waits for the whole CI
+# workflow to conclude successfully (check-release-hygiene.sh --require-ci),
+# so every gate that workflow runs is mirrored here.
+# ShellCheck and cargo-deny are skipped with a printed note when the tool is
+# not installed locally; CI installs both, so a skip here is not a pass there.
 # Profiles needing a proprietary Microsoft extension, `alc`, or live Business
 # Central remain explicit environment-gated checks in Docs/testing-guide.md.
 # The separate `crates-publish-dryrun` target is the strict registry-resolution
 # gate and never converts a blocked dependency into success.
 release-dryrun:
 	@echo "=== Release dry-run (read-only; nothing is published) ==="
-	@echo "--- 1/13 grammar crate tests ---"
+	@echo "--- 1/16 grammar crate tests ---"
 	cd tree-sitter-al && cargo test --all-targets
-	@echo "--- 2/13 grammar generator tests ---"
+	@echo "--- 2/16 grammar generator tests ---"
 	cd tree-sitter-al && cargo test --manifest-path generator/Cargo.toml --all-targets
-	@echo "--- 3/13 focused grammar fixtures + pinned repository corpus ---"
+	@echo "--- 3/16 focused grammar fixtures + pinned repository corpus ---"
 	tree-sitter-al/tests/run_repo_tests.sh
-	@echo "--- 4/13 grammar package manifest ---"
+	@echo "--- 4/16 grammar package manifest ---"
 	cd tree-sitter-al && cargo package --list
-	@echo "--- 5/13 repo-slug consistency ---"
+	@echo "--- 5/16 repo-slug consistency ---"
 	@bash scripts/check-repo-consistency.sh
 	@bash scripts/test-use-api.sh
-	@echo "--- 6/13 stale crates/<name> doc references ---"
+	@echo "--- 6/16 ShellCheck over the shipped shell scripts ---"
+	@$(MAKE) --no-print-directory shellcheck
+	@echo "--- 7/16 stale crates/<name> doc references ---"
 	@bash scripts/check-doc-paths.sh
-	@echo "--- 7/13 release hygiene (versions / submodule / grammar rev / generated assets) ---"
+	@echo "--- 8/16 release hygiene (versions / submodule / grammar rev / generated assets) ---"
 	@bash scripts/check-release-hygiene.sh
-	@echo "--- 8/13 reproducible generated artifacts ---"
+	@echo "--- 9/16 reproducible generated artifacts ---"
 	@$(MAKE) --no-print-directory repro-artifacts
-	@echo "--- 9/13 formatting + clippy + benchmark harness contracts ---"
+	@echo "--- 10/16 formatting + clippy + benchmark harness contracts ---"
 	cargo fmt --all -- --check
 	cargo clippy --workspace --exclude zed-al --all-targets -- -D warnings
 	cargo clippy -p zed-al --all-targets -- -D warnings
 	python3 -m unittest discover -s benchmarks/scripts -p 'test_*_bench.py'
-	@echo "--- 10/13 build workspace (excl zed-al) + real semantic al-lsp ---"
+	@echo "--- 11/16 dependency policy (cargo-deny) ---"
+	@$(MAKE) --no-print-directory deny
+	@echo "--- 12/16 build workspace (excl zed-al) + real semantic al-lsp ---"
 	cargo build --workspace --exclude zed-al
 	cargo build -p al-lsp --bin al-lsp --features semantic
-	@echo "--- 11/13 test workspace (excl zed-al) ---"
+	@echo "--- 13/16 test workspace (excl zed-al) ---"
 	cargo test --workspace --exclude zed-al
-	@echo "--- 12/13 test + build the actual Zed extension ---"
+	@echo "--- 14/16 semantic-feature clippy + tests (the unsafe CLR FFI) ---"
+	cargo clippy -p al-semantic -p al-lsp --features semantic --all-targets -- -D warnings
+	cargo test -p al-semantic --features semantic
+	@echo "--- 15/16 test + build the actual Zed extension ---"
 	cargo test -p zed-al
 	cargo build -p zed-al --target wasm32-wasip2 --release
 	@bash scripts/check-zed-wasm-component.sh "$(WASM_BIN)"
-	@echo "--- 13/13 local package-manifest audit for publishable crates ---"
+	@echo "--- 16/16 local package-manifest audit for publishable crates ---"
 	@fail=0; \
 	for dir in crates/*/; do \
 		f="$$dir/Cargo.toml"; \

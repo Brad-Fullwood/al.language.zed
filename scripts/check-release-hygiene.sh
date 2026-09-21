@@ -256,6 +256,23 @@ check_submodule_and_grammar_rev() {
     ok "tree-sitter-al gitlink, HEAD, and extension.toml grammar rev are aligned"
 }
 
+# Every third-party action must be referenced by a 40-hex commit SHA. A tag or
+# branch ref lets the action's owner change what runs in a job that has the
+# workspace checked out and, in release.yml, a GH_TOKEN in the environment.
+check_actions_sha_pinned() {
+    local unpinned
+    unpinned="$(grep -rhoE '^[[:space:]]*(- )?uses:[[:space:]]*\S+' .github/workflows/ \
+        | sed -E 's/^[[:space:]]*(- )?uses:[[:space:]]*//' \
+        | grep -vE '^\./' \
+        | grep -vE '@[0-9a-f]{40}$' \
+        | sort -u || true)"
+    if [ -n "${unpinned}" ]; then
+        echo "${unpinned}" >&2
+        fail "the actions above are not pinned to a 40-character commit SHA"
+    fi
+    ok "every workflow action is pinned to a commit SHA"
+}
+
 check_generated_files_exist() {
     local files=(
         tree-sitter-al/.tree-sitter-cli-version
@@ -611,6 +628,7 @@ fi
 
 check_versions
 check_submodule_and_grammar_rev
+check_actions_sha_pinned
 check_generated_files_exist
 check_zed_language_generated
 check_generated_cochange "${CHANGED_SINCE}"

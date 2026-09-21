@@ -1,6 +1,6 @@
 # AL Language for Zed
 
-AL Language for Zed is a native Business Central AL toolchain for Zed. It is not a syntax-highlighting package with a thin language-server wrapper. The repository contains a Rust language server, debug adapter, CLI/TUI, MCP server, symbol engine, query engine, test runner, and generated Zed language package for Microsoft Dynamics 365 Business Central AL development.
+AL Language for Zed is a native Business Central AL toolchain for Zed. The repository contains a Rust language server, debug adapter, CLI/TUI, MCP server, symbol engine, query engine, test runner, and generated Zed language package for Microsoft Dynamics 365 Business Central AL development.
 
 The toolchain is available from Zed, the terminal, CI, and MCP clients. Microsoft tooling remains available where exact compiler semantics or Business Central runtime behavior is required.
 
@@ -11,9 +11,9 @@ The toolchain is available from Zed, the terminal, CI, and MCP clients. Microsof
 > explicit Microsoft backend. [Current limitations](./Docs/current-limitations.md)
 > distinguish deliberate compatibility boundaries from regressions.
 
-## What Makes This Different
+## Why this exists
 
-The standard Microsoft AL tooling is powerful, but most of it is coupled to the VS Code extension, the official language server, Business Central service assumptions, and opaque editor commands. That makes it hard to build deep Zed integration, hard to run narrow analysis from CI, hard to expose AL-aware tools to agents, and hard to test behavior outside the Microsoft extension boundary.
+Most Microsoft AL tooling is coupled to the VS Code extension, the official language server, Business Central service assumptions, and opaque editor commands. That makes it hard to build deep Zed integration, hard to run narrow analysis from CI, hard to expose AL-aware tools to agents, and hard to test behavior outside the Microsoft extension boundary.
 
 This project rewrites a large part of that experience in native Rust:
 
@@ -250,17 +250,19 @@ CodeLens currently emits lenses with these command IDs:
 
 Those CodeLens IDs are separate from the native execute-command dispatcher above.
 
-### Gallery-safe commands
+### Commands that need no `PATH` install
 
-The installed language package does not ship static shell tasks. Stable Zed task definitions cannot
-address binaries downloaded into an extension work directory, so a task such as
-`command = "al-explorer"` would work only for developers who separately added the CLI to `PATH`.
+The installed language package ships 55 static tasks in `languages/al/tasks.json` plus the inline
+runnables in `languages/al/runnables.scm`. Every one of them runs `command = "al-explorer"`, so they
+work once `al-explorer` is on `PATH` — stable Zed task definitions cannot address a binary the
+extension downloaded into its own work directory. See
+[Language assets](Docs/features/language-assets.md#al-explorer-must-be-on-path) for the install step.
 
-Editor actions use the resolved `al-lsp` process instead: LSP execute commands cover compilation,
-formatting, linting, cache management, and test CodeLens actions, while the registered **AL Tools**
-MCP server exposes named tools such as `al_build`, `al_symbolsearch`, and `al_deadcode`. Its generic
-`al_call` tool reaches the complete shared daemon command catalog. `al-explorer` remains the
-standalone terminal interface for users who deliberately install or invoke it themselves.
+Two surfaces cover the same operations with no `PATH` install, because both run the `al-lsp` process
+the extension resolves for itself: LSP execute commands cover compilation, formatting, linting,
+cache management, and test CodeLens actions, and the registered **AL Tools** MCP server exposes named
+tools such as `al_build`, `al_symbolsearch`, and `al_deadcode`. Its generic `al_call` tool reaches the
+complete shared daemon command catalog.
 
 ### `al-explorer` CLI/TUI
 
@@ -362,10 +364,19 @@ GitHub release assets are binary/update artifacts:
 - `extension.wasm`
 - `extension.toml`
 - `checksums.txt`
+- `binary-checksums.txt`
 
 The Zed extension archive also includes tracked repository assets such as `languages/al`, `snippets/*.json`, and `themes/bc-themes.json`. These are not separate GitHub release assets; Zed packages them as part of the extension install archive.
 
 Every native archive includes `al-lsp`, `al-explorer`, and the semantic bridge files (`.exe` binaries on Windows). Daemon IPC uses Unix-domain sockets on Linux/macOS and named pipes on Windows.
+
+The two checksum assets cover different things. `checksums.txt` lists a SHA-256 per released asset
+and is what `sha256sum -c` verifies after a manual download. `binary-checksums.txt` lists a SHA-256
+per executable inside each archive, keyed `<archive>/<binary>`, and is what the extension checks on
+the automatic download path: it extracts `al-lsp` and `al-explorer`, compares both against that
+listing, and only then makes them executable. A mismatch deletes the directory and reports the
+expected and actual digests. See [Current limitations](./Docs/current-limitations.md#releases) for
+why the archive itself cannot be checked there.
 
 Zed auto-resolves or downloads `al-lsp` for LSP, DAP, and the MCP context server. Release archives
 also ship `al-explorer`, but stable Zed cannot address an extension-private sidecar from static task
@@ -410,9 +421,9 @@ Common AL settings:
 default path is this project's native `al-lsp`. Set `AL_DOTNET_PATH` to select a specific executable
 for Microsoft .NET-hosted AL tools; otherwise the toolchain resolves `dotnet` from `PATH`.
 
-**Every setting—with types, defaults, and descriptions—is documented in the
+Every setting, with its type, default, and description, is documented in the
 [settings reference](Docs/reference/settings.md), and a ready-to-copy template is available at
-[examples/zed-settings.jsonc](examples/zed-settings.jsonc).** `al.enableNativeLint` and
+[examples/zed-settings.jsonc](examples/zed-settings.jsonc). `al.enableNativeLint` and
 `al.nativeLintRules` control the native file, project-semantic, transaction, obsolete, and
 architecture rules (`AL-NL*`/`AL-NC*`); for example, set `"AL-NL005": false` to disable the
 SetLoadFields rule. Microsoft's CodeAnalysis bridge is optional and additive.

@@ -4,12 +4,16 @@ mod settings;
 #[cfg(test)]
 mod merge_json_test;
 #[cfg(test)]
+mod release_test;
+#[cfg(test)]
 mod repo_consistency_test;
 #[cfg(test)]
 mod settings_test;
 
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::fs;
+use std::time::SystemTime;
 use zed_extension_api::{
     self as zed,
     settings::{ContextServerSettings, LspSettings},
@@ -18,6 +22,17 @@ use zed_extension_api::{
 
 /// Repository that publishes the extension's `al-lsp` release assets.
 const GITHUB_REPO: &str = "Brad-Fullwood/al.language.zed";
+
+/// Release asset listing a SHA-256 for each executable inside each platform
+/// archive, one `sha256sum`-style line per file, keyed `<archive>/<binary>`.
+/// `checksums.txt` covers the archives themselves and stays exactly
+/// `sha256sum -c`-able for a manual download; this one covers the bytes the
+/// extension ends up executing, which is what it can actually check (see
+/// `verify_extracted_binaries`).
+const BINARY_CHECKSUMS_ASSET: &str = "binary-checksums.txt";
+
+/// Prefix of the per-release directories the extension downloads into.
+const RELEASE_DIR_PREFIX: &str = "al-lsp-";
 
 struct AlExtension {
     cached_binary_path: Option<String>,
@@ -101,32 +116,142 @@ fn merge_json_inner(base: &Value, overrides: &Value, depth: u32) -> Value {
     }
 }
 
+/// A complete `al-lsp-<version>` directory already in the extension work
+/// directory: both `al-lsp` and its `al-explorer` sidecar present as regular
+/// files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedRelease {
+    /// Version parsed out of the `al-lsp-<version>` directory name.
+    pub version: String,
+    /// Path to the `al-lsp` binary inside the directory.
+    pub binary_path: String,
+    /// Directory modification time. Decides which cached release to fall back
+    /// to when the latest-release lookup fails and several are present.
+    pub modified: SystemTime,
+}
+
+/// What to do once the extension knows what is cached on disk and what the
+/// latest-release lookup returned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReleaseChoice {
+    /// Start this already-downloaded binary. `prune_others` is true only when
+    /// the lookup succeeded and named this exact version, which is the only
+    /// case where the other cached directories are known to be stale.
+    UseCached {
+        binary_path: String,
+        prune_others: bool,
+    },
+    /// Download this version, then remove the other cached directories.
+    Download { version: String },
+    /// Nothing usable on disk and no release to download.
+    Fail { message: String },
+}
+
+/// Pick a binary from what is cached and what the release lookup said.
+///
+/// The lookup runs first so a published upgrade is picked up: an earlier
+/// version of this resolver returned any cached directory before it ever
+/// called `latest_github_release`, which pinned an installation to the first
+/// release it downloaded and left the stale-directory cleanup unreachable.
+///
+/// `latest` is `Ok(version)` from the lookup, or `Err(message)` with the
+/// message to report when nothing is cached. A lookup failure is the offline
+/// case: keep running from disk rather than failing to start.
+///
+/// A version string that is not safe to use as a path component is treated as
+/// a failed lookup, because it cannot name a directory. Cached binaries still
+/// start; with nothing cached the rejection is reported.
+pub fn choose_release(cached: &[CachedRelease], latest: Result<&str, &str>) -> ReleaseChoice {
+    let newest_cached = || {
+        cached
+            .iter()
+            .max_by_key(|release| release.modified)
+            .map(|release| release.binary_path.clone())
+    };
+
+    let version = match latest {
+        Ok(version) if is_safe_version(version) => version,
+        Ok(version) => {
+            let message =
+                format!("Rejected release version '{version}': contains path-unsafe characters");
+            return match newest_cached() {
+                Some(binary_path) => ReleaseChoice::UseCached {
+                    binary_path,
+                    prune_others: false,
+                },
+                None => ReleaseChoice::Fail { message },
+            };
+        }
+        Err(message) => {
+            return match newest_cached() {
+                Some(binary_path) => ReleaseChoice::UseCached {
+                    binary_path,
+                    prune_others: false,
+                },
+                None => ReleaseChoice::Fail {
+                    message: message.to_string(),
+                },
+            }
+        }
+    };
+
+    match cached.iter().find(|release| release.version == version) {
+        Some(release) => ReleaseChoice::UseCached {
+            binary_path: release.binary_path.clone(),
+            prune_others: cached.len() > 1,
+        },
+        None => ReleaseChoice::Download {
+            version: version.to_string(),
+        },
+    }
+}
+
+/// Look up one file's expected digest in a `sha256sum`-style listing. Accepts
+/// the two separators `sha256sum` emits (`  ` for text mode, ` *` for binary
+/// mode) and tolerates the CRLF line endings PowerShell writes on Windows.
+pub fn expected_sha256<'a>(listing: &'a str, name: &str) -> Option<&'a str> {
+    listing.lines().find_map(|line| {
+        let line = line.trim();
+        let (digest, rest) = line.split_once(' ')?;
+        let file = rest.trim_start_matches([' ', '*']);
+        (file == name
+            && digest.len() == 64
+            && digest.chars().all(|c| c.is_ascii_hexdigit())
+            && !digest.chars().any(|c| c.is_ascii_uppercase()))
+        .then_some(digest)
+    })
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    hex
+}
+
 impl AlExtension {
-    /// Scan the extension work directory for a previously downloaded, complete
-    /// `al-lsp-<version>` release — both the `al-lsp` and `al-explorer`
-    /// sidecar present as regular files — without touching the network. This
-    /// lets a machine that downloaded a release in an earlier session start
-    /// `al-lsp` fully offline (no PATH install, no `binary.path`, no reachable
-    /// GitHub). When multiple cached releases are present, the most recently
-    /// modified one wins.
-    fn cached_release_binary_path(os: zed::Os) -> Option<String> {
-        let binary_name = match os {
-            zed::Os::Windows => "al-lsp.exe",
-            _ => "al-lsp",
-        };
-        let explorer_name = match os {
-            zed::Os::Windows => "al-explorer.exe",
-            _ => "al-explorer",
+    /// Scan the extension work directory for complete, previously downloaded
+    /// releases, without touching the network. A machine that downloaded a
+    /// release in an earlier session can then start `al-lsp` fully offline (no
+    /// PATH install, no `binary.path`, no reachable GitHub).
+    fn cached_releases(os: zed::Os) -> Vec<CachedRelease> {
+        let (binary_name, explorer_name) = match os {
+            zed::Os::Windows => ("al-lsp.exe", "al-explorer.exe"),
+            _ => ("al-lsp", "al-explorer"),
         };
 
-        let entries = fs::read_dir(".").ok()?;
-        let mut best: Option<(std::time::SystemTime, String)> = None;
+        let Ok(entries) = fs::read_dir(".") else {
+            return Vec::new();
+        };
+        let mut releases = Vec::new();
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if !name.starts_with("al-lsp-") {
+            let Some(version) = name.strip_prefix(RELEASE_DIR_PREFIX) else {
                 continue;
-            }
+            };
             let dir_path = entry.path();
             let binary_path = dir_path.join(binary_name);
             let explorer_path = dir_path.join(explorer_name);
@@ -135,18 +260,93 @@ impl AlExtension {
             {
                 continue;
             }
-            let modified = fs::metadata(&dir_path)
-                .and_then(|m| m.modified())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            let path_str = binary_path.to_string_lossy().into_owned();
-            let is_better = best
-                .as_ref()
-                .is_none_or(|(best_modified, _)| modified > *best_modified);
-            if is_better {
-                best = Some((modified, path_str));
+            releases.push(CachedRelease {
+                version: version.to_string(),
+                binary_path: binary_path.to_string_lossy().into_owned(),
+                modified: fs::metadata(&dir_path)
+                    .and_then(|m| m.modified())
+                    .unwrap_or(SystemTime::UNIX_EPOCH),
+            });
+        }
+        releases
+    }
+
+    /// Remove every cached release directory other than `keep`. Only called
+    /// once the latest-release lookup has confirmed which version is current,
+    /// so an unreachable GitHub never deletes the binary the user is running
+    /// from. A failure here only leaves an obsolete directory behind.
+    fn prune_release_dirs(keep: &str) {
+        let Ok(entries) = fs::read_dir(".") else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with(RELEASE_DIR_PREFIX) && name != keep {
+                let _ = fs::remove_dir_all(entry.path());
             }
         }
-        best.map(|(_, path)| path)
+    }
+
+    /// Compare the extracted executables against the release's published
+    /// digests before anything is made executable or spawned.
+    ///
+    /// `download_file` extracts a `.tar.gz`/`.zip` and does not keep the
+    /// archive, and the 0.7 extension API has no way to unpack a local file,
+    /// so the archive digests in `checksums.txt` cannot be checked on this
+    /// path. `binary-checksums.txt` covers the extracted executables instead,
+    /// which is a stronger check: it is the bytes that actually run.
+    ///
+    /// Returns `Ok(false)` when the release publishes no such asset, which is
+    /// every release made before it existed. The asset list comes from the
+    /// GitHub API rather than the asset CDN, so its absence is not something a
+    /// tampered download can fake.
+    fn verify_extracted_binaries(
+        release: &zed::GithubRelease,
+        asset_name: &str,
+        extracted: &[(&str, &str)],
+        version_dir: &str,
+    ) -> Result<bool> {
+        let Some(asset) = release
+            .assets
+            .iter()
+            .find(|asset| asset.name == BINARY_CHECKSUMS_ASSET)
+        else {
+            return Ok(false);
+        };
+
+        let listing_path = format!("{version_dir}/{BINARY_CHECKSUMS_ASSET}");
+        zed::download_file(
+            &asset.download_url,
+            &listing_path,
+            zed::DownloadedFileType::Uncompressed,
+        )
+        .map_err(|e| format!("Failed to download {BINARY_CHECKSUMS_ASSET}: {e}"))?;
+        let listing = fs::read_to_string(&listing_path)
+            .map_err(|e| format!("Failed to read {listing_path}: {e}"))?;
+
+        for (member, path) in extracted {
+            let key = format!("{asset_name}/{member}");
+            let expected = expected_sha256(&listing, &key).ok_or_else(|| {
+                format!(
+                    "{BINARY_CHECKSUMS_ASSET} for release {} has no SHA-256 for {key}, so the \
+                     downloaded {member} cannot be verified",
+                    release.version
+                )
+            })?;
+            let bytes =
+                fs::read(path).map_err(|e| format!("Failed to read downloaded {path}: {e}"))?;
+            let actual = sha256_hex(&bytes);
+            if actual != expected {
+                return Err(format!(
+                    "Checksum mismatch for {member} from {asset_name}: expected {expected}, got \
+                     {actual}. The downloaded archive does not match the digest published with \
+                     release {}. Nothing was made executable.",
+                    release.version
+                ));
+            }
+        }
+        Ok(true)
     }
 
     /// Resolves an explicit, cached, installed, or downloadable `al-lsp` binary.
@@ -179,15 +379,6 @@ impl AlExtension {
 
         let (os, arch) = zed::current_platform();
 
-        // Reuse a previously downloaded release from disk before ever touching
-        // the network, so a fresh Zed session with a valid cached binary starts
-        // offline. `latest_github_release` below only runs when no on-disk
-        // release is found.
-        if let Some(path) = Self::cached_release_binary_path(os) {
-            self.cached_binary_path = Some(path.clone());
-            return Ok(path);
-        }
-
         if let Some(id) = status_id {
             zed::set_language_server_installation_status(
                 id,
@@ -195,14 +386,46 @@ impl AlExtension {
             );
         }
 
+        // Ask for the latest release first, so an extension update that
+        // publishes a new al-lsp is actually picked up. A lookup failure is the
+        // offline case and falls back to a cached release below; only an empty
+        // cache turns it into an error.
         let release = zed::latest_github_release(
             GITHUB_REPO,
             zed::GithubReleaseOptions {
                 require_assets: true,
                 pre_release: false,
             },
-        )
-        .map_err(|e| release_lookup_failure_message(os, &e))?;
+        );
+        let lookup_error = release
+            .as_ref()
+            .err()
+            .map(|e| release_lookup_failure_message(os, e));
+
+        let cached = Self::cached_releases(os);
+        let latest = match (&release, &lookup_error) {
+            (Ok(release), _) => Ok(release.version.as_str()),
+            (_, Some(message)) => Err(message.as_str()),
+            (Err(_), None) => unreachable!("a failed lookup always produces a message"),
+        };
+
+        let version = match choose_release(&cached, latest) {
+            ReleaseChoice::UseCached {
+                binary_path,
+                prune_others,
+            } => {
+                if prune_others {
+                    if let Some(dir) = binary_path.split(['/', '\\']).next() {
+                        Self::prune_release_dirs(dir);
+                    }
+                }
+                self.cached_binary_path = Some(binary_path.clone());
+                return Ok(binary_path);
+            }
+            ReleaseChoice::Fail { message } => return Err(message),
+            ReleaseChoice::Download { version } => version,
+        };
+        let release = release.expect("a Download choice only follows a successful lookup");
 
         let arch_name = match arch {
             zed::Architecture::Aarch64 => "aarch64",
@@ -231,62 +454,56 @@ impl AlExtension {
             .find(|a| a.name == asset_name)
             .ok_or_else(|| spawn_failure_message(os, &asset_name))?;
 
-        if !is_safe_version(&release.version) {
-            return Err(format!(
-                "Rejected release version '{}': contains path-unsafe characters",
-                release.version
-            ));
-        }
-        let version_dir = format!("al-lsp-{}", release.version);
-        let binary_name = match os {
-            zed::Os::Windows => "al-lsp.exe",
-            _ => "al-lsp",
+        // `choose_release` already rejected a version that cannot name a
+        // directory, so `version` is safe to interpolate here.
+        let version_dir = format!("{RELEASE_DIR_PREFIX}{version}");
+        let (binary_name, explorer_name) = match os {
+            zed::Os::Windows => ("al-lsp.exe", "al-explorer.exe"),
+            _ => ("al-lsp", "al-explorer"),
         };
         let binary_path = format!("{version_dir}/{binary_name}");
-        let explorer_name = match os {
-            zed::Os::Windows => "al-explorer.exe",
-            _ => "al-explorer",
-        };
         let explorer_path = format!("{version_dir}/{explorer_name}");
 
-        let archive_is_complete = [&binary_path, &explorer_path]
-            .iter()
-            .all(|path| fs::metadata(path).is_ok_and(|metadata| metadata.is_file()));
-        if !archive_is_complete {
-            if let Some(id) = status_id {
-                zed::set_language_server_installation_status(
-                    id,
-                    &zed::LanguageServerInstallationStatus::Downloading,
-                );
-            }
+        if let Some(id) = status_id {
+            zed::set_language_server_installation_status(
+                id,
+                &zed::LanguageServerInstallationStatus::Downloading,
+            );
+        }
 
-            zed::download_file(&asset.download_url, &version_dir, archive_type)
-                .map_err(|e| format!("Failed to download al-lsp: {e}"))?;
+        zed::download_file(&asset.download_url, &version_dir, archive_type)
+            .map_err(|e| format!("Failed to download al-lsp: {e}"))?;
 
-            for (tool, path) in [("al-lsp", &binary_path), ("al-explorer", &explorer_path)] {
-                if !fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
-                    return Err(format!(
-                        "Downloaded release archive does not contain the required {tool} \
-                         sidecar at {path}"
-                    ));
-                }
-                zed::make_file_executable(path)
-                    .map_err(|e| format!("Failed to make {tool} executable: {e}"))?;
-            }
-
-            // Cleanup failure only leaves an obsolete cached release.
-            if fs::metadata(&version_dir).is_ok_and(|m| m.is_dir()) {
-                if let Ok(entries) = fs::read_dir(".") {
-                    for entry in entries.flatten() {
-                        let name = entry.file_name();
-                        let name = name.to_string_lossy();
-                        if name.starts_with("al-lsp-") && name != version_dir {
-                            let _ = fs::remove_dir_all(entry.path());
-                        }
-                    }
-                }
+        for (tool, path) in [("al-lsp", &binary_path), ("al-explorer", &explorer_path)] {
+            if !fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
+                let _ = fs::remove_dir_all(&version_dir);
+                return Err(format!(
+                    "Downloaded release archive does not contain the required {tool} \
+                     sidecar at {path}"
+                ));
             }
         }
+
+        // Verify before anything becomes executable. A failed check takes the
+        // directory with it, so the next start downloads again rather than
+        // finding the rejected bytes cached.
+        let extracted = [
+            (binary_name, binary_path.as_str()),
+            (explorer_name, explorer_path.as_str()),
+        ];
+        if let Err(error) =
+            Self::verify_extracted_binaries(&release, &asset_name, &extracted, &version_dir)
+        {
+            let _ = fs::remove_dir_all(&version_dir);
+            return Err(error);
+        }
+
+        for (tool, path) in [("al-lsp", &binary_path), ("al-explorer", &explorer_path)] {
+            zed::make_file_executable(path)
+                .map_err(|e| format!("Failed to make {tool} executable: {e}"))?;
+        }
+
+        Self::prune_release_dirs(&version_dir);
 
         self.cached_binary_path = Some(binary_path.clone());
         Ok(binary_path)

@@ -102,3 +102,15 @@ live in [ROADMAP.md](../ROADMAP.md).
 - Publishable workspace libraries have independent semantic versions. The Zed
   extension, `al-lsp`, `extension.toml`, and corresponding lockfile product
   entries use the synchronized release version.
+- The extension cannot check a downloaded archive against `checksums.txt`,
+  because `zed_extension_api` 0.7's `download_file` extracts a `.tar.gz`/`.zip`
+  and does not keep the archive, and the API has no way to unpack a local file.
+  It checks the extracted `al-lsp` and `al-explorer` against the release's
+  `binary-checksums.txt` instead, before either is made executable, so the bytes
+  that run are verified. `checksums.txt` still covers the archives for a manual
+  `sha256sum -c` of a hand-downloaded asset.
+- Releases published before `binary-checksums.txt` existed carry no per-binary
+  digests, and the extension starts from them unverified. Their absence comes
+  from the GitHub API asset listing rather than the asset download, so a
+  tampered download cannot cause the check to be skipped for a release that
+  does publish them.

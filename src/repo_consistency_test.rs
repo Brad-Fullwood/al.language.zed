@@ -687,3 +687,116 @@ fn debug_snippet_fields_are_declared_by_debug_schema() {
         }
     }
 }
+
+/// README.md describes the language package's task list in prose. The tasks
+/// were removed and later restored (commit 3bc8a90e), and one of the two
+/// passages that describe them was left saying the package ships none, so a
+/// reader who stopped at the first section concluded the tasks did not exist.
+/// Tie both numbers to the file they describe.
+#[test]
+fn readme_task_count_matches_the_shipped_language_package() {
+    let readme = include_str!("../README.md");
+    let tasks: serde_json::Value = serde_json::from_str(include_str!("../languages/al/tasks.json"))
+        .expect("languages/al/tasks.json must be valid JSON");
+    let tasks = tasks
+        .as_array()
+        .expect("languages/al/tasks.json must be a task array");
+
+    assert!(
+        !tasks.is_empty(),
+        "languages/al/tasks.json is empty, so every README passage describing \
+         the shipped tasks needs rewriting, not just this count"
+    );
+    let claim = format!("ships {} static tasks", tasks.len());
+    assert!(
+        readme.contains(&claim),
+        "languages/al/tasks.json has {} tasks, but README.md does not say \
+         {claim:?}. Update the passage rather than leaving the two to drift.",
+        tasks.len()
+    );
+
+    // Every task runs `al-explorer`, which is why the README tells the reader
+    // to put it on PATH. A task with another command would make that advice
+    // wrong for at least one entry.
+    for task in tasks {
+        let command = task["command"]
+            .as_str()
+            .expect("every task must declare a string command");
+        assert_eq!(
+            command, "al-explorer",
+            "README.md states every shipped task runs al-explorer; task \
+             {:?} runs {command:?}",
+            task["label"]
+        );
+    }
+
+    assert!(
+        !readme.contains("does not ship static shell tasks"),
+        "README.md still claims the installed language package ships no static \
+         shell tasks, which contradicts the {} tasks in languages/al/tasks.json",
+        tasks.len()
+    );
+}
+
+/// The extension refuses to run a downloaded binary whose digest does not
+/// match the release's `binary-checksums.txt`. That asset only exists because
+/// `release.yml` builds and uploads it, so the two must move together: a
+/// rename on either side turns the integrity check into a silent no-op (the
+/// asset looks absent, which is how pre-2026 releases are handled).
+#[test]
+fn binary_checksum_asset_is_produced_by_the_release_workflow() {
+    let lib = include_str!("lib.rs");
+    let workflow = include_str!("../.github/workflows/release.yml");
+
+    assert!(
+        lib.contains("const BINARY_CHECKSUMS_ASSET: &str = \"binary-checksums.txt\""),
+        "src/lib.rs must name the per-binary checksum asset it verifies against"
+    );
+    assert!(
+        workflow.contains("binary-checksums.txt"),
+        "release.yml must produce binary-checksums.txt, or src/lib.rs would \
+         find no asset and skip the integrity check on every release"
+    );
+    assert!(
+        workflow.contains("artifacts/binary-checksums.txt"),
+        "release.yml must upload binary-checksums.txt as a release asset; \
+         building it without uploading leaves the check unreachable"
+    );
+    for leg in ["sha256sum al-lsp al-explorer", "Get-FileHash"] {
+        assert!(
+            workflow.contains(leg),
+            "release.yml must hash the staged binaries on every platform \
+             (missing: {leg:?})"
+        );
+    }
+
+    // The keys the extension looks up are `<asset>/<binary>`. Both packaging
+    // legs must write that shape, or every lookup misses and the download is
+    // rejected as uncovered.
+    assert!(
+        workflow.contains(r#"sed "s|  |  $OUT.tar.gz/|""#),
+        "the Unix packaging step must key digests by <archive>/<binary>"
+    );
+    assert!(
+        workflow.contains(r#""$hash  $archive/$name""#),
+        "the Windows packaging step must key digests by <archive>/<binary>"
+    );
+}
+
+/// The integrity check must run before anything is made executable. Reversing
+/// the order would leave a rejected binary executable on disk.
+#[test]
+fn binaries_are_verified_before_they_are_made_executable() {
+    let lib = include_str!("lib.rs");
+    let verify = lib
+        .find("Self::verify_extracted_binaries(")
+        .expect("find_or_download_binary must verify the extracted binaries");
+    let make_executable = lib
+        .find("zed::make_file_executable(path)")
+        .expect("find_or_download_binary must make the binaries executable");
+    assert!(
+        verify < make_executable,
+        "src/lib.rs calls make_file_executable before verify_extracted_binaries, \
+         so a binary whose digest does not match is made executable anyway"
+    );
+}
