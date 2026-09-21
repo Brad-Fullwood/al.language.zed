@@ -879,12 +879,4 @@ mod tests {
         let member = enclosing_member(PAGE_WITH_TOOLTIP, action_line).expect("action");
         assert_eq!(member.keyword, "action");
     }
-
-    // if_to_case UTF-16 column vs byte offset
-    // When a non-ASCII character appears before the cursor on the same line,
-    // tree-sitter Point::column must be a byte offset, not a UTF-16 code unit.
-    // The two differ for characters with len_utf16 > 1 (e.g. emoji, surrogate pairs)
-    // but we can also test with a 2-byte UTF-8 sequence (1 UTF-16 unit = still 2 bytes).
-    // A simpler but valid test: verify the action is still offered when the procedure
-    // contains a non-ASCII comment, ensuring we use utf16_col_to_byte_offset.
 }
