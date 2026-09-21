@@ -99,7 +99,7 @@ Part B, agent-facing threat model:
   per-project trust prompt, the way an editor gates workspace trust. At minimum, refuse an
   analyzer path that lies inside the project root, and refuse `compilationOptions` entries that
   begin `/analyzer`, `/ruleset` or `/assemblyprobingpaths` when they came from a project file.
-- status: open
+- status: fixed bbf25313
 
 ### [SECURITY] a repository's own launch.json is both the allowlist and the target for a Business Central bearer token
 
