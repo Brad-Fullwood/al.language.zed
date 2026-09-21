@@ -286,7 +286,7 @@ Listed by neither checklist:
 - severity: low
 - scenario: `tree-sitter-al/grammar.js:1206` defines `quoted_identifier: token(seq('"', repeat(choice(/[^"\r\n]/, '""')), '"'))`, so `""` is a legal escaped quote inside an AL quoted name. `node_clean_name` is `text.trim_matches('"')`, which strips *every* leading and trailing quote rather than one pair and never un-doubles the interior. For the field `"Order ""A"""` it returns `Order ""A` instead of `Order "A`, so the name never matches the symbol index or another occurrence and hover, go-to-definition, find-references and rename all come back empty on that identifier. The doc says the function strips "surrounding double-quotes", which describes one pair.
 - fix: strip a single leading and trailing `"` when both are present, then replace `""` with `"`. `queries/source.rs:547`, `test_coverage.rs:390`, `audit.rs:642` and `profiler_hints.rs:454` repeat the same `trim_matches('"')` and should route through the shared helper.
-- status: open
+- status: fixed 9d7bd6cf — `node_clean_name` already delegated to `al_syntax::node_text_clean`, so the claim about its body was stale by the time the fix ran. The repeats named here, plus hover's cursor and parameter names, definition's procedure scan and implementation's interface match, now route through `al_syntax::clean_identifier`.
 
 ### [SLOP] al-analysis's crate doc still explains itself in terms of a crate that no longer exists
 - where: crates/al-analysis/src/lib.rs:3 and 21-23

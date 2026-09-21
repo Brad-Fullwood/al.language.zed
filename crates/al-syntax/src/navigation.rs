@@ -243,6 +243,41 @@ pub fn find_variable_references(tree: &Tree, text: &str, name: &str) -> Vec<tree
     refs
 }
 
+/// Count every identifier occurrence in the tree, keyed by lowercased name.
+///
+/// Same predicate and same span de-duplication as
+/// [`find_variable_references`], answered for every name in one walk. Asking
+/// `find_variable_references` once per name over F files is one full tree walk
+/// per (name, file) pair; a permission set with 300 grants over a 2000-file
+/// project did 600 000 walks for its first check and the same again for its
+/// second.
+pub fn count_identifier_occurrences(
+    tree: &Tree,
+    text: &str,
+) -> std::collections::HashMap<String, usize> {
+    let source = text.as_bytes();
+    let mut seen: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    walk_tree(tree.root_node(), &mut |node| {
+        if !matches!(node.kind(), "identifier" | "quoted_identifier" | "name") {
+            return;
+        }
+        let Ok(node_text) = node.utf8_text(source) else {
+            return;
+        };
+        let clean = crate::clean_identifier(node_text);
+        if clean.is_empty() {
+            return;
+        }
+        let range = node.range();
+        if !seen.insert((range.start_byte, range.end_byte)) {
+            return;
+        }
+        *counts.entry(clean.to_lowercase()).or_default() += 1;
+    });
+    counts
+}
+
 /// Find references to an event raised through `[EventSubscriber(...)]`
 /// attributes whose target event name equals `event_name`.
 ///
@@ -670,6 +705,34 @@ mod tests {
             vec![(2, Some(4)), (8, Some(8))],
             "the attributed procedure's node starts two lines above its keyword"
         );
+    }
+
+    /// The one-pass count has to agree with the per-name query it replaces,
+    /// including its span de-duplication of the `name`/`identifier` pair.
+    #[test]
+    fn identifier_counts_match_the_per_name_query() {
+        let src = "codeunit 50100 \"Ship Mgt\"\n\
+                   {\n\
+                   \x20   procedure Post(var Cust: Record Customer)\n\
+                   \x20   var\n\
+                   \x20       \"Ship Log\": Record \"Ship Log\";\n\
+                   \x20   begin\n\
+                   \x20       Cust.Modify();\n\
+                   \x20       \"Ship Log\".Insert();\n\
+                   \x20       Post(Cust);\n\
+                   \x20   end;\n\
+                   }\n";
+        let parsed = AlParser::parse_quick(src);
+        let counts = count_identifier_occurrences(&parsed.tree, src);
+
+        for name in ["Ship Mgt", "Post", "Cust", "Customer", "Ship Log", "Modify"] {
+            assert_eq!(
+                counts.get(&name.to_lowercase()).copied().unwrap_or(0),
+                find_variable_references(&parsed.tree, src, name).len(),
+                "count for {name}"
+            );
+        }
+        assert_eq!(counts.get("post"), Some(&2), "declaration plus one call");
     }
 
     #[test]

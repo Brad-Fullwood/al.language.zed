@@ -335,11 +335,17 @@ pub fn permission_set_audit(workspace: &Workspace) -> Result<PermissionAuditRepo
         .map(|source| (source.text.clone(), source.tree.clone()))
         .collect();
 
-    let over_broad = compute_over_broad(&scan_files, &perm_sets, &declared_names);
+    // One pass over the snapshot answers both checks' reference counts.
+    let reference_counts = workspace_reference_counts(&scan_files);
+    let over_broad = compute_over_broad(&reference_counts, &perm_sets, &declared_names);
 
     let observed_writes = collect_observed_writes(&scan_files);
-    let over_granted_rights =
-        compute_over_granted_rights(&scan_files, &perm_sets, &declared_names, &observed_writes);
+    let over_granted_rights = compute_over_granted_rights(
+        &reference_counts,
+        &perm_sets,
+        &declared_names,
+        &observed_writes,
+    );
 
     parse_issues.sort_by(|left, right| (&left.file, left.clause).cmp(&(&right.file, right.clause)));
 
@@ -416,7 +422,7 @@ fn grant_covers_object(
 /// base-app objects the workspace merely references. A grant with no references
 /// above that baseline is flagged as unused.
 fn compute_over_broad(
-    scan_files: &[(String, tree_sitter::Tree)],
+    reference_counts: &HashMap<String, usize>,
     perm_sets: &[(String, Vec<PermissionGrant>)],
     declared_names: &HashSet<String>,
 ) -> Vec<OverBroadGrantEntry> {
@@ -470,7 +476,7 @@ fn compute_over_broad(
                 });
                 continue;
             }
-            let total_refs = count_object_refs(scan_files, &grant.object);
+            let total_refs = count_object_refs(reference_counts, &grant.object);
 
             let baseline = usize::from(declared_names.contains(&grant.object.to_lowercase()));
             if total_refs <= baseline {
@@ -491,13 +497,30 @@ fn compute_over_broad(
     out
 }
 
-/// Total identifier references to `object` across the (non-permissionset)
-/// snapshot. Shared by the object-level and right-level checks.
-fn count_object_refs(scan_files: &[(String, tree_sitter::Tree)], object: &str) -> usize {
-    scan_files
-        .iter()
-        .map(|(text, tree)| al_syntax::find_variable_references(tree, text, object).len())
-        .sum()
+/// Identifier occurrence counts across the (non-permissionset) snapshot, by
+/// lowercased name.
+///
+/// Built once and shared by the object-level and right-level checks. Asking
+/// `find_variable_references` per grant per file walked every tree once per
+/// grant, and the right-level check then recomputed the same numbers.
+fn workspace_reference_counts(
+    scan_files: &[(String, tree_sitter::Tree)],
+) -> HashMap<String, usize> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for (text, tree) in scan_files {
+        for (name, count) in al_syntax::count_identifier_occurrences(tree, text) {
+            *counts.entry(name).or_default() += count;
+        }
+    }
+    counts
+}
+
+/// Total identifier references to `object` across the snapshot.
+fn count_object_refs(reference_counts: &HashMap<String, usize>, object: &str) -> usize {
+    reference_counts
+        .get(&object.to_lowercase())
+        .copied()
+        .unwrap_or(0)
 }
 
 /// Right-level / RIMDX over-grant detection.
@@ -511,7 +534,7 @@ fn count_object_refs(scan_files: &[(String, tree_sitter::Tree)], object: &str) -
 /// Tables that are *not* referenced are skipped here — they are surfaced by
 /// `compute_over_broad` instead, so the two checks never double-report a grant.
 fn compute_over_granted_rights(
-    scan_files: &[(String, tree_sitter::Tree)],
+    reference_counts: &HashMap<String, usize>,
     perm_sets: &[(String, Vec<PermissionGrant>)],
     declared_names: &HashSet<String>,
     observed_writes: &ObservedWrites,
@@ -553,7 +576,7 @@ fn compute_over_granted_rights(
 
             // Skip tables that aren't referenced at all — object-level handles
             // those, and "only R observed" presumes the table is read.
-            let total_refs = count_object_refs(scan_files, &grant.object);
+            let total_refs = count_object_refs(reference_counts, &grant.object);
             let baseline = usize::from(declared_names.contains(&object_lower));
             if total_refs <= baseline {
                 continue;
