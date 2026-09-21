@@ -200,7 +200,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
 - fix: route every one of these through `crate::clean_identifier_text` /
   `node_text_clean`, including `al-analysis`'s `node_clean_name`, and delete the
   ad-hoc `trim_matches('"')` calls.
-- status: open
+- status: fixed bce5ec64
 
 ### [TEST] The incremental-parse benchmark never performs an edit
 - where: crates/al-syntax/benches/parser.rs:97-121
@@ -296,6 +296,51 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
 - fix: snap both offsets to char boundaries (`xml.floor_char_boundary` / a
   `is_char_boundary` loop) before slicing.
 - status: fixed tree-sitter-al eef111e (gitlink 48cbd3b0)
+
+## Found while fixing
+
+### [BUG] 124 more `trim_matches('"')` identifier cleanups outside al-syntax
+- where: crates/al-analysis/src (102 occurrences, notably resolution.rs:145,389,583,1610,
+  1629,1662,1671; queries/hover.rs:30,193; queries/code_lens.rs:93,98,119,150,409;
+  queries/dead_code.rs:225,520,548; queries/rename.rs:224; queries/implementation.rs:131;
+  queries/obsolete_usage.rs:49; queries/impact.rs:157-161; xliff.rs:328,598) and
+  crates/al-insight (22 occurrences)
+- severity: medium
+- scenario: the same defect the al-syntax fix (bce5ec64) removed. `trim_matches('"')`
+  strips quote *runs* and leaves a doubled `""` in place, so a name written
+  `"Cust ""Main"" Rec"` is keyed as `Cust ""Main"" Rec` while al-syntax now stores
+  `Cust "Main" Rec`. Hover's `clean_name` (hover.rs:30) and the code-lens reference
+  counts are the visible surfaces. A name ending in a quote (`"Name"""`) is
+  over-stripped to `Name` at every one of these sites.
+- fix: route them through `al_syntax::clean_identifier` / `node_text_clean`. The
+  sites that also strip `'` are attribute/property values, not identifiers, and
+  belong with `clean_attr_arg` instead.
+- note: left open deliberately. al-analysis was being edited on another branch
+  while this fix ran, so only `node_clean_name` was changed there.
+- status: open
+
+### [BUG] `clean_attr_arg` does not unescape doubled quotes
+- where: crates/al-syntax/src/lib.rs:52
+- severity: low
+- scenario: `clean_attr_arg` strips `"` runs with `trim_matches`, the same way the
+  identifier sites did before bce5ec64. An attribute argument that names a quoted
+  object (`[EventSubscriber(ObjectType::Codeunit, "My ""Big"" Codeunit", …)]`) keeps
+  its doubled quotes, so it does not match the object name al-syntax reports.
+- fix: strip one quote pair and unescape `""` for the `"` case, keeping the existing
+  `'` handling for string-literal arguments.
+- status: open
+
+### [GAP] `sort_members` leaves a blank line stranded at the end of a body
+- where: crates/al-syntax/src/sort.rs:194-277 (`split_into_members`)
+- severity: low
+- scenario: a member block absorbs the blank line that follows it, so sorting
+  `Zebra` (blank) `Mango` emits `Mango` `Zebra` (blank): the two procedures end up
+  with no separator and a blank line sits against the closing brace. Pre-existing
+  and unrelated to the multi-object fix (24ffeeea) — verified against the code
+  before it. The output is still a pure reordering, so `is_pure_reordering` passes.
+- fix: split trailing blank lines off each member into a separator pool and re-emit
+  one between members, keeping the line multiset intact.
+- status: open
 
 ## Review complete
 
