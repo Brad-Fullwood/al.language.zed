@@ -939,6 +939,11 @@ impl SymbolIndex {
         cache.clone()
     }
 
+    /// Names the substring stage of [`search`] may examine for one query.
+    ///
+    /// [`search`]: Self::search
+    pub const SUBSTRING_SCAN_BUDGET: usize = 20_000;
+
     pub fn search(&self, query: &str, limit: usize) -> Vec<Arc<SymbolEntry>> {
         if limit == 0 {
             return Vec::new();
@@ -967,8 +972,22 @@ impl SymbolIndex {
             }
         }
 
+        // Third stage: a fragment in the middle of a name. There is no index
+        // for that, so it scans, and a Base Application-scale catalogue is
+        // ~50 000 names. The budget keeps one keystroke's worth of work bounded
+        // rather than letting an unmatched fragment walk the whole catalogue.
         if !query_lower.is_empty() && results.len() < limit {
+            let mut budget = Self::SUBSTRING_SCAN_BUDGET;
             for name in names.iter() {
+                if budget == 0 {
+                    tracing::debug!(
+                        query = %query_lower,
+                        budget = Self::SUBSTRING_SCAN_BUDGET,
+                        "workspace symbol search: substring stage hit its scan budget"
+                    );
+                    break;
+                }
+                budget -= 1;
                 if name.contains(&query_lower) && !name.starts_with(&query_lower) {
                     self.append_search_name(name, limit, &mut results);
                     if results.len() == limit {
@@ -1520,6 +1539,28 @@ mod tests {
             vec!["Customer", "Customer Ledger Entry", "My Customer Archive"]
         );
         assert!(index.search("customer", 0).is_empty());
+    }
+
+    /// The substring stage has no index behind it, so a fragment that matches
+    /// nothing must not walk a Base Application-scale catalogue.
+    #[test]
+    fn the_substring_stage_stops_at_its_scan_budget() {
+        let index = SymbolIndex::new();
+        let over_budget = SymbolIndex::SUBSTRING_SCAN_BUDGET + 500;
+        let entries: Vec<_> = (0..over_budget)
+            .map(|i| make_entry(ObjectKind::Table, i as i32, &format!("Aaa Object {i:06}")))
+            .collect();
+        index.add_entries(&entries);
+        // A name only the very end of the catalogue carries.
+        index.add_entries(&[make_entry(ObjectKind::Table, 999_999, "Zzz Needle Object")]);
+
+        let hits = index.search("needle", 10);
+        assert!(
+            hits.is_empty(),
+            "the scan must stop at the budget rather than reaching the tail: {hits:?}"
+        );
+        // A prefix query still finds it: that stage is indexed, not scanned.
+        assert_eq!(index.search("zzz needle", 10).len(), 1);
     }
 
     #[test]
