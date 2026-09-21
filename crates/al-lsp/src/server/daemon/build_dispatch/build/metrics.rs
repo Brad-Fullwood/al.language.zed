@@ -4,8 +4,8 @@ use al_protocol::jsonrpc::{error_codes, Response};
 use al_workspace::Workspace;
 
 use crate::server::daemon::{
-    ensure_document, file_not_found, file_uri_from_params, invalid_params, optional_bool_param,
-    optional_bounded_usize_param, rpc_error,
+    file_not_found, optional_bool_param, optional_bounded_usize_param, read_document_from_params,
+    rpc_error,
 };
 
 pub(in crate::server::daemon) fn dispatch_metrics(
@@ -55,14 +55,10 @@ pub(in crate::server::daemon) fn dispatch_metrics(
         };
     }
 
-    let uri = match file_uri_from_params(workspace, params) {
-        Ok(Some(uri)) => uri,
-        Ok(None) => return invalid_params(id),
-        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
 
     let Some(text) = workspace.documents.get_text(&uri) else {
         return file_not_found(id);

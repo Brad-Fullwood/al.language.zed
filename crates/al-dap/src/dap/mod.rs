@@ -33,11 +33,10 @@ pub enum DapError {
     #[error("DAP protocol error in {command}: {message}")]
     DapProtocolError { command: String, message: String },
 
-    #[error("Debug session is not paused")]
-    SessionNotPaused,
-
-    #[error("No active debug session")]
-    NoActiveSession,
+    #[error(
+        "BC rejected the debug configuration on {attempts} attempts; breakpoints will not bind"
+    )]
+    ConfigurationFailed { attempts: u32 },
 
     #[error("Operation timed out after {0:?}")]
     Timeout(Duration),

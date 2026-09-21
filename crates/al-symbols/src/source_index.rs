@@ -27,8 +27,24 @@ const MAX_TOTAL_EXTRACTED_SOURCE_BYTES: u64 = 1_073_741_824; // 1 GiB
 /// concurrent callers for the **same** path serialise on building the index
 /// (double-checked locking) while callers for **different** paths remain
 /// independent.
+///
+/// The cache is process-global and keyed by canonical path, so a session that
+/// re-points `al.packageCachePath` or downloads successive symbol versions
+/// would otherwise accumulate one full index per path ever seen. It is
+/// bounded: [`MAX_CACHED_SOURCE_INDEXES`] entries, least recently used first
+/// out, and a workspace that drops packages removes their entries outright.
 static SOURCE_INDEX_CACHE: OnceLock<DashMap<PathBuf, Arc<AppSourceIndex>>> = OnceLock::new();
 static SOURCE_BUILD_LOCKS: OnceLock<DashMap<PathBuf, Arc<Mutex<()>>>> = OnceLock::new();
+static SOURCE_INDEX_CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A workspace loads its `.alpackages` plus the Microsoft base symbols, so the
+/// working set is tens of packages. The cap is what keeps a long session from
+/// holding an index per package version it has ever seen.
+pub const MAX_CACHED_SOURCE_INDEXES: usize = 64;
+
+fn next_tick() -> u64 {
+    SOURCE_INDEX_CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Acquire a payload-free source-index build lock.
 ///
@@ -52,6 +68,8 @@ fn lock_source_build(lock: &Mutex<()>) -> std::sync::MutexGuard<'_, ()> {
 pub struct AppSourceIndex {
     modified: SystemTime,
     file_size: u64,
+    /// Tick of the last `get_or_build`/`get_cached` hit, for eviction order.
+    last_used: std::sync::atomic::AtomicU64,
     app_path: PathBuf,
     by_kind_id: HashMap<(ObjectKind, i32), String>,
     by_kind_name: HashMap<(ObjectKind, String), String>,
@@ -135,8 +153,10 @@ impl AppSourceIndex {
             // accepted — the real name may continue past the boundary, and a
             // truncated key would break name-based navigation.
             let truncated = file.size() > buf.len() as u64;
-            let mut header = parse_object_header_inner(&buf, truncated);
-            if header.is_none() && truncated {
+            // Every declaration in the window is kept. Objects past a 256 KiB
+            // window are not, which no real multi-object AL file reaches.
+            let mut headers = parse_object_headers(&buf, truncated);
+            if headers.is_empty() && truncated {
                 if file.size() > MAX_EXTRACTED_SOURCE_BYTES {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -157,7 +177,7 @@ impl AppSourceIndex {
                         ),
                     ));
                 }
-                header = parse_object_header(&buf);
+                headers = parse_object_headers(&buf, false);
             }
             total_decompressed = total_decompressed.saturating_add(buf.len() as u64);
             if total_decompressed > MAX_TOTAL_EXTRACTED_SOURCE_BYTES {
@@ -167,7 +187,7 @@ impl AppSourceIndex {
                 ));
             }
 
-            if let Some((kind, id, obj_name)) = header {
+            for (kind, id, obj_name) in headers {
                 by_kind_id.entry((kind, id)).or_insert_with(|| name.clone());
                 by_kind_name
                     .entry((kind, obj_name.to_lowercase()))
@@ -181,11 +201,47 @@ impl AppSourceIndex {
         Ok(Self {
             modified,
             file_size,
+            last_used: std::sync::atomic::AtomicU64::new(next_tick()),
             app_path: app_path.to_path_buf(),
             by_kind_id,
             by_kind_name,
             source_paths,
         })
+    }
+
+    fn touch(&self) {
+        self.last_used
+            .store(next_tick(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn last_used(&self) -> u64 {
+        self.last_used.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Heap held by this index: both lookup maps and the archive path list.
+    pub fn owned_bytes(&self) -> usize {
+        let by_kind_id: usize = self
+            .by_kind_id
+            .iter()
+            .map(|(key, value)| std::mem::size_of_val(key) + value.capacity())
+            .sum();
+        let by_kind_name: usize = self
+            .by_kind_name
+            .iter()
+            .map(|((_, name), value)| {
+                std::mem::size_of::<(ObjectKind, String)>() + name.capacity() + value.capacity()
+            })
+            .sum();
+        let source_paths: usize = self
+            .source_paths
+            .iter()
+            .map(|path| std::mem::size_of::<String>() + path.capacity())
+            .sum();
+        std::mem::size_of::<Self>()
+            + self.app_path.as_os_str().len()
+            + by_kind_id
+            + by_kind_name
+            + source_paths
     }
 
     pub fn source_path_for_entry(&self, entry: &SymbolEntry) -> Option<&str> {
@@ -352,6 +408,7 @@ pub fn get_or_build(app_path: &Path) -> io::Result<Arc<AppSourceIndex>> {
     };
 
     if let Some(index) = fresh()? {
+        index.touch();
         return Ok(index);
     }
 
@@ -367,12 +424,74 @@ pub fn get_or_build(app_path: &Path) -> io::Result<Arc<AppSourceIndex>> {
     let _guard = lock_source_build(&lock_arc);
 
     if let Some(index) = fresh()? {
+        index.touch();
         return Ok(index);
     }
 
     let built = Arc::new(AppSourceIndex::from_app_path(app_path)?);
+    built.touch();
     cache.insert(app_path.to_path_buf(), built.clone());
+    evict_until_within_cap(cache, app_path);
     Ok(built)
+}
+
+/// Drop least recently used entries until the cache is back within its cap.
+/// `keep` is the entry the caller just built, which must survive its own
+/// insertion however full the cache was.
+fn evict_until_within_cap(cache: &DashMap<PathBuf, Arc<AppSourceIndex>>, keep: &Path) {
+    while cache.len() > MAX_CACHED_SOURCE_INDEXES {
+        let victim = cache
+            .iter()
+            .filter(|entry| entry.key() != keep)
+            .min_by_key(|entry| entry.value().last_used())
+            .map(|entry| entry.key().clone());
+        let Some(victim) = victim else {
+            return;
+        };
+        cache.remove(&victim);
+        if let Some(locks) = SOURCE_BUILD_LOCKS.get() {
+            locks.remove(&victim);
+        }
+        tracing::debug!(
+            path = %victim.display(),
+            "evicted least recently used .app source index"
+        );
+    }
+}
+
+/// Drop the cached index for one `.app`, if any.
+///
+/// Called when a workspace unloads or replaces a package: the index holds two
+/// maps plus one archive path per embedded `.al`, which for a source-bearing
+/// Base Application is tens of thousands of entries.
+pub fn remove_source_index(app_path: &Path) {
+    let canonical = std::fs::canonicalize(app_path).unwrap_or_else(|_| app_path.to_path_buf());
+    for key in [canonical, app_path.to_path_buf()] {
+        if let Some(cache) = SOURCE_INDEX_CACHE.get() {
+            cache.remove(&key);
+        }
+        if let Some(locks) = SOURCE_BUILD_LOCKS.get() {
+            locks.remove(&key);
+        }
+    }
+}
+
+/// Bytes held by every cached source index, for memory reporting.
+pub fn cached_memory_bytes() -> usize {
+    SOURCE_INDEX_CACHE
+        .get()
+        .map(|cache| {
+            cache
+                .iter()
+                .map(|entry| entry.key().as_os_str().len() + entry.value().owned_bytes())
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// Number of cached source indexes.
+pub fn cached_index_count() -> usize {
+    SOURCE_INDEX_CACHE.get().map(DashMap::len).unwrap_or(0)
 }
 
 /// Return an already-built source index without touching the filesystem.
@@ -381,10 +500,12 @@ pub fn get_or_build(app_path: &Path) -> io::Result<Arc<AppSourceIndex>> {
 /// index. User-facing search and package-summary requests use this lookup so a
 /// cold request can never trigger an archive scan on the daemon thread.
 pub fn get_cached(app_path: &Path) -> Option<Arc<AppSourceIndex>> {
-    SOURCE_INDEX_CACHE
+    let index = SOURCE_INDEX_CACHE
         .get()?
         .get(app_path)
-        .map(|entry| Arc::clone(entry.value()))
+        .map(|entry| Arc::clone(entry.value()))?;
+    index.touch();
+    Some(index)
 }
 
 pub fn clear_source_index_cache() {
@@ -396,20 +517,49 @@ pub fn clear_source_index_cache() {
     }
 }
 
+/// The first declaration only. The indexer takes every declaration through
+/// [`parse_object_headers`]; this single-result form is what the scanner's own
+/// tests assert against.
+#[cfg(test)]
 fn parse_object_header(bytes: &[u8]) -> Option<(ObjectKind, i32, String)> {
     parse_object_header_inner(bytes, false)
 }
 
-/// Parse the first object declaration header in `bytes`.
+#[cfg(test)]
+fn parse_object_header_inner(
+    bytes: &[u8],
+    reject_name_at_end: bool,
+) -> Option<(ObjectKind, i32, String)> {
+    scan_object_headers(bytes, reject_name_at_end, true)
+        .into_iter()
+        .next()
+}
+
+/// Every object declaration header in `bytes`, in document order.
+///
+/// AL allows several objects in one file, and a package built from such a
+/// file ships it as one archive entry, so indexing only the first left every
+/// later object unreachable from navigation.
+fn parse_object_headers(bytes: &[u8], reject_name_at_end: bool) -> Vec<(ObjectKind, i32, String)> {
+    scan_object_headers(bytes, reject_name_at_end, false)
+}
+
+/// Scan object declaration headers.
 ///
 /// With `reject_name_at_end`, an *unquoted* name that terminates only because
 /// the buffer ends (no whitespace/`{` delimiter seen) is rejected: the caller
 /// passed a truncated window and the real name may continue past the boundary.
 /// Quoted names need no such guard — an unterminated quote already fails.
-fn parse_object_header_inner(
+///
+/// A type reference inside a body (`Codeunit "Sales-Post"`, `Enum "Status"`)
+/// carries no object id, and every kind that can be declared with one is
+/// required to have one here, so bodies do not produce spurious matches.
+fn scan_object_headers(
     bytes: &[u8],
     reject_name_at_end: bool,
-) -> Option<(ObjectKind, i32, String)> {
+    stop_after_first: bool,
+) -> Vec<(ObjectKind, i32, String)> {
+    let mut found = Vec::new();
     let text = String::from_utf8_lossy(bytes);
     let s = text.as_ref();
     let b = s.as_bytes();
@@ -472,19 +622,29 @@ fn parse_object_header_inner(
                     if reject_name_at_end && unquoted && name_end == b.len() {
                         // The name may straddle the truncated window edge;
                         // force the caller's full-read fallback.
-                        return None;
+                        return found;
                     }
-                    return Some((kind, id, name));
+                    found.push((kind, id, name));
+                    if stop_after_first {
+                        return found;
+                    }
+                    i = name_end;
+                    continue;
                 }
                 if kind == ObjectKind::DotNet {
-                    return Some((kind, id, String::new()));
+                    found.push((kind, id, String::new()));
+                    if stop_after_first {
+                        return found;
+                    }
+                    i = k;
+                    continue;
                 }
             }
         } else {
             i += 1;
         }
     }
-    None
+    found
 }
 
 fn skip_ws_and_comments(bytes: &[u8], i: &mut usize) {
@@ -849,11 +1009,54 @@ mod tests {
         AppSourceIndex {
             modified: SystemTime::UNIX_EPOCH,
             file_size: 1,
+            last_used: std::sync::atomic::AtomicU64::new(0),
             app_path: PathBuf::new(),
             by_kind_id,
             by_kind_name,
             source_paths,
         }
+    }
+
+    /// AL allows several objects in one file, and a package ships such a file
+    /// as one archive entry. Every object in it has to be reachable, not just
+    /// the first.
+    #[test]
+    #[serial_test::serial]
+    fn every_object_in_a_multi_object_entry_is_indexed() {
+        clear_source_index_cache();
+
+        let source = concat!(
+            "codeunit 50100 \"First Object\"\n{\n    procedure Run() begin end;\n}\n\n",
+            "codeunit 50101 \"Second Object\"\n{\n    var Helper: Codeunit \"Sales-Post\";\n}\n\n",
+            "table 50102 Third\n{\n    fields { field(1; \"No.\"; Code[20]) { } }\n}\n"
+        );
+        let path = write_app(&[("src/Combined.al", source)]);
+        let index = get_or_build(&path).unwrap();
+
+        for (kind, id, name) in [
+            (ObjectKind::Codeunit, 50100, "First Object"),
+            (ObjectKind::Codeunit, 50101, "Second Object"),
+            (ObjectKind::Table, 50102, "Third"),
+        ] {
+            assert_eq!(
+                index.source_path_for_entry(&entry(kind, id, name)),
+                Some("src/Combined.al"),
+                "{name} is not reachable"
+            );
+            assert_eq!(
+                index.source_path_for_entry(&entry(kind, 0, name)),
+                Some("src/Combined.al"),
+                "{name} is not reachable by name"
+            );
+        }
+        // A type reference inside a body carries no object id, so it must not
+        // register as a declaration.
+        assert_eq!(
+            index.source_path_for_entry(&entry(ObjectKind::Codeunit, 0, "Sales-Post")),
+            None
+        );
+
+        clear_source_index_cache();
     }
 
     #[test]
@@ -1349,6 +1552,56 @@ mod tests {
             second.source_path_for_entry(&entry(ObjectKind::Codeunit, 1, "V1")),
             None,
             "stale V1 object must be gone after rebuild"
+        );
+
+        clear_source_index_cache();
+    }
+
+    /// A long session that re-points the package cache path, or downloads
+    /// successive symbol versions, must not accumulate one index per path.
+    #[test]
+    #[serial_test::serial]
+    fn the_source_index_cache_is_bounded() {
+        clear_source_index_cache();
+
+        let mut paths = Vec::new();
+        for i in 0..(MAX_CACHED_SOURCE_INDEXES + 8) {
+            let path = write_app(&[(
+                "src/Obj.al",
+                Box::leak(format!("codeunit {} Obj{}\n{{\n}}", i + 1, i).into_boxed_str()),
+            )]);
+            get_or_build(&path).unwrap();
+            paths.push(path);
+        }
+
+        assert!(
+            cached_index_count() <= MAX_CACHED_SOURCE_INDEXES,
+            "cache grew to {} entries",
+            cached_index_count()
+        );
+        assert!(
+            get_cached(&std::fs::canonicalize(paths.last().unwrap()).unwrap()).is_some(),
+            "the most recently built index must survive"
+        );
+
+        clear_source_index_cache();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn removing_a_package_releases_its_source_index() {
+        clear_source_index_cache();
+
+        let path = write_app(&[("src/Gone.al", "codeunit 7 Gone\n{\n}")]);
+        let canonical = std::fs::canonicalize(&path).unwrap();
+        get_or_build(&path).unwrap();
+        assert!(get_cached(&canonical).is_some());
+        assert!(cached_memory_bytes() > 0);
+
+        remove_source_index(&path);
+        assert!(
+            get_cached(&canonical).is_none(),
+            "an unloaded package must not keep its source index"
         );
 
         clear_source_index_cache();

@@ -156,8 +156,13 @@ impl App {
             )
             .map_err(|e| format!("search request failed: {e}"))?;
 
-            let parsed: Vec<types::SymbolEntry> = serde_json::from_value(result)
-                .map_err(|e| format!("Failed to deserialize symbol entries from daemon: {e}"))?;
+            // The `limit` above is the index's search bound, and a request
+            // that carries one comes back as the projection envelope rather
+            // than a bare array. `list_rows` reads either.
+            let parsed: Vec<types::SymbolEntry> = serde_json::from_value(
+                crate::cli::commands::list_rows(&result).clone(),
+            )
+            .map_err(|e| format!("Failed to deserialize symbol entries from daemon: {e}"))?;
             if !parsed.is_empty() {
                 entries = parsed;
                 break;

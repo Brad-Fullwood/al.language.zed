@@ -70,6 +70,15 @@ pub enum SnapshotCaptureError {
         line: u32,
         object: Option<(i32, i32)>,
     },
+    #[error(
+        "debug session stopped on line {line} and BC did not report which object, so the stop \
+         matches {count} configured breakpoints: {files:?}"
+    )]
+    AmbiguousStop {
+        line: u32,
+        count: usize,
+        files: Vec<String>,
+    },
     #[error("debug session paused without a source location (object {object:?})")]
     MissingStopLocation { object: Option<(i32, i32)> },
     #[error("live test completed without hitting any configured breakpoint")]
@@ -103,7 +112,16 @@ pub async fn capture_live_snapshot(
     let shutdown_result = debug.stop().await;
     match (capture_result, shutdown_result) {
         (Ok(snapshot), Ok(())) => Ok(snapshot),
-        (Ok(_), Err(shutdown)) => Err(SnapshotCaptureError::Debug(shutdown)),
+        // The snapshot is complete and useful; a debugger BC failed to detach
+        // is an operational problem for the next session, not a reason to
+        // throw the capture away.
+        (Ok(snapshot), Err(shutdown)) => {
+            tracing::warn!(
+                %shutdown,
+                "snapshot captured, but the BC debug session did not detach"
+            );
+            Ok(snapshot)
+        }
         (Err(capture), Ok(())) => Err(capture),
         (Err(capture), Err(shutdown)) => Err(SnapshotCaptureError::CaptureAndShutdown {
             capture: capture.to_string(),
@@ -188,6 +206,9 @@ async fn capture_with_session(
                     .ok_or(SnapshotCaptureError::MissingStopLocation {
                         object: current_object,
                     })?;
+                // BC does not always report the object it stopped in, and the
+                // Break event carries no source path either, so narrow by
+                // whatever the stop does identify.
                 let candidates = request
                     .breakpoints
                     .iter()
@@ -197,11 +218,26 @@ async fn capture_with_session(
                                 breakpoint.object_type == object_type
                                     && breakpoint.object_id == object_id
                             })
+                            && (location.file.is_empty() || breakpoint.file == location.file)
                     })
                     .collect::<Vec<_>>();
                 let configured = match candidates.as_slice() {
                     [breakpoint] => *breakpoint,
-                    _ => {
+                    // Two breakpoints on the same line of different files and
+                    // no object identity: the capture was configured exactly as
+                    // asked, and saying the stop was "unconfigured" sends the
+                    // reader after the wrong thing.
+                    [_, _, ..] => {
+                        return Err(SnapshotCaptureError::AmbiguousStop {
+                            line: location.line,
+                            count: candidates.len(),
+                            files: candidates
+                                .iter()
+                                .map(|breakpoint| breakpoint.file.clone())
+                                .collect(),
+                        });
+                    }
+                    [] => {
                         return Err(SnapshotCaptureError::UnexpectedStop {
                             line: location.line,
                             object: current_object,

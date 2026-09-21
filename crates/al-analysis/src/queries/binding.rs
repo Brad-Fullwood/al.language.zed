@@ -167,6 +167,31 @@ fn qualifier_before(text: &str, byte: usize) -> String {
     before[start..].to_lowercase()
 }
 
+/// The name token in an `object_section`'s parenthesized header.
+///
+/// The header spells the name either first (`key(PK; "No.")`,
+/// `action(Post)`, `field(Name; Rec.Name)` on a page) or after a leading id
+/// (`field(2; "Posting Date"; Date)`, `value(0; Open)`), so a leading integer
+/// and its separator are skipped and the next identifier is the name.
+fn section_header_name(section: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    let mut cursor = section.walk();
+    let header = section
+        .children(&mut cursor)
+        .find(|n| n.kind() == "parenthesized_block")?;
+    let mut header_cursor = header.walk();
+    let mut seen_id = false;
+    for child in header.named_children(&mut header_cursor) {
+        match child.kind() {
+            "integer" if !seen_id => seen_id = true,
+            "semicolon" | "comma" if seen_id => {}
+            "identifier" | "quoted_identifier" => return Some(child),
+            "name" | "name_or_keyword" => return Some(child),
+            _ => return None,
+        }
+    }
+    None
+}
+
 /// If `pos` falls on the *name* of a declaration (procedure, trigger, field, or
 /// variable), return that name's location as a `BindKey`. Returns `None` when
 /// `pos` is inside a declaration but not on its name (i.e. a usage in the body),
@@ -187,6 +212,22 @@ pub(crate) fn enclosing_declaration_name(
     let mut cur = Some(node);
     while let Some(n) = cur {
         match n.kind() {
+            // A table field, table key, enum value, page field, action or
+            // group is not a `field_declaration`: it parses as an
+            // `object_section` whose header is a `parenthesized_block`
+            // (`field(2; "Posting Date"; Date) { }`). Without this arm a cursor
+            // on such a name is not recognized as a declaration site, so
+            // `decl_loc` defers to go-to-definition, which resolves the
+            // declaration to one of its own uses and makes the two disagree.
+            "object_section" => {
+                let name = section_header_name(n)?;
+                if node.start_byte() >= name.start_byte() && node.end_byte() <= name.end_byte() {
+                    let range: Range =
+                        al_syntax::ts_range_to_syntax(&name.range(), text.as_bytes()).into();
+                    return Some((uri.to_string(), range.start.line, range.start.character));
+                }
+                return None;
+            }
             "procedure_declaration"
             | "trigger_declaration"
             | "event_procedure_declaration"

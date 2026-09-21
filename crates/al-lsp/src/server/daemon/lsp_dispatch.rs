@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use super::{
     ensure_document, extract_position, extract_uri, invalid_params, optional_bool_param,
-    optional_bounded_usize_param, rpc_error,
+    optional_bounded_usize_param, read_document_from_params, rpc_error,
 };
 
 /// Sentinel package name for workspace-local objects (not from .app packages).
@@ -55,15 +55,13 @@ pub(super) async fn dispatch_hover(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let result = match al_analysis::queries::hover::hover_full(workspace, &uri, position).await {
         Ok(result) => result,
         Err(error) => {
@@ -82,15 +80,13 @@ pub(super) fn dispatch_definition(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let result = al_analysis::queries::definition::definition(workspace, &uri, position);
     match result {
         Ok(Some(locations)) => ok_response(id, &locations, "textDocument/definition"),
@@ -108,9 +104,6 @@ pub(super) fn dispatch_references(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
@@ -118,9 +111,10 @@ pub(super) fn dispatch_references(
         Ok(value) => value,
         Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let locations = match al_analysis::queries::references::references(
         workspace,
         &uri,
@@ -144,15 +138,13 @@ pub(super) fn dispatch_implementations(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let locations =
         al_analysis::queries::implementation::find_implementations(workspace, &uri, position);
     ok_response(id, &locations, "textDocument/implementation")
@@ -163,15 +155,13 @@ pub(super) async fn dispatch_completions(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let entries = match al_analysis::queries::completions::completions_full(
         workspace, &uri, position,
     )
@@ -194,15 +184,13 @@ pub(super) fn dispatch_signature_help(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let result = al_analysis::queries::signature::signature_help(workspace, &uri, position);
     match result {
         Ok(result) => ok_response_opt(id, result, "textDocument/signatureHelp"),
@@ -248,12 +236,10 @@ pub(super) fn dispatch_document_symbols(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
     // Serialize the transport-agnostic AlDocumentSymbol vec directly. The daemon
     // returns JSON, so there is no need to round-trip through tower_lsp types.
     let result = al_analysis::queries::symbols::document_symbols(workspace, &uri);
@@ -265,12 +251,10 @@ pub(super) fn dispatch_folding_ranges(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
     let result = al_analysis::queries::folding::folding_ranges(workspace, &uri);
     ok_response_opt(id, result, "textDocument/foldingRange")
 }
@@ -280,12 +264,10 @@ pub(super) fn dispatch_semantic_tokens(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
     let tokens = al_analysis::queries::semantic_tokens::semantic_tokens_full(workspace, &uri);
     ok_response(id, &tokens, "textDocument/semanticTokens/full")
 }
@@ -295,9 +277,6 @@ pub(super) fn dispatch_inlay_hints(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     // Cap to u32::MAX to prevent silent truncation of attacker-controlled
     // line values (matches extract_position in mod.rs). An out-of-range
     // startLine/endLine is rejected with INVALID_PARAMS rather than wrapping
@@ -316,9 +295,10 @@ pub(super) fn dispatch_inlay_hints(
             None => return invalid_params(id),
         },
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let range = al_analysis::queries::Range {
         start: al_analysis::queries::Position {
             line: start_line,
@@ -367,15 +347,13 @@ pub(super) fn dispatch_code_actions(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let range = al_analysis::queries::Range {
         start: position,
         end: position,
@@ -556,6 +534,25 @@ fn resolve_unique_kind_by_name(
     }
 }
 
+/// Run the call-graph enrichment pass so workspace objects carry their fields
+/// and methods, and carry on if it cannot.
+///
+/// `object` and `byId` answered a workspace object with kind, id, name and
+/// nothing else, because members only enter the symbol index through this
+/// pass. A Haiku run asked `by-id codeunit 50130` for `.methods[0].name` and
+/// got null. The pass is an enrichment here rather than a requirement: a file
+/// the index cannot parse must still not stop the lookup from answering with
+/// the object's identity.
+fn enrich_workspace_members(workspace: &Workspace, method: &str) {
+    if let Err(error) = workspace.get_or_build_call_graph() {
+        tracing::warn!(
+            method,
+            %error,
+            "workspace members are unavailable for this lookup; answering with object identity"
+        );
+    }
+}
+
 pub(super) fn dispatch_object(
     workspace: &Workspace,
     id: u64,
@@ -581,6 +578,7 @@ pub(super) fn dispatch_object(
             None => return invalid_params(id),
         },
     };
+    enrich_workspace_members(workspace, "object");
     let candidates = workspace.symbols.get_by_name(name);
     let mut matches: Vec<serde_json::Value> = match candidates
         .iter()
@@ -728,6 +726,7 @@ pub(super) fn dispatch_by_id(
         Ok(k) => k,
         Err(e) => return e,
     };
+    enrich_workspace_members(workspace, "byId");
     let results = workspace.symbols.get_by_id(kind, obj_id);
     let mut value: Vec<serde_json::Value> = match results
         .iter()
@@ -852,34 +851,107 @@ pub(super) fn dispatch_subscribers(
     };
     // see dispatch_events — workspace subscribers need the
     // enrichment pass too.
-    if let Err(error) = workspace.get_or_build_call_graph() {
-        return rpc_error(
-            id,
-            error_codes::INTERNAL_ERROR,
-            &format!("subscriber query could not build a complete workspace graph: {error}"),
-        );
-    }
+    let (graph, _cg_guard) = match workspace.get_or_build_call_graph() {
+        Ok(graph) => graph,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("subscriber query could not build a complete workspace graph: {error}"),
+            );
+        }
+    };
     let results = workspace.symbols.get_events(event);
-    let subscribers: Vec<serde_json::Value> = results
+    let mut subscribers: Vec<serde_json::Value> = results
         .subscribers
         .iter()
         .map(|s| {
             serde_json::json!({
+                "objectKind": s.object.kind.to_string(),
                 "objectName": s.object.name,
                 "methodName": s.method.name,
                 "targetObjectType": s.target_object_type,
                 "targetObjectName": s.target_object_name,
                 "targetEventName": s.target_event_name,
+                "package": s.object.package,
+                "resolved": true,
                 "source_availability": workspace.symbols.source_availability(&s.object),
             })
         })
         .collect();
+
+    // Microsoft symbol packages carry no EventSubscriber attribute, so the
+    // symbol index sees workspace subscribers only. The insight graph also
+    // holds the subscribers parsed out of each package's extracted AL source,
+    // which is the set `trace` was reporting while this method returned [].
+    for matched in al_insight::discovery::subscribers_of(&graph, event) {
+        subscribers.push(serde_json::json!({
+            "objectKind": matched.object_kind,
+            "objectName": matched.object_name,
+            "methodName": matched.method_name,
+            "targetObjectType": "",
+            "targetObjectName": matched.target_object,
+            "targetEventName": matched.target_event,
+            "package": package_of_object(workspace, &matched.object_name),
+            "resolved": matched.resolved,
+        }));
+    }
+    dedup_subscribers(&mut subscribers);
+
     Response {
         id,
         result: Some(serde_json::json!(subscribers)),
         error: None,
         ..Default::default()
     }
+}
+
+/// The package that owns an object name, for rows whose source carries no
+/// package of its own (insight-graph nodes). Workspace objects win over a
+/// same-named package object because the workspace copy is the one a developer
+/// can change.
+fn package_of_object(workspace: &Workspace, object_name: &str) -> String {
+    if workspace
+        .file_index
+        .object_info
+        .iter()
+        .any(|entry| entry.value().name.eq_ignore_ascii_case(object_name))
+    {
+        return WORKSPACE_PACKAGE.to_string();
+    }
+    workspace
+        .symbols
+        .get_by_name(object_name)
+        .first()
+        .map(|entry| entry.package.clone())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Collapse rows that name the same handler. The symbol index and the insight
+/// graph both see a workspace subscriber, so the merge above lists it twice.
+fn dedup_subscribers(subscribers: &mut Vec<serde_json::Value>) {
+    let mut seen = std::collections::HashSet::new();
+    let mut unique = Vec::with_capacity(subscribers.len());
+    for row in subscribers.drain(..) {
+        let key = (
+            row.get("objectName")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_lowercase(),
+            row.get("methodName")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_lowercase(),
+            row.get("targetEventName")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_lowercase(),
+        );
+        if seen.insert(key) {
+            unique.push(row);
+        }
+    }
+    *subscribers = unique;
 }
 
 pub(super) fn dispatch_composed(
@@ -1822,6 +1894,64 @@ mod tests {
         let resp = dispatch_subscribers(&ws, 23, &serde_json::json!({ "event": "OnAfterPost" }));
         assert!(resp.error.is_none());
         assert_eq!(resp.result, Some(serde_json::json!([])));
+    }
+
+    /// `subscribers` read the symbol index only, and Microsoft symbol packages
+    /// carry no `EventSubscriber` attribute, so it answered `[]` for events
+    /// `trace` could follow to three handlers. Both now read the same graph.
+    #[test]
+    fn dispatch_subscribers_agrees_with_trace() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/Publisher.Codeunit.al"),
+            r#"codeunit 50100 "Test Event Publisher"
+{
+    [IntegrationEvent(false, false)]
+    procedure OnAfterProcess()
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/Handler.Codeunit.al"),
+            r#"codeunit 50101 "Work Order Subscribers"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Test Event Publisher", 'OnAfterProcess', '', false, false)]
+    local procedure OnAfterProcessLogResult()
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+
+        let subscribers =
+            dispatch_subscribers(&ws, 25, &serde_json::json!({ "event": "OnAfterProcess" }))
+                .result
+                .expect("subscribers must carry a result");
+        let rows = subscribers.as_array().expect("an array of subscribers");
+        assert!(
+            rows.iter()
+                .any(|row| row.get("objectName").and_then(|v| v.as_str())
+                    == Some("Work Order Subscribers")),
+            "the handler must be listed: {subscribers}"
+        );
+        assert_eq!(
+            rows.len(),
+            1,
+            "the symbol-index and graph views must be merged, not doubled: {subscribers}"
+        );
+        let package = rows[0]
+            .get("package")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            package.eq_ignore_ascii_case("workspace")
+                || package.eq_ignore_ascii_case(WORKSPACE_PACKAGE),
+            "a workspace handler must be labelled as such, got '{package}'"
+        );
     }
 
     #[test]

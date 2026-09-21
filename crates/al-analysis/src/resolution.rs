@@ -46,19 +46,23 @@ fn builtin_for<'a>(
     cache: &'a al_semantic::SemanticCache,
     receiver: &ResolvedType,
 ) -> Option<&'a al_semantic::BuiltinType> {
-    let member_class = match receiver.type_name.to_ascii_lowercase().as_str() {
+    // `Text[100]` names the same type as `Text`; the catalog is keyed by the
+    // bare name, so the length qualifier is dropped for the lookup while the
+    // declared spelling stays on the ResolvedType for display.
+    let type_name = strip_length(&receiver.type_name);
+    let member_class = match type_name.to_ascii_lowercase().as_str() {
         "record" => Some("TableClass".to_string()),
         "codeunit" if receiver.type_subtype.is_some() => Some("CodeunitInstanceClass".to_string()),
         "report" if receiver.type_subtype.is_some() => Some("ReportInstanceClass".to_string()),
         "xmlport" if receiver.type_subtype.is_some() => Some("XmlportInstanceClass".to_string()),
         "query" if receiver.type_subtype.is_some() => Some("QueryInstanceClass".to_string()),
-        _ => Some(format!("{}Class", receiver.type_name)),
+        _ => Some(format!("{type_name}Class")),
     };
 
     member_class
         .as_deref()
         .and_then(|name| cache.get_type(name))
-        .or_else(|| cache.get_type(&receiver.type_name))
+        .or_else(|| cache.get_type(type_name))
         .or_else(|| {
             receiver
                 .type_subtype
@@ -99,6 +103,14 @@ pub(crate) struct ResolvedMember {
 }
 
 pub(crate) fn access_path_at(tree: &Tree, text: &str, position: Position) -> Option<AccessPath> {
+    // The text shortcut below works on the raw line and knows nothing of
+    // comments or literals, so `// Update Cust.Name before posting` and
+    // `Error('Cust.Name is required')` both produced a member access and a
+    // tooltip. The tree branch cannot fire inside either, so only the shortcut
+    // needs the guard.
+    if position_is_in_comment_or_literal(tree, text, position) {
+        return None;
+    }
     if let Some(path) = access_path_from_text(text, position) {
         tracing::debug!(
             receiver = %path.receiver,
@@ -590,7 +602,9 @@ pub(crate) fn resolve_member(
         );
 
         if let Some(subtype) = receiver.type_subtype.as_deref() {
-            if let Some(path) = resolve_object_path(workspace, Some(uri), subtype) {
+            if let Some(path) =
+                resolve_object_path(workspace, Some(uri), subtype, Some(&receiver.type_name))
+            {
                 if let Some(member) = workspace_member(workspace, &path, target_name) {
                     tracing::debug!(
                         member = %target_name,
@@ -969,7 +983,7 @@ pub(crate) fn resolve_workspace_object_definition(
     workspace: &Workspace,
     name: &str,
 ) -> Option<(Url, Range)> {
-    let path = resolve_object_path(workspace, None, name)?;
+    let path = resolve_object_path(workspace, None, name, None)?;
     let (file_source, tree) = workspace.file_index.get_cached_parse(&path)?;
     let obj = al_syntax::find_object_declaration(&tree, &file_source)?;
     let uri = Url::from_file_path(&path).ok()?;
@@ -1014,26 +1028,37 @@ pub(crate) enum CompletionCandidateKind {
 /// `workspace_field_items`). Moving it would force those internals to `pub(crate)`
 /// and split two tightly-coupled resolution calls across the layer boundary —
 /// increasing coupling, not reducing it.
-/// Map of `procedure name (lowercased) -> formatted XML doc` for a symbol-package
-/// object, extracted from the `///` comments in its virtual-file source (the same
-/// source go-to-definition opens). Empty when the package ships no source for the
-/// object — completion then shows no documentation, as before.
-fn symbol_package_proc_docs(
-    workspace: &Workspace,
-    object_name: &str,
-) -> std::collections::HashMap<String, String> {
+/// `procedure name (lowercased) -> formatted XML doc` for one symbol-package
+/// source file.
+type ProcDocs = std::sync::Arc<std::collections::HashMap<String, String>>;
+
+/// Documentation maps per symbol-package source file, with the symbol-index
+/// generation they were built from.
+///
+/// `completion_items_for_receiver` runs on every `textDocument/completion`
+/// request, so without this each keystroke after `Cust.` re-read the extracted
+/// Customer source from disk twice and ran a full tree-sitter parse plus
+/// document-symbol extraction over several thousand lines, all of it to fill
+/// in the `documentation` field of the completion items. The extracted source
+/// only changes when the package does, which is what the generation tracks.
+static SYMBOL_PACKAGE_DOCS: std::sync::LazyLock<
+    std::sync::RwLock<std::collections::HashMap<PathBuf, (u64, ProcDocs)>>,
+> = std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::HashMap::new()));
+
+/// The documentation map for one already-extracted symbol-package source file.
+fn proc_docs_for_file(path: &Path, generation: u64) -> ProcDocs {
+    {
+        let cache = SYMBOL_PACKAGE_DOCS
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((cached_generation, docs)) = cache.get(path) {
+            if *cached_generation == generation {
+                return std::sync::Arc::clone(docs);
+            }
+        }
+    }
     let mut map = std::collections::HashMap::new();
-    for entry in workspace.symbols.get_by_name(object_name) {
-        let Some((uri, _)) = crate::queries::get_or_create_virtual_file(workspace, &entry, None)
-        else {
-            continue;
-        };
-        let Ok(path) = uri.to_file_path() else {
-            continue;
-        };
-        let Ok(content) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+    if let Ok(content) = std::fs::read_to_string(path) {
         let result = al_syntax::AlParser::parse_quick(&content);
         for symbol in al_syntax::extract_document_symbols(&result.tree, &content) {
             let Some(children) = symbol.children else {
@@ -1052,7 +1077,42 @@ fn symbol_package_proc_docs(
             }
         }
     }
-    map
+    let docs: ProcDocs = std::sync::Arc::new(map);
+    let mut cache = SYMBOL_PACKAGE_DOCS
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.insert(
+        path.to_path_buf(),
+        (generation, std::sync::Arc::clone(&docs)),
+    );
+    docs
+}
+
+/// Procedure documentation for a symbol-package object, one map per source
+/// file the package ships for it (the same sources go-to-definition opens).
+/// Empty when the package ships none, and completion then shows no
+/// documentation.
+fn symbol_package_proc_docs(workspace: &Workspace, object_name: &str) -> Vec<ProcDocs> {
+    let generation = workspace.symbols.generation();
+    workspace
+        .symbols
+        .get_by_name(object_name)
+        .into_iter()
+        .filter_map(|entry| {
+            let path = crate::queries::virtual_file_path(workspace, &entry)?;
+            Some(proc_docs_for_file(&path, generation))
+        })
+        .filter(|docs| !docs.is_empty())
+        .collect()
+}
+
+/// The documentation for `name` in the first map that carries it.
+fn proc_doc(docs: &[ProcDocs], name: &str) -> Option<String> {
+    if docs.is_empty() {
+        return None;
+    }
+    let key = name.to_lowercase();
+    docs.iter().find_map(|map| map.get(&key).cloned())
 }
 
 pub(crate) fn completion_items_for_receiver(
@@ -1073,7 +1133,8 @@ pub(crate) fn completion_items_for_receiver(
     let mut builtin_methods = 0usize;
 
     if let Some(subtype) = receiver.type_subtype.as_deref() {
-        if let Some(path) = resolve_object_path(workspace, None, subtype) {
+        if let Some(path) = resolve_object_path(workspace, None, subtype, Some(&receiver.type_name))
+        {
             if let Some((file_text, tree)) = workspace.file_index.get_cached_parse(&path) {
                 let resolver = al_syntax::TypeResolver::new(&tree, &file_text);
                 for var in resolver.variables_at(Position::default().into()) {
@@ -1140,7 +1201,7 @@ pub(crate) fn completion_items_for_receiver(
                         &method.parameters,
                         method.return_type.as_deref(),
                     )),
-                    documentation: pkg_docs.get(&method.name.to_lowercase()).cloned(),
+                    documentation: proc_doc(&pkg_docs, &method.name),
                     insert_text: None,
                     sort_text: None,
                 });
@@ -1341,24 +1402,80 @@ fn workspace_object_type(workspace: &Workspace, path: &Path) -> Option<ResolvedT
     })
 }
 
+/// Whether `position` sits inside a comment or a string literal.
+fn position_is_in_comment_or_literal(tree: &Tree, text: &str, position: Position) -> bool {
+    al_syntax::find_node_at_position(tree, text, position.into()).is_some_and(|node| {
+        matches!(
+            node.kind(),
+            "comment" | "string" | "verbatim_string" | "inactive_code"
+        )
+    })
+}
+
+/// The file declaring the object `name`, preferring one whose AL type matches
+/// `al_type` (`Record`, `Page`, `Codeunit`, …).
+///
+/// Without the type, `file_index.object_path` returns whichever file was
+/// indexed last, and re-indexing a file moves it to the back of the owners
+/// list. A project with `table 50100 "Sales Setup"` and `page 50100 "Sales
+/// Setup"`, which is the usual AL convention for a setup table and its card,
+/// therefore resolved `Setup."Posting No. Series"` to the page as soon as the
+/// table was edited, and offered the page's globals in place of the table's
+/// fields.
 fn resolve_object_path(
     workspace: &Workspace,
     current_uri: Option<&Url>,
     name: &str,
+    al_type: Option<&str>,
 ) -> Option<PathBuf> {
+    let matches_type = |path: &Path| {
+        let Some(al_type) = al_type else {
+            return true;
+        };
+        workspace
+            .file_index
+            .object_info
+            .get(path)
+            .is_some_and(|info| {
+                al_syntax::type_resolver::object_kind_to_al_type(&info.kind)
+                    .eq_ignore_ascii_case(al_type)
+            })
+    };
+
+    let mut referring_path = None;
     if let Some(uri) = current_uri {
         if let Ok(current_path) = uri.to_file_path() {
             if workspace_object_name(workspace, &current_path)
                 .as_deref()
                 .is_some_and(|object_name| object_name.eq_ignore_ascii_case(name))
+                && matches_type(&current_path)
             {
                 tracing::debug!(name = %name, source = "current_file", "resolve_object_path: matched current file");
                 return Some(current_path);
             }
+            referring_path = Some(current_path);
         }
     }
 
-    if let Some(path) = workspace.file_index.object_path(name) {
+    if let Some(al_type) = al_type {
+        let typed =
+            workspace
+                .file_index
+                .object_path_where(name, referring_path.as_deref(), |kind| {
+                    al_syntax::type_resolver::object_kind_to_al_type(kind)
+                        .eq_ignore_ascii_case(al_type)
+                });
+        if let Some(path) = typed {
+            tracing::debug!(name = %name, al_type = %al_type, path = %path.display(), "resolve_object_path: matched on AL type");
+            return Some(path);
+        }
+    }
+
+    let resolved = match referring_path.as_deref() {
+        Some(from) => workspace.file_index.object_path_near(name, from),
+        None => workspace.file_index.object_path(name),
+    };
+    if let Some(path) = resolved {
         tracing::debug!(name = %name, source = "workspace_index", path = %path.display(), "resolve_object_path: found in workspace index");
         return Some(path);
     }
@@ -1508,24 +1625,6 @@ fn workspace_member(
     result
 }
 
-/// Parse a single `field(id; name; type)` line and return `(name_part, type_str)` slices
-/// from the trimmed version of the line.  Returns `None` when the line is not a field
-/// declaration or is missing the name / type segments.
-///
-/// Shared by `find_workspace_field` (needs name_part to compute column offsets) and
-/// `workspace_field_items` (needs both segments to build completion items).
-fn parse_field_line(trimmed: &str) -> Option<(&str, &str)> {
-    let inside = trimmed.strip_prefix("field(")?.split(')').next()?;
-    let mut parts = inside.splitn(3, ';');
-    let _ = parts.next()?; // skip id
-    let name_part = parts.next()?.trim();
-    let ty = parts.next()?.trim();
-    if name_part.is_empty() {
-        return None;
-    }
-    Some((name_part, ty))
-}
-
 /// Every `field(id; "Name"; Type ...)` declaration node in `tree`. A field is
 /// a node whose text begins with `field(`, so two `field(...)`
 /// on one line each resolve independently, unlike the old per-line text scan
@@ -1573,28 +1672,43 @@ fn byte_to_position(content: &str, byte: usize) -> Position {
 }
 
 /// Parse a field declaration `node` into `(name_part, type_str)` plus the byte
-/// range of the name within `content`. Feeds the node's own text to
-/// [`parse_field_line`], so layout (one-per-line vs several on a line) is
-/// irrelevant.
+/// range of the name within `content`.
+///
+/// The header parses as `(<id> ; <name> ; <type…>)`, so the name is the token
+/// between the first and second `;` and the type is everything from the second
+/// `;` to the end of the header. Splitting the text instead cut the
+/// declaration at its first `)`, which dropped every standard Business Central
+/// field named like `"Amount (LCY)"` or `"Qty. (Base)"` and mis-split any name
+/// holding a `;`.
 fn parse_field_node<'a>(
     node: tree_sitter::Node<'_>,
     content: &'a str,
 ) -> Option<(&'a str, &'a str, usize, usize)> {
-    let src = content.as_bytes();
-    let node_text = node.utf8_text(src).ok()?;
-    let lead = node_text.len() - node_text.trim_start().len();
-    let trimmed = &node_text[lead..];
-    let (name_part, ty) = parse_field_line(trimmed)?;
-    // Offsets are into `trimmed`; map back into `content`.
-    let name_off = lead + (name_part.as_ptr() as usize - trimmed.as_ptr() as usize);
-    let name_byte_start = node.start_byte() + name_off;
-    let name_byte_end = name_byte_start + name_part.len();
-    // SAFETY of slices: name_part/ty borrow node_text which borrows `src` =
-    // content bytes, so their lifetime is tied to `content`.
-    let name_part: &'a str = &content[name_byte_start..name_byte_end];
-    let ty_start = node.start_byte() + lead + (ty.as_ptr() as usize - trimmed.as_ptr() as usize);
-    let ty: &'a str = &content[ty_start..ty_start + ty.len()];
-    Some((name_part, ty, name_byte_start, name_byte_end))
+    let mut cursor = node.walk();
+    let header = node
+        .children(&mut cursor)
+        .find(|child| child.kind() == "parenthesized_block")?;
+    let mut header_cursor = header.walk();
+    let parts: Vec<tree_sitter::Node> = header.named_children(&mut header_cursor).collect();
+    let mut separators = parts
+        .iter()
+        .enumerate()
+        .filter(|(_, part)| part.kind() == "semicolon")
+        .map(|(index, _)| index);
+    let after_id = separators.next()? + 1;
+    let after_name = separators.next()?;
+    if after_id >= after_name {
+        return None; // `field(1; ; Integer)`
+    }
+    let name = parts.get(after_id)?;
+    let type_start = parts.get(after_name + 1)?.start_byte();
+    let type_end = parts.last()?.end_byte();
+    Some((
+        content.get(name.start_byte()..name.end_byte())?,
+        content.get(type_start..type_end)?,
+        name.start_byte(),
+        name.end_byte(),
+    ))
 }
 
 fn find_workspace_field(
@@ -1607,7 +1721,7 @@ fn find_workspace_field(
         let Some((name_part, ty, start, end)) = parse_field_node(node, content) else {
             continue;
         };
-        if !name_part.trim_matches('"').eq_ignore_ascii_case(field_name) {
+        if !al_syntax::clean_identifier(name_part).eq_ignore_ascii_case(field_name) {
             continue;
         }
         let range = Range {
@@ -1626,7 +1740,7 @@ fn workspace_field_items(content: &str, tree: &tree_sitter::Tree) -> Vec<Complet
         .filter_map(|node| {
             let (name_part, ty, _, _) = parse_field_node(node, content)?;
             Some(CompletionCandidate {
-                label: name_part.trim_matches('"').to_string(),
+                label: al_syntax::clean_identifier(name_part),
                 kind: CompletionCandidateKind::Field,
                 detail: Some(ty.to_string()),
                 documentation: None,
@@ -1658,6 +1772,12 @@ fn split_last<'a>(value: &'a str, needle: &str) -> Option<(&'a str, &'a str)> {
 
 fn parse_type_expr(value: &str) -> ResolvedType {
     let trimmed = value.trim();
+    // `array[10] of Text` names an array of `Text`; splitting on the first
+    // space instead produced `array[10]` with subtype `of Text`, which no
+    // builtin lookup matches.
+    if let Some((_, element)) = split_array_element(trimmed) {
+        return parse_type_expr(element);
+    }
     if let Some((name, subtype)) = trimmed.split_once(' ') {
         let clean_subtype = subtype.trim().trim_matches('"').trim_matches('\'');
         if !clean_subtype.is_empty() {
@@ -1670,6 +1790,35 @@ fn parse_type_expr(value: &str) -> ResolvedType {
     ResolvedType {
         type_name: trimmed.trim_matches('"').to_string(),
         type_subtype: None,
+    }
+}
+
+/// `array[10] of Text` split into its dimensions and its element type.
+fn split_array_element(value: &str) -> Option<(&str, &str)> {
+    let lower = value.to_ascii_lowercase();
+    if !lower.starts_with("array[") {
+        return None;
+    }
+    let close = value.find(']')?;
+    let after = value.get(close + 1..)?.trim_start();
+    let element = after.strip_prefix("of ").or_else(|| {
+        after
+            .get(..3)
+            .filter(|prefix| prefix.eq_ignore_ascii_case("of "))
+            .and_then(|_| after.get(3..))
+    })?;
+    Some((&value[..close + 1], element.trim()))
+}
+
+/// `Text[100]` -> `Text`, matching `al_syntax::parse_type_reference`.
+///
+/// A length-qualified type kept its `[100]`, so `builtin_for` looked up
+/// `Text[100]Class`, missed, and `Rec.Description.` offered no Text methods at
+/// all while the same variable declared locally worked.
+fn strip_length(name: &str) -> &str {
+    match name.split_once('[') {
+        Some((base, rest)) if rest.ends_with(']') && !base.is_empty() => base,
+        _ => name,
     }
 }
 
@@ -1708,9 +1857,21 @@ pub(crate) fn format_builtin_signature(method: &al_semantic::BuiltinMethod) -> S
     }
 }
 
+/// The return type in a procedure detail string such as
+/// `"(var Header: Record; Preview: Boolean): Boolean"`, or `None` when the
+/// procedure returns nothing.
+///
+/// Splitting on the last `": "` anywhere found the separator inside the
+/// *parameter list* of a void procedure: `(var Cust: Record Customer)` yielded
+/// `Record Customer)`, which made `Helper.GetCustomer.` offer the whole
+/// TableClass method list and put a trailing `)` on every field lookup. The
+/// return type is what follows the `": "` after the parameter list's closing
+/// paren.
 fn extract_return_type(detail: &str) -> Option<&str> {
-    let (_, ret) = detail.rsplit_once(": ")?;
-    Some(ret)
+    let close = detail.rfind(')')?;
+    let after = detail.get(close + 1..)?;
+    let ret = after.trim_start().strip_prefix(':')?.trim();
+    (!ret.is_empty()).then_some(ret)
 }
 
 pub(crate) fn extract_doc_comment(text: &str, line_idx: usize) -> Option<String> {
@@ -1851,13 +2012,42 @@ mod tests {
         assert_eq!(range.end.character - range.start.character, 9);
     }
 
+    /// The documentation map is read and parsed once per generation. Deleting
+    /// the file between the two calls proves the second one did not go to disk,
+    /// and bumping the generation proves a package reload invalidates it.
+    #[test]
+    fn symbol_package_docs_are_parsed_once_per_generation() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("Cod50100.al");
+        std::fs::write(
+            &path,
+            "codeunit 50100 \"Helper\"\n{\n    /// <summary>Posts the document.</summary>\n    procedure Post()\n    begin\n    end;\n}\n",
+        )
+        .expect("write");
+
+        let first = proc_docs_for_file(&path, 7);
+        assert!(first.contains_key("post"), "got {first:?}");
+
+        std::fs::remove_file(&path).expect("remove");
+        let second = proc_docs_for_file(&path, 7);
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &second),
+            "the second lookup re-read and re-parsed the source"
+        );
+
+        // A new package generation drops what the old one produced.
+        let after_reload = proc_docs_for_file(&path, 8);
+        assert!(after_reload.is_empty());
+    }
+
     #[test]
     fn workspace_field_items_lists_fields() {
-        let text = "table 1 T\n{\n    fields\n    {\n        field(1; Name; Text[50]) { }\n        field(2; \"Ørn\"; Integer) { }\n    }\n}";
+        let text = "table 1 T\n{\n    fields\n    {\n        field(1; Name; Text[50]) { }\n        field(2; \"Ørn\"; Integer) { }\n        field(50; \"Amount (LCY)\"; Decimal) { }\n    }\n}";
         let items = workspace_field_items(text, &tree_of(text));
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert!(labels.contains(&"Name"));
         assert!(labels.contains(&"Ørn"));
+        assert!(labels.contains(&"Amount (LCY)"), "got {labels:?}");
     }
 
     #[test]
@@ -2346,11 +2536,68 @@ mod tests {
         assert_eq!(extract_return_type("(x: Code[20]): Text"), Some("Text"));
     }
 
+    /// `Text[100]` and `array[10] of Text` are the spellings a table field
+    /// uses. Both used to survive into `type_name`, so `builtin_for` looked up
+    /// `Text[100]Class`, missed, and the member list came back empty.
     #[test]
-    fn extract_return_type_splits_on_last_colon_space_even_in_params() {
-        // The function rsplits on the LAST ": ", which for a no-return signature
-        // is the parameter's type — documenting the (lossy) real behavior.
-        assert_eq!(extract_return_type("(a: Integer)"), Some("Integer)"));
+    fn parse_type_expr_handles_a_length_and_an_array() {
+        let text = parse_type_expr("Text[100]");
+        assert_eq!(text.type_name, "Text[100]");
+        assert_eq!(strip_length(&text.type_name), "Text");
+        assert_eq!(text.type_subtype, None);
+
+        let code = parse_type_expr("Code[20]");
+        assert_eq!(strip_length(&code.type_name), "Code");
+
+        let array = parse_type_expr("array[10] of Text");
+        assert_eq!(array.type_name, "Text");
+        assert_eq!(array.type_subtype, None);
+
+        let records = parse_type_expr("array[5] of Record \"Sales Header\"");
+        assert_eq!(records.type_name, "Record");
+        assert_eq!(records.type_subtype.as_deref(), Some("Sales Header"));
+    }
+
+    /// Hovering an identifier inside a comment or a string literal used to
+    /// reach the text shortcut, which knows nothing of either, and produced a
+    /// member access and a tooltip.
+    #[test]
+    fn access_path_ignores_comments_and_string_literals() {
+        let source = r#"codeunit 50100 "Test"
+{
+    procedure Run()
+    var
+        Cust: Record Customer;
+    begin
+        // Update Cust.Name before posting
+        Error('Cust.Name is required');
+        Cust.Name := 'X';
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let parsed = parser.parse(source);
+
+        let at = |line: u32, character: u32| {
+            access_path_at(&parsed.tree, source, Position { line, character })
+        };
+        assert!(at(6, 19).is_none(), "comment produced an access path");
+        assert!(
+            at(7, 20).is_none(),
+            "string literal produced an access path"
+        );
+        let real = at(8, 14).expect("the real member access still resolves");
+        assert_eq!(real.receiver, "Cust");
+        assert_eq!(real.member, "Name");
+    }
+
+    /// A void procedure has no return type. Finding the `": "` inside its
+    /// parameter list reported one, and `Helper.GetCustomer.` then offered the
+    /// whole TableClass method list.
+    #[test]
+    fn extract_return_type_is_none_for_a_void_procedure() {
+        assert_eq!(extract_return_type("(a: Integer)"), None);
+        assert_eq!(extract_return_type("(var Cust: Record Customer)"), None);
+        assert_eq!(extract_return_type("()"), None);
     }
 
     #[test]
@@ -2486,26 +2733,67 @@ mod tests {
         assert_eq!(extract_doc_comment(text, 99), None);
     }
 
-    #[test]
-    fn parse_field_line_extracts_name_and_type() {
-        let (name, ty) = parse_field_line("field(1; Name; Text[50]) { }").expect("parsed");
-        assert_eq!(name, "Name");
-        assert_eq!(ty, "Text[50]");
+    /// `(name, type)` for every field in a one-table source, in source order.
+    fn parsed_fields(content: &str) -> Vec<(&str, &str)> {
+        let tree = tree_of(content);
+        let mut fields: Vec<(usize, &str, &str)> = field_decl_nodes(&tree, content.as_bytes())
+            .into_iter()
+            .filter_map(|node| {
+                let (name, ty, start, _) = parse_field_node(node, content)?;
+                Some((start, name, ty))
+            })
+            .collect();
+        fields.sort_by_key(|(start, _, _)| *start);
+        fields.into_iter().map(|(_, name, ty)| (name, ty)).collect()
     }
 
     #[test]
-    fn parse_field_line_none_for_non_field() {
-        assert_eq!(parse_field_line("procedure Foo()"), None);
+    fn parse_field_node_extracts_name_and_type() {
+        let content =
+            "table 1 T\n{\n    fields\n    {\n        field(1; Name; Text[50]) { }\n    }\n}";
+        assert_eq!(parsed_fields(content), vec![("Name", "Text[50]")]);
+    }
+
+    /// A parenthesis, a percent sign and a `;` all appear in standard Business
+    /// Central field names, and all three used to cut the declaration short.
+    #[test]
+    fn parse_field_node_handles_punctuation_in_a_quoted_name() {
+        let content = "table 1 T\n{\n    fields\n    {\n        field(50; \"Amount (LCY)\"; Decimal) { }\n        field(51; \"Line Discount %\"; Decimal) { }\n        field(52; \"A;B\"; Text[10]) { }\n    }\n}";
+        assert_eq!(
+            parsed_fields(content),
+            vec![
+                ("\"Amount (LCY)\"", "Decimal"),
+                ("\"Line Discount %\"", "Decimal"),
+                ("\"A;B\"", "Text[10]"),
+            ]
+        );
+    }
+
+    /// A multi-token type keeps every token, up to the closing paren.
+    #[test]
+    fn parse_field_node_keeps_a_multi_token_type() {
+        let content = "table 1 T\n{\n    fields\n    {\n        field(53; Kind; Enum \"My Enum\") { }\n        field(54; Items; array[10] of Text) { }\n    }\n}";
+        assert_eq!(
+            parsed_fields(content),
+            vec![("Kind", "Enum \"My Enum\""), ("Items", "array[10] of Text")]
+        );
     }
 
     #[test]
-    fn parse_field_line_none_when_missing_segments() {
-        assert_eq!(parse_field_line("field(1)"), None);
+    fn parse_field_node_none_when_name_or_type_is_missing() {
+        let content = "table 1 T\n{\n    fields\n    {\n        field(1; ; Integer) { }\n        field(2) { }\n    }\n}";
+        assert!(parsed_fields(content).is_empty());
     }
 
+    /// A field a punctuated name reaches hover and go-to-definition, which is
+    /// what the text split dropped.
     #[test]
-    fn parse_field_line_none_when_name_empty() {
-        assert_eq!(parse_field_line("field(1; ; Integer)"), None);
+    fn find_workspace_field_resolves_a_punctuated_name() {
+        let content = "table 1 T\n{\n    fields\n    {\n        field(50; \"Amount (LCY)\"; Decimal) { }\n    }\n}";
+        let (resolved, range) =
+            find_workspace_field(content, &tree_of(content), "Amount (LCY)").expect("resolved");
+        assert_eq!(resolved.type_name, "Decimal");
+        assert_eq!(range.start.line, 4);
     }
 
     #[test]
@@ -2602,6 +2890,41 @@ mod tests {
             Position::default()
         )
         .is_none());
+    }
+
+    /// A setup table and its card share a name, which is the usual AL
+    /// convention. `object_path` returns whichever file was indexed last, so
+    /// editing the table used to make `Setup.Field` resolve to the page.
+    #[test]
+    fn resolve_object_path_prefers_the_receiver_s_own_al_type() {
+        let ws = Workspace::new();
+        let table_path = std::path::PathBuf::from("/proj/Tab50100.al");
+        let page_path = std::path::PathBuf::from("/proj/Pag50100.al");
+        ws.file_index.add_file(
+            table_path.clone(),
+            "table 50100 \"Sales Setup\"\n{\n    fields\n    {\n        field(1; \"Posting No. Series\"; Code[20]) { }\n    }\n}"
+                .to_string(),
+        );
+        ws.file_index.add_file(
+            page_path.clone(),
+            "page 50100 \"Sales Setup\"\n{\n    SourceTable = \"Sales Setup\";\n}".to_string(),
+        );
+        // Re-index the table: it moves to the back of the owners list, which is
+        // exactly what used to flip the result.
+        ws.file_index.add_file(
+            table_path.clone(),
+            "table 50100 \"Sales Setup\"\n{\n    fields\n    {\n        field(1; \"Posting No. Series\"; Code[20]) { }\n    }\n}"
+                .to_string(),
+        );
+
+        assert_eq!(
+            resolve_object_path(&ws, None, "Sales Setup", Some("Record")),
+            Some(table_path)
+        );
+        assert_eq!(
+            resolve_object_path(&ws, None, "Sales Setup", Some("Page")),
+            Some(page_path)
+        );
     }
 
     #[test]

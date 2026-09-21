@@ -48,11 +48,23 @@ impl TestResultStore {
         let key = (record.codeunit_id, record.method_name.clone());
         let mut counts_guard = self.bucket_counts.lock().await;
         if counts_guard.is_none() {
+            let read = read_records_inner(&self.path, false).await?;
             let mut counts = std::collections::HashMap::new();
-            for rec in read_records_no_lock(&self.path).await? {
+            for rec in &read.records {
                 *counts
                     .entry((rec.codeunit_id, rec.method_name.clone()))
                     .or_insert(0usize) += 1;
+            }
+            // Repair the file once, on the first append after the damage: a
+            // partial line left by a kill would otherwise stay there and be
+            // re-skipped on every read.
+            if read.corrupt_lines > 0 {
+                tracing::warn!(
+                    path = %self.path.display(),
+                    corrupt_lines = read.corrupt_lines,
+                    "rewriting the test result store without its unreadable lines"
+                );
+                rewrite_records(&self.path, &read.records).await?;
             }
             *counts_guard = Some(counts);
         }
@@ -84,12 +96,19 @@ impl TestResultStore {
         Ok(())
     }
 
-    /// Read every record in the file.
+    /// Read every record in the file, skipping any line that does not parse.
     ///
-    /// A malformed record is an explicit persistence error: returning a
-    /// partial history would make corruption look like tests had never run.
+    /// Use [`verify`] when a malformed record must be reported rather than
+    /// stepped over.
+    ///
+    /// [`verify`]: Self::verify
     pub async fn read_all(&self) -> Result<Vec<TestRunRecord>, PersistenceError> {
         read_records_no_lock(&self.path).await
+    }
+
+    /// Fail on the first record that does not parse, naming its line.
+    pub async fn verify(&self) -> Result<(), PersistenceError> {
+        read_records_inner(&self.path, true).await.map(|_| ())
     }
 
     /// Synchronous read for callers outside a Tokio context.
@@ -111,14 +130,15 @@ impl TestResultStore {
             if trimmed.is_empty() {
                 continue;
             }
-            let record = serde_json::from_str::<TestRunRecord>(trimmed).map_err(|source| {
-                PersistenceError::CorruptRecord {
-                    path: self.path.clone(),
-                    line: line_no + 1,
-                    source,
-                }
-            })?;
-            out.push(record);
+            match serde_json::from_str::<TestRunRecord>(trimmed) {
+                Ok(record) => out.push(record),
+                Err(source) => tracing::warn!(
+                    path = %self.path.display(),
+                    line = line_no + 1,
+                    %source,
+                    "skipping an unreadable test result record"
+                ),
+            }
         }
         Ok(out)
     }
@@ -172,14 +192,40 @@ fn short_hash(bytes: &[u8]) -> String {
 async fn read_records_no_lock(
     path: &std::path::Path,
 ) -> Result<Vec<TestRunRecord>, PersistenceError> {
+    read_records_inner(path, false)
+        .await
+        .map(|read| read.records)
+}
+
+/// The records of one read, plus how many lines could not be parsed.
+struct ReadRecords {
+    records: Vec<TestRunRecord>,
+    corrupt_lines: usize,
+}
+
+/// Read the store, either skipping unparseable lines or failing on the first.
+///
+/// `append` writes with a userspace flush, so a kill between the write and
+/// writeback can leave a partial line. Failing on it would make every later
+/// append and read fail, with no repair short of deleting the file by hand.
+async fn read_records_inner(
+    path: &std::path::Path,
+    strict: bool,
+) -> Result<ReadRecords, PersistenceError> {
     let file = match fs::File::open(path).await {
         Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ReadRecords {
+                records: Vec::new(),
+                corrupt_lines: 0,
+            })
+        }
         Err(e) => return Err(e.into()),
     };
     let reader = BufReader::new(file);
     let mut lines = reader.lines();
-    let mut out = Vec::new();
+    let mut records = Vec::new();
+    let mut corrupt_lines = 0usize;
     let mut line_no: usize = 0;
     loop {
         let line = lines
@@ -198,16 +244,30 @@ async fn read_records_no_lock(
         if trimmed.is_empty() {
             continue;
         }
-        let record = serde_json::from_str::<TestRunRecord>(trimmed).map_err(|source| {
-            PersistenceError::CorruptRecord {
-                path: path.to_path_buf(),
-                line: line_no,
-                source,
+        match serde_json::from_str::<TestRunRecord>(trimmed) {
+            Ok(record) => records.push(record),
+            Err(source) => {
+                if strict {
+                    return Err(PersistenceError::CorruptRecord {
+                        path: path.to_path_buf(),
+                        line: line_no,
+                        source,
+                    });
+                }
+                corrupt_lines += 1;
+                tracing::warn!(
+                    path = %path.display(),
+                    line = line_no,
+                    %source,
+                    "skipping an unreadable test result record"
+                );
             }
-        })?;
-        out.push(record);
+        }
     }
-    Ok(out)
+    Ok(ReadRecords {
+        records,
+        corrupt_lines,
+    })
 }
 
 async fn rewrite_records(
@@ -288,9 +348,10 @@ mod tests {
         assert!(all.is_empty());
     }
 
+    /// A kill between the write and writeback can leave a partial line. The
+    /// records around it are still history, and `verify` names the damage.
     #[tokio::test]
-    async fn malformed_lines_fail_with_path_and_line() {
-        // Negative: a partial history must never be presented as complete.
+    async fn a_malformed_line_is_skipped_and_named_by_verify() {
         let tmp = TempDir::new().unwrap();
         let path = store_path(&tmp);
 
@@ -300,7 +361,10 @@ mod tests {
         tokio::fs::write(&path, content).await.unwrap();
 
         let store = TestResultStore::open(path.clone()).await.unwrap();
-        let error = store.read_all().await.unwrap_err();
+        let records = store.read_all().await.expect("history stays readable");
+        assert_eq!(records.len(), 2);
+
+        let error = store.verify().await.unwrap_err();
         assert!(
             matches!(
                 error,
@@ -315,29 +379,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn append_refuses_to_overwrite_corrupt_history() {
+    async fn append_repairs_a_store_with_a_partial_line() {
         let tmp = TempDir::new().unwrap();
         let path = store_path(&tmp);
-        let original = "not json\n";
-        tokio::fs::write(&path, original).await.unwrap();
+        let valid = serde_json::to_string(&rec("Test_A", TestStatus::Pass, 1)).unwrap();
+        let partial = format!("{valid}\n{{\"timestamp\":2,\"codeun");
+        tokio::fs::write(&path, partial).await.unwrap();
 
         let store = TestResultStore::open(path.clone()).await.unwrap();
-        let error = store
-            .append(rec("Test_A", TestStatus::Pass, 1))
+        store
+            .append(rec("Test_B", TestStatus::Pass, 3))
             .await
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            PersistenceError::CorruptRecord { line: 1, .. }
-        ));
-        assert_eq!(tokio::fs::read_to_string(path).await.unwrap(), original);
+            .expect("a partial line must not stop recording test runs");
+
+        let records = store.read_all().await.unwrap();
+        assert_eq!(records.len(), 2, "{records:?}");
+        store
+            .verify()
+            .await
+            .expect("the partial line is gone after the repair");
     }
 
     #[test]
-    fn synchronous_reader_reports_corrupt_history() {
+    fn the_synchronous_reader_skips_an_unreadable_line() {
         let tmp = TempDir::new().unwrap();
         let path = store_path(&tmp);
-        std::fs::write(&path, "not json\n").unwrap();
+        let valid = serde_json::to_string(&rec("Test_A", TestStatus::Pass, 1)).unwrap();
+        std::fs::write(&path, format!("not json\n{valid}\n")).unwrap();
 
         let store = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -345,10 +413,7 @@ mod tests {
             .unwrap()
             .block_on(TestResultStore::open(path))
             .unwrap();
-        assert!(matches!(
-            store.all_records(),
-            Err(PersistenceError::CorruptRecord { line: 1, .. })
-        ));
+        assert_eq!(store.all_records().unwrap().len(), 1);
     }
 
     #[tokio::test]

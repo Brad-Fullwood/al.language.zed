@@ -295,8 +295,54 @@ pub fn find_event_subscriber_references(
     text: &str,
     event_name: &str,
 ) -> Vec<tree_sitter::Range> {
+    find_event_subscriber_attributes(tree, text)
+        .into_iter()
+        .filter_map(|attribute| attribute.event)
+        .filter(|event| event.name.eq_ignore_ascii_case(event_name))
+        .map(|event| event.range)
+        .collect()
+}
+
+/// One name argument of an `[EventSubscriber(...)]` attribute.
+#[derive(Debug, Clone)]
+pub struct SubscriberArgument {
+    /// The name with its quotes, `Type::` prefix and `''` escapes removed.
+    pub name: String,
+    /// The range of the token spelling the name: the `'…'` literal for the
+    /// event and element arguments, the identifier after `::` for the object.
+    pub range: tree_sitter::Range,
+}
+
+/// The name arguments of one `[EventSubscriber(...)]` attribute.
+///
+/// The positional order mirrors `insight::calls::parse_subscriber_target_from_attrs`:
+/// `(ObjectType, Object, Event, Element, …)`.
+#[derive(Debug, Clone)]
+pub struct EventSubscriberAttribute {
+    /// The object kind named by the 1st argument (`ObjectType::Codeunit` →
+    /// `Codeunit`), empty when the argument is missing.
+    pub object_type: String,
+    /// The publisher object (2nd argument), e.g. `Codeunit::"Sales-Post"`.
+    pub object: Option<SubscriberArgument>,
+    /// The event name (3rd argument), a string literal.
+    pub event: Option<SubscriberArgument>,
+    /// The element the event belongs to (4th argument), a string literal that
+    /// names a table field for the field-level table events and is `''`
+    /// otherwise.
+    pub element: Option<SubscriberArgument>,
+}
+
+/// Every `[EventSubscriber(...)]` attribute in `tree`, with the ranges of the
+/// arguments that name a renameable symbol.
+///
+/// A subscriber names its target with *string literals* and a `Type::Name`
+/// scope reference, not with identifiers, so the identifier walk behind
+/// [`find_variable_references`] cannot see any of them. `references` and
+/// `rename` both need them, and both need the same ones, or Find All
+/// References and Rename disagree about what a symbol's references are.
+pub fn find_event_subscriber_attributes(tree: &Tree, text: &str) -> Vec<EventSubscriberAttribute> {
     let source = text.as_bytes();
-    let mut refs = Vec::new();
+    let mut found = Vec::new();
     walk_tree(tree.root_node(), &mut |node| {
         if node.kind() != "attribute" {
             return;
@@ -316,22 +362,52 @@ pub fn find_event_subscriber_references(
         else {
             return;
         };
-        // The event name is the 3rd positional argument (index 2), matching
-        // `parse_subscriber_target_from_attrs` (ObjectType, Object, Event, …).
         let mut lc = arg_list.walk();
-        let event_arg = arg_list
+        let args: Vec<Node> = arg_list
             .children(&mut lc)
             .filter(|n| n.kind() == "attribute_argument")
-            .nth(2);
-        if let Some(arg) = event_arg {
-            if let Ok(arg_text) = arg.utf8_text(source) {
-                if crate::clean_attr_arg(arg_text).eq_ignore_ascii_case(event_name) {
-                    refs.push(arg.range());
-                }
+            .collect();
+        let argument = |index: usize| {
+            args.get(index).and_then(|arg| {
+                let token = subscriber_name_token(*arg);
+                let text = token.utf8_text(source).ok()?;
+                Some(SubscriberArgument {
+                    name: crate::clean_attr_arg(text),
+                    range: token.range(),
+                })
+            })
+        };
+        found.push(EventSubscriberAttribute {
+            object_type: args
+                .first()
+                .and_then(|arg| arg.utf8_text(source).ok())
+                .map(crate::clean_attr_arg)
+                .unwrap_or_default(),
+            object: argument(1),
+            event: argument(2),
+            element: argument(3),
+        });
+    });
+    found
+}
+
+/// The node spelling an attribute argument's name.
+///
+/// `Codeunit::"Sales-Post"` puts the name on the `member` field of a
+/// `scope_suffix`, so only that part may be rewritten; the `'…'` literals and a
+/// bare identifier are the whole argument.
+fn subscriber_name_token(argument: Node<'_>) -> Node<'_> {
+    fn scope_member<'a>(node: Node<'a>) -> Option<Node<'a>> {
+        if node.kind() == "scope_suffix" {
+            if let Some(member) = node.child_by_field_name("member") {
+                return Some(member);
             }
         }
-    });
-    refs
+        let mut cursor = node.walk();
+        let found = node.children(&mut cursor).find_map(scope_member);
+        found
+    }
+    scope_member(argument).unwrap_or(argument)
 }
 
 fn find_refs_iterative(

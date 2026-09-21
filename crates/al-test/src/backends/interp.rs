@@ -193,6 +193,18 @@ impl TestSession for InterpMode {
             }
         }
 
+        // A filter that selects nothing is a typo in the pattern far more often
+        // than it is an empty suite, so it must not print a green summary over
+        // zero tests.
+        if let Some(pattern) = opts.filter.as_deref() {
+            if !tests.is_empty() && grouped.is_empty() {
+                return Err(TestRunnerError::FilterMatchedNothing {
+                    pattern: pattern.to_string(),
+                    requested: tests.len(),
+                });
+            }
+        }
+
         let mut all_summaries: Vec<TestCodeunitResult> = Vec::new();
 
         let work: Vec<(i32, String, Vec<Option<String>>)> = grouped
@@ -410,6 +422,8 @@ fn run_codeunit_interp(
                 _ => None,
             },
             duration_ms: Some(duration_ms),
+            // The interpreter ran the body, so a failure is the AL code's.
+            failure_kind: None,
         };
         method_results.push(method_result.clone());
         events.push(TestEvent::CaseResult {

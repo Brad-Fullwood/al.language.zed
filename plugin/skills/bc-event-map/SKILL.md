@@ -9,39 +9,39 @@ Run every command from the project directory you are already in. Do not `cd`
 first: the daemon binds to the directory the command runs in, and the plugin
 directory is not the project.
 
-## Who subscribes to an event: use `trace`, not `subscribers`
+## Who subscribes to an event
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json subscribers OnAfterPostSalesDoc
+```
+
+```json
+{"items":[{"objectKind":"Codeunit","objectName":"Booking Manager","methodName":"OnAfterPostSalesDoc",
+  "targetObjectName":"Sales-Post","targetEventName":"OnAfterPostSalesDoc",
+  "package":"Base Application","resolved":true}],
+ "total":3,"returned":3,"offset":0,"truncated":false}
+```
+
+`subscribers` reads the same graph `trace` does, so it covers package handlers
+as well as the workspace, and each row says which package it came from.
+`resolved: false` means nothing publishes the event the handler names, which is
+the classic silent breakage after an upgrade.
+
+Use `trace` when you also want the next hop: what the subscribers publish in
+turn.
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json trace OnAfterPostSalesDoc
 ```
 
-```json
-[{"depth":0,"edgeType":"origin","nodeType":"event","name":"OnAfterPostSalesDoc","object":"Sales-Post"},
- {"depth":1,"edgeType":"subscribes_to","nodeType":"subscriber","name":"OnAfterPostSalesDoc","object":"Booking Manager"},
- {"depth":1,"edgeType":"subscribes_to","nodeType":"subscriber","name":"PostCRMSalesDocumentOnAfterPostSalesDoc","object":"CRM Sales Document Posting Mgt"},
- {"depth":2,"edgeType":"publishes","nodeType":"event","name":"OnBeforePostCRMSalesDocumentOnAfterPostSalesDoc","object":"CRM Sales Document Posting Mgt"}]
-```
-
-842 bytes, and it covers packages as well as the workspace. `depth: 0` is the
-publisher, `depth: 1` the direct subscribers, `depth: 2` and beyond what those
-subscribers publish in turn. `--depth 3` limits the walk, `--tree` prints it
-nested.
-
-**`subscribers <event>` is wrong today.** It returns `[]` for
-`OnAfterPostSalesDoc` while `trace` on the same daemon finds three subscribers,
-because it only searches workspace source and does not say so. An empty
-`subscribers` result is no information at all. Use `trace`.
+`depth: 0` is the publisher, `depth: 1` the direct subscribers, `depth: 2` and
+beyond what those subscribers publish. `--depth 3` limits the walk, `--tree`
+prints it nested.
 
 ## What an event's parameters are
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json events OnAfterPostSalesDoc \
-  | jq -c '.[] | {objectName, methodName, eventType, params: [.parameters[] | "\(.is_var | if . then "var " else "" end)\(.name): \(.type_name)"]}'
-```
-
-```json
-{"objectName":"Sales-Post","methodName":"OnAfterPostSalesDoc","eventType":"IntegrationEvent",
- "params":["var SalesHeader: Record \"Sales Header\"","SalesShipmentHeader: Record \"Sales Shipment Header\""]}
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --limit 5 events OnAfterPostSalesDoc
 ```
 
 `events` matches on substring, so it also returns events whose name contains the
@@ -50,69 +50,63 @@ one you asked for. Read `objectName` before you write the subscriber attribute.
 ## Which event to subscribe to for a goal
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json suggest-event --table Item \
-  | jq -c '{partial, total: (.integrationPoints | length), top: [.integrationPoints[:8][] | {event, object}]}'
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --limit 8 --fields event,object,example suggest-event --table Item
 ```
 
 ```json
-{"partial":false,"total":682,"top":[{"event":"OnFindItemVendOnAfterFindItemVend","object":"Item"}]}
+{"integrationPoints":[{"event":"OnFindItemVendOnAfterFindItemVend","object":"Item",
+  "example":"[EventSubscriber(ObjectType::Table, Table::\"Item\", 'OnFindItemVendOnAfterFindItemVend', '', false, false)]"}],
+ "total":682,"returned":8,"offset":0,"truncated":true}
 ```
 
-484,680 bytes unprojected, 682 candidates. Keep the `jq`. Narrow with
-`--field "<Field>"`, `--procedure "<Name>"` or `--object "<Name>" --kind codeunit`
-before you widen the slice.
-
-Each row also carries a ready-made attribute line. Pull it for the one you pick:
-
-```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json suggest-event --table Item \
-  | jq -r '.integrationPoints[] | select(.event == "OnFindItemVendOnAfterFindItemVend") | .example'
-```
-
-```
-[EventSubscriber(ObjectType::Table, Table::"Item", 'OnFindItemVendOnAfterFindItemVend', '', false, false)]
-```
-
-`"partial": true` means the list was cut, without saying by how much. Narrow the
-query rather than trusting the count.
+484,680 bytes without the flags. `total` is the real candidate count and
+`truncated` says more follow, so narrow with `--field "<Field>"`,
+`--procedure "<Name>"` or `--object "<Name>" --kind codeunit` rather than paging
+through 682 rows. Each row carries a ready-made `example` attribute line.
 
 ## Why a subscriber does not fire
 
 1. Confirm the event still exists: `events <name>` returns nothing if the
    publisher was removed or renamed in a newer dependency version.
-2. Confirm the subscriber is wired: `al-explorer --json dead-code` reports
-   orphaned subscribers, meaning ones pointing at an event nobody publishes.
-3. Resolve the publisher behind an existing attribute:
+2. `subscribers <event>` marks a handler `"resolved": false` when no publisher
+   declares the event it names.
+3. `al-explorer --json dead-code` reports orphaned subscribers across the
+   workspace.
+4. Resolve the publisher behind an existing attribute:
    `al-explorer --json event-source --file <path> --line <n>`. That subcommand
    takes flags, not positional arguments.
 
-## Events the workspace publishes
+## Every event in the workspace, with its subscribers
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json intercept \
-  | jq -c '[.[]? | select(.publisherPackage == "(workspace)")] | length'
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --scope workspace --limit 30 intercept
 ```
 
-`intercept` is the full publisher-to-subscriber map. It is 9.4 MB on a project
-with Base Application loaded and has no filter, so only ever read it through a
-`jq` projection, and prefer `trace` for a single event.
+```json
+{"events":[…],"scope":"workspace","outOfScopeCount":31204,
+ "total":12,"returned":12,"offset":0,"truncated":false}
+```
+
+Without `--scope workspace` this is 9.4 MB on a project with Base Application
+loaded. `outOfScopeCount` is how many package events it left out. For one event,
+`trace` or `subscribers` is still the smaller answer.
 
 ## Do not
 
-- Use `subscribers`. It under-reports.
 - Grep `.al` files or `.alpackages` for `[EventSubscriber]`. The graph already
   holds every edge.
-- Read `intercept` or `suggest-event` without a `jq` projection.
+- Read `intercept` or `suggest-event` without `--scope` or `--limit`.
 
-## When a call times out
+## When a call is slow
 
-`trace`, `events` and `intercept` wait on an event graph that is built behind a
-dependency source index. On a project with Base Application loaded that index
-takes about a minute, and the client gives up after 30 seconds:
+`trace`, `subscribers`, `events` and `intercept` need an event graph built
+behind a dependency source index that takes about a minute on Base Application.
+The daemon starts it in the background at startup and the client waits while it
+makes progress rather than giving up at 30 seconds, so let a slow first call
+finish. To watch it:
 
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json diag | jq -c '.sourceIndex'
 ```
-Daemon did not respond within 30s — the operation may still be running.
-```
 
-There is no timeout flag. Run `al-explorer --json packages` first to start the
-daemon, then retry the call up to twice before reporting a failure.
+`state` reaches `ready` when every call is fast.

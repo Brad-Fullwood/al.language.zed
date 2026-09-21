@@ -33,12 +33,14 @@ pub fn rename(
     position: Position,
     new_name: &str,
 ) -> Result<Option<WorkspaceEdit>, WorkspaceStateError> {
-    // Reject a new name that would splice invalid AL into every touched file.
-    // Without this, renaming to `my var`, `2Start`, `` or a reserved keyword
-    // returns a WorkspaceEdit that writes syntax errors workspace-wide.
-    if !is_valid_rename_target(new_name) {
+    // Reject a new name that cannot be spelled in AL at all, and work out the
+    // spelling for the rest. Without this, renaming to `` or to a name holding
+    // a newline returns a WorkspaceEdit that writes syntax errors
+    // workspace-wide.
+    let Some(new_name) = parse_rename_name(new_name) else {
         return Ok(None);
-    }
+    };
+    let new_name = &new_name;
 
     let Some((text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, uri) else {
         return Ok(None);
@@ -83,7 +85,7 @@ pub fn rename(
                 .filter(|r| r.start_byte >= proc_start && r.end_byte <= proc_end)
                 .filter_map(|r| {
                     let matched_text = text.get(r.start_byte..r.end_byte)?;
-                    let replacement = make_rename_text(node.kind(), matched_text, new_name);
+                    let replacement = new_name.spelled_over(matched_text);
                     Some(TextEdit {
                         range: al_syntax::ts_range_to_syntax(r, source_bytes).into(),
                         new_text: replacement,
@@ -111,24 +113,33 @@ pub fn rename(
     // file runs a full go-to-definition query.
     let mut binder = binding::DeclLocCache::new();
 
+    // An `[EventSubscriber]` names its target with string literals and a
+    // `Type::Name` scope reference, which the identifier walk below cannot
+    // see. Renaming a published event, its publisher object or the table field
+    // an event belongs to has to rewrite those arguments too, or the rename
+    // leaves every subscriber pointing at a name that no longer exists.
+    let subscriber_target = subscriber_target_at(node, &text, clean_name);
+
     let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
-    if !refs.is_empty() {
-        let mut edits = Vec::new();
-        for r in &refs {
-            if binder.decl_loc_for_reference(workspace, uri, &text, &tree, r)? != cursor_decl {
-                continue;
-            }
-            if let Some(matched_text) = text.get(r.start_byte..r.end_byte) {
-                let replacement = make_rename_text(node.kind(), matched_text, new_name);
-                edits.push(TextEdit {
-                    range: al_syntax::ts_range_to_syntax(r, source_bytes).into(),
-                    new_text: replacement,
-                });
-            }
+    let mut edits = Vec::new();
+    for r in &refs {
+        if binder.decl_loc_for_reference(workspace, uri, &text, &tree, r)? != cursor_decl {
+            continue;
         }
-        if !edits.is_empty() {
-            changes.push((uri.clone(), edits));
+        if let Some(matched_text) = text.get(r.start_byte..r.end_byte) {
+            let replacement = new_name.spelled_over(matched_text);
+            edits.push(TextEdit {
+                range: al_syntax::ts_range_to_syntax(r, source_bytes).into(),
+                new_text: replacement,
+            });
         }
+    }
+    if let Some(target) = &subscriber_target {
+        merge_subscriber_edits(&mut edits, subscriber_edits(target, &tree, &text, new_name));
+    }
+    if !edits.is_empty() {
+        edits.sort_by_key(|e| (e.range.start.line, e.range.start.character));
+        changes.push((uri.clone(), edits));
     }
 
     let current_path = uri.to_file_path().ok();
@@ -145,26 +156,31 @@ pub fn rename(
             continue;
         };
         let refs = al_syntax::find_variable_references(&file_tree, &file_text, clean_name);
-        if !refs.is_empty() {
-            let file_source_bytes = file_text.as_bytes();
-            let mut edits = Vec::new();
-            for r in &refs {
-                if binder.decl_loc_for_reference(workspace, &file_uri, &file_text, &file_tree, r)?
-                    != cursor_decl
-                {
-                    continue;
-                }
-                if let Some(matched_text) = file_text.get(r.start_byte..r.end_byte) {
-                    let replacement = make_rename_text("", matched_text, new_name);
-                    edits.push(TextEdit {
-                        range: al_syntax::ts_range_to_syntax(r, file_source_bytes).into(),
-                        new_text: replacement,
-                    });
-                }
+        let file_source_bytes = file_text.as_bytes();
+        let mut edits = Vec::new();
+        for r in &refs {
+            if binder.decl_loc_for_reference(workspace, &file_uri, &file_text, &file_tree, r)?
+                != cursor_decl
+            {
+                continue;
             }
-            if !edits.is_empty() {
-                changes.push((file_uri, edits));
+            if let Some(matched_text) = file_text.get(r.start_byte..r.end_byte) {
+                let replacement = new_name.spelled_over(matched_text);
+                edits.push(TextEdit {
+                    range: al_syntax::ts_range_to_syntax(r, file_source_bytes).into(),
+                    new_text: replacement,
+                });
             }
+        }
+        if let Some(target) = &subscriber_target {
+            merge_subscriber_edits(
+                &mut edits,
+                subscriber_edits(target, &file_tree, &file_text, new_name),
+            );
+        }
+        if !edits.is_empty() {
+            edits.sort_by_key(|e| (e.range.start.line, e.range.start.character));
+            changes.push((file_uri, edits));
         }
     }
 
@@ -187,45 +203,369 @@ fn node_decl_loc(
     decl_loc(workspace, uri, range.start)
 }
 
-/// Whether `new_name` can be spliced into AL source as a rename target without
-/// producing invalid code. Accepts a plain identifier
-/// (`[A-Za-z_][A-Za-z0-9_]*` that is not a reserved keyword) or an
-/// already-quoted identifier (`"…"` with a non-empty, quote-free interior).
-/// Rejects empty names, names containing spaces or other characters that would
-/// require quoting, and bare keywords.
-fn is_valid_rename_target(new_name: &str) -> bool {
-    let name = new_name.trim();
-    if name.is_empty() {
-        return false;
-    }
-    // Already-quoted identifier: quotable names (fields, objects) may be passed
-    // pre-quoted. Require a non-empty interior with no embedded quote.
-    if name.len() >= 2 && name.starts_with('"') && name.ends_with('"') {
-        let inner = &name[1..name.len() - 1];
-        return !inner.is_empty() && !inner.contains('"');
-    }
-    // Plain identifier grammar.
-    let mut chars = name.chars();
-    let first = chars.next().unwrap();
-    if !(first.is_ascii_alphabetic() || first == '_') {
-        return false;
-    }
-    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return false;
-    }
-    // A bare reserved keyword is not a legal unquoted identifier.
-    !al_syntax::language_data::is_keyword(name)
+/// Which `[EventSubscriber]` argument a rename has to rewrite, and the
+/// publisher the subscriber must name for the rewrite to apply.
+///
+/// AL identifies a subscriber's target by object *and* name, so matching on
+/// the name alone would rewrite a same-named event published by an unrelated
+/// object.
+struct SubscriberTarget {
+    /// The argument position: the event name, the publisher object, or the
+    /// element (table field) the event belongs to.
+    argument: SubscriberArgumentKind,
+    /// The object declaring the renamed symbol: its AL keyword (`codeunit`,
+    /// `table`, …) and its name.
+    object_keyword: String,
+    object_name: String,
+    /// The name being renamed, as the subscriber spells it.
+    current_name: String,
 }
 
-fn make_rename_text(node_kind: &str, original_text: &str, new_name: &str) -> String {
-    let is_quoted = node_kind == "quoted_identifier"
-        || (original_text.starts_with('"') && original_text.ends_with('"'));
-    if is_quoted {
-        let clean = new_name.trim_matches('"');
-        format!("\"{}\"", clean)
-    } else {
-        new_name.to_string()
+#[derive(PartialEq)]
+enum SubscriberArgumentKind {
+    Object,
+    Event,
+    Element,
+}
+
+/// Classify the cursor node as the declaration of something an
+/// `[EventSubscriber]` names, or `None` when it is anything else.
+fn subscriber_target_at(
+    node: tree_sitter::Node<'_>,
+    text: &str,
+    clean_name: &str,
+) -> Option<SubscriberTarget> {
+    let source = text.as_bytes();
+    let mut current = Some(node);
+    while let Some(ancestor) = current {
+        match ancestor.kind() {
+            "procedure_declaration" | "event_procedure_declaration" => {
+                if !covers_name_field(ancestor, node) || !publishes_an_event(ancestor, source) {
+                    return None;
+                }
+                let (object_keyword, object_name) = enclosing_object(ancestor, source)?;
+                return Some(SubscriberTarget {
+                    argument: SubscriberArgumentKind::Event,
+                    object_keyword,
+                    object_name,
+                    current_name: clean_name.to_string(),
+                });
+            }
+            // A table field: `field(2; "Posting Date"; Date)`. The 4th
+            // subscriber argument names it for the field-level table events.
+            "object_section" => {
+                let name = al_syntax::node_text_clean(section_header_name(ancestor)?, source)?;
+                if !name.eq_ignore_ascii_case(clean_name) {
+                    return None;
+                }
+                let (object_keyword, object_name) = enclosing_object(ancestor, source)?;
+                if !object_keyword.eq_ignore_ascii_case("table") {
+                    return None;
+                }
+                return Some(SubscriberTarget {
+                    argument: SubscriberArgumentKind::Element,
+                    object_keyword,
+                    object_name,
+                    current_name: clean_name.to_string(),
+                });
+            }
+            "object_declaration" => {
+                if !covers_name_field(ancestor, node) {
+                    return None;
+                }
+                let keyword = ancestor
+                    .child_by_field_name("kind")
+                    .and_then(|n| n.utf8_text(source).ok())?
+                    .to_string();
+                return Some(SubscriberTarget {
+                    argument: SubscriberArgumentKind::Object,
+                    object_keyword: keyword,
+                    object_name: clean_name.to_string(),
+                    current_name: clean_name.to_string(),
+                });
+            }
+            _ => {}
+        }
+        current = ancestor.parent();
     }
+    None
+}
+
+/// Whether `node` sits inside `declaration`'s `name` field.
+fn covers_name_field(declaration: tree_sitter::Node<'_>, node: tree_sitter::Node<'_>) -> bool {
+    let mut cursor = declaration.walk();
+    let covers = declaration
+        .children_by_field_name("name", &mut cursor)
+        .any(|name| node.start_byte() >= name.start_byte() && node.end_byte() <= name.end_byte());
+    covers
+}
+
+/// Whether the procedure carries `[IntegrationEvent]` or `[BusinessEvent]`.
+///
+/// Without this guard an ordinary rename would rewrite any subscriber string
+/// that happened to match the name.
+fn publishes_an_event(declaration: tree_sitter::Node<'_>, source: &[u8]) -> bool {
+    let mut cursor = declaration.walk();
+    let publishes = declaration.children(&mut cursor).any(|child| {
+        child.kind() == "attribute"
+            && child
+                .child_by_field_name("name")
+                .or_else(|| child.child(0))
+                .and_then(|n| n.utf8_text(source).ok())
+                .map(|name| {
+                    let name = name.trim();
+                    name.eq_ignore_ascii_case("IntegrationEvent")
+                        || name.eq_ignore_ascii_case("BusinessEvent")
+                })
+                .unwrap_or(false)
+    });
+    publishes
+}
+
+/// The AL keyword and name of the object declaration enclosing `node`.
+fn enclosing_object(node: tree_sitter::Node<'_>, source: &[u8]) -> Option<(String, String)> {
+    let mut current = node.parent();
+    while let Some(ancestor) = current {
+        if ancestor.kind() == "object_declaration" {
+            let keyword = ancestor
+                .child_by_field_name("kind")?
+                .utf8_text(source)
+                .ok()?
+                .to_string();
+            let name = al_syntax::node_text_clean(ancestor.child_by_field_name("name")?, source)?;
+            return Some((keyword, name));
+        }
+        current = ancestor.parent();
+    }
+    None
+}
+
+/// The name token in an `object_section`'s parenthesized header, e.g.
+/// `"Posting Date"` in `field(2; "Posting Date"; Date)`.
+fn section_header_name(section: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    let mut cursor = section.walk();
+    let header = section
+        .children(&mut cursor)
+        .find(|n| n.kind() == "parenthesized_block")?;
+    let mut header_cursor = header.walk();
+    let mut seen_id = false;
+    for child in header.named_children(&mut header_cursor) {
+        match child.kind() {
+            "integer" if !seen_id => seen_id = true,
+            "semicolon" | "comma" if seen_id => {}
+            "identifier" | "quoted_identifier" | "name" | "name_or_keyword" => return Some(child),
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// The `ObjectType::` value an `[EventSubscriber]` uses for an object declared
+/// with `keyword`.
+///
+/// The 2nd argument writes a table as `Database::"Sales Header"` while the 1st
+/// writes it as `ObjectType::Table`, so the two are compared separately.
+fn subscriber_object_type(keyword: &str) -> Option<&'static str> {
+    Some(match keyword.to_ascii_lowercase().as_str() {
+        "table" => "Table",
+        "codeunit" => "Codeunit",
+        "page" => "Page",
+        "report" => "Report",
+        "query" => "Query",
+        "xmlport" => "XmlPort",
+        _ => return None,
+    })
+}
+
+/// Add the subscriber edits that the identifier walk has not already covered.
+///
+/// The publisher object argument (`Codeunit::"Sales-Post"`) spells its name
+/// with a `quoted_identifier`, which the identifier walk can also reach, so the
+/// two would otherwise produce a pair of edits over the same range.
+fn merge_subscriber_edits(edits: &mut Vec<TextEdit>, from_subscribers: Vec<TextEdit>) {
+    for edit in from_subscribers {
+        if !edits.iter().any(|existing| existing.range == edit.range) {
+            edits.push(edit);
+        }
+    }
+}
+
+/// The edits that rewrite `target` in every `[EventSubscriber]` of one file.
+fn subscriber_edits(
+    target: &SubscriberTarget,
+    tree: &tree_sitter::Tree,
+    text: &str,
+    new_name: &RenameName,
+) -> Vec<TextEdit> {
+    let Some(object_type) = subscriber_object_type(&target.object_keyword) else {
+        return Vec::new();
+    };
+    let source = text.as_bytes();
+    let mut edits = Vec::new();
+    for attribute in al_syntax::find_event_subscriber_attributes(tree, text) {
+        // The 1st argument is optional in practice (an unparsed or abbreviated
+        // attribute), so only a *mismatch* disqualifies the subscriber.
+        if !attribute.object_type.is_empty()
+            && !attribute.object_type.eq_ignore_ascii_case(object_type)
+        {
+            continue;
+        }
+        let names_the_object = attribute
+            .object
+            .as_ref()
+            .is_some_and(|object| object.name.eq_ignore_ascii_case(&target.object_name));
+        let (argument, replacement) = match target.argument {
+            SubscriberArgumentKind::Object => (
+                attribute.object.as_ref(),
+                None, // spelled from the argument's own text below
+            ),
+            SubscriberArgumentKind::Event if names_the_object => {
+                (attribute.event.as_ref(), Some(new_name.as_string_literal()))
+            }
+            SubscriberArgumentKind::Element if names_the_object => (
+                attribute.element.as_ref(),
+                Some(new_name.as_string_literal()),
+            ),
+            _ => continue,
+        };
+        let Some(argument) = argument else { continue };
+        if !argument.name.eq_ignore_ascii_case(&target.current_name) {
+            continue;
+        }
+        let new_text = match replacement {
+            Some(literal) => literal,
+            None => {
+                let current = text
+                    .get(argument.range.start_byte..argument.range.end_byte)
+                    .unwrap_or_default();
+                new_name.spelled_over(current)
+            }
+        };
+        edits.push(TextEdit {
+            range: al_syntax::ts_range_to_syntax(&argument.range, source).into(),
+            new_text,
+        });
+    }
+    edits
+}
+
+/// The identifier a rename request names, plus how AL has to spell it.
+///
+/// A client sends `newName` as free text and the two spellings of one AL name
+/// both arrive: an editor that prefilled its box from [`prepare_rename`] sends
+/// the placeholder back unquoted (`Posting Date`), while a client that echoes
+/// the source sends `"Posting Date"`. Both name the same field, so the request
+/// is reduced to the identifier and the spelling is derived from that
+/// identifier rather than from whichever form arrived.
+pub(crate) struct RenameName {
+    /// The identifier, with the surrounding quotes and `""` escapes removed.
+    clean: String,
+    /// Whether AL needs double quotes to write `clean`.
+    needs_quoting: bool,
+}
+
+impl RenameName {
+    /// `clean` as a quoted AL identifier, re-doubling any embedded `"`.
+    fn quoted(&self) -> String {
+        format!("\"{}\"", self.clean.replace('"', "\"\""))
+    }
+
+    /// The text to splice over an occurrence currently spelled
+    /// `original_text`. An occurrence already written with quotes keeps them,
+    /// so a rename does not reflow the file's existing style.
+    fn spelled_over(&self, original_text: &str) -> String {
+        if self.needs_quoting || is_quoted(original_text) {
+            self.quoted()
+        } else {
+            self.clean.clone()
+        }
+    }
+
+    /// `clean` inside an AL string literal, for the `[EventSubscriber]`
+    /// arguments that name an event or element by string.
+    fn as_string_literal(&self) -> String {
+        format!("'{}'", self.clean.replace('\'', "''"))
+    }
+}
+
+/// Parse a client's `newName` into the identifier it names, or `None` when no
+/// AL spelling of it exists.
+///
+/// Rejects the empty name, an interior whose `"` are not all doubled escapes,
+/// and any control character: an interior holding a newline would split the
+/// identifier across two lines in every file the rename touches, and the LSP
+/// specification puts no constraint on `newName`, so the daemon path passes
+/// whatever arrives on the wire.
+pub(crate) fn parse_rename_name(new_name: &str) -> Option<RenameName> {
+    let raw = new_name.trim();
+    let clean = if is_quoted(raw) {
+        let inner = &raw[1..raw.len() - 1];
+        if !quotes_are_all_doubled(inner) {
+            return None;
+        }
+        inner.replace("\"\"", "\"")
+    } else {
+        raw.to_string()
+    };
+    if clean.is_empty() || clean.trim() != clean {
+        return None;
+    }
+    if clean.chars().any(char::is_control) {
+        return None;
+    }
+    Some(RenameName {
+        needs_quoting: needs_quoting(&clean),
+        clean,
+    })
+}
+
+fn is_quoted(text: &str) -> bool {
+    text.len() >= 2 && text.starts_with('"') && text.ends_with('"')
+}
+
+/// Whether every `"` in a quoted identifier's interior is half of a `""` escape.
+fn quotes_are_all_doubled(inner: &str) -> bool {
+    let bytes = inner.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'"' {
+            i += 1;
+            continue;
+        }
+        if bytes.get(i + 1) != Some(&b'"') {
+            return false;
+        }
+        i += 2;
+    }
+    true
+}
+
+/// Whether AL requires double quotes around `name`.
+///
+/// Compiler error AL0107 states the rule: a bare name holds letters, digits and
+/// underscores, does not start with a digit, and is not a reserved keyword;
+/// anything else goes in double quotes. Microsoft does not publish the reserved
+/// set, so every word in the grammar's keyword table is quoted. Quoting a name
+/// that would also have been legal bare still names the same identifier, while
+/// leaving a reserved word bare is AL0107.
+fn needs_quoting(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return true;
+    };
+    if !is_identifier_start(first) || !chars.all(is_identifier_continue) {
+        return true;
+    }
+    al_syntax::language_data::is_keyword(name)
+}
+
+/// The grammar's `identifier` rule: `[A-Za-z_\u{80}-\u{FFFF}]`.
+fn is_identifier_start(c: char) -> bool {
+    c.is_ascii_alphabetic() || c == '_' || ('\u{80}'..='\u{FFFF}').contains(&c)
+}
+
+fn is_identifier_continue(c: char) -> bool {
+    is_identifier_start(c) || c.is_ascii_digit()
 }
 
 #[cfg(test)]
@@ -248,6 +588,99 @@ mod tests {
 
     fn open_doc(ws: &Workspace, uri: &Url, al_code: &str) {
         ws.documents.open(uri.clone(), al_code.to_string()).unwrap();
+    }
+
+    /// Index `al_code` as well as opening it, so the cross-file loop sees it.
+    fn open_and_index(ws: &Workspace, uri: &Url, al_code: &str) {
+        open_doc(ws, uri, al_code);
+        ws.file_index
+            .add_file(uri.to_file_path().unwrap(), al_code.to_string());
+    }
+
+    fn byte_offset(source: &str, pos: Position) -> usize {
+        let mut offset = 0usize;
+        for (index, line) in source.split('\n').enumerate() {
+            if index == pos.line as usize {
+                return offset + al_syntax::utf16_col_to_byte_offset(line, pos.character as usize);
+            }
+            offset += line.len() + 1;
+        }
+        source.len()
+    }
+
+    fn apply_edits(source: &str, edits: &[TextEdit]) -> String {
+        let mut spans: Vec<(usize, usize, &str)> = edits
+            .iter()
+            .map(|e| {
+                (
+                    byte_offset(source, e.range.start),
+                    byte_offset(source, e.range.end),
+                    e.new_text.as_str(),
+                )
+            })
+            .collect();
+        spans.sort_by_key(|(start, _, _)| *start);
+        let mut out = String::new();
+        let mut cursor = 0usize;
+        for (start, end, text) in spans {
+            assert!(start >= cursor, "rename produced overlapping edits");
+            out.push_str(&source[cursor..start]);
+            out.push_str(text);
+            cursor = end;
+        }
+        out.push_str(&source[cursor..]);
+        out
+    }
+
+    fn assert_parses(label: &str, source: &str) {
+        let parsed = al_syntax::AlParser::parse_quick(source);
+        assert!(
+            !parsed.tree.root_node().has_error(),
+            "{label} no longer parses after the rename:\n{source}"
+        );
+    }
+
+    /// Drive a rename the way a client does: take the placeholder
+    /// `prepare_rename` offers, hand the user's edit of it to `rename`, apply
+    /// the returned edits and re-parse each touched file.
+    ///
+    /// Everything a real client does to a quoted name goes through here: the
+    /// editor pre-fills its box with the *unquoted* placeholder, so the string
+    /// that comes back carries no quotes and the validator has to accept it.
+    fn client_rename(
+        ws: &Workspace,
+        files: &[(Url, &str)],
+        uri: &Url,
+        pos: Position,
+        edit_placeholder: impl FnOnce(&str) -> String,
+    ) -> Vec<(Url, String)> {
+        let (_range, placeholder) =
+            prepare_rename(ws, uri, pos).expect("prepare_rename should offer a placeholder");
+        let new_name = edit_placeholder(&placeholder);
+        let Some(workspace_edit) = rename(ws, uri, pos, &new_name) else {
+            panic!("rename to {new_name:?} produced no edits");
+        };
+        let mut renamed = Vec::new();
+        for (file_uri, edits) in &workspace_edit.changes {
+            let source = files
+                .iter()
+                .find(|(u, _)| u == file_uri)
+                .unwrap_or_else(|| panic!("rename edited an unknown file {file_uri}"))
+                .1;
+            let after = apply_edits(source, edits);
+            assert_parses(file_uri.as_str(), &after);
+            renamed.push((file_uri.clone(), after));
+        }
+        renamed
+    }
+
+    fn text_for<'a>(renamed: &'a [(Url, String)], uri: &Url) -> &'a str {
+        renamed
+            .iter()
+            .find(|(u, _)| u == uri)
+            .unwrap_or_else(|| panic!("no edits landed in {uri}"))
+            .1
+            .as_str()
     }
 
     #[test]
@@ -547,28 +980,66 @@ mod tests {
     }
 
     #[test]
-    fn invalid_new_names_rejected() {
-        assert!(!is_valid_rename_target(""));
-        assert!(!is_valid_rename_target("   "));
-        assert!(!is_valid_rename_target("my var with spaces"));
-        assert!(!is_valid_rename_target("2Start"));
-        assert!(!is_valid_rename_target("has-dash"));
-        assert!(!is_valid_rename_target("bad!name"));
-        assert!(!is_valid_rename_target("begin")); // reserved keyword
-        assert!(!is_valid_rename_target("\"\"")); // empty quoted
-        assert!(!is_valid_rename_target("\"bad\"quote\"")); // embedded quote
+    fn unspellable_new_names_rejected() {
+        assert!(parse_rename_name("").is_none());
+        assert!(parse_rename_name("   ").is_none());
+        assert!(parse_rename_name("\"\"").is_none()); // empty quoted
+        assert!(parse_rename_name("\"bad\"quote\"").is_none()); // undoubled quote
+        assert!(parse_rename_name("\"My\nField\"").is_none()); // splits across lines
+        assert!(parse_rename_name("My\tField").is_none());
+        assert!(parse_rename_name("\" Padded \"").is_none());
     }
 
     #[test]
-    fn valid_new_names_accepted() {
-        assert!(is_valid_rename_target("NewVar"));
-        assert!(is_valid_rename_target("_leading"));
-        assert!(is_valid_rename_target("Var123"));
-        assert!(is_valid_rename_target("\"My Field\"")); // pre-quoted quotable name
+    fn a_name_that_needs_quoting_gets_quoted() {
+        let quoted = |name: &str| parse_rename_name(name).expect("spellable").quoted();
+        assert_eq!(
+            parse_rename_name("my var with spaces")
+                .unwrap()
+                .spelled_over("MyVar"),
+            "\"my var with spaces\""
+        );
+        assert_eq!(
+            parse_rename_name("2Start").unwrap().spelled_over("MyVar"),
+            "\"2Start\""
+        );
+        assert_eq!(
+            parse_rename_name("has-dash").unwrap().spelled_over("MyVar"),
+            "\"has-dash\""
+        );
+        // A reserved keyword is a legal name once quoted (AL0107).
+        assert_eq!(
+            parse_rename_name("begin").unwrap().spelled_over("MyVar"),
+            "\"begin\""
+        );
+        // An embedded quote is re-doubled on the way out.
+        assert_eq!(quoted("Cust \"Main\" Rec"), "\"Cust \"\"Main\"\" Rec\"");
+        assert_eq!(
+            parse_rename_name("\"Cust \"\"Main\"\" Rec\"")
+                .unwrap()
+                .clean,
+            "Cust \"Main\" Rec"
+        );
     }
 
     #[test]
-    fn rename_to_invalid_name_produces_no_edit() {
+    fn a_plain_name_stays_unquoted_unless_the_occurrence_is_quoted() {
+        let plain = parse_rename_name("NewVar").unwrap();
+        assert!(!plain.needs_quoting);
+        assert_eq!(plain.spelled_over("MyVar"), "NewVar");
+        assert_eq!(plain.spelled_over("\"My Var\""), "\"NewVar\"");
+        assert!(!parse_rename_name("_leading").unwrap().needs_quoting);
+        assert!(!parse_rename_name("Var123").unwrap().needs_quoting);
+        // Unicode identifiers are plain per the grammar's `identifier` rule.
+        assert!(!parse_rename_name("Ørnamental").unwrap().needs_quoting);
+        // A pre-quoted plain name is still the same identifier.
+        let prequoted = parse_rename_name("\"NewVar\"").unwrap();
+        assert_eq!(prequoted.clean, "NewVar");
+        assert_eq!(prequoted.spelled_over("MyVar"), "NewVar");
+    }
+
+    #[test]
+    fn rename_to_an_unspellable_name_produces_no_edit() {
         let ws = Workspace::new();
         let uri = test_uri();
         open_doc(
@@ -588,40 +1059,450 @@ mod tests {
             line: 6,
             character: 8,
         };
-        // Space-containing name would splice broken code — must be rejected.
-        assert!(
-            rename(&ws, &uri, pos, "my var with spaces").is_none(),
-            "rename to a space-containing name must not produce edits"
-        );
         assert!(rename(&ws, &uri, pos, "").is_none());
-        assert!(rename(&ws, &uri, pos, "begin").is_none());
-        // A valid name still works (control).
+        assert!(
+            rename(&ws, &uri, pos, "\"My\nField\"").is_none(),
+            "a newline in the new name must not be spliced into the file"
+        );
         assert!(rename(&ws, &uri, pos, "NewVar").is_some());
     }
 
+    /// The round trip an editor makes on a quoted field: `prepare_rename`
+    /// hands back the unquoted placeholder, the user edits it, and the edited
+    /// text comes back with no quotes. The rename has to re-quote it.
     #[test]
-    fn make_rename_text_unquoted() {
-        assert_eq!(make_rename_text("identifier", "MyVar", "NewVar"), "NewVar");
+    fn rename_quoted_field_through_the_client_round_trip() {
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/src/Shipment.al").unwrap();
+        let src = r#"table 50100 "Shipment"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; "Posting Date"; Date) { }
     }
 
-    #[test]
-    fn make_rename_text_quoted_identifier() {
+    procedure Stamp()
+    begin
+        Rec."Posting Date" := Today();
+    end;
+}
+"#;
+        open_and_index(&ws, &uri, src);
+
+        let pos = Position {
+            line: 5,
+            character: 18,
+        };
+        let (_range, placeholder) = prepare_rename(&ws, &uri, pos).expect("placeholder");
+        assert_eq!(placeholder, "Posting Date");
+
+        let renamed = client_rename(&ws, &[(uri.clone(), src)], &uri, pos, |placeholder| {
+            placeholder.replace("Posting", "Posted")
+        });
         assert_eq!(
-            make_rename_text("quoted_identifier", "\"Old Name\"", "New Name"),
-            "\"New Name\""
+            text_for(&renamed, &uri),
+            r#"table 50100 "Shipment"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; "Posted Date"; Date) { }
+    }
+
+    procedure Stamp()
+    begin
+        Rec."Posted Date" := Today();
+    end;
+}
+"#
         );
     }
 
+    /// `"No."` cannot be written without quotes at all: the `.` is not an
+    /// identifier character. Renaming it to another dotted name has to keep the
+    /// quotes on both the declaration and the use.
     #[test]
-    fn make_rename_text_strips_extra_quotes() {
-        assert_eq!(
-            make_rename_text("quoted_identifier", "\"Old\"", "\"New\""),
-            "\"New\""
+    fn rename_dotted_quoted_field_keeps_its_quotes() {
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/src/Dotted.al").unwrap();
+        let src = r#"table 50100 "Shipment"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+
+    procedure Stamp()
+    begin
+        Rec."No." := 'X';
+    end;
+}
+"#;
+        open_and_index(&ws, &uri, src);
+        let pos = Position {
+            line: 4,
+            character: 18,
+        };
+        let renamed = client_rename(&ws, &[(uri.clone(), src)], &uri, pos, |placeholder| {
+            assert_eq!(placeholder, "No.");
+            "Doc. No.".to_string()
+        });
+        let after = text_for(&renamed, &uri);
+        assert!(
+            after.contains(r#"field(1; "Doc. No."; Code[20])"#),
+            "declaration not re-quoted: {after}"
+        );
+        assert!(
+            after.contains(r#"        Rec."Doc. No." := 'X';"#),
+            "use not re-quoted: {after}"
         );
     }
 
+    /// A name whose embedded `"` is escaped by doubling survives the round
+    /// trip: `prepare_rename` hands back the unescaped identifier and the
+    /// rename re-escapes it.
     #[test]
-    fn make_rename_text_detects_quotes_from_text() {
-        assert_eq!(make_rename_text("", "\"Quoted\"", "Renamed"), "\"Renamed\"");
+    fn rename_field_whose_name_contains_doubled_quotes() {
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/src/Doubled.al").unwrap();
+        let src = r#"table 50100 "Shipment"
+{
+    fields
+    {
+        field(1; "Cust ""Main"" Rec"; Code[20]) { }
+    }
+
+    procedure Stamp()
+    begin
+        Rec."Cust ""Main"" Rec" := 'X';
+    end;
+}
+"#;
+        open_and_index(&ws, &uri, src);
+        let pos = Position {
+            line: 4,
+            character: 20,
+        };
+        let renamed = client_rename(&ws, &[(uri.clone(), src)], &uri, pos, |placeholder| {
+            assert_eq!(placeholder, r#"Cust "Main" Rec"#);
+            r#"Cust "Head" Rec"#.to_string()
+        });
+        let after = text_for(&renamed, &uri);
+        assert!(
+            after.contains(r#"field(1; "Cust ""Head"" Rec"; Code[20])"#),
+            "declaration not re-escaped: {after}"
+        );
+        assert!(
+            after.contains(r#"        Rec."Cust ""Head"" Rec" := 'X';"#),
+            "use not re-escaped: {after}"
+        );
+    }
+
+    /// A rename to a name AL cannot write bare has to quote it, rather than
+    /// returning no edits and leaving the editor silent.
+    #[test]
+    fn rename_plain_variable_to_a_quotable_name() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        let src = r#"codeunit 50100 "Test"
+{
+    procedure Foo()
+    var
+        MyVar: Integer;
+    begin
+        MyVar := 42;
+    end;
+}
+"#;
+        open_and_index(&ws, &uri, src);
+        let pos = Position {
+            line: 6,
+            character: 8,
+        };
+        let renamed = client_rename(&ws, &[(uri.clone(), src)], &uri, pos, |_| {
+            "Total (LCY)".to_string()
+        });
+        assert_eq!(
+            text_for(&renamed, &uri),
+            r#"codeunit 50100 "Test"
+{
+    procedure Foo()
+    var
+        "Total (LCY)": Integer;
+    begin
+        "Total (LCY)" := 42;
+    end;
+}
+"#
+        );
+    }
+
+    /// The cross-file loop has to produce edits, not just withhold them: a
+    /// codeunit referencing a table's field is renamed along with the field.
+    #[test]
+    fn rename_field_edits_the_referencing_codeunit() {
+        let ws = Workspace::new();
+        let table_uri = Url::parse("file:///test/src/Tab50100.al").unwrap();
+        let codeunit_uri = Url::parse("file:///test/src/Cod50100.al").unwrap();
+        let table_src = r#"table 50100 "Shipment"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Amount; Decimal) { }
+    }
+}
+"#;
+        let codeunit_src = r#"codeunit 50100 "Shipment Mgt."
+{
+    procedure Total(var Shipment: Record "Shipment"): Decimal
+    begin
+        exit(Shipment.Amount);
+    end;
+}
+"#;
+        open_and_index(&ws, &table_uri, table_src);
+        open_and_index(&ws, &codeunit_uri, codeunit_src);
+
+        let pos = Position {
+            line: 5,
+            character: 18,
+        };
+        let renamed = client_rename(
+            &ws,
+            &[
+                (table_uri.clone(), table_src),
+                (codeunit_uri.clone(), codeunit_src),
+            ],
+            &table_uri,
+            pos,
+            |placeholder| {
+                assert_eq!(placeholder, "Amount");
+                "Total Amount".to_string()
+            },
+        );
+        assert!(
+            text_for(&renamed, &table_uri).contains(r#"field(2; "Total Amount"; Decimal)"#),
+            "table not renamed: {}",
+            text_for(&renamed, &table_uri)
+        );
+        let codeunit_after = text_for(&renamed, &codeunit_uri);
+        assert!(
+            codeunit_after.contains(r#"exit(Shipment."Total Amount");"#),
+            "cross-file reference not renamed: {codeunit_after}"
+        );
+    }
+
+    const PUBLISHER: &str = r#"codeunit 50100 "Sales Post"
+{
+    [IntegrationEvent(false, false)]
+    local procedure OnAfterPostSalesDoc(var Header: Record "Sales Header")
+    begin
+    end;
+}
+"#;
+
+    const SUBSCRIBER: &str = r#"codeunit 50101 "Sales Post Sub"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Sales Post", 'OnAfterPostSalesDoc', '', false, false)]
+    local procedure OnAfterPost(var Header: Record "Sales Header")
+    begin
+    end;
+}
+"#;
+
+    /// Renaming a published event has to rewrite the subscriber's event-name
+    /// string. It is a string literal, so the identifier walk cannot see it and
+    /// the subscriber is left naming an event that no longer exists.
+    #[test]
+    fn rename_event_rewrites_the_subscriber_string() {
+        let ws = Workspace::new();
+        let publisher_uri = Url::parse("file:///test/src/Pub.al").unwrap();
+        let subscriber_uri = Url::parse("file:///test/src/Sub.al").unwrap();
+        open_and_index(&ws, &publisher_uri, PUBLISHER);
+        open_and_index(&ws, &subscriber_uri, SUBSCRIBER);
+
+        let pos = Position {
+            line: 3,
+            character: 24,
+        };
+        let renamed = client_rename(
+            &ws,
+            &[
+                (publisher_uri.clone(), PUBLISHER),
+                (subscriber_uri.clone(), SUBSCRIBER),
+            ],
+            &publisher_uri,
+            pos,
+            |placeholder| {
+                assert_eq!(placeholder, "OnAfterPostSalesDoc");
+                "OnAfterPostSales".to_string()
+            },
+        );
+        assert!(text_for(&renamed, &publisher_uri).contains("procedure OnAfterPostSales(var"));
+        assert_eq!(
+            text_for(&renamed, &subscriber_uri),
+            r#"codeunit 50101 "Sales Post Sub"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Sales Post", 'OnAfterPostSales', '', false, false)]
+    local procedure OnAfterPost(var Header: Record "Sales Header")
+    begin
+    end;
+}
+"#
+        );
+    }
+
+    /// A same-named event published by a different object must be left alone:
+    /// a subscriber names its target by object and name together.
+    #[test]
+    fn rename_event_leaves_a_subscriber_to_another_publisher_alone() {
+        let ws = Workspace::new();
+        let publisher_uri = Url::parse("file:///test/src/Pub.al").unwrap();
+        let other_uri = Url::parse("file:///test/src/OtherSub.al").unwrap();
+        let other_sub = r#"codeunit 50102 "Other Sub"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Purch Post", 'OnAfterPostSalesDoc', '', false, false)]
+    local procedure OnAfterPost()
+    begin
+    end;
+}
+"#;
+        open_and_index(&ws, &publisher_uri, PUBLISHER);
+        open_and_index(&ws, &other_uri, other_sub);
+
+        let pos = Position {
+            line: 3,
+            character: 24,
+        };
+        let edit = rename(&ws, &publisher_uri, pos, "OnAfterPostSales").expect("edits");
+        assert!(
+            edit.changes.iter().all(|(u, _)| u != &other_uri),
+            "rename of a Sales Post event reached a Purch Post subscriber: {:?}",
+            edit.changes
+        );
+    }
+
+    /// An ordinary procedure with no event attribute must not rewrite
+    /// subscriber strings that happen to match its name.
+    #[test]
+    fn rename_plain_procedure_leaves_subscriber_strings_alone() {
+        let ws = Workspace::new();
+        let publisher_uri = Url::parse("file:///test/src/Plain.al").unwrap();
+        let subscriber_uri = Url::parse("file:///test/src/Sub.al").unwrap();
+        let plain = r#"codeunit 50100 "Sales Post"
+{
+    local procedure OnAfterPostSalesDoc()
+    begin
+    end;
+}
+"#;
+        open_and_index(&ws, &publisher_uri, plain);
+        open_and_index(&ws, &subscriber_uri, SUBSCRIBER);
+
+        let pos = Position {
+            line: 2,
+            character: 24,
+        };
+        let edit = rename(&ws, &publisher_uri, pos, "OnAfterPostSales").expect("edits");
+        assert!(
+            edit.changes.iter().all(|(u, _)| u != &subscriber_uri),
+            "renaming a plain procedure rewrote a subscriber string: {:?}",
+            edit.changes
+        );
+    }
+
+    /// Renaming the publisher object has to rewrite the subscriber's
+    /// `Codeunit::"…"` argument, and exactly once.
+    #[test]
+    fn rename_publisher_object_rewrites_the_subscriber_argument() {
+        let ws = Workspace::new();
+        let publisher_uri = Url::parse("file:///test/src/Pub.al").unwrap();
+        let subscriber_uri = Url::parse("file:///test/src/Sub.al").unwrap();
+        open_and_index(&ws, &publisher_uri, PUBLISHER);
+        open_and_index(&ws, &subscriber_uri, SUBSCRIBER);
+
+        let pos = Position {
+            line: 0,
+            character: 18,
+        };
+        let renamed = client_rename(
+            &ws,
+            &[
+                (publisher_uri.clone(), PUBLISHER),
+                (subscriber_uri.clone(), SUBSCRIBER),
+            ],
+            &publisher_uri,
+            pos,
+            |placeholder| {
+                assert_eq!(placeholder, "Sales Post");
+                "Sales Posting".to_string()
+            },
+        );
+        assert_eq!(
+            text_for(&renamed, &subscriber_uri),
+            r#"codeunit 50101 "Sales Post Sub"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Sales Posting", 'OnAfterPostSalesDoc', '', false, false)]
+    local procedure OnAfterPost(var Header: Record "Sales Header")
+    begin
+    end;
+}
+"#
+        );
+    }
+
+    /// A field-level table event names the field in the 4th argument, which is
+    /// a string literal like the event name.
+    #[test]
+    fn rename_table_field_rewrites_the_subscriber_element_argument() {
+        let ws = Workspace::new();
+        let table_uri = Url::parse("file:///test/src/Tab.al").unwrap();
+        let subscriber_uri = Url::parse("file:///test/src/FieldSub.al").unwrap();
+        let table = r#"table 50100 "Shipment"
+{
+    fields
+    {
+        field(2; "Posting Date"; Date) { }
+    }
+}
+"#;
+        let subscriber = r#"codeunit 50101 "Shipment Sub"
+{
+    [EventSubscriber(ObjectType::Table, Database::"Shipment", 'OnAfterValidateEvent', 'Posting Date', false, false)]
+    local procedure OnValidate()
+    begin
+    end;
+}
+"#;
+        open_and_index(&ws, &table_uri, table);
+        open_and_index(&ws, &subscriber_uri, subscriber);
+
+        let pos = Position {
+            line: 4,
+            character: 18,
+        };
+        let renamed = client_rename(
+            &ws,
+            &[
+                (table_uri.clone(), table),
+                (subscriber_uri.clone(), subscriber),
+            ],
+            &table_uri,
+            pos,
+            |_| "Posted Date".to_string(),
+        );
+        assert_eq!(
+            text_for(&renamed, &subscriber_uri),
+            r#"codeunit 50101 "Shipment Sub"
+{
+    [EventSubscriber(ObjectType::Table, Database::"Shipment", 'OnAfterValidateEvent', 'Posted Date', false, false)]
+    local procedure OnValidate()
+    begin
+    end;
+}
+"#
+        );
     }
 }

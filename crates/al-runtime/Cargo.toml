@@ -20,5 +20,6 @@ getrandom = { workspace = true }
 rust_decimal = { workspace = true }
 
 [dev-dependencies]
+al-types = { path = "../al-types", version = "0.1.0" }
 proptest = "1"
 rust_decimal_macros = { workspace = true }

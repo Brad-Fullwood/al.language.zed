@@ -112,6 +112,37 @@ pub struct AlConfig {
     pub max_document_size_bytes: Option<usize>,
 }
 
+/// Outcome of merging one batch of settings.
+///
+/// The two lists are kept apart because they call for different handling: a
+/// `.vscode/settings.json` is shared with Microsoft's AL extension, whose
+/// `al.*` keys this crate does not model, so an unknown key is normal and only
+/// worth a warning, while a modeled key holding the wrong kind of value is a
+/// mistake the user has to see.
+#[derive(Debug, Clone, Default)]
+pub struct SettingsMergeReport {
+    /// Keys that are not modeled here. Skipped and reported.
+    pub unknown_keys: Vec<String>,
+    /// Modeled keys whose value has the wrong shape. Skipped and reported.
+    pub invalid_values: Vec<String>,
+    /// The batch itself could not be read, so nothing in it was applied.
+    pub root_error: Option<String>,
+}
+
+impl SettingsMergeReport {
+    pub fn is_empty(&self) -> bool {
+        self.unknown_keys.is_empty() && self.invalid_values.is_empty() && self.root_error.is_none()
+    }
+
+    /// Every issue, the unreadable root first, then invalid values.
+    pub fn into_issues(self) -> Vec<String> {
+        let mut issues: Vec<String> = self.root_error.into_iter().collect();
+        issues.extend(self.invalid_values);
+        issues.extend(self.unknown_keys);
+        issues
+    }
+}
+
 /// NuGet feed configuration for symbol download.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -389,7 +420,30 @@ impl AlConfig {
     /// (`lsp.al-lsp.settings`), flat VS Code keys (`al.foo`), the LSP
     /// `{ "al": { ... } }` envelope, and already-normalized server keys.
     /// Extension-only launch settings are intentionally filtered out.
+    ///
+    /// Returns only the invalid values. `al.*` keys this crate does not model
+    /// are logged and skipped: the same file configures Microsoft's AL
+    /// extension, which has many more of them.
     pub fn merge_editor_settings(&mut self, value: &serde_json::Value) -> Vec<String> {
+        let report = self.merge_editor_settings_reporting(value);
+        if !report.unknown_keys.is_empty() || !report.invalid_values.is_empty() {
+            tracing::warn!(
+                unknown = ?report.unknown_keys,
+                invalid = ?report.invalid_values,
+                "ignoring AL settings this server does not model"
+            );
+        }
+        report.root_error.into_iter().collect()
+    }
+
+    /// [`merge_editor_settings`] with the unknown keys returned rather than
+    /// logged, for callers that surface them in the editor.
+    ///
+    /// [`merge_editor_settings`]: Self::merge_editor_settings
+    pub fn merge_editor_settings_reporting(
+        &mut self,
+        value: &serde_json::Value,
+    ) -> SettingsMergeReport {
         let nested = value
             .pointer("/lsp/al-lsp/settings")
             .or_else(|| value.get("settings"));
@@ -399,7 +453,10 @@ impl AlConfig {
         };
         let mut normalized = serde_json::Map::new();
         let Some(settings) = value.as_object() else {
-            return vec!["settings root must be an object".to_string()];
+            return SettingsMergeReport {
+                root_error: Some("settings root must be an object".to_string()),
+                ..SettingsMergeReport::default()
+            };
         };
 
         for (key, value) in settings {
@@ -415,7 +472,7 @@ impl AlConfig {
                 insert_editor_setting(&mut normalized, key, value);
             }
         }
-        self.merge(&serde_json::Value::Object(normalized))
+        self.merge_reporting(&serde_json::Value::Object(normalized))
     }
 
     /// Parse and merge serialized editor settings passed across a process
@@ -438,26 +495,58 @@ impl AlConfig {
     /// Merge new settings into this config. Only fields present in
     /// the incoming JSON are updated; absent fields keep their current value.
     ///
-    /// Returns a list of unrecognized keys for reporting to the user.
+    /// Strict: nothing is applied when the batch carries any issue, and every
+    /// issue is returned. Used for this project's own persisted settings file.
+    /// Settings that come from an editor go through [`merge_reporting`] or
+    /// [`merge_editor_settings`], which keep the keys they understand.
+    ///
+    /// [`merge_reporting`]: Self::merge_reporting
+    /// [`merge_editor_settings`]: Self::merge_editor_settings
     pub fn merge(&mut self, settings: &serde_json::Value) -> Vec<String> {
         let mut candidate = self.clone();
-        let issues = candidate.merge_in_place(settings);
-        if issues.is_empty() {
+        let report = candidate.merge_in_place(settings);
+        if report.is_empty() {
             *self = candidate;
         }
-        issues
+        report.into_issues()
     }
 
-    fn merge_in_place(&mut self, settings: &serde_json::Value) -> Vec<String> {
-        let mut unknown_keys = Vec::new();
+    /// Merge per key, reporting rather than rejecting.
+    ///
+    /// Every key that is modeled here and carries a value of the right shape
+    /// is applied. A key this crate does not model, and a modeled key whose
+    /// value has the wrong shape, are skipped and reported. Used for settings
+    /// that come from an editor, where both cases are normal: the same file
+    /// configures Microsoft's AL extension, which models more `al.*` keys and
+    /// gives some of the shared ones a different type.
+    pub fn merge_reporting(&mut self, settings: &serde_json::Value) -> SettingsMergeReport {
+        self.merge_in_place(settings)
+    }
+
+    fn merge_in_place(&mut self, settings: &serde_json::Value) -> SettingsMergeReport {
+        let mut report = SettingsMergeReport::default();
 
         let obj = match settings.as_object() {
             Some(o) => o,
-            None => return vec!["settings root must be an object".to_string()],
+            None => {
+                report.root_error = Some("settings root must be an object".to_string());
+                return report;
+            }
         };
-        unknown_keys.extend(validate_setting_shapes(obj));
+        let shape_issues = validate_setting_shapes(obj);
+        let invalid_keys: std::collections::HashSet<&str> =
+            shape_issues.iter().map(|(key, _)| key.as_str()).collect();
+        report
+            .invalid_values
+            .extend(shape_issues.iter().map(|(_, message)| message.clone()));
 
         for key in obj.keys() {
+            // A key whose value has the wrong shape is skipped whole rather
+            // than half-applied: `merge_string_array` and friends would
+            // otherwise keep the entries they could read.
+            if invalid_keys.contains(key.as_str()) {
+                continue;
+            }
             match key.as_str() {
                 "enableCodeAnalysis" => merge_bool(obj, key, &mut self.enable_code_analysis),
                 "backgroundCodeAnalysis" => {
@@ -469,7 +558,9 @@ impl AlConfig {
                             s.to_string(),
                         )) {
                             Ok(scope) => self.diagnostics_scope = scope,
-                            Err(_) => unknown_keys.push(format!("diagnosticsScope={s:?}")),
+                            Err(_) => report
+                                .invalid_values
+                                .push(format!("diagnosticsScope={s:?}")),
                         }
                     }
                 }
@@ -479,7 +570,9 @@ impl AlConfig {
                             serde_json::Value::String(s.to_string()),
                         ) {
                             Ok(trigger) => self.diagnostics_trigger = trigger,
-                            Err(_) => unknown_keys.push(format!("diagnosticsTrigger={s:?}")),
+                            Err(_) => report
+                                .invalid_values
+                                .push(format!("diagnosticsTrigger={s:?}")),
                         }
                     }
                 }
@@ -497,7 +590,7 @@ impl AlConfig {
                 "enableCodeActions" => merge_bool(obj, key, &mut self.enable_code_actions),
                 "formatting" => {
                     let Some(formatting) = obj.get(key).and_then(|value| value.as_object()) else {
-                        unknown_keys.push("formatting".to_string());
+                        report.invalid_values.push("formatting".to_string());
                         continue;
                     };
                     for (format_key, value) in formatting {
@@ -508,32 +601,33 @@ impl AlConfig {
                                 value.clone()
                             ) {
                                 Ok(value) => self.formatting.blank_lines_between_procedures = value,
-                                Err(_) => unknown_keys.push(format!(
+                                Err(_) => report.invalid_values.push(format!(
                                     "formatting.blankLinesBetweenProcedures={value}"
                                 )),
                             },
                             "maxLineLength" => {
                                 match value.as_u64().and_then(|value| usize::try_from(value).ok()) {
                                     Some(value) => self.formatting.max_line_length = value,
-                                    None => unknown_keys
+                                    None => report
+                                        .invalid_values
                                         .push(format!("formatting.maxLineLength={value}")),
                                 }
                             }
                             "braceStyle" => {
                                 match serde_json::from_value::<BraceStyle>(value.clone()) {
                                     Ok(value) => self.formatting.brace_style = value,
-                                    Err(_) => {
-                                        unknown_keys.push(format!("formatting.braceStyle={value}"))
-                                    }
+                                    Err(_) => report
+                                        .invalid_values
+                                        .push(format!("formatting.braceStyle={value}")),
                                 }
                             }
                             "sortProperties" => match value.as_bool() {
                                 Some(value) => self.formatting.sort_properties = value,
-                                None => {
-                                    unknown_keys.push(format!("formatting.sortProperties={value}"))
-                                }
+                                None => report
+                                    .invalid_values
+                                    .push(format!("formatting.sortProperties={value}")),
                             },
-                            _ => unknown_keys.push(format!("formatting.{format_key}")),
+                            _ => report.unknown_keys.push(format!("formatting.{format_key}")),
                         }
                     }
                 }
@@ -564,13 +658,19 @@ impl AlConfig {
                 "nugetFeeds" => {
                     if let Some(arr) = obj.get(key).and_then(|v| v.as_array()) {
                         let mut accepted: Vec<NuGetFeedConfig> = Vec::with_capacity(arr.len());
+                        let mut rejected = false;
                         for (i, v) in arr.iter().enumerate() {
                             match serde_json::from_value::<NuGetFeedConfig>(v.clone()) {
                                 Ok(f) => accepted.push(f),
-                                Err(_) => unknown_keys.push(format!("nugetFeeds[{i}]")),
+                                Err(_) => {
+                                    report.invalid_values.push(format!("nugetFeeds[{i}]"));
+                                    rejected = true;
+                                }
                             }
                         }
-                        self.nuget_feeds = accepted;
+                        if !rejected {
+                            self.nuget_feeds = accepted;
+                        }
                     }
                 }
                 "symbolsCountryRegion" => {
@@ -586,17 +686,19 @@ impl AlConfig {
                         Some(n) => self.max_document_size_bytes = Some(n as usize),
                         // A non-integer / negative value is a typo; surface it
                         // rather than silently retaining the current value.
-                        None => unknown_keys.push(format!("maxDocumentSizeBytes={v}")),
+                        None => report
+                            .invalid_values
+                            .push(format!("maxDocumentSizeBytes={v}")),
                     },
                     None => {}
                 },
                 _ => {
-                    unknown_keys.push(key.clone());
+                    report.unknown_keys.push(key.clone());
                 }
             }
         }
 
-        unknown_keys
+        report
     }
 }
 
@@ -659,7 +761,10 @@ fn is_al_setting_key(key: &str) -> bool {
     )
 }
 
-fn validate_setting_shapes(settings: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+/// Modeled keys whose value has the wrong shape, as (key, message).
+fn validate_setting_shapes(
+    settings: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<(String, String)> {
     let mut issues = Vec::new();
     for (key, value) in settings {
         let valid = match key.as_str() {
@@ -712,7 +817,7 @@ fn validate_setting_shapes(settings: &serde_json::Map<String, serde_json::Value>
             _ => true,
         };
         if !valid {
-            issues.push(format!("{key} has invalid value {value}"));
+            issues.push((key.clone(), format!("{key} has invalid value {value}")));
         }
     }
     issues
@@ -756,88 +861,12 @@ fn read_editor_settings_file(path: &Path) -> Result<Option<serde_json::Value>, C
 }
 
 /// Remove JSONC comments and trailing commas without altering string contents.
+/// Strip JSONC comments and trailing commas.
+///
+/// One implementation for the whole workspace lives in `al_types::jsonc`;
+/// this wrapper keeps the local call sites short.
 fn strip_jsonc(source: &str) -> String {
-    let mut without_comments = String::with_capacity(source.len());
-    let mut chars = source.chars().peekable();
-    let mut in_string = false;
-    let mut escaped = false;
-    while let Some(ch) = chars.next() {
-        if in_string {
-            without_comments.push(ch);
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-        if ch == '"' {
-            in_string = true;
-            without_comments.push(ch);
-            continue;
-        }
-        if ch == '/' && chars.peek() == Some(&'/') {
-            chars.next();
-            for comment in chars.by_ref() {
-                if comment == '\n' {
-                    without_comments.push('\n');
-                    break;
-                }
-            }
-            continue;
-        }
-        if ch == '/' && chars.peek() == Some(&'*') {
-            chars.next();
-            let mut previous = '\0';
-            for comment in chars.by_ref() {
-                if comment == '\n' {
-                    without_comments.push('\n');
-                }
-                if previous == '*' && comment == '/' {
-                    break;
-                }
-                previous = comment;
-            }
-            continue;
-        }
-        without_comments.push(ch);
-    }
-
-    let chars = without_comments.chars().collect::<Vec<_>>();
-    let mut cleaned = String::with_capacity(without_comments.len());
-    let mut in_string = false;
-    let mut escaped = false;
-    for (index, ch) in chars.iter().copied().enumerate() {
-        if in_string {
-            cleaned.push(ch);
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-        if ch == '"' {
-            in_string = true;
-            cleaned.push(ch);
-            continue;
-        }
-        if ch == ',' {
-            let next = chars[index + 1..]
-                .iter()
-                .copied()
-                .find(|next| !next.is_whitespace());
-            if matches!(next, Some('}') | Some(']')) {
-                continue;
-            }
-        }
-        cleaned.push(ch);
-    }
-    cleaned
+    al_types::jsonc::strip_json_comments(source)
 }
 
 fn merge_bool(obj: &serde_json::Map<String, serde_json::Value>, key: &str, target: &mut bool) {
@@ -1267,6 +1296,129 @@ mod tests {
         );
         assert_eq!(config.app_local_folder_paths, vec![PathBuf::from("vendor")]);
         assert!(config.inlay_hints.parameter_names);
+    }
+
+    /// A `.vscode/settings.json` as Microsoft's AL extension leaves it: most
+    /// `al.*` keys belong to that extension and are not modeled here.
+    const MICROSOFT_AL_SETTINGS: &str = r#"{
+        "al.codeAnalyzers": ["${CodeCop}", "${UICop}"],
+        "al.enableCodeAnalysis": true,
+        "al.ruleSetPath": "./rules.ruleset.json",
+        "al.packageCachePath": "./.alpackages",
+        "al.assemblyProbingPaths": ["./.netpackages"],
+        "al.browser": "Edge",
+        "al.backgroundCodeAnalysis": "File",
+        "al.incrementalBuild": true,
+        "al.enableCodeActions": true,
+        "al.inlayhints.functionReturnTypes.enabled": true,
+        "al.snippets": "Standard",
+        "al.compilationOptions": {"generateReportLayout": true},
+        "editor.formatOnSave": true
+    }"#;
+
+    #[test]
+    fn unmodeled_al_keys_are_warnings_and_do_not_discard_the_file() {
+        let value: serde_json::Value =
+            serde_json::from_str(MICROSOFT_AL_SETTINGS).expect("valid JSON");
+        let mut config = AlConfig::default();
+        let report = config.merge_editor_settings_reporting(&value);
+
+        assert!(
+            report.root_error.is_none(),
+            "unmodeled Microsoft AL keys must not fail the file"
+        );
+        assert!(
+            report.unknown_keys.iter().any(|key| key == "browser"),
+            "unmodeled keys should be reported: {:?}",
+            report.unknown_keys
+        );
+        // Microsoft gives these two shared keys a different type: an enum
+        // string and an object. Skipped and reported, not fatal.
+        assert!(
+            report
+                .invalid_values
+                .iter()
+                .any(|issue| issue.starts_with("backgroundCodeAnalysis")),
+            "{:?}",
+            report.invalid_values
+        );
+        assert!(config.background_code_analysis, "the default is kept");
+        assert_eq!(
+            config.rule_set_path,
+            Some(PathBuf::from("./rules.ruleset.json")),
+            "keys that did parse must still apply"
+        );
+        assert_eq!(
+            config.package_cache_path,
+            Some(PathBuf::from("./.alpackages"))
+        );
+        assert_eq!(config.code_analyzers, vec!["${CodeCop}", "${UICop}"]);
+        assert_eq!(
+            config.assembly_probing_paths,
+            vec![PathBuf::from("./.netpackages")]
+        );
+        assert!(config.incremental_build);
+    }
+
+    #[test]
+    fn load_effective_accepts_a_microsoft_al_settings_file() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::create_dir_all(dir.path().join(".vscode")).expect("create .vscode");
+        std::fs::write(
+            dir.path().join(".vscode/settings.json"),
+            MICROSOFT_AL_SETTINGS,
+        )
+        .expect("write settings");
+
+        let config = AlConfig::load_effective(dir.path())
+            .expect("an unmodeled al.* key must not fail startup");
+        assert_eq!(
+            config.package_cache_path,
+            Some(PathBuf::from("./.alpackages"))
+        );
+    }
+
+    #[test]
+    fn a_wrong_value_shape_in_editor_settings_skips_only_that_key() {
+        let mut config = AlConfig::default();
+        let report = config.merge_editor_settings_reporting(&serde_json::json!({
+            "al.incrementalBuild": "yes",
+            "al.enableCodeAnalysis": false
+        }));
+
+        assert!(
+            report
+                .invalid_values
+                .iter()
+                .any(|issue| issue.contains("incrementalBuild")),
+            "{:?}",
+            report.invalid_values
+        );
+        assert!(report.root_error.is_none());
+        assert!(!config.incremental_build, "the bad value is not applied");
+        assert!(
+            !config.enable_code_analysis,
+            "the keys that did parse still apply"
+        );
+    }
+
+    #[test]
+    fn editor_settings_with_a_non_object_root_are_rejected() {
+        let mut config = AlConfig::default();
+        let issues = config.merge_editor_settings(&serde_json::json!("not an object"));
+        assert_eq!(issues, vec!["settings root must be an object"]);
+        assert!(config.enable_code_analysis);
+    }
+
+    #[test]
+    fn the_projects_own_settings_file_stays_strict() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"enableCodeAnalysis": false, "typoKey": true}"#)
+            .expect("write settings");
+
+        let error = AlConfig::load(&path).expect_err("an unknown key is an error here");
+        assert!(error.to_string().contains("typoKey"), "{error}");
     }
 
     #[test]

@@ -435,9 +435,9 @@ fn cmp_value(value: &Value, ov: &OrderableValue) -> Option<std::cmp::Ordering> {
         (Value::Decimal(a), OrderableValue::Decimal(b)) => Some(a.cmp(b)),
         (Value::Decimal(a), OrderableValue::Integer(b)) => Some(a.cmp(&Decimal::from(*b))),
         // A `Code` field compares caselessly (BC), a `Text` field case-sensitively.
-        (Value::Code(a), OrderableValue::Text(b)) => {
-            Some(a.to_ascii_uppercase().cmp(&b.to_ascii_uppercase()))
-        }
+        // Full Unicode folding, matching the caseless primary-key index in
+        // `mock::record::normalize_key_value`.
+        (Value::Code(a), OrderableValue::Text(b)) => Some(a.to_uppercase().cmp(&b.to_uppercase())),
         (Value::Text(a), OrderableValue::Text(b)) => Some(a.cmp(b)),
         (Value::Date(a) | Value::Time(a) | Value::DateTime(a), OrderableValue::Integer(b)) => {
             Some(a.cmp(b))

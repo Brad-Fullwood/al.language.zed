@@ -102,6 +102,9 @@ pub enum SourceLookupError {
         object: String,
         member: String,
         kind: SourceMemberKind,
+        /// Names the object does declare, closest first. Empty when the
+        /// object's members could not be read.
+        candidates: Vec<String>,
     },
     MemberUnavailable {
         object: String,
@@ -139,13 +142,21 @@ impl fmt::Display for SourceLookupError {
                 object,
                 member,
                 kind,
-            } => write!(
-                f,
-                "{} '{}' was not found in object '{}'",
-                kind.label(),
-                member,
-                object
-            ),
+                candidates,
+            } => {
+                write!(
+                    f,
+                    "{} '{}' was not found in object '{}'",
+                    kind.label(),
+                    member,
+                    object
+                )?;
+                if candidates.is_empty() {
+                    write!(f, ". List its members with listProcedures")
+                } else {
+                    write!(f, ". It declares: {}", candidates.join(", "))
+                }
+            }
             Self::MemberUnavailable {
                 object,
                 member,
@@ -410,9 +421,15 @@ fn try_workspace_source(
             object: name.to_string(),
             member: member.name.to_string(),
             kind: member.kind,
+            candidates: member_candidates(&text, member.name),
         });
     }
 
+    // A whole-object lookup used to return `code` with no `range`, so an agent
+    // that asked where the object lives got `null` and fell back to `find`.
+    // The declaration's own span and path answer that without a second call —
+    // the span of the object that was asked for, which in a multi-object file
+    // is not necessarily the file's first.
     Ok(SourceResult {
         k: kind,
         id,
@@ -422,7 +439,11 @@ fn try_workspace_source(
         source_availability: SourceAvailability::WorkspaceSource,
         pkg: None,
         sig: None,
-        range: None,
+        range: Some(SourceRange {
+            f: file_path.to_string_lossy().to_string(),
+            l: object_range.start_point.row as u32 + 1,
+            end: object_range.end_point.row as u32 + 1,
+        }),
         code: text[object_range.start_byte..object_range.end_byte.min(text.len())].to_string(),
         note: None,
     })
@@ -480,6 +501,7 @@ fn try_package_source(
                     object: entry.name.clone(),
                     member: member.name.to_string(),
                     kind: member.kind,
+                    candidates: member_candidates(&full_source, member.name),
                 });
             }
 
@@ -523,6 +545,14 @@ fn try_package_source(
                 object: entry.name.clone(),
                 member: member.name.to_string(),
                 kind: member.kind,
+                // No AL source here, only SymbolReference.json metadata, so
+                // the candidates come from the indexed method names.
+                candidates: entry
+                    .methods
+                    .iter()
+                    .map(|method| method.name.clone())
+                    .take(8)
+                    .collect(),
             })?;
         let sig = render_method_signature(method);
         return Ok(SourceResult {
@@ -610,10 +640,13 @@ fn member_signature(node: tree_sitter::Node<'_>, source: &str) -> String {
     let Some(name_node) = node.child_by_field_name("name") else {
         return signature_from_row(node, source, keyword_row);
     };
+    // The declaration's own leading keyword: `procedure`, `function` or
+    // `trigger`. A trigger rendered as "procedure OnInsert()" is a signature
+    // no AL file contains.
     let mut cursor = node.walk();
     let keyword = node
         .children(&mut cursor)
-        .find(|child| matches!(child.kind(), "kw_procedure" | "kw_function"))
+        .find(|child| matches!(child.kind(), "kw_procedure" | "kw_function" | "kw_trigger"))
         .and_then(|child| child.utf8_text(bytes).ok())
         .unwrap_or("procedure")
         .to_string();
@@ -651,6 +684,138 @@ fn signature_from_row(
 ) -> String {
     let row = keyword_row.unwrap_or_else(|| node.start_position().row);
     source.lines().nth(row).unwrap_or("").trim().to_string()
+}
+
+/// One member of an object, without its body.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberOutline {
+    pub name: String,
+    /// `procedure` or `trigger`.
+    pub kind: &'static str,
+    /// The declaration up to the return type.
+    pub signature: String,
+    /// 1-based first and last line of the declaration in the object's source.
+    pub start_line: u32,
+    pub end_line: u32,
+}
+
+/// Every procedure and trigger an object declares, with signatures and line
+/// ranges but no bodies.
+///
+/// `source "Sales-Post"` was 837 KB because the only way to find a procedure
+/// name was to read the whole codeunit, and the `not found` error listed none
+/// of the 609 names it knew. Both of those read this.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberList {
+    pub k: ObjectKind,
+    pub id: i32,
+    pub n: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pkg: Option<String>,
+    /// Spelled as `SourceResult` spells it, because the CLI's response
+    /// contract for `source` checks this field whichever mode answered.
+    #[serde(rename = "source_availability")]
+    pub source_availability: SourceAvailability,
+    pub members: Vec<MemberOutline>,
+    pub total: usize,
+}
+
+/// List an object's procedures and triggers without their bodies.
+pub fn list_members(
+    workspace: &Workspace,
+    name: &str,
+    kind_filter: Option<ObjectKind>,
+    package_filter: Option<&str>,
+) -> Result<MemberList, SourceLookupError> {
+    let whole = source(workspace, name, kind_filter, package_filter, None)?;
+    let members = member_outlines(&whole.code);
+    Ok(MemberList {
+        k: whole.k,
+        id: whole.id,
+        n: whole.n,
+        pkg: whole.pkg,
+        source_availability: whole.source_availability,
+        total: members.len(),
+        members,
+    })
+}
+
+/// Parse `source` and return each procedure and trigger declaration's name,
+/// signature and line range.
+fn member_outlines(source: &str) -> Vec<MemberOutline> {
+    let parsed = al_syntax::AlParser::parse_quick(source);
+    let mut outlines = Vec::new();
+    let mut stack = vec![parsed.tree.root_node()];
+    while let Some(node) = stack.pop() {
+        let member_kind = match node.kind() {
+            "procedure_declaration" => Some("procedure"),
+            "trigger_declaration" => Some("trigger"),
+            _ => None,
+        };
+        if let Some(member_kind) = member_kind {
+            if let Some(name) = node
+                .child_by_field_name("name")
+                .and_then(|name| name.utf8_text(source.as_bytes()).ok())
+            {
+                outlines.push(MemberOutline {
+                    name: al_syntax::clean_identifier(name),
+                    kind: member_kind,
+                    // From the declaration's children, not a text scan: the
+                    // grammar nests a procedure's attributes inside it, so
+                    // scanning for the first balanced `(...)` finds the
+                    // attribute's argument list.
+                    signature: member_signature(node, source),
+                    start_line: node.start_position().row as u32 + 1,
+                    end_line: node.end_position().row as u32 + 1,
+                });
+            }
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
+    }
+    outlines.sort_by_key(|outline| outline.start_line);
+    outlines
+}
+
+/// Member names close enough to `wanted` to be worth offering, plus the first
+/// few names outright when nothing is close.
+///
+/// A `not found` that dead-ends costs the agent a call that pulls the whole
+/// object to read one name off it.
+pub fn member_candidates(source: &str, wanted: &str) -> Vec<String> {
+    let outlines = member_outlines(source);
+    let wanted_lower = wanted.to_lowercase();
+    let mut close: Vec<String> = outlines
+        .iter()
+        .filter(|outline| {
+            let lower = outline.name.to_lowercase();
+            lower.contains(&wanted_lower)
+                || wanted_lower.contains(&lower)
+                // A wrong guess is usually right about the first word:
+                // `PostSalesDoc` for `PostSalesLines`.
+                || shared_prefix_len(&lower, &wanted_lower) >= 4
+        })
+        .map(|outline| outline.name.clone())
+        .collect();
+    if close.is_empty() {
+        close = outlines
+            .iter()
+            .take(8)
+            .map(|outline| outline.name.clone())
+            .collect();
+    }
+    close.truncate(8);
+    close
+}
+
+/// How many leading bytes two lowercased names share.
+fn shared_prefix_len(left: &str, right: &str) -> usize {
+    left.bytes()
+        .zip(right.bytes())
+        .take_while(|(a, b)| a == b)
+        .count()
 }
 
 fn extract_member_from_text(source: &str, member: SourceMember<'_>) -> Option<(String, String)> {
@@ -1124,7 +1289,8 @@ mod tests {
         assert!(outline.starts_with("table 18 Customer\n{\n"));
         assert!(outline.contains("field(1; \"No.\"; Code[20]) { }"));
         assert!(outline.contains("field(2; Name; Text[100]) { }"));
-        assert!(outline.contains("key(PK; No.)"));
+        // Key field names are quoted: `No.` is not a plain AL identifier.
+        assert!(outline.contains("key(PK; \"No.\")"), "{outline}");
         assert!(outline.contains("procedure SetFilter(FilterStr: Text)"));
         assert!(outline.contains("procedure GetBalance(): Decimal"));
         assert!(outline.ends_with("}\n"));
@@ -1261,6 +1427,109 @@ mod tests {
         assert!(
             result.is_some(),
             "Target procedure should be found in deeply nested source"
+        );
+    }
+
+    #[test]
+    /// The signature cases the deleted `extract_signature_from_text` covered,
+    /// now asserted against the node-based `member_signature` that replaced it
+    /// — plus the attributed procedure the text scan got wrong.
+    fn member_signatures_cover_the_shapes_a_text_scan_used_to() {
+        let signature = |source: &str, name: &str| {
+            member_outlines(source)
+                .into_iter()
+                .find(|outline| outline.name == name)
+                .unwrap_or_else(|| panic!("no member named {name} in:\n{source}"))
+                .signature
+        };
+
+        let source = "table 50100 \"Ship Log\"\n\
+                      {\n\
+                      \x20   trigger OnInsert()\n\
+                      \x20   begin\n\
+                      \x20   end;\n\
+                      \n\
+                      \x20   procedure GetValue(): Decimal\n\
+                      \x20   begin\n\
+                      \x20   end;\n\
+                      \n\
+                      \x20   procedure Foo(a: Integer)\n\
+                      \x20   begin\n\
+                      \x20   end;\n\
+                      \n\
+                      \x20   [EventSubscriber(ObjectType::Codeunit, Codeunit::\"Sales-Post\", 'OnAfterPost', '', false, false)]\n\
+                      \x20   local procedure HandlePost(var SalesHeader: Record \"Sales Header\")\n\
+                      \x20   begin\n\
+                      \x20   end;\n\
+                      }\n";
+
+        assert_eq!(signature(source, "OnInsert"), "trigger OnInsert()");
+        assert_eq!(signature(source, "GetValue"), "procedure GetValue(): Decimal");
+        assert_eq!(signature(source, "Foo"), "procedure Foo(a: Integer)");
+        assert_eq!(
+            signature(source, "HandlePost"),
+            "procedure HandlePost(var SalesHeader: Record \"Sales Header\")",
+            "the attribute's argument list is not the signature"
+        );
+        assert!(
+            member_outlines("").is_empty(),
+            "empty source has no members"
+        );
+    }
+
+    /// `source` answers with either shape, and the CLI's response contract
+    /// checks `source_availability` on both. A camelCase rename here made
+    /// `--list-procedures` fail that check at runtime.
+    #[test]
+    fn member_list_spells_source_availability_the_way_source_does() {
+        let list = MemberList {
+            k: ObjectKind::Codeunit,
+            id: 80,
+            n: "Sales-Post".to_string(),
+            pkg: Some("Base Application".to_string()),
+            source_availability: SourceAvailability::EmbeddedSource,
+            members: Vec::new(),
+            total: 0,
+        };
+        let value = serde_json::to_value(&list).expect("serializable");
+        assert!(
+            value.get("source_availability").is_some(),
+            "wire name must match SourceResult: {value}"
+        );
+        assert!(value.get("sourceAvailability").is_none());
+    }
+
+    #[test]
+    fn member_outlines_carry_signatures_and_line_ranges_without_bodies() {
+        let source = "codeunit 50100 Helper\n{\n    procedure Alpha()\n    begin\n    end;\n\n    trigger OnRun()\n    begin\n    end;\n}\n";
+        let outlines = member_outlines(source);
+        assert_eq!(outlines.len(), 2, "{outlines:?}");
+        assert_eq!(outlines[0].name, "Alpha");
+        assert_eq!(outlines[0].kind, "procedure");
+        assert_eq!(outlines[0].signature, "procedure Alpha()");
+        assert_eq!(outlines[0].start_line, 3);
+        assert_eq!(outlines[0].end_line, 5);
+        assert_eq!(outlines[1].kind, "trigger");
+        assert!(
+            !outlines
+                .iter()
+                .any(|outline| outline.signature.contains("begin")),
+            "a signature must not carry the body: {outlines:?}"
+        );
+    }
+
+    #[test]
+    fn member_candidates_offer_close_names_then_fall_back_to_the_first_few() {
+        let source = "codeunit 80 \"Sales-Post\"\n{\n    procedure RunWithCheck()\n    begin\n    end;\n\n    procedure PostSalesLines()\n    begin\n    end;\n}\n";
+        assert_eq!(
+            member_candidates(source, "PostSalesDoc"),
+            vec!["PostSalesLines".to_string()],
+            "the shared prefix must win"
+        );
+        assert_eq!(
+            member_candidates(source, "zzzz").len(),
+            2,
+            "nothing close means offer what there is"
         );
     }
 

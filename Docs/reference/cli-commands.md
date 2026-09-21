@@ -4,6 +4,21 @@ Every `al-explorer` subcommand. The global `--json` flag works on all of them (s
 errors as `{ "error": "…" }`). Run with no subcommand to open the TUI. See
 [cli-and-tui](../features/cli-and-tui.md) for behavior and the TUI; this is the lookup table.
 
+Other global flags, which work on every subcommand:
+
+| Flag | Purpose |
+| --- | --- |
+| `--compact` | Print JSON on one line. Implies `--json`. Indentation was 43% of the bytes of the largest measured answer |
+| `--limit N` | Return at most N rows from a list-returning command. The JSON result reports `total` and `truncated` |
+| `--offset N` | Skip the first N rows, for reading past a truncated page |
+| `--fields a,b,c` | Keep only these fields on each row |
+| `--scope workspace\|packages\|all` | Which code `impact`, `entrypoints` and the event map report on. The result reports `outOfScopeCount` |
+| `--timeout-ms N` | Per-request deadline, overriding `AL_REQUEST_TIMEOUT_MS`. A request blocked on the dependency source index keeps waiting while that index makes progress, whatever this is set to |
+
+The projection flags are the daemon's `limit`, `offset`, `fields` and `scope` parameters, described
+in the [daemon method reference](./daemon-methods.md). A command that sets one of them itself keeps
+its own value.
+
 > `al-explorer` runs on Linux, macOS, and Windows. Most commands auto-start the daemon for the
 > current project using the platform's local IPC transport.
 
@@ -21,6 +36,13 @@ MCP, call the corresponding daemon method through `al_call` with the same parame
 frequently used workflows also have named aliases documented in the
 [MCP tool reference](./mcp-tools.md).
 
+A file argument outside the current project is read by the CLI and sent to the daemon as text, so
+commands that only read a file (`parse`, `lint`, `metrics`, `symbols`, `hover`, `folding`,
+`tokens`, `definition`, `references`) answer for any file you can read. Commands that rewrite a
+file (`format`, `fix`, `sort-members`, `organize-files`, `rename`) refuse it and name the project
+they are confined to: the daemon changes files only inside the project it has loaded. See
+[daemon-methods](./daemon-methods.md#paths-and-the-project-boundary).
+
 ## Setup & diagnostics
 
 | Command | Flags | Purpose |
@@ -37,10 +59,11 @@ frequently used workflows also have named aliases documented in the
 
 | Command | Args / flags | Purpose |
 | --- | --- | --- |
-| `search <query>` | `--limit N` (20) | Fuzzy symbol search across packages + workspace |
-| `object <type> <name>` | — | Look up object by kind + name (with members) |
-| `by-id <type> <id>` | — | Look up object by kind + numeric id |
-| `source <name>` | `--kind <type>`, `--package <name>`, `--procedure <name>` or `--trigger <name>` | Return the strongest actual source representation; ambiguous names require kind/package selection |
+| `search <query>` | global `--limit N` (20) | Fuzzy symbol search across packages + workspace |
+| `object <type> <name>` | — | Look up object by kind + name, with members for workspace and package objects alike |
+| `by-id <type> <id>` | — | Look up object by kind + numeric id, with members |
+| `source <name>` | `--kind <type>`, `--package <name>`, `--procedure <name>` or `--trigger <name>`, `--list-procedures` | Return the strongest actual source representation; ambiguous names require kind/package selection. `--list-procedures` returns signatures and line ranges without bodies, and a wrong `--procedure` name lists the ones that exist |
+| `location <name>` | `--kind <type>`, `--package <name>` | Print `path:line` for an object's declaration. A package object is materialised as a virtual `.al` file |
 | `composed [<kind>] <name>` | — | Base object + all extensions merged |
 | `packages` | — | List loaded packages with version, publisher, object count, and embedded/outline/metadata-only source counts |
 | `deps` | — | Explicit + transitive dependencies |
@@ -75,6 +98,7 @@ frequently used workflows also have named aliases documented in the
 | --- | --- | --- |
 | `compile` | `--project <dir>` | Compile (native default; `al.useOfficialCompiler` → `alc`) |
 | `package` | — | Package compiled app into `.app` |
+| `publish` | `--config <name> [--incremental]` | Compile and publish the `.app` to the BC dev endpoint named in `.vscode/launch.json` or `.zed/debug.json`; `--incremental` uses the RAD API |
 | `pack-native` | `--project <dir> --out <path> [--validate]` | Verified pure-Rust `.app` build; rejects syntax/manifest/project/binding/artifact errors and writes nothing on failure; global `--json` returns exact native ranges; `--validate` adds `alc` after native checks |
 | `download-symbols` | `--project <dir> --source server\|nuget` | Download dependency symbols |
 | `authenticate [login\|status\|clear]` | `--tenant <tenant>` | BC / Entra authentication and cached-session management |

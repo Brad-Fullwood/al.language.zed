@@ -235,6 +235,12 @@ pub struct SymbolIndexMemoryStats {
     pub lookup_index_bytes: usize,
     pub path_cache_bytes: usize,
     pub composed_cache_bytes: usize,
+    /// Process-global `.app` source indexes. Not owned by this index, but
+    /// filled and emptied by package loading, and large enough for a
+    /// source-bearing Base Application that leaving it out made the report
+    /// understate the process by more than it reported.
+    pub package_source_index_bytes: usize,
+    pub package_source_index_count: usize,
     pub tracked_bytes: usize,
 }
 
@@ -302,6 +308,14 @@ impl SymbolIndex {
     fn note_mutation(&self) {
         self.mutation
             .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+
+    /// The current entry-set generation.
+    ///
+    /// Derived caches outside this crate key on it, so replacing or reloading
+    /// a symbol package invalidates whatever they built from the old entries.
+    pub fn generation(&self) -> u64 {
+        self.mutation.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Shared, lazily rebuilt event catalog for the current entry generation.
@@ -504,15 +518,19 @@ impl SymbolIndex {
             })
             .sum::<usize>();
 
+        let package_source_index_bytes = super::source_index::cached_memory_bytes();
         SymbolIndexMemoryStats {
             symbol_payload_bytes,
             lookup_index_bytes,
             path_cache_bytes,
             composed_cache_bytes,
+            package_source_index_bytes,
+            package_source_index_count: super::source_index::cached_index_count(),
             tracked_bytes: symbol_payload_bytes
                 + lookup_index_bytes
                 + path_cache_bytes
-                + composed_cache_bytes,
+                + composed_cache_bytes
+                + package_source_index_bytes,
         }
     }
 
@@ -929,6 +947,11 @@ impl SymbolIndex {
         cache.clone()
     }
 
+    /// Names the substring stage of [`search`] may examine for one query.
+    ///
+    /// [`search`]: Self::search
+    pub const SUBSTRING_SCAN_BUDGET: usize = 20_000;
+
     pub fn search(&self, query: &str, limit: usize) -> Vec<Arc<SymbolEntry>> {
         if limit == 0 {
             return Vec::new();
@@ -957,8 +980,22 @@ impl SymbolIndex {
             }
         }
 
+        // Third stage: a fragment in the middle of a name. There is no index
+        // for that, so it scans, and a Base Application-scale catalogue is
+        // ~50 000 names. The budget keeps one keystroke's worth of work bounded
+        // rather than letting an unmatched fragment walk the whole catalogue.
         if !query_lower.is_empty() && results.len() < limit {
+            let mut budget = Self::SUBSTRING_SCAN_BUDGET;
             for name in names.iter() {
+                if budget == 0 {
+                    tracing::debug!(
+                        query = %query_lower,
+                        budget = Self::SUBSTRING_SCAN_BUDGET,
+                        "workspace symbol search: substring stage hit its scan budget"
+                    );
+                    break;
+                }
+                budget -= 1;
                 if name.contains(&query_lower) && !name.starts_with(&query_lower) {
                     self.append_search_name(name, limit, &mut results);
                     if results.len() == limit {
@@ -1221,6 +1258,7 @@ impl SymbolIndex {
         if package_names.is_empty() {
             return;
         }
+        self.drop_source_indexes(|record| package_names.contains(&record.1));
         let to_remove: Vec<(usize, Arc<SymbolEntry>)> = self
             .all
             .iter()
@@ -1247,6 +1285,7 @@ impl SymbolIndex {
         if identities.is_empty() {
             return;
         }
+        self.drop_source_indexes(|record| identities.contains(&record.0));
         let to_remove: Vec<(usize, Arc<SymbolEntry>)> = self
             .all
             .iter()
@@ -1280,6 +1319,21 @@ impl SymbolIndex {
             !removed_names.contains(package) || surviving_names.contains(package)
         });
         self.remove_selected_entries(to_remove);
+    }
+
+    /// Release the process-global `.app` source index of every package this
+    /// removal drops. Without this the index outlives the symbols it belongs
+    /// to for the life of the process.
+    fn drop_source_indexes(&self, selected: impl Fn(&(String, String)) -> bool) {
+        let paths: Vec<std::path::PathBuf> = self
+            .app_paths
+            .iter()
+            .filter(|record| selected(&(record.key().clone(), record.value().name_key.clone())))
+            .map(|record| record.value().path.clone())
+            .collect();
+        for path in paths {
+            super::source_index::remove_source_index(&path);
+        }
     }
 
     /// Shared core of both removal flavors: prune the primary map and every
@@ -1495,6 +1549,28 @@ mod tests {
         assert!(index.search("customer", 0).is_empty());
     }
 
+    /// The substring stage has no index behind it, so a fragment that matches
+    /// nothing must not walk a Base Application-scale catalogue.
+    #[test]
+    fn the_substring_stage_stops_at_its_scan_budget() {
+        let index = SymbolIndex::new();
+        let over_budget = SymbolIndex::SUBSTRING_SCAN_BUDGET + 500;
+        let entries: Vec<_> = (0..over_budget)
+            .map(|i| make_entry(ObjectKind::Table, i as i32, &format!("Aaa Object {i:06}")))
+            .collect();
+        index.add_entries(&entries);
+        // A name only the very end of the catalogue carries.
+        index.add_entries(&[make_entry(ObjectKind::Table, 999_999, "Zzz Needle Object")]);
+
+        let hits = index.search("needle", 10);
+        assert!(
+            hits.is_empty(),
+            "the scan must stop at the budget rather than reaching the tail: {hits:?}"
+        );
+        // A prefix query still finds it: that stage is indexed, not scanned.
+        assert_eq!(index.search("zzz needle", 10).len(), 1);
+    }
+
     #[test]
     fn search_name_cache_tracks_additions_after_it_is_built() {
         let index = SymbolIndex::new();
@@ -1662,6 +1738,9 @@ mod tests {
                 + populated.lookup_index_bytes
                 + populated.path_cache_bytes
                 + populated.composed_cache_bytes
+                // The package source-index cache is process-global, so its
+                // size depends on what else the process has loaded.
+                + populated.package_source_index_bytes
         );
     }
 

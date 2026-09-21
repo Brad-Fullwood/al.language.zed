@@ -240,6 +240,41 @@ pub(in crate::server::daemon) fn dispatch_source(
         Ok(package) => package,
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
+    // `listProcedures` answers "what can I ask for" without paying for the
+    // bodies: `source "Sales-Post"` was 837 KB, of which the agent needed one
+    // procedure name.
+    let list_members = match params.get("listProcedures") {
+        None => false,
+        Some(value) => match value.as_bool() {
+            Some(flag) => flag,
+            None => {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    "'listProcedures' must be a boolean",
+                );
+            }
+        },
+    };
+    if list_members {
+        return match al_analysis::queries::source::list_members(
+            workspace,
+            name,
+            kind_filter,
+            package_filter,
+        ) {
+            Ok(result) => Response {
+                id,
+                result: Some(
+                    serde_json::to_value(&result).expect("member list must be JSON serializable"),
+                ),
+                error: None,
+                ..Default::default()
+            },
+            Err(error) => rpc_error(id, error_codes::INVALID_PARAMS, &error.to_string()),
+        };
+    }
+
     let proc_filter = match optional_non_empty_string(params, "proc") {
         Ok(procedure) => procedure,
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),

@@ -6,7 +6,7 @@ use crate::cli::commands::*;
 
 pub fn cmd_rules(json: bool) -> ExitCode {
     run_command("rules", None, json, None, |result| {
-        let rules = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+        let rules = list_rows(result).as_array().map(|v| &v[..]).unwrap_or(&[]);
         if rules.is_empty() {
             eprintln!(
                 "No native lint rules are registered. Semantic AL diagnostics \
@@ -60,7 +60,7 @@ pub fn cmd_permissions(format: &str, name: &str, id: i64, role_id: &str, json: b
 
 pub fn cmd_error_codes(json: bool) -> ExitCode {
     run_command("errorCodes", None, json, None, |result| {
-        let codes = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+        let codes = list_rows(result).as_array().map(|v| &v[..]).unwrap_or(&[]);
         if codes.is_empty() {
             eprintln!("No error codes loaded (requires ALTool)");
         } else {
@@ -76,7 +76,7 @@ pub fn cmd_error_codes(json: bool) -> ExitCode {
 
 pub fn cmd_builtins(json: bool) -> ExitCode {
     run_command("builtinTypes", None, json, None, |result| {
-        let types = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+        let types = list_rows(result).as_array().map(|v| &v[..]).unwrap_or(&[]);
         if types.is_empty() {
             eprintln!("No builtin types loaded (requires ALTool)");
         } else {
@@ -176,7 +176,7 @@ pub fn cmd_hints(
             if json {
                 print_json(&result);
             } else {
-                let hints = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+                let hints = list_rows(&result).as_array().map(|v| &v[..]).unwrap_or(&[]);
                 if hints.is_empty() {
                     eprintln!("No inlay hints");
                 } else {

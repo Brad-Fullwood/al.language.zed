@@ -18,6 +18,11 @@ mod containment;
 mod debug_dispatch;
 mod insight_dispatch;
 mod lsp_dispatch;
+mod projection;
+mod scope;
+
+pub(crate) use projection::list_target;
+pub(crate) use scope::accepts_scope;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -143,6 +148,17 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
     }));
 
     initialize_daemon_workspace(&workspace, &project_root).await?;
+
+    // Warm the dependency AL source index and the graphs built on it now,
+    // rather than inside whichever query needs them first. The build takes
+    // about a minute on Base Application; paid here it overlaps with the
+    // agent's first few symbol queries, and `status` can report its progress
+    // from the start instead of only once something is already blocked on it.
+    let warm_workspace = Arc::clone(&workspace);
+    tokio::task::spawn_blocking(move || match warm_workspace.get_or_build_call_graph() {
+        Ok(_) => tracing::info!("daemon: dependency source index and call graph warm"),
+        Err(error) => tracing::warn!(%error, "daemon: background index warm-up failed"),
+    });
 
     // stored as millis-since-`DAEMON_EPOCH` in an AtomicU64 so
     // the hot per-connection-accept + per-dispatch update is lock-free.
@@ -642,6 +658,21 @@ pub(crate) async fn dispatch_request(
     req: Request,
     shutdown: &Notify,
 ) -> Response {
+    let method = req.method.clone();
+    let params = req.params.clone().unwrap_or(serde_json::Value::Null);
+    let response = dispatch_method(workspace, req, shutdown).await;
+    // `scope` first, so a `limit` counts the rows that survive it rather than
+    // the rows it was about to drop. Both are applied once, here, for every
+    // method that takes them. See `scope` and `projection`.
+    let response = scope::apply(workspace, &method, &params, response);
+    projection::apply(&method, &params, response)
+}
+
+async fn dispatch_method(
+    workspace: &std::sync::Arc<Workspace>,
+    req: Request,
+    shutdown: &Notify,
+) -> Response {
     // Dispatch is keyed on u64; string/null ids dispatch under 0 and the
     // connection loop restores the original id on the wire.
     let id = req.dispatch_id();
@@ -832,6 +863,14 @@ pub(crate) async fn dispatch_request(
             }
         }
         "status" => {
+            // Read the project before taking the std RwLock guards below: a
+            // guard held across an await makes this dispatch future non-Send.
+            let launch_config_error = workspace
+                .project
+                .read()
+                .await
+                .as_ref()
+                .and_then(|project| project.launch_config_error.clone());
             let semantic_cache = match workspace.semantic_cache.read() {
                 Ok(cache) => cache,
                 Err(_) => {
@@ -864,6 +903,14 @@ pub(crate) async fn dispatch_request(
                 "workspaceObjects": workspace.file_index.object_count(),
                 "builtinTypes": builtins.len(),
                 "semanticCache": cache_stats,
+                // Present only when the project's debug configuration file
+                // could not be read. Symbol queries are unaffected; the BC
+                // connection commands are the ones that need it.
+                "launchConfigError": launch_config_error,
+                // `subscribers`, `composed`, `events`, `lint`, `trace`,
+                // `impact` and `entrypoints` all wait for this. A client that
+                // sees `building` should keep waiting rather than retry.
+                "sourceIndex": workspace.dependency_source_progress(),
             });
             Response {
                 id,
@@ -911,12 +958,28 @@ fn dispatch_diag(workspace: &Workspace, id: u64, params: &serde_json::Value) -> 
                 }
             };
             match serde_json::to_value(&stats) {
-                Ok(value) => Response {
-                    id,
-                    result: Some(value),
-                    error: None,
-                    ..Default::default()
-                },
+                Ok(mut value) => {
+                    if let Some(object) = value.as_object_mut() {
+                        match serde_json::to_value(workspace.dependency_source_progress()) {
+                            Ok(progress) => {
+                                object.insert("sourceIndex".into(), progress);
+                            }
+                            Err(error) => {
+                                return rpc_error(
+                                    id,
+                                    error_codes::INTERNAL_ERROR,
+                                    &format!("diag/summary source-index progress: {error}"),
+                                );
+                            }
+                        }
+                    }
+                    Response {
+                        id,
+                        result: Some(value),
+                        error: None,
+                        ..Default::default()
+                    }
+                }
                 Err(e) => Response {
                     id,
                     result: None,
@@ -1214,6 +1277,98 @@ pub(crate) fn ensure_document(
         })
 }
 
+/// A path parameter the daemon refused, carrying the JSON-RPC code the client
+/// needs to tell "the daemon will not touch this path" from any other bad
+/// parameter.
+///
+/// `al-explorer` resends a read-only request with the file's text when it sees
+/// [`error_codes::PATH_NOT_AUTHORIZED`], so the distinction has to survive the
+/// round trip as a code rather than as prose.
+#[derive(Debug)]
+pub(crate) struct PathRejection {
+    pub(crate) code: i32,
+    pub(crate) message: String,
+}
+
+impl std::fmt::Display for PathRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl PathRejection {
+    fn invalid(message: impl Into<String>) -> Self {
+        Self {
+            code: error_codes::INVALID_PARAMS,
+            message: message.into(),
+        }
+    }
+
+    fn unauthorized(message: impl Into<String>) -> Self {
+        Self {
+            code: error_codes::PATH_NOT_AUTHORIZED,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn into_response(self, id: u64) -> Response {
+        rpc_error(id, self.code, &self.message)
+    }
+}
+
+/// The path a request names, before any containment or filesystem check.
+///
+/// `Ok(None)` means the request named no file at all, which several
+/// dispatchers treat as a whole-project request.
+fn path_from_params(params: &serde_json::Value) -> Result<Option<PathBuf>, PathRejection> {
+    let uri_value = params.get("uri");
+    let file_value = params.get("file");
+    if uri_value.is_some() && file_value.is_some() {
+        return Err(PathRejection::invalid(
+            "'uri' and 'file' are mutually exclusive",
+        ));
+    }
+
+    match (uri_value, file_value) {
+        (Some(value), None) => {
+            let raw = value
+                .as_str()
+                .ok_or_else(|| PathRejection::invalid("'uri' must be a string when supplied"))?;
+            if raw.trim().is_empty() {
+                return Err(PathRejection::invalid("'uri' must not be empty"));
+            }
+            let uri = url::Url::parse(raw)
+                .map_err(|error| PathRejection::invalid(format!("invalid 'uri': {error}")))?;
+            let path = uri
+                .to_file_path()
+                .map_err(|()| PathRejection::invalid("'uri' must identify a local file"))?;
+            Ok(Some(path))
+        }
+        (None, Some(value)) => {
+            let raw = value
+                .as_str()
+                .ok_or_else(|| PathRejection::invalid("'file' must be a string when supplied"))?;
+            if raw.trim().is_empty() {
+                return Err(PathRejection::invalid("'file' must not be empty"));
+            }
+            Ok(Some(PathBuf::from(raw)))
+        }
+        (None, None) => Ok(None),
+        (Some(_), Some(_)) => unreachable!("mutual exclusion checked above"),
+    }
+}
+
+/// The `text` a caller supplied in place of letting the daemon open the path.
+fn text_from_params(params: &serde_json::Value) -> Result<Option<String>, PathRejection> {
+    match params.get("text") {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value
+            .as_str()
+            .map(|text| Some(text.to_string()))
+            .ok_or_else(|| PathRejection::invalid("'text' must be a string when supplied")),
+    }
+}
+
 /// The single existing local regular file a request names, resolved inside the
 /// loaded project's boundary.
 ///
@@ -1222,59 +1377,152 @@ pub(crate) fn ensure_document(
 /// of them at once. Relative paths resolve against the project root, not the
 /// daemon's working directory: the daemon outlives the shell that started it,
 /// so its cwd is not a meaningful base for a client's path.
+///
+/// This is the path a method that *writes* the file takes, so it never accepts
+/// `text`: the content a caller supplies can be analysed, never written back
+/// over a file the caller was not allowed to name.
 pub(crate) fn file_uri_from_params(
     workspace: &Workspace,
     params: &serde_json::Value,
-) -> Result<Option<url::Url>, String> {
+) -> Result<Option<url::Url>, PathRejection> {
     // Daemon file operations accept exactly one existing local regular file.
     // Failing canonicalisation used to fall back to the unresolved path, which
     // made missing files, inaccessible parents, and symlink failures look like
     // a valid request until a later and often unrelated operation failed.
-    let uri_value = params.get("uri");
-    let file_value = params.get("file");
-    if uri_value.is_some() && file_value.is_some() {
-        return Err("'uri' and 'file' are mutually exclusive".to_string());
-    }
-
-    let path = match (uri_value, file_value) {
-        (Some(value), None) => {
-            let raw = value
-                .as_str()
-                .ok_or_else(|| "'uri' must be a string when supplied".to_string())?;
-            if raw.trim().is_empty() {
-                return Err("'uri' must not be empty".to_string());
-            }
-            let uri = url::Url::parse(raw).map_err(|error| format!("invalid 'uri': {error}"))?;
-            uri.to_file_path()
-                .map_err(|()| "'uri' must identify a local file".to_string())?
-        }
-        (None, Some(value)) => {
-            let raw = value
-                .as_str()
-                .ok_or_else(|| "'file' must be a string when supplied".to_string())?;
-            if raw.trim().is_empty() {
-                return Err("'file' must not be empty".to_string());
-            }
-            std::path::PathBuf::from(raw)
-        }
-        (None, None) => return Ok(None),
-        (Some(_), Some(_)) => unreachable!("mutual exclusion checked above"),
-    };
-
-    let canonical = containment::resolve_within_project(workspace, &path)?;
-    if !canonical.is_file() {
-        return Err(format!(
-            "input path '{}' is not a regular file",
-            canonical.display()
+    if text_from_params(params)?.is_some() {
+        return Err(PathRejection::invalid(
+            "'text' is not accepted here: this method rewrites the file it names, and only a \
+             path inside the project can be written",
         ));
     }
+    let Some(path) = path_from_params(params)? else {
+        return Ok(None);
+    };
+
+    let canonical = containment::resolve_within_project(workspace, &path)
+        .map_err(PathRejection::unauthorized)?;
+    if !canonical.is_file() {
+        return Err(PathRejection::invalid(format!(
+            "input path '{}' is not a regular file",
+            canonical.display()
+        )));
+    }
     let uri = url::Url::from_file_path(&canonical).map_err(|()| {
-        format!(
+        PathRejection::invalid(format!(
             "input file cannot be represented as a file URI: {}",
             canonical.display()
-        )
+        ))
     })?;
     Ok(Some(uri))
+}
+
+/// A document the caller supplied the text for, removed from the store when
+/// the request that needed it is answered.
+///
+/// The text stands in for a file the daemon is not allowed to open, so it must
+/// not outlive the one request: it is not part of the project, and leaving it
+/// behind would put a file the daemon never read into workspace-wide answers.
+pub(crate) struct SuppliedDocument<'a> {
+    workspace: &'a Workspace,
+    uri: url::Url,
+}
+
+impl Drop for SuppliedDocument<'_> {
+    fn drop(&mut self) {
+        self.workspace.documents.close(&self.uri);
+    }
+}
+
+/// The document a read-only single-file request works on, and the guard that
+/// removes it again when the caller supplied its text.
+///
+/// Three inputs, tried in order:
+///
+/// 1. `text` from the caller. The daemon answers from that and never opens the
+///    path, which is how `al-explorer` serves a file outside the project: the
+///    user running the CLI can read their own files, the daemon must not read
+///    them on anyone's behalf. Refused for a path *inside* the project, so no
+///    caller can substitute its own content for a project file the daemon
+///    holds and have a later write flush it to disk.
+/// 2. a document already open in the store, which the editor put there. No
+///    filesystem access, so containment has nothing to guard.
+/// 3. the path itself, contained in the project and read from disk.
+#[allow(clippy::result_large_err)]
+pub(crate) fn read_document_from_params<'a>(
+    workspace: &'a Workspace,
+    params: &serde_json::Value,
+    id: u64,
+) -> Result<(url::Url, Option<SuppliedDocument<'a>>), Response> {
+    let supplied = text_from_params(params).map_err(|rejection| rejection.into_response(id))?;
+    if let Some(text) = supplied {
+        let path = path_from_params(params)
+            .map_err(|rejection| rejection.into_response(id))?
+            .ok_or_else(|| {
+                rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    "'text' needs the 'uri' or 'file' it stands for",
+                )
+            })?;
+        if let Ok(inside) = containment::resolve_within_project(workspace, &path) {
+            return Err(rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                &format!(
+                    "'{}' is inside the project, so the daemon reads it itself; 'text' is only \
+                     for a path the daemon may not open",
+                    inside.display()
+                ),
+            ));
+        }
+        let absolute = if path.is_absolute() {
+            path
+        } else {
+            std::env::current_dir().unwrap_or_default().join(path)
+        };
+        let uri = url::Url::from_file_path(&absolute).map_err(|()| {
+            rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                &format!(
+                    "supplied path cannot be represented as a file URI: {}",
+                    absolute.display()
+                ),
+            )
+        })?;
+        workspace
+            .documents
+            .open(uri.clone(), text)
+            .map_err(|error| {
+                rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    &format!("supplied document was rejected: {error}"),
+                )
+            })?;
+        let guard = SuppliedDocument {
+            workspace,
+            uri: uri.clone(),
+        };
+        return Ok((uri, Some(guard)));
+    }
+
+    // The raw URI, before containment: a document the editor already opened is
+    // answered from the store, exactly as `ensure_document` has always done,
+    // and reading it touches no filesystem for containment to guard.
+    if let Some(uri) = extract_uri(params) {
+        if workspace.documents.contains(&uri) {
+            return Ok((uri, None));
+        }
+    }
+
+    let uri = match file_uri_from_params(workspace, params) {
+        Ok(Some(uri)) => uri,
+        Ok(None) => return Err(invalid_params(id)),
+        Err(rejection) => return Err(rejection.into_response(id)),
+    };
+    ensure_document(workspace, &uri, id)?;
+    Ok((uri, None))
 }
 
 /// Load a minimal project rooted at `root` so a test workspace has a
@@ -1301,6 +1549,7 @@ pub(crate) fn set_test_project_root(workspace: &Workspace, root: &Path) {
             packages_dir: root.join(".alpackages"),
             packages: Vec::new(),
             server_configs: Vec::new(),
+            launch_config_error: None,
         });
 }
 
@@ -1710,7 +1959,15 @@ mod tests {
         ] {
             let error = file_uri_from_params(&workspace, &params)
                 .expect_err("a path outside the project must be rejected");
-            assert!(error.contains("outside the project"), "{error}: {params}");
+            assert!(
+                error.message.contains("outside the project"),
+                "{error}: {params}"
+            );
+            assert_eq!(
+                error.code,
+                error_codes::PATH_NOT_AUTHORIZED,
+                "a refused path needs the code the CLI retries on: {params}"
+            );
         }
     }
 
@@ -1729,7 +1986,7 @@ mod tests {
         let params = serde_json::json!({ "file": "link/id_rsa" });
         let error = file_uri_from_params(&workspace, &params)
             .expect_err("a symlink out of the project must be rejected");
-        assert!(error.contains("outside the project"), "{error}");
+        assert!(error.message.contains("outside the project"), "{error}");
     }
 
     #[test]
@@ -1741,7 +1998,7 @@ mod tests {
         let params = serde_json::json!({ "file": file.to_str().unwrap() });
         let error = file_uri_from_params(&workspace, &params)
             .expect_err("without a project there is nothing to contain against");
-        assert!(error.contains("No project is loaded"), "{error}");
+        assert!(error.message.contains("No project is loaded"), "{error}");
     }
 
     #[test]
@@ -1752,7 +2009,7 @@ mod tests {
         let error = file_uri_from_params(&workspace, &params)
             .expect_err("nonexistent path must be rejected");
         assert!(
-            error.contains("is not a regular file"),
+            error.message.contains("is not a regular file"),
             "unexpected error: {error}"
         );
     }
@@ -1762,7 +2019,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (workspace, _) = project_with_doc(dir.path());
         let params = serde_json::json!({ "something": "else" });
-        assert_eq!(file_uri_from_params(&workspace, &params).unwrap(), None);
+        assert_eq!(
+            file_uri_from_params(&workspace, &params).expect("no path is not an error"),
+            None
+        );
     }
 
     #[test]
@@ -1782,6 +2042,101 @@ mod tests {
                 "malformed input must be rejected: {params}"
             );
         }
+    }
+
+    /// A read-only method reaches a file outside the project only through the
+    /// text its caller supplies. Without that text the path is refused, and
+    /// with the dedicated code, which is what tells `al-explorer` to read the
+    /// file and ask again.
+    #[test]
+    fn a_read_refuses_an_outside_path_it_was_given_no_text_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        let file = outside.join("ErrorCases.al");
+        std::fs::write(&file, b"codeunit 1 Broken { procedure").unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let (workspace, _) = project_with_doc(&root);
+
+        let params = serde_json::json!({ "file": file.to_str().unwrap() });
+        let response = super::build_dispatch::dispatch_parse(&workspace, 1, &params);
+        let error = response.error.expect("an outside path must be refused");
+        assert_eq!(error.code, error_codes::PATH_NOT_AUTHORIZED, "{error}");
+        assert!(error.message.contains("outside the project"), "{error}");
+    }
+
+    /// With the text, the same read is answered from what the caller sent, the
+    /// path is never opened, and nothing is left behind in the document store
+    /// for a later workspace-wide query to pick up.
+    #[test]
+    fn a_read_answers_an_outside_path_from_the_supplied_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let (workspace, _) = project_with_doc(&root);
+        // Never written to disk: the daemon must answer without opening it.
+        let absent = dir.path().join("outside").join("ErrorCases.al");
+
+        let params = serde_json::json!({
+            "file": absent.to_str().unwrap(),
+            "text": "codeunit 50100 Broken\n{\n    procedure\n}\n",
+        });
+        let response = super::build_dispatch::dispatch_parse(&workspace, 2, &params);
+        assert!(response.error.is_none(), "{:?}", response.error);
+        let errors = response
+            .result
+            .as_ref()
+            .and_then(|result| result.get("errors"))
+            .and_then(serde_json::Value::as_u64)
+            .expect("parse reports an error count");
+        assert!(errors > 0, "the supplied text does not parse cleanly");
+
+        let uri = url::Url::from_file_path(&absent).unwrap();
+        assert!(
+            !workspace.documents.contains(&uri),
+            "a supplied document must not outlive the request that needed it"
+        );
+    }
+
+    /// Text for a path *inside* the project is refused: the daemon holds that
+    /// file itself, and substituting content for it would let a later write
+    /// flush a caller's text over the real source.
+    #[test]
+    fn supplied_text_is_refused_for_a_path_inside_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let (workspace, file) = project_with_doc(dir.path());
+        let params = serde_json::json!({
+            "file": file.to_str().unwrap(),
+            "text": "codeunit 50100 Substituted { }",
+        });
+        let error = super::build_dispatch::dispatch_parse(&workspace, 3, &params)
+            .error
+            .expect("text for a project file must be refused");
+        assert_eq!(error.code, error_codes::INVALID_PARAMS, "{error}");
+        assert!(error.message.contains("inside the project"), "{error}");
+    }
+
+    /// A method that rewrites the file it names takes no text at all.
+    #[tokio::test]
+    async fn a_write_refuses_supplied_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let (workspace, _) = project_with_doc(&root);
+        let outside = dir.path().join("outside.al");
+        std::fs::write(&outside, b"codeunit 50100 Ugly { }").unwrap();
+
+        let params = serde_json::json!({
+            "file": outside.to_str().unwrap(),
+            "text": "codeunit 50100 Ugly { }",
+        });
+        let error = super::build_dispatch::dispatch_format(&workspace, 4, &params)
+            .await
+            .error
+            .expect("a write method must refuse supplied text");
+        assert_eq!(error.code, error_codes::INVALID_PARAMS, "{error}");
+        assert!(error.message.contains("rewrites the file"), "{error}");
     }
 
     #[tokio::test]
@@ -1834,6 +2189,58 @@ mod tests {
                 .get("semanticCache")
                 .is_some_and(serde_json::Value::is_object),
             "a healthy cache must report concrete statistics"
+        );
+    }
+
+    /// A client whose request is blocked on the dependency source index needs
+    /// to be able to see that from a second connection, or a timeout carries
+    /// no reason and the natural response is a retry into the next one.
+    #[tokio::test]
+    async fn status_reports_dependency_source_index_progress() {
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+        let shutdown = Notify::new();
+        let resp = dispatch_request(&ws, Request::new(4, "status", None), &shutdown).await;
+        let result = resp.result.expect("status must return a result");
+        let source_index = result
+            .get("sourceIndex")
+            .expect("status must carry sourceIndex");
+        assert_eq!(
+            source_index.get("state").and_then(|v| v.as_str()),
+            Some("idle"),
+            "nothing has needed the index yet: {source_index}"
+        );
+        for key in ["packagesDone", "packagesTotal", "filesDone", "elapsedMs"] {
+            assert!(
+                source_index.get(key).is_some_and(|v| v.is_u64()),
+                "sourceIndex must report {key}: {source_index}"
+            );
+        }
+
+        // Building it on a workspace with no packages is instant and must
+        // leave the counters in the ready state a client waits for.
+        let _graph = ws.get_or_build_call_graph().expect("empty graph builds");
+        let after = dispatch_request(&ws, Request::new(5, "status", None), &shutdown)
+            .await
+            .result
+            .expect("result");
+        assert_eq!(
+            after
+                .get("sourceIndex")
+                .and_then(|index| index.get("state"))
+                .and_then(|v| v.as_str()),
+            Some("ready")
+        );
+    }
+
+    #[tokio::test]
+    async fn diag_summary_reports_dependency_source_index_progress() {
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+        let shutdown = Notify::new();
+        let resp = dispatch_request(&ws, Request::new(6, "diag", None), &shutdown).await;
+        let result = resp.result.expect("diag must return a result");
+        assert!(
+            result.get("sourceIndex").is_some(),
+            "diag/summary must carry sourceIndex: {result}"
         );
     }
 

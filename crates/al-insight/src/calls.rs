@@ -1168,6 +1168,7 @@ pub fn register_workspace_nodes(
             // source for workspace symbol entries (it clobbers the "workspace"
             // package), so without it `implements` would always be empty.
             implements: info_implements_from_tree(tree.root_node(), source_bytes, &info.name),
+            properties: extract_object_properties_from_tree(tree.root_node(), source_bytes),
             ..Default::default()
         });
     }
@@ -1275,6 +1276,50 @@ fn extract_fields_from_tree(
 /// shared between `implements` and `extends`). Needed so workspace extension
 /// objects participate in composition (`composed table <base>`) once
 /// registered in the SymbolIndex.
+/// Object-level `property_assignment` entries (`SourceTable`, `PageType`,
+/// `Permissions`, …) for one workspace object.
+///
+/// Table-impact analysis reads `SourceTable` off the symbol entry, and without
+/// this pass workspace pages carried none, so a table that a workspace page is
+/// built on reported no consumers at all.
+fn extract_object_properties_from_tree(
+    root: tree_sitter::Node,
+    source: &[u8],
+) -> Vec<al_symbols::PropertyValue> {
+    let mut properties = Vec::new();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "object_body" => stack.push(child),
+                "property_assignment" => {
+                    let (Some(name), Some(value)) = (
+                        child
+                            .child_by_field_name("name")
+                            .and_then(|n| n.utf8_text(source).ok()),
+                        child
+                            .child_by_field_name("value")
+                            .and_then(|n| n.utf8_text(source).ok()),
+                    ) else {
+                        continue;
+                    };
+                    properties.push(al_symbols::PropertyValue {
+                        name: name.trim().to_string(),
+                        value: value.trim().trim_end_matches(';').trim().to_string(),
+                    });
+                }
+                // Only the object's own header and body level matter; a
+                // property inside a page control or a table field belongs to
+                // that member, not to the object.
+                "source_file" | "object_declaration" => stack.push(child),
+                _ => {}
+            }
+        }
+    }
+    properties
+}
+
 fn info_extends_from_tree(root: tree_sitter::Node, source: &[u8]) -> Option<String> {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {

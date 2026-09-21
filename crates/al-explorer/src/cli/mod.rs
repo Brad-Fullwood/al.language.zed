@@ -24,6 +24,17 @@ use clap_complete::generate;
 use commands::{build, debug, insight, lsp};
 
 pub fn run(cli: Cli) -> ExitCode {
+    if let Some(millis) = cli.timeout_ms {
+        commands::set_request_timeout_override(millis);
+    }
+    commands::set_compact_json(cli.compact);
+    commands::set_projection_override(cli.limit, cli.offset, &cli.fields, cli.scope.as_deref());
+    // `--compact` is about how JSON is rendered, so asking for it is asking
+    // for JSON.
+    let cli = Cli {
+        json: cli.json || cli.compact,
+        ..cli
+    };
     match cli.command {
         Commands::GenerateCompletions { shell } => {
             let mut cmd = Cli::command();
@@ -66,7 +77,7 @@ pub fn run(cli: Cli) -> ExitCode {
         Commands::DownloadSymbols { project, source } => {
             lsp::cmd_download_symbols(project.as_deref(), source.as_deref(), cli.json)
         }
-        Commands::Search { query, limit } => lsp::cmd_search(&query, limit, cli.json),
+        Commands::Search { query } => lsp::cmd_search(&query, cli.limit, cli.json),
         Commands::Object { kind, name } => lsp::cmd_object(&kind, &name, cli.json),
         Commands::ById { kind, id } => lsp::cmd_by_id(&kind, id, cli.json),
         Commands::Source {
@@ -75,14 +86,21 @@ pub fn run(cli: Cli) -> ExitCode {
             package,
             procedure,
             trigger,
+            list_procedures,
         } => lsp::cmd_source(
             &name,
             kind.as_deref(),
             package.as_deref(),
             procedure.as_deref(),
             trigger.as_deref(),
+            list_procedures,
             cli.json,
         ),
+        Commands::Location {
+            name,
+            kind,
+            package,
+        } => lsp::cmd_location(&name, kind.as_deref(), package.as_deref(), cli.json),
         Commands::Events { name } => lsp::cmd_events(&name, cli.json),
         Commands::Subscribers { event } => lsp::cmd_subscribers(&event, cli.json),
         Commands::EventSource { file, line } => lsp::cmd_event_source(&file, line, cli.json),

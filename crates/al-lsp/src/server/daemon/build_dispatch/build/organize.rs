@@ -32,9 +32,19 @@ pub(in crate::server::daemon) fn dispatch_sort_members(
             }
         },
     };
+    // Name a contradictory request as one before resolving the path: with
+    // `content` already supplied, a refusal about where the path points would
+    // describe the wrong problem.
+    if raw_content.is_some() && (params.get("uri").is_some() || params.get("file").is_some()) {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            "select exactly one of 'content', 'uri'/'file', or 'all': true",
+        );
+    }
     let file_uri = match file_uri_from_params(workspace, params) {
         Ok(file_uri) => file_uri,
-        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+        Err(rejection) => return rejection.into_response(id),
     };
     let all = match optional_bool_param(params, "all", false) {
         Ok(all) => all,
@@ -627,6 +637,7 @@ mod tests {
                 packages_dir: tmp.path().join(".alpackages"),
                 packages: Vec::new(),
                 server_configs: Vec::new(),
+                launch_config_error: None,
             });
         }
         // A real on-disk file whose name does NOT match <Kind><Id>.<Name>.al.

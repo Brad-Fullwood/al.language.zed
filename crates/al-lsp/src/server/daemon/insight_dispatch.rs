@@ -200,7 +200,41 @@ pub(super) fn dispatch_impact(
             ..Default::default()
         };
     }
+    // Consumers are found through the workspace-enriched index; without the
+    // enrichment pass a workspace symbol looks like it has none.
+    if let Err(error) = workspace.get_or_build_call_graph() {
+        return graph_build_error(id, "impact", error);
+    }
     match al_analysis::queries::impact::impact(workspace, symbol) {
+        // An empty list reads the same whether the symbol is unused or
+        // misspelled, so resolve the name before reporting zero.
+        Ok(entries) if entries.is_empty() => match resolve_impact_symbol(workspace, symbol) {
+            SymbolResolution::Found => Response {
+                id,
+                result: Some(serde_json::json!({ "symbol": symbol, "impacted": entries })),
+                error: None,
+                ..Default::default()
+            },
+            SymbolResolution::UnknownObject { name, candidates } => {
+                not_found_error(id, "impact", "object", &name, &candidates)
+            }
+            SymbolResolution::UnknownMember {
+                object,
+                member,
+                candidates,
+            } => rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                &format!(
+                    "impact: object '{object}' has no member named '{member}'. {}",
+                    if candidates.is_empty() {
+                        format!("Call `source \"{object}\" --list-procedures` for its members.")
+                    } else {
+                        format!("Closest members: {}.", candidates.join(", "))
+                    }
+                ),
+            ),
+        },
         Ok(entries) => Response {
             id,
             result: Some(serde_json::json!({ "symbol": symbol, "impacted": entries })),
@@ -273,8 +307,164 @@ pub(super) fn dispatch_table_impact(
     let Some(table) = params.get("table").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
+    // Workspace objects reach `workspace.symbols` through the call-graph
+    // enrichment pass. Without it this method saw package entries only and
+    // answered `totalImpacts: 0` for a table that workspace pages use.
+    if let Err(error) = workspace.get_or_build_call_graph() {
+        return graph_build_error(id, "tableImpact", error);
+    }
     let result = al_insight::analysis::table_impact(&workspace.symbols, table);
+    if result.total_impacts == 0 {
+        if let SymbolResolution::UnknownObject { name, candidates } =
+            resolve_impact_symbol(workspace, table)
+        {
+            return not_found_error(id, "tableImpact", "table", &name, &candidates);
+        }
+    }
     serialized_response(id, &result, "tableImpact")
+}
+
+/// What `impact`'s `symbol` argument turned out to name.
+///
+/// An agent cannot act on a bare empty list: it reads the same whether the
+/// symbol is unused or misspelled. The survey's `impact "Sales-Post.PostSalesDoc"`
+/// returned `{"impacted": []}` for a procedure whose real name is `RunWithCheck`.
+enum SymbolResolution {
+    Found,
+    UnknownObject {
+        name: String,
+        candidates: Vec<String>,
+    },
+    UnknownMember {
+        object: String,
+        member: String,
+        candidates: Vec<String>,
+    },
+}
+
+fn resolve_impact_symbol(workspace: &Workspace, symbol: &str) -> SymbolResolution {
+    let (object, member) = split_object_member(symbol);
+    let entries = workspace.symbols.get_by_name(&object);
+    let in_workspace_files = workspace
+        .file_index
+        .object_info
+        .iter()
+        .any(|entry| entry.value().name.eq_ignore_ascii_case(&object));
+    if entries.is_empty() && !in_workspace_files {
+        let candidates = unknown_symbol_candidates(workspace, &object);
+        return SymbolResolution::UnknownObject {
+            name: object,
+            candidates,
+        };
+    }
+    let Some(member) = member else {
+        return SymbolResolution::Found;
+    };
+    // A workspace object indexed only in the file index carries no members
+    // here, so an unverifiable member is accepted rather than rejected.
+    if entries.is_empty() {
+        return SymbolResolution::Found;
+    }
+    let mut members: Vec<String> = Vec::new();
+    for entry in &entries {
+        members.extend(entry.methods.iter().map(|method| method.name.clone()));
+        members.extend(entry.fields.iter().map(|field| field.name.clone()));
+        members.extend(entry.controls.iter().map(|control| control.name.clone()));
+    }
+    if members
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(&member))
+    {
+        return SymbolResolution::Found;
+    }
+    let member_lower = member.to_lowercase();
+    let mut candidates: Vec<String> = members
+        .iter()
+        .filter(|candidate| {
+            let lower = candidate.to_lowercase();
+            lower.contains(&member_lower) || member_lower.contains(&lower)
+        })
+        .cloned()
+        .collect();
+    candidates.sort();
+    candidates.dedup();
+    candidates.truncate(8);
+    SymbolResolution::UnknownMember {
+        object,
+        member,
+        candidates,
+    }
+}
+
+/// Split `Object."Member"` into its two halves, ignoring a dot inside quotes.
+fn split_object_member(symbol: &str) -> (String, Option<String>) {
+    let mut in_quotes = false;
+    for (index, character) in symbol.char_indices() {
+        match character {
+            '"' => in_quotes = !in_quotes,
+            '.' if !in_quotes => {
+                return (
+                    symbol[..index].trim().trim_matches('"').to_string(),
+                    Some(symbol[index + 1..].trim().trim_matches('"').to_string()),
+                );
+            }
+            _ => {}
+        }
+    }
+    (symbol.trim().trim_matches('"').to_string(), None)
+}
+
+/// Close-enough object names for a name the index does not hold. Uses the same
+/// fuzzy matcher `search` serves, over both packages and workspace source, so
+/// the suggestion is a name the agent's next call can use verbatim.
+fn unknown_symbol_candidates(workspace: &Workspace, name: &str) -> Vec<String> {
+    let mut candidates: Vec<String> = workspace
+        .symbols
+        .search(name, 8)
+        .iter()
+        .map(|entry| entry.name.clone())
+        .collect();
+    // `workspace_search` matches substrings, so a misspelling in the last few
+    // characters finds nothing. Shortening the query until it matches turns
+    // "Sales Postr" into the prefix that does hit "Sales Poster".
+    let mut prefix_length = name.len();
+    while prefix_length >= 3 {
+        let Some(prefix) = name.get(..prefix_length) else {
+            prefix_length -= 1;
+            continue;
+        };
+        let found = al_analysis::queries::search::workspace_search(workspace, prefix, 8);
+        if !found.is_empty() {
+            candidates.extend(found.into_iter().map(|result| result.info.name));
+            break;
+        }
+        prefix_length -= 1;
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates.truncate(8);
+    candidates
+}
+
+/// A not-found error naming the closest candidates, so the agent's next call
+/// can be the right one instead of a full dump to find the real name.
+fn not_found_error(
+    id: u64,
+    method: &str,
+    noun: &str,
+    name: &str,
+    candidates: &[String],
+) -> Response {
+    let suggestion = if candidates.is_empty() {
+        format!("Run `search {name}` to find the name that does exist.")
+    } else {
+        format!("Closest names in the index: {}.", candidates.join(", "))
+    };
+    rpc_error(
+        id,
+        error_codes::INVALID_PARAMS,
+        &format!("{method}: no {noun} named '{name}' is loaded. {suggestion}"),
+    )
 }
 
 /// Returns the event propagation tree, including cycles.
@@ -463,6 +653,10 @@ mod tests {
     #[test]
     fn dispatch_table_impact_returns_table_impact_result_shape() {
         let ws = Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/Customer.Table.al"),
+            "table 18 Customer\n{\n}\n".to_string(),
+        );
         let resp = dispatch_table_impact(&ws, 41, &serde_json::json!({ "table": "Customer" }));
         let value = resp.result.expect("must carry a result");
         assert_eq!(
@@ -511,6 +705,103 @@ mod tests {
         let ws = Workspace::new();
         let resp = dispatch_suggest_event(&ws, 4, &serde_json::json!({ "query": "not-an-object" }));
         assert_invalid_params(&resp);
+    }
+
+    /// `trace` timed out at 30 s twice in a row while `dead-code` answered in
+    /// 47 ms on the same daemon. `dead-code` reads the workspace file index;
+    /// `trace` waits for the dependency AL source index, which takes about a
+    /// minute on Base Application and only starts when a query first needs it.
+    /// Once that index exists the traversal itself is bounded by the event's
+    /// own subscriber fan-out, not by the graph size, which is what this
+    /// asserts: a graph with a thousand unrelated events costs the same as one
+    /// with a handful.
+    #[test]
+    fn trace_cost_follows_the_event_not_the_graph_size() {
+        fn workspace_with_events(unrelated: usize) -> Workspace {
+            let ws = Workspace::new();
+            ws.file_index.add_file(
+                std::path::PathBuf::from("/proj/Target.Codeunit.al"),
+                "codeunit 50000 \"Target Publisher\"\n{\n    [IntegrationEvent(false, false)]\n    procedure OnTargetEvent()\n    begin\n    end;\n}\n".to_string(),
+            );
+            for index in 0..unrelated {
+                ws.file_index.add_file(
+                    std::path::PathBuf::from(format!("/proj/Noise{index}.Codeunit.al")),
+                    format!(
+                        "codeunit {} \"Noise {index}\"\n{{\n    [IntegrationEvent(false, false)]\n    procedure OnNoise{index}()\n    begin\n    end;\n}}\n",
+                        50_100 + index
+                    ),
+                );
+            }
+            // Pay the graph build before timing the query. The guard is
+            // dropped at the end of this statement, which is what lets the
+            // workspace be returned.
+            drop(ws.get_or_build_call_graph().expect("graph builds"));
+            ws
+        }
+
+        let small = workspace_with_events(4);
+        let large = workspace_with_events(1_000);
+        let params = serde_json::json!({ "event": "OnTargetEvent" });
+
+        let time = |ws: &Workspace| {
+            let start = std::time::Instant::now();
+            let response = dispatch_trace(ws, 60, &params);
+            assert!(response.error.is_none(), "{:?}", response.error);
+            start.elapsed()
+        };
+        let small_elapsed = time(&small);
+        let large_elapsed = time(&large);
+
+        // Generous headroom: the point is that the cost does not scale with
+        // the 250x larger graph, not a precise ratio on a shared runner.
+        assert!(
+            large_elapsed < small_elapsed + std::time::Duration::from_millis(250),
+            "trace on a 1000-event graph took {large_elapsed:?} against {small_elapsed:?} on a \
+             4-event graph; a per-call whole-graph walk would show up here"
+        );
+    }
+
+    /// A cold call-graph build is 86 s on a project with Base Application
+    /// loaded. Two `trace` calls arriving before it finishes must join the
+    /// same build: running a second copy is the difference between one wait
+    /// and two, and a client that retried after its deadline used to be the
+    /// second caller.
+    #[test]
+    fn concurrent_cold_traces_share_one_call_graph_build() {
+        let ws = std::sync::Arc::new(Workspace::new());
+        for index in 0..40 {
+            ws.file_index.add_file(
+                std::path::PathBuf::from(format!("/proj/Object{index}.al")),
+                format!(
+                    "codeunit {} \"Object {index}\"\n{{\n    [IntegrationEvent(false, false)]\n    procedure OnThing{index}()\n    begin\n    end;\n}}\n",
+                    50_100 + index
+                ),
+            );
+        }
+        assert_eq!(ws.call_graph_build_count(), 0, "nothing built yet");
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                let ws = std::sync::Arc::clone(&ws);
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let response =
+                        dispatch_trace(&ws, 70, &serde_json::json!({ "event": "OnThing0" }));
+                    assert!(response.error.is_none(), "{:?}", response.error);
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().expect("trace worker finished");
+        }
+
+        assert_eq!(
+            ws.call_graph_build_count(),
+            1,
+            "four concurrent cold traces must share one build"
+        );
     }
 
     #[test]
@@ -722,6 +1013,10 @@ mod tests {
     #[test]
     fn dispatch_impact_valid_symbol_returns_result() {
         let ws = Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/MyCodeunit.al"),
+            "codeunit 50100 MyCodeunit\n{\n}\n".to_string(),
+        );
         let resp = dispatch_impact(&ws, 15, &serde_json::json!({ "symbol": "MyCodeunit" }));
         assert!(resp.error.is_none(), "valid symbol must not error");
         let value = resp.result.expect("impact must carry a result");
@@ -730,6 +1025,126 @@ mod tests {
             Some("MyCodeunit")
         );
         assert!(value.get("impacted").is_some());
+    }
+
+    /// An empty `impacted` list and a misspelled name used to be the same
+    /// answer, so an agent could not tell a real zero from a typo.
+    #[test]
+    fn dispatch_impact_on_an_unknown_object_says_not_found_with_candidates() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/SalesPost.al"),
+            "codeunit 50100 \"Sales Poster\"\n{\n}\n".to_string(),
+        );
+        let resp = dispatch_impact(&ws, 50, &serde_json::json!({ "symbol": "Sales Postr" }));
+        assert_invalid_params(&resp);
+        let message = &resp.error.as_ref().expect("error").message;
+        assert!(
+            message.contains("no object named 'Sales Postr'"),
+            "got: {message}"
+        );
+        assert!(
+            message.contains("Sales Poster"),
+            "the close name must be offered: {message}"
+        );
+    }
+
+    #[test]
+    fn dispatch_impact_on_an_unknown_member_lists_the_real_members() {
+        use al_symbols::{MethodSymbol, ObjectKind, SymbolEntry};
+        let ws = Workspace::new();
+        let mut entry = SymbolEntry {
+            synthetic: false,
+            kind: ObjectKind::Codeunit,
+            id: 80,
+            name: "Sales-Post".to_string(),
+            extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
+            package: "Base Application".to_string(),
+            methods: Vec::new(),
+            fields: Vec::new(),
+            controls: Vec::new(),
+            enum_values: Vec::new(),
+            keys: Vec::new(),
+            properties: Vec::new(),
+            permissions: Vec::new(),
+            variables: Vec::new(),
+        };
+        entry.methods = vec![MethodSymbol {
+            name: "RunWithCheck".to_string(),
+            parameters: Vec::new(),
+            return_type: None,
+            attributes: Vec::new(),
+            is_local: false,
+        }];
+        ws.symbols.add_entries(&[entry]);
+
+        let resp = dispatch_impact(
+            &ws,
+            51,
+            &serde_json::json!({ "symbol": "Sales-Post.PostSalesDoc" }),
+        );
+        assert_invalid_params(&resp);
+        let message = &resp.error.as_ref().expect("error").message;
+        assert!(
+            message.contains("has no member named 'PostSalesDoc'"),
+            "got: {message}"
+        );
+    }
+
+    /// A workspace page bound to the table through `SourceTable` used to be
+    /// invisible here, so a table plainly in use reported `totalImpacts: 0`.
+    #[test]
+    fn dispatch_table_impact_counts_a_workspace_page_source_table() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/Staging.Table.al"),
+            "table 50130 \"Work Order Staging\"\n{\n    fields { field(1; \"No.\"; Code[20]) { } }\n}\n"
+                .to_string(),
+        );
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/StagingList.Page.al"),
+            "page 50130 \"Work Order List\"\n{\n    PageType = List;\n    SourceTable = \"Work Order Staging\";\n}\n"
+                .to_string(),
+        );
+
+        let resp = dispatch_table_impact(
+            &ws,
+            52,
+            &serde_json::json!({ "table": "Work Order Staging" }),
+        );
+        assert!(resp.error.is_none(), "{:?}", resp.error);
+        let value = resp.result.expect("result");
+        assert!(
+            value
+                .get("totalImpacts")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                > 0,
+            "the page must count as an impact: {value}"
+        );
+    }
+
+    #[test]
+    fn dispatch_table_impact_on_an_unknown_table_says_not_found() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/Staging.Table.al"),
+            "table 50130 \"Work Order Staging\"\n{\n}\n".to_string(),
+        );
+        let resp = dispatch_table_impact(
+            &ws,
+            53,
+            &serde_json::json!({ "table": "Work Order Stagin" }),
+        );
+        assert_invalid_params(&resp);
+        assert!(resp
+            .error
+            .as_ref()
+            .expect("error")
+            .message
+            .contains("Work Order Staging"));
     }
 
     #[test]

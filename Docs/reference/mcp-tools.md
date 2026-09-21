@@ -14,14 +14,14 @@ MCP without a way to invoke it.
 | `al_debug` | `debug` | `cmd: start\|breakpoint\|state\|stack\|variables\|globals\|expand\|eval\|continue\|step\|history\|stop` plus command-specific fields | persistent debug-session control and inspection result |
 | `al_build` | `compile` | _(none)_ | verified-native (or configured `alc`) success, structured diagnostics, `.app` path |
 | `al_downloadsymbols` | `downloadSymbols` | _(none)_ | downloaded package list |
-| `al_symbolsearch` | `search` | `query: string`, `limit: number = 20` | matching symbols |
+| `al_symbolsearch` | `search` | `query: string`, `limit: number = 50` | matching symbols |
 | `al_getdiagnostics` | `lint` | `file: string` (required) | diagnostics for the file |
 | `al_runtests` | `tests.run_auto` | _(none)_ | test results plus per-method classified/actual backend, local/live status, and reasons; unsupported/platform behavior needs live BC |
 | `al_deadcode` | `deadCode` | _(none)_ | unused procedures/fields/orphaned subscribers |
 | `al_sqlscan` | `sqlPatterns` | _(none)_ | SQL anti-pattern findings |
-| `al_entrypoints` | `entrypoints` | _(none)_ | procedures with no incoming calls |
+| `al_entrypoints` | `entrypoints` | `scope: workspace \| packages \| all = workspace` | procedures with no incoming calls |
 | `al_trace_event` | `trace` | `event: string`, `depth: number = 10` | event propagation chain |
-| `al_impact` | `impact` | `symbol: string` (required) | consumers of the symbol |
+| `al_impact` | `impact` | `symbol: string` (required), `scope: workspace \| packages \| all = workspace` | consumers of the symbol; a name that is not loaded is an error naming the closest ones |
 | `al_suggestevent` | `suggestEvent` | `query: object` (required) | suggested integration events and paths |
 | `al_testclassify` | `tests.classify` | _(none)_ | per-test execution routing and reasons |
 | `al_testcoverage` | `tests.coverage` | _(none)_ | qualified/transitive static coverage plus explicit unresolved overload targets |
@@ -33,6 +33,34 @@ MCP without a way to invoke it.
 The complete method names accepted by `al_call`, grouped by capability, are in the
 [daemon method reference](./daemon-methods.md). Its `params` object is passed unchanged to the same
 dispatcher used by `al-explorer` and checkout-local contributor tasks.
+
+## Result size
+
+A tool whose method returns a list also accepts `limit`, `offset` and `fields`, and answers with
+`{ items, total, returned, offset, truncated }`, or with those counters beside the list when the
+result is an object around one array. `total` counts the rows before the window and `truncated`
+says whether more follow, so a full page is never mistaken for a complete answer. `fields` keeps
+only the named keys on each row.
+
+An MCP call that passes no `limit` gets 50, because a tool result goes straight into a context
+window: `al_symbolsearch` on a common word, `al_entrypoints` on a project with Base Application, or
+`al_impact` on a base table each return tens of thousands of rows otherwise. An explicit `limit`
+always wins, including `limit: 0` for a count alone.
+
+`al_impact` and `al_entrypoints`, and `impact`, `tableImpact`, `entrypoints` and `eventMap` through
+`al_call`, also accept `scope` as `workspace`, `packages` or `all`, and report `scope` and
+`outOfScopeCount`. An MCP call that passes no `scope` gets `workspace`, the code the open project
+can change.
+
+Each tool's `inputSchema` carries whichever of these its method takes, derived from the method, so
+the advertised schema and the accepted arguments cannot drift apart. The full semantics are in the
+[daemon method reference](./daemon-methods.md#projection-limit-offset-fields).
+
+A `uri` or `file` outside the loaded project is refused with `-32002`, for MCP as for every other
+caller, and nothing here reads a file on the caller's behalf. A read-only single-file method can
+be given the source as `text` instead, which the caller already has; a method that rewrites the
+file it names takes no `text` at all. See
+[paths and the project boundary](./daemon-methods.md#paths-and-the-project-boundary).
 
 ## Protocol surface
 

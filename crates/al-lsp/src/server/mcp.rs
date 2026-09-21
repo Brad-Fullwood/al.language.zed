@@ -52,6 +52,69 @@ fn obj_schema(props: serde_json::Value, required: &[&str]) -> serde_json::Value 
     })
 }
 
+/// A tool's declared schema plus the parameters the dispatch boundary adds.
+///
+/// `projection` and `scope` are applied to every method that lists, so each
+/// tool would otherwise have to repeat their four properties, and a tool whose
+/// schema forgot them would reject them (`additionalProperties: false`).
+/// Deriving them from the method keeps the advertised schema and the accepted
+/// arguments the same thing.
+fn tool_schema(tool: &ToolDef) -> serde_json::Value {
+    let mut schema = (tool.schema)();
+    // `al_call` forwards an arbitrary method, so its `params` object carries
+    // whatever that method takes; there is nothing to add here.
+    if tool.name == "al_call" {
+        return schema;
+    }
+    let Some(properties) = schema
+        .get_mut("properties")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return schema;
+    };
+    if super::daemon::list_target(tool.method).is_some() {
+        properties.insert(
+            "limit".into(),
+            serde_json::json!({
+                "type": "integer",
+                "minimum": 0,
+                "description": format!(
+                    "Rows to return; defaults to {MCP_DEFAULT_LIMIT}. The result reports total and truncated."
+                ),
+            }),
+        );
+        properties.insert(
+            "offset".into(),
+            serde_json::json!({
+                "type": "integer",
+                "minimum": 0,
+                "description": "Rows to skip, for reading past a truncated page.",
+            }),
+        );
+        properties.insert(
+            "fields".into(),
+            serde_json::json!({
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Keep only these fields on each row. Omit for whole rows.",
+            }),
+        );
+    }
+    if super::daemon::accepts_scope(tool.method) {
+        properties.insert(
+            "scope".into(),
+            serde_json::json!({
+                "type": "string",
+                "enum": ["workspace", "packages", "all"],
+                "description": format!(
+                    "Which code to report on; defaults to {MCP_DEFAULT_SCOPE}, the code this project can change. The result reports outOfScopeCount."
+                ),
+            }),
+        );
+    }
+    schema
+}
+
 fn object_result_schema(properties: serde_json::Value, required: &[&str]) -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -61,10 +124,26 @@ fn object_result_schema(properties: serde_json::Value, required: &[&str]) -> ser
     })
 }
 
+/// The shape a list-returning method answers with once the projection layer
+/// has been through it.
+///
+/// MCP calls carry a default `limit`, so these never come back as a bare
+/// array. `total` and `truncated` are the part an agent needs: without them a
+/// page of 50 reads exactly like a complete answer of 50.
 fn array_result_schema(item: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
-        "type": "array",
-        "items": item,
+        "type": "object",
+        "properties": {
+            "items": {"type": "array", "items": item},
+            "total": {"type": "integer", "description": "Rows before limit and offset."},
+            "returned": {"type": "integer", "description": "Rows in items."},
+            "offset": {"type": "integer"},
+            "truncated": {
+                "type": "boolean",
+                "description": "True when rows follow this page. Raise offset by returned to read them."
+            },
+        },
+        "required": ["items", "total", "returned", "offset", "truncated"],
     })
 }
 
@@ -450,7 +529,7 @@ fn validate_schema_value(
 }
 
 fn validate_tool_arguments(tool: &ToolDef, arguments: &serde_json::Value) -> Result<(), String> {
-    validate_schema_value(arguments, &(tool.schema)(), "arguments")
+    validate_schema_value(arguments, &tool_schema(tool), "arguments")
 }
 
 fn tools() -> &'static [ToolDef] {
@@ -987,6 +1066,14 @@ fn agent_diagnostic(
 }
 
 fn result_is_empty(result: &serde_json::Value) -> bool {
+    // MCP calls carry a default `limit`, so a list result arrives as the
+    // projection envelope. `total: 0` is the empty case there, and checking
+    // the envelope object itself would never see it.
+    if let Some(total) = result.get("total").and_then(serde_json::Value::as_u64) {
+        if result.get("items").is_some_and(serde_json::Value::is_array) {
+            return total == 0;
+        }
+    }
     result.is_null()
         || result.as_array().is_some_and(Vec::is_empty)
         || result.as_object().is_some_and(serde_json::Map::is_empty)
@@ -1017,6 +1104,29 @@ async fn agent_diagnostics(
                 "Create .zed/debug.json or .vscode/launch.json with an AL configuration.",
                 "Choose a configuration containing the target tenant/environment or on-premises server.",
                 "For tests, call al_testclassify first to see which methods can run locally.",
+            ],
+        ));
+    }
+
+    // A debug configuration that will not parse no longer stops the daemon, so
+    // the agent has to be told why the BC-facing commands are unavailable while
+    // symbol queries answer normally.
+    if let Some(reason) = workspace
+        .project
+        .read()
+        .await
+        .as_ref()
+        .and_then(|project| project.launch_config_error.clone())
+    {
+        diagnostics.push(agent_diagnostic(
+            "AL_AGENT_INVALID_LAUNCH_CONFIGURATION",
+            "warning",
+            "The project's debug configuration file could not be read",
+            reason,
+            &[
+                "Symbol, source, event and impact queries are unaffected; keep using them.",
+                "Fix the reported field in .vscode/launch.json or .zed/debug.json before running compile, downloadSymbols, tests against live BC, or debug.",
+                "Call al_call with method 'status' to see the message again after editing the file.",
             ],
         ));
     }
@@ -1121,6 +1231,38 @@ async fn agent_diagnostics(
     diagnostics
 }
 
+/// Rows an MCP caller gets back when it does not say how many it wants.
+///
+/// The survey's five largest answers were between 89,000 and 2.4 million
+/// tokens each, and the question behind every one of them had an answer of
+/// twenty rows or fewer. An agent that needs more asks for it by `limit` or
+/// pages with `offset`; the response says `total` and `truncated` either way.
+pub(crate) const MCP_DEFAULT_LIMIT: u64 = 50;
+
+/// The package scope an MCP caller gets when it does not say.
+///
+/// A developer can only change workspace code, so the workspace rows are the
+/// actionable ones. `impact Item` returned 1,670 consumers of which the
+/// workspace's were a handful.
+pub(crate) const MCP_DEFAULT_SCOPE: &str = "workspace";
+
+/// Add the agent-facing defaults to a forwarded tool call.
+///
+/// Only fills what the caller left out, so an explicit `limit`, `offset`,
+/// `fields` or `scope` always wins, including `limit: 0` for a count.
+fn apply_agent_defaults(method: &str, mut params: serde_json::Value) -> serde_json::Value {
+    let Some(object) = params.as_object_mut() else {
+        return params;
+    };
+    if super::daemon::list_target(method).is_some() && !object.contains_key("limit") {
+        object.insert("limit".into(), serde_json::json!(MCP_DEFAULT_LIMIT));
+    }
+    if super::daemon::accepts_scope(method) && !object.contains_key("scope") {
+        object.insert("scope".into(), serde_json::json!(MCP_DEFAULT_SCOPE));
+    }
+    params
+}
+
 /// Handle one parsed MCP message. Returns the response to write, or `None`
 /// for notifications (which get no response).
 pub(crate) async fn handle_mcp_message(
@@ -1178,7 +1320,7 @@ pub(crate) async fn handle_mcp_message(
                     serde_json::json!({
                         "name": t.name,
                         "description": t.description,
-                        "inputSchema": (t.schema)(),
+                        "inputSchema": tool_schema(t),
                         "outputSchema": output_schema(t.name),
                     })
                 })
@@ -1225,6 +1367,7 @@ pub(crate) async fn handle_mcp_message(
             };
 
             // Forward to the daemon dispatcher — same logic, different wire.
+            let daemon_params = apply_agent_defaults(daemon_method, daemon_params);
             let req = Request::new(0, daemon_method, Some(daemon_params));
             let resp = super::daemon::dispatch_request(workspace, req, shutdown).await;
             let error_message = resp.error.as_ref().map(|error| error.message.as_str());
@@ -1434,6 +1577,19 @@ pub async fn run_mcp(project_root: PathBuf) -> Result<(), Box<dyn std::error::Er
         tracing::warn!("mcp: {msg}");
     }));
     super::daemon::initialize_daemon_workspace(&workspace, &project_root).await?;
+
+    // Same warm-up as the daemon. An MCP server owns its workspace in process,
+    // so without this the first event or impact question pays the whole
+    // dependency source index and call-graph build inside the tool call: a
+    // cold `al_trace_event` measured 599.7 s once and 12.9 s on the next call.
+    // The build is single-flight, so this and a concurrent first tool call
+    // join the same build rather than running two.
+    let warm_workspace = Arc::clone(&workspace);
+    tokio::task::spawn_blocking(move || match warm_workspace.get_or_build_call_graph() {
+        Ok(_) => tracing::info!("mcp: dependency source index and call graph warm"),
+        Err(error) => tracing::warn!(%error, "mcp: background index warm-up failed"),
+    });
+
     tracing::info!(project = %project_root.display(), tools = tools().len(), "MCP server ready");
 
     // Never triggered in MCP mode — exists because the shared dispatcher's
@@ -1554,6 +1710,7 @@ mod tests {
             packages_dir: root.join(".alpackages"),
             packages: Vec::new(),
             server_configs: Vec::new(),
+            launch_config_error: None,
         });
     }
 
@@ -1680,10 +1837,19 @@ mod tests {
             .as_array()
             .and_then(|tools| tools.iter().find(|tool| tool["name"] == "al_symbolsearch"))
             .expect("al_symbolsearch definition");
-        assert_eq!(
-            search["outputSchema"]["properties"]["result"]["type"],
-            "array"
-        );
+        // A list tool advertises the projection envelope, not a bare array:
+        // MCP calls carry a default `limit`, so `total` and `truncated` are
+        // always part of the answer.
+        let search_result = &search["outputSchema"]["properties"]["result"];
+        assert_eq!(search_result["type"], "object");
+        assert_eq!(search_result["properties"]["items"]["type"], "array");
+        for counter in ["total", "returned", "offset"] {
+            assert_eq!(
+                search_result["properties"][counter]["type"], "integer",
+                "a list tool must advertise {counter}: {search_result}"
+            );
+        }
+        assert_eq!(search_result["properties"]["truncated"]["type"], "boolean");
     }
 
     /// End-to-end through the shared dispatcher: a workspace object must be
@@ -1711,9 +1877,16 @@ mod tests {
             resp["result"]["structuredContent"]["tool"],
             "al_symbolsearch"
         );
+        // MCP calls carry a default `limit`, so a list arrives as the
+        // projection envelope rather than a bare array.
         assert!(
-            resp["result"]["structuredContent"]["result"].is_array(),
+            resp["result"]["structuredContent"]["result"]["items"].is_array(),
             "structured result must preserve the daemon JSON: {resp}"
+        );
+        assert_eq!(resp["result"]["structuredContent"]["result"]["total"], 1);
+        assert_eq!(
+            resp["result"]["structuredContent"]["result"]["truncated"],
+            false
         );
         validate_schema_value(
             &resp["result"]["structuredContent"]["result"],

@@ -77,9 +77,10 @@ Confirm each one by name:
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json events "OnAfterPostSalesDoc"
 ```
 
-An empty result means no loaded package publishes that event any more. Use
-`al-explorer --json suggest-event --table <Table>` through a `jq` projection to
-find the replacement, as in the `bc-event-map` skill.
+An empty result means no loaded package publishes that event any more.
+`subscribers <event>` marks a handler `"resolved": false` for the same reason.
+Use `al-explorer --json --limit 8 suggest-event --table <Table>` to find the
+replacement, as in the `bc-event-map` skill.
 
 ## Deprecation timeline
 

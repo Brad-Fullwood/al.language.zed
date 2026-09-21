@@ -11,8 +11,25 @@ use serde::Serialize;
 
 use al_protocol::DaemonClient;
 
+/// Whether `--compact` was passed, set once by `cli::run`.
+static COMPACT_JSON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Print JSON on one line from here on.
+///
+/// Indentation was 43% of the bytes of the largest measured answer:
+/// `by-id codeunit 80` was 552,710 bytes pretty-printed and 315,393 compact,
+/// for the same content.
+pub fn set_compact_json(compact: bool) {
+    COMPACT_JSON.store(compact, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn print_json<T: Serialize>(value: &T) {
-    match serde_json::to_string_pretty(value) {
+    let rendered = if COMPACT_JSON.load(std::sync::atomic::Ordering::Relaxed) {
+        serde_json::to_string(value)
+    } else {
+        serde_json::to_string_pretty(value)
+    };
+    match rendered {
         Ok(json) => println!("{json}"),
         Err(e) => eprintln!("{{\"error\":\"serialization failed: {e}\"}}"),
     }
@@ -171,23 +188,46 @@ pub fn file_to_uri(file: &str) -> Result<String, String> {
         })
 }
 
+/// The `--timeout-ms` value for this process, set once by `cli::run`.
+///
+/// A global rather than a parameter because every one of the ~80 subcommand
+/// functions calls [`connect`] and none of them should have to thread a
+/// deadline through.
+static REQUEST_TIMEOUT_OVERRIDE: std::sync::OnceLock<std::time::Duration> =
+    std::sync::OnceLock::new();
+
+/// Record the per-request deadline the caller asked for. Later calls are
+/// ignored, so the first (the one `cli::run` makes) wins.
+pub fn set_request_timeout_override(millis: u64) {
+    if millis > 0 {
+        let _ = REQUEST_TIMEOUT_OVERRIDE.set(std::time::Duration::from_millis(millis));
+    }
+}
+
 pub fn connect(project_dir: Option<&str>) -> Result<DaemonClient, String> {
     let root = project_root(project_dir)?;
-    DaemonClient::connect(&root).map_err(|e| {
-        if e.contains("No such file") || e.contains("Connection refused") {
-            format!(
-                "{e}\n\nHint: Is the daemon running? Start it with: al-lsp daemon --project {}",
-                root.display()
-            )
-        } else if e.contains("app.json") {
-            format!(
-                "{e}\n\nHint: No AL project found. Ensure app.json exists in {}",
-                root.display()
-            )
-        } else {
-            e
-        }
-    })
+    DaemonClient::connect(&root)
+        .map(|mut client| {
+            if let Some(timeout) = REQUEST_TIMEOUT_OVERRIDE.get() {
+                client.set_request_timeout(*timeout);
+            }
+            client
+        })
+        .map_err(|e| {
+            if e.contains("No such file") || e.contains("Connection refused") {
+                format!(
+                    "{e}\n\nHint: Is the daemon running? Start it with: al-lsp daemon --project {}",
+                    root.display()
+                )
+            } else if e.contains("app.json") {
+                format!(
+                    "{e}\n\nHint: No AL project found. Ensure app.json exists in {}",
+                    root.display()
+                )
+            } else {
+                e
+            }
+        })
 }
 
 pub fn report_error(msg: &str, json: bool) -> ExitCode {
@@ -276,7 +316,7 @@ fn collect_al_files_for_extension(
 }
 
 pub fn print_symbol_entries(result: &serde_json::Value) {
-    let entries = match result.as_array() {
+    let entries = match list_rows(result).as_array() {
         Some(arr) => arr.clone(),
         None => vec![result.clone()],
     };
@@ -420,19 +460,195 @@ where
     }
 }
 
+/// The global `--limit`, `--offset`, `--fields` and `--scope` for this
+/// process, set once by `cli::run`.
+///
+/// Held globally for the same reason as the request deadline: they apply to
+/// every list-returning command and none of the ~80 command functions should
+/// have to thread them through.
+static PROJECTION_OVERRIDE: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+
+/// Record the projection the caller asked for, as the params the daemon reads.
+pub fn set_projection_override(
+    limit: Option<usize>,
+    offset: Option<usize>,
+    fields: &[String],
+    scope: Option<&str>,
+) {
+    let mut params = serde_json::Map::new();
+    if let Some(limit) = limit {
+        params.insert("limit".into(), serde_json::json!(limit));
+    }
+    if let Some(offset) = offset {
+        params.insert("offset".into(), serde_json::json!(offset));
+    }
+    if !fields.is_empty() {
+        params.insert("fields".into(), serde_json::json!(fields));
+    }
+    if let Some(scope) = scope {
+        params.insert("scope".into(), serde_json::json!(scope));
+    }
+    if !params.is_empty() {
+        let _ = PROJECTION_OVERRIDE.set(serde_json::Value::Object(params));
+    }
+}
+
+/// Add the process-wide projection to one request's params.
+///
+/// A command that sets one of these itself keeps its own value: `search`
+/// passes a `limit` that is the search bound, not a page size.
+fn with_projection(params: Option<serde_json::Value>) -> Option<serde_json::Value> {
+    let Some(serde_json::Value::Object(overrides)) = PROJECTION_OVERRIDE.get() else {
+        return params;
+    };
+    let mut merged = match params {
+        Some(serde_json::Value::Object(object)) => object,
+        Some(other) => return Some(other),
+        None => serde_json::Map::new(),
+    };
+    for (key, value) in overrides {
+        merged.entry(key.clone()).or_insert_with(|| value.clone());
+    }
+    Some(serde_json::Value::Object(merged))
+}
+
+/// The rows of a list result, whether or not it came back projected.
+///
+/// A projected root-array method answers `{items, total, returned, offset,
+/// truncated}` instead of a bare array, so the human formatters ask for the
+/// rows through this rather than each knowing about the envelope. `--json`
+/// prints the whole envelope, because `total` and `truncated` are the part an
+/// agent needs.
+pub fn list_rows(result: &serde_json::Value) -> &serde_json::Value {
+    match result.get("items") {
+        Some(items) if items.is_array() && result.get("total").is_some() => items,
+        _ => result,
+    }
+}
+
+/// Daemon methods that answer from one file and never write it.
+///
+/// The daemon refuses a path outside the project it has loaded, because the
+/// same dispatchers are published over MCP, where the caller may be an agent
+/// and the path may be anything it asks for. The person running the CLI can
+/// already read their own files, so for these methods the CLI reads the file
+/// and sends its text, and the daemon answers without opening the path.
+/// Methods that rewrite the file are absent on purpose: content a caller
+/// supplies can be analysed, never written back over a path the daemon was not
+/// allowed to name.
+const READ_ONLY_FILE_METHODS: &[&str] = &[
+    "parse",
+    "lint",
+    "metrics",
+    "hover",
+    "definition",
+    "references",
+    "implementations",
+    "completions",
+    "signatureHelp",
+    "documentSymbols",
+    "foldingRanges",
+    "semanticTokens",
+    "inlayHints",
+    "codeActions",
+];
+
+/// Whether a daemon error is the refusal to touch the path a request named.
+///
+/// `DaemonClient::request` flattens the JSON-RPC error to a string ending in
+/// `(code N)`, so the code is matched in that form rather than re-parsed.
+fn is_path_not_authorized(error: &str) -> bool {
+    error.contains(&format!(
+        "(code {})",
+        al_protocol::jsonrpc::error_codes::PATH_NOT_AUTHORIZED
+    ))
+}
+
+/// The path a request named, as `file` or as a `file://` URI.
+fn requested_path(params: Option<&serde_json::Value>) -> Option<PathBuf> {
+    let params = params?;
+    if let Some(file) = params.get("file").and_then(|value| value.as_str()) {
+        return Some(PathBuf::from(file));
+    }
+    let uri = params.get("uri").and_then(|value| value.as_str())?;
+    url::Url::parse(uri).ok()?.to_file_path().ok()
+}
+
+/// The same request with the file's text attached, for a read-only method the
+/// daemon refused to open the path for.
+fn params_with_text(
+    method: &str,
+    params: Option<&serde_json::Value>,
+    error: &str,
+) -> Option<serde_json::Value> {
+    if !READ_ONLY_FILE_METHODS.contains(&method) || !is_path_not_authorized(error) {
+        return None;
+    }
+    if params.is_some_and(|params| params.get("text").is_some()) {
+        // The text was already sent and still refused: nothing left to try.
+        return None;
+    }
+    let path = requested_path(params)?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    let mut retry = params?.clone();
+    retry.as_object_mut()?.insert("text".into(), text.into());
+    Some(retry)
+}
+
+/// Whether the request narrowed each row to a chosen set of keys.
+fn asked_for_fields(params: Option<&serde_json::Value>) -> bool {
+    params
+        .and_then(|params| params.get("fields"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|fields| !fields.is_empty())
+}
+
 pub fn request_checked(
     client: &mut DaemonClient,
     method: &str,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    let contract_params = params.clone();
-    let result = client.request(method, params)?;
-    if response_contract::handles(method) {
-        response_contract::validate(method, contract_params.as_ref(), &result)?;
-    } else {
-        validate_run_command_result(method, &result)?;
+    let mut sent = with_projection(params);
+    // At most two passes: the second carries the text for a file the daemon
+    // may not open, and `params_with_text` returns None once it is attached.
+    loop {
+        let result = client.request(method, sent.clone());
+        let error = match result {
+            Ok(result) => {
+                // The contracts describe the method's own result shape, so
+                // validate the rows rather than the projection envelope
+                // wrapped around them. `--fields` removes the very keys they
+                // check, and a caller who asked for a subset is not owed an
+                // error for getting one.
+                if !asked_for_fields(sent.as_ref()) {
+                    let checked = list_rows(&result).clone();
+                    if response_contract::handles(method) {
+                        response_contract::validate(method, sent.as_ref(), &checked)?;
+                    } else {
+                        validate_run_command_result(method, &checked)?;
+                    }
+                }
+                return Ok(result);
+            }
+            Err(error) => error,
+        };
+        match params_with_text(method, sent.as_ref(), &error) {
+            Some(retry) => sent = Some(retry),
+            None => return Err(explain_path_refusal(&error)),
+        }
     }
-    Ok(result)
+}
+
+/// Say why a path was refused when the CLI cannot work around it.
+fn explain_path_refusal(error: &str) -> String {
+    if is_path_not_authorized(error) {
+        format!(
+            "{error}\n\nHint: this command rewrites the file it is given, and the daemon changes \
+             only files inside the project named above. Run it from that file's own project."
+        )
+    } else {
+        error.to_string()
+    }
 }
 
 fn validate_run_command_result(method: &str, result: &serde_json::Value) -> Result<(), String> {

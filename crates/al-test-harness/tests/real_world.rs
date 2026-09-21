@@ -5,6 +5,54 @@
 
 use al_test_harness::*;
 
+/// Apply LSP `TextEdit`s to `original`, last edit first so earlier ranges stay
+/// valid. Used to check that formatting a formatted document changes nothing.
+fn apply_edits(original: &str, edits: &[serde_json::Value]) -> String {
+    let mut text = original.to_string();
+    for edit in edits.iter().rev() {
+        let range = &edit["range"];
+        let start = utf8_offset(
+            &text,
+            range["start"]["line"].as_u64().expect("edit start line") as usize,
+            range["start"]["character"]
+                .as_u64()
+                .expect("edit start character") as usize,
+        );
+        let end = utf8_offset(
+            &text,
+            range["end"]["line"].as_u64().expect("edit end line") as usize,
+            range["end"]["character"]
+                .as_u64()
+                .expect("edit end character") as usize,
+        );
+        text.replace_range(start..end, edit["newText"].as_str().expect("edit newText"));
+    }
+    text
+}
+
+fn utf8_offset(text: &str, line: usize, character: usize) -> usize {
+    let mut offset = 0usize;
+    for (index, current) in text.split_inclusive('\n').enumerate() {
+        if index == line {
+            return offset
+                + current
+                    .char_indices()
+                    .nth(character)
+                    .map(|(byte, _)| byte)
+                    .unwrap_or(current.len());
+        }
+        offset += current.len();
+    }
+    text.len()
+}
+
+fn completion_labels(items: &[serde_json::Value]) -> Vec<String> {
+    items
+        .iter()
+        .map(|item| item["label"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
 const TABLE_AL: &str = r#"table 50200 "Item Journal Staging"
 {
     Extensible = false;
@@ -614,6 +662,10 @@ async fn test_completion_after_dot() {
     let project_dir = test_project_dir();
     let mut client = LspClient::spawn(&project_dir).await.unwrap();
 
+    // The receiver's table must be in the workspace for member completion to
+    // have anything to offer.
+    client.open_file("objects/table.al", TABLE_AL).await;
+
     let code = r#"codeunit 50100 "Test"
 {
     procedure DoWork()
@@ -627,9 +679,21 @@ async fn test_completion_after_dot() {
     client.open_file("objects/test.al", code).await;
 
     // After "Staging." on line 6, col 16
-    let _completions = client.completion("objects/test.al", 6, 16).await;
-    // Should return at least some completions (even if just keywords)
-    // The important thing is it doesn't crash
+    let completions = client.completion("objects/test.al", 6, 16).await;
+    let labels = completion_labels(&completions);
+    for field in ["Entry No.", "Status", "Journal Data"] {
+        assert!(
+            labels.iter().any(|label| label == field),
+            "member completion after `Staging.` must offer the table's fields; \
+             {field:?} missing from {labels:?}"
+        );
+    }
+    for method in ["FindSet", "Insert", "Modify"] {
+        assert!(
+            labels.iter().any(|label| label == method),
+            "member completion must offer the Record methods; {method:?} missing"
+        );
+    }
 
     client.shutdown().await;
 }
@@ -757,11 +821,20 @@ async fn test_formatting_idempotent() {
     let project_dir = test_project_dir();
     let mut client = LspClient::spawn(&project_dir).await.unwrap();
 
-    // Already well-formatted code — formatting should be idempotent
     client.open_file("objects/codeunit.al", CODEUNIT_AL).await;
+    let once = apply_edits(CODEUNIT_AL, &client.format("objects/codeunit.al").await);
 
-    let _edits = client.format("objects/codeunit.al").await;
-    // This test mainly verifies it doesn't crash on complex real code
+    // Format the formatted text: a second pass must be a no-op.
+    client
+        .open_file("objects/codeunit_formatted.al", &once)
+        .await;
+    let second_pass = client.format("objects/codeunit_formatted.al").await;
+    let twice = apply_edits(&once, &second_pass);
+
+    assert_eq!(
+        once, twice,
+        "formatting is not idempotent: the second pass returned {second_pass:?}"
+    );
 
     client.shutdown().await;
 }
@@ -960,9 +1033,13 @@ async fn test_hover_on_keyword() {
 
     client.open_file("objects/codeunit.al", CODEUNIT_AL).await;
 
-    // Hover on "begin" keyword - should return None (keywords don't have hover info)
-    let _hover = client.hover("objects/codeunit.al", 6, 4).await;
-    // This is fine if it returns None or Some
+    // Line 6 column 4 is the `begin` of `procedure Precheck`. A keyword names
+    // no symbol, so there is nothing to document.
+    let hover = client.hover("objects/codeunit.al", 6, 4).await;
+    assert!(
+        hover.is_none(),
+        "a keyword has no symbol documentation, got: {hover:?}"
+    );
 
     client.shutdown().await;
 }
@@ -974,9 +1051,13 @@ async fn test_hover_on_string_literal() {
 
     client.open_file("objects/codeunit.al", CODEUNIT_AL).await;
 
-    // Hover on a string literal - should return None
-    let _hover = client.hover("objects/codeunit.al", 28, 35).await;
-    // This is fine if it returns None or Some
+    // Inside the 'Failed to parse journal data' literal: text is not an
+    // identifier, so it resolves to no symbol.
+    let hover = client.hover("objects/codeunit.al", 28, 35).await;
+    assert!(
+        hover.is_none(),
+        "a string literal has no symbol documentation, got: {hover:?}"
+    );
 
     client.shutdown().await;
 }
@@ -988,9 +1069,24 @@ async fn test_empty_file() {
 
     client.open_file("objects/empty.al", "").await;
 
-    let _symbols = client.document_symbols("objects/empty.al").await;
-    let _tokens = client.semantic_tokens("objects/empty.al").await;
-    let _ranges = client.folding_ranges("objects/empty.al").await;
+    let symbols = client.document_symbols("objects/empty.al").await;
+    assert!(symbols.is_empty(), "empty file has no symbols: {symbols:?}");
+
+    let tokens = client.semantic_tokens("objects/empty.al").await;
+    let token_data = tokens
+        .as_ref()
+        .and_then(|value| value.get("data"))
+        .and_then(serde_json::Value::as_array);
+    assert!(
+        tokens.is_none() || token_data.is_some_and(|data| data.is_empty()),
+        "empty file has no semantic tokens: {tokens:?}"
+    );
+
+    let ranges = client.folding_ranges("objects/empty.al").await;
+    assert!(
+        ranges.is_empty(),
+        "empty file has no folding ranges: {ranges:?}"
+    );
 
     client.shutdown().await;
 }
