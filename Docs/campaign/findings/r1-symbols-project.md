@@ -202,7 +202,7 @@ current code are tagged [STILL-OPEN].
   availability reporting but not both.
 - fix: export one `pub fn is_workspace_package(package: &str) -> bool` from
   `source_availability` and call it from `composition`.
-- status: open
+- status: fixed 861c667a
 
 ### [BUG] The workspace file index keeps only one owner per (object name, kind), across all files
 - where: crates/al-source/src/file_index.rs:540-547
@@ -248,7 +248,7 @@ current code are tagged [STILL-OPEN].
   three times.
 - fix: delete `al-project::config::strip_jsonc` and the al-lsp copy's stripper and call
   `al_types::jsonc::strip_json_comments`.
-- status: open
+- status: fixed 861c667a
 
 ### [SLOP] `CoreInitError::SymbolPackages` is unreachable
 - where: crates/al-workspace/src/lib.rs:775
