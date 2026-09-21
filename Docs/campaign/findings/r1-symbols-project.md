@@ -133,7 +133,8 @@ current code are tagged [STILL-OPEN].
   gap, so the two should be fixed with one shared multi-declaration scanner.
 - fix: keep scanning after the first header and record every `(kind, id, name)` found in the
   entry.
-- status: open
+- status: fixed aa9c8a36. The `al-source/src/file_index.rs` half was already collecting every
+  declaration; its ownership keying was the separate bug fixed in a8ead4ab.
 
 ### [BUG] A corrupt `.zed/settings.json` in the symbol cache fails every package navigation
 - where: crates/al-symbols/src/virtual_file.rs:51 and :656-673
