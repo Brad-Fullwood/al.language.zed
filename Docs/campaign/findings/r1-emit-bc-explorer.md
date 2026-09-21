@@ -8,7 +8,7 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - [ ] crates/al-emit/src/assemble.rs
 - [ ] crates/al-emit/src/project.rs
 - [ ] crates/al-emit/src/manifest.rs
-- [ ] crates/al-emit/src/package.rs
+- [x] crates/al-emit/src/package.rs
 - [ ] crates/al-emit/src/symbol_extract.rs
 - [ ] crates/al-emit/src/symbol_reference.rs
 - [ ] crates/al-emit/src/method_id.rs
@@ -73,5 +73,12 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - severity: medium
 - scenario: `extract_app_id_from_manifest` accepts any non-empty string from `app.json`'s `id` field and `rad_publish` builds `format!("{}/dev/applications/{}", self.base_url, app_id)` with no percent-encoding and no GUID check (contrast `dev_packages_url`, which percent-encodes `server_instance` for exactly this reason, and has a test for it). A cloned repo whose `app.json` has `"id": "../../../admin/SomeEndpoint"` makes `Url::parse` normalize the `..` segments away, so `al-explorer publish --incremental` sends an authenticated PATCH with the whole `.app` body to an operator-chosen path on the BC server. A `?` or `#` in the id truncates the path instead.
 - fix: validate the id parses as a GUID in `extract_app_id_from_manifest` (BC requires one), or at minimum `urlencoding::encode` it in `rad_publish` and reject any id containing `/`, `?` or `#`.
+- status: open
+
+### [SECURITY] control add-in resource paths bypass the project-containment check used for every other resource
+- where: crates/al-emit/src/assemble.rs:602-606, 793-797, 825-829
+- severity: high
+- scenario: report layouts and the app logo go through `read_project_resource` (assemble.rs:872-898), which canonicalizes and asserts `resolved.starts_with(&root)` and rejects `..`/absolute paths via `project_relative_resource_path`. Control add-in resources do not: `resolve_addin_resources`'s `read` closure and both `control_addin_bundle` loops do a bare `std::fs::read(root.join(rel))`. An AL source file with `controladdin "X" { Scripts = '../../../../etc/passwd'; StartupScript = '../../.ssh/id_rsa'; }` makes a native build read those files and (a) embed their contents in the shipped `.app` and (b) write the outer archive entry at the literal path `addin/src/../../../../etc/passwd`. `write_zip` uses `zip::ZipWriter::start_file`, which stores the name verbatim (only `start_file_from_path` normalizes), so the traversal survives into the package and any consumer that extracts it naively writes outside the extraction directory. `Scripts = '/etc/passwd'` works the same way, since `Path::join` with an absolute path discards the root.
+- fix: route all three reads through `read_project_resource` (or at least `project_relative_resource_path`) so add-in resources get the same containment and the same named error as layouts.
 - status: open
 

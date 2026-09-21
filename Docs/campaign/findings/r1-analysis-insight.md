@@ -100,6 +100,20 @@ Insight:
 - fix: prefer `workspace.documents.get_text_arc(&table_uri)` when the table is an open document and fall back to the file index only for closed files.
 - status: open
 
+### [BUG] Promoted-action conversion counts braces inside comments and captions
+- where: crates/al-analysis/src/queries/code_actions/promoted.rs:159-185 (`find_block_extent`)
+- severity: medium
+- scenario: `find_block_extent` iterates the raw characters of each line and counts every `{` and `}`. A line inside an action body such as `// TODO: rework the { } layout` or `Caption = 'Open }';` shifts the depth counter, so `body_end_line` lands on the wrong line. Downstream that means `remove_lines` can miss the `Promoted = true` line (the action is then not offered, or worse the `area(Promoted)` insert point computed from `actions_block.close` is off) and the generated page no longer parses. events.rs:181-204 already has `strip_literals_and_comment` for exactly this problem; promoted.rs duplicates the brace counting without it.
+- fix: move `strip_literals_and_comment` into the shared `code_actions/mod.rs` and run every line through it before counting braces in `find_block_extent` and `find_block_in`.
+- status: open
+
+### [GAP] Report-layout conversion does not check for an existing `rendering` section
+- where: crates/al-analysis/src/queries/code_actions/promoted.rs:578-671
+- severity: low
+- scenario: `find_rendering_insert_line` only looks for `requestpage` or the last bare `}`. A report that already has a `rendering { }` section plus one legacy `WordLayout = '...';` property gets a *second* `rendering` block inserted, which alc rejects as a duplicate section. The conversion should merge the new `layout(...)` into the existing section.
+- fix: scan for an existing `rendering` header first and, when found, insert the `layout(...)` entries inside it rather than emitting a new `rendering` block.
+- status: open
+
 ### [BUG] Add-parentheses is never offered for `Rec.` / `CurrPage.` member calls
 - where: crates/al-analysis/src/queries/code_actions/add_parens.rs:73-110
 - severity: low

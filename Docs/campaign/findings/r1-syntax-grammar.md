@@ -9,10 +9,10 @@ are tagged `[STILL-OPEN]`.
 ## Coverage
 
 - [x] AUDIT-BACKLOG.md "Syntax & Grammar" section
-- [ ] tree-sitter-al/grammar.js
-- [ ] tree-sitter-al/src/scanner.c
-- [ ] tree-sitter-al/queries/*.scm (7 files)
-- [ ] languages/al/*.scm + config.toml + semantic_token_rules.json + tasks.json
+- [x] tree-sitter-al/grammar.js
+- [x] tree-sitter-al/src/scanner.c
+- [x] tree-sitter-al/queries/*.scm (7 files)
+- [x] languages/al/*.scm + config.toml + semantic_token_rules.json + tasks.json
 - [ ] tree-sitter-al/bindings/rust
 - [ ] tree-sitter-al/generator/
 - [ ] tree-sitter-al/test/corpus + tests/
