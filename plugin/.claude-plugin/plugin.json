@@ -1,0 +1,20 @@
+{
+  "name": "al-bc",
+  "displayName": "AL / Business Central",
+  "description": "Answer Business Central questions from the AL symbol index, call and event graphs and impact analysis instead of decompiling .app files.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Brad Fullwood",
+    "url": "https://github.com/Brad-Fullwood"
+  },
+  "homepage": "https://github.com/Brad-Fullwood/al.language.zed",
+  "repository": "https://github.com/Brad-Fullwood/al.language.zed",
+  "license": "MIT",
+  "keywords": [
+    "business-central",
+    "al",
+    "dynamics-365",
+    "symbols",
+    "erp"
+  ]
+}
