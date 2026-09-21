@@ -133,7 +133,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   depth 0 (or count `object_declaration` children of the parsed root in
   `sort_members_strict`) and return `None` when it is not 1. The doc comment at
   sort.rs:13-14 already claims this behaviour.
-- status: open
+- status: fixed 24ffeeea
 
 ### [TEST] No sort test covers a file with two objects
 - where: crates/al-syntax/src/sort.rs:350-860 (test module)
@@ -144,7 +144,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   like it would catch it and cannot, because the bug *is* a pure reordering.
 - fix: add a test asserting `sort_members` returns `None` for a two-object source, and
   one asserting each object keeps its own members when the guard is added.
-- status: open
+- status: fixed 24ffeeea
 
 ### [PERF] `ts_range_to_syntax` rescans the file from byte 0 for every range
 - where: crates/al-syntax/src/lib.rs:231-263 (`get_source_line`, `ts_range_to_syntax`)
