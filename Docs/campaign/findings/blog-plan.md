@@ -31,8 +31,28 @@ Mode selection in `al-lsp` is hand-rolled positional argument matching, not clap
 mode argument it is the LSP server; `daemon` and `mcp` take `--project <dir>`; `--dap` is the debug
 adapter and resolves the project from the current directory (`al-lsp.rs:310`).
 
-`al-explorer` has **82 subcommands** (`al-explorer --help`, counted). It has no `--version` flag;
-the subcommand is `al-explorer version`, which prints `al 0.4.0`.
+`al-explorer` has **83 subcommands**, counted as variants of `pub enum Commands` in
+`crates/al-explorer/src/cli/args.rs` on the current branch. It has no `--version` flag; the
+subcommand is `al-explorer version`, which prints `al 0.4.0`.
+
+> **Careful with the binary.** `target/release/al-explorer` predates two commands that are on the
+> branch now: `publish` and `free-ids`. Its `--help` lists 81. Count from `args.rs`, and rebuild
+> before measuring anything for an article.
+
+Two commands added during the campaign, both already present as daemon methods before they had a
+CLI front end:
+
+- **`al-explorer publish`** (`args.rs:361`) compiles the project and publishes the `.app` to the BC
+  dev API. It reads the server from `.vscode/launch.json` or `.zed/debug.json`, takes `--config` to
+  name a launch configuration and `--incremental` to deploy through the RAD API instead of a full
+  upload. Credentials come from `BC_ACCESS_TOKEN` (AAD) or `BC_USERNAME`/`BC_PASSWORD`. Never from a
+  flag.
+- **`al-explorer free-ids`** (`args.rs:663`) reports the next free object ID, table field number or
+  enum value ordinal inside the `idRanges` declared in `app.json`. It counts every object in the
+  workspace, including the second and later objects in a multi-object file, and the dependency
+  package objects in the same range. An exhausted range is an error that names the range rather
+  than a silent wrap. `--include_used` is off by default "so the answer stays a few hundred bytes"
+  (`args.rs:685`), which is the token-cost design rule from §1.8 showing up in a CLI flag.
 
 ## 1.2 Workspace layout
 
@@ -474,8 +494,12 @@ daemon dispatcher (`README.md:110-112`, `crates/al-lsp/src/bin/al-lsp.rs:458`).
 `al_suggestevent`, `al_testclassify`, `al_testcoverage`, `al_testsnapshot`, `al_testsnapshotreplay`,
 `al_freeids`, `al_depgraph`.
 
-> **Drift found while writing this**: `README.md:116-135` lists 18 and omits `al_freeids`. Fix the
-> README, and write the articles against 19.
+`al_freeids` is the newest, and the clearest example of the design rule below: it answers "what is
+the next free codeunit ID" in a few hundred bytes, where the honest way to answer it from raw data
+is to ship the agent every used ID in the range (`README.md:136`, `crates/al-explorer/src/cli/args.rs:683-685`).
+
+Re-checked against the current branch: `README.md` lists all 19, including `al_freeids`. An earlier
+pass of this fact sheet recorded that as drift; it was fixed in the meantime. Use 19.
 
 The design point worth an article: named tools are discovery shortcuts, not an allow-list.
 `al_call` forwards any of the 92 daemon methods with any parameter object, so the MCP surface is not
@@ -745,8 +769,11 @@ From `Docs/current-limitations.md` and `ROADMAP.md`:
 - **UNVERIFIED**: cold-start time for `al-lsp` on a first-ever run with an empty symbol cache. The
   published 2,020.928 ms cold-ready is from the benchmark harness on the medium project, not from a
   cold cache.
-- **Drift to fix in the repository, found here**: `README.md` MCP list omits `al_freeids` (19 tools,
-  not 18); `findings/ai-tooling-ideas.md` says 119 daemon methods where the dispatcher has 92.
+- **Drift to fix in the repository, found here**: `findings/ai-tooling-ideas.md:58` says 119 daemon
+  methods where the dispatcher has 92, and cites `daemon/mod.rs:589-780` where the match now starts
+  at 650. And `README.md:339` lists the build and toolchain commands without `publish`, which has
+  been a subcommand since `args.rs:361` landed. The `al_freeids` omission noted in an earlier pass
+  is already fixed.
 
 ---
 
@@ -984,6 +1011,9 @@ and why is it not more speed?
 3. The server: 19 named tools plus `al_call` onto all 92 daemon methods, so the named list is
    discovery rather than an allow-list. Result-specific output schemas, and structured diagnostics
    when an answer is incomplete because symbols or live BC were unavailable.
+   `al_freeids` is the worked example of the design rule: "what is the next free codeunit ID" comes
+   back in a few hundred bytes, and `--include_used` is off by default so the used-number list is
+   something you ask for rather than something you are sent.
 4. The plugin: 8 skills, 2 subagents, 1 hook that fires only inside an AL project.
    `bc-symbol-scout` runs lookups on a cheap model and returns the answer instead of the payload.
 5. The awkward shapes, named: `impact Item` returns 1,594 rows with no limit flag, `by-id codeunit 80`
@@ -1110,8 +1140,10 @@ draft before committing it.
 - End-of-week fact pass over all nine against this file, with the binaries rebuilt from whatever
   `campaign/2026-09-21` has become.
 - Resolve every **UNVERIFIED** in §1.14 or cut the claim.
-- Fix the two drifts found here: `al_freeids` missing from the README MCP list, and the 119-vs-92
-  daemon method count in `findings/ai-tooling-ideas.md`.
+- Fix the two drifts found here: the 119-vs-92 daemon method count in
+  `findings/ai-tooling-ideas.md:58`, and `publish` missing from the README CLI list at `README.md:339`.
+- Rebuild `target/release` before measuring. The binary used for §1.4 predates `publish` and
+  `free-ids`.
 - Queue the `al-explorer trace` 30 s timeout as a campaign finding. It is not in any findings file.
 - `draft: false` and a real `publishedAt` on each, in the order above.
 - Merge `campaign/2026-09-rewrite` into `main` only when the series is ready. Vercel deploys `main`.
