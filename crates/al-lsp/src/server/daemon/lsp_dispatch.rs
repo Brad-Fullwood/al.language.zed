@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use super::{
     ensure_document, extract_position, extract_uri, invalid_params, optional_bool_param,
-    optional_bounded_usize_param, rpc_error,
+    optional_bounded_usize_param, read_document_from_params, rpc_error,
 };
 
 /// Sentinel package name for workspace-local objects (not from .app packages).
@@ -55,15 +55,13 @@ pub(super) async fn dispatch_hover(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let result = match al_analysis::queries::hover::hover_full(workspace, &uri, position).await {
         Ok(result) => result,
         Err(error) => {
@@ -82,15 +80,13 @@ pub(super) fn dispatch_definition(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let result = al_analysis::queries::definition::definition(workspace, &uri, position);
     match result {
         Ok(Some(locations)) => ok_response(id, &locations, "textDocument/definition"),
@@ -108,9 +104,6 @@ pub(super) fn dispatch_references(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
@@ -118,9 +111,10 @@ pub(super) fn dispatch_references(
         Ok(value) => value,
         Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let locations = match al_analysis::queries::references::references(
         workspace,
         &uri,
@@ -144,15 +138,13 @@ pub(super) fn dispatch_implementations(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let locations =
         al_analysis::queries::implementation::find_implementations(workspace, &uri, position);
     ok_response(id, &locations, "textDocument/implementation")
@@ -163,15 +155,13 @@ pub(super) async fn dispatch_completions(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let entries = match al_analysis::queries::completions::completions_full(
         workspace, &uri, position,
     )
@@ -194,15 +184,13 @@ pub(super) fn dispatch_signature_help(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let result = al_analysis::queries::signature::signature_help(workspace, &uri, position);
     match result {
         Ok(result) => ok_response_opt(id, result, "textDocument/signatureHelp"),
@@ -248,12 +236,10 @@ pub(super) fn dispatch_document_symbols(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
     // Serialize the transport-agnostic AlDocumentSymbol vec directly. The daemon
     // returns JSON, so there is no need to round-trip through tower_lsp types.
     let result = al_analysis::queries::symbols::document_symbols(workspace, &uri);
@@ -265,12 +251,10 @@ pub(super) fn dispatch_folding_ranges(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
     let result = al_analysis::queries::folding::folding_ranges(workspace, &uri);
     ok_response_opt(id, result, "textDocument/foldingRange")
 }
@@ -280,12 +264,10 @@ pub(super) fn dispatch_semantic_tokens(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
     let tokens = al_analysis::queries::semantic_tokens::semantic_tokens_full(workspace, &uri);
     ok_response(id, &tokens, "textDocument/semanticTokens/full")
 }
@@ -295,9 +277,6 @@ pub(super) fn dispatch_inlay_hints(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     // Cap to u32::MAX to prevent silent truncation of attacker-controlled
     // line values (matches extract_position in mod.rs). An out-of-range
     // startLine/endLine is rejected with INVALID_PARAMS rather than wrapping
@@ -316,9 +295,10 @@ pub(super) fn dispatch_inlay_hints(
             None => return invalid_params(id),
         },
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let range = al_analysis::queries::Range {
         start: al_analysis::queries::Position {
             line: start_line,
@@ -367,15 +347,13 @@ pub(super) fn dispatch_code_actions(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let range = al_analysis::queries::Range {
         start: position,
         end: position,

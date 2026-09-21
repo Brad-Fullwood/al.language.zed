@@ -240,6 +240,53 @@ fn cli_source_rejects_an_unknown_kind() {
     );
 }
 
+/// The daemon refuses a path outside the project it loaded, because the same
+/// dispatchers answer MCP callers. A person running the CLI can read their own
+/// files, so a read-only command sends the text it read and gets its answer.
+#[test]
+fn a_read_only_command_answers_for_a_file_outside_the_project() {
+    let outside = tempfile::tempdir().expect("create a directory outside the project");
+    let file = outside.path().join("ErrorCases.al");
+    std::fs::write(&file, "codeunit 50123 Broken\n{\n    procedure\n}\n").expect("write fixture");
+
+    let (ok, output) = al(&["parse", file.to_str().expect("UTF-8 path"), "--json"]);
+    assert!(
+        !ok,
+        "a file with syntax errors must exit non-zero:\n{output}"
+    );
+    assert!(
+        output.contains("\"errors\":") && !output.contains("outside the project"),
+        "parse outside the project must answer from the text the CLI read:\n{output}"
+    );
+}
+
+/// The other half of the same rule: a command that rewrites the file it names
+/// stays refused outside the project, and says which project it is confined to.
+#[test]
+fn formatting_a_file_outside_the_project_is_refused() {
+    let outside = tempfile::tempdir().expect("create a directory outside the project");
+    let file = outside.path().join("Unformatted.al");
+    let source = "codeunit 50124 Ugly\n{\n        procedure X()\n    begin\n    end;\n}\n";
+    std::fs::write(&file, source).expect("write fixture");
+
+    let (ok, output) = al(&["format", file.to_str().expect("UTF-8 path")]);
+    assert!(!ok, "formatting outside the project must fail:\n{output}");
+    assert!(
+        output.contains("outside the project")
+            && output.contains(
+                test_project_dir()
+                    .to_str()
+                    .expect("fixture project path is UTF-8")
+            ),
+        "the refusal must name the project the daemon is confined to:\n{output}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).expect("read fixture back"),
+        source,
+        "a refused format must not have rewritten the file"
+    );
+}
+
 fn copy_tree(source: &std::path::Path, destination: &std::path::Path) {
     std::fs::create_dir_all(destination)
         .unwrap_or_else(|error| panic!("create {}: {error}", destination.display()));

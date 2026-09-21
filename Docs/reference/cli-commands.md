@@ -21,6 +21,13 @@ MCP, call the corresponding daemon method through `al_call` with the same parame
 frequently used workflows also have named aliases documented in the
 [MCP tool reference](./mcp-tools.md).
 
+A file argument outside the current project is read by the CLI and sent to the daemon as text, so
+commands that only read a file (`parse`, `lint`, `metrics`, `symbols`, `hover`, `folding`,
+`tokens`, `definition`, `references`) answer for any file you can read. Commands that rewrite a
+file (`format`, `fix`, `sort-members`, `organize-files`, `rename`) refuse it and name the project
+they are confined to: the daemon changes files only inside the project it has loaded. See
+[daemon-methods](./daemon-methods.md#paths-and-the-project-boundary).
+
 ## Setup & diagnostics
 
 | Command | Flags | Purpose |
