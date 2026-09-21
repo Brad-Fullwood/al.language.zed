@@ -38,17 +38,15 @@ fn ok_response<T: Serialize>(id: u64, value: &T, method: &str) -> Response {
     }
 }
 
-/// `ok_response` variant for `Option<T>` results. `None` is encoded as a
-/// JSON-RPC `null` result (no error). `Some(v)` defers to `ok_response`.
+/// `ok_response` variant for `Option<T>` results. `None` is encoded as an
+/// explicit `result: null`, not as an absent `result`: both `result` and
+/// `error` carry `skip_serializing_if`, so `Response { result: None, error:
+/// None }` serialises to `{"jsonrpc":"2.0","id":7}`, which JSON-RPC 2.0 §5
+/// forbids. `Some(v)` defers to `ok_response`.
 fn ok_response_opt<T: Serialize>(id: u64, value: Option<T>, method: &str) -> Response {
     match value {
         Some(v) => ok_response(id, &v, method),
-        None => Response {
-            id,
-            result: None,
-            error: None,
-            ..Default::default()
-        },
+        None => Response::null(id),
     }
 }
 
@@ -96,12 +94,7 @@ pub(super) fn dispatch_definition(
     let result = al_analysis::queries::definition::definition(workspace, &uri, position);
     match result {
         Ok(Some(locations)) => ok_response(id, &locations, "textDocument/definition"),
-        Ok(None) => Response {
-            id,
-            result: None,
-            error: None,
-            ..Default::default()
-        },
+        Ok(None) => Response::null(id),
         Err(error) => rpc_error(
             id,
             error_codes::INTERNAL_ERROR,
@@ -241,12 +234,7 @@ pub(super) fn dispatch_rename(
     let result = al_analysis::queries::rename::rename(workspace, &uri, position, new_name);
     match result {
         Ok(Some(we)) => ok_response(id, &we, "textDocument/rename"),
-        Ok(None) => Response {
-            id,
-            result: None,
-            error: None,
-            ..Default::default()
-        },
+        Ok(None) => Response::null(id),
         Err(error) => rpc_error(
             id,
             error_codes::INTERNAL_ERROR,
@@ -1145,6 +1133,39 @@ pub(super) fn dispatch_deps(workspace: &Workspace, id: u64) -> Response {
 mod tests {
     use super::*;
 
+    /// JSON-RPC 2.0 §5: every response carries exactly one of `result` or
+    /// `error`. `Response { result: None, error: None }` serialises to
+    /// `{"jsonrpc":"2.0","id":7}` because both fields skip when absent, which
+    /// a conforming third-party client rejects.
+    #[tokio::test]
+    async fn empty_results_serialise_as_an_explicit_null_result() {
+        let workspace = Workspace::new();
+        let uri = url::Url::parse("file:///proj/Foo.Codeunit.al").unwrap();
+        workspace
+            .documents
+            .open(uri.clone(), "codeunit 50100 Foo\n{\n}\n".to_string())
+            .unwrap();
+        let position = serde_json::json!({
+            "uri": uri.as_str(),
+            "line": 1,
+            "character": 0,
+        });
+
+        let mut rename = position.clone();
+        rename["newName"] = serde_json::json!("Bar");
+        for response in [
+            dispatch_definition(&workspace, 7, &position),
+            dispatch_rename(&workspace, 8, &rename),
+            dispatch_hover(&workspace, 9, &position).await,
+        ] {
+            let frame = serde_json::to_value(&response).expect("response serialises");
+            assert!(
+                frame.get("result").is_some() != frame.get("error").is_some(),
+                "exactly one of result/error must be present: {frame}"
+            );
+        }
+    }
+
     #[test]
     fn dedup_objects_by_identity_drops_same_object_from_two_indices() {
         // Regression: workspace objects appear in both the
@@ -1503,10 +1524,14 @@ mod tests {
     }
 
     #[test]
-    fn ok_response_opt_none_yields_null_result_no_error() {
+    fn ok_response_opt_none_yields_an_explicit_null_result_no_error() {
         let resp = ok_response_opt::<Vec<u8>>(3, None, "test/method");
         assert_eq!(resp.id, 3);
-        assert!(resp.result.is_none(), "None must map to absent result");
+        assert_eq!(
+            resp.result,
+            Some(serde_json::Value::Null),
+            "an absent result would serialise to a frame with neither result nor error"
+        );
         assert!(resp.error.is_none(), "None is not an error");
     }
 

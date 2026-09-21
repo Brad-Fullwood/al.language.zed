@@ -608,9 +608,33 @@ pub(super) async fn run_test(
         .await
         .as_ref()
         .map(|p| p.root.clone());
+    // An optional `config` argument names the launch configuration to run
+    // against, following the convention `al_debug` already established. With
+    // no name the project's first entry is used, and the reply names it.
+    let requested_config = arguments
+        .first()
+        .and_then(|value| value.get("config"))
+        .and_then(|value| value.as_str());
     let config = match project_root.as_deref() {
         Some(root) => match al_bc::launch::find_launch_config(root) {
-            Ok(file) => file.and_then(|df| df.configs.into_iter().next()),
+            Ok(file) => match file {
+                Some(df) => match al_bc::launch::pick_config(&df.configs, requested_config) {
+                    Ok(config) => Some(config.clone()),
+                    Err(error) if requested_config.is_some() => {
+                        server
+                            .client
+                            .show_message(MessageType::ERROR, format!("Cannot run test: {error}"))
+                            .await;
+                        return serde_json::json!({
+                            "status": "configurationError",
+                            "target": target,
+                            "error": error,
+                        });
+                    }
+                    Err(_) => None,
+                },
+                None => None,
+            },
             Err(error) => {
                 server
                     .client
@@ -641,13 +665,17 @@ pub(super) async fn run_test(
         return serde_json::json!({ "status": "noServer", "target": target });
     };
 
+    let config_name = config.name.clone();
     server
         .client
         .show_message(
             MessageType::INFO,
             format!(
-                "Running test '{}' (codeunit {})…",
-                target.method_name, target.codeunit_id
+                "Running test '{}' (codeunit {}) against {} [{}]…",
+                target.method_name,
+                target.codeunit_id,
+                config.display_name(),
+                config_name
             ),
         )
         .await;
@@ -661,7 +689,7 @@ pub(super) async fn run_test(
         run_test_background(workspace, client, session, config, target_for_task).await;
     });
 
-    serde_json::json!({ "status": "started", "target": target })
+    serde_json::json!({ "status": "started", "target": target, "config": config_name })
 }
 
 /// Background worker for [`run_test`]: executes the codeunit/method against the

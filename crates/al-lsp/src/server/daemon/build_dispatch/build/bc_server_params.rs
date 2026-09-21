@@ -13,6 +13,7 @@ pub(super) struct BcServerParams {
     pub(super) accept_invalid_certs: bool,
 }
 pub(super) fn parse_bc_server_params(
+    workspace: &al_workspace::Workspace,
     params: &serde_json::Value,
     output_subdir: &str,
 ) -> Result<BcServerParams, String> {
@@ -35,7 +36,11 @@ pub(super) fn parse_bc_server_params(
             if !output_dir.is_absolute() {
                 return Err("'outputDir' must be an absolute path".to_string());
             }
-            output_dir
+            // A caller-named download target is a write primitive, so it stays
+            // inside the project. The daemon-chosen default below is not
+            // caller-controlled and needs no such check.
+            crate::server::daemon::containment::resolve_within_project(workspace, &output_dir)
+                .map_err(|error| format!("'outputDir' {error}"))?
         }
         None => dirs::data_local_dir()
             .unwrap_or_else(std::env::temp_dir)
@@ -113,7 +118,8 @@ mod tests {
     fn bc_server_params_apply_documented_defaults_when_absent() {
         // Empty params: every field must fall back to its documented default
         // and the output dir must end in the supplied subdir.
-        let bc = parse_bc_server_params(&serde_json::json!({}), "snapshots").unwrap();
+        let workspace = al_workspace::Workspace::new();
+        let bc = parse_bc_server_params(&workspace, &serde_json::json!({}), "snapshots").unwrap();
         assert_eq!(bc.server_url, "http://localhost:7049/BC");
         assert_eq!(bc.company, "");
         assert!(bc.username.is_none());
@@ -130,11 +136,16 @@ mod tests {
     fn bc_server_params_honour_explicit_overrides() {
         // Positive: every explicit field is threaded through verbatim, and an
         // explicit outputDir wins over the subdir-based default.
+        let project = tempfile::tempdir().unwrap();
+        let out = project.path().join("out");
+        let workspace = al_workspace::Workspace::new();
+        crate::server::daemon::set_test_project_root(&workspace, project.path());
         let bc = parse_bc_server_params(
+            &workspace,
             &serde_json::json!({
                 "serverUrl": "https://bc.example/inst",
                 "company": "CRONUS",
-                "outputDir": "/data/out",
+                "outputDir": out.to_str().unwrap(),
                 "username": "admin",
                 "password": "s3cret",
                 "acceptInvalidCerts": true,
@@ -144,7 +155,10 @@ mod tests {
         .unwrap();
         assert_eq!(bc.server_url, "https://bc.example/inst");
         assert_eq!(bc.company, "CRONUS");
-        assert_eq!(bc.output_dir, std::path::PathBuf::from("/data/out"));
+        assert_eq!(
+            bc.output_dir,
+            project.path().canonicalize().unwrap().join("out")
+        );
         assert_eq!(bc.username.as_deref(), Some("admin"));
         assert_eq!(bc.password.as_deref(), Some("s3cret"));
         assert!(bc.accept_invalid_certs);
@@ -152,6 +166,9 @@ mod tests {
 
     #[test]
     fn bc_server_params_reject_wrong_typed_or_relative_fields() {
+        let project = tempfile::tempdir().unwrap();
+        let workspace = al_workspace::Workspace::new();
+        crate::server::daemon::set_test_project_root(&workspace, project.path());
         for params in [
             serde_json::json!({ "serverUrl": 7049 }),
             serde_json::json!({ "company": false }),
@@ -159,9 +176,11 @@ mod tests {
             serde_json::json!({ "password": [] }),
             serde_json::json!({ "acceptInvalidCerts": "yes" }),
             serde_json::json!({ "outputDir": "relative/path" }),
+            // An absolute path outside the project is a write primitive.
+            serde_json::json!({ "outputDir": "/tmp/al-lsp-escape" }),
         ] {
             assert!(
-                parse_bc_server_params(&params, "snapshots").is_err(),
+                parse_bc_server_params(&workspace, &params, "snapshots").is_err(),
                 "malformed BC params must be rejected: {params}"
             );
         }

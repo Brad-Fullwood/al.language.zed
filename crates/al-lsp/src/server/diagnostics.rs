@@ -267,7 +267,16 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
     // retry if a newer generation won the race between computation and
     // publication. This keeps the snapshot atomic without holding edits behind
     // potentially slow client I/O.
-    loop {
+    //
+    // The retry is bounded. `on_document_change` bumps the revision on every
+    // keystroke, so on a project where the pass takes longer than the typing
+    // gaps an unbounded loop recomputed forever and published nothing: with
+    // `diagnosticsScope: "project"` the user saw no diagnostics at all while
+    // typing. After MAX_STAGING_ATTEMPTS the newest computed result is
+    // published against the versions it was computed from, and the debounced
+    // pass that the last keystroke armed corrects it.
+    const MAX_STAGING_ATTEMPTS: u32 = 3;
+    for attempt in 1..=MAX_STAGING_ATTEMPTS {
         if session.is_cancelled() {
             return false;
         }
@@ -301,7 +310,7 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
             return false;
         }
         let generation = workspace.generation_lock.read().await;
-        if workspace.generation_revision() != revision {
+        if workspace.generation_revision() != revision && attempt < MAX_STAGING_ATTEMPTS {
             drop(generation);
             tokio::task::yield_now().await;
             continue;
@@ -343,6 +352,7 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
         drop(generation);
         return true;
     }
+    false
 }
 
 pub(crate) async fn publish_diagnostics(

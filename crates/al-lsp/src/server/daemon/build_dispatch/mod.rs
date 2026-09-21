@@ -260,29 +260,14 @@ fn current_workspace_symbols(
 }
 
 /// Run the whole-workspace public-surface scan off the async executor.
-///
-/// `block_in_place` panics outright on a current-thread runtime (unit tests and
-/// any embedder that drives the dispatcher from one), so guard it exactly like
-/// `ensure_document` does instead of crashing the process on a `breaking` or
-/// `upgrade` request.
 fn scan_current_workspace_symbols(
     workspace: &Workspace,
 ) -> Result<Vec<al_symbols::SymbolEntry>, String> {
-    // Resolve the project *before* entering `block_in_place` so the lock wait
-    // never nests inside it.
+    // Resolve the project *before* entering `blocking` so the lock wait never
+    // nests inside `block_in_place`.
     let project = super::project_state_with_wait(workspace, |project| project.cloned())?
         .ok_or_else(|| ERR_NO_PROJECT.to_string())?;
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle)
-            if matches!(
-                handle.runtime_flavor(),
-                tokio::runtime::RuntimeFlavor::MultiThread
-            ) =>
-        {
-            tokio::task::block_in_place(|| current_workspace_symbols(workspace, &project))
-        }
-        _ => current_workspace_symbols(workspace, &project),
-    }
+    super::blocking(|| current_workspace_symbols(workspace, &project))
 }
 
 pub(super) async fn dispatch_breaking_changes(

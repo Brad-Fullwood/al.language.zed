@@ -102,6 +102,7 @@ pub(in crate::server::daemon) fn dispatch_permissions(
     }
 }
 pub(in crate::server::daemon) fn dispatch_new_project(
+    workspace: &al_workspace::Workspace,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
@@ -119,8 +120,9 @@ pub(in crate::server::daemon) fn dispatch_new_project(
             };
         }
     };
-    // Require an absolute path to prevent path traversal via relative paths
-    // (e.g., "../../etc/malicious-dir").
+    // A relative path would resolve against the daemon process cwd, which
+    // outlives the shell that started the daemon and is not the project.
+    // Traversal is handled separately, by the containment check below.
     if !dir.is_absolute() {
         return Response {
             id,
@@ -132,6 +134,22 @@ pub(in crate::server::daemon) fn dispatch_new_project(
             ..Default::default()
         };
     }
+    // Scaffolding writes app.json, src/ and .vscode/ under `dir`, so an
+    // unconstrained `dir` creates files anywhere the daemon's user can write.
+    let dir = match crate::server::daemon::containment::resolve_within_project(workspace, &dir) {
+        Ok(dir) => dir,
+        Err(message) => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INVALID_PARAMS,
+                    message: format!("'dir' {message}"),
+                }),
+                ..Default::default()
+            };
+        }
+    };
 
     let invalid = |message: String| Response {
         id,
@@ -484,14 +502,24 @@ mod tests {
         Workspace::new()
     }
 
+    /// A workspace whose project root is `root`, so `newProject` can scaffold
+    /// inside it.
+    fn ws_rooted_at(root: &std::path::Path) -> Workspace {
+        let workspace = Workspace::new();
+        crate::server::daemon::set_test_project_root(&workspace, root);
+        workspace
+    }
+
     #[test]
     fn dispatch_new_project_honors_template_and_rejects_invalid() {
         // Regression: the `template` param was dropped, so
         // every `al new` produced the Default scaffold and invalid templates
         // were silently accepted.
         let tmp = tempfile::tempdir().unwrap();
+        let ws = ws_rooted_at(tmp.path());
         let dir = tmp.path().join("proj");
         let resp = dispatch_new_project(
+            &ws,
             1,
             &serde_json::json!({
                 "dir": dir.to_str().unwrap(),
@@ -510,6 +538,7 @@ mod tests {
         );
 
         let bad = dispatch_new_project(
+            &ws,
             2,
             &serde_json::json!({
                 "dir": tmp.path().join("proj2").to_str().unwrap(),
@@ -526,6 +555,7 @@ mod tests {
         // Present-but-non-string `template` is a malformed request, not an
         // absent field: it must be rejected, not silently defaulted.
         let wrong_type = dispatch_new_project(
+            &ws,
             3,
             &serde_json::json!({
                 "dir": tmp.path().join("proj3").to_str().unwrap(),
@@ -725,23 +755,54 @@ mod tests {
 
     #[test]
     fn new_project_missing_dir_is_invalid_params() {
-        let resp = dispatch_new_project(1, &serde_json::json!({}));
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = ws_rooted_at(tmp.path());
+        let resp = dispatch_new_project(&ws, 1, &serde_json::json!({}));
         assert_eq!(resp.error.expect("err").code, error_codes::INVALID_PARAMS);
     }
 
     #[test]
     fn new_project_rejects_relative_dir() {
-        let resp = dispatch_new_project(2, &serde_json::json!({ "dir": "../evil" }));
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = ws_rooted_at(tmp.path());
+        let resp = dispatch_new_project(&ws, 2, &serde_json::json!({ "dir": "../evil" }));
         let err = resp.error.expect("relative dir must error");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("absolute"), "got: {}", err.message);
     }
 
     #[test]
+    fn new_project_rejects_a_dir_outside_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let ws = ws_rooted_at(&root);
+        let outside = tmp.path().join("elsewhere").join("MyApp");
+        let resp = dispatch_new_project(
+            &ws,
+            5,
+            &serde_json::json!({ "dir": outside.to_string_lossy() }),
+        );
+        let err = resp.error.expect("a dir outside the project must error");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(
+            err.message.contains("outside the project"),
+            "got: {}",
+            err.message
+        );
+        assert!(
+            !outside.exists(),
+            "nothing may be created outside the project"
+        );
+    }
+
+    #[test]
     fn new_project_scaffolds_into_absolute_dir() {
         let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_rooted_at(tmp.path());
         let dir = tmp.path().join("MyApp");
         let resp = dispatch_new_project(
+            &ws,
             3,
             &serde_json::json!({
                 "dir": dir.to_string_lossy(),
@@ -762,8 +823,10 @@ mod tests {
     fn new_project_rejects_invalid_or_non_string_runtime() {
         for runtime in [serde_json::json!("latest"), serde_json::json!(17)] {
             let tmp = tempfile::TempDir::new().unwrap();
+            let ws = ws_rooted_at(tmp.path());
             let dir = tmp.path().join("MyApp");
             let resp = dispatch_new_project(
+                &ws,
                 4,
                 &serde_json::json!({
                     "dir": dir.to_string_lossy(),

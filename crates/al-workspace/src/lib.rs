@@ -161,6 +161,15 @@ pub struct Workspace {
     /// Monotonic publication revision used by operations that stage work under
     /// a read guard and then upgrade by reacquiring the write lock.
     pub generation_revision: std::sync::atomic::AtomicU64,
+    /// Monotonic revision of the *package* generation: the loaded project, its
+    /// resolved `.app` set and the symbol index built from them.
+    ///
+    /// Separate from [`generation_revision`](Self::generation_revision), which
+    /// every keystroke bumps. Staging a package generation takes seconds on a
+    /// real project, so a loop that retried whenever the source generation
+    /// moved never converged while the user typed. Nothing a document edit
+    /// does invalidates a package generation, so those loops key on this.
+    pub package_revision: std::sync::atomic::AtomicU64,
     /// Merged workspace configuration (settings from client + project defaults).
     pub config: RwLock<AlConfig>,
     /// Builtins loaded once at init, read-only afterward.
@@ -239,6 +248,7 @@ impl Workspace {
             file_index: Arc::new(FileIndex::new()),
             generation_lock: tokio::sync::RwLock::new(()),
             generation_revision: std::sync::atomic::AtomicU64::new(0),
+            package_revision: std::sync::atomic::AtomicU64::new(0),
             config: RwLock::new(AlConfig::default()),
             builtins: std::sync::RwLock::new(Arc::new(Vec::new())),
             error_codes: DashMap::new(),
@@ -274,6 +284,22 @@ impl Workspace {
     #[inline]
     pub fn mark_generation_changed(&self) {
         self.generation_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Current monotonic revision of the published package generation.
+    #[inline]
+    pub fn package_revision(&self) -> u64 {
+        self.package_revision
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Mark the project, its `.app` set or the symbol index as replaced. Every
+    /// caller also calls [`mark_generation_changed`](Self::mark_generation_changed),
+    /// since a new package generation is a new source generation too.
+    #[inline]
+    pub fn mark_package_generation_changed(&self) {
+        self.package_revision
             .fetch_add(1, std::sync::atomic::Ordering::Release);
     }
 

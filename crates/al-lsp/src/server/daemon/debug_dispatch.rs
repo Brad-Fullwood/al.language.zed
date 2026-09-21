@@ -140,25 +140,7 @@ fn resolve_object_metadata(workspace: &Workspace, file: &str) -> Option<(i32, i3
     Some((kind_to_object_type(&info.kind), id))
 }
 
-/// When a config name is supplied, it must match exactly. Falling
-/// back to the first config silently masks typos (and could route to the
-/// wrong BC environment). Only fall back to the first config when no name
-/// was supplied. Extracted for unit-testability — the surrounding
-/// `resolve_debug_config` adds project + file IO that is hard to mock.
-pub(super) fn pick_named_config<'a>(
-    configs: &'a [al_bc::launch::BcServerConfig],
-    requested_name: Option<&str>,
-) -> Result<&'a al_bc::launch::BcServerConfig, String> {
-    match requested_name {
-        Some(name) => configs.iter().find(|c| c.name == name).ok_or_else(|| {
-            let known: Vec<&str> = configs.iter().map(|c| c.name.as_str()).collect();
-            format!("Debug config {name:?} not found. Known configs: {known:?}")
-        }),
-        None => configs
-            .first()
-            .ok_or_else(|| "Project debug configuration file has no configs".to_string()),
-    }
-}
+pub(super) use al_bc::launch::pick_config as pick_named_config;
 
 pub(super) fn resolve_debug_config(
     workspace: &Workspace,
@@ -239,6 +221,109 @@ fn has_inline_debug_config(params: &serde_json::Value) -> bool {
         .any(|field| params.get(field).is_some())
 }
 
+/// The host an on-premises target resolves to, lower-cased, or `None` for a
+/// BC online target.
+///
+/// `BcDebugConfig::base_url` sends an on-premises session to `server` and a BC
+/// online session to the fixed `api.businesscentral.dynamics.com`, so `server`
+/// is the only part of a debug configuration that decides where a bearer token
+/// travels. A bare host (`erp.example.com`) and a URL
+/// (`https://erp.example.com:8080/`) must resolve to the same host, so a bare
+/// value is parsed with a scheme prepended.
+fn onprem_target_host(config: &al_dap::dap::bc_debug::BcDebugConfig) -> Option<String> {
+    if !config.environment_type.eq_ignore_ascii_case("OnPrem") {
+        return None;
+    }
+    let server = config.server.as_deref()?.trim();
+    if server.is_empty() {
+        return None;
+    }
+    let parsed = url::Url::parse(server)
+        .or_else(|_| url::Url::parse(&format!("https://{server}")))
+        .ok()?;
+    parsed.host_str().map(str::to_ascii_lowercase)
+}
+
+/// What an inline `al_debug start` configuration is allowed to do.
+pub(super) struct InlineAuthorization {
+    /// Whether the daemon may acquire a bearer token for this target from the
+    /// shared keyring-backed OAuth cache.
+    pub may_use_cached_credentials: bool,
+    /// Whether TLS certificate verification may be disabled for this target.
+    pub may_accept_invalid_certs: bool,
+}
+
+/// Decide what an inline debug configuration may reach.
+///
+/// `al_debug` is published as an MCP tool, so an untrusted caller controls
+/// `server`, `tenant`, `environmentType` and `acceptInvalidCerts` when it
+/// passes an inline configuration instead of naming one from the project. A
+/// token from the shared OAuth cache is the user's Business Central
+/// credential, not the caller's, so the rule is:
+///
+/// **A cached token may only be sent to a host the workspace's own launch
+/// configuration names, and TLS verification may only be disabled where that
+/// configuration disables it.**
+///
+/// A configuration resolved through `resolve_debug_config` comes from the
+/// project's `.vscode/launch.json` or `.zed/debug.json`, which only the user
+/// writes, and is trusted without this check. For an inline configuration:
+///
+/// - a BC online target always resolves to Microsoft's fixed endpoint, so the
+///   token cannot be redirected and the cache stays available;
+/// - an on-premises target may use the cache only when its host matches the
+///   host of one of the project's own configurations;
+/// - `acceptInvalidCerts` is honoured only when a project configuration for
+///   the same host sets it.
+///
+/// A caller that wants an unlisted on-premises target must supply its own
+/// `accessToken`, which is its credential to spend.
+pub(super) fn authorize_inline_config(
+    config: &al_dap::dap::bc_debug::BcDebugConfig,
+    project_configs: &[al_bc::launch::BcServerConfig],
+) -> InlineAuthorization {
+    let Some(target_host) = onprem_target_host(config) else {
+        // BC online: the endpoint is fixed, so the cache is safe. TLS
+        // verification is never negotiable against it.
+        return InlineAuthorization {
+            may_use_cached_credentials: true,
+            may_accept_invalid_certs: false,
+        };
+    };
+
+    let matching: Vec<&al_bc::launch::BcServerConfig> = project_configs
+        .iter()
+        .filter(|candidate| {
+            onprem_target_host(&debug_config_from_server_config(candidate))
+                .is_some_and(|host| host == target_host)
+        })
+        .collect();
+
+    InlineAuthorization {
+        may_use_cached_credentials: !matching.is_empty(),
+        may_accept_invalid_certs: matching.iter().any(|c| c.accept_invalid_certs),
+    }
+}
+
+/// The project's own debug configurations, or an empty list when the project
+/// has no launch configuration file (in which case no inline on-premises host
+/// is trusted).
+fn project_debug_configs(workspace: &Workspace) -> Vec<al_bc::launch::BcServerConfig> {
+    let Some(project_root) = workspace
+        .project
+        .try_read()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|p| p.root.clone()))
+    else {
+        return Vec::new();
+    };
+    al_bc::launch::find_launch_config(&project_root)
+        .ok()
+        .flatten()
+        .map(|file| file.configs)
+        .unwrap_or_default()
+}
+
 pub(super) async fn dispatch_debug(
     workspace: &Workspace,
     id: u64,
@@ -274,7 +359,10 @@ pub(super) async fn dispatch_debug(
 
             // Look up the named config in the project's debug configuration.
             // or fall back to parsing full DAP args from params for backward compat.
-            let config = if params.get("config").is_some() || !has_inline_debug_config(params) {
+            let inline = params.get("config").is_none() && has_inline_debug_config(params);
+            let config = if inline {
+                BcDebugConfig::from_dap_args(params)
+            } else {
                 match resolve_debug_config(workspace, params) {
                     Ok(c) => c,
                     Err(msg) => {
@@ -289,11 +377,42 @@ pub(super) async fn dispatch_debug(
                         };
                     }
                 }
-            } else {
-                BcDebugConfig::from_dap_args(params)
             };
             if let Err(message) = config.validate_native() {
                 return Response::error(id, error_codes::INVALID_PARAMS, message);
+            }
+
+            // See `authorize_inline_config`: an inline configuration must not
+            // redirect the workspace's cached credential to a host the project
+            // never named, nor turn off TLS verification on its own say-so.
+            if inline {
+                let authorization =
+                    authorize_inline_config(&config, &project_debug_configs(workspace));
+                if !authorization.may_use_cached_credentials
+                    && supplied_access_token.is_empty()
+                    && debug_uses_oauth(&config)
+                {
+                    let host = onprem_target_host(&config).unwrap_or_default();
+                    return Response::error(
+                        id,
+                        error_codes::INVALID_PARAMS,
+                        format!(
+                            "Refusing to send a cached Business Central token to {host:?}: no \
+                             debug configuration in this project names that server. Add it to \
+                             .vscode/launch.json (or .zed/debug.json) and pass 'config', or \
+                             supply an explicit 'accessToken'."
+                        ),
+                    );
+                }
+                if config.accept_invalid_certs && !authorization.may_accept_invalid_certs {
+                    return Response::error(
+                        id,
+                        error_codes::INVALID_PARAMS,
+                        "Refusing to disable TLS verification from an inline debug \
+                         configuration: set acceptInvalidCerts in the project's own debug \
+                         configuration and pass 'config'.",
+                    );
+                }
             }
 
             // MCP/CLI callers normally authenticate through the shared OAuth
@@ -1063,7 +1182,9 @@ mod resolve_object_metadata_tests {
 
 #[cfg(test)]
 mod dispatch_debug_tests {
-    use super::dispatch_debug;
+    use super::{authorize_inline_config, dispatch_debug};
+    use al_bc::launch::BcServerConfig;
+    use al_dap::dap::bc_debug::BcDebugConfig;
     use al_protocol::jsonrpc::error_codes;
     use al_workspace::Workspace;
     use serde_json::json;
@@ -1331,6 +1452,161 @@ mod dispatch_debug_tests {
         let r = dispatch_debug(&ws, 16, &json!({"cmd": "start"})).await;
         assert_eq!(err_code(&r), error_codes::INVALID_PARAMS);
         assert!(err_msg(&r).contains("No active project"), "{}", err_msg(&r));
+    }
+
+    fn onprem_server_config(
+        name: &str,
+        server: &str,
+        accept_invalid_certs: bool,
+    ) -> BcServerConfig {
+        BcServerConfig {
+            name: name.to_string(),
+            environment_type: al_bc::launch::EnvironmentType::OnPrem,
+            server: Some(server.to_string()),
+            server_instance: Some("BC".to_string()),
+            port: Some(7049),
+            environment_name: None,
+            tenant: Some("default".to_string()),
+            authentication: al_bc::launch::AuthMethod::AAD,
+            accept_invalid_certs,
+            debug_args: json!({}),
+        }
+    }
+
+    fn inline_onprem_config(server: &str, accept_invalid_certs: bool) -> BcDebugConfig {
+        BcDebugConfig::from_dap_args(&json!({
+            "server": server,
+            "serverInstance": "BC",
+            "environmentType": "OnPrem",
+            "authentication": "AAD",
+            "tenant": "contoso.onmicrosoft.com",
+            "acceptInvalidCerts": accept_invalid_certs,
+        }))
+    }
+
+    #[test]
+    fn inline_onprem_host_outside_the_project_cannot_use_cached_credentials() {
+        let project = [onprem_server_config(
+            "Sandbox",
+            "https://erp.example.com",
+            false,
+        )];
+        let authorization = authorize_inline_config(
+            &inline_onprem_config("https://attacker.example", false),
+            &project,
+        );
+        assert!(!authorization.may_use_cached_credentials);
+        assert!(!authorization.may_accept_invalid_certs);
+    }
+
+    #[test]
+    fn inline_onprem_host_named_by_the_project_may_use_cached_credentials() {
+        let project = [onprem_server_config(
+            "Sandbox",
+            "https://erp.example.com",
+            false,
+        )];
+        // A bare host and a URL naming the same server must compare equal.
+        for server in [
+            "https://erp.example.com",
+            "erp.example.com",
+            "HTTPS://ERP.Example.com/",
+        ] {
+            let authorization =
+                authorize_inline_config(&inline_onprem_config(server, false), &project);
+            assert!(
+                authorization.may_use_cached_credentials,
+                "{server} names the project's own server"
+            );
+            assert!(!authorization.may_accept_invalid_certs);
+        }
+    }
+
+    #[test]
+    fn accept_invalid_certs_follows_the_project_configuration_for_that_host() {
+        let lax = [onprem_server_config("Lab", "https://lab.example.com", true)];
+        assert!(
+            authorize_inline_config(&inline_onprem_config("https://lab.example.com", true), &lax)
+                .may_accept_invalid_certs
+        );
+        let strict = [onprem_server_config(
+            "Lab",
+            "https://lab.example.com",
+            false,
+        )];
+        assert!(
+            !authorize_inline_config(
+                &inline_onprem_config("https://lab.example.com", true),
+                &strict
+            )
+            .may_accept_invalid_certs
+        );
+    }
+
+    #[test]
+    fn cloud_targets_keep_the_cache_and_never_get_lax_tls() {
+        // A BC online session always resolves to Microsoft's fixed endpoint,
+        // so no host allowlist applies.
+        let cloud = BcDebugConfig::from_dap_args(&json!({
+            "environmentType": "Sandbox",
+            "environmentName": "Sandbox",
+            "tenant": "contoso.onmicrosoft.com",
+            "authentication": "AAD",
+        }));
+        let authorization = authorize_inline_config(&cloud, &[]);
+        assert!(authorization.may_use_cached_credentials);
+        assert!(!authorization.may_accept_invalid_certs);
+    }
+
+    #[tokio::test]
+    async fn start_refuses_to_mint_a_token_for_a_caller_supplied_server() {
+        let ws = Workspace::new();
+        let response = dispatch_debug(
+            &ws,
+            74,
+            &json!({
+                "cmd": "start",
+                "server": "https://attacker.example",
+                "serverInstance": "BC",
+                "environmentType": "OnPrem",
+                "authentication": "AAD",
+                "tenant": "contoso.onmicrosoft.com",
+                "launchBrowser": true,
+            }),
+        )
+        .await;
+        assert_eq!(err_code(&response), error_codes::INVALID_PARAMS);
+        assert!(
+            err_msg(&response).contains("attacker.example"),
+            "{}",
+            err_msg(&response)
+        );
+    }
+
+    #[tokio::test]
+    async fn start_refuses_inline_accept_invalid_certs() {
+        let ws = Workspace::new();
+        let response = dispatch_debug(
+            &ws,
+            75,
+            &json!({
+                "cmd": "start",
+                "server": "https://erp.example.com",
+                "serverInstance": "BC",
+                "environmentType": "OnPrem",
+                "authentication": "AAD",
+                "tenant": "contoso.onmicrosoft.com",
+                "accessToken": "caller-supplied",
+                "acceptInvalidCerts": true,
+            }),
+        )
+        .await;
+        assert_eq!(err_code(&response), error_codes::INVALID_PARAMS);
+        assert!(
+            err_msg(&response).contains("TLS verification"),
+            "{}",
+            err_msg(&response)
+        );
     }
 
     #[tokio::test]

@@ -621,8 +621,20 @@ fn tools() -> &'static [ToolDef] {
             name: "al_downloadsymbols",
             method: "downloadSymbols",
             description: "Download dependent symbol packages (.app) from the configured \
-                          NuGet feeds (public Microsoft feeds by default) into .alpackages.",
-            schema: || obj_schema(serde_json::json!({}), &[]),
+                          NuGet feeds (public Microsoft feeds by default) into .alpackages. \
+                          Args: source (\"nuget\" or \"server\", default nuget), config \
+                          (exact launch-configuration name, only for source=server; the \
+                          project's first configuration is used when omitted, and the \
+                          result names it either way).",
+            schema: || {
+                obj_schema(
+                    serde_json::json!({
+                        "source": {"type": "string", "enum": ["nuget", "server"]},
+                        "config": {"type": "string"}
+                    }),
+                    &[],
+                )
+            },
         },
         ToolDef {
             name: "al_symbolsearch",

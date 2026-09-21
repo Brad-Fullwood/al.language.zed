@@ -265,6 +265,7 @@ pub(crate) async fn initialize_workspace(
                         &client,
                         session.clone(),
                         &deps,
+                        None,
                     )
                     .await;
                     if !batch.failures.is_empty() {
@@ -525,6 +526,14 @@ async fn publish_complete_generation(
     // acquired, the document store and its corresponding file-index overlays
     // cannot advance until publication finishes.
     let _publication = workspace.generation_lock.write().await;
+    // The project guard is taken before the first index swap, so the mutation
+    // sequence below contains no await point. `al.reindex` aborts any previous
+    // reindex task, and an await between swapping the file and symbol indexes
+    // and swapping the project left the two disagreeing, with the revision
+    // never bumped: every optimistic publisher then concluded nothing had
+    // changed and `require_project_root` handed out the old root against the
+    // new file index.
+    let mut published_project = workspace.project.write().await;
     for uri in workspace.documents.open_uris() {
         let (Ok(path), Some(text)) = (uri.to_file_path(), workspace.documents.get_text(&uri))
         else {
@@ -535,9 +544,10 @@ async fn publish_complete_generation(
 
     workspace.file_index.replace_with(staged_files);
     workspace.symbols.replace_with(staged_symbols);
-    *workspace.project.write().await = project;
+    *published_project = project;
     set_package_info(workspace, packages);
     workspace.invalidate_insight_graph();
+    workspace.mark_package_generation_changed();
     workspace
         .generation_revision
         .fetch_add(1, std::sync::atomic::Ordering::Release);
@@ -548,9 +558,11 @@ async fn refresh_current_symbol_generation(
 ) -> Result<(usize, usize), String> {
     loop {
         let generation = workspace.generation_lock.read().await;
-        let revision = workspace
-            .generation_revision
-            .load(std::sync::atomic::Ordering::Acquire);
+        // Keyed on the package revision, not the source revision: staging
+        // re-reads every `.app` in the cache, which takes seconds on a real
+        // project, and a retry keyed on `generation_revision` restarted on
+        // every keystroke and never published.
+        let revision = workspace.package_revision();
         let project = workspace.project.read().await.clone();
         let config = workspace.config.read().await.clone();
         let Some(mut project) = project else {
@@ -582,18 +594,18 @@ async fn refresh_current_symbol_generation(
         };
 
         let publication = workspace.generation_lock.write().await;
-        if workspace
-            .generation_revision
-            .load(std::sync::atomic::Ordering::Acquire)
-            != revision
-        {
+        if workspace.package_revision() != revision {
             drop(publication);
             continue;
         }
+        // As in `publish_complete_generation`: no await between the first swap
+        // and the revision bump.
+        let mut published_project = workspace.project.write().await;
         workspace.symbols.replace_with(&symbols);
-        *workspace.project.write().await = Some(project);
+        *published_project = Some(project);
         set_package_info(workspace, &loaded);
         workspace.invalidate_insight_graph();
+        workspace.mark_package_generation_changed();
         workspace
             .generation_revision
             .fetch_add(1, std::sync::atomic::Ordering::Release);
@@ -684,6 +696,7 @@ async fn download_dependency_closure(
     client: &tower_lsp::Client,
     session: Option<LspSessionState>,
     direct: &[al_project::project::AppDependency],
+    requested_config: Option<&str>,
 ) -> DownloadBatch {
     let mut visited: std::collections::HashSet<String> = direct
         .iter()
@@ -705,7 +718,14 @@ async fn download_dependency_closure(
         }
         let round = match source {
             DownloadSource::Server => {
-                download_symbols_from_server(project, &queue, client, session.clone()).await
+                download_symbols_from_server(
+                    project,
+                    &queue,
+                    client,
+                    session.clone(),
+                    requested_config,
+                )
+                .await
             }
             DownloadSource::NuGet => {
                 download_packages_nuget(workspace, &queue, &project.packages_dir).await
@@ -889,12 +909,17 @@ async fn prompt_download_symbols(
 
 /// Download symbols from a running BC instance defined in launch.json.
 ///
-/// Uses the first available server config. Returns downloaded .app file paths.
+/// `requested_config` names one of the project's launch configurations; with
+/// no name the project's first entry is used. Either way the chosen
+/// configuration is named in the log and in the messages the user sees, so a
+/// project listing Sandbox and Production never downloads from one of them
+/// silently. Returns downloaded .app file paths.
 async fn download_symbols_from_server(
     project: &al_project::project::AlProject,
     deps: &[al_project::project::AppDependency],
     lsp_client: &tower_lsp::Client,
     session: Option<LspSessionState>,
+    requested_config: Option<&str>,
 ) -> DownloadBatch {
     let configs = &project.server_configs;
     if configs.is_empty() {
@@ -907,8 +932,17 @@ async fn download_symbols_from_server(
         };
     }
 
-    let config = &configs[0];
+    let config = match al_bc::launch::pick_config(configs, requested_config) {
+        Ok(config) => config,
+        Err(error) => {
+            return DownloadBatch {
+                paths: Vec::new(),
+                failures: vec![error],
+            };
+        }
+    };
     info!(
+        config = %config.name,
         server = %config.display_name(),
         deps = deps.len(),
         "Downloading symbols from BC server"
@@ -1100,7 +1134,11 @@ async fn download_packages_nuget(
 /// Handle the `al.downloadSymbols*` commands.
 ///
 /// Downloads symbols from the specified source and reloads the symbol index.
-pub(crate) async fn download_symbols_command(server: &AlServer, source: DownloadSource) {
+pub(crate) async fn download_symbols_command(
+    server: &AlServer,
+    source: DownloadSource,
+    requested_config: Option<&str>,
+) {
     let generation = server.workspace.generation_lock.read().await;
     let project = server.workspace.project.read().await.clone();
     let Some(project) = project else {
@@ -1180,6 +1218,7 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
         &server.client,
         Some(server.session.clone()),
         &deps,
+        requested_config,
     )
     .await;
     if server.session.is_cancelled() {
@@ -2702,5 +2741,131 @@ mod tests {
         let merged = deep_merge(&json!({}), &recommended_al_settings());
         assert!(merged["lsp"]["al-lsp"]["settings"].is_object());
         assert_eq!(merged["languages"]["AL"]["language_servers"][0], "al-lsp");
+    }
+
+    /// `refresh_current_symbol_generation` used to retry whenever
+    /// `generation_revision` moved, which every keystroke bumps, so on a
+    /// project where staging outlasts the typing gaps it never published.
+    /// Document edits must not restart it.
+    #[tokio::test]
+    async fn symbol_staging_converges_while_documents_are_edited() {
+        let workspace = Workspace::new();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".alpackages")).unwrap();
+        *workspace.project.write().await = Some(al_project::project::AlProject {
+            root: root.path().to_path_buf(),
+            app_json: al_project::project::AppManifest {
+                id: "test".to_string(),
+                name: "Test".to_string(),
+                publisher: "Test".to_string(),
+                version: "1.0.0.0".to_string(),
+                dependencies: Vec::new(),
+                application: None,
+                platform: None,
+                runtime: None,
+            },
+            packages_dir: root.path().join(".alpackages"),
+            packages: Vec::new(),
+            server_configs: Vec::new(),
+        });
+
+        let uri = url::Url::parse("file:///proj/Foo.Codeunit.al").unwrap();
+        workspace
+            .documents
+            .open(uri.clone(), "codeunit 50100 Foo\n{\n}\n".to_string())
+            .unwrap();
+
+        let packages_before = workspace.package_revision();
+        // Simulate the keystrokes that arrive while staging runs.
+        for _ in 0..50 {
+            let text = workspace.documents.get_text(&uri).unwrap();
+            al_workspace::on_document_change(&workspace, &uri, &text);
+        }
+        assert_eq!(
+            workspace.package_revision(),
+            packages_before,
+            "document edits must not move the package generation"
+        );
+
+        let (loaded, _symbols) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            refresh_current_symbol_generation(&workspace),
+        )
+        .await
+        .expect("staging must converge, not retry forever")
+        .expect("staging succeeds for an empty package set");
+        assert_eq!(loaded, 0);
+        assert!(workspace.package_revision() > packages_before);
+    }
+
+    /// `al.reindex` aborts the previous reindex task. Publication used to await
+    /// the project lock between swapping the file and symbol indexes and
+    /// swapping the project, so a cancel landing there left the indexes ahead
+    /// of the project with the revision never bumped. Publication must be
+    /// all-or-nothing under cancellation.
+    #[tokio::test]
+    async fn an_aborted_publication_never_leaves_a_half_swapped_generation() {
+        let workspace = std::sync::Arc::new(Workspace::new());
+        let root = tempfile::tempdir().unwrap();
+        let project = al_project::project::AlProject {
+            root: root.path().to_path_buf(),
+            app_json: al_project::project::AppManifest {
+                id: "test".to_string(),
+                name: "Test".to_string(),
+                publisher: "Test".to_string(),
+                version: "1.0.0.0".to_string(),
+                dependencies: Vec::new(),
+                application: None,
+                platform: None,
+                runtime: None,
+            },
+            packages_dir: root.path().join(".alpackages"),
+            packages: Vec::new(),
+            server_configs: Vec::new(),
+        };
+
+        // A reader holding the project lock is what the publication used to
+        // await on, which is where the abort landed.
+        let reader = workspace.project.read().await;
+
+        let staged_files = al_source::file_index::FileIndex::new();
+        staged_files.add_file(
+            root.path().join("Staged.Codeunit.al"),
+            "codeunit 50100 Staged\n{\n}\n".to_string(),
+        );
+        let staged_symbols = al_symbols::SymbolIndex::new();
+        let publisher = tokio::spawn({
+            let workspace = std::sync::Arc::clone(&workspace);
+            async move {
+                publish_complete_generation(
+                    &workspace,
+                    staged_files,
+                    &staged_symbols,
+                    Some(project),
+                    &[],
+                )
+                .await;
+            }
+        });
+
+        tokio::task::yield_now().await;
+        publisher.abort();
+        let _ = publisher.await;
+        drop(reader);
+
+        assert_eq!(
+            workspace.generation_revision(),
+            0,
+            "an aborted publication must not be observable"
+        );
+        assert!(
+            workspace.project.read().await.is_none(),
+            "the project must not be replaced without the indexes"
+        );
+        assert_eq!(
+            workspace.file_index.files.len(),
+            0,
+            "the file index must not be replaced without the project"
+        );
     }
 }
