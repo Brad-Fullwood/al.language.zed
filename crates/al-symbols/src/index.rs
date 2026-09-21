@@ -1730,6 +1730,9 @@ mod tests {
                 + populated.lookup_index_bytes
                 + populated.path_cache_bytes
                 + populated.composed_cache_bytes
+                // The package source-index cache is process-global, so its
+                // size depends on what else the process has loaded.
+                + populated.package_source_index_bytes
         );
     }
 

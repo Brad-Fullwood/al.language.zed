@@ -65,12 +65,39 @@ pub fn read_app_bytes(data: &[u8]) -> Result<SymbolPackage, AppReaderError> {
         return Err(AppReaderError::NotNavx);
     }
 
-    let zip_offset = find_zip_offset(data).ok_or(AppReaderError::NoZipSignature)?;
+    reject_oversized_directory(read_zip_trailer(data).as_ref())?;
+    // The trailer says where the archive starts. When it does not add up, hand
+    // the whole buffer to the zip reader, which infers a prefix the same way
+    // `read_app_file` relies on, so both paths accept the same packages.
+    let zip_offset = find_zip_offset(data).unwrap_or(0);
 
-    let zip_data = &data[zip_offset..];
-
-    let cursor = Cursor::new(zip_data);
+    let cursor = Cursor::new(&data[zip_offset..]);
     read_archive(ZipArchive::new(cursor)?)
+}
+
+/// Refuse a central directory larger than the entry limit before anything
+/// parses it. `read_archive` re-checks the count the reader actually found.
+fn reject_oversized_directory(trailer: Option<&ZipTrailer>) -> Result<(), AppReaderError> {
+    match trailer {
+        Some(trailer) if trailer.entries > MAX_ARCHIVE_ENTRIES as u64 => Err(
+            AppReaderError::TooManyEntries(trailer.entries.min(usize::MAX as u64) as usize),
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// Read the tail of `file` and parse the archive trailer from it.
+///
+/// The end-of-central-directory record is within 64 KiB of the end, so this
+/// costs one seek and one small read rather than a full parse.
+fn read_trailer_from_file(file: &mut std::fs::File, size: u64) -> Option<ZipTrailer> {
+    let tail_len = size.min((EOCD_MIN_LEN + MAX_EOCD_COMMENT + ZIP64_EOCD_MIN_LEN) as u64);
+    file.seek(std::io::SeekFrom::End(-(tail_len as i64))).ok()?;
+    let mut tail = vec![0u8; tail_len as usize];
+    file.read_exact(&mut tail).ok()?;
+    let trailer = read_zip_trailer(&tail);
+    file.rewind().ok()?;
+    trailer
 }
 
 pub fn read_app_file(path: &std::path::Path) -> Result<SymbolPackage, AppReaderError> {
@@ -88,6 +115,7 @@ pub fn read_app_file(path: &std::path::Path) -> Result<SymbolPackage, AppReaderE
         return Err(AppReaderError::NotNavx);
     }
     file.rewind()?;
+    reject_oversized_directory(read_trailer_from_file(&mut file, file_size).as_ref())?;
     read_archive(ZipArchive::new(file)?)
 }
 
@@ -148,6 +176,7 @@ pub fn read_app_manifest_file(path: &std::path::Path) -> Result<NavxManifest, Ap
         return Err(AppReaderError::NotNavx);
     }
     file.rewind()?;
+    reject_oversized_directory(read_trailer_from_file(&mut file, file_size).as_ref())?;
     // zip supports self-extracting/prefixed archives and infers the NAVX
     // prefix from the central directory, so dependency checks can read only
     // the small manifest entry instead of allocating the entire .app.
@@ -610,13 +639,31 @@ mod tests {
         );
     }
 
+    /// A NAVX file with no archive in it is refused, and the bytes and file
+    /// paths refuse it the same way: they now locate the payload by the same
+    /// rule instead of one scanning for `PK\x03\x04` and the other trusting
+    /// the zip reader.
     #[test]
     fn reject_navx_without_zip() {
         let mut data = Vec::new();
         data.extend_from_slice(b"NAVX");
         data.extend_from_slice(&[0u8; 100]);
-        let err = read_app_bytes(&data).unwrap_err();
-        assert!(matches!(err, AppReaderError::NoZipSignature));
+
+        let from_bytes = read_app_bytes(&data).unwrap_err();
+        assert!(
+            matches!(from_bytes, AppReaderError::Zip(_)),
+            "got {from_bytes:?}"
+        );
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(&data).unwrap();
+        file.flush().unwrap();
+        let from_file = read_app_file(file.path()).unwrap_err();
+        assert_eq!(
+            std::mem::discriminant(&from_bytes),
+            std::mem::discriminant(&from_file),
+            "the two paths must agree: {from_bytes:?} vs {from_file:?}"
+        );
     }
 
     #[test]
