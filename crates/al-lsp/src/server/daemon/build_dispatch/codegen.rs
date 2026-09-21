@@ -61,8 +61,8 @@ pub(in crate::server::daemon) fn dispatch_permissions(
             }
         },
     };
-    let entries = match al_analysis::permissions::collect_permissions(workspace) {
-        Ok(entries) => entries,
+    let collection = match al_analysis::permissions::collect_permissions(workspace) {
+        Ok(collection) => collection,
         Err(error) => {
             return rpc_error(
                 id,
@@ -71,34 +71,40 @@ pub(in crate::server::daemon) fn dispatch_permissions(
             );
         }
     };
+    let entries = collection.entries;
+    // Files that could not contribute an entry travel with the result: the set
+    // is usable, and the caller can see which sources it does not cover.
+    let skipped: Vec<serde_json::Value> = collection
+        .skipped
+        .iter()
+        .map(|skip| {
+            serde_json::json!({
+                "path": skip.path.to_string_lossy(),
+                "reason": skip.reason,
+            })
+        })
+        .collect();
 
-    match format {
-        "xml" => {
-            let output = al_analysis::permissions::render_xml(&entries, role_id, name);
-            Response {
-                id,
-                result: Some(serde_json::json!({
-                    "format": "xml",
-                    "content": output,
-                    "objectCount": entries.len(),
-                })),
-                error: None,
-                ..Default::default()
-            }
-        }
-        _ => {
-            let output = al_analysis::permissions::render_al(&entries, name, perm_id);
-            Response {
-                id,
-                result: Some(serde_json::json!({
-                    "format": "al",
-                    "content": output,
-                    "objectCount": entries.len(),
-                })),
-                error: None,
-                ..Default::default()
-            }
-        }
+    let (format_name, output) = match format {
+        "xml" => (
+            "xml",
+            al_analysis::permissions::render_xml(&entries, role_id, name),
+        ),
+        _ => (
+            "al",
+            al_analysis::permissions::render_al(&entries, name, perm_id),
+        ),
+    };
+    Response {
+        id,
+        result: Some(serde_json::json!({
+            "format": format_name,
+            "content": output,
+            "objectCount": entries.len(),
+            "skipped": skipped,
+        })),
+        error: None,
+        ..Default::default()
     }
 }
 pub(in crate::server::daemon) fn dispatch_new_project(
@@ -706,21 +712,39 @@ mod tests {
         assert!(content.contains("50123"), "rendered AL: {content}");
     }
 
+    /// A malformed source used to fail the whole request. It is now reported
+    /// beside a permission set built from the files that do parse.
     #[test]
-    fn dispatch_permissions_rejects_malformed_workspace_source() {
+    fn dispatch_permissions_reports_a_malformed_source_and_covers_the_rest() {
         let ws = empty_ws();
         ws.file_index.add_file(
             std::path::PathBuf::from("/project/Broken.al"),
             "codeunit 50100 Broken { procedure Incomplete(".to_string(),
         );
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/project/Good.al"),
+            r#"codeunit 50101 "Good Codeunit" { procedure Run() begin end; }"#.to_string(),
+        );
 
         let resp = dispatch_permissions(&ws, 3, &serde_json::json!({}));
-        let error = resp
-            .error
-            .expect("incomplete permission input must return an error");
-        assert_eq!(error.code, error_codes::INTERNAL_ERROR);
-        assert!(error.message.contains("refused incomplete workspace input"));
-        assert!(resp.result.is_none());
+        assert!(resp.error.is_none(), "got error: {:?}", resp.error);
+        let result = resp.result.expect("a permission set");
+        assert_eq!(result.get("objectCount").and_then(|v| v.as_u64()), Some(1));
+        let content = result
+            .get("content")
+            .and_then(|v| v.as_str())
+            .expect("content");
+        assert!(content.contains("Good Codeunit"), "rendered AL: {content}");
+
+        let skipped = result
+            .get("skipped")
+            .and_then(|v| v.as_array())
+            .expect("skipped list");
+        assert_eq!(skipped.len(), 1, "{skipped:?}");
+        assert!(skipped[0]
+            .get("path")
+            .and_then(|v| v.as_str())
+            .is_some_and(|path| path.ends_with("Broken.al")));
     }
 
     #[test]
