@@ -85,3 +85,8 @@ Append-only. Newest entry last.
 
 - Merged `campaign/fix-lsp-content-modified`. Full gates with `--no-fail-fast`: clippy clean, 80 suites, 4564 tests pass, 0 fail, 10 ignored. Baseline this morning was 4380, so the day added 184 tests net.
 - Day 1 totals: 224 review findings, 9 fix branches merged (about 150 findings fixed, 4 rejected with evidence), the `al-bc` plugin, the free ID allocator, 4 of 9 blog articles drafted.
+
+## 2026-09-21 21:05 BST: fourth usage limit, CI red on three platforms
+
+- Limit hit about 18:25, reset 21:00. Six agents resumed.
+- PR #30 CI: cargo-deny, WASM and the .NET bridge pass. Ubuntu, macOS and Windows each fail one test that passes locally. macOS shows a real bug (1.9.0 chosen over 1.10.0, selection depends on directory enumeration order). Windows fails the new out-of-project refusal test, probably path form. Ubuntu fails a harness test strengthened today, so something it needs exists on this machine and not on a clean runner. A fix agent has its own draft PR to iterate on real runners.

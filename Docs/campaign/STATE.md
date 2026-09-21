@@ -16,6 +16,7 @@ Round 1 reviews are complete: 224 verified findings in 11 files. Six of seven fi
 | AI tooling daemon work: wrong answers first, then limit, fields, scope, `source --list-procedures`, CLI `location`, index progress, plugin simplification | worktree build | branch `campaign/ai-daemon-projection` |
 | desloppify batch: split `formatting.rs`, `symbols.rs`, `index.rs`, `oauth.rs`, remove the duplicate data loader, merge the two line tables | worktree refactor | branch `campaign/slop-syntax-symbols`, `findings/slop-syntax-symbols.md` |
 | Round 2 security review: bypass attempts on today's security fixes, threat model of the agent-facing surface | review | `findings/r2-security.md` |
+| CI fails on PR #30 on three platforms while local Linux is green: `test_completion_after_dot` on ubuntu, numeric version selection depends on directory order on macOS, out-of-project format refusal on Windows | worktree fix with its own draft PR for runner access | branch `campaign/fix-ci-platforms` |
 
 Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, CI runs on every push).
 
