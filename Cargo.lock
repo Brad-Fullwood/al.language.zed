@@ -332,6 +332,7 @@ dependencies = [
  "al-syntax",
  "al-types",
  "dashmap 6.2.1",
+ "proptest",
  "ropey",
  "serde",
  "serde_json",

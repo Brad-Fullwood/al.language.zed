@@ -18,4 +18,6 @@ tracing = { workspace = true }
 url = "2"
 
 [dev-dependencies]
+al-syntax = { path = "../al-syntax", version = "0.1.0" }
+proptest = "1"
 tempfile = "3"

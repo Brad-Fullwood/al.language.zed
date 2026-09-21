@@ -45,7 +45,12 @@ tokio = { version = "1", features = ["full"] }
 interprocess = { version = "2.4.2", features = ["tokio"] }
 tower-lsp = "0.20"
 dashmap = "6"
-ropey = "1"
+# `unicode_lines` (a ropey default) counts VT, FF, NEL, U+2028 and U+2029 as line
+# breaks. LSP counts only `\n`, `\r\n` and a lone `\r`, so with the default feature set
+# a document containing any of those five characters gets different line numbers in the
+# server than in the client, and every position after it maps to the wrong offset.
+# `cr_lines` alone is exactly the LSP definition.
+ropey = { version = "1", default-features = false, features = ["cr_lines", "simd"] }
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 # rustls (not the default native-tls) so the dep tree has no system-OpenSSL
