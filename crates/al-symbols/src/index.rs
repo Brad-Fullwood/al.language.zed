@@ -310,6 +310,14 @@ impl SymbolIndex {
             .fetch_add(1, std::sync::atomic::Ordering::Release);
     }
 
+    /// The current entry-set generation.
+    ///
+    /// Derived caches outside this crate key on it, so replacing or reloading
+    /// a symbol package invalidates whatever they built from the old entries.
+    pub fn generation(&self) -> u64 {
+        self.mutation.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// Shared, lazily rebuilt event catalog for the current entry generation.
     pub(crate) fn event_catalog(&self) -> Arc<events::EventCatalog> {
         let generation = self.mutation.load(std::sync::atomic::Ordering::Acquire);

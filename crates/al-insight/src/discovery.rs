@@ -48,6 +48,9 @@ pub struct DiscoveredEvent {
     /// Subscriber count (convenience field for JSON consumers).
     pub subscriber_count: usize,
     pub has_subscribers: bool,
+    /// Graph node index, the sort tiebreaker. Not part of the JSON contract.
+    #[serde(skip)]
+    node_index: usize,
 }
 
 /// A subscriber that references an event with no matching publisher in the workspace.
@@ -59,6 +62,9 @@ pub struct OrphanSubscriber {
     pub method_name: String,
     pub target_object: String,
     pub target_event: String,
+    /// Graph node index, the sort tiebreaker. Not part of the JSON contract.
+    #[serde(skip)]
+    node_index: usize,
 }
 
 /// Full result of an event discovery query.
@@ -83,6 +89,12 @@ pub struct EventDiscoveryResult {
 ///    (meaning they point to an event not in the graph) — these are orphans.
 ///
 /// Results are sorted by `(object_name, event_name)` for stable output.
+/// Sort key for a name, so the three sorts compare case-insensitively without
+/// spelling the byte-wise comparison out at each of the five comparisons.
+fn lower(name: &str) -> String {
+    name.to_ascii_lowercase()
+}
+
 pub fn discover_events(graph: &InsightGraph) -> EventDiscoveryResult {
     // Map from event NodeIndex to subscriber list.
     let mut event_subscribers: HashMap<petgraph::graph::NodeIndex, Vec<SubscriberInfo>> =
@@ -136,6 +148,7 @@ pub fn discover_events(graph: &InsightGraph) -> EventDiscoveryResult {
                     method_name,
                     target_object,
                     target_event,
+                    node_index: sub_idx.index(),
                 });
             } else {
                 for event_idx in subscribed_events {
@@ -166,24 +179,15 @@ pub fn discover_events(graph: &InsightGraph) -> EventDiscoveryResult {
                 object_kind.to_string(),
                 object_name.clone(),
                 name.clone(),
-                format!("{:?}", event_type),
+                event_type.to_string(),
             ),
             _ => continue,
         };
 
         subs.sort_by(|a, b| {
-            a.object_name
-                .as_bytes()
-                .iter()
-                .map(u8::to_ascii_lowercase)
-                .cmp(b.object_name.as_bytes().iter().map(u8::to_ascii_lowercase))
-                .then_with(|| {
-                    a.method_name
-                        .as_bytes()
-                        .iter()
-                        .map(u8::to_ascii_lowercase)
-                        .cmp(b.method_name.as_bytes().iter().map(u8::to_ascii_lowercase))
-                })
+            lower(&a.object_name)
+                .cmp(&lower(&b.object_name))
+                .then_with(|| lower(&a.method_name).cmp(&lower(&b.method_name)))
         });
 
         let sub_count = subs.len();
@@ -200,44 +204,28 @@ pub fn discover_events(graph: &InsightGraph) -> EventDiscoveryResult {
             subscribers: subs,
             subscriber_count: sub_count,
             has_subscribers: has_subs,
+            node_index: event_idx.index(),
         });
     }
 
+    // The node index is the final tiebreaker: `graph.index` maps one
+    // `NodeKey::Event` to a *list* of nodes, so two files declaring the same
+    // object and event (what a half-finished copy-paste refactor looks like)
+    // produce two events with identical sort keys, and `al subscribers`
+    // printed them in a different order between runs.
     events.sort_by(|a, b| {
-        a.publisher
-            .object_name
-            .as_bytes()
-            .iter()
-            .map(u8::to_ascii_lowercase)
-            .cmp(
-                b.publisher
-                    .object_name
-                    .as_bytes()
-                    .iter()
-                    .map(u8::to_ascii_lowercase),
-            )
-            .then_with(|| {
-                a.event_name
-                    .as_bytes()
-                    .iter()
-                    .map(u8::to_ascii_lowercase)
-                    .cmp(b.event_name.as_bytes().iter().map(u8::to_ascii_lowercase))
-            })
+        lower(&a.publisher.object_name)
+            .cmp(&lower(&b.publisher.object_name))
+            .then_with(|| lower(&a.event_name).cmp(&lower(&b.event_name)))
+            .then_with(|| a.publisher.object_kind.cmp(&b.publisher.object_kind))
+            .then_with(|| a.node_index.cmp(&b.node_index))
     });
 
     orphans.sort_by(|a, b| {
-        a.object_name
-            .as_bytes()
-            .iter()
-            .map(u8::to_ascii_lowercase)
-            .cmp(b.object_name.as_bytes().iter().map(u8::to_ascii_lowercase))
-            .then_with(|| {
-                a.method_name
-                    .as_bytes()
-                    .iter()
-                    .map(u8::to_ascii_lowercase)
-                    .cmp(b.method_name.as_bytes().iter().map(u8::to_ascii_lowercase))
-            })
+        lower(&a.object_name)
+            .cmp(&lower(&b.object_name))
+            .then_with(|| lower(&a.method_name).cmp(&lower(&b.method_name)))
+            .then_with(|| a.node_index.cmp(&b.node_index))
     });
 
     let total_events = events.len();
@@ -363,6 +351,37 @@ mod tests {
         assert_eq!(ev.publisher.event_type, "Integration");
         assert!(!ev.has_subscribers);
         assert_eq!(ev.subscriber_count, 0);
+    }
+
+    /// Two events sorted only by object and event name: a codeunit and a table
+    /// may share a name, and each may publish `OnPost`. The final `sort_by` is
+    /// stable, so their order was whatever the `event_subscribers` HashMap
+    /// happened to yield, and `al subscribers` printed them differently
+    /// between runs.
+    #[test]
+    fn events_with_equal_names_come_back_in_a_stable_order() {
+        let mut codeunit = base_entry(ObjectKind::Codeunit, 50100, "Publisher");
+        codeunit.methods = vec![integration_event_method("OnPost")];
+        let mut table = base_entry(ObjectKind::Table, 50101, "Publisher");
+        table.methods = vec![integration_event_method("OnPost")];
+
+        let graph = build_graph(&[codeunit, table]);
+        let order = |result: &EventDiscoveryResult| -> Vec<(String, usize)> {
+            result
+                .events
+                .iter()
+                .map(|event| (event.publisher.object_kind.clone(), event.node_index))
+                .collect()
+        };
+        let first = order(&discover_events(&graph));
+        assert_eq!(first.len(), 2, "expected two events: {first:?}");
+        for _ in 0..25 {
+            assert_eq!(
+                order(&discover_events(&graph)),
+                first,
+                "event order moved between runs"
+            );
+        }
     }
 
     #[test]

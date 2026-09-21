@@ -783,6 +783,25 @@ impl FileIndex {
         self.best_owner(name, Some(kinds), from)
     }
 
+    /// The owner of `name` whose kind satisfies `kind_matches`, with the app
+    /// preference of [`object_path_near`] when the referring file is known.
+    ///
+    /// [`object_path_near`]: Self::object_path_near
+    pub fn object_path_where(
+        &self,
+        name: &str,
+        from: Option<&Path>,
+        kind_matches: impl Fn(&str) -> bool,
+    ) -> Option<PathBuf> {
+        let from_app = from.and_then(|from| self.app_root_for(from));
+        let owners = self.objects.get(&name.to_lowercase())?;
+        owners
+            .iter()
+            .filter(|e| kind_matches(&e.kind))
+            .min_by_key(|e| self.owner_rank(e, from_app.as_ref()))
+            .map(|e| e.path.clone())
+    }
+
     fn best_owner(&self, name: &str, kinds: Option<&[&str]>, from: &Path) -> Option<PathBuf> {
         let from_app = self.app_root_for(from);
         let owners = self.objects.get(&name.to_lowercase())?;
