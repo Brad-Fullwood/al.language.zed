@@ -160,7 +160,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
 - fix: this crate already builds a line-start table twice; hoist it into a small
   `LineIndex` type and add `ts_range_to_syntax_with(range, source, &LineIndex)` for
   the loop callers, keeping the existing signature for one-off use.
-- status: open
+- status: fixed caa16426
 
 ### [SIMPLIFY] `build_line_starts` is implemented twice, byte for byte
 - where: crates/al-syntax/src/tokens.rs:179-189 and crates/al-syntax/src/type_resolver.rs:237-249
@@ -172,7 +172,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   will add a third copy.
 - fix: one `LineIndex` in lib.rs with both accessors, shared by tokens.rs,
   type_resolver.rs and the `ts_range_to_syntax` fix above.
-- status: open
+- status: fixed caa16426
 
 ### [BUG] `clean_identifier_text` is bypassed by ~20 call sites that still use `trim_matches('"')`
 - where: crates/al-syntax/src/navigation.rs:158,258,308,330,342,449;
@@ -214,7 +214,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   serialize/deserialize, for instance) would not move this benchmark at all.
 - fix: mutate the source (insert one character), call `prev.edit(&InputEdit{…})` with
   the matching byte/point deltas, then `parse_incremental` the edited text.
-- status: open
+- status: fixed 886e00a6
 
 ### [GAP] Benchmarks cap out at 80 lines, below where the hot paths hurt
 - where: crates/al-syntax/benches/parser.rs:15-77
@@ -225,7 +225,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   are invisible at 80 lines. Real AL files in the BC base app run to 10 000+ lines.
 - fix: add a generated large fixture (say a table with 500 fields) and benchmark
   `extract_document_symbols`, `extract_semantic_tokens` and `lint` on it.
-- status: open
+- status: fixed 886e00a6
 
 ### [BUG] `format_range` returns the caller's unclamped `end_line` in the edit
 - where: crates/al-syntax/src/formatting.rs:477 and 536-542
