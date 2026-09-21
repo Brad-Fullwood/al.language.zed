@@ -131,7 +131,7 @@ item that file left unticked, plus the files its checklist does not name.
   ```
   produces a `<failure>` body that Jenkins, GitLab and the .NET JUnit readers reject for the entire file. The CI step then reports "no test results" rather than one failing test, which reads as a passing build in the configurations that do not fail on a missing report.
 - fix: strip or replace the XML-1.0-illegal code points in both the failure body and the `name`/`classname` attributes before writing, and add a test that round-trips a message containing `\u{0}` and `\u{1b}` through `assert_well_formed_xml`.
-- status: open
+- status: fixed 443ef7cc
 
 ### [DEAD] Five entries in the SignalR invoke-timeout table name targets the client never invokes, and a test pins them
 - where: crates/al-dap/src/dap/bc_debug/wire.rs:41 (`"Next" | "StepIn" | "StepOut" | "Continue" | "Break"`), test at wire.rs:241
@@ -201,7 +201,7 @@ item that file left unticked, plus the files its checklist does not name.
 - severity: low
 - scenario: when a codeunit exceeds `timeout_ms` the backend synthesises a `TestMethodResult` with `status: Fail` and the message "timeout after 30000 ms". The JUnit writer stamps every failure `type="AssertionError"`, so the CI report says the AL assertion failed when in fact BC never answered. The same conflation covers "Failed to construct the BC test client" and every HTTP 500. `TestRunnerError::Timeout { secs }` exists for this case and is constructed nowhere in the workspace.
 - fix: carry the failure kind on `TestMethodResult` (assertion, timeout, infrastructure) and map it to the JUnit `type` attribute, so a CI dashboard can separate a red test from a red environment.
-- status: open
+- status: fixed 443ef7cc
 
 ### [DEAD] Four error variants are declared and never constructed
 - where: crates/al-test/src/error.rs:16 (`NoConfig`) and :24 (`Timeout`), crates/al-dap/src/dap/mod.rs:37 (`SessionNotPaused`) and :40 (`NoActiveSession`)
