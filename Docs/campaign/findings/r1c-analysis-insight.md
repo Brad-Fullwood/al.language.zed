@@ -55,7 +55,7 @@ Listed by neither checklist:
   starts with the attribute. `extract_signature_from_text` scans for the first paren-balanced `(...)`, which is the attribute's argument list, so it stops at the `)` before `]` and returns `[EventSubscriber(ObjectType::Codeunit, Codeunit::"Sales-Post", 'OnAfterPost', '', false, false)`, the attribute with its closing bracket cut off, and no procedure signature at all. Every subscriber, every `[IntegrationEvent]` publisher and every `[Test]` procedure reports this as `sig` from `al source --proc`. The `range.l` returned alongside it is the attribute's line for the same reason.
   The eight `extract_signature_*` tests (source.rs:1156-1250) all feed bare `procedure ...` text, so none of them sees an attribute.
 - fix: take the signature from the declaration's own child nodes (`kw_procedure`/`kw_function`, the `name` field, the `parameters` field and the optional `return_type` field) instead of re-scanning the node's text. If the text scan stays, skip leading `[...]` attribute blocks first.
-- status: open
+- status: fixed 74acc262 — `member_signature` builds the signature from the declaration's children and `extract_signature_from_text` is deleted. `range` still spans the returned `code`, which includes the attribute, so the two stay consistent.
 
 ### [BUG] One `system` permission grant makes the whole permission audit fail
 - where: crates/al-analysis/src/queries/audit.rs:768-777 (`parse_permission_clause`), propagated through `extract_permission_grants` (753-758) to `permission_set_audit` (277)
@@ -155,7 +155,7 @@ Listed by neither checklist:
   ```
   the resolved line is the attribute line, one (or more, with several attributes) above the signature. The module header lists "Hints on a procedure's signature line, not body line" and "Must not show hints on wrong lines" as correctness rules. Subscribers and `[Test]` procedures are exactly the procedures that dominate a BC profile, so the common case is the broken one. The sibling function `collect_profiler_lenses` (537-548) gets this right by using `name_node.start_position().row`, so the two location paths in the same file disagree about where a procedure starts.
 - fix: use `name_node.start_position().row` in `collect_procs`, matching `collect_profiler_lenses`. The tests (profiler_hints.rs:686-700, 984-1020) all use unattributed procedures, so add one with an attribute.
-- status: open
+- status: fixed 74acc262 — one shared helper, `al_syntax::procedure_keyword_row`, returns the `procedure`/`function` keyword's row, and profiler_hints, test_coverage, queries/tests.rs and dead_code all use it.
 
 ### [SLOP] The profile's recording duration is computed and then discarded
 - where: crates/al-analysis/src/queries/profiler_hints.rs:182-188
@@ -202,7 +202,7 @@ Listed by neither checklist:
   - `test_coverage` labels the second object's procedures with the first object's name, so `ProcKey` and every `covers` / `untested` row names the wrong object;
   - `data_classification_audit` skips the file entirely when the first object is not a table.
 - fix: have `workspace_sources` emit one `WorkspaceSource` per object declaration (with the object's own node range), and switch the metadata lookups to `object_infos` with a name or range predicate. Until then `object_infos` is dead weight that suggests the problem is solved.
-- status: open
+- status: fixed 74acc262 for the three named harms — `WorkspaceSource` carries `objects` plus `object_at_byte`, and `permission_set_audit`, `data_classification_audit`, `test_coverage` and the profiler location pass all iterate the declarations and scope their walk to the object's node. `FileIndex` gained `object_infos_in` / `object_info_named` / `object_info_at_byte` (4180a321) and `source.rs`, `search.rs` and `code_lens.rs` use them. The remaining per-object snapshot for the other consumers is tracked below as its own finding.
 
 ### [BUG] `workspace/symbol` returns an arbitrary subset once the limit is hit, and misses non-first objects
 - where: crates/al-analysis/src/queries/search.rs:39-60 (`workspace_search`) and 84-127 (`workspace_search_children`)
@@ -296,6 +296,13 @@ Listed by neither checklist:
 - status: open
 
 ## Opened while fixing
+
+### [GAP] Nine whole-workspace queries still analyse a multi-object file as one object
+- where: crates/al-analysis/src/workspace_sources.rs:28-60 (`WorkspaceSource`) against its readers in crates/al-analysis/src/queries/{dead_code.rs:83, duplicates.rs:71, sql_patterns.rs:39, complexity.rs:45, arch_lint.rs:269, impact.rs:376, native_check.rs:229, obsolescence.rs:50, obsolete_usage.rs:40}
+- severity: medium
+- scenario: `WorkspaceSource` now carries every declaration in `objects` (74acc262), and the permission, classification, coverage and profiler passes use it. The nine readers above still take `source.object` for the object name and walk `source.tree` from the root, so in a file declaring two objects every finding is attributed to the first one. A dead-code report on the second object of a file names the first object, and `impact` counts references under the wrong owner.
+- fix: give each of them the declaration whose range contains the node they found (`WorkspaceSource::object_at_byte`) and scope the walk to that object's node. Several call `al_syntax` helpers that take a `&Tree`; those need node-taking companions, as `al_insight::calls` gained in 5996424f.
+- status: open
 
 ### [SLOP] `obsolescence.rs` tests for the node kind `attribute_list`, which the grammar does not define
 - where: crates/al-analysis/src/queries/obsolescence.rs:186 and 200
