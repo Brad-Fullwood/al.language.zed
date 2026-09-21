@@ -217,6 +217,37 @@ pub fn create_project(dir: &Path, config: &ScaffoldConfig) -> Result<ScaffoldRes
     })
 }
 
+/// Replace every `{{token}}` in `input` with its value from `values`, in one
+/// pass over the input.
+///
+/// One pass is what makes the result independent of the substitution order.
+/// Applying the pairs in sequence meant a value could itself be substituted:
+/// `--name "{{publisher}}"` put `{{publisher}}` into the output and the next
+/// pair replaced it with the publisher. An unknown token is left as written.
+fn substitute_placeholders(
+    input: &str,
+    values: &std::collections::HashMap<&str, String>,
+) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(open) = rest.find("{{") {
+        out.push_str(&rest[..open]);
+        let after_open = &rest[open + 2..];
+        let Some(close) = after_open.find("}}") else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let token = &after_open[..close];
+        match values.get(token) {
+            Some(value) => out.push_str(value),
+            None => out.push_str(&rest[open..open + 2 + close + 2]),
+        }
+        rest = &after_open[close + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// AL rejects an object name longer than this (compiler error AL0305).
 const AL_OBJECT_NAME_LIMIT: usize = 30;
 
@@ -493,25 +524,19 @@ fn materialize_custom_template(
         .descriptor
         .id_to
         .unwrap_or_else(|| id_from.saturating_add(49));
-    let substitutions: Vec<(String, String)> = vec![
-        ("{{name}}".to_string(), config.name.clone()),
-        ("{{publisher}}".to_string(), config.publisher.clone()),
-        ("{{version}}".to_string(), config.version.clone()),
-        ("{{runtime}}".to_string(), config.runtime.clone()),
-        ("{{target}}".to_string(), config.target.clone()),
-        ("{{id}}".to_string(), app_id),
-        ("{{id_from}}".to_string(), id_from.to_string()),
-        ("{{id_to}}".to_string(), id_to.to_string()),
-    ];
-    let substitute = |input: &str| -> String {
-        let mut out = input.to_string();
-        for (needle, value) in &substitutions {
-            if out.contains(needle.as_str()) {
-                out = out.replace(needle.as_str(), value);
-            }
-        }
-        out
-    };
+    let substitutions: std::collections::HashMap<&str, String> = [
+        ("name", config.name.clone()),
+        ("publisher", config.publisher.clone()),
+        ("version", config.version.clone()),
+        ("runtime", config.runtime.clone()),
+        ("target", config.target.clone()),
+        ("id", app_id),
+        ("id_from", id_from.to_string()),
+        ("id_to", id_to.to_string()),
+    ]
+    .into_iter()
+    .collect();
+    let substitute = |input: &str| -> String { substitute_placeholders(input, &substitutions) };
 
     // Gather the template's files (relative to `files/`), rejecting symlinks
     // and any path that escapes the root.
@@ -883,17 +908,13 @@ fn generate_library_codeunit(config: &ScaffoldConfig) -> String {
 
 fn generate_test_codeunit(config: &ScaffoldConfig) -> String {
     let name = crate::permissions::al_escape_name(&config.name);
+    let stub = crate::generators::default_test_stub();
     format!(
         r#"codeunit 50100 "{name} Test"
 {{
     Subtype = Test;
 
-    [Test]
-    procedure TestSomething()
-    begin
-        Error('Placeholder test: implementation required');
-    end;
-}}
+{stub}}}
 "#
     )
 }
@@ -982,18 +1003,43 @@ fn generate_agent_job_handler(config: &ScaffoldConfig) -> String {
     )
 }
 
+/// The table the API template exposes. The entity names are derived from it,
+/// so the endpoint and its payload describe the same object.
+const API_TEMPLATE_SOURCE_TABLE: &str = "Customer";
+
+/// Reduce `text` to the lowercase alphanumeric form an `APIPublisher` /
+/// `APIGroup` value takes. Empty input falls back to `default`.
+fn api_identifier(text: &str) -> String {
+    let out: String = text
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    if out.is_empty() {
+        "default".to_string()
+    } else {
+        out
+    }
+}
+
 fn generate_api_page(config: &ScaffoldConfig) -> String {
     let name = crate::permissions::al_escape_name(&config.name);
+    // `EntityName = 'item'` over `SourceTable = Customer` made `/items` return
+    // customers. The publisher and group come from the project rather than the
+    // `defaultPublisher` / `defaultGroup` placeholders AppSourceCop flags.
+    let entity = API_TEMPLATE_SOURCE_TABLE.to_ascii_lowercase();
+    let publisher = api_identifier(&config.publisher);
+    let group = api_identifier(&config.name);
     format!(
         r#"page 50100 "{name} API"
 {{
     PageType = API;
-    APIPublisher = 'defaultPublisher';
-    APIGroup = 'defaultGroup';
+    APIPublisher = '{publisher}';
+    APIGroup = '{group}';
     APIVersion = 'v1.0';
-    EntityName = 'item';
-    EntitySetName = 'items';
-    SourceTable = Customer;
+    EntityName = '{entity}';
+    EntitySetName = '{entity}s';
+    SourceTable = {API_TEMPLATE_SOURCE_TABLE};
     DelayedInsert = true;
 
     layout
@@ -1037,6 +1083,7 @@ fn generate_app_source_cop_json() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::assert_al_parses;
 
     #[test]
     fn scaffold_creates_all_files() {
@@ -1167,6 +1214,57 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Applying the pairs in sequence let an inserted value be substituted by
+    /// a later pair.
+    #[test]
+    fn placeholder_substitution_never_rewrites_a_value_it_just_inserted() {
+        let values: std::collections::HashMap<&str, String> = [
+            ("name", "{{publisher}}".to_string()),
+            ("publisher", "Contoso".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            substitute_placeholders("app {{name}} by {{publisher}}", &values),
+            "app {{publisher}} by Contoso"
+        );
+        assert_eq!(
+            substitute_placeholders("{{unknown}} stays", &values),
+            "{{unknown}} stays"
+        );
+        assert_eq!(
+            substitute_placeholders("unterminated {{name", &values),
+            "unterminated {{name"
+        );
+        assert_eq!(substitute_placeholders("", &values), "");
+    }
+
+    /// The API template shipped `EntityName = 'item'` over
+    /// `SourceTable = Customer`, so `/items` returned customers, and the
+    /// `defaultPublisher` / `defaultGroup` placeholders AppSourceCop flags.
+    #[test]
+    fn api_template_entity_names_match_its_source_table() {
+        let src = generate_api_page(&ScaffoldConfig {
+            name: "Sales Portal".to_string(),
+            publisher: "Contoso Ltd.".to_string(),
+            ..ScaffoldConfig::default()
+        });
+        assert_al_parses("api page", &src);
+        assert!(src.contains("SourceTable = Customer;"), "{src}");
+        assert!(src.contains("EntityName = 'customer';"), "{src}");
+        assert!(src.contains("EntitySetName = 'customers';"), "{src}");
+        assert!(src.contains("APIPublisher = 'contosoltd';"), "{src}");
+        assert!(src.contains("APIGroup = 'salesportal';"), "{src}");
+        assert!(!src.contains("default"), "{src}");
+    }
+
+    #[test]
+    fn api_identifier_falls_back_when_nothing_survives() {
+        assert_eq!(api_identifier("Contoso Ltd."), "contosoltd");
+        assert_eq!(api_identifier("!!!"), "default");
+        assert_eq!(api_identifier(""), "default");
     }
 
     #[test]
@@ -1449,15 +1547,6 @@ mod tests {
     /// no errors. Used to guard against generator templates that drift
     /// out-of-sync with the grammar (e.g. property renames, syntax
     /// tightening). A string-content assertion would not catch this.
-    fn assert_al_parses(label: &str, source: &str) {
-        let result = al_syntax::parser::AlParser::parse_quick(source);
-        assert!(
-            result.errors.is_empty(),
-            "{label} did not parse cleanly:\n{source}\nerrors: {:?}",
-            result.errors
-        );
-    }
-
     #[test]
     fn generated_starter_codeunit_parses() {
         let config = ScaffoldConfig::default();

@@ -169,7 +169,6 @@ fn collect_normal_fields(fields: &[FieldSymbol]) -> Vec<&FieldSymbol> {
         .iter()
         .filter(|f| {
             !is_flow_field(f)
-                && !f.name.starts_with('$')
                 && !f.name.eq_ignore_ascii_case("SystemId")
                 && !f.name.eq_ignore_ascii_case("SystemCreatedAt")
                 && !f.name.eq_ignore_ascii_case("SystemModifiedAt")
@@ -258,7 +257,10 @@ fn generate_test_stubs(subject: &SymbolEntry) -> String {
         .join("\n")
 }
 
-fn default_test_stub() -> String {
+/// The single placeholder `[Test]` procedure emitted when there is nothing to
+/// derive stubs from. Shared with `scaffold`'s test template, which emitted a
+/// byte-identical copy.
+pub(crate) fn default_test_stub() -> String {
     "    [Test]\n    procedure TestSomething()\n    begin\n        Error('Placeholder test: implementation required');\n    end;\n".to_string()
 }
 
@@ -307,6 +309,7 @@ fn sanitize_identifier(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::assert_al_parses;
     use al_symbols::model::{FieldSymbol, ObjectKind, SymbolEntry};
 
     fn make_table(name: &str, fields: Vec<FieldSymbol>) -> SymbolEntry {
@@ -663,15 +666,6 @@ mod tests {
         assert!(
             out.contains(r#"; "Bad""Field")"#),
             "report column field name must escape `\"` → `\"\"`, got:\n{out}"
-        );
-    }
-
-    fn assert_al_parses(label: &str, source: &str) {
-        let result = al_syntax::parser::AlParser::parse_quick(source);
-        assert!(
-            result.errors.is_empty(),
-            "{label} did not parse cleanly:\n{source}\nerrors: {:?}",
-            result.errors
         );
     }
 
