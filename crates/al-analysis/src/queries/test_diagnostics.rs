@@ -205,6 +205,7 @@ mod tests {
                 status: s,
                 error: e.map(|s| s.to_string()),
                 duration_ms: None,
+                failure_kind: None,
             })
             .collect::<Vec<_>>();
         let total = method_results.len();

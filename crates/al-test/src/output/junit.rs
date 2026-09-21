@@ -1,14 +1,56 @@
 //! JUnit XML serializer for `TestCodeunitResult` slices.
 
+use std::borrow::Cow;
 use std::io::{self, Write};
 
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Writer;
 
-use crate::result::{TestCodeunitResult, TestStatus};
+use crate::result::{TestCodeunitResult, TestFailureKind, TestStatus};
 
 const MAX_FAILURE_BODY_BYTES: usize = 4096;
 const MAX_FAILURE_MSG_BYTES: usize = 256;
+
+/// Substitute for a code point XML 1.0 has no representation for.
+const REPLACEMENT: char = '\u{fffd}';
+
+/// True for the characters XML 1.0 allows in a document.
+///
+/// Production [2]: `#x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] |
+/// [#x10000-#x10FFFF]`. Everything else, including `\u{0}` and the ESC that a
+/// terminal-coloured AL error message carries, has no escape form: a numeric
+/// character reference for it is illegal too, so the only way to keep the
+/// document parseable is not to write the character.
+fn is_xml10_char(ch: char) -> bool {
+    matches!(ch,
+        '\u{9}' | '\u{a}' | '\u{d}'
+        | '\u{20}'..='\u{d7ff}'
+        | '\u{e000}'..='\u{fffd}'
+        | '\u{10000}'..='\u{10ffff}')
+}
+
+/// Replace every code point XML 1.0 forbids. Borrows when there is nothing to
+/// replace, which is every ordinary AL failure message.
+fn xml10_safe(text: &str) -> Cow<'_, str> {
+    if text.chars().all(is_xml10_char) {
+        return Cow::Borrowed(text);
+    }
+    Cow::Owned(
+        text.chars()
+            .map(|ch| if is_xml10_char(ch) { ch } else { REPLACEMENT })
+            .collect(),
+    )
+}
+
+/// The JUnit `type` attribute for a failure, so a CI dashboard can separate a
+/// red test from a red environment.
+fn failure_type(kind: Option<TestFailureKind>) -> &'static str {
+    match kind {
+        None => "AssertionError",
+        Some(TestFailureKind::Timeout) => "Timeout",
+        Some(TestFailureKind::Infrastructure) => "InfrastructureError",
+    }
+}
 
 fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
@@ -72,9 +114,10 @@ pub fn write_junit<W: Write>(results: &[TestCodeunitResult], out: W) -> Result<(
 
     for cu in results {
         let cu_time = measured_total(cu.methods.iter())?;
+        let cu_name = xml10_safe(&cu.name);
 
         let mut suite_start = BytesStart::new("testsuite");
-        suite_start.push_attribute(("name", cu.name.as_str()));
+        suite_start.push_attribute(("name", cu_name.as_ref()));
         suite_start.push_attribute(("id", cu.id.to_string().as_str()));
         suite_start.push_attribute(("tests", cu.total.to_string().as_str()));
         suite_start.push_attribute(("failures", cu.failed.to_string().as_str()));
@@ -86,47 +129,39 @@ pub fn write_junit<W: Write>(results: &[TestCodeunitResult], out: W) -> Result<(
 
         for method in &cu.methods {
             let method_time = method.duration_ms.map(ms_to_secs);
+            let method_name = xml10_safe(&method.name);
+
+            let mut tc = BytesStart::new("testcase");
+            tc.push_attribute(("classname", cu_name.as_ref()));
+            tc.push_attribute(("name", method_name.as_ref()));
+            if let Some(method_time) = &method_time {
+                tc.push_attribute(("time", method_time.as_str()));
+            }
 
             match method.status {
                 TestStatus::Pass => {
-                    let mut tc = BytesStart::new("testcase");
-                    tc.push_attribute(("classname", cu.name.as_str()));
-                    tc.push_attribute(("name", method.name.as_str()));
-                    if let Some(method_time) = &method_time {
-                        tc.push_attribute(("time", method_time.as_str()));
-                    }
                     writer.write_event(Event::Empty(tc))?;
                 }
                 TestStatus::Skip => {
-                    let mut tc = BytesStart::new("testcase");
-                    tc.push_attribute(("classname", cu.name.as_str()));
-                    tc.push_attribute(("name", method.name.as_str()));
-                    if let Some(method_time) = &method_time {
-                        tc.push_attribute(("time", method_time.as_str()));
-                    }
                     writer.write_event(Event::Start(tc))?;
                     writer.write_event(Event::Empty(BytesStart::new("skipped")))?;
                     writer.write_event(Event::End(BytesEnd::new("testcase")))?;
                 }
                 TestStatus::Fail => {
-                    let error_str = method.error.as_deref().unwrap_or("");
-
-                    let body = truncate_utf8(error_str, MAX_FAILURE_BODY_BYTES);
+                    // Sanitize before truncating: a replacement is wider than
+                    // the byte it stands in for, so a cap applied first would
+                    // not hold.
+                    let error_str = xml10_safe(method.error.as_deref().unwrap_or(""));
+                    let body = truncate_utf8(&error_str, MAX_FAILURE_BODY_BYTES);
 
                     let first_line = error_str.lines().next().unwrap_or("");
                     let msg = truncate_utf8(first_line, MAX_FAILURE_MSG_BYTES);
 
-                    let mut tc = BytesStart::new("testcase");
-                    tc.push_attribute(("classname", cu.name.as_str()));
-                    tc.push_attribute(("name", method.name.as_str()));
-                    if let Some(method_time) = &method_time {
-                        tc.push_attribute(("time", method_time.as_str()));
-                    }
                     writer.write_event(Event::Start(tc))?;
 
                     let mut failure_start = BytesStart::new("failure");
                     failure_start.push_attribute(("message", msg));
-                    failure_start.push_attribute(("type", "AssertionError"));
+                    failure_start.push_attribute(("type", failure_type(method.failure_kind)));
                     writer.write_event(Event::Start(failure_start))?;
                     writer.write_event(Event::Text(BytesText::new(body)))?;
                     writer.write_event(Event::End(BytesEnd::new("failure")))?;
@@ -155,6 +190,7 @@ mod tests {
             status: TestStatus::Pass,
             error: None,
             duration_ms: Some(10),
+            failure_kind: None,
         }
     }
 
@@ -164,6 +200,14 @@ mod tests {
             status: TestStatus::Fail,
             error: Some(error.to_string()),
             duration_ms: Some(5),
+            failure_kind: None,
+        }
+    }
+
+    fn fail_method_of_kind(name: &str, error: &str, kind: TestFailureKind) -> TestMethodResult {
+        TestMethodResult {
+            failure_kind: Some(kind),
+            ..fail_method(name, error)
         }
     }
 
@@ -173,6 +217,7 @@ mod tests {
             status: TestStatus::Skip,
             error: None,
             duration_ms: None,
+            failure_kind: None,
         }
     }
 
@@ -389,6 +434,141 @@ mod tests {
             found_text.trim(),
             raw_error,
             "Round-tripped failure text must equal original"
+        );
+    }
+
+    /// Read the whole document with an XML parser and return the `type`
+    /// attribute of every `<failure>`.
+    fn failure_types(xml: &str) -> Vec<String> {
+        use quick_xml::events::Event;
+        use quick_xml::Reader;
+        let mut reader = Reader::from_str(xml);
+        let mut types = Vec::new();
+        loop {
+            match reader.read_event() {
+                Ok(Event::Start(e)) if e.local_name().as_ref() == b"failure" => {
+                    for attribute in e.attributes() {
+                        let attribute = attribute.expect("failure attributes parse");
+                        if attribute.key.local_name().as_ref() == b"type" {
+                            types.push(
+                                String::from_utf8(attribute.value.into_owned())
+                                    .expect("type is UTF-8"),
+                            );
+                        }
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => panic!("XML parse error: {e}\nXML was:\n{xml}"),
+                _ => {}
+            }
+        }
+        types
+    }
+
+    /// XML 1.0 has no representation at all for most C0 control characters:
+    /// even `&#0;` is illegal. An AL failure message built from binary or
+    /// terminal data used to be written raw, which made the whole report
+    /// unparseable and turned one failing test into "no test results".
+    #[test]
+    fn control_characters_do_not_break_the_document() {
+        let raw_error = "bad payload: \u{0}\u{1}\u{8}\u{b}\u{c}\u{e}\u{1b}[31m\u{1f} end";
+        let cu = TestCodeunitResult::from_methods(
+            "Suite\u{7}Bell".to_string(),
+            50105,
+            vec![fail_method("Test_\u{1}Ctrl", raw_error)],
+        );
+        let xml = run_junit(&[cu]);
+        assert_well_formed_xml(&xml);
+        assert!(
+            !xml.chars().any(|ch| !is_xml10_char(ch)),
+            "no XML-illegal code point may reach the document: {xml:?}"
+        );
+        assert!(
+            xml.contains("bad payload:"),
+            "the readable part of the message survives: {xml}"
+        );
+        // Tab, newline and carriage return are legal and must be kept.
+        let kept = TestCodeunitResult::from_methods(
+            "Whitespace".to_string(),
+            50106,
+            vec![fail_method("Test_WS", "line one\n\tline two\r")],
+        );
+        let xml = run_junit(&[kept]);
+        assert_well_formed_xml(&xml);
+        assert!(xml.contains("line one"), "got:\n{xml}");
+    }
+
+    /// `]]>` ends a CDATA section. The writer escapes rather than wrapping in
+    /// CDATA, so the sequence must survive intact.
+    #[test]
+    fn a_cdata_terminator_in_a_message_round_trips() {
+        let raw_error = "unexpected ]]> in the payload";
+        let cu = TestCodeunitResult::from_methods(
+            "CdataTests".to_string(),
+            50107,
+            vec![fail_method("Test_Cdata", raw_error)],
+        );
+        let xml = run_junit(&[cu]);
+        assert_well_formed_xml(&xml);
+        assert!(
+            !xml.contains("]]>"),
+            "a raw CDATA terminator must not appear: {xml}"
+        );
+
+        use quick_xml::events::Event;
+        use quick_xml::Reader;
+        let mut reader = Reader::from_str(&xml);
+        let mut in_failure = false;
+        let mut found = String::new();
+        loop {
+            match reader.read_event() {
+                Ok(Event::Start(e)) if e.local_name().as_ref() == b"failure" => in_failure = true,
+                Ok(Event::Text(e)) if in_failure => {
+                    found.push_str(&e.xml10_content().unwrap());
+                }
+                Ok(Event::GeneralRef(e)) if in_failure => match e.decode().unwrap().as_ref() {
+                    "amp" => found.push('&'),
+                    "lt" => found.push('<'),
+                    "gt" => found.push('>'),
+                    "quot" => found.push('"'),
+                    "apos" => found.push('\''),
+                    other => panic!("unexpected entity reference: &{other};"),
+                },
+                Ok(Event::End(e)) if e.local_name().as_ref() == b"failure" => in_failure = false,
+                Ok(Event::Eof) => break,
+                Err(e) => panic!("XML parse error: {e}"),
+                _ => {}
+            }
+        }
+        assert_eq!(found.trim(), raw_error);
+    }
+
+    /// A dead server and a red test must not carry the same JUnit `type`.
+    #[test]
+    fn the_failure_type_names_the_failure_kind() {
+        let cu = TestCodeunitResult::from_methods(
+            "KindTests".to_string(),
+            50108,
+            vec![
+                fail_method("Test_Assert", "Assert.AreEqual failed"),
+                fail_method_of_kind(
+                    "Test_Slow",
+                    "timeout after 30000 ms",
+                    TestFailureKind::Timeout,
+                ),
+                fail_method_of_kind(
+                    "Test_Dead",
+                    "BC server error (HTTP 500)",
+                    TestFailureKind::Infrastructure,
+                ),
+            ],
+        );
+        let xml = run_junit(&[cu]);
+        assert_well_formed_xml(&xml);
+        assert_eq!(
+            failure_types(&xml),
+            vec!["AssertionError", "Timeout", "InfrastructureError"],
+            "got:\n{xml}"
         );
     }
 

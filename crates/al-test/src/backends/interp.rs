@@ -422,6 +422,8 @@ fn run_codeunit_interp(
                 _ => None,
             },
             duration_ms: Some(duration_ms),
+            // The interpreter ran the body, so a failure is the AL code's.
+            failure_kind: None,
         };
         method_results.push(method_result.clone());
         events.push(TestEvent::CaseResult {

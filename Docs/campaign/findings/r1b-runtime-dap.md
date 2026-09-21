@@ -113,14 +113,14 @@ item that file left unticked, plus the files its checklist does not name.
 - severity: medium
 - scenario: `run` groups `TestId`s by codeunit and dedupes only exact `(codeunit_id, method_name)` pairs, so `[TestId{50100, None}, TestId{50100, Some("TestA")}]` survives as one group with `methods = [None, Some("TestA")]`. `has_specific_methods` is true, so the loop calls `run_codeunit` once per entry, and the `None` entry runs the *whole* codeunit. For a codeunit with five tests the run issues two BC calls, emits two `SuiteComplete` events, and `SessionComplete` reports `total = 6` with `TestA` counted twice. A client that sends the codeunit node and one of its method nodes in the same request (the obvious shape for "run selected" in a tree UI) hits this.
 - fix: when any entry in a group is `Some`, drop the `None` entries (the whole-codeunit run is a superset), or expand the `None` entry through `list_methods` and merge before grouping.
-- status: open
+- status: fixed 54bfd8b7 (kept the `None` entry, which is the superset, and dropped the named ones)
 
 ### [GAP] The parallel live-BC path spawns one task per codeunit with no concurrency cap
 - where: crates/al-test/src/backends/live_bc.rs:287 (`JoinSet::spawn` inside the `for` loop)
 - severity: medium
 - scenario: `opts.parallel` with 200 test codeunits opens 200 simultaneous `POST /dev/tests/{id}/run` calls against one BC server instance, each holding a session. On-prem NST typically caps concurrent sessions well below that, so the surplus calls fail with a server error and `append_failed_case` reports them as test *failures* rather than as an infrastructure limit. The failures look like product regressions and are not reproducible on a rerun with fewer codeunits.
 - fix: bound the fan-out (a `Semaphore`, or spawn in chunks) with a default around 4 to 8 and expose it in `RunOptions`, and keep a server-error result distinguishable from an assertion failure in the emitted `TestMethodResult`.
-- status: open
+- status: fixed 54bfd8b7 (the failure-kind half lands with the JUnit `type` finding below)
 
 ### [BUG] A test name or failure message containing a control character makes the whole JUnit report unparseable
 - where: crates/al-test/src/output/junit.rs:131 (`BytesText::new(body)`) and :121 (`push_attribute(("name", ...))`)

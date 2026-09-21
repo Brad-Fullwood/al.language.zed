@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
 
 use crate::error::TestRunnerError;
-use crate::result::{TestCodeunitResult, TestMethodResult, TestStatus};
+use crate::result::{TestCodeunitResult, TestFailureKind, TestMethodResult, TestStatus};
 use crate::session::{
     method_name_matches, RunOptions, TestEvent, TestId, TestSession, DEFAULT_MAX_PARALLEL,
 };
@@ -37,26 +37,37 @@ async fn send_event(tx: &mpsc::Sender<TestEvent>, event: TestEvent) -> Result<()
     })
 }
 
-fn failure_result(name: String, message: String) -> TestMethodResult {
+fn failure_result(name: String, message: String, kind: TestFailureKind) -> TestMethodResult {
     TestMethodResult {
         name,
         status: TestStatus::Fail,
         error: Some(message),
         duration_ms: None,
+        failure_kind: Some(kind),
     }
 }
 
+/// Emit an `Error`, a failed `CaseResult` and a one-test `SuiteComplete` for a
+/// target the server never reported on.
+///
+/// `kind` reaches the JUnit `type` attribute, so a timeout or a dead server is
+/// not filed under `AssertionError` alongside a genuinely red test.
 fn append_failed_case(
     events: &mut Vec<TestEvent>,
     codeunit_id: i32,
     codeunit_name: &str,
     method_name: Option<&str>,
     message: String,
+    kind: TestFailureKind,
 ) {
     events.push(TestEvent::Error {
         message: message.clone(),
     });
-    let result = failure_result(method_name.unwrap_or(codeunit_name).to_string(), message);
+    let result = failure_result(
+        method_name.unwrap_or(codeunit_name).to_string(),
+        message,
+        kind,
+    );
     events.push(TestEvent::CaseResult {
         id: TestId {
             codeunit_id,
@@ -149,6 +160,7 @@ async fn run_one_codeunit(
                     codeunit_name,
                     method.as_deref(),
                     format!("Failed to construct the BC test client: {error}"),
+                    TestFailureKind::Infrastructure,
                 );
             }
             return events;
@@ -199,6 +211,7 @@ async fn run_one_codeunit(
                         codeunit_name,
                         method_str,
                         e.to_string(),
+                        TestFailureKind::Infrastructure,
                     );
                 }
                 Err(_elapsed) => {
@@ -208,6 +221,7 @@ async fn run_one_codeunit(
                         codeunit_name,
                         method_str,
                         format!("timeout after {} ms", timeout_dur.as_millis()),
+                        TestFailureKind::Timeout,
                     );
                 }
             }
@@ -244,7 +258,14 @@ async fn run_one_codeunit(
                 });
             }
             Ok(Err(e)) => {
-                append_failed_case(&mut events, codeunit_id, codeunit_name, None, e.to_string());
+                append_failed_case(
+                    &mut events,
+                    codeunit_id,
+                    codeunit_name,
+                    None,
+                    e.to_string(),
+                    TestFailureKind::Infrastructure,
+                );
             }
             Err(_elapsed) => {
                 append_failed_case(
@@ -253,6 +274,7 @@ async fn run_one_codeunit(
                     codeunit_name,
                     None,
                     format!("timeout after {} ms", timeout_dur.as_millis()),
+                    TestFailureKind::Timeout,
                 );
             }
         }
@@ -435,6 +457,7 @@ impl TestSession for LiveBcMode {
                 &codeunit_name,
                 Some(&method_name),
                 message,
+                TestFailureKind::Infrastructure,
             );
             for event in events {
                 if let TestEvent::SuiteComplete { ref summary, .. } = event {
@@ -947,6 +970,7 @@ mod tests {
                     status: TestStatus::Pass,
                     error: None,
                     duration_ms: None,
+                    failure_kind: None,
                 },
             },
             &mut unreported,

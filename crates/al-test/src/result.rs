@@ -2,4 +2,4 @@
 
 pub use crate::error::TestRunnerError;
 
-pub use al_types::{TestCodeunitResult, TestMethodResult, TestStatus};
+pub use al_types::{TestCodeunitResult, TestFailureKind, TestMethodResult, TestStatus};

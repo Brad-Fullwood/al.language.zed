@@ -324,6 +324,9 @@ fn map_dev_result(r: DevTestResult) -> Result<TestMethodResult, TestRunnerError>
         status,
         error: r.message.filter(|m| !m.is_empty()),
         duration_ms,
+        // BC ran the test and told us how it went, so a failure here is the
+        // AL assertion failing.
+        failure_kind: None,
     })
 }
 
@@ -526,18 +529,21 @@ mod tests {
                 status: TestStatus::Pass,
                 error: None,
                 duration_ms: None,
+                failure_kind: None,
             },
             TestMethodResult {
                 name: "B".into(),
                 status: TestStatus::Fail,
                 error: Some("err".into()),
                 duration_ms: None,
+                failure_kind: None,
             },
             TestMethodResult {
                 name: "C".into(),
                 status: TestStatus::Skip,
                 error: None,
                 duration_ms: None,
+                failure_kind: None,
             },
         ];
         let result = TestCodeunitResult::from_methods("MyTests".into(), 50100, methods);

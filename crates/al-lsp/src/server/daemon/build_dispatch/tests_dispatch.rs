@@ -3559,6 +3559,7 @@ mod tests {
                 status: TestStatus::Pass,
                 error: None,
                 duration_ms: Some(10),
+                failure_kind: None,
             }],
         );
         let json = serde_json::to_value(&v).unwrap();
