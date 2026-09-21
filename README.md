@@ -141,6 +141,71 @@ agent diagnostics when work is incomplete because package symbols, live-BC confi
 bridge enrichment, or original package source are unavailable. `al_call` keeps the generic result
 shape required to forward the complete heterogeneous daemon catalog.
 
+## Claude Code Plugin
+
+`plugin/` is a Claude Code plugin that points Claude Code at these tools. Without
+it, an agent asked where a Business Central object is defined greps the workspace
+and cannot see inside a `.app` package at all. With it, the same question is a
+symbol-index lookup that also covers Base Application and every other dependency.
+
+### Install
+
+```bash
+/plugin marketplace add Brad-Fullwood/al.language.zed
+/plugin install al-bc@al-language-zed
+```
+
+The plugin drives `al-lsp` and `al-explorer` and does not ship them.
+`plugin/scripts/al-bin.sh` looks for both, in this order: `$AL_BIN_DIR`, a
+`target/release` or `target/debug` directory in an enclosing checkout of this
+repository, `PATH`, then `$CLAUDE_PLUGIN_DATA/bin`. If it finds neither, it
+prints the `cargo install` commands and the release-download URL. The two
+binaries have to sit in the same directory, because `al-explorer` starts the
+daemon by looking next to itself first.
+
+To try it without installing:
+
+```bash
+claude --plugin-dir /path/to/al.language.zed/plugin
+```
+
+### What it adds
+
+An MCP server, wired to the project the session opened, exposing the tools listed
+under [MCP Automation](#mcp-automation). Eight skills, which Claude Code loads by
+itself when a question matches one:
+
+| Skill | Answers |
+| --- | --- |
+| `bc-symbol-lookup` | Where an object, table, field, codeunit or enum is defined, which app defines object N, what fields a table has, what an enum accepts |
+| `bc-base-app-source` | The source of a procedure or trigger, including code that only exists inside a `.app` package |
+| `bc-event-map` | Who subscribes to an event, who publishes it, its parameters, which integration event to subscribe to |
+| `bc-impact-check` | Who calls or uses a symbol, what a change to a field or a signature breaks |
+| `bc-object-id-allocator` | The next free object ID inside `app.json`'s `idRanges`, and the next free field number |
+| `bc-test-locally` | Running AL tests on the built-in interpreter, coverage, which tests a change affects, which tests need a live tenant |
+| `bc-upgrade-impact` | What a dependency version bump breaks: removed symbols, changed signatures, subscribers pointing at events that no longer exist |
+| `bc-workspace-health` | Pre-build and pre-deploy audit: duplicate or out-of-range IDs, SQL anti-patterns, dead code, missing annotations, permission coverage |
+
+Two subagents. `bc-symbol-scout` runs the lookups on a cheap model and returns
+the answer instead of the payload, which matters because several of these calls
+return hundreds of kilobytes today. `bc-cop-fixer` drives lint diagnostics to
+zero on a named set of files.
+
+One `SessionStart` hook. It emits a short routing note when the working
+directory holds an AL `app.json`, and nothing at all anywhere else.
+
+### Notes
+
+The skills are written for what the tools return today, which includes some
+awkward shapes: `impact Item` returns 1,594 rows with no limit flag, `by-id
+codeunit 80` is 552 KB, and `subscribers` under-reports where `trace` is
+correct. Every skill names the compact call, pipes the large ones through `jq`,
+and lists the calls to avoid. `plugin/ROADMAP.md` records each of those
+workarounds against the change that removes it, and `plugin/TESTING.md` records
+the agent runs behind the current wording.
+
+Validate a change with `make plugin-validate`.
+
 ## Native AL Test Runtime
 
 Yes, this project includes a native AL language runner for tests.

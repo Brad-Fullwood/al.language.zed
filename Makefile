@@ -14,6 +14,7 @@
 #   make repro-artifacts — regenerate generated artifacts; fail on any diff (CI drift guard)
 #   make live-bc-contracts — strict tenant-backed publish/DAP/test/snapshot profile
 #   make release-dryrun  — read-only release-readiness gate (never publishes)
+#   make plugin-validate — check the Claude Code plugin under plugin/
 #   make clean     — clean all build artifacts
 
 SHELL := /bin/bash
@@ -34,7 +35,7 @@ endif
 ALSEMANTIC_PROJ := "$(ROOT)/crates/al-semantic/bridge/AlBridge.csproj"
 WASM_BIN := $(ROOT)/target/wasm32-wasip2/release/zed_al.wasm
 
-.PHONY: build install install-lsp dev-setup watch rust wasm bridges grammar language record-methods check-record-methods repro-artifacts shellcheck deny microsoft-contracts live-bc-contracts release-dryrun crates-publish-dryrun clean
+.PHONY: build install install-lsp dev-setup watch rust wasm bridges grammar language record-methods check-record-methods repro-artifacts shellcheck deny microsoft-contracts live-bc-contracts release-dryrun crates-publish-dryrun plugin-validate clean
 
 # Crates that are NOT published to crates.io (publish = false): the root wasm
 # extension plus the binary/harness crates. Everything else under crates/* is a
@@ -405,6 +406,12 @@ crates-publish-dryrun:
 		fi; \
 	done; \
 	[ $$fail -eq 0 ] || { echo "crates-publish-dryrun: registry readiness is not green"; exit 1; }
+
+# ── Claude Code plugin ───────────────────────────────────────────
+# Manifest JSON validity, shellcheck on plugin/scripts/*.sh, and a name plus a
+# description in the frontmatter of every skill and agent.
+plugin-validate:
+	@bash scripts/check-plugin.sh
 
 # ── Clean ────────────────────────────────────────────────────────
 clean:
