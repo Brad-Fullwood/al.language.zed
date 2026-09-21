@@ -238,7 +238,7 @@ Files the first checklist does not list at all:
   ```
   `scan_file_for_obsolete` calls `extract_obsolete_from_preceding_attr(root, source)` with the tree *root*. `root.prev_sibling()` is `None`, so the sibling walk at 184-196 does nothing, and the child loop at 198-207 only accepts children of kind `attribute` or `attribute_list`. The object's properties are not attribute nodes, so `obj_obsolete` is always `None` and the query never emits a `kind: "object"` entry for any real AL object. The whole `ObsoleteState` branch of `parse_obsolete_attr` (214-226) is therefore unreachable, which also hides its own ordering bug: it tests `lower.contains("pending")` before `lower.contains("removed")`, so `ObsoleteState = Removed; ObsoleteReason = 'Pending removal was announced in 24.0';` would be classified `Pending`.
 - fix: read the object's property block (the same `Caption`-style property scan other queries use) rather than looking for an attribute, and test for `removed` before `pending`.
-- status: open
+- status: fixed 15d7b1c0
 
 ### [GAP] Obsolete table fields are never scanned, though `kind` documents "field"
 - where: crates/al-analysis/src/queries/obsolescence.rs:23 (doc) and 139-178 (`scan_procedures_for_obsolete`)
@@ -249,21 +249,21 @@ Files the first checklist does not list at all:
   ```
   produces no entry. An obsolete field is the most common obsolescence in Business Central because it is the one that forces data migration, and it is the one case the timeline query cannot see. No test covers it either (tests at 314-418 cover an obsolete procedure, a non-obsolete procedure, an empty workspace and a symbol-package method).
 - fix: add a `field_declaration` arm to the tree walk that reads the field's property block, and add a test.
-- status: open
+- status: fixed 15d7b1c0
 
 ### [PERF] Reference counting re-walks every workspace tree once per obsolete symbol
 - where: crates/al-analysis/src/queries/obsolescence.rs:292-297 (`count_references_in_files`), called at 114 and 158
 - severity: medium
 - scenario: `count_references_in_files` maps `al_syntax::find_call_references(tree, text, name)` over *all* files, and it is called once per obsolete symbol found. `find_call_references` (crates/al-syntax/src/navigation.rs:283-289) is a full tree walk. A project with 2000 `.al` files and 50 obsolete procedures does 100,000 full tree walks for one `obsolescence` query. al-syntax already ships the fix and documents it for exactly this shape: `collect_call_site_names` (navigation.rs:291-303) says "Single-pass companion to `find_call_references`: instead of asking 'is this one name called here?' N times, walk the tree once and collect the full set of called names."
 - fix: build one `HashSet<String>` of call-site names per file with `collect_call_site_names`, then look each obsolete symbol up in it.
-- status: open
+- status: fixed 15d7b1c0
 
 ### [PERF] The obsolete-usage diagnostic snapshots the whole workspace twice and throws away the expensive half
 - where: crates/al-analysis/src/queries/obsolete_usage.rs:36 and 56, reached from crates/al-analysis/src/queries/diagnostics.rs:289-290
 - severity: high
 - scenario: `obsolete_usages` calls `workspace_sources::snapshot(workspace)` at line 36, which clones the text and tree of every indexed `.al` file. At line 56 it then calls `obsolescence_timeline(workspace)`, whose first statement (obsolescence.rs:41) is *another* full `snapshot`. The timeline also runs `count_references_in_files` for every obsolete symbol, a full tree walk of every file per symbol (see the finding above), and `obsolete_usages` discards `caller_count` entirely: lines 57-67 read only `kind`, `file`, `symbol`, `reason` and `tag`. This runs inside `workspace_diagnostics`, which crates/al-lsp/src/server/lsp.rs:1257-1261 schedules on every `did_change` when the scope is `Project` and the trigger is `Continuous`. On a 2000-file project with 50 obsolete procedures, each debounced keystroke costs two whole-workspace snapshots plus 100,000 tree walks whose result is dropped.
 - fix: give `obsolescence_timeline` a variant that takes an existing `sources` snapshot and skips reference counting, and have `obsolete_usages` call that.
-- status: open
+- status: fixed 15d7b1c0
 
 ### [SLOP] `EdgeKind::TriggerInvocation` can never appear in a call graph, but four consumers branch on it
 - where: crates/al-insight/src/index.rs:9-10 (module doc), 52 (variant), 215-222 (`add_trigger_invocation`); consumers at crates/al-insight/src/search.rs:142 and 430, crates/al-analysis/src/queries/test_coverage.rs:327
