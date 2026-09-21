@@ -6,7 +6,11 @@ description: Use whenever you need to read the AL source or body of a Business C
 # Read AL source, including from .app packages
 
 The `.app` packages in `.alpackages` carry the original AL source for most
-objects. `source` extracts it. Run every command from the AL project directory.
+objects. `source` extracts it.
+
+Run every command from the project directory you are already in. Do not `cd`
+first: the daemon binds to the directory the command runs in, and the plugin
+directory is not the project.
 
 ## Two steps, always
 

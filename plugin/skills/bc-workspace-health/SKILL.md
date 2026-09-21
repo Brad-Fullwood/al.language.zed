@@ -5,8 +5,10 @@ description: Use before compiling or deploying a Business Central extension, and
 
 # Audit an AL extension
 
-Every check here is workspace-scoped and small. Run them from the AL project
-directory. None of them needs a compile.
+Every check here is workspace-scoped and small, and none of them needs a
+compile. Run them from the project directory you are already in. Do not `cd`
+first: the daemon binds to the directory the command runs in, and the plugin
+directory is not the project.
 
 ## The pre-flight set
 

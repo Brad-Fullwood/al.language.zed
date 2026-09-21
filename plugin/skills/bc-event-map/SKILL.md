@@ -5,7 +5,9 @@ description: Use for any Business Central event question - who subscribes to an 
 
 # Business Central events
 
-Run every command from the AL project directory.
+Run every command from the project directory you are already in. Do not `cd`
+first: the daemon binds to the directory the command runs in, and the plugin
+directory is not the project.
 
 ## Who subscribes to an event: use `trace`, not `subscribers`
 

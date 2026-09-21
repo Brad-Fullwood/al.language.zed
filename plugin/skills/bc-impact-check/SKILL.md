@@ -5,7 +5,9 @@ description: Use for any question of the form who calls X, who uses X, what read
 
 # What does changing this break
 
-Run every command from the AL project directory.
+Run every command from the project directory you are already in. Do not `cd`
+first: the daemon binds to the directory the command runs in, and the plugin
+directory is not the project.
 
 ## Confirm the name exists first
 

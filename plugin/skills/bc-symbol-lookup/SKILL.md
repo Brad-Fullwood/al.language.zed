@@ -5,8 +5,10 @@ description: Use for any question about where an AL or Business Central object l
 
 # Find an AL symbol
 
-Run every command from the AL project directory. The first call starts a daemon
-and takes one to three seconds; later calls take tens of milliseconds.
+Run every command from the project directory you are already in. Do not `cd`
+first: the daemon binds to the directory the command runs in, and the plugin
+directory is not the project. The first call starts a daemon and takes one to
+three seconds; later calls take tens of milliseconds.
 
 ## Always search first
 

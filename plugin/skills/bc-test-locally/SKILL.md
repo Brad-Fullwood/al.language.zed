@@ -5,7 +5,9 @@ description: Use for any AL or Business Central test request - run the tests, wr
 
 # Run AL tests locally
 
-Run every command from the AL project directory.
+Run every command from the project directory you are already in. Do not `cd`
+first: the daemon binds to the directory the command runs in, and the plugin
+directory is not the project.
 
 ## Check the routing before you run anything
 

@@ -5,8 +5,8 @@ description: Use before creating any new Business Central object or adding a fie
 
 # Pick a free object ID or field number
 
-No tool enumerates free IDs yet. This is the working recipe, run from the AL
-project directory.
+No tool enumerates free IDs yet. This is the working recipe. Run it from the
+project directory you are already in; do not `cd` first.
 
 ## Next free object ID
 
