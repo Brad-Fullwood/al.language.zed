@@ -41,7 +41,7 @@ item that file left unticked, plus the files its checklist does not name.
   ```
   `read_name` returns `SalesDetail.Amount`, `expect_char('.')` then sees `W` and returns `UnexpectedToken`. `parse_field_calcformula` turns that into `Err`, `parse_field_def` propagates it, and `parse_table_meta` fails, so the table cannot be loaded at all. Every interp-routed test that touches that table dies with a parse message, while BC runs the test normally. Quoting the table name (`Sum("SalesDetail".Amount ...)`) hides the bug, which is why all 12 unit tests and the two lint fixtures use quoted names. `Count(SalesDetail)` happens to work because `Count` reads no field name, so the failure is silent until someone writes an aggregating FlowField.
 - fix: stop treating `.` as an identifier character in `read_name`, or read the table name with a dedicated routine that stops at the first `.` when the formula type takes a field. Add a unit test parsing `Sum(SalesDetail.Amount)` and `Lookup(Item.UnitPrice)` with no quotes.
-- status: open
+- status: fixed b60dcc2b
 
 ### [BUG] `LibraryVariableStorage.DequeueText`/`PeekText` print Date, Time, DateTime and Duration as raw carriers
 - where: crates/al-runtime/src/stubs/library_variable_storage.rs:398 (`format_value`, arms at :405-:408)

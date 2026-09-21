@@ -52,7 +52,7 @@ fn ok(v: Value) -> Eval {
 /// If MaxValue < 1, returns 1 (matches BC behaviour).
 pub fn rand_int(args: &[Value]) -> Eval {
     let max = match args {
-        [Value::Integer(n)] => *n,
+        [Value::Integer(n) | Value::BigInteger(n)] => *n,
         [] => return err("LibraryRandom.RandInt requires 1 argument"),
         _ => return err("LibraryRandom.RandInt expects (Integer)"),
     };
@@ -68,7 +68,9 @@ pub fn rand_int(args: &[Value]) -> Eval {
 /// If MinValue ≥ MaxValue, returns MinValue.
 pub fn rand_int_in_range(args: &[Value]) -> Eval {
     let (min, max) = match args {
-        [Value::Integer(a), Value::Integer(b)] => (*a, *b),
+        [Value::Integer(a) | Value::BigInteger(a), Value::Integer(b) | Value::BigInteger(b)] => {
+            (*a, *b)
+        }
         _ => return err("LibraryRandom.RandIntInRange expects (Integer, Integer)"),
     };
     if min >= max {
@@ -90,8 +92,10 @@ pub fn rand_int_in_range(args: &[Value]) -> Eval {
 ///   integer part = RandInt(MaxValue × 10^Places), then divide by 10^Places.
 pub fn rand_dec(args: &[Value]) -> Eval {
     let (max_val, places) = match args {
-        [Value::Integer(m), Value::Integer(p)] => (*m, *p),
-        [Value::Decimal(m), Value::Integer(p)] => {
+        [Value::Integer(m) | Value::BigInteger(m), Value::Integer(p) | Value::BigInteger(p)] => {
+            (*m, *p)
+        }
+        [Value::Decimal(m), Value::Integer(p) | Value::BigInteger(p)] => {
             let Some(max) = m.to_i64() else {
                 return err(
                     "LibraryRandom.RandDec: MaxValue must be a whole Decimal within Integer range",
@@ -128,7 +132,7 @@ pub fn rand_dec(args: &[Value]) -> Eval {
 pub fn rand_text(args: &[Value]) -> Eval {
     let max_len: i64 = match args {
         [] => 30,
-        [Value::Integer(n)] => (*n).clamp(1, 250),
+        [Value::Integer(n) | Value::BigInteger(n)] => (*n).clamp(1, 250),
         _ => return err("LibraryRandom.RandText expects ([Integer])"),
     };
     let length = next_rand(max_len) as usize;
@@ -153,16 +157,12 @@ pub(super) fn set_lcg_seed(seed: u64) {
     LCG_STATE.with(|cell| cell.set(seed.max(1)));
 }
 
-pub(super) fn lcg_state() -> u64 {
-    LCG_STATE.with(Cell::get)
-}
-
 /// `LibraryRandom.SetSeed(Seed: Integer)`
 ///
 /// Seeds the thread-local RNG.  A seed of 0 is treated as 1 (BC convention).
 pub fn set_seed(args: &[Value]) -> Eval {
     let seed = match args {
-        [Value::Integer(n)] => *n as u64,
+        [Value::Integer(n) | Value::BigInteger(n)] => *n as u64,
         [] => return err("LibraryRandom.SetSeed requires 1 argument"),
         _ => return err("LibraryRandom.SetSeed expects (Integer)"),
     };
@@ -175,7 +175,7 @@ pub fn set_seed(args: &[Value]) -> Eval {
 /// Returns a pseudo-random date in [StartDate, StartDate + MaxNumberOfDays].
 pub fn rand_date_from(args: &[Value]) -> Eval {
     let (start, max_days) = match args {
-        [Value::Date(d), Value::Integer(n)] => (*d, *n),
+        [Value::Date(d), Value::Integer(n) | Value::BigInteger(n)] => (*d, *n),
         _ => return err("LibraryRandom.RandDateFrom expects (Date, Integer)"),
     };
     if max_days <= 0 {

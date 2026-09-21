@@ -2101,13 +2101,53 @@ pub(crate) fn render_value(v: &Value) -> String {
             let time = render_time_ms(dt.rem_euclid(crate::interpreter::value::MS_PER_DAY));
             format!("{m:02}/{day:02}/{y:04} {time}")
         }
-        Value::Duration(d) => d.to_string(),
+        Value::Duration(d) => render_duration(*d),
         Value::Guid(g) => g.clone(),
         Value::Char(c) => c.to_string(),
         Value::Null => String::new(),
         Value::Empty => String::new(),
         Value::Option { member, .. } => member.clone(),
         other => format!("<{}>", other.type_name()),
+    }
+}
+
+/// Render a Duration as BC's `Format` does: the non-zero components from days
+/// down, each singular or plural.
+///
+/// `CreateDateTime(20090505D, 133001T) - CreateDateTime(20090101D, 080000T)`
+/// formats as `124 days 4 hours 30 minutes 1 second` (Microsoft Learn,
+/// Duration data type, Example 1). A Duration carries milliseconds, so a
+/// sub-second remainder shows as its own component.
+pub(crate) fn render_duration(milliseconds: i64) -> String {
+    const MS_PER_SECOND: u64 = 1_000;
+    const MS_PER_MINUTE: u64 = 60 * MS_PER_SECOND;
+    const MS_PER_HOUR: u64 = 60 * MS_PER_MINUTE;
+    const MS_PER_DAY: u64 = 24 * MS_PER_HOUR;
+
+    let mut rest = milliseconds.unsigned_abs();
+    let mut parts: Vec<String> = Vec::new();
+    for (unit, name) in [
+        (MS_PER_DAY, "day"),
+        (MS_PER_HOUR, "hour"),
+        (MS_PER_MINUTE, "minute"),
+        (MS_PER_SECOND, "second"),
+        (1, "millisecond"),
+    ] {
+        let count = rest / unit;
+        rest %= unit;
+        if count != 0 {
+            let plural = if count == 1 { "" } else { "s" };
+            parts.push(format!("{count} {name}{plural}"));
+        }
+    }
+    if parts.is_empty() {
+        return "0 seconds".to_string();
+    }
+    let rendered = parts.join(" ");
+    if milliseconds < 0 {
+        format!("-{rendered}")
+    } else {
+        rendered
     }
 }
 

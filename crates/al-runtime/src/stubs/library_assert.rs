@@ -169,7 +169,7 @@ fn render_value(v: &Value) -> String {
         Text(s) | Code(s) => format!("\"{s}\""),
         // A second renderer used to print these as their day and millisecond
         // carriers, so `expected 739068 but got 739069` named no date.
-        Date(_) | Time(_) | DateTime(_) | Option { .. } => {
+        Date(_) | Time(_) | DateTime(_) | Duration(_) | Option { .. } => {
             crate::interpreter::dispatch::render_value(v)
         }
         Null => "null".into(),
