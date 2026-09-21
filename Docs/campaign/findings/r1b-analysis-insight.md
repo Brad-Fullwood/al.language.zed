@@ -11,18 +11,18 @@ Priority (edits user files / core resolution):
 - [x] queries/breaking_changes.rs
 
 Rest of scope:
-- [ ] xliff.rs
+- [x] xliff.rs
 - [ ] scaffold.rs  — findings pending from orchestrator
 - [ ] generators.rs  — findings pending from orchestrator
-- [ ] queries/source.rs
-- [ ] queries/audit.rs
-- [ ] queries/obsolescence.rs + queries/obsolete_usage.rs
+- [ ] queries/source.rs  — NOT COVERED
+- [ ] queries/audit.rs  — NOT COVERED
+- [x] queries/obsolescence.rs + queries/obsolete_usage.rs
 - [x] queries/upgrade.rs
-- [ ] al-insight/src/index.rs
-- [ ] al-insight/src/discovery.rs
-- [ ] queries/test_diagnostics.rs
-- [ ] queries/code_actions/test_support.rs
-- [ ] queries/suggest_event.rs, profiler_hints.rs, test_coverage.rs
+- [x] al-insight/src/index.rs
+- [x] al-insight/src/discovery.rs
+- [ ] queries/test_diagnostics.rs  — NOT COVERED
+- [ ] queries/code_actions/test_support.rs  — NOT COVERED
+- [ ] queries/suggest_event.rs, profiler_hints.rs, test_coverage.rs  — NOT COVERED
 
 Files the first checklist does not list at all:
 - [ ] lsp.rs
@@ -127,6 +127,74 @@ Files the first checklist does not list at all:
 - fix: add a test with a table declaring `field(2; Amount; Decimal)` and a separate codeunit using `Cust.Amount`, and assert the codeunit gets exactly one edit.
 - status: open
 
+### [BUG] `xlf.untranslated` always reports an empty object type, id and name
+- where: crates/al-analysis/src/xliff.rs:836-838, surfaced at crates/al-lsp/src/server/daemon/build_dispatch/xliff.rs:341-352
+- severity: high
+- scenario: `parse_xliff` builds each `TranslationUnit` with `object_type: String::new(), object_id: 0, object_name: String::new()` and the comment `// reconstructed from id`. Nothing reconstructs them. `dispatch_xlf_untranslated` reads a language `.xlf` through `parse_xliff` and emits `"objectType": u.object_type, "objectId": u.object_id, "objectName": u.object_name` for every item, so every row of the `xlf.untranslated` response carries `""`, `0`, `""`. A translator asking which object a missing string belongs to gets nothing back, for every string.
+- fix: parse the id back into its parts (`<ObjectType> <hash> - ...`) and fill at least `object_type`, or drop the three fields from the response and from `TranslationUnit` when it came from a parse.
+- status: open
+
+### [BUG] Only the first object in a multi-object `.al` file gets translation units, and the rest collide or vanish
+- where: crates/al-analysis/src/xliff.rs:158-166 (`extract_from_file`), 467-546 (`detect_object_header`)
+- severity: high
+- scenario: AL allows several objects in one file and the index explicitly supports it (crates/al-source/src/file_index.rs:695). `detect_object_header` returns on the *first* declaration it finds, and `extract_from_file` then attributes every `Caption`, `ToolTip` and `Label` in the whole file to that one object. Given a file holding `table 50100 "Shipment Header"` followed by `table 50101 "Shipment Line"`, the second table's captions get ids built from `name_hash("Shipment Header")` and note text naming the wrong object. When both tables have a field of the same name (`"Document No."`, near-universal in BC), the two produce a byte-identical id, and `extract_translation_units` (134-145) drops the second as a duplicate. The translation for the second table's field is then simply absent from the `.g.xlf`, with only a `tracing::warn!` that no CLI surface shows.
+- fix: scan for every object declaration in the file and re-anchor the object context when the brace depth returns to zero, rather than detecting a single header up front.
+- status: open
+
+### [BUG] `Caption='X';` without spaces around `=` produces no translation unit
+- where: crates/al-analysis/src/xliff.rs:582-591 (`parse_property_value`)
+- severity: medium
+- scenario: `prefix = format!("{} =", property)` then `line_lower.starts_with(&prefix_lower)`, so the match requires exactly one space between the property name and `=`. `Caption='Posted Shipment';` and `Caption  = 'Posted Shipment';` both fail `starts_with("caption =")` and the string is silently left out of the generated `.g.xlf`. alc accepts either spelling, so the file compiles and ships with an untranslatable caption that nobody is told about. `parse_label_declaration` (595-610) does not have this problem because it matches on `:` and `label ` separately.
+- fix: split the line on the first `=`, trim both sides, and compare the left side to the property name case-insensitively.
+- status: open
+
+### [BUG] A `Comment` containing the word "locked" suppresses the translation unit
+- where: crates/al-analysis/src/xliff.rs:371-410 (`property_is_locked`)
+- severity: medium
+- scenario: the function finds the first `'`, skips that one literal honouring `''`, then searches the *raw remainder* for "locked". It never skips the later literals. Given `Caption = 'Closed', Comment = 'Shown when the period is locked; %1 is the date';`, the remainder after the first literal still contains the Comment's text. `lower.find("locked")` hits inside the comment string, `after` is `; %1 is the date';`, `strip_prefix('=')` returns `None`, and the `None` arm accepts `after.starts_with(';')` as the bare-`Locked` shorthand. The caption is treated as locked and dropped from the `.g.xlf`, so it can never be translated. `Comment = 'locked, see the manual'` triggers the same through the `,` branch.
+- fix: skip every single-quoted literal on the line before searching for the modifier, reusing the same doubled-quote-aware scan the function already has for the first literal.
+- status: open
+
+### [BUG] An action group inside `actions` is keyed as `Control` instead of `Action`
+- where: crates/al-analysis/src/xliff.rs:259-275 (`MemberBlock::in_actions` and `id_kind`), set only at 302-308
+- severity: medium
+- scenario: `in_actions: true` is assigned in exactly one place, on the unnamed `actions` marker block itself. Every real member is constructed at 332-336 with `in_actions: false`, and `id_kind` reads only `self.in_actions`, never an ancestor's. So for
+  ```
+  actions { area(Processing) { group(Posting) { Caption = 'Posting'; action(Post) { Caption = 'Post'; } } } }
+  ```
+  the `action(Post)` caption is keyed `Action` through the `self.keyword == "action"` test, but the `group(Posting)` caption is keyed `Control`, because `group` is not in that keyword test and the enclosing `actions` flag is never consulted. alc emits `Action` for action groups, so the generated id does not match the one in the translator's file: `refresh_xliff` reports the unit as both added and removed on every run and the existing translation is lost.
+  - the field is therefore close to dead: it is written once and can only ever be read on the marker block, which has an empty `name`.
+- fix: propagate `in_actions` when pushing onto the stack (inherit it from the nearest enclosing entry), and drop the per-keyword special case.
+- status: open
+
+### [BUG] A `/* */` block comment containing an unbalanced brace corrupts the member stack for the rest of the file
+- where: crates/al-analysis/src/xliff.rs:342-365 (`strip_literals_for_structure`), used at 173 and 239-247
+- severity: medium
+- scenario: `strip_literals_for_structure` blanks single-quoted literals and stops at `//`, and handles neither `/*` nor `*/`. AL supports block comments, and `detect_object_header` (467-494) handles them, so the module knows they exist. A line such as `    /* the old layout used a { here */` pushes an extra entry onto `stack` at line 241 that is never popped. From that point every `Caption` in the file resolves its anchor one level too deep, so table fields declared after the comment get ids built from the wrong member, and the closing `}` of the object pops the wrong frame. The generated ids no longer match alc's, so those strings cannot be matched to existing translations.
+- fix: track `/* */` state in `strip_literals_for_structure` the way `detect_object_header` already does, and blank the comment body.
+- status: open
+
+### [BUG] A property on the same line as its member block is attributed to the enclosing block
+- where: crates/al-analysis/src/xliff.rs:172-247
+- severity: low
+- scenario: `anchor` is read at line 180 from the stack as it stands *before* the current line's braces are processed at 239-247. For a one-line member such as `field(1; "No."; Code[20]) { Caption = 'No.'; }`, `pending` is set at 175 but not yet pushed, so `anchor` is the enclosing `fields` frame (or `None`). The caption is emitted with the object-level id `Table <hash> - Property <hash>` instead of `Table <hash> - Field <hash> - Property <hash>`. If two one-line fields both carry a `Caption`, they produce the same object-level id and `extract_translation_units` drops the second as a duplicate.
+- fix: push `pending` for braces that open before the property's position on the line, or detect the single-line form and use `pending` as the anchor when it is set on the same line.
+- status: open
+
+### [SLOP] `find_untranslated`'s doc claims a sort the code does not do
+- where: crates/al-analysis/src/xliff.rs:964-978
+- severity: low
+- scenario: the doc comment says "Returns units where `target` is `None` or empty, sorted by object type and ID." The body is a `filter().filter().collect()` with no sort. The caller at crates/al-lsp/src/server/daemon/build_dispatch/xliff.rs:338-341 builds its input with `units_map.into_values()`, which is `HashMap` iteration order, so the `xlf.untranslated` output is in a different order on every run. The same module fixed exactly this for obsolete units at xliff.rs:944-951 with the comment "huge spurious VCS diffs".
+- fix: sort by `id` (the object type and id are blank anyway, per the first finding), or correct the doc.
+- status: open
+
+### [SLOP] Dead reset of `current_target` after the trans-unit is emitted
+- where: crates/al-analysis/src/xliff.rs:860
+- severity: low
+- scenario: `current_target = None;` runs after the `if let` block that already did `current_target.take()` at line 840, and the next `<trans-unit ` line resets it again at 800. It can only matter for a `</trans-unit>` whose `<source>` was missing, and in that case the next `<trans-unit ` clears it anyway.
+- fix: delete the line.
+- status: open
+
 ### [BUG] Renaming a procedure parameter is reported as a breaking change, and AL has no named arguments
 - where: crates/al-analysis/src/queries/breaking_changes.rs:582-600 (`check_matching_signature`)
 - severity: medium
@@ -155,9 +223,119 @@ Files the first checklist does not list at all:
 - fix: drop `check_data_migration_needs` and attach the `OnUpgradePerCompany` hint to the existing `FieldTypeChanged` arm.
 - status: open
 
+### [BUG] Object-level obsolescence is never detected, because AL expresses it as a property and the scan only reads attributes
+- where: crates/al-analysis/src/queries/obsolescence.rs:112-126 and 180-209 (`extract_obsolete_from_preceding_attr`)
+- severity: high
+- scenario: AL marks an *object* obsolete with properties inside the object body, not with an attribute:
+  ```al
+  table 50100 "Old Shipment Buffer"
+  {
+      ObsoleteState = Pending;
+      ObsoleteReason = 'Use table 50101 instead';
+      ObsoleteTag = '24.0';
+      ...
+  }
+  ```
+  `scan_file_for_obsolete` calls `extract_obsolete_from_preceding_attr(root, source)` with the tree *root*. `root.prev_sibling()` is `None`, so the sibling walk at 184-196 does nothing, and the child loop at 198-207 only accepts children of kind `attribute` or `attribute_list`. The object's properties are not attribute nodes, so `obj_obsolete` is always `None` and the query never emits a `kind: "object"` entry for any real AL object. The whole `ObsoleteState` branch of `parse_obsolete_attr` (214-226) is therefore unreachable, which also hides its own ordering bug: it tests `lower.contains("pending")` before `lower.contains("removed")`, so `ObsoleteState = Removed; ObsoleteReason = 'Pending removal was announced in 24.0';` would be classified `Pending`.
+- fix: read the object's property block (the same `Caption`-style property scan other queries use) rather than looking for an attribute, and test for `removed` before `pending`.
+- status: open
+
+### [GAP] Obsolete table fields are never scanned, though `kind` documents "field"
+- where: crates/al-analysis/src/queries/obsolescence.rs:23 (doc) and 139-178 (`scan_procedures_for_obsolete`)
+- severity: high
+- scenario: `ObsoleteEntry::kind` is documented as `"object"`, `"procedure"`, or `"field"`. The only two producers set `"object"` (line 118, unreachable per the finding above) and `"procedure"` (163, 82). Nothing walks `field_declaration` nodes, so
+  ```al
+  field(5; "Discount Amount"; Decimal) { ObsoleteState = Removed; ObsoleteReason = 'Replaced by "Line Discount Amount"'; ObsoleteTag = '23.0'; }
+  ```
+  produces no entry. An obsolete field is the most common obsolescence in Business Central because it is the one that forces data migration, and it is the one case the timeline query cannot see. No test covers it either (tests at 314-418 cover an obsolete procedure, a non-obsolete procedure, an empty workspace and a symbol-package method).
+- fix: add a `field_declaration` arm to the tree walk that reads the field's property block, and add a test.
+- status: open
+
+### [PERF] Reference counting re-walks every workspace tree once per obsolete symbol
+- where: crates/al-analysis/src/queries/obsolescence.rs:292-297 (`count_references_in_files`), called at 114 and 158
+- severity: medium
+- scenario: `count_references_in_files` maps `al_syntax::find_call_references(tree, text, name)` over *all* files, and it is called once per obsolete symbol found. `find_call_references` (crates/al-syntax/src/navigation.rs:283-289) is a full tree walk. A project with 2000 `.al` files and 50 obsolete procedures does 100,000 full tree walks for one `obsolescence` query. al-syntax already ships the fix and documents it for exactly this shape: `collect_call_site_names` (navigation.rs:291-303) says "Single-pass companion to `find_call_references`: instead of asking 'is this one name called here?' N times, walk the tree once and collect the full set of called names."
+- fix: build one `HashSet<String>` of call-site names per file with `collect_call_site_names`, then look each obsolete symbol up in it.
+- status: open
+
+### [PERF] The obsolete-usage diagnostic snapshots the whole workspace twice and throws away the expensive half
+- where: crates/al-analysis/src/queries/obsolete_usage.rs:36 and 56, reached from crates/al-analysis/src/queries/diagnostics.rs:289-290
+- severity: high
+- scenario: `obsolete_usages` calls `workspace_sources::snapshot(workspace)` at line 36, which clones the text and tree of every indexed `.al` file. At line 56 it then calls `obsolescence_timeline(workspace)`, whose first statement (obsolescence.rs:41) is *another* full `snapshot`. The timeline also runs `count_references_in_files` for every obsolete symbol, a full tree walk of every file per symbol (see the finding above), and `obsolete_usages` discards `caller_count` entirely: lines 57-67 read only `kind`, `file`, `symbol`, `reason` and `tag`. This runs inside `workspace_diagnostics`, which crates/al-lsp/src/server/lsp.rs:1257-1261 schedules on every `did_change` when the scope is `Project` and the trigger is `Continuous`. On a 2000-file project with 50 obsolete procedures, each debounced keystroke costs two whole-workspace snapshots plus 100,000 tree walks whose result is dropped.
+- fix: give `obsolescence_timeline` a variant that takes an existing `sources` snapshot and skips reference counting, and have `obsolete_usages` call that.
+- status: open
+
+### [SLOP] `EdgeKind::TriggerInvocation` can never appear in a call graph, but four consumers branch on it
+- where: crates/al-insight/src/index.rs:9-10 (module doc), 52 (variant), 215-222 (`add_trigger_invocation`); consumers at crates/al-insight/src/search.rs:142 and 430, crates/al-analysis/src/queries/test_coverage.rs:327
+- severity: low
+- scenario: `add_trigger_invocation` is the only function that constructs a `TriggerInvocation` edge, and a grep across the repo finds exactly one call, in its own unit test at index.rs:646. No production code path creates one. The module header still advertises it as one of "three kinds of edges tracked", `search.rs:142` includes it in the traversal filter, `search.rs:430` assigns it a hop cost of 1, and `test_coverage.rs:327` matches it when deciding what counts as coverage. All four are unreachable. The feature the doc describes, "Trigger A invokes Procedure B", is not implemented.
+- fix: either wire it up where triggers are parsed (calls.rs already emits `RecordTrigger` at line 890) or delete the variant and the four dead branches.
+- status: open
+
+### [SLOP] `CallGraph::remove_edges_from` is dead, and it would leave stale resolution state if it were used
+- where: crates/al-insight/src/index.rs:245-254
+- severity: low
+- scenario: the doc says "Used for invalidation". Its only caller is the test at index.rs:810. If it were called, it would remove the node's edges but leave `self.resolution` untouched, and `calls.rs:1878` and `1934` gate lazy edge resolution on `resolution_state(proc_id)` not being `Resolved`. An invalidated node would therefore stay marked `Resolved` and never have its edges rebuilt, leaving the node permanently edge-less. The bug is latent only because nothing calls the function.
+- fix: delete it, or have it also `self.resolution.remove(&node)` and add a test that re-resolves after invalidation.
+- status: open
+
+### [BUG] `discover_events` output order is not deterministic when two nodes share an object and event name
+- where: crates/al-insight/src/discovery.rs:91-97, 101-105, 157, and the sorts at 206-226
+- severity: low
+- scenario: `graph.index` is a `HashMap` whose values are `Vec<NodeIndex>` (line 93 iterates `indices`, so one `NodeKey::Event` can map to several nodes). Two workspace files both declaring `codeunit 50100 "Publisher"` with `[IntegrationEvent] procedure OnPost()`, which is what a half-finished copy-paste refactor looks like, produce two distinct event nodes under one key. Both become `DiscoveredEvent`s with identical sort keys, so the final `sort_by` (stable) preserves whatever order `event_subscribers`, itself a `HashMap`, happened to yield. `al subscribers` then prints the two in a different order between runs. `search.rs:373` and `xliff.rs:944-951` both call out and fix this exact nondeterminism elsewhere in the codebase.
+- fix: add the node index as the final tiebreaker in the `events` and `orphans` comparators.
+- status: open
+
+### [SLOP] The event type in the JSON output is a `Debug` format of an enum
+- where: crates/al-insight/src/discovery.rs:169
+- severity: low
+- scenario: `event_type: format!("{:?}", event_type)` puts the `Debug` rendering of the event-type enum into `PublisherInfo::event_type`, a `#[serde]`-exposed field of the `al subscribers` JSON. The tests pin the resulting strings (`"Integration"` at discovery.rs:363, `"Business"` at 378), so renaming the enum variant silently changes the public JSON contract with no compiler error. Every other serialized enum in the file uses `#[serde(rename_all = "camelCase")]`.
+- fix: give the event-type enum a `Display` impl or derive `Serialize` on it and store the typed value rather than a formatted string.
+- status: open
+
+### [SIMPLIFY] The same case-insensitive string comparator is spelled out five times
+- where: crates/al-insight/src/discovery.rs:174-187, 206-226, 228-241
+- severity: low
+- scenario: each of the five comparisons is written as `a.field.as_bytes().iter().map(u8::to_ascii_lowercase).cmp(b.field.as_bytes().iter().map(u8::to_ascii_lowercase))`, which is 34 lines of sort code for three sorts on what are two-field keys. A `fn lower_key(s: &str) -> impl Iterator<Item = u8> + '_` (or just `str::to_ascii_lowercase` on the two keys) collapses it, and the tiebreaker fix above would then have one place to go.
+- fix: extract the comparator into one helper.
+- status: open
+
 ### [GAP] A brand-new permission set produces one issue per permission entry
 - where: crates/al-analysis/src/queries/upgrade.rs:333-385 (`detect_new_permissions`)
 - severity: low
 - scenario: when `surface_key(current_entry)` is absent from `baseline_map`, `old_permissions` falls back to `&[]` (line 351-354), so `old_value` is 0 for every permission and `added == permission.value` is non-zero for all of them. Adding one `permissionset 50100 "My App Objects"` that grants RIMD on 200 tables yields 200 separate `NewPermission` warnings, all saying "Review the added privilege against least-privilege and AppSource policy." The signal that matters (a *new* permission set exists) is buried in 200 identical rows.
 - fix: when the permission set itself is new, emit a single issue naming the set and the number of grants, and keep the per-permission breakdown for sets that already existed.
 - status: open
+
+## Not covered by this pass
+
+`queries/source.rs`, `queries/audit.rs`, `queries/test_diagnostics.rs`,
+`queries/code_actions/test_support.rs`, `queries/suggest_event.rs`,
+`queries/profiler_hints.rs`, `queries/test_coverage.rs`, and every file in the
+"not listed at all" group above. `scaffold.rs` and `generators.rs` were reviewed
+by a sub-agent whose report went to the orchestrator; those findings are pending
+and are not in this file.
+
+## Review complete
+
+Rename is the weakest surface. Renaming a quoted identifier is a silent no-op,
+because prepare_rename hands the editor an unquoted placeholder that the
+validator then rejects, and every quotable BC name goes through that path.
+
+Rename also skips `[EventSubscriber]` string references that Find All References
+already collects, so renaming a published event leaves every subscriber pointing
+at a name that no longer exists.
+
+In resolution.rs, `parse_field_line` cuts the field declaration at the first `)`,
+so any field named like `"Amount (LCY)"` is invisible to hover, go-to-definition
+and completion, and no test uses a field name with punctuation.
+
+Two hot paths do heavy synchronous work per request: member completion re-reads
+and re-parses the receiver's whole symbol-package source from disk on every
+keystroke, and the obsolete-usage diagnostic snapshots the whole workspace twice
+per debounced change while discarding the expensive half of what it computed.
+
+xliff.rs and obsolescence.rs both miss the normal AL spelling of what they
+target: xliff drops every object after the first in a multi-object file, and
+obsolescence never sees object- or field-level `ObsoleteState`, because it only
+reads attributes and AL expresses both as properties.

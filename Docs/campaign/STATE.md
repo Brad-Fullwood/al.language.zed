@@ -13,7 +13,6 @@ Round 1: four of seven reviews are done (58 findings) and their fix agents are r
 | Fix R1 syntax and grammar (11 findings) | worktree fix | branch `campaign/fix-r1-syntax-grammar` |
 | Fix R1 symbols and project layer (24 findings) | worktree fix | branch `campaign/fix-r1-symbols-project` |
 | Fix R1 emit, compile, BC, explorer (28 findings) | worktree fix | branch `campaign/fix-r1-emit-bc-explorer` |
-| R1b review: al-analysis and al-insight modules the first pass skipped | review | `findings/r1b-analysis-insight.md` |
 | Fix R1 extension, CI, docs (12 findings) | worktree fix | branch `campaign/fix-r1-extension-ci` |
 | Fix R1 analysis and insight (18 findings) | worktree fix | branch `campaign/fix-r1-analysis-insight` |
 | Fix R1 LSP and protocol (15 findings, 2 security) | worktree fix | branch `campaign/fix-r1-lsp-protocol` |
@@ -24,6 +23,8 @@ Round 1: four of seven reviews are done (58 findings) and their fix agents are r
 Queued for a free build slot (at most 7 building agents, RAM is the limit):
 
 - Fix `findings/r1b-runtime-dap.md` (28 findings, 1 high: `--filter '*Post'` drops tests from a green summary). Crates: al-test, al-dap, al-test-harness, al-runtime stubs. Start after `campaign/fix-r1-runtime-dap` merges, on a branch from the merged result.
+- Fix `findings/r1b-analysis-insight.md` (35 findings: quoted identifiers cannot be renamed, rename misses EventSubscriber strings, fields with `)` in the name dropped from resolution). Start after `campaign/fix-r1-analysis-insight` merges.
+- Review still owed in al-analysis: `queries/source.rs`, `queries/audit.rs`, `queries/test_diagnostics.rs`, `code_actions/test_support.rs`, `suggest_event.rs`, `profiler_hints.rs`, `test_coverage.rs`.
 - Fix `findings/r1b-scaffold-generators.md` (11 findings): handed to the analysis fix agent.
 
 A review file without a `## Review complete` line means the agent died. Re-dispatch it to
