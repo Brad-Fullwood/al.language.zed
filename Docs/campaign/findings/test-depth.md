@@ -143,6 +143,32 @@ Fix: all three fold with `to_uppercase()`, matching the index. Regression tests:
   The canonical `if FindSet then repeat Delete until Next() = 0` loop removes exactly the
   filtered rows and terminates, and `Next(n)` then `Next(-n)` returns to the same row.
 
+### Emitter and package-reader properties that hold
+
+`crates/al-emit/tests/property_roundtrip.rs`:
+
+- a generated project (codeunit, table, enum, interface, with names carrying spaces, dots,
+  parentheses and non-ASCII) packs to an `.app` that `al-symbols` reads back with the same
+  object set, the same ids and the same app identity
+- two builds of one project yield the same object set
+- `checked_entry_name` accepts only names that stay inside the directory they are joined
+  to, every accepted name has only `Component::Normal` parts, and `write_zip` stores an
+  accepted name verbatim and refuses every rejected one
+
+Two properties I wrote first were wrong about the emitter, not the other way round, and are
+worth recording so the next reader does not re-raise them:
+
+- an `interface` declaration carries no object id, so the emitter synthesises one. The id
+  comparison excludes interfaces.
+- `build_app_from_project` calls `random_package_guid()` per build, so an `.app` is
+  deliberately not byte-reproducible. The property is on the object set instead.
+
+`crates/al-symbols/tests/property_app_reader.rs`: `read_app_bytes` answers with a package or
+an error, never a panic, for arbitrary bytes, for bytes carrying the NAVX magic, for bytes
+carrying NAVX plus a ZIP local-header signature, for every truncation of the
+`representative.app` benchmark fixture, and for the fixture with up to 8 bytes flipped.
+Reading is deterministic. No defect found.
+
 ### Not implemented, so not tested
 
 `CalcDate` and `DateFormula` have no implementation in al-runtime (`supports_global_builtin`
