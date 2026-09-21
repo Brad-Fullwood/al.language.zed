@@ -500,8 +500,51 @@ fn find_member_line_in_file(
                 // the editor a bogus line number. Clamp to u32::MAX instead.
                 return Ok(Some(u32::try_from(i).unwrap_or(u32::MAX)));
             }
-            start = abs + 1;
+            // Advance by one *character*: `abs + 1` lands inside a multi-byte
+            // character when the searched name starts with one, and the next
+            // `line_lower[start..]` panics on the non-boundary index. Quoted
+            // non-ASCII identifiers are ordinary in Nordic and German AL.
+            start = abs + line_lower[abs..].chars().next().map_or(1, char::len_utf8);
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write(source: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Table.al");
+        std::fs::write(&path, source).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn a_non_ascii_member_name_does_not_panic() {
+        // The first hit fails the whole-word check, so the scan continues from
+        // just past it. Advancing one *byte* landed inside the leading `Ä` and
+        // killed the TUI with "byte index 1 is not a char boundary".
+        let (_dir, path) = write("xÄrsredovisning := 1;\nÄrsredovisning := 2;\n");
+        assert_eq!(
+            find_member_line_in_file(&path, "Ärsredovisning").unwrap(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn a_name_that_never_matches_as_a_whole_word_is_not_found() {
+        let (_dir, path) = write("xÄrsredovisningy := 1;\n");
+        assert_eq!(
+            find_member_line_in_file(&path, "Ärsredovisning").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn an_ascii_member_name_still_matches_on_its_own_line() {
+        let (_dir, path) = write("field(1; Amount; Decimal)\n");
+        assert_eq!(find_member_line_in_file(&path, "Amount").unwrap(), Some(0));
+    }
 }
