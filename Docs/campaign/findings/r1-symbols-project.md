@@ -216,7 +216,7 @@ current code are tagged [STILL-OPEN].
 - fix: keep one owner per (path, kind) rather than one per kind — `retain(|e| e.path != path
   || !e.kind.eq_ignore_ascii_case(&info.kind))` — and make `object_path`/`object_path_of_kind`
   prefer the owner under the same project root as the referring file.
-- status: open
+- status: fixed a8ead4ab
 
 ### [BUG] A dangling symlink or unreadable subdirectory aborts the whole toolchain search
 - where: crates/al-project/src/toolchain.rs:409-448 (`search_dir_recursive`)
