@@ -22,6 +22,9 @@ pub fn inlay_hints(
     };
     let root = tree.root_node();
     let source = text.as_bytes();
+    // Built once per request: every hint needs the text of its own line, and
+    // the client re-asks for the whole viewport on each scroll.
+    let lines = al_syntax::SourceLines::new(source);
     let mut hints = Vec::new();
 
     let config = workspace
@@ -53,6 +56,7 @@ pub fn inlay_hints(
         collect_inlay_hints(
             root,
             source,
+            &lines,
             &text,
             &tree,
             workspace,
@@ -64,7 +68,7 @@ pub fn inlay_hints(
     }
 
     if return_hints {
-        collect_return_type_hints(root, source, &range, &mut hints);
+        collect_return_type_hints(root, source, &lines, &range, &mut hints);
     }
 
     if hints.is_empty() {
@@ -95,6 +99,7 @@ fn inclusive_last_row(node: tree_sitter::Node<'_>) -> u32 {
 fn collect_inlay_hints(
     root: tree_sitter::Node<'_>,
     source: &[u8],
+    lines: &al_syntax::SourceLines<'_>,
     text: &str,
     tree: &tree_sitter::Tree,
     workspace: &Workspace,
@@ -121,7 +126,7 @@ fn collect_inlay_hints(
                     let position = Position {
                         line: node.start_position().row as u32,
                         character: al_syntax::byte_col_to_utf16_col(
-                            source_line(source, node.start_position().row),
+                            lines.line(node.start_position().row),
                             node.start_position().column,
                         ),
                     };
@@ -138,7 +143,7 @@ fn collect_inlay_hints(
                         &arg_types,
                     )?;
                     if !param_names.is_empty() {
-                        add_parameter_hints(node, source, &param_names, hints);
+                        add_parameter_hints(node, lines, &param_names, hints);
                     }
                 }
             }
@@ -553,6 +558,7 @@ fn overload_candidates_from_symbols(
 fn collect_return_type_hints(
     root: tree_sitter::Node<'_>,
     source: &[u8],
+    lines: &al_syntax::SourceLines<'_>,
     range: &Range,
     hints: &mut Vec<AlInlayHint>,
 ) {
@@ -580,7 +586,7 @@ fn collect_return_type_hints(
                             .map(|p| Position {
                                 line: p.end_position().row as u32,
                                 character: al_syntax::byte_col_to_utf16_col(
-                                    source_line(source, p.end_position().row),
+                                    lines.line(p.end_position().row),
                                     p.end_position().column,
                                 ),
                             })
@@ -588,7 +594,7 @@ fn collect_return_type_hints(
                                 node.child_by_field_name("name").map(|n| Position {
                                     line: n.end_position().row as u32,
                                     character: al_syntax::byte_col_to_utf16_col(
-                                        source_line(source, n.end_position().row),
+                                        lines.line(n.end_position().row),
                                         n.end_position().column,
                                     ),
                                 })
@@ -617,7 +623,7 @@ fn collect_return_type_hints(
 
 fn add_parameter_hints(
     arg_list: tree_sitter::Node<'_>,
-    source: &[u8],
+    lines: &al_syntax::SourceLines<'_>,
     param_names: &[String],
     hints: &mut Vec<AlInlayHint>,
 ) {
@@ -637,7 +643,7 @@ fn add_parameter_hints(
             break;
         }
         let row = child.start_position().row;
-        let line_text = source_line(source, row);
+        let line_text = lines.line(row);
         // tree-sitter column is a UTF-8 byte offset; LSP Position uses UTF-16 code units.
         let character = al_syntax::byte_col_to_utf16_col(line_text, child.start_position().column);
         hints.push(AlInlayHint {
@@ -655,14 +661,6 @@ fn add_parameter_hints(
 }
 
 /// Decode `row` (0-indexed) of `source` as UTF-8, or `""` on bad UTF-8 / OOB.
-fn source_line(source: &[u8], row: usize) -> &str {
-    source
-        .split(|&b| b == b'\n')
-        .nth(row)
-        .and_then(|b| std::str::from_utf8(b).ok())
-        .unwrap_or("")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -698,7 +696,13 @@ mod tests {
         let (text, tree) = parse(src);
         let source = text.as_bytes();
         let mut hints = Vec::new();
-        collect_return_type_hints(tree.root_node(), source, &full_range(), &mut hints);
+        collect_return_type_hints(
+            tree.root_node(),
+            source,
+            &al_syntax::SourceLines::new(source),
+            &full_range(),
+            &mut hints,
+        );
 
         assert_eq!(
             hints.len(),
@@ -732,7 +736,13 @@ mod tests {
             },
         };
         let mut hints = Vec::new();
-        collect_return_type_hints(tree.root_node(), source, &range, &mut hints);
+        collect_return_type_hints(
+            tree.root_node(),
+            source,
+            &al_syntax::SourceLines::new(source),
+            &range,
+            &mut hints,
+        );
         assert!(
             hints.is_empty(),
             "procedure ending before the range must yield no hints, got: {hints:?}"
@@ -750,7 +760,13 @@ mod tests {
         let (text, tree) = parse(src);
         let source = text.as_bytes();
         let mut hints = Vec::new();
-        collect_return_type_hints(tree.root_node(), source, &full_range(), &mut hints);
+        collect_return_type_hints(
+            tree.root_node(),
+            source,
+            &al_syntax::SourceLines::new(source),
+            &full_range(),
+            &mut hints,
+        );
 
         assert!(
             hints.is_empty(),
@@ -769,7 +785,13 @@ mod tests {
         let (text, tree) = parse(src);
         let source = text.as_bytes();
         let mut hints = Vec::new();
-        collect_return_type_hints(tree.root_node(), source, &full_range(), &mut hints);
+        collect_return_type_hints(
+            tree.root_node(),
+            source,
+            &al_syntax::SourceLines::new(source),
+            &full_range(),
+            &mut hints,
+        );
 
         assert_eq!(hints.len(), 1);
         let AlInlayHintLabel::String(s) = &hints[0].label;
@@ -795,7 +817,13 @@ mod tests {
         let (text, tree) = parse(src);
         let source = text.as_bytes();
         let mut hints = Vec::new();
-        collect_return_type_hints(tree.root_node(), source, &full_range(), &mut hints);
+        collect_return_type_hints(
+            tree.root_node(),
+            source,
+            &al_syntax::SourceLines::new(source),
+            &full_range(),
+            &mut hints,
+        );
 
         assert_eq!(
             hints.len(),
@@ -830,7 +858,13 @@ mod tests {
                 character: 0,
             },
         };
-        collect_return_type_hints(tree.root_node(), source, &narrow_range, &mut hints);
+        collect_return_type_hints(
+            tree.root_node(),
+            source,
+            &al_syntax::SourceLines::new(source),
+            &narrow_range,
+            &mut hints,
+        );
 
         assert_eq!(
             hints.len(),
@@ -882,6 +916,7 @@ mod tests {
         collect_inlay_hints(
             tree.root_node(),
             source,
+            &al_syntax::SourceLines::new(source),
             &text,
             &tree,
             &ws,
@@ -1085,7 +1120,12 @@ mod tests {
         let source = text.as_bytes();
         let arg_list = first_arg_list(tree.root_node()).expect("an argument list");
         let mut hints = Vec::new();
-        add_parameter_hints(arg_list, source, &["Value".to_string()], &mut hints);
+        add_parameter_hints(
+            arg_list,
+            &al_syntax::SourceLines::new(source),
+            &["Value".to_string()],
+            &mut hints,
+        );
         assert_eq!(hints.len(), 1, "Expected one parameter hint: {hints:?}");
         let h = &hints[0];
         // The argument "Ünïcödé" starts at byte column 12 ("        Foo(" = 8
@@ -1112,7 +1152,12 @@ mod tests {
         let source = text.as_bytes();
         let arg_list = first_arg_list(tree.root_node()).expect("an argument list");
         let mut hints = Vec::new();
-        add_parameter_hints(arg_list, source, &["Only".to_string()], &mut hints);
+        add_parameter_hints(
+            arg_list,
+            &al_syntax::SourceLines::new(source),
+            &["Only".to_string()],
+            &mut hints,
+        );
         assert_eq!(
             hints.len(),
             1,
@@ -1317,34 +1362,49 @@ mod tests {
         assert_eq!(info.1.as_deref(), Some("Name"));
     }
 
+    /// A hint far down the file must get the column of its own line, not of
+    /// whichever line a rescan from byte 0 happened to land on.
     #[test]
-    fn source_line_returns_requested_row() {
-        let source = b"line0\nline1\nline2";
-        assert_eq!(source_line(source, 0), "line0");
-        assert_eq!(source_line(source, 1), "line1");
-        assert_eq!(source_line(source, 2), "line2");
-    }
+    fn parameter_hints_use_the_right_line_far_into_the_file() {
+        let mut src = String::from("codeunit 50100 Test\n{\n    procedure Caller()\n    begin\n");
+        for _ in 0..500 {
+            src.push_str("        Message('padding');\n");
+        }
+        src.push_str("        Foo('Ünïcödé', 2);\n    end;\n}\n");
+        let (text, tree) = parse(&src);
+        let source = text.as_bytes();
+        let lines = al_syntax::SourceLines::new(source);
+        let call_row = src.lines().position(|l| l.contains("Foo(")).unwrap();
 
-    #[test]
-    fn source_line_out_of_bounds_is_empty() {
-        let source = b"only-one-line";
-        assert_eq!(
-            source_line(source, 5),
-            "",
-            "out-of-range row must yield empty string, not panic"
-        );
-    }
+        let arg_list = {
+            let mut stack = vec![tree.root_node()];
+            let mut found = None;
+            while let Some(node) = stack.pop() {
+                if matches!(node.kind(), "argument_list" | "call_arguments")
+                    && node.start_position().row == call_row
+                {
+                    found = Some(node);
+                    break;
+                }
+                let mut cursor = node.walk();
+                stack.extend(node.children(&mut cursor));
+            }
+            found.expect("the call's argument list")
+        };
 
-    #[test]
-    fn source_line_invalid_utf8_is_empty() {
-        // Row 1 contains an invalid UTF-8 byte (0xFF); must degrade to "".
-        let source: &[u8] = b"ok\n\xff\xfe";
-        assert_eq!(source_line(source, 0), "ok");
-        assert_eq!(
-            source_line(source, 1),
-            "",
-            "invalid UTF-8 row must yield empty string"
+        let mut hints = Vec::new();
+        add_parameter_hints(
+            arg_list,
+            &lines,
+            &["First".to_string(), "Second".to_string()],
+            &mut hints,
         );
+        assert_eq!(hints.len(), 2, "{hints:?}");
+        assert_eq!(hints[0].position.line, call_row as u32);
+        assert_eq!(hints[0].position.character, 12);
+        // `'Ünïcödé'` is 9 UTF-16 units wide; the second argument starts after
+        // it plus `, `.
+        assert_eq!(hints[1].position.character, 23);
     }
 
     #[test]

@@ -521,14 +521,16 @@ pub fn profiler_code_lenses(
     }
 
     let source = text.as_bytes();
+    let lines = al_syntax::SourceLines::new(source);
     let mut lenses = Vec::new();
-    collect_profiler_lenses(tree.root_node(), source, &by_proc, &mut lenses);
+    collect_profiler_lenses(tree.root_node(), source, &lines, &by_proc, &mut lenses);
     lenses
 }
 
 fn collect_profiler_lenses(
     root: tree_sitter::Node,
     source: &[u8],
+    lines: &al_syntax::SourceLines<'_>,
     by_proc: &std::collections::HashMap<String, &ProfilerHint>,
     lenses: &mut Vec<CodeLensEntry>,
 ) {
@@ -541,7 +543,7 @@ fn collect_profiler_lenses(
                     let name_lc = name_clean.to_lowercase();
                     if let Some(hint) = by_proc.get(&name_lc) {
                         let start_row = name_node.start_position().row as u32;
-                        let row_text = source_line(source, name_node.start_position().row);
+                        let row_text = lines.line(name_node.start_position().row);
                         let start_col = al_syntax::byte_col_to_utf16_col(
                             row_text,
                             name_node.start_position().column,
@@ -629,14 +631,6 @@ pub fn clear_profile(workspace: &Workspace) {
 }
 
 /// Decode `row` (0-indexed) of `source` as UTF-8, or `""` on bad UTF-8 / OOB.
-fn source_line(source: &[u8], row: usize) -> &str {
-    source
-        .split(|&b| b == b'\n')
-        .nth(row)
-        .and_then(|b| std::str::from_utf8(b).ok())
-        .unwrap_or("")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
