@@ -31,6 +31,8 @@ urlencoding = "2"
 criterion = { version = "0.5", features = ["html_reports"] }
 tokio = { workspace = true, features = ["full"] }
 wiremock = "0.6"
+proptest = "1"
+regex = { workspace = true }
 
 [[bench]]
 name = "interpreter"

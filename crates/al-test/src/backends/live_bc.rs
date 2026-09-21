@@ -27,9 +27,6 @@ impl LiveBcMode {
     }
 }
 
-/// Match `name` against a simple-glob `pattern`. Supports `*` (zero-or-more
-/// of any char) and is case-insensitive — matches AL's identifier rules.
-/// No-asterisk patterns require an exact case-insensitive match.
 async fn send_event(tx: &mpsc::Sender<TestEvent>, event: TestEvent) -> Result<(), TestRunnerError> {
     tx.send(event).await.map_err(|_| {
         tracing::warn!("test event channel closed; receiver dropped — aborting run");
@@ -77,6 +74,51 @@ fn append_failed_case(
             skipped: 0,
         },
     });
+}
+
+/// Index every specifically named method by `(codeunit_id, lowercased name)`.
+///
+/// Keyed case-insensitively because BC echoes a method name with its own
+/// casing. `tally` removes an entry when its result arrives, so whatever is
+/// left at the end of a run was requested and never reported.
+fn requested_targets(
+    codeunits: &[(i32, String, Vec<Option<String>>)],
+) -> HashMap<(i32, String), (String, String)> {
+    let mut targets = HashMap::new();
+    for (codeunit_id, codeunit_name, methods) in codeunits {
+        for method in methods.iter().flatten() {
+            targets.insert(
+                (*codeunit_id, method.to_ascii_lowercase()),
+                (codeunit_name.clone(), method.clone()),
+            );
+        }
+    }
+    targets
+}
+
+/// Fold one event into the session totals and tick off the method it reports.
+fn tally(
+    event: &TestEvent,
+    unreported: &mut HashMap<(i32, String), (String, String)>,
+    total: &mut usize,
+    passed: &mut usize,
+    failed: &mut usize,
+    skipped: &mut usize,
+) {
+    match event {
+        TestEvent::SuiteComplete { summary, .. } => {
+            *total += summary.total;
+            *passed += summary.passed;
+            *failed += summary.failed;
+            *skipped += summary.skipped;
+        }
+        TestEvent::CaseResult { id, .. } => {
+            if let Some(method) = &id.method_name {
+                unreported.remove(&(id.codeunit_id, method.to_ascii_lowercase()));
+            }
+        }
+        _ => {}
+    }
 }
 
 async fn run_one_codeunit(
@@ -228,6 +270,7 @@ impl TestSession for LiveBcMode {
         // Apply the method-name filter before grouping. Whole-codeunit targets
         // are expanded through the dev API so `--filter` never silently runs
         // every method merely because the caller supplied `method_name: None`.
+        let requested = tests.len();
         let tests = match opts.filter.as_deref() {
             None => tests,
             Some(pattern) => {
@@ -256,6 +299,18 @@ impl TestSession for LiveBcMode {
             }
         };
 
+        // A filter that selects nothing is a typo in the pattern far more often
+        // than it is an empty suite. Returning an error stops `al test run
+        // --filter '*Post'` from printing a green summary over zero tests.
+        if let Some(pattern) = opts.filter.as_deref() {
+            if requested > 0 && tests.is_empty() {
+                return Err(TestRunnerError::FilterMatchedNothing {
+                    pattern: pattern.to_string(),
+                    requested,
+                });
+            }
+        }
+
         // Deduplicate identical (codeunit_id, method_name) targets before
         // grouping. A malformed RPC call can repeat the same TestId; without
         // this guard the BC API would be invoked once per duplicate and every
@@ -279,6 +334,8 @@ impl TestSession for LiveBcMode {
             .map(|(id, (name, methods))| (id, name, methods))
             .collect();
 
+        let mut unreported = requested_targets(&codeunits);
+
         let mut total_total: usize = 0;
         let mut total_passed: usize = 0;
         let mut total_failed: usize = 0;
@@ -298,12 +355,14 @@ impl TestSession for LiveBcMode {
                 let events =
                     result.map_err(|error| TestRunnerError::WorkerFailed(error.to_string()))?;
                 for event in events {
-                    if let TestEvent::SuiteComplete { ref summary, .. } = event {
-                        total_total += summary.total;
-                        total_passed += summary.passed;
-                        total_failed += summary.failed;
-                        total_skipped += summary.skipped;
-                    }
+                    tally(
+                        &event,
+                        &mut unreported,
+                        &mut total_total,
+                        &mut total_passed,
+                        &mut total_failed,
+                        &mut total_skipped,
+                    );
                     send_event(&tx, event).await?;
                 }
             }
@@ -318,14 +377,47 @@ impl TestSession for LiveBcMode {
                 )
                 .await;
                 for event in events {
-                    if let TestEvent::SuiteComplete { ref summary, .. } = event {
-                        total_total += summary.total;
-                        total_passed += summary.passed;
-                        total_failed += summary.failed;
-                        total_skipped += summary.skipped;
-                    }
+                    tally(
+                        &event,
+                        &mut unreported,
+                        &mut total_total,
+                        &mut total_passed,
+                        &mut total_failed,
+                        &mut total_skipped,
+                    );
                     send_event(&tx, event).await?;
                 }
+            }
+        }
+
+        // Report the dropped tests as failures rather than letting them shrink
+        // the summary: a silently smaller `total` reads as a green run.
+        let mut dropped: Vec<(i32, String, String)> = unreported
+            .into_iter()
+            .map(|((codeunit_id, _), (codeunit_name, method_name))| {
+                (codeunit_id, codeunit_name, method_name)
+            })
+            .collect();
+        dropped.sort();
+        for (codeunit_id, codeunit_name, method_name) in dropped {
+            let message = format!(
+                "{codeunit_name}.{method_name} was requested but the backend reported no result for it"
+            );
+            tracing::error!("{message}");
+            let mut events = Vec::new();
+            append_failed_case(
+                &mut events,
+                codeunit_id,
+                &codeunit_name,
+                Some(&method_name),
+                message,
+            );
+            for event in events {
+                if let TestEvent::SuiteComplete { ref summary, .. } = event {
+                    total_total += summary.total;
+                    total_failed += summary.failed;
+                }
+                send_event(&tx, event).await?;
             }
         }
 
@@ -709,6 +801,137 @@ mod tests {
                 .query()
                 .is_some_and(|query| query.contains("SkipThis"))
         }));
+    }
+
+    /// A method whose name repeats the filter's trailing chunk used to be
+    /// dropped from `expanded`, so it never reached BC and never appeared in
+    /// any event, while the summary still said the run was green.
+    #[tokio::test]
+    async fn filter_keeps_a_method_whose_name_repeats_the_pattern() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/BC/dev/tests/50100"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "value": [
+                    { "name": "TestPostPost" },
+                    { "name": "TestShip" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/BC/dev/tests/50100/run"))
+            .and(query_param("method", "TestPostPost"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "value": [{ "name": "TestPostPost", "result": "pass" }]
+            })))
+            .mount(&server)
+            .await;
+
+        let mode = LiveBcMode::new(config_for(&server.uri()));
+        let (tx, mut rx) = mpsc::channel::<TestEvent>(32);
+        mode.run(
+            vec![test_id(50100, "PostingTests")],
+            RunOptions {
+                filter: Some("*Post".to_string()),
+                ..Default::default()
+            },
+            tx,
+        )
+        .await
+        .expect("filtered live run");
+
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                TestEvent::CaseResult { id, result }
+                    if id.method_name.as_deref() == Some("TestPostPost")
+                        && result.status == TestStatus::Pass
+            )),
+            "TestPostPost ends with the pattern and must run: {events:?}"
+        );
+        assert!(
+            matches!(
+                events.last(),
+                Some(TestEvent::SessionComplete { total: 1, .. })
+            ),
+            "the matched test must be counted: {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn filter_matching_nothing_is_an_error_not_a_green_run() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/BC/dev/tests/50100"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "value": [{ "name": "TestShip" }]
+            })))
+            .mount(&server)
+            .await;
+
+        let mode = LiveBcMode::new(config_for(&server.uri()));
+        let (tx, mut rx) = mpsc::channel::<TestEvent>(32);
+        let error = mode
+            .run(
+                vec![test_id(50100, "PostingTests")],
+                RunOptions {
+                    filter: Some("*Nonexistent".to_string()),
+                    ..Default::default()
+                },
+                tx,
+            )
+            .await
+            .expect_err("a filter that selects nothing must fail loudly");
+        assert!(
+            matches!(error, TestRunnerError::FilterMatchedNothing { .. }),
+            "got {error:?}"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "no SessionComplete may be emitted for an empty selection"
+        );
+    }
+
+    /// A requested method whose result never arrives stays in the reconciliation
+    /// map, which is what turns it into a reported failure at the end of `run`.
+    #[test]
+    fn a_requested_method_without_a_case_result_stays_unreported() {
+        use crate::backends::live_bc::{requested_targets, tally};
+
+        let codeunits = vec![(
+            50100,
+            "MyTests".to_string(),
+            vec![Some("TestA".to_string()), Some("TestB".to_string())],
+        )];
+        let mut unreported = requested_targets(&codeunits);
+        assert_eq!(unreported.len(), 2);
+
+        let (mut total, mut passed, mut failed, mut skipped) = (0, 0, 0, 0);
+        // BC echoes its own casing; the reconciliation must still tick it off.
+        tally(
+            &TestEvent::CaseResult {
+                id: method_test_id(50100, "MyTests", "testa"),
+                result: crate::result::TestMethodResult {
+                    name: "testa".into(),
+                    status: TestStatus::Pass,
+                    error: None,
+                    duration_ms: None,
+                },
+            },
+            &mut unreported,
+            &mut total,
+            &mut passed,
+            &mut failed,
+            &mut skipped,
+        );
+
+        let left: Vec<_> = unreported.into_values().collect();
+        assert_eq!(left, vec![("MyTests".to_string(), "TestB".to_string())]);
     }
 
     #[tokio::test]

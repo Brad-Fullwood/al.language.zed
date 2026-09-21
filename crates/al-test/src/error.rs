@@ -30,4 +30,6 @@ pub enum TestRunnerError {
     WorkerFailed(String),
     #[error("test discovery failed: {0}")]
     TestDiscovery(#[from] al_analysis::queries::tests::TestQueryError),
+    #[error("filter '{pattern}' matched none of the {requested} requested test target(s)")]
+    FilterMatchedNothing { pattern: String, requested: usize },
 }
