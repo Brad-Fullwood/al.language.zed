@@ -15,16 +15,16 @@ item that file left unticked, plus the files its checklist does not name.
 - [x] al-test/src/session.rs
 - [x] al-test/src/persistence.rs
 - [x] al-test/src/output/junit.rs
-- [ ] al-test/src/error.rs + result.rs + lib.rs
-- [ ] al-dap/src/dap/bc_debug/session.rs
-- [ ] al-dap/src/dap/bc_debug/session_config.rs
-- [ ] al-dap/src/dap/bc_debug/wire.rs
-- [ ] al-dap/src/dap/bc_debug/rest.rs
-- [ ] al-dap/src/native_debug.rs
-- [ ] al-dap/src/dap/client.rs + protocol.rs + types.rs + config.rs + json_util.rs
+- [x] al-test/src/error.rs + result.rs + lib.rs
+- [x] al-dap/src/dap/bc_debug/session.rs
+- [x] al-dap/src/dap/bc_debug/session_config.rs
+- [x] al-dap/src/dap/bc_debug/wire.rs
+- [x] al-dap/src/dap/bc_debug/rest.rs
+- [x] al-dap/src/native_debug.rs
+- [x] al-dap/src/dap/client.rs + protocol.rs + types.rs + config.rs + json_util.rs
 - [ ] al-test-harness/src/lib.rs + protocol.rs + bin/gen-zed-index.rs
 - [ ] al-test-harness/tests/* (harness suites)
-- [ ] al-runtime/src/test_support.rs
+- [x] al-runtime/src/test_support.rs
 
 ## Findings
 
@@ -166,4 +166,46 @@ item that file left unticked, plus the files its checklist does not name.
 - severity: low
 - scenario: the candidate filter matches on `breakpoint.line == location.line` and only narrows by object when `current_object()` is `Some`. With breakpoints on line 42 of two different files and a stop whose object is unknown, `candidates` has two entries and the `_` arm returns `UnexpectedStop`, aborting a capture where both breakpoints were configured exactly as asked. The same filter would also mis-attribute the sample if it happened to pick one.
 - fix: narrow by file as well when the object is unknown, using the stop's source path if the session exposes it, and fail with a message that says the object was unknown rather than that the stop was unconfigured.
+- status: open
+
+### [BUG] A breakpoint BC arms for the wrong object is marked unverified locally but never removed from the server
+- where: crates/al-dap/src/native_debug.rs:133 (`if bp_id != 0 && object_matches { new_ids.push(bp_id) }`), test at native_debug.rs:1007
+- severity: medium
+- scenario: `object_matches` exists because BC silently coerces a camelCase `ApplicationObjectIdWrapper` to object 0/0 (session.rs:743 documents exactly that). When it is false the code still has a live `bp_id` from BC, reports `verified: false` to the client, and then does not record the id in `self.breakpoints`. Nothing ever calls `remove_breakpoint` for it, so the breakpoint stays armed on the server for the life of the session. Execution then stops at a location the DAP client believes has no breakpoint. In snapshot capture that stop reaches `capture_with_session`, matches no configured breakpoint, and the whole capture fails with `UnexpectedStop`. The existing test asserts only `!infos[0].verified` and never checks that a `RemoveBreakpoint` frame was sent.
+- fix: call `self.session.remove_breakpoint(bp_id)` in the mismatch branch before pushing the unverified info, and extend `set_breakpoints_rejects_silently_coerced_object_id` to assert the removal frame.
+- status: open
+
+### [BUG] A rejected configurationDone is retried on every debug command with a 120-second budget and no backoff
+- where: crates/al-dap/src/native_debug.rs:222-232 (`if !self.configured && self.session.is_attached()`), budget from crates/al-dap/src/dap/bc_debug/wire.rs:45
+- severity: medium
+- scenario: `drain_events` runs at the head of `state`, `stack`, `variables`, `globals`, `expand`, `continue_exec` and `step`. Once `OnAttachedToConnection` has arrived, every one of those calls retries `configuration_done` until it succeeds, and `DebugAdapterConfigurationDone` carries a 120-second invoke budget. A BC server that rejects the options by timing out (rather than by returning an error) makes each retry cost up to 240 seconds, because `configuration_done` also falls back to the no-args form on failure. The user's next "step" in the editor blocks for four minutes, and `capture_with_session`, which calls `state()` on a 20 ms interval, blocks the whole interval arm for the same period until its own deadline fires. The warn text "will retry" reads as a cheap retry.
+- fix: cap the attempts (say three) or back off, and mark the session failed once the cap is reached so the adapter reports a clear configuration error rather than stalling each command.
+- status: open
+
+### [GAP] `BreakpointHit.breakpoint_id` is always zero, so debug history cannot be tied back to a breakpoint
+- where: crates/al-dap/src/native_debug.rs:205, field declared at crates/al-dap/src/dap/types.rs:92, surfaced in the CLI response contract at crates/al-explorer/src/cli/commands/response_contract.rs:1049
+- severity: low
+- scenario: the only production write of the field is the literal `breakpoint_id: 0`. `set_breakpoints` already knows every BC id it registered per file, and a Break event carries the object identity, so the id could be resolved, but nothing does. Every entry the `debug history` surface returns reports `breakpoint_id: 0`, and a caller that groups hits by breakpoint gets one bucket. The snapshot backend had to rebuild its own `(object_type, object_id, line)` to id map at snapshot.rs:131 for exactly this reason.
+- fix: resolve the id from the stored `breakpoints` map using the Break event's object and line, or drop the field from the response contract so consumers stop trusting it.
+- status: open
+
+### [FALSE-GREEN] `spawn_echo_and_kill` passes whether or not the subprocess spawns
+- where: crates/al-dap/src/dap/client.rs:237-244
+- severity: low
+- scenario: the body is `if let Ok(mut client) = result { client.kill().await.unwrap(); }` with the comment "If cat doesn't exist (unlikely), that's ok — skip". On any host where `/usr/bin/cat` is not at that path, which includes NixOS and several container images where it is `/bin/cat`, the test asserts nothing and reports green. It also asserts nothing about the spawned client on the hosts where it does run, beyond `kill` returning `Ok`, and `kill` returns `Ok` unconditionally (client.rs:201).
+- fix: resolve the binary with a `which`-style lookup and fail the test when it is missing, or delete the test since `spawn_fake` at client.rs:360 already drives the real spawn seam with a script the test writes itself.
+- status: open
+
+### [BUG] A live-BC timeout is reported to CI as an assertion failure
+- where: crates/al-test/src/backends/live_bc.rs:165 and :210 (`format!("timeout after {} ms", ...)`) feeding crates/al-test/src/output/junit.rs:129 (`type="AssertionError"`), with the unused crates/al-test/src/error.rs:24 (`TestRunnerError::Timeout`)
+- severity: low
+- scenario: when a codeunit exceeds `timeout_ms` the backend synthesises a `TestMethodResult` with `status: Fail` and the message "timeout after 30000 ms". The JUnit writer stamps every failure `type="AssertionError"`, so the CI report says the AL assertion failed when in fact BC never answered. The same conflation covers "Failed to construct the BC test client" and every HTTP 500. `TestRunnerError::Timeout { secs }` exists for this case and is constructed nowhere in the workspace.
+- fix: carry the failure kind on `TestMethodResult` (assertion, timeout, infrastructure) and map it to the JUnit `type` attribute, so a CI dashboard can separate a red test from a red environment.
+- status: open
+
+### [DEAD] Four error variants are declared and never constructed
+- where: crates/al-test/src/error.rs:16 (`NoConfig`) and :24 (`Timeout`), crates/al-dap/src/dap/mod.rs:37 (`SessionNotPaused`) and :40 (`NoActiveSession`)
+- severity: low
+- scenario: `grep -rn` across `crates/` finds each name only at its declaration. None has a `#[from]`, so none can be produced implicitly by `?` either. `DapError::SessionNotPaused` in particular advertises a guard the adapter does not have: `native_debug::variables` and `eval` query BC whatever the session state is, and the "not paused" case surfaces as whatever the hub happens to answer.
+- fix: delete the four variants, or implement the guard `SessionNotPaused` describes in `variables`/`stack`/`eval` and construct it there.
 - status: open

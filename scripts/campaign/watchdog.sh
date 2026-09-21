@@ -40,7 +40,7 @@ for model in "${MODELS[@]}"; do
         --add-dir /home/bradf/Projects/tools >"$out" 2>&1
     code=$?
     log "session on $model exited $code, log $out"
-    if grep -qiE 'usage limit|limit reached|rate limit|resets? at' "$out" && [ "$(wc -c <"$out")" -lt 2000 ]; then
+    if grep -qiE 'limit|resets ' "$out" && [ "$(wc -c <"$out")" -lt 2000 ]; then
         log "$model is limited, trying next model"
         continue
     fi

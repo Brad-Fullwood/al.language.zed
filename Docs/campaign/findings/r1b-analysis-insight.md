@@ -6,8 +6,8 @@ Adversarial read-only review of every module marked NOT COVERED in
 ## Coverage
 
 Priority (edits user files / core resolution):
-- [ ] queries/rename.rs
-- [ ] resolution.rs
+- [x] queries/rename.rs (plus queries/binding.rs, which it depends on)
+- [x] resolution.rs
 - [ ] queries/breaking_changes.rs
 
 Rest of scope:
@@ -69,6 +69,55 @@ Files the first checklist does not list at all:
 - severity: low
 - scenario: the already-quoted branch accepts any interior that is non-empty and has no `"`. `rename(ws, uri, pos, "\"My\nField\"")` passes validation and is spliced into every reference, producing `"My` / `Field"` on two lines, which does not parse. Reachable from any client that does not sanitise the rename input box (the LSP spec places no constraint on `newName`), and from the daemon path at crates/al-lsp/src/server/daemon/lsp_dispatch.rs:241 where `new_name` comes straight off the wire.
 - fix: reject interiors containing any control character, and reject a leading or trailing space.
+- status: open
+
+### [BUG] A field name containing a parenthesis is invisible to hover, go-to-definition and completion
+- where: crates/al-analysis/src/resolution.rs:1517-1527 (`parse_field_line`), used by `find_workspace_field` (1600-1620) and `workspace_field_items` (1622-1638)
+- severity: high
+- scenario: `field(50; "Amount (LCY)"; Decimal) { }` in a workspace table. `parse_field_line` does `trimmed.strip_prefix("field(")?.split(')').next()?`, which cuts at the *first* `)`, giving `50; "Amount (LCY"`. `splitn(3, ';')` then yields only two segments, so `parts.next()?` for the type returns `None` and the whole field is dropped. `find_workspace_field` never matches it, so hover and go-to-definition on `Rec."Amount (LCY)"` return nothing, and `workspace_field_items` omits it from the `Rec.` completion list. `"Amount (LCY)"`, `"Sales (LCY)"`, `"Profit (LCY)"`, `"Qty. (Base)"` are standard Business Central field names that developers copy into custom tables. The same cut breaks any field whose name contains `;`, for example `field(1; "A;B"; Text[10])`, which yields `name_part = "A` and `ty = B"`.
+- fix: `field_decl_nodes` already hands `parse_field_node` a tree-sitter node, so the id, name and type are available as child nodes. Read them from the node instead of re-splitting the text. If the text split has to stay, make it quote-aware the way `split_last` (1640-1657) already is.
+- status: open
+
+### [TEST] No `parse_field_line` test uses a quoted field name with punctuation
+- where: crates/al-analysis/src/resolution.rs:2490-2510
+- severity: medium
+- scenario: the four `parse_field_line` tests cover `field(1; Name; Text[50])`, a non-field line, `field(1)` and an empty name. None uses a quoted name, and none uses a name containing `(`, `)` or `;`. The field-resolution tests at 1788-1860 use `Name`, `Amount`, `Qty`, `Ørnamental` and `München`, all punctuation-free. The bug above is therefore entirely invisible to the suite.
+- fix: add `field(50; "Amount (LCY)"; Decimal) { }` to both `parse_field_line_extracts_name_and_type` and `workspace_field_items_lists_fields`.
+- status: open
+
+### [PERF] Every member completion re-reads and re-parses the receiver's whole symbol-package source from disk
+- where: crates/al-analysis/src/resolution.rs:1021-1056 (`symbol_package_proc_docs`), called at 1128
+- severity: high
+- scenario: typing `Cust.` where `Cust: Record Customer`. `queries/completions.rs:99` calls `completion_items_for_receiver` on every `textDocument/completion` request with no caching. For each symbol entry named `Customer`, `symbol_package_proc_docs` calls `get_or_create_virtual_file`, which itself does `fs::read_to_string` inside `find_object_range` (crates/al-symbols/src/virtual_file.rs:316-317), then reads the same file again at resolution.rs:1034, runs `AlParser::parse_quick` over it, and runs `extract_document_symbols` plus `extract_doc_comment` per procedure. The extracted Customer source from the base app is several thousand lines. That is two synchronous full-file reads and a full tree-sitter parse per keystroke, and the entire result is used only to fill in the `documentation` field of the completion items at line 1143.
+- fix: cache the `name -> docs` map keyed on the virtual file's path and mtime, or drop `documentation` from the initial completion list and fill it in `completionItem/resolve`, which is what that LSP request exists for.
+- status: open
+
+### [BUG] `resolve_object_path` is kind-blind, so a table and a page sharing a name resolve to whichever was indexed last
+- where: crates/al-analysis/src/resolution.rs:1344-1368, called from `resolve_member` (593) and `completion_items_for_receiver` (1076)
+- severity: medium
+- scenario: a project with `table 50100 "Sales Setup"` in Tab50100.al and `page 50100 "Sales Setup"` in Pag50100.al, which is the normal AL naming convention for a setup table and its card. `file_index.object_path` (crates/al-source/src/file_index.rs:629-633) returns `owners.first()`, and `add_file_with_tree` (file_index.rs:540-546) removes the re-indexed path's entry and pushes it to the *back* of the owners vector. So editing Tab50100.al moves the table to the end and `object_path("sales setup")` starts returning the page. After that, `resolve_member` for `Setup."Posting No. Series"` searches the page file, and `completion_items_for_receiver` offers the page's globals and procedures instead of the table's fields. The receiver's `type_name` is `Record` at both call sites, so the correct kind is known and simply not used. `resolve_workspace_object_definition_of_type` (935-966) already documents and solves this exact problem for go-to-definition.
+- fix: give `resolve_object_path` an optional AL type keyword and route it through `file_index.object_path_of_kind` (file_index.rs:638-645), passing `receiver.type_name` from both call sites.
+- status: open
+
+### [BUG] `extract_return_type` reports a return type for procedures that have none
+- where: crates/al-analysis/src/resolution.rs:1711-1714, used at 1404-1408
+- severity: medium
+- scenario: `procedure GetCustomer(var Cust: Record Customer)` has no return type, so `extract_procedure_symbol` (crates/al-syntax/src/symbols.rs:359-363) sets `detail = "(var Cust: Record Customer)"`. `extract_return_type` is `detail.rsplit_once(": ")`, which finds the `": "` inside the *parameter list* and returns `Record Customer)`. `parse_type_expr` turns that into `{ type_name: "Record", type_subtype: Some("Customer)") }`. `workspace_member` attaches it as the procedure's `type_info`, so `Helper.GetCustomer.` (a parameterless-style call, legal AL syntax) offers the full `TableClass` builtin method list through `builtin_for` as if the void procedure returned a record. The trailing `)` on the subtype also makes every real field lookup miss.
+- fix: return `None` unless the detail's closing `)` is followed by `: `, i.e. split on the `": "` that occurs *after* the last `)`, not the last one anywhere in the string.
+- status: open
+
+### [BUG] Hover and go-to-definition fire on identifiers inside comments and string literals
+- where: crates/al-analysis/src/resolution.rs:101-111 (`access_path_at` tries the text scan before the tree) and 208-276 (`access_path_from_text`)
+- severity: low
+- scenario: the line `        // Update Cust.Name before posting` inside a procedure that declares `Cust: Record Customer`. Hovering `Name` reaches `hover` (queries/hover.rs:44), whose `find_node_at_position` returns the `comment` node with non-empty text, so the early return at hover.rs:32-35 does not trigger. `access_path_at` calls `access_path_from_text` first, which works purely on the raw line text with no notion of comments or literals, and returns `receiver: "Cust", member: "Name"`. The tooltip shows `Name: Text[100]`. The same happens for `Error('Cust.Name is required');` and for Ctrl+Click, since `definition` uses the same helper.
+- fix: before the text scan, check whether the node at the position is a `comment` or a string literal and return `None`. The tree branch already cannot fire inside a comment, so only the text shortcut needs the guard.
+- status: open
+
+### [GAP] Length-qualified types lose their builtin members
+- where: crates/al-analysis/src/resolution.rs:1659-1674 (`parse_type_expr`) and 45-68 (`builtin_for`)
+- severity: low
+- scenario: `field(3; Description; Text[100]) { }` in a workspace table. `parse_field_line` returns `ty = "Text[100]"`, and `parse_type_expr` finds no space so it produces `{ type_name: "Text[100]", type_subtype: None }`. `builtin_for` then looks up `Text[100]Class` and `Text[100]`, both of which miss, so `Rec.Description.` offers no Text methods at all. `al_syntax`'s own `parse_type_reference` strips the length (crates/al-syntax/src/type_resolver.rs:544 documents `Text[100] -> ("Text", None)`), so local variables work and table fields do not. The same applies to `Code[20]` and to `array[10] of Text`, where `split_once(' ')` produces `type_name = "array[10]"` and `type_subtype = "of Text"`.
+- fix: strip a trailing `[...]` in `parse_type_expr` the way `parse_type_reference` does, and handle `array[N] of T` explicitly.
 - status: open
 
 ### [TEST] No test covers a cross-file rename that should produce edits
