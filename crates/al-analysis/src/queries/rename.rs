@@ -113,24 +113,33 @@ pub fn rename(
     // file runs a full go-to-definition query.
     let mut binder = binding::DeclLocCache::new();
 
+    // An `[EventSubscriber]` names its target with string literals and a
+    // `Type::Name` scope reference, which the identifier walk below cannot
+    // see. Renaming a published event, its publisher object or the table field
+    // an event belongs to has to rewrite those arguments too, or the rename
+    // leaves every subscriber pointing at a name that no longer exists.
+    let subscriber_target = subscriber_target_at(node, &text, clean_name);
+
     let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
-    if !refs.is_empty() {
-        let mut edits = Vec::new();
-        for r in &refs {
-            if binder.decl_loc_for_reference(workspace, uri, &text, &tree, r)? != cursor_decl {
-                continue;
-            }
-            if let Some(matched_text) = text.get(r.start_byte..r.end_byte) {
-                let replacement = new_name.spelled_over(matched_text);
-                edits.push(TextEdit {
-                    range: al_syntax::ts_range_to_syntax(r, source_bytes).into(),
-                    new_text: replacement,
-                });
-            }
+    let mut edits = Vec::new();
+    for r in &refs {
+        if binder.decl_loc_for_reference(workspace, uri, &text, &tree, r)? != cursor_decl {
+            continue;
         }
-        if !edits.is_empty() {
-            changes.push((uri.clone(), edits));
+        if let Some(matched_text) = text.get(r.start_byte..r.end_byte) {
+            let replacement = new_name.spelled_over(matched_text);
+            edits.push(TextEdit {
+                range: al_syntax::ts_range_to_syntax(r, source_bytes).into(),
+                new_text: replacement,
+            });
         }
+    }
+    if let Some(target) = &subscriber_target {
+        merge_subscriber_edits(&mut edits, subscriber_edits(target, &tree, &text, new_name));
+    }
+    if !edits.is_empty() {
+        edits.sort_by_key(|e| (e.range.start.line, e.range.start.character));
+        changes.push((uri.clone(), edits));
     }
 
     let current_path = uri.to_file_path().ok();
@@ -147,26 +156,31 @@ pub fn rename(
             continue;
         };
         let refs = al_syntax::find_variable_references(&file_tree, &file_text, clean_name);
-        if !refs.is_empty() {
-            let file_source_bytes = file_text.as_bytes();
-            let mut edits = Vec::new();
-            for r in &refs {
-                if binder.decl_loc_for_reference(workspace, &file_uri, &file_text, &file_tree, r)?
-                    != cursor_decl
-                {
-                    continue;
-                }
-                if let Some(matched_text) = file_text.get(r.start_byte..r.end_byte) {
-                    let replacement = new_name.spelled_over(matched_text);
-                    edits.push(TextEdit {
-                        range: al_syntax::ts_range_to_syntax(r, file_source_bytes).into(),
-                        new_text: replacement,
-                    });
-                }
+        let file_source_bytes = file_text.as_bytes();
+        let mut edits = Vec::new();
+        for r in &refs {
+            if binder.decl_loc_for_reference(workspace, &file_uri, &file_text, &file_tree, r)?
+                != cursor_decl
+            {
+                continue;
             }
-            if !edits.is_empty() {
-                changes.push((file_uri, edits));
+            if let Some(matched_text) = file_text.get(r.start_byte..r.end_byte) {
+                let replacement = new_name.spelled_over(matched_text);
+                edits.push(TextEdit {
+                    range: al_syntax::ts_range_to_syntax(r, file_source_bytes).into(),
+                    new_text: replacement,
+                });
             }
+        }
+        if let Some(target) = &subscriber_target {
+            merge_subscriber_edits(
+                &mut edits,
+                subscriber_edits(target, &file_tree, &file_text, new_name),
+            );
+        }
+        if !edits.is_empty() {
+            edits.sort_by_key(|e| (e.range.start.line, e.range.start.character));
+            changes.push((file_uri, edits));
         }
     }
 
@@ -187,6 +201,252 @@ fn node_decl_loc(
 ) -> Result<BindKey, WorkspaceStateError> {
     let range: Range = al_syntax::ts_range_to_syntax(&node.range(), source).into();
     decl_loc(workspace, uri, range.start)
+}
+
+/// Which `[EventSubscriber]` argument a rename has to rewrite, and the
+/// publisher the subscriber must name for the rewrite to apply.
+///
+/// AL identifies a subscriber's target by object *and* name, so matching on
+/// the name alone would rewrite a same-named event published by an unrelated
+/// object.
+struct SubscriberTarget {
+    /// The argument position: the event name, the publisher object, or the
+    /// element (table field) the event belongs to.
+    argument: SubscriberArgumentKind,
+    /// The object declaring the renamed symbol: its AL keyword (`codeunit`,
+    /// `table`, …) and its name.
+    object_keyword: String,
+    object_name: String,
+    /// The name being renamed, as the subscriber spells it.
+    current_name: String,
+}
+
+#[derive(PartialEq)]
+enum SubscriberArgumentKind {
+    Object,
+    Event,
+    Element,
+}
+
+/// Classify the cursor node as the declaration of something an
+/// `[EventSubscriber]` names, or `None` when it is anything else.
+fn subscriber_target_at(
+    node: tree_sitter::Node<'_>,
+    text: &str,
+    clean_name: &str,
+) -> Option<SubscriberTarget> {
+    let source = text.as_bytes();
+    let mut current = Some(node);
+    while let Some(ancestor) = current {
+        match ancestor.kind() {
+            "procedure_declaration" | "event_procedure_declaration" => {
+                if !covers_name_field(ancestor, node) || !publishes_an_event(ancestor, source) {
+                    return None;
+                }
+                let (object_keyword, object_name) = enclosing_object(ancestor, source)?;
+                return Some(SubscriberTarget {
+                    argument: SubscriberArgumentKind::Event,
+                    object_keyword,
+                    object_name,
+                    current_name: clean_name.to_string(),
+                });
+            }
+            // A table field: `field(2; "Posting Date"; Date)`. The 4th
+            // subscriber argument names it for the field-level table events.
+            "object_section" => {
+                let name = al_syntax::node_text_clean(section_header_name(ancestor)?, source)?;
+                if !name.eq_ignore_ascii_case(clean_name) {
+                    return None;
+                }
+                let (object_keyword, object_name) = enclosing_object(ancestor, source)?;
+                if !object_keyword.eq_ignore_ascii_case("table") {
+                    return None;
+                }
+                return Some(SubscriberTarget {
+                    argument: SubscriberArgumentKind::Element,
+                    object_keyword,
+                    object_name,
+                    current_name: clean_name.to_string(),
+                });
+            }
+            "object_declaration" => {
+                if !covers_name_field(ancestor, node) {
+                    return None;
+                }
+                let keyword = ancestor
+                    .child_by_field_name("kind")
+                    .and_then(|n| n.utf8_text(source).ok())?
+                    .to_string();
+                return Some(SubscriberTarget {
+                    argument: SubscriberArgumentKind::Object,
+                    object_keyword: keyword,
+                    object_name: clean_name.to_string(),
+                    current_name: clean_name.to_string(),
+                });
+            }
+            _ => {}
+        }
+        current = ancestor.parent();
+    }
+    None
+}
+
+/// Whether `node` sits inside `declaration`'s `name` field.
+fn covers_name_field(declaration: tree_sitter::Node<'_>, node: tree_sitter::Node<'_>) -> bool {
+    let mut cursor = declaration.walk();
+    let covers = declaration
+        .children_by_field_name("name", &mut cursor)
+        .any(|name| node.start_byte() >= name.start_byte() && node.end_byte() <= name.end_byte());
+    covers
+}
+
+/// Whether the procedure carries `[IntegrationEvent]` or `[BusinessEvent]`.
+///
+/// Without this guard an ordinary rename would rewrite any subscriber string
+/// that happened to match the name.
+fn publishes_an_event(declaration: tree_sitter::Node<'_>, source: &[u8]) -> bool {
+    let mut cursor = declaration.walk();
+    let publishes = declaration.children(&mut cursor).any(|child| {
+        child.kind() == "attribute"
+            && child
+                .child_by_field_name("name")
+                .or_else(|| child.child(0))
+                .and_then(|n| n.utf8_text(source).ok())
+                .map(|name| {
+                    let name = name.trim();
+                    name.eq_ignore_ascii_case("IntegrationEvent")
+                        || name.eq_ignore_ascii_case("BusinessEvent")
+                })
+                .unwrap_or(false)
+    });
+    publishes
+}
+
+/// The AL keyword and name of the object declaration enclosing `node`.
+fn enclosing_object(node: tree_sitter::Node<'_>, source: &[u8]) -> Option<(String, String)> {
+    let mut current = node.parent();
+    while let Some(ancestor) = current {
+        if ancestor.kind() == "object_declaration" {
+            let keyword = ancestor
+                .child_by_field_name("kind")?
+                .utf8_text(source)
+                .ok()?
+                .to_string();
+            let name = al_syntax::node_text_clean(ancestor.child_by_field_name("name")?, source)?;
+            return Some((keyword, name));
+        }
+        current = ancestor.parent();
+    }
+    None
+}
+
+/// The name token in an `object_section`'s parenthesized header, e.g.
+/// `"Posting Date"` in `field(2; "Posting Date"; Date)`.
+fn section_header_name(section: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    let mut cursor = section.walk();
+    let header = section
+        .children(&mut cursor)
+        .find(|n| n.kind() == "parenthesized_block")?;
+    let mut header_cursor = header.walk();
+    let mut seen_id = false;
+    for child in header.named_children(&mut header_cursor) {
+        match child.kind() {
+            "integer" if !seen_id => seen_id = true,
+            "semicolon" | "comma" if seen_id => {}
+            "identifier" | "quoted_identifier" | "name" | "name_or_keyword" => return Some(child),
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// The `ObjectType::` value an `[EventSubscriber]` uses for an object declared
+/// with `keyword`.
+///
+/// The 2nd argument writes a table as `Database::"Sales Header"` while the 1st
+/// writes it as `ObjectType::Table`, so the two are compared separately.
+fn subscriber_object_type(keyword: &str) -> Option<&'static str> {
+    Some(match keyword.to_ascii_lowercase().as_str() {
+        "table" => "Table",
+        "codeunit" => "Codeunit",
+        "page" => "Page",
+        "report" => "Report",
+        "query" => "Query",
+        "xmlport" => "XmlPort",
+        _ => return None,
+    })
+}
+
+/// Add the subscriber edits that the identifier walk has not already covered.
+///
+/// The publisher object argument (`Codeunit::"Sales-Post"`) spells its name
+/// with a `quoted_identifier`, which the identifier walk can also reach, so the
+/// two would otherwise produce a pair of edits over the same range.
+fn merge_subscriber_edits(edits: &mut Vec<TextEdit>, from_subscribers: Vec<TextEdit>) {
+    for edit in from_subscribers {
+        if !edits.iter().any(|existing| existing.range == edit.range) {
+            edits.push(edit);
+        }
+    }
+}
+
+/// The edits that rewrite `target` in every `[EventSubscriber]` of one file.
+fn subscriber_edits(
+    target: &SubscriberTarget,
+    tree: &tree_sitter::Tree,
+    text: &str,
+    new_name: &RenameName,
+) -> Vec<TextEdit> {
+    let Some(object_type) = subscriber_object_type(&target.object_keyword) else {
+        return Vec::new();
+    };
+    let source = text.as_bytes();
+    let mut edits = Vec::new();
+    for attribute in al_syntax::find_event_subscriber_attributes(tree, text) {
+        // The 1st argument is optional in practice (an unparsed or abbreviated
+        // attribute), so only a *mismatch* disqualifies the subscriber.
+        if !attribute.object_type.is_empty()
+            && !attribute.object_type.eq_ignore_ascii_case(object_type)
+        {
+            continue;
+        }
+        let names_the_object = attribute
+            .object
+            .as_ref()
+            .is_some_and(|object| object.name.eq_ignore_ascii_case(&target.object_name));
+        let (argument, replacement) = match target.argument {
+            SubscriberArgumentKind::Object => (
+                attribute.object.as_ref(),
+                None, // spelled from the argument's own text below
+            ),
+            SubscriberArgumentKind::Event if names_the_object => {
+                (attribute.event.as_ref(), Some(new_name.as_string_literal()))
+            }
+            SubscriberArgumentKind::Element if names_the_object => (
+                attribute.element.as_ref(),
+                Some(new_name.as_string_literal()),
+            ),
+            _ => continue,
+        };
+        let Some(argument) = argument else { continue };
+        if !argument.name.eq_ignore_ascii_case(&target.current_name) {
+            continue;
+        }
+        let new_text = match replacement {
+            Some(literal) => literal,
+            None => {
+                let current = text
+                    .get(argument.range.start_byte..argument.range.end_byte)
+                    .unwrap_or_default();
+                new_name.spelled_over(current)
+            }
+        };
+        edits.push(TextEdit {
+            range: al_syntax::ts_range_to_syntax(&argument.range, source).into(),
+            new_text,
+        });
+    }
+    edits
 }
 
 /// The identifier a rename request names, plus how AL has to spell it.
@@ -1031,6 +1291,218 @@ mod tests {
         assert!(
             codeunit_after.contains(r#"exit(Shipment."Total Amount");"#),
             "cross-file reference not renamed: {codeunit_after}"
+        );
+    }
+
+    const PUBLISHER: &str = r#"codeunit 50100 "Sales Post"
+{
+    [IntegrationEvent(false, false)]
+    local procedure OnAfterPostSalesDoc(var Header: Record "Sales Header")
+    begin
+    end;
+}
+"#;
+
+    const SUBSCRIBER: &str = r#"codeunit 50101 "Sales Post Sub"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Sales Post", 'OnAfterPostSalesDoc', '', false, false)]
+    local procedure OnAfterPost(var Header: Record "Sales Header")
+    begin
+    end;
+}
+"#;
+
+    /// Renaming a published event has to rewrite the subscriber's event-name
+    /// string. It is a string literal, so the identifier walk cannot see it and
+    /// the subscriber is left naming an event that no longer exists.
+    #[test]
+    fn rename_event_rewrites_the_subscriber_string() {
+        let ws = Workspace::new();
+        let publisher_uri = Url::parse("file:///test/src/Pub.al").unwrap();
+        let subscriber_uri = Url::parse("file:///test/src/Sub.al").unwrap();
+        open_and_index(&ws, &publisher_uri, PUBLISHER);
+        open_and_index(&ws, &subscriber_uri, SUBSCRIBER);
+
+        let pos = Position {
+            line: 3,
+            character: 24,
+        };
+        let renamed = client_rename(
+            &ws,
+            &[
+                (publisher_uri.clone(), PUBLISHER),
+                (subscriber_uri.clone(), SUBSCRIBER),
+            ],
+            &publisher_uri,
+            pos,
+            |placeholder| {
+                assert_eq!(placeholder, "OnAfterPostSalesDoc");
+                "OnAfterPostSales".to_string()
+            },
+        );
+        assert!(text_for(&renamed, &publisher_uri).contains("procedure OnAfterPostSales(var"));
+        assert_eq!(
+            text_for(&renamed, &subscriber_uri),
+            r#"codeunit 50101 "Sales Post Sub"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Sales Post", 'OnAfterPostSales', '', false, false)]
+    local procedure OnAfterPost(var Header: Record "Sales Header")
+    begin
+    end;
+}
+"#
+        );
+    }
+
+    /// A same-named event published by a different object must be left alone:
+    /// a subscriber names its target by object and name together.
+    #[test]
+    fn rename_event_leaves_a_subscriber_to_another_publisher_alone() {
+        let ws = Workspace::new();
+        let publisher_uri = Url::parse("file:///test/src/Pub.al").unwrap();
+        let other_uri = Url::parse("file:///test/src/OtherSub.al").unwrap();
+        let other_sub = r#"codeunit 50102 "Other Sub"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Purch Post", 'OnAfterPostSalesDoc', '', false, false)]
+    local procedure OnAfterPost()
+    begin
+    end;
+}
+"#;
+        open_and_index(&ws, &publisher_uri, PUBLISHER);
+        open_and_index(&ws, &other_uri, other_sub);
+
+        let pos = Position {
+            line: 3,
+            character: 24,
+        };
+        let edit = rename(&ws, &publisher_uri, pos, "OnAfterPostSales").expect("edits");
+        assert!(
+            edit.changes.iter().all(|(u, _)| u != &other_uri),
+            "rename of a Sales Post event reached a Purch Post subscriber: {:?}",
+            edit.changes
+        );
+    }
+
+    /// An ordinary procedure with no event attribute must not rewrite
+    /// subscriber strings that happen to match its name.
+    #[test]
+    fn rename_plain_procedure_leaves_subscriber_strings_alone() {
+        let ws = Workspace::new();
+        let publisher_uri = Url::parse("file:///test/src/Plain.al").unwrap();
+        let subscriber_uri = Url::parse("file:///test/src/Sub.al").unwrap();
+        let plain = r#"codeunit 50100 "Sales Post"
+{
+    local procedure OnAfterPostSalesDoc()
+    begin
+    end;
+}
+"#;
+        open_and_index(&ws, &publisher_uri, plain);
+        open_and_index(&ws, &subscriber_uri, SUBSCRIBER);
+
+        let pos = Position {
+            line: 2,
+            character: 24,
+        };
+        let edit = rename(&ws, &publisher_uri, pos, "OnAfterPostSales").expect("edits");
+        assert!(
+            edit.changes.iter().all(|(u, _)| u != &subscriber_uri),
+            "renaming a plain procedure rewrote a subscriber string: {:?}",
+            edit.changes
+        );
+    }
+
+    /// Renaming the publisher object has to rewrite the subscriber's
+    /// `Codeunit::"…"` argument, and exactly once.
+    #[test]
+    fn rename_publisher_object_rewrites_the_subscriber_argument() {
+        let ws = Workspace::new();
+        let publisher_uri = Url::parse("file:///test/src/Pub.al").unwrap();
+        let subscriber_uri = Url::parse("file:///test/src/Sub.al").unwrap();
+        open_and_index(&ws, &publisher_uri, PUBLISHER);
+        open_and_index(&ws, &subscriber_uri, SUBSCRIBER);
+
+        let pos = Position {
+            line: 0,
+            character: 18,
+        };
+        let renamed = client_rename(
+            &ws,
+            &[
+                (publisher_uri.clone(), PUBLISHER),
+                (subscriber_uri.clone(), SUBSCRIBER),
+            ],
+            &publisher_uri,
+            pos,
+            |placeholder| {
+                assert_eq!(placeholder, "Sales Post");
+                "Sales Posting".to_string()
+            },
+        );
+        assert_eq!(
+            text_for(&renamed, &subscriber_uri),
+            r#"codeunit 50101 "Sales Post Sub"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Sales Posting", 'OnAfterPostSalesDoc', '', false, false)]
+    local procedure OnAfterPost(var Header: Record "Sales Header")
+    begin
+    end;
+}
+"#
+        );
+    }
+
+    /// A field-level table event names the field in the 4th argument, which is
+    /// a string literal like the event name.
+    #[test]
+    fn rename_table_field_rewrites_the_subscriber_element_argument() {
+        let ws = Workspace::new();
+        let table_uri = Url::parse("file:///test/src/Tab.al").unwrap();
+        let subscriber_uri = Url::parse("file:///test/src/FieldSub.al").unwrap();
+        let table = r#"table 50100 "Shipment"
+{
+    fields
+    {
+        field(2; "Posting Date"; Date) { }
+    }
+}
+"#;
+        let subscriber = r#"codeunit 50101 "Shipment Sub"
+{
+    [EventSubscriber(ObjectType::Table, Database::"Shipment", 'OnAfterValidateEvent', 'Posting Date', false, false)]
+    local procedure OnValidate()
+    begin
+    end;
+}
+"#;
+        open_and_index(&ws, &table_uri, table);
+        open_and_index(&ws, &subscriber_uri, subscriber);
+
+        let pos = Position {
+            line: 4,
+            character: 18,
+        };
+        let renamed = client_rename(
+            &ws,
+            &[
+                (table_uri.clone(), table),
+                (subscriber_uri.clone(), subscriber),
+            ],
+            &table_uri,
+            pos,
+            |_| "Posted Date".to_string(),
+        );
+        assert_eq!(
+            text_for(&renamed, &subscriber_uri),
+            r#"codeunit 50101 "Shipment Sub"
+{
+    [EventSubscriber(ObjectType::Table, Database::"Shipment", 'OnAfterValidateEvent', 'Posted Date', false, false)]
+    local procedure OnValidate()
+    begin
+    end;
+}
+"#
         );
     }
 }
