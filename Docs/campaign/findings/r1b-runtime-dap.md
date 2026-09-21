@@ -54,7 +54,7 @@ item that file left unticked, plus the files its checklist does not name.
   ```
   compares `01/07/24` against `739068` and fails locally where BC passes. `Duration` is worse: BC formats a Duration as `2 hours 5 minutes`, this prints the millisecond count.
 - fix: delete `format_value` and call `crate::interpreter::dispatch::render_value` so there is one renderer. Cover the Date and Duration round trip in a unit test.
-- status: open
+- status: fixed dfd65be8 (the shared renderer also learned BC's Duration format)
 
 ### [BUG] `Any.DecimalInRange` rejects the two-argument call when MaxValue is a Decimal
 - where: crates/al-runtime/src/stubs/any.rs:59 (`decimal_in_range` match arms)
@@ -66,35 +66,35 @@ item that file left unticked, plus the files its checklist does not name.
   ```
   errors with `Any.DecimalInRange expects (Integer, Integer) or (Num, Num, Integer)`. The test fails locally and passes on BC. The three-argument forms already cover every Integer/Decimal mix, so the omission is in the two-argument form only.
 - fix: add `[Value::Decimal(max), Value::Integer(places)] => decimal_in_range_impl(Decimal::ZERO, *max, *places)`, and accept `BigInteger` wherever `Integer` is accepted across this file and `library_random.rs`.
-- status: open
+- status: fixed dfd65be8 (the AL signature is `MaxValue: Integer`; AL converts the Decimal argument to it, so the reported behaviour holds)
 
 ### [SLOP] `Any.GetSeed` doc comment and its test both describe behaviour the code does not have
 - where: crates/al-runtime/src/stubs/any.rs:255 (doc), :260 (`get_seed`), test at any.rs:580
 - severity: low
 - scenario: the doc says "the LCG *state* is not the same as the user-visible seed (the state is updated on every call). We return the raw state cast to i64". `set_seed` calls `set_lcg_seed(seed)` which assigns the cell directly and advances nothing, so `Any.SetSeed(999); Any.GetSeed()` returns exactly 999. The test comment repeats the wrong claim ("it won't equal 999 exactly") and then asserts only that the result is an `Integer`, which no implementation of `GetSeed` could fail.
 - fix: correct the doc, and make the test assert `Value::Integer(999)` so the round trip is actually pinned.
-- status: open
+- status: fixed dfd65be8 (codeunit 130500 keeps the seed in a field, so `GetSeed` now returns it rather than the LCG state)
 
 ### [SLOP] `Any.AlphanumericText` doc claims a character set the code does not produce
 - where: crates/al-runtime/src/stubs/any.rs:140-161
 - severity: low
 - scenario: the doc says the range is "0-9, a-f from GUIDs -> here extended to a-z for variety". The body uses `const HEX: &[u8] = b"0123456789abcdef"` only, so the output is hex. The code matches BC (the AL original strips separators out of GUIDs, giving hex); the comment invents an extension that does not exist and would be a divergence if someone implemented it.
 - fix: delete the second and third paragraphs of the doc comment and say the output is lowercase hex, matching the GUID-derived original.
-- status: open
+- status: fixed dfd65be8
 
 ### [BUG] `AssertFull`'s failure message says the queue is empty whatever it holds
 - where: crates/al-runtime/src/stubs/library_variable_storage.rs:129 (`assert_full`), message at :134
 - severity: low
 - scenario: with 3 of 25 slots used, `LibraryVariableStorage.AssertFull()` fails with `AssertFull failed - queue has 3/25 items. Queue is empty.` The trailing sentence is a constant and contradicts the count in the same string, which sends the reader looking for a lost enqueue.
 - fix: drop the constant sentence, or say "queue is not full".
-- status: open
+- status: fixed dfd65be8
 
 ### [GAP] `Any.AlphabeticText`, `UnicodeText`, `AlphanumericText` and `Email` allocate whatever length the AL code asks for
 - where: crates/al-runtime/src/stubs/any.rs:130, :158, :177, :200
 - severity: low
 - scenario: each builds `(0..length as usize).map(...).collect::<String>()` with no upper bound, so `Any.AlphabeticText(2000000000)` in a test tries to build a 2 GB string and either takes the runner down or swaps the machine. BC caps the result at the `Text` variable's declared length and errors instead. `library_random::rand_text` already clamps to 250 at line 131, so the guard exists one file over.
 - fix: clamp the length the way `rand_text` does, and return an error above the cap rather than allocating.
-- status: open
+- status: fixed dfd65be8 (cap 2048, the longest a Text or Code table field can declare)
 
 ### [BUG] `--filter` drops a test whose name contains the trailing pattern twice, and the run still reports green
 - where: crates/al-test/src/session.rs:51 (`method_name_matches`), consumed at crates/al-test/src/backends/live_bc.rs:239 and :246
