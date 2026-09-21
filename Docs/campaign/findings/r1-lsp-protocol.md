@@ -45,7 +45,7 @@ audit that are still present in current code are tagged [STILL-OPEN].
 - severity: medium
 - scenario: `on_document_change` runs `AlParser::parse_quick(text)`, `text.to_string()` (a full copy of the document), `procedures_snapshot`, `add_file_with_tree` and symbol-cache invalidation. All of it is synchronous, on the tokio worker, while `did_change` holds `generation_lock.write()`. On a 10k-line AL file every keystroke pays a full reparse plus a full-document clone on the executor thread that also drives all other connections' futures. The crate is otherwise careful to push exactly this kind of CPU work into `spawn_blocking` (references, documentSymbol, semanticTokens, workspaceSymbol).
 - fix: Move the parse and re-index into `spawn_blocking`, keeping the write guard only around the store mutation, or debounce the file-index refresh the same way diagnostics are debounced.
-- status: open
+- status: fixed ff9f60a1
 
 ### [BUG] A partially read or partially written frame desynchronizes the daemon client
 - where: crates/al-protocol/src/client.rs:46 (`read_bounded_line`), 192 (`write_all_bounded`), 501 (`read_response`)
