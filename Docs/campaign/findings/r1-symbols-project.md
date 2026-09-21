@@ -98,7 +98,7 @@ current code are tagged [STILL-OPEN].
   identifiers that appear in real packages), each rendered bare.
 - fix: route `k.name`, every entry of `k.field_names`, `m.name`, `p.name` and `v.name`
   through the existing `format_name`.
-- status: open
+- status: fixed c0e57362
 
 ### [GAP] The process-global `.app` source-index cache is never evicted in production
 - where: crates/al-symbols/src/source_index.rs:30-31, :337-397
