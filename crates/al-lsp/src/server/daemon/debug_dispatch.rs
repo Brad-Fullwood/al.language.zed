@@ -140,25 +140,7 @@ fn resolve_object_metadata(workspace: &Workspace, file: &str) -> Option<(i32, i3
     Some((kind_to_object_type(&info.kind), id))
 }
 
-/// When a config name is supplied, it must match exactly. Falling
-/// back to the first config silently masks typos (and could route to the
-/// wrong BC environment). Only fall back to the first config when no name
-/// was supplied. Extracted for unit-testability — the surrounding
-/// `resolve_debug_config` adds project + file IO that is hard to mock.
-pub(super) fn pick_named_config<'a>(
-    configs: &'a [al_bc::launch::BcServerConfig],
-    requested_name: Option<&str>,
-) -> Result<&'a al_bc::launch::BcServerConfig, String> {
-    match requested_name {
-        Some(name) => configs.iter().find(|c| c.name == name).ok_or_else(|| {
-            let known: Vec<&str> = configs.iter().map(|c| c.name.as_str()).collect();
-            format!("Debug config {name:?} not found. Known configs: {known:?}")
-        }),
-        None => configs
-            .first()
-            .ok_or_else(|| "Project debug configuration file has no configs".to_string()),
-    }
-}
+pub(super) use al_bc::launch::pick_config as pick_named_config;
 
 pub(super) fn resolve_debug_config(
     workspace: &Workspace,

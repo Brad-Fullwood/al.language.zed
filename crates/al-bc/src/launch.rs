@@ -129,6 +129,28 @@ impl BcServerConfig {
     }
 }
 
+/// Choose the launch configuration a command should act on.
+///
+/// A named configuration must match exactly: falling back to the first entry
+/// would mask a typo and could route a symbol download or a test run at the
+/// wrong Business Central environment. With no name, the first entry is the
+/// project's own default, and the caller reports which one that was so the
+/// choice is never silent.
+pub fn pick_config<'a>(
+    configs: &'a [BcServerConfig],
+    requested_name: Option<&str>,
+) -> Result<&'a BcServerConfig, String> {
+    match requested_name {
+        Some(name) => configs.iter().find(|c| c.name == name).ok_or_else(|| {
+            let known: Vec<&str> = configs.iter().map(|c| c.name.as_str()).collect();
+            format!("Debug config {name:?} not found. Known configs: {known:?}")
+        }),
+        None => configs
+            .first()
+            .ok_or_else(|| "Project debug configuration file has no configs".to_string()),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ZedDebugConfigJson {
@@ -422,6 +444,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn named_config(name: &str) -> BcServerConfig {
+        BcServerConfig {
+            name: name.to_string(),
+            environment_type: EnvironmentType::Sandbox,
+            server: None,
+            server_instance: None,
+            port: None,
+            environment_name: Some(name.to_string()),
+            tenant: None,
+            authentication: AuthMethod::AAD,
+            accept_invalid_certs: false,
+            debug_args: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn pick_config_without_a_name_takes_the_projects_first_entry() {
+        let configs = [named_config("Sandbox"), named_config("Production")];
+        assert_eq!(pick_config(&configs, None).unwrap().name, "Sandbox");
+    }
+
+    #[test]
+    fn pick_config_matches_a_name_exactly_and_never_falls_back() {
+        let configs = [named_config("Sandbox"), named_config("Production")];
+        assert_eq!(
+            pick_config(&configs, Some("Production")).unwrap().name,
+            "Production"
+        );
+        let error = pick_config(&configs, Some("Prodction")).unwrap_err();
+        assert!(error.contains("Prodction"), "{error}");
+        assert!(
+            error.contains("Sandbox") && error.contains("Production"),
+            "the error must list the known configs: {error}"
+        );
+    }
+
+    #[test]
+    fn pick_config_on_an_empty_list_is_an_error() {
+        assert!(pick_config(&[], None).is_err());
     }
 
     #[test]

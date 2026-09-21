@@ -2145,14 +2145,31 @@ impl LanguageServer for AlServer {
         // publishing a replacement generation.
         drop(self.await_ready().await?);
 
+        // An optional `config` argument names the launch configuration to act
+        // on, following the convention `al_debug` already established.
+        let requested_config = params
+            .arguments
+            .first()
+            .and_then(|value| value.get("config"))
+            .and_then(|value| value.as_str());
         let start = std::time::Instant::now();
         let result = match params.command.as_str() {
             "al.downloadSymbols" | "al.downloadSymbolsNuget" => {
-                workspace::download_symbols_command(self, workspace::DownloadSource::NuGet).await;
+                workspace::download_symbols_command(
+                    self,
+                    workspace::DownloadSource::NuGet,
+                    requested_config,
+                )
+                .await;
                 Ok(None)
             }
             "al.downloadSymbolsServer" => {
-                workspace::download_symbols_command(self, workspace::DownloadSource::Server).await;
+                workspace::download_symbols_command(
+                    self,
+                    workspace::DownloadSource::Server,
+                    requested_config,
+                )
+                .await;
                 Ok(None)
             }
             "al.clearSymbolCache" => {

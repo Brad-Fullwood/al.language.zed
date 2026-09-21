@@ -265,6 +265,7 @@ pub(crate) async fn initialize_workspace(
                         &client,
                         session.clone(),
                         &deps,
+                        None,
                     )
                     .await;
                     if !batch.failures.is_empty() {
@@ -695,6 +696,7 @@ async fn download_dependency_closure(
     client: &tower_lsp::Client,
     session: Option<LspSessionState>,
     direct: &[al_project::project::AppDependency],
+    requested_config: Option<&str>,
 ) -> DownloadBatch {
     let mut visited: std::collections::HashSet<String> = direct
         .iter()
@@ -716,7 +718,14 @@ async fn download_dependency_closure(
         }
         let round = match source {
             DownloadSource::Server => {
-                download_symbols_from_server(project, &queue, client, session.clone()).await
+                download_symbols_from_server(
+                    project,
+                    &queue,
+                    client,
+                    session.clone(),
+                    requested_config,
+                )
+                .await
             }
             DownloadSource::NuGet => {
                 download_packages_nuget(workspace, &queue, &project.packages_dir).await
@@ -900,12 +909,17 @@ async fn prompt_download_symbols(
 
 /// Download symbols from a running BC instance defined in launch.json.
 ///
-/// Uses the first available server config. Returns downloaded .app file paths.
+/// `requested_config` names one of the project's launch configurations; with
+/// no name the project's first entry is used. Either way the chosen
+/// configuration is named in the log and in the messages the user sees, so a
+/// project listing Sandbox and Production never downloads from one of them
+/// silently. Returns downloaded .app file paths.
 async fn download_symbols_from_server(
     project: &al_project::project::AlProject,
     deps: &[al_project::project::AppDependency],
     lsp_client: &tower_lsp::Client,
     session: Option<LspSessionState>,
+    requested_config: Option<&str>,
 ) -> DownloadBatch {
     let configs = &project.server_configs;
     if configs.is_empty() {
@@ -918,8 +932,17 @@ async fn download_symbols_from_server(
         };
     }
 
-    let config = &configs[0];
+    let config = match al_bc::launch::pick_config(configs, requested_config) {
+        Ok(config) => config,
+        Err(error) => {
+            return DownloadBatch {
+                paths: Vec::new(),
+                failures: vec![error],
+            };
+        }
+    };
     info!(
+        config = %config.name,
         server = %config.display_name(),
         deps = deps.len(),
         "Downloading symbols from BC server"
@@ -1111,7 +1134,11 @@ async fn download_packages_nuget(
 /// Handle the `al.downloadSymbols*` commands.
 ///
 /// Downloads symbols from the specified source and reloads the symbol index.
-pub(crate) async fn download_symbols_command(server: &AlServer, source: DownloadSource) {
+pub(crate) async fn download_symbols_command(
+    server: &AlServer,
+    source: DownloadSource,
+    requested_config: Option<&str>,
+) {
     let generation = server.workspace.generation_lock.read().await;
     let project = server.workspace.project.read().await.clone();
     let Some(project) = project else {
@@ -1191,6 +1218,7 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
         &server.client,
         Some(server.session.clone()),
         &deps,
+        requested_config,
     )
     .await;
     if server.session.is_cancelled() {
