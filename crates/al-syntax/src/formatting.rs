@@ -95,6 +95,12 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     // track of the source convention so a no-op format check stays a no-op on
     // Windows checkouts instead of rewriting every line ending to LF.
     let uses_crlf = text.contains("\r\n");
+    // The brace merge runs *before* the indentation pass. Merging a stand-alone
+    // `{` onto the line above changes what the indentation state machine sees on
+    // that line, so a merge applied afterwards would leave the file indented for
+    // the pre-merge layout and the next format run would move it again.
+    let merged = apply_brace_style(text, options);
+    let text: &str = &merged;
     let indent_str = if options.insert_spaces {
         " ".repeat(options.tab_size)
     } else {
@@ -425,12 +431,12 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     }
 
     // The pass order is significant for idempotence: sort properties, normalize
-    // procedure gaps, wrap long properties, then merge braces.
+    // procedure gaps, then wrap long properties. The brace merge already ran
+    // ahead of the indentation pass.
     let result = sort_object_properties(result, options);
     let result = normalize_blank_lines_between_procedures(result, options);
     let result = wrap_long_property_lines(result, options);
 
-    let result = apply_brace_style(result, options);
     if uses_crlf {
         result.replace('\n', "\r\n")
     } else {
@@ -1073,11 +1079,20 @@ fn wrap_property_line(line: &str, unit: &str) -> Vec<String> {
 /// (`begin`/`end`), closers (`}`), comment lines, lines already ending in `{`,
 /// and — critically — any line carrying a trailing `//` comment (merging there
 /// would comment the brace out and produce invalid AL).
+///
+/// It also rejects every line that the indentation pass classifies as a block
+/// opener in its own right: a statement terminator (`;`), a single-statement
+/// opener (`then`, `do`), `case … of`, a case label (`:`), `repeat`, `var` and
+/// `else`. A stand-alone `{` never follows one of those in valid AL, and
+/// merging there would change what the indentation pass sees on a re-run, so
+/// the pass would not be idempotent.
 fn is_mergeable_brace_target(prev: &str) -> bool {
     let t = prev.trim();
     if t.is_empty()
         || t == "}"
         || t.ends_with('{')
+        || t.ends_with(';')
+        || t.ends_with(':')
         || t.starts_with("//")
         || t.starts_with("/*")
         || t.starts_with('*')
@@ -1094,16 +1109,24 @@ fn is_mergeable_brace_target(prev: &str) -> bool {
     {
         return false;
     }
+    for kw in ["then", "do", "of", "repeat", "var", "else"] {
+        if lower == kw || lower.ends_with(&format!(" {kw}")) {
+            return false;
+        }
+    }
     // CRITICAL: never merge onto a line with a trailing line comment.
     !has_line_comment_outside_strings(t)
 }
 
-/// PASS 4 — `brace_style`. For `SameLine`, merge a stand-alone `{` line onto
+/// PRE-PASS — `brace_style`. For `SameLine`, merge a stand-alone `{` line onto
 /// the preceding mergeable opener line. `NextLine` (default) is a no-op; this
 /// pass never moves `begin`/`end` or a closing `}`.
-fn apply_brace_style(text: String, options: &FormatOptions) -> String {
+///
+/// Runs before the indentation pass so the indentation is computed for the
+/// final line layout. See the call site in `format_al`.
+fn apply_brace_style(text: &str, options: &FormatOptions) -> String {
     if !matches!(options.brace_style, BraceStyle::SameLine) {
-        return text;
+        return text.to_string();
     }
     let lines: Vec<&str> = text.lines().collect();
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
@@ -2538,6 +2561,44 @@ table 50100 Test
         let pass1 = format_al(BRACE_INPUT, &opts);
         let pass2 = format_al(&pass1, &opts);
         assert_eq!(pass1, pass2, "brace_style must be idempotent");
+    }
+
+    #[test]
+    fn brace_style_does_not_merge_onto_a_single_statement_opener() {
+        // Found by `property_formatting::fixtures::mutated_fixture_every_option_is_idempotent`.
+        // `if … then` opens a single-statement indent. Merging the `{` onto it removed
+        // that opener on the next run, so the body dedented by one level every pass.
+        let input = "\
+        if Rec.Status = Rec.Status::Posted then
+                {
+                    ApplicationArea = All;
+";
+        let opts = FormatOptions {
+            brace_style: BraceStyle::SameLine,
+            ..Default::default()
+        };
+        let pass1 = format_al(input, &opts);
+        assert!(
+            !pass1.contains("then {"),
+            "a `{{` must not merge onto `if … then`:\n{pass1}"
+        );
+        assert_eq!(pass1, format_al(&pass1, &opts));
+    }
+
+    #[test]
+    fn brace_style_does_not_merge_onto_a_statement_terminator() {
+        let input = "\
+    Caption = 'x';
+    {
+    }
+";
+        let opts = FormatOptions {
+            brace_style: BraceStyle::SameLine,
+            ..Default::default()
+        };
+        let pass1 = format_al(input, &opts);
+        assert!(!pass1.contains("; {"), "merged past a `;`:\n{pass1}");
+        assert_eq!(pass1, format_al(&pass1, &opts));
     }
 
     #[test]

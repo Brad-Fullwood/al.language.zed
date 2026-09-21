@@ -1383,6 +1383,56 @@ mod tests {
         assert_eq!(off, Some(2));
     }
 
+    /// LSP ends a line at `\n`, `\r\n` or a lone `\r` and at nothing else. Ropey's
+    /// default `unicode_lines` feature also counts VT, FF, NEL, U+2028 and U+2029, which
+    /// put the server one line ahead of the client for every position after such a
+    /// character. Found by `tests/property_positions.rs`; the fix is the ropey feature
+    /// set in the workspace manifest.
+    #[test]
+    fn unicode_separators_are_not_line_breaks() {
+        for sep in ['\u{0b}', '\u{0c}', '\u{85}', '\u{2028}', '\u{2029}'] {
+            let text = format!("a{sep}b\nc");
+            let rope = Rope::from_str(&text);
+            assert_eq!(
+                rope.len_lines(),
+                2,
+                "U+{:04X} must not open a line",
+                sep as u32
+            );
+            let end_of_first = position_to_offset(&rope, 0, 999).unwrap();
+            assert_eq!(
+                rope.char_to_byte(end_of_first),
+                text.find('\n').unwrap(),
+                "line 0 must run up to the newline past U+{:04X}",
+                sep as u32
+            );
+        }
+    }
+
+    /// The same defect through the public API: the minimal failing input from
+    /// `property_positions::edits_agree_with_the_lsp_position_reference`.
+    #[test]
+    fn edit_spanning_a_vertical_tab_replaces_the_whole_range() {
+        let store = DocumentStore::new();
+        let uri = test_uri("vtab");
+        store.open(uri.clone(), "\u{0b}\u{0b}".to_string()).unwrap();
+        store
+            .apply_changes(
+                &uri,
+                &[TextChange {
+                    range: Some(TextRange {
+                        start_line: 0,
+                        start_character: 0,
+                        end_line: 0,
+                        end_character: 2,
+                    }),
+                    text: "@".to_string(),
+                }],
+            )
+            .unwrap();
+        assert_eq!(store.get_text(&uri).unwrap(), "@");
+    }
+
     /// A non-existent line still returns `None`; the clamp is
     /// for `character` only, not for `line`.
     #[test]
