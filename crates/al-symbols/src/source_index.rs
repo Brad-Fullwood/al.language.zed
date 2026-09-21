@@ -153,8 +153,10 @@ impl AppSourceIndex {
             // accepted — the real name may continue past the boundary, and a
             // truncated key would break name-based navigation.
             let truncated = file.size() > buf.len() as u64;
-            let mut header = parse_object_header_inner(&buf, truncated);
-            if header.is_none() && truncated {
+            // Every declaration in the window is kept. Objects past a 256 KiB
+            // window are not, which no real multi-object AL file reaches.
+            let mut headers = parse_object_headers(&buf, truncated);
+            if headers.is_empty() && truncated {
                 if file.size() > MAX_EXTRACTED_SOURCE_BYTES {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -175,7 +177,7 @@ impl AppSourceIndex {
                         ),
                     ));
                 }
-                header = parse_object_header(&buf);
+                headers = parse_object_headers(&buf, false);
             }
             total_decompressed = total_decompressed.saturating_add(buf.len() as u64);
             if total_decompressed > MAX_TOTAL_EXTRACTED_SOURCE_BYTES {
@@ -185,7 +187,7 @@ impl AppSourceIndex {
                 ));
             }
 
-            if let Some((kind, id, obj_name)) = header {
+            for (kind, id, obj_name) in headers {
                 by_kind_id.entry((kind, id)).or_insert_with(|| name.clone());
                 by_kind_name
                     .entry((kind, obj_name.to_lowercase()))
@@ -519,16 +521,40 @@ fn parse_object_header(bytes: &[u8]) -> Option<(ObjectKind, i32, String)> {
     parse_object_header_inner(bytes, false)
 }
 
-/// Parse the first object declaration header in `bytes`.
+fn parse_object_header_inner(
+    bytes: &[u8],
+    reject_name_at_end: bool,
+) -> Option<(ObjectKind, i32, String)> {
+    scan_object_headers(bytes, reject_name_at_end, true)
+        .into_iter()
+        .next()
+}
+
+/// Every object declaration header in `bytes`, in document order.
+///
+/// AL allows several objects in one file, and a package built from such a
+/// file ships it as one archive entry, so indexing only the first left every
+/// later object unreachable from navigation.
+fn parse_object_headers(bytes: &[u8], reject_name_at_end: bool) -> Vec<(ObjectKind, i32, String)> {
+    scan_object_headers(bytes, reject_name_at_end, false)
+}
+
+/// Scan object declaration headers.
 ///
 /// With `reject_name_at_end`, an *unquoted* name that terminates only because
 /// the buffer ends (no whitespace/`{` delimiter seen) is rejected: the caller
 /// passed a truncated window and the real name may continue past the boundary.
 /// Quoted names need no such guard — an unterminated quote already fails.
-fn parse_object_header_inner(
+///
+/// A type reference inside a body (`Codeunit "Sales-Post"`, `Enum "Status"`)
+/// carries no object id, and every kind that can be declared with one is
+/// required to have one here, so bodies do not produce spurious matches.
+fn scan_object_headers(
     bytes: &[u8],
     reject_name_at_end: bool,
-) -> Option<(ObjectKind, i32, String)> {
+    stop_after_first: bool,
+) -> Vec<(ObjectKind, i32, String)> {
+    let mut found = Vec::new();
     let text = String::from_utf8_lossy(bytes);
     let s = text.as_ref();
     let b = s.as_bytes();
@@ -591,19 +617,29 @@ fn parse_object_header_inner(
                     if reject_name_at_end && unquoted && name_end == b.len() {
                         // The name may straddle the truncated window edge;
                         // force the caller's full-read fallback.
-                        return None;
+                        return found;
                     }
-                    return Some((kind, id, name));
+                    found.push((kind, id, name));
+                    if stop_after_first {
+                        return found;
+                    }
+                    i = name_end;
+                    continue;
                 }
                 if kind == ObjectKind::DotNet {
-                    return Some((kind, id, String::new()));
+                    found.push((kind, id, String::new()));
+                    if stop_after_first {
+                        return found;
+                    }
+                    i = k;
+                    continue;
                 }
             }
         } else {
             i += 1;
         }
     }
-    None
+    found
 }
 
 fn skip_ws_and_comments(bytes: &[u8], i: &mut usize) {
@@ -974,6 +1010,48 @@ mod tests {
             by_kind_name,
             source_paths,
         }
+    }
+
+    /// AL allows several objects in one file, and a package ships such a file
+    /// as one archive entry. Every object in it has to be reachable, not just
+    /// the first.
+    #[test]
+    #[serial_test::serial]
+    fn every_object_in_a_multi_object_entry_is_indexed() {
+        clear_source_index_cache();
+
+        let source = concat!(
+            "codeunit 50100 \"First Object\"\n{\n    procedure Run() begin end;\n}\n\n",
+            "codeunit 50101 \"Second Object\"\n{\n    var Helper: Codeunit \"Sales-Post\";\n}\n\n",
+            "table 50102 Third\n{\n    fields { field(1; \"No.\"; Code[20]) { } }\n}\n"
+        );
+        let path = write_app(&[("src/Combined.al", source)]);
+        let index = get_or_build(&path).unwrap();
+
+        for (kind, id, name) in [
+            (ObjectKind::Codeunit, 50100, "First Object"),
+            (ObjectKind::Codeunit, 50101, "Second Object"),
+            (ObjectKind::Table, 50102, "Third"),
+        ] {
+            assert_eq!(
+                index.source_path_for_entry(&entry(kind, id, name)),
+                Some("src/Combined.al"),
+                "{name} is not reachable"
+            );
+            assert_eq!(
+                index.source_path_for_entry(&entry(kind, 0, name)),
+                Some("src/Combined.al"),
+                "{name} is not reachable by name"
+            );
+        }
+        // A type reference inside a body carries no object id, so it must not
+        // register as a declaration.
+        assert_eq!(
+            index.source_path_for_entry(&entry(ObjectKind::Codeunit, 0, "Sales-Post")),
+            None
+        );
+
+        clear_source_index_cache();
     }
 
     #[test]
