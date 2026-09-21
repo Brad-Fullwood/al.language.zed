@@ -149,15 +149,14 @@ pub fn generate_test(config: &GenerateTestConfig) -> String {
     // for generate_page / generate_report).
     let test_name = crate::permissions::al_escape_name(&config.test_name);
 
+    // No `var Assert: Codeunit "Library Assert";`: it needs Microsoft's test
+    // library, which a fresh project does not depend on, and no stub uses it.
     format!(
         r#"codeunit {id} "{name}"
 {{
     Subtype = Test;
 
-{stubs}
-    var
-        Assert: Codeunit "Library Assert";
-}}
+{stubs}}}
 "#,
         id = config.object_id,
         name = test_name,
@@ -235,13 +234,24 @@ fn generate_test_stubs(subject: &SymbolEntry) -> String {
         return default_test_stub();
     }
 
+    // `sanitize_identifier` drops the characters an identifier cannot hold, so
+    // `PostSale` and `"Post Sale"` both become `PostSale` and emitted two
+    // procedures with the same name. Suffix the repeats.
+    let mut taken: Vec<String> = Vec::with_capacity(public_methods.len());
     public_methods
         .iter()
         .map(|m| {
             let method_name = m.name.replace('\'', "''");
+            let base = sanitize_identifier(&m.name);
+            let mut stub_name = base.clone();
+            let mut suffix = 1u32;
+            while taken.contains(&stub_name.to_ascii_lowercase()) {
+                suffix += 1;
+                stub_name = format!("{base}{suffix}");
+            }
+            taken.push(stub_name.to_ascii_lowercase());
             format!(
-                "    [Test]\n    procedure Test{}()\n    begin\n        Error('TODO: implement test for {}');\n    end;\n",
-                sanitize_identifier(&m.name), method_name,
+                "    [Test]\n    procedure Test{stub_name}()\n    begin\n        Error('TODO: implement test for {method_name}');\n    end;\n",
             )
         })
         .collect::<Vec<_>>()
@@ -495,6 +505,49 @@ mod tests {
         assert_eq!(al_identifier("2nd Reminder"), "field2ndReminder");
         assert_eq!(al_identifier("%"), "field");
         assert_eq!(al_identifier(""), "field");
+    }
+
+    /// `var Assert: Codeunit "Library Assert";` needs Microsoft's test library,
+    /// which a fresh project does not depend on, and nothing in the stub uses
+    /// it.
+    #[test]
+    fn generated_test_codeunit_declares_no_unsatisfied_dependency() {
+        let src = generate_test(&GenerateTestConfig {
+            object_id: 50100,
+            test_name: "My Tests".to_string(),
+            subject: None,
+        });
+        assert_al_parses("test codeunit", &src);
+        assert!(!src.contains("Library Assert"), "{src}");
+        assert!(!src.contains("var"), "{src}");
+    }
+
+    /// `sanitize_identifier` maps `PostSale` and `"Post Sale"` to the same
+    /// name, so both procedures produced `procedure TestPostSale()`.
+    #[test]
+    fn test_stub_names_are_unique_even_when_sanitised_names_collide() {
+        let mut subject = make_table("Posting", vec![]);
+        subject.kind = al_symbols::model::ObjectKind::Codeunit;
+        subject.methods = ["PostSale", "Post Sale", "Post-Sale"]
+            .into_iter()
+            .map(|name| al_symbols::model::MethodSymbol {
+                name: name.to_string(),
+                parameters: vec![],
+                return_type: None,
+                attributes: vec![],
+                is_local: false,
+            })
+            .collect();
+
+        let src = generate_test(&GenerateTestConfig {
+            object_id: 50100,
+            test_name: "Posting Tests".to_string(),
+            subject: Some(subject),
+        });
+        assert_al_parses("test codeunit with colliding names", &src);
+        assert!(src.contains("procedure TestPostSale()"), "{src}");
+        assert!(src.contains("procedure TestPostSale2()"), "{src}");
+        assert!(src.contains("procedure TestPostSale3()"), "{src}");
     }
 
     /// The whole point of the sanitisation: a page over a table with such a

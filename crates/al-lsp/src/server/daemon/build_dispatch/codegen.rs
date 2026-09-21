@@ -283,6 +283,10 @@ pub(in crate::server::daemon) fn dispatch_setup(workspace: &Workspace, id: u64) 
     let report = crate::toolchain::doctor(workspace);
     serialized_response(id, "setup report", &report)
 }
+/// Last object ID in Microsoft's own range. Partner and per-tenant objects
+/// start above it, so an ID at or below this cannot belong to generated code.
+const MICROSOFT_ID_RANGE_END: i32 = 50_000;
+
 pub(in crate::server::daemon) fn dispatch_generate(
     workspace: &Workspace,
     id: u64,
@@ -303,6 +307,25 @@ pub(in crate::server::daemon) fn dispatch_generate(
             None => return invalid_params(id),
         },
     };
+    // An AL object ID is positive, and 1..=50000 is Microsoft's own range:
+    // `al generate page --id -5` used to emit `page -5 "NewPage"`.
+    if object_id <= 0 {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            &format!("Object ID {object_id} is not valid: AL object IDs are positive"),
+        );
+    }
+    if object_id <= MICROSOFT_ID_RANGE_END {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            &format!(
+                "Object ID {object_id} is inside Microsoft's reserved range \
+                 (1-{MICROSOFT_ID_RANGE_END}) — pass an `id` from your own range"
+            ),
+        );
+    }
     let table_name = params.get("table").and_then(|v| v.as_str()).unwrap_or("");
 
     // Object-ID conflict check. The default of 50100 makes it
@@ -543,6 +566,34 @@ mod tests {
             .error
             .expect("non-string template must error, not default silently");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
+    }
+
+    /// `al generate page --id -5` used to emit `page -5 "NewPage"`, and
+    /// `--id 18` an object inside Microsoft's own range.
+    #[test]
+    fn dispatch_generate_rejects_non_positive_and_base_range_object_ids() {
+        for (object_id, expected) in [
+            (-5, "positive"),
+            (0, "positive"),
+            (18, "reserved range"),
+            (50_000, "reserved range"),
+        ] {
+            let ws = empty_ws();
+            let resp = dispatch_generate(
+                &ws,
+                1,
+                &serde_json::json!({ "kind": "page", "id": object_id, "table": "Customer" }),
+            );
+            let error = resp
+                .error
+                .unwrap_or_else(|| panic!("id {object_id} must be rejected"));
+            assert_eq!(error.code, error_codes::INVALID_PARAMS);
+            assert!(
+                error.message.contains(expected),
+                "id {object_id}: {}",
+                error.message
+            );
+        }
     }
 
     #[test]
