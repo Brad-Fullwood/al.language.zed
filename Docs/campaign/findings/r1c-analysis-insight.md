@@ -209,14 +209,14 @@ Listed by neither checklist:
 - severity: medium
 - scenario: both functions iterate a DashMap (`object_info`, `files`) and `break` as soon as `results.len() >= limit`. DashMap iteration order is shard order, which depends on key hashes and is not the file order, so for a query like `Sales` in a project with 400 matching objects and the LSP's limit, the editor's symbol picker shows an arbitrary 100 of them and the exact object the user typed the full name of may not be among them. Nothing ranks an exact or prefix match above a mid-string one, and the results are not sorted at all, so the list also reorders between identical requests. `workspace_search` additionally iterates `object_info`, the first-declaration-only map, so the second and later objects of a multi-object file are not findable by `workspace/symbol` at all.
 - fix: collect all matches, rank them (exact, then prefix, then substring, then by name), and truncate after ranking. Iterate `object_infos` for the object list.
-- status: open
+- status: fixed 2b2ed4c4 — both search functions collect every match, rank it, sort, and truncate last; `workspace_search` reads `object_infos`.
 
 ### [GAP] Symbol search is case-sensitive for non-ASCII names
 - where: crates/al-analysis/src/queries/search.rs:24-32 (`ascii_contains_ci`) with the `query.to_lowercase()` at 45 and 90
 - severity: low
 - scenario: the query is lowercased with Unicode-aware `str::to_lowercase`, and the haystack is folded with `u8::to_ascii_lowercase` per byte. For the object `"München Setup"`, `Ü` is `0xC3 0x9C` and `ü` is `0xC3 0xBC`; the ASCII fold leaves `0x9C` alone, so searching `MÜNCHEN` finds nothing while `München` does. The same applies to `Ø`, `Æ` and the accented names that appear in Nordic and German BC projects (resolution.rs:1788-1860 already tests `Ørnamental` and `München` elsewhere, so the codebase expects them).
 - fix: compare with `str::to_lowercase` on both sides, or use a case-folding substring search. The comment "Case-insensitive ASCII substring check" is accurate about the mechanism and the callers treat it as generally case-insensitive.
-- status: open
+- status: fixed 2b2ed4c4 — `ascii_contains_ci` is replaced by `match_rank`, which folds both sides with `str::to_lowercase`.
 
 ### [SLOP] Two doc comments in lsp.rs describe code that is not there
 - where: crates/al-analysis/src/lsp.rs:4-6 and 138-146

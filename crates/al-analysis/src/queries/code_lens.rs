@@ -588,7 +588,12 @@ fn build_reference_counts(
                 let has_call = postfix
                     .children(&mut cursor)
                     .any(|c| c.kind() == "call_suffix");
-                has_call
+                // AL permits a parameterless call with no parentheses
+                // (`MyProc;`), which produces no `call_suffix` at all. Missing
+                // those made a procedure every caller invokes that way read
+                // "0 references", which is what a developer uses to decide it
+                // is dead.
+                has_call || is_bare_statement_expression(postfix)
             }
             "member_call_suffix" | "scope_call_suffix" => {
                 let inner = if name_parent.kind() == "name" {
@@ -598,8 +603,57 @@ fn build_reference_counts(
                 };
                 field_name_of(outer, inner).as_deref() == Some("member")
             }
+            // `CurrPage.Update;` — the parenthesis-less form of a member call.
+            // Only in statement position: inside a larger expression a
+            // `member_suffix` is field access, not a call.
+            "member_suffix" => {
+                let inner = if name_parent.kind() == "name" {
+                    name_parent
+                } else {
+                    node
+                };
+                if field_name_of(outer, inner).as_deref() != Some("member") {
+                    return false;
+                }
+                let Some(postfix) = outer.parent() else {
+                    return false;
+                };
+                if postfix
+                    .child(postfix.child_count().saturating_sub(1))
+                    .map(|last| last.id())
+                    != Some(outer.id())
+                {
+                    return false;
+                }
+                is_bare_statement_expression(postfix)
+            }
             _ => false,
         }
+    }
+
+    /// True when `postfix` is the whole of an expression statement.
+    ///
+    /// `MyProc;` parses as
+    /// `statement > expression_statement > expression > unary_expression >
+    /// postfix_expression`, with the `expression` holding that one child. An
+    /// assignment target (`V := 5;`) sits in the same shape but under an
+    /// `expression` with three children, so the single-child test keeps it out.
+    fn is_bare_statement_expression(postfix: tree_sitter::Node<'_>) -> bool {
+        let Some(unary) = postfix.parent() else {
+            return false;
+        };
+        if unary.kind() != "unary_expression" {
+            return false;
+        }
+        let Some(expression) = unary.parent() else {
+            return false;
+        };
+        if expression.kind() != "expression" || expression.named_child_count() != 1 {
+            return false;
+        }
+        expression
+            .parent()
+            .is_some_and(|parent| parent.kind() == "expression_statement")
     }
 
     fn field_name_of(
@@ -927,6 +981,77 @@ codeunit 50101 "Second CU"
                 .any(|lens| lens.kind == CodeLensKind::Reference(1)),
             "the subscriber to the second object's event must be counted, got {titles:?}"
         );
+    }
+
+    /// AL permits a parameterless call with no parentheses, which the
+    /// grammar spells with no `call_suffix`. Those call sites were never
+    /// recorded, so the lens read "0 references".
+    #[test]
+    fn reference_lens_counts_a_parenthesis_less_call() {
+        let uri = Url::parse("file:///project/Bare.al").unwrap();
+        let ws = workspace_with_doc(
+            &uri,
+            "codeunit 50100 \"Bare\"\n\
+             {\n\
+             \x20   procedure Refresh()\n\
+             \x20   begin\n\
+             \x20   end;\n\
+             \n\
+             \x20   procedure Caller()\n\
+             \x20   var\n\
+             \x20       V: Integer;\n\
+             \x20   begin\n\
+             \x20       Refresh;\n\
+             \x20       V := 5;\n\
+             \x20   end;\n\
+             }\n",
+        );
+
+        let lenses = code_lens(&ws, &uri).unwrap();
+        let refresh = lenses
+            .iter()
+            .find(|lens| {
+                matches!(lens.kind, CodeLensKind::Reference(_)) && lens.range.start.line == 2
+            })
+            .expect("Refresh reference lens");
+        assert_eq!(
+            refresh.kind,
+            CodeLensKind::Reference(1),
+            "{}",
+            refresh.title
+        );
+    }
+
+    /// An assignment target sits in the same syntactic shape as a bare call,
+    /// so it must not be counted.
+    #[test]
+    fn reference_lens_does_not_count_an_assignment_target() {
+        let uri = Url::parse("file:///project/Assign.al").unwrap();
+        let ws = workspace_with_doc(
+            &uri,
+            "codeunit 50100 \"Assign\"\n\
+             {\n\
+             \x20   procedure Value()\n\
+             \x20   begin\n\
+             \x20   end;\n\
+             \n\
+             \x20   procedure Caller()\n\
+             \x20   var\n\
+             \x20       Value: Integer;\n\
+             \x20   begin\n\
+             \x20       Value := 5;\n\
+             \x20   end;\n\
+             }\n",
+        );
+
+        let lenses = code_lens(&ws, &uri).unwrap();
+        let value = lenses
+            .iter()
+            .find(|lens| {
+                matches!(lens.kind, CodeLensKind::Reference(_)) && lens.range.start.line == 2
+            })
+            .expect("Value reference lens");
+        assert_eq!(value.kind, CodeLensKind::Reference(0), "{}", value.title);
     }
 
     /// Building the counts walks every workspace file, so a fresh build per
