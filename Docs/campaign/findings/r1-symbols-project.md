@@ -368,7 +368,7 @@ current code are tagged [STILL-OPEN].
   endpoint therefore reports a small `tracked_bytes` while RSS is dominated by these two.
 - fix: add a `FileIndexMemoryStats` for the dependency index and an accessor on
   `source_index` that sums its cached indexes.
-- status: open
+- status: fixed e5ad9e1d (dependency index) and ddaad70f (package source indexes).
 
 ### [SECURITY] nupkg `.app` extraction misses the Windows drive-relative ZIP-slip case
 - where: crates/al-symbols/src/nuget.rs:700-721
