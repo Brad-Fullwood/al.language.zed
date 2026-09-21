@@ -279,9 +279,9 @@ mod tests {
             .get_cached_source_path("Drop", ObjectKind::Table, 50_000)
             .is_none());
         assert!(index.is_composed_cache_empty());
-        assert_eq!(index.get_default_completions().len(), 30);
+        assert_eq!(index.default_completions_snapshot().len(), 30);
         assert!(index
-            .get_default_completions()
+            .default_completions_snapshot()
             .iter()
             .all(|entry| entry.package == "Keep"));
     }

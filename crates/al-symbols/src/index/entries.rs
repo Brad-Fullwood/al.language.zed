@@ -147,7 +147,7 @@ impl SymbolIndex {
     ///
     /// O(1) pointer copies — never iterates the full symbol index. Use in place of
     /// `search("", 30)` on completion hot paths.
-    pub fn get_default_completions(&self) -> Vec<Arc<SymbolEntry>> {
+    pub fn default_completions_snapshot(&self) -> Vec<Arc<SymbolEntry>> {
         let (cache, repaired) =
             read_derived_cache(&self.default_completions, "default_completions");
         if repaired {
@@ -210,7 +210,7 @@ mod tests {
         synthetic.synthetic = true;
         index.add_entries(&[synthetic, make_entry(ObjectKind::Table, 1, "Real Table")]);
 
-        let defaults = index.get_default_completions();
+        let defaults = index.default_completions_snapshot();
         assert_eq!(defaults.len(), 1);
         assert_eq!(defaults[0].name, "Real Table");
     }

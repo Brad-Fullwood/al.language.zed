@@ -29,7 +29,7 @@ pub use index::{PackageLoadError, PackageLoadFailure, SymbolIndex, SymbolIndexMe
 pub use model::{
     AttributeSymbol, ComposedObject, ControlSymbol, DeclarationIdError, EnumValueSymbol,
     FieldSymbol, KeySymbol, MethodSymbol, ObjectKind, ParameterSymbol, PermissionSymbol,
-    PropertyValue, SymbolEntry, SymbolPackage, VariableSymbol,
+    PropertyValue, SymbolEntry, SymbolPackage, UnknownObjectKind, VariableSymbol,
 };
 pub use source_availability::{SourceAvailability, SourceAvailabilitySummary};
 

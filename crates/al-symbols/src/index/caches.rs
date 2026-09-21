@@ -192,7 +192,7 @@ mod tests {
             make_entry(ObjectKind::Page, 2, "Beta"),
         ]);
         assert_eq!(index.search("alpha", 10).len(), 1);
-        assert_eq!(index.get_default_completions().len(), 2);
+        assert_eq!(index.default_completions_snapshot().len(), 2);
 
         let poison_target = Arc::clone(&index);
         let _ = std::thread::spawn(move || {
@@ -208,7 +208,7 @@ mod tests {
         assert_eq!(search.len(), 1);
         assert_eq!(search[0].name, "Alpha");
 
-        let completions = index.get_default_completions();
+        let completions = index.default_completions_snapshot();
         assert_eq!(completions.len(), 2);
         assert!(completions.iter().any(|entry| entry.name == "Alpha"));
         assert!(completions.iter().any(|entry| entry.name == "Beta"));

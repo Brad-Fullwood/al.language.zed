@@ -381,7 +381,7 @@ mod tests {
     fn replace_with_rebuilds_every_lookup_and_completion_index() {
         let active = SymbolIndex::new();
         active.add_entries(&[make_entry(ObjectKind::Table, 50_100, "Old")]);
-        assert_eq!(active.get_default_completions().len(), 1);
+        assert_eq!(active.default_completions_snapshot().len(), 1);
         let _ = active.search("Old", 10);
 
         let staged = SymbolIndex::new();
@@ -405,7 +405,7 @@ mod tests {
             "New"
         );
         assert_eq!(active.get_extensions_of("New").len(), 1);
-        assert_eq!(active.get_default_completions().len(), 2);
+        assert_eq!(active.default_completions_snapshot().len(), 2);
         assert_eq!(active.len(), 2);
     }
 
