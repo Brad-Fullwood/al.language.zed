@@ -39,7 +39,9 @@ with the instruction to read the file and continue from the areas not yet covere
 9. Docs: bring `Docs/`, `README.md`, `ROADMAP.md` in line with the code, then unsloppify.
 10. Blog: delete the six articles in `technically-business-central/src/content/blog/en/`,
     write the new series from the current state of this project, unsloppify each article.
-11. Reusable tooling: move anything other BC projects can use into `~/Projects/tools`.
+11. `~/Projects/tools` is Brad's personal tooling, external to this project. Nothing moves out
+    of this repository into it. Its skills may call this project's binaries (al-lsp,
+    al-explorer, the grammar) where that helps them. Check whether any do or should.
 12. Repeat: adversarial review of everything the campaign changed, then a new review round.
 
 ## Done
@@ -48,4 +50,5 @@ with the instruction to read the file and continue from the areas not yet covere
 
 ## Baseline (2026-09-21)
 
-Pending: `cargo clippy --workspace --all-targets` and `cargo test --workspace` results.
+- `cargo clippy --workspace --all-targets`: clean.
+- `cargo test --workspace`: 80 suites, 4380 passed, 0 failed, 10 ignored.
