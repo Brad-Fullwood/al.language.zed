@@ -53,9 +53,15 @@ Application 28.1, measured directly rather than through an agent:
 | 3 | Who subscribes to the OnAfterProcess event? | `bc-event-map` | `trace OnAfterProcess`, one call | Yes. `Work Order Subscribers.OnAfterProcessLogResult`, published by `Test Event Publisher` |
 | 4 | Show me the source of the InsertJournalLine procedure in the Work Order Post Task codeunit. | `bc-base-app-source` | `search`, then `source "Work Order Post Task" --procedure InsertJournalLine` | Yes. Exact body and signature |
 | 5 | What would changing the Amount field on the Work Order Staging table affect? | `bc-symbol-scout` agent | `search`, `impact "Work Order Staging.Amount"`, then several `source --procedure` calls | Yes. `Work Order Helper`, `Work Order Post Task` and the table itself, scope stated |
+| 6 | I want to add a new table to this extension. What is the next free table object ID? | `bc-object-id-allocator` | `jq .idRanges app.json`, the skill's `grep`, then `seq \| grep -vxFf` | Yes. 50101, with 50100 and 50130 named as taken, and `native-check` offered as the confirmation |
+| 7 | Audit this extension before I deploy it. What problems does it have? | `bc-workspace-health` | `native-check`, `sql-scan`, `dead-code`, `arch-lint`, `audit-data`, `permission-audit`, `metrics --all`, `duplicates`, then `daemon-shutdown` | Yes. Seven categories, each with the object and line, ordered by what blocks a deploy |
 
 No run unzipped a `.app`, and none grepped for a symbol except where the skill
 tells it to.
+
+Two of the seven runs still prefixed their first command with a `cd` into the
+toolchain checkout, hit the daemon error and recovered within three calls. The
+`SessionStart` hook now carries the same no-`cd` line the skills do.
 
 ## What each round of failures changed
 
@@ -114,7 +120,8 @@ agent carries a `name` and a `description`.
   a base-app lookup, the dependency source index, or the 30-second timeout the
   skills tell the agent to retry. Those paths were measured by calling
   `al-explorer` directly.
-- `bc-object-id-allocator`, `bc-test-locally`, `bc-upgrade-impact` and
-  `bc-workspace-health` have no agent run yet. Their commands were each verified
-  by hand against the fixture.
+- `bc-test-locally` and `bc-upgrade-impact` have no agent run yet. Their
+  commands were each verified by hand against the fixture. `bc-upgrade-impact`
+  needs a project with two versions of an app in `.alpackages` to be worth an
+  agent run at all.
 - `bc-cop-fixer` has no agent run yet.

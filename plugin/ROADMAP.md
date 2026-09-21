@@ -10,13 +10,13 @@
 - [x] `claude plugin validate ./plugin` and `claude plugin validate .` pass
 - [x] `make plugin-validate`
 - [x] README section
-- [x] `plugin/TESTING.md` with five Haiku runs recorded, all correct through the plugin
+- [x] `plugin/TESTING.md` with seven Haiku runs recorded, all correct through the plugin
 
 Left for the next agent:
 
-- [ ] Agent runs for `bc-object-id-allocator`, `bc-test-locally`,
-      `bc-upgrade-impact`, `bc-workspace-health` and `bc-cop-fixer`. Their
-      commands are verified by hand, but none has been through a Haiku session.
+- [ ] Agent runs for `bc-test-locally`, `bc-upgrade-impact` and `bc-cop-fixer`.
+      Their commands are verified by hand, but none has been through a Haiku
+      session. The other five skills have one each, recorded in `TESTING.md`.
 - [ ] An agent run against a project with `.alpackages`, which is the only way
       to exercise the base-app lookups, the dependency source index and the
       30-second timeout the skills tell the agent to retry.

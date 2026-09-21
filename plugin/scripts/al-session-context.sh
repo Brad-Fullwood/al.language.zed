@@ -45,6 +45,10 @@ Answer these from the plugin, not from find, grep, ripgrep or reading .al files:
 - What a dependency upgrade breaks -> skill al-bc:bc-upgrade-impact
 - Pre-build and pre-deploy audit, lint and cop warnings -> skill al-bc:bc-workspace-health
 
+Run the plugin's commands from this project directory. Do not cd first: the
+al-lsp daemon binds to the directory the command runs in, and a cd into the
+toolchain checkout starts a daemon on the wrong project.
+
 For a lookup that needs several calls, delegate to the al-bc:bc-symbol-scout
 agent rather than the Explore agent. Grep finds text; these tools read the
 symbol index and the call and event graphs, so they also see .app package code
