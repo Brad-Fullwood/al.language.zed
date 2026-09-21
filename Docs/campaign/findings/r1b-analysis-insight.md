@@ -90,7 +90,7 @@ Files the first checklist does not list at all:
 - severity: high
 - scenario: typing `Cust.` where `Cust: Record Customer`. `queries/completions.rs:99` calls `completion_items_for_receiver` on every `textDocument/completion` request with no caching. For each symbol entry named `Customer`, `symbol_package_proc_docs` calls `get_or_create_virtual_file`, which itself does `fs::read_to_string` inside `find_object_range` (crates/al-symbols/src/virtual_file.rs:316-317), then reads the same file again at resolution.rs:1034, runs `AlParser::parse_quick` over it, and runs `extract_document_symbols` plus `extract_doc_comment` per procedure. The extracted Customer source from the base app is several thousand lines. That is two synchronous full-file reads and a full tree-sitter parse per keystroke, and the entire result is used only to fill in the `documentation` field of the completion items at line 1143.
 - fix: cache the `name -> docs` map keyed on the virtual file's path and mtime, or drop `documentation` from the initial completion list and fill it in `completionItem/resolve`, which is what that LSP request exists for.
-- status: open
+- status: fixed 7fab7e36
 
 ### [BUG] `resolve_object_path` is kind-blind, so a table and a page sharing a name resolve to whichever was indexed last
 - where: crates/al-analysis/src/resolution.rs:1344-1368, called from `resolve_member` (593) and `completion_items_for_receiver` (1076)
