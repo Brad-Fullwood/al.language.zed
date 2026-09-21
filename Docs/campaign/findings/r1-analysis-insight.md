@@ -154,14 +154,14 @@ Insight:
 - severity: medium
 - scenario: `source_line(source, row)` is `source.split(b'\n').nth(row)`, an O(row) byte scan. `inlay_hints` calls it once per call-expression and once per emitted argument hint. On a 3000-line page with a few hundred hints in the requested range, each hint near the bottom of the file re-walks ~3000 lines of bytes, so the request is O(hints x file_lines). Inlay hints are re-requested on every viewport scroll.
 - fix: compute the line-start offsets once per request (a `Vec<usize>` of `memchr` positions) and index it, or pass `&str` slices from a single pass over the text.
-- status: open
+- status: fixed 387df64c
 
 ### [SIMPLIFY] `source_line` is duplicated byte-for-byte in three query modules
 - where: crates/al-analysis/src/queries/diagnostics.rs:620-626, crates/al-analysis/src/queries/inlay_hints.rs:658-664, crates/al-analysis/src/queries/profiler_hints.rs:632-638
 - severity: low
 - scenario: the three definitions are character-identical, and only inlay_hints.rs has tests for it (1321-1348). A fix to the quadratic scan above has to be made in three places or it will regress in the untested copies.
 - fix: move it to `queries/mod.rs` (or al-syntax next to `byte_col_to_utf16_col`, which is its only caller pattern) and delete the copies.
-- status: open
+- status: fixed 387df64c
 
 ### [BUG] Event-subscriber conversion mixes indices from the lowercased line with the original line
 - where: crates/al-analysis/src/queries/code_actions/events.rs:363-419
