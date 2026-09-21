@@ -687,3 +687,53 @@ fn debug_snippet_fields_are_declared_by_debug_schema() {
         }
     }
 }
+
+/// README.md describes the language package's task list in prose. The tasks
+/// were removed and later restored (commit 3bc8a90e), and one of the two
+/// passages that describe them was left saying the package ships none, so a
+/// reader who stopped at the first section concluded the tasks did not exist.
+/// Tie both numbers to the file they describe.
+#[test]
+fn readme_task_count_matches_the_shipped_language_package() {
+    let readme = include_str!("../README.md");
+    let tasks: serde_json::Value = serde_json::from_str(include_str!("../languages/al/tasks.json"))
+        .expect("languages/al/tasks.json must be valid JSON");
+    let tasks = tasks
+        .as_array()
+        .expect("languages/al/tasks.json must be a task array");
+
+    assert!(
+        !tasks.is_empty(),
+        "languages/al/tasks.json is empty, so every README passage describing \
+         the shipped tasks needs rewriting, not just this count"
+    );
+    let claim = format!("ships {} static tasks", tasks.len());
+    assert!(
+        readme.contains(&claim),
+        "languages/al/tasks.json has {} tasks, but README.md does not say \
+         {claim:?}. Update the passage rather than leaving the two to drift.",
+        tasks.len()
+    );
+
+    // Every task runs `al-explorer`, which is why the README tells the reader
+    // to put it on PATH. A task with another command would make that advice
+    // wrong for at least one entry.
+    for task in tasks {
+        let command = task["command"]
+            .as_str()
+            .expect("every task must declare a string command");
+        assert_eq!(
+            command, "al-explorer",
+            "README.md states every shipped task runs al-explorer; task \
+             {:?} runs {command:?}",
+            task["label"]
+        );
+    }
+
+    assert!(
+        !readme.contains("does not ship static shell tasks"),
+        "README.md still claims the installed language package ships no static \
+         shell tasks, which contradicts the {} tasks in languages/al/tasks.json",
+        tasks.len()
+    );
+}
