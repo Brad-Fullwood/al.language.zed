@@ -12,9 +12,45 @@
 //! `appLocalFolderPaths` lands). Nothing outside it is readable or writable
 //! through a path parameter, and with no project loaded nothing is.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use al_workspace::Workspace;
+
+/// A path spelled the way the caller would have typed it.
+///
+/// Containment canonicalises both sides, and on Windows `canonicalize` returns
+/// the verbatim form: `\\?\D:\project`. Comparing two verbatim paths is right,
+/// but printing one is not — the caller passed `D:\project` and cannot match
+/// the refusal against the path it asked about.
+pub(crate) fn display_path(path: &Path) -> String {
+    simplify_verbatim(&path.to_string_lossy()).into_owned()
+}
+
+/// Strip a `\\?\` prefix when the rest is an ordinary drive or UNC path.
+///
+/// `\\?\Volume{...}` has no other spelling, so it is returned unchanged. The
+/// function is pure text, so it behaves the same on every platform and the
+/// Windows shapes can be tested anywhere.
+fn simplify_verbatim(text: &str) -> Cow<'_, str> {
+    let Some(rest) = text.strip_prefix(r"\\?\") else {
+        return Cow::Borrowed(text);
+    };
+    if let Some(unc) = rest.strip_prefix(r"UNC\") {
+        return Cow::Owned(format!(r"\\{unc}"));
+    }
+    let mut characters = rest.chars();
+    let drive = characters.next();
+    let colon = characters.next();
+    let separator = characters.next();
+    if drive.is_some_and(|c| c.is_ascii_alphabetic())
+        && colon == Some(':')
+        && matches!(separator, Some('\\') | None)
+    {
+        return Cow::Borrowed(rest);
+    }
+    Cow::Borrowed(text)
+}
 
 /// Resolve a caller-supplied path and reject anything that escapes `roots`.
 ///
@@ -145,8 +181,8 @@ pub(crate) fn resolve_within_project(
     resolve_path_within_roots(requested, &base, &roots).ok_or_else(|| {
         format!(
             "path '{}' is outside the project at '{}'",
-            requested.display(),
-            base.display()
+            display_path(requested),
+            display_path(&base)
         )
     })
 }
@@ -229,6 +265,56 @@ mod tests {
         let root = tmp.path().canonicalize().unwrap();
         std::fs::write(root.join("Foo.al"), "codeunit 1 A {}").unwrap();
         assert!(resolve_path_within_roots(Path::new("Foo.al"), &root, &[]).is_none());
+    }
+
+    /// Windows shapes, as plain text, so they are checked on every platform.
+    #[test]
+    fn a_verbatim_prefix_is_stripped_for_display() {
+        for (verbatim, plain) in [
+            (r"\\?\D:\a\project", r"D:\a\project"),
+            (
+                r"\\?\c:\Users\runneradmin\App.al",
+                r"c:\Users\runneradmin\App.al",
+            ),
+            (r"\\?\D:", r"D:"),
+            (r"\\?\UNC\server\share\project", r"\\server\share\project"),
+        ] {
+            assert_eq!(simplify_verbatim(verbatim), plain, "{verbatim}");
+        }
+    }
+
+    #[test]
+    fn a_path_with_no_plainer_spelling_is_left_alone() {
+        for text in [
+            r"\\?\Volume{b75e2c83-0000-0000-0000-602f00000000}\project",
+            r"D:\a\project",
+            "/home/user/project",
+            r"\\server\share\project",
+        ] {
+            assert_eq!(simplify_verbatim(text), text, "{text}");
+        }
+    }
+
+    /// The refusal must name the project the way the caller spelled it, not the
+    /// verbatim path `canonicalize` produced inside the containment check.
+    #[cfg(windows)]
+    #[test]
+    fn the_displayed_root_matches_the_path_the_caller_would_type() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let canonical = root.canonicalize().unwrap();
+
+        assert!(
+            canonical.to_string_lossy().starts_with(r"\\?\"),
+            "this test only means anything while Windows canonicalize is verbatim: {}",
+            canonical.display()
+        );
+        assert_eq!(display_path(&canonical), root.to_string_lossy());
+        assert!(
+            resolve_path_within_roots(Path::new("Foo.al"), &canonical, &project(&canonical))
+                .is_some(),
+            "containment still compares the canonical paths"
+        );
     }
 
     #[tokio::test]
