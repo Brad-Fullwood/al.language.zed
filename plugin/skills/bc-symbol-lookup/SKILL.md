@@ -108,9 +108,32 @@ Drop the `select` to list all of them. Use `bc-base-app-source` to read a body.
 450,532 bytes unprojected for `Item`. `composed` also waits on the dependency
 source index, so read "When a call times out" below before using it.
 
-## Where the object's file is
+## Workspace objects work differently
 
-For a workspace object, `source` reports the file and line range:
+`object` and `by-id` return only the stub for a workspace object, because
+`fields` and `methods` come from package symbols:
+
+```json
+[{"kind":"Table","id":50130,"name":"Work Order Staging","package":"(workspace)","source_availability":"workspace_source"}]
+```
+
+For the members of a workspace object, read its AL text instead:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json source "Work Order Staging" | jq -r '.code'
+```
+
+```al
+table 50130 "Work Order Staging"
+{
+    DataClassification = CustomerContent;
+    fields
+    {
+        field(1; "No."; Code[20])
+```
+
+Ask for a member with `--procedure <Name>`. That form, and only that form,
+returns the file and line range:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json source "Work Order Helper" --procedure SchedulePost \
@@ -121,9 +144,20 @@ For a workspace object, `source` reports the file and line range:
 {"f":"WorkOrderHelper.Codeunit.al","l":16,"end":20}
 ```
 
-Workspace objects carry no `fields` or `methods` arrays in `object` and `by-id`;
-those come from package symbols. For a workspace object, read the file, or use
-`al-explorer --json symbols <file>` for its outline.
+## Where the object's file is
+
+No subcommand maps a whole object to its file yet. `source "<name>"` without
+`--procedure` returns `code` and no `range`, so do not ask it for a path.
+
+Two ways to get one, in order:
+
+1. `source "<name>" --procedure <any member>` and read `range.f`.
+2. Grep for the declaration line, which is one line and one file:
+   `grep -rln 'table 50130' --include='*.al' .`
+
+`dead-code`, `sql-scan`, `native-check` and `audit-data` all carry an absolute
+`file` on every row, so if you are already running one of those, take the path
+from there.
 
 ## Do not
 
