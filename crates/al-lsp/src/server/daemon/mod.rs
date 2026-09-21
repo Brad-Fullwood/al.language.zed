@@ -73,6 +73,14 @@ impl Drop for SocketCleanup {
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 const MAX_CONNECTIONS: usize = 64;
+/// How many requests one connection may have running at once.
+///
+/// The connection loop used to await each dispatch before reading the next
+/// line, so a `ping` pipelined behind a `tests.run` or a `downloadSymbols`
+/// waited for the long call. Requests now run as tasks; the cap keeps one
+/// client from filling the blocking pool, and reading stops until a permit
+/// frees up, which is the backpressure the sequential loop gave for free.
+const MAX_IN_FLIGHT_PER_CONNECTION: usize = 8;
 const ACCEPT_BACKOFF_START: Duration = Duration::from_millis(10);
 const ACCEPT_BACKOFF_CAP: Duration = Duration::from_secs(5);
 
@@ -415,8 +423,17 @@ async fn handle_connection(
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
     shutdown: Arc<Notify>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (reader, mut writer) = stream.split();
+    let (reader, writer) = stream.split();
     let mut reader = BufReader::new(reader);
+    // One writer shared by every in-flight request on this connection, so two
+    // responses can never interleave on the wire. Mirrors `run_mcp`'s
+    // `write_mcp_frame`.
+    let writer = Arc::new(tokio::sync::Mutex::new(writer));
+    let permits = Arc::new(Semaphore::new(MAX_IN_FLIGHT_PER_CONNECTION));
+    let mut in_flight_tasks = tokio::task::JoinSet::new();
+    // Set when a write fails, so the read loop stops instead of queueing more
+    // work for a client that is gone.
+    let client_gone = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // previously a 50 ms ring-buffer dedup over hover / completions /
     // signatureHelp / inlayHints replied to repeat requests with `null` /
@@ -428,6 +445,9 @@ async fn handle_connection(
     // correctness debt.
 
     while let Some(line) = read_bounded_line(&mut reader, MAX_MESSAGE_SIZE).await? {
+        if client_gone.load(Ordering::Relaxed) {
+            break;
+        }
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -447,7 +467,7 @@ async fn handle_connection(
                 // surface. Logging first preserves the diagnostic either way.
                 tracing::warn!(error = %e, "daemon: malformed JSON-RPC request");
                 if !write_frame(
-                    &mut writer,
+                    &mut *writer.lock().await,
                     &error_frame(
                         serde_json::Value::Null,
                         error_codes::PARSE_ERROR,
@@ -471,7 +491,7 @@ async fn handle_connection(
             Err(e) => {
                 tracing::warn!(error = %e, "daemon: invalid JSON-RPC request object");
                 if !write_frame(
-                    &mut writer,
+                    &mut *writer.lock().await,
                     &error_frame(
                         echo_id,
                         error_codes::INVALID_REQUEST,
@@ -493,38 +513,78 @@ async fn handle_connection(
         // alive for the idle window measured from the end of the work.
         last_activity.store(now_activity_ms(), Ordering::Relaxed);
 
-        let is_notification = req.is_notification();
-        let request_id = req.id.clone();
-        let method = req.method.clone();
-        let start = Instant::now();
-        let response = {
-            // Held for the whole dispatch so the idle reaper cannot fire
-            // mid-request, however long the operation takes.
-            let _in_flight = InFlightGuard::new(&in_flight);
-            dispatch_request(&workspace, req, &shutdown).await
+        // Reading stops here while the connection is already at its in-flight
+        // cap, which is the backpressure the sequential loop provided.
+        let permit = match Arc::clone(&permits).acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => break,
         };
-        let elapsed = start.elapsed();
-        tracing::debug!(method = %method, id = ?request_id, elapsed_us = elapsed.as_micros() as u64, "daemon: request");
-        last_activity.store(now_activity_ms(), Ordering::Relaxed);
 
-        if is_notification {
-            // JSON-RPC 2.0 §4.1: a notification is processed but MUST NOT be
-            // answered.
-            continue;
-        }
+        let workspace = Arc::clone(&workspace);
+        let shutdown = Arc::clone(&shutdown);
+        let writer = Arc::clone(&writer);
+        let last_activity = Arc::clone(&last_activity);
+        let client_gone = Arc::clone(&client_gone);
+        let in_flight = Arc::clone(&in_flight);
+        in_flight_tasks.spawn(async move {
+            let _permit = permit;
+            let is_notification = req.is_notification();
+            let request_id = req.id.clone();
+            let method = req.method.clone();
+            let start = Instant::now();
+            let response = {
+                // Held for the whole dispatch so the idle reaper cannot fire
+                // mid-request, however long the operation takes.
+                let _in_flight = InFlightGuard::new(&in_flight);
+                dispatch_request(&workspace, req, &shutdown).await
+            };
+            let elapsed = start.elapsed();
+            tracing::debug!(method = %method, id = ?request_id, elapsed_us = elapsed.as_micros() as u64, "daemon: request");
+            last_activity.store(now_activity_ms(), Ordering::Relaxed);
 
-        let frame = match request_id {
-            // The common case — an id that round-trips through the dispatcher's
-            // `u64` — serializes the typed response directly. Anything else
-            // (string, null, negative, or fractional) is echoed verbatim.
-            Some(ref id) if id.as_u64().is_some() => serde_json::to_value(&response)?,
-            Some(ref id) => response.to_json_with_id(id),
-            None => serde_json::to_value(&response)?,
-        };
-        if !write_frame(&mut writer, &frame).await {
-            break;
-        }
+            if is_notification {
+                // JSON-RPC 2.0 §4.1: a notification is processed but MUST NOT
+                // be answered.
+                return;
+            }
+
+            let frame = match request_id {
+                // The common case — an id that round-trips through the
+                // dispatcher's `u64` — serializes the typed response directly.
+                // Anything else (string, null, negative, or fractional) is
+                // echoed verbatim.
+                Some(ref id) if id.as_u64().is_some() => serde_json::to_value(&response),
+                Some(ref id) => Ok(response.to_json_with_id(id)),
+                None => serde_json::to_value(&response),
+            };
+            let frame = match frame {
+                Ok(frame) => frame,
+                Err(error) => {
+                    tracing::error!(method = %method, %error, "daemon: response is not serializable");
+                    error_frame(
+                        request_id
+                            .as_ref()
+                            .map(|id| id.to_json())
+                            .unwrap_or(serde_json::Value::Null),
+                        error_codes::INTERNAL_ERROR,
+                        &format!("response for {method} is not serializable: {error}"),
+                    )
+                }
+            };
+            if !write_frame(&mut *writer.lock().await, &frame).await {
+                client_gone.store(true, Ordering::Relaxed);
+            }
+        });
+
+        // Reap finished tasks so the set does not grow for the connection's
+        // lifetime. `try_join_next` never blocks the read loop.
+        while in_flight_tasks.try_join_next().is_some() {}
     }
+
+    // Requests already accepted must finish and answer before the connection
+    // closes, so a client that pipelined and then stopped reading still gets
+    // every response it was owed.
+    while in_flight_tasks.join_next().await.is_some() {}
 
     Ok(())
 }
@@ -1328,6 +1388,97 @@ mod tests {
     use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
     use tokio::sync::Notify;
+
+    /// A `ping` pipelined behind a long call on the same connection used to
+    /// wait for it, because the loop awaited each dispatch before reading the
+    /// next line. The debug-session mutex gives a dispatch the test can hold
+    /// open for as long as it likes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_pipelined_request_is_answered_while_a_long_one_runs() {
+        use super::handle_connection;
+        use interprocess::local_socket::tokio::prelude::*;
+        use interprocess::local_socket::{GenericFilePath, ListenerOptions, ToFsName};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("daemon.sock");
+        let name = endpoint
+            .as_path()
+            .to_fs_name::<GenericFilePath>()
+            .expect("socket name");
+        let listener = ListenerOptions::new()
+            .name(name)
+            .create_tokio()
+            .expect("listener");
+
+        let workspace = std::sync::Arc::new(al_workspace::Workspace::new());
+        let shutdown = std::sync::Arc::new(Notify::new());
+        let server = {
+            let workspace = std::sync::Arc::clone(&workspace);
+            tokio::spawn(async move {
+                let stream = listener.accept().await.expect("accept");
+                let _ = handle_connection(
+                    stream,
+                    workspace,
+                    std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                    std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                    shutdown,
+                )
+                .await;
+            })
+        };
+
+        let name = endpoint
+            .as_path()
+            .to_fs_name::<GenericFilePath>()
+            .expect("socket name");
+        let client = interprocess::local_socket::tokio::Stream::connect(name)
+            .await
+            .expect("connect");
+        let (reader, mut writer) = client.split();
+        let mut reader = tokio::io::BufReader::new(reader);
+
+        // `debug {"cmd":"state"}` waits on the debug-session mutex, which the
+        // test holds, so its dispatch cannot finish yet.
+        let blocked = workspace.debug_session.lock().await;
+        let batch = concat!(
+            r#"{"jsonrpc":"2.0","id":1,"method":"debug","params":{"cmd":"state"}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":99,"method":"ping"}"#,
+            "\n",
+        );
+        writer.write_all(batch.as_bytes()).await.expect("write");
+        writer.flush().await.expect("flush");
+
+        let mut line = String::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            reader.read_line(&mut line),
+        )
+        .await
+        .expect("a pipelined ping must not wait for the request ahead of it")
+        .expect("read");
+        let frame: serde_json::Value = serde_json::from_str(line.trim()).expect("json");
+        assert_eq!(frame["id"], 99, "the ping must be answered first: {frame}");
+        assert_eq!(frame["result"], "pong");
+
+        // Releasing the mutex lets the queued request finish and answer too.
+        drop(blocked);
+        let mut line = String::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            reader.read_line(&mut line),
+        )
+        .await
+        .expect("the blocked request must still be answered")
+        .expect("read");
+        let frame: serde_json::Value = serde_json::from_str(line.trim()).expect("json");
+        assert_eq!(frame["id"], 1);
+
+        drop(writer);
+        drop(reader);
+        let _ = server.await;
+    }
 
     fn dispatched_method_literals(source: &str) -> BTreeSet<String> {
         let dispatch = source
