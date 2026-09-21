@@ -18,7 +18,6 @@ Round 1: four of seven reviews are done (58 findings) and their fix agents are r
 | Fix R1 LSP and protocol (15 findings, 2 security) | worktree fix | branch `campaign/fix-r1-lsp-protocol` |
 | Fix R1 runtime and DAP (13 findings) | worktree fix | branch `campaign/fix-r1-runtime-dap` |
 | Build the Claude Code plugin (`plugin/`, marketplace manifest, 8 skills, 2 subagents) | worktree build | branch `campaign/ai-plugin` |
-| R1c review: last unreviewed al-analysis modules | review | `findings/r1c-analysis-insight.md` |
 | desloppify first scan | shell | `.campaign/desloppify-scan.log` |
 
 Queued for a free build slot (at most 7 building agents, RAM is the limit):
@@ -26,7 +25,7 @@ Queued for a free build slot (at most 7 building agents, RAM is the limit):
 - Fix `findings/r1b-runtime-dap.md` (28 findings, 1 high: `--filter '*Post'` drops tests from a green summary). Crates: al-test, al-dap, al-test-harness, al-runtime stubs. Start after `campaign/fix-r1-runtime-dap` merges, on a branch from the merged result.
 - AI tooling build list items 1, 2, 3, 5, 7, 8 (`findings/ai-tooling-ideas.md` section 6: limit and fields projection, `scope` parameter, `source --list-procedures`, fix `subscribers` and `impact --table`, index progress, compact JSON). They edit the daemon dispatchers, so start after `campaign/fix-r1-lsp-protocol` merges. Item 4 (free object ID allocator, new file) can start as soon as a build slot frees. Items 9 and 10 (package version diff, persisted symbol index) later in the week.
 - Fix `findings/r1b-analysis-insight.md` (35 findings: quoted identifiers cannot be renamed, rename misses EventSubscriber strings, fields with `)` in the name dropped from resolution). Start after `campaign/fix-r1-analysis-insight` merges.
-- Review still owed in al-analysis: `queries/source.rs`, `queries/audit.rs`, `queries/test_diagnostics.rs`, `code_actions/test_support.rs`, `suggest_event.rs`, `profiler_hints.rs`, `test_coverage.rs`.
+- Fix `findings/r1c-analysis-insight.md` (29 findings, 5 high: unreachable coverage pass keyed on node kinds the grammar does not have, multi-object files read as first object only by 14 consumers, permission audit recommends dropping needed permissions, `Table::` where AL needs `Database::`, signature help picks a local procedure over the receiver's). Same crate as the analysis fix branch, start after it merges.
 - Fix `findings/r1b-scaffold-generators.md` (11 findings): handed to the analysis fix agent.
 
 A review file without a `## Review complete` line means the agent died. Re-dispatch it to

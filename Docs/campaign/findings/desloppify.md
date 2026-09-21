@@ -36,7 +36,58 @@ rename is cosmetic.
 
 ## 2. Subjective review
 
-(filled in after the batch agents return)
+`desloppify review --prepare` split the work into 20 batches, one dimension each, against the blind
+packet `.desloppify/review_packet_blind.json` (no score targets, no anchoring data). Each batch ran
+as a separate context-isolated agent that read source in `al-analysis`, `al-lsp`, `al-runtime`,
+`al-symbols`, `al-syntax` and `al-explorer`, scored from evidence, and wrote
+`results/batch-N.raw.txt`. Run directory: `.desloppify/subagents/runs/20260921_050147/`.
+
+Scores are in the table at the end. Recurring findings across independent batches, which is the part
+worth acting on:
+
+**The architecture is sound and the documentation describing it is not.** Three separate batches
+landed on `Docs/architecture.md` independently. It claims to be derived from the Cargo manifests but
+carries 2 phantom dependency edges (al-snapshot has no `al-*` dependencies at all) and 5 missing or
+misstated ones. The 21-crate graph itself is acyclic and enforced by Cargo, and `tower_lsp` really is
+confined to al-lsp plus al-analysis's default-off `lsp` feature.
+
+**Residue from the al-core crate split.** `al-core` and `al-cli` names survive in 18 files of
+cross-crate docs. `crates/al-lsp/Cargo.toml` declares 14 production dependencies the crate never
+references, including verbatim copies of al-symbols' 5-feature `keyring` block and al-dap's
+`tokio-tungstenite` block, under section headers that still read "Folded in from al-symbols
+(stage 5)". Three more unused entries sit in al-analysis, al-bc and al-publish. There is no
+cargo-machete or cargo-udeps gate, which is why they survive.
+
+**One helper, three private copies, three different error messages.** `optional_non_empty_string` is
+defined three times across sibling modules in `crates/al-lsp/src/server/daemon`, with divergent
+client-visible error strings, while neighbouring parameter helpers are shared `pub(crate)` from
+`daemon/mod.rs`. Two `serialized_response` helpers in the same tree take their parameters in
+opposite order. Flagged by the convention, elegance and duplication batches alike, and it matches
+the mechanical `signature` detector's 14 "different signatures across N files" findings.
+
+**A stringly-typed seam through al-analysis.** Roughly 65 `Result<_, String>` signatures sit
+alongside 8 `thiserror` enums, with 8 modules using both in one file (`hover.rs:16` typed,
+`hover.rs:325` not). `bulk_fix.rs:154` is a one-line pass-through whose only effect is erasing
+`al_source::file_index::ScanError`, after which its four al-lsp call sites map the resulting String
+to `INTERNAL_ERROR`, so a user-actionable file limit and a disk fault reach the editor identically.
+
+**Untyped RPC on both sides of the daemon boundary.** 131 hand-rolled `extract_*` calls against 5
+`serde_json::from_value`, 534 `.get("field")` reads in al-explorer, and a 1451-line hand-maintained
+validator covering 60 of the 84 dispatch methods.
+
+**What is genuinely good**, and held up under inspection: 52 `thiserror` domain enums across 21
+crates with zero `anyhow`; production paths that effectively do not panic (about 70 unwraps and 110
+expects across roughly 123K production lines once `#[cfg(test)]` blocks are stripped, concentrated
+in test helpers); one `Err(_) => {}` in all of `crates/*/src` and it is in a test; poisoned locks
+recovered uniformly in 7 files; 376 `let ... else` guards with only 1.33% of production lines at
+indent 7 or deeper; 2 TODOs and zero `todo!()`; no util/helper/common/misc module anywhere in
+`crates/`; 245 of 268 source files carrying a `//!` header; an executable test pinning
+`Docs/reference/daemon-methods.md` to the dispatch table; cargo-deny in CI with an annotated license
+allow-list.
+
+The batch covering `error_consistency` independently flagged the four `hardcoded_secret_name`
+findings as likely false positives, noting that the containing structs derive `Zeroize,
+ZeroizeOnDrop`. That agrees with section 1, reached separately.
 
 ## 3. Detector false-positive classes and suppressions
 
