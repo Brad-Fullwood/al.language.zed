@@ -105,7 +105,7 @@ Insight:
 - severity: medium
 - scenario: `find_block_extent` iterates the raw characters of each line and counts every `{` and `}`. A line inside an action body such as `// TODO: rework the { } layout` or `Caption = 'Open }';` shifts the depth counter, so `body_end_line` lands on the wrong line. Downstream that means `remove_lines` can miss the `Promoted = true` line (the action is then not offered, or worse the `area(Promoted)` insert point computed from `actions_block.close` is off) and the generated page no longer parses. events.rs:181-204 already has `strip_literals_and_comment` for exactly this problem; promoted.rs duplicates the brace counting without it.
 - fix: move `strip_literals_and_comment` into the shared `code_actions/mod.rs` and run every line through it before counting braces in `find_block_extent` and `find_block_in`.
-- status: open
+- status: fixed ad7467e0
 
 ### [GAP] Report-layout conversion does not check for an existing `rendering` section
 - where: crates/al-analysis/src/queries/code_actions/promoted.rs:578-671
