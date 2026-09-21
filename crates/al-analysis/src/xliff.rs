@@ -62,6 +62,9 @@ pub struct TranslationUnit {
     pub id: String,
     /// Object type (e.g. "Table", "Page", "Codeunit")
     pub object_type: String,
+    /// The AL object id. Zero for a unit read back from an `.xlf`: the id
+    /// carries the object's *name hash*, which no object id can be recovered
+    /// from.
     pub object_id: u32,
     pub object_name: String,
     /// Source text (English caption/tooltip/label value)
@@ -157,94 +160,195 @@ pub fn extract_translation_units(workspace: &Workspace) -> Vec<TranslationUnit> 
 /// properties were attributed to the last field seen.
 fn extract_from_file(path: &Path, text: &str, units: &mut Vec<TranslationUnit>) {
     let _ = path;
-    let Some(header) = detect_object_header(text) else {
-        return;
-    };
-    let obj_type = header.kind_display.clone();
-    let obj_id = header.id;
-    let obj_name = header.name.clone();
-    let object_hash = name_hash(&obj_name);
-
-    // One entry per open brace; `Some(member)` for a named member block.
-    let mut stack: Vec<Option<MemberBlock>> = Vec::new();
+    let mut object: Option<ObjectContext> = None;
+    // One frame per open brace.
+    let mut stack: Vec<Frame> = Vec::new();
     let mut pending: Option<MemberBlock> = None;
+    let mut in_block_comment = false;
 
     for line in text.lines() {
-        let code = strip_literals_for_structure(line);
-        let trimmed_code = code.trim();
-        if let Some(member) = parse_member_block(trimmed_code) {
-            pending = Some(member);
-        }
-
-        let trimmed = line.trim();
-        let anchor = stack.iter().rev().flatten().next();
-
-        for property in ["Caption", "ToolTip"] {
-            let Some(value) = parse_property_value(trimmed, property) else {
-                continue;
-            };
-            if property_is_locked(trimmed) {
+        let code = strip_for_structure(line, &mut in_block_comment);
+        let mut segment_start = 0usize;
+        for (index, ch) in code.char_indices() {
+            if ch != '{' && ch != '}' {
                 continue;
             }
-            let (id, note) = match anchor {
-                Some(member) => (
+            scan_segment(
+                &line[segment_start..index],
+                &code[segment_start..index],
+                &mut object,
+                &stack,
+                &mut pending,
+                units,
+            );
+            match ch {
+                '{' => {
+                    // `Action` is what alc emits for a group inside `actions`,
+                    // so the flag has to reach every descendant, not just the
+                    // `actions` marker block itself.
+                    let in_actions = stack.last().is_some_and(|frame| frame.in_actions)
+                        || matches!(pending, Some(MemberBlock { actions_marker, .. }) if actions_marker);
+                    let member = pending.take().filter(|member| !member.actions_marker);
+                    stack.push(Frame { member, in_actions });
+                }
+                _ => {
+                    stack.pop();
+                    if stack.is_empty() {
+                        // The object closed: a file may hold several.
+                        object = None;
+                    }
+                }
+            }
+            segment_start = index + ch.len_utf8();
+        }
+        scan_segment(
+            &line[segment_start..],
+            &code[segment_start..],
+            &mut object,
+            &stack,
+            &mut pending,
+            units,
+        );
+    }
+}
+
+/// The object a translation unit belongs to.
+struct ObjectContext {
+    header: ObjectHeader,
+    name_hash: i64,
+}
+
+/// One open brace: the member it declares, if any, and whether it is under an
+/// `actions` section.
+struct Frame {
+    member: Option<MemberBlock>,
+    in_actions: bool,
+}
+
+/// Process one brace-free run of a line: an object header, a member header,
+/// and every `;`-terminated statement in it.
+///
+/// Working in segments rather than whole lines is what makes a one-line member
+/// (`field(1; "No."; Code[20]) { Caption = 'No.'; }`) resolve against the field
+/// it declares: the brace between the two has already been applied to `stack`
+/// by the time the caption is read.
+fn scan_segment(
+    raw: &str,
+    code: &str,
+    object: &mut Option<ObjectContext>,
+    stack: &[Frame],
+    pending: &mut Option<MemberBlock>,
+    units: &mut Vec<TranslationUnit>,
+) {
+    if stack.is_empty() {
+        if let Some(header) = parse_object_header_line(code.trim()) {
+            *object = Some(ObjectContext {
+                name_hash: name_hash(&header.name),
+                header,
+            });
+        }
+        return;
+    }
+    let Some(object) = object.as_ref() else {
+        return;
+    };
+
+    if let Some(member) = parse_member_block(code.trim()) {
+        *pending = Some(member);
+    }
+
+    let anchor = stack.iter().rev().find_map(|frame| {
+        frame
+            .member
+            .as_ref()
+            .map(|member| (member, frame.in_actions))
+    });
+
+    for (statement, stripped) in statements(raw, code) {
+        if property_is_locked(stripped) {
+            continue;
+        }
+        emit_statement_units(statement, object, anchor, units);
+    }
+}
+
+/// Split a segment into `;`-terminated statements, pairing each with the
+/// same span of the structure-stripped text. Both strings have the same byte
+/// length, so one index serves both.
+fn statements<'a>(raw: &'a str, code: &'a str) -> Vec<(&'a str, &'a str)> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    for (index, ch) in code.char_indices() {
+        if ch == ';' {
+            out.push((raw[start..index].trim(), code[start..index].trim()));
+            start = index + ch.len_utf8();
+        }
+    }
+    out.push((raw[start..].trim(), code[start..].trim()));
+    out.into_iter().filter(|(raw, _)| !raw.is_empty()).collect()
+}
+
+fn emit_statement_units(
+    statement: &str,
+    object: &ObjectContext,
+    anchor: Option<(&MemberBlock, bool)>,
+    units: &mut Vec<TranslationUnit>,
+) {
+    let obj_type = &object.header.kind_display;
+    let obj_name = &object.header.name;
+    let object_hash = object.name_hash;
+
+    for property in ["Caption", "ToolTip"] {
+        let Some(value) = parse_property_value(statement, property) else {
+            continue;
+        };
+        let (id, note) = match anchor {
+            Some((member, in_actions)) => {
+                let kind = member.id_kind(&object.header, in_actions);
+                (
                     format!(
-                        "{obj_type} {object_hash} - {} {} - Property {}",
-                        member.id_kind(&header),
+                        "{obj_type} {object_hash} - {kind} {} - Property {}",
                         name_hash(&member.name),
                         name_hash(property)
                     ),
                     format!(
-                        "{obj_type} {obj_name} - {} {} - Property {property}",
-                        member.id_kind(&header),
+                        "{obj_type} {obj_name} - {kind} {} - Property {property}",
                         member.name
                     ),
-                ),
-                None => (
-                    format!(
-                        "{obj_type} {object_hash} - Property {}",
-                        name_hash(property)
-                    ),
-                    format!("{obj_type} {obj_name} - Property {property}"),
-                ),
-            };
-            units.push(make_translation_unit(
-                id,
-                &obj_type,
-                obj_id,
-                &obj_name,
-                value,
-                Some(note),
-            ));
-        }
-
-        // `MyLabel: Label 'text';` — alc keys labels by the NamedType name.
-        if let Some((label_name, label_text)) = parse_label_declaration(trimmed) {
-            if !property_is_locked(trimmed) {
-                let id = format!(
-                    "{obj_type} {object_hash} - NamedType {}",
-                    name_hash(&label_name)
-                );
-                units.push(make_translation_unit(
-                    id,
-                    &obj_type,
-                    obj_id,
-                    &obj_name,
-                    label_text,
-                    Some(format!("{obj_type} {obj_name} - NamedType {label_name}")),
-                ));
+                )
             }
-        }
+            None => (
+                format!(
+                    "{obj_type} {object_hash} - Property {}",
+                    name_hash(property)
+                ),
+                format!("{obj_type} {obj_name} - Property {property}"),
+            ),
+        };
+        units.push(make_translation_unit(
+            id,
+            obj_type,
+            object.header.id,
+            obj_name,
+            value,
+            Some(note),
+        ));
+    }
 
-        for ch in code.chars() {
-            match ch {
-                '{' => stack.push(pending.take()),
-                '}' => {
-                    stack.pop();
-                }
-                _ => {}
-            }
-        }
+    // `MyLabel: Label 'text';` — alc keys labels by the NamedType name.
+    if let Some((label_name, label_text)) = parse_label_declaration(statement) {
+        let id = format!(
+            "{obj_type} {object_hash} - NamedType {}",
+            name_hash(&label_name)
+        );
+        units.push(make_translation_unit(
+            id,
+            obj_type,
+            object.header.id,
+            obj_name,
+            label_text,
+            Some(format!("{obj_type} {obj_name} - NamedType {label_name}")),
+        ));
     }
 }
 
@@ -256,15 +360,16 @@ struct MemberBlock {
     keyword: String,
     /// Member name used in the translation id.
     name: String,
-    /// Whether the member sits inside an `actions` section.
-    in_actions: bool,
+    /// The unnamed `actions` section marker, which anchors nothing itself but
+    /// makes every block inside it an action.
+    actions_marker: bool,
 }
 
 impl MemberBlock {
     /// alc's id component for this member: `Field` for a table field,
     /// `Action` for anything under `actions`, `Control` otherwise.
-    fn id_kind(&self, header: &ObjectHeader) -> &'static str {
-        if self.in_actions || self.keyword == "action" || self.keyword == "actionref" {
+    fn id_kind(&self, header: &ObjectHeader, in_actions: bool) -> &'static str {
+        if in_actions || self.keyword == "action" || self.keyword == "actionref" {
             "Action"
         } else if header.is_table_like && self.keyword == "field" {
             "Field"
@@ -300,11 +405,10 @@ fn parse_member_block(trimmed: &str) -> Option<MemberBlock> {
         .unwrap_or("")
         .to_lowercase();
     if lower_head == "actions" {
-        // Marks the section; unnamed, so it never anchors a property itself.
         return Some(MemberBlock {
             keyword: "actions".to_string(),
             name: String::new(),
-            in_actions: true,
+            actions_marker: true,
         });
     }
     let open = trimmed.find('(')?;
@@ -332,21 +436,60 @@ fn parse_member_block(trimmed: &str) -> Option<MemberBlock> {
     Some(MemberBlock {
         keyword,
         name: name.to_string(),
-        in_actions: false,
+        actions_marker: false,
     })
 }
 
-/// Blank out string-literal contents so braces inside AL captions do not
-/// corrupt the nesting count. Quotes themselves are kept so token shape is
-/// unchanged.
-fn strip_literals_for_structure(line: &str) -> String {
+/// Blank out string literals and comment bodies so a brace or a `;` inside
+/// either does not corrupt the structure scan.
+///
+/// The result has the same byte length as `line`, so an index into one is an
+/// index into the other. AL has block comments and the object-header scan
+/// already handled them; without the same handling here, a line such as
+/// `/* the old layout used a { here */` pushed a frame that was never popped
+/// and every id built after it anchored one level too deep.
+fn strip_for_structure(line: &str, in_block_comment: &mut bool) -> String {
     let mut out = String::with_capacity(line.len());
     let mut chars = line.char_indices().peekable();
     let mut in_single = false;
     let mut in_double = false;
+    let mut in_line_comment = false;
     while let Some((_, ch)) = chars.next() {
-        if !in_single && !in_double && ch == '/' && chars.peek().is_some_and(|(_, n)| *n == '/') {
-            break;
+        let blank = |out: &mut String, ch: char| {
+            for _ in 0..ch.len_utf8() {
+                out.push(' ');
+            }
+        };
+        if *in_block_comment {
+            if ch == '*' && chars.peek().is_some_and(|(_, n)| *n == '/') {
+                chars.next();
+                *in_block_comment = false;
+                out.push_str("  ");
+            } else {
+                blank(&mut out, ch);
+            }
+            continue;
+        }
+        if in_line_comment {
+            blank(&mut out, ch);
+            continue;
+        }
+        if !in_single && !in_double && ch == '/' {
+            match chars.peek().map(|(_, n)| *n) {
+                Some('/') => {
+                    chars.next();
+                    in_line_comment = true;
+                    out.push_str("  ");
+                    continue;
+                }
+                Some('*') => {
+                    chars.next();
+                    *in_block_comment = true;
+                    out.push_str("  ");
+                    continue;
+                }
+                _ => {}
+            }
         }
         match ch {
             '\'' if !in_double => {
@@ -357,56 +500,53 @@ fn strip_literals_for_structure(line: &str) -> String {
                 in_double = !in_double;
                 out.push(ch);
             }
-            _ if in_single => out.push(' '),
+            _ if in_single => blank(&mut out, ch),
             _ => out.push(ch),
         }
     }
     out
 }
 
-/// Whether a `Caption`/`ToolTip`/`Label` declaration carries `Locked = true`.
+/// Whether a `Caption`/`ToolTip`/`Label` statement carries `Locked = true`.
 ///
 /// Microsoft's AL excludes locked strings from the generated translation file;
 /// emitting them made non-translatable text look translatable.
-fn property_is_locked(line: &str) -> bool {
-    // Only the part *after* the (single-quoted) value can hold the modifier.
-    let Some(quote) = line.find('\'') else {
-        return false;
-    };
-    let mut rest = &line[quote..];
-    // Skip the literal, honouring the doubled-quote escape.
-    let bytes = rest.as_bytes();
-    let mut index = 1usize;
-    while index < rest.len() {
-        if bytes[index] == b'\'' {
-            if bytes.get(index + 1) == Some(&b'\'') {
-                index += 2;
-                continue;
+///
+/// Takes the statement with every literal blanked, so a `Comment` that happens
+/// to use the word ("Shown when the period is locked") does not lock the
+/// caption and drop it from the `.g.xlf` for good.
+fn property_is_locked(stripped_statement: &str) -> bool {
+    let lower = stripped_statement.to_lowercase();
+    let mut search = 0usize;
+    while let Some(offset) = lower[search..].find("locked") {
+        let position = search + offset;
+        search = position + "locked".len();
+        let preceded_by_word = lower[..position]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+        if preceded_by_word {
+            continue;
+        }
+        let after = lower[search..].trim_start();
+        let locked = match after.strip_prefix('=') {
+            // `Locked = true`; the value may be followed by `;` or `,`.
+            Some(value) => {
+                let word: String = value
+                    .trim_start()
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .collect();
+                word == "true"
             }
-            index += 1;
-            break;
+            // `Locked` on its own is shorthand for `Locked = true`.
+            None => after.is_empty() || after.starts_with(';') || after.starts_with(','),
+        };
+        if locked {
+            return true;
         }
-        index += 1;
     }
-    rest = &rest[index.min(rest.len())..];
-    let lower = rest.to_lowercase();
-    let Some(position) = lower.find("locked") else {
-        return false;
-    };
-    let after = lower[position + "locked".len()..].trim_start();
-    match after.strip_prefix('=') {
-        // `Locked = true`; the value may be followed by `;` or `,`.
-        Some(value) => {
-            let value = value.trim_start();
-            let word: String = value
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric())
-                .collect();
-            word == "true"
-        }
-        // `Locked` on its own is shorthand for `Locked = true`.
-        None => after.is_empty() || after.starts_with(';') || after.starts_with(','),
-    }
+    false
 }
 
 fn make_translation_unit(
@@ -457,90 +597,55 @@ struct ObjectHeader {
     is_table_like: bool,
 }
 
-/// Detect the AL object declaration: (type, id, name).
+/// Parse one already-comment-free line as an object declaration.
 ///
-/// Leading blank lines, `//` and `/* */` comments, and `namespace`/`using`
-/// directives are skipped, then the first meaningful line must be the
-/// declaration. The previous implementation only looked at the first 10 lines,
-/// so any file with a longer licence header was silently skipped by XLIFF
-/// extraction — no units, no warning.
-fn detect_object_header(text: &str) -> Option<ObjectHeader> {
-    let mut in_block_comment = false;
-    for raw in text.lines() {
-        let mut line = raw.trim().to_string();
-        if in_block_comment {
-            match line.find("*/") {
-                Some(end) => {
-                    in_block_comment = false;
-                    line = line[end + 2..].trim().to_string();
-                }
-                None => continue,
-            }
-        }
-        while let Some(start) = line.find("/*") {
-            match line[start + 2..].find("*/") {
-                Some(end) => {
-                    let after = start + 2 + end + 2;
-                    line = format!("{} {}", &line[..start], &line[after..])
-                        .trim()
-                        .to_string();
-                }
-                None => {
-                    in_block_comment = true;
-                    line = line[..start].trim().to_string();
-                    break;
-                }
-            }
-        }
-        let line = line.trim();
-        if line.is_empty() || line.starts_with("//") {
+/// `extract_from_file` calls this at every brace depth of zero, because AL
+/// allows several objects in one file and the index supports it. Attributing
+/// the whole file to the first declaration gave the second table's captions
+/// ids built from the first table's name hash, and two tables sharing a field
+/// name ("Document No." is near-universal) produced a byte-identical id, so
+/// the second was dropped as a duplicate and its translation vanished.
+fn parse_object_header_line(line: &str) -> Option<ObjectHeader> {
+    let line = line.trim();
+    let lower = line.to_lowercase();
+
+    // Sort object type keywords by length descending so longer keywords
+    // (extensions) win over their shorter base-type prefixes.
+    let mut sorted_types: Vec<&str> = al_syntax::language_data::object_types()
+        .iter()
+        .map(|ot| ot.keyword.as_str())
+        .collect();
+    sorted_types.sort_by_key(|k| Reverse(k.len()));
+
+    for ot in &sorted_types {
+        let Some(after) = lower.strip_prefix(ot) else {
+            continue;
+        };
+        // Require a word boundary after the keyword.
+        if !after.starts_with(|c: char| c.is_ascii_whitespace() || c.is_ascii_digit()) {
             continue;
         }
-        let lower = line.to_lowercase();
-        if lower.starts_with("namespace ") || lower.starts_with("using ") {
+        let rest = line[ot.len()..].trim();
+        let (id_str, rest2) = split_id_and_name(rest);
+        let id: u32 = id_str.parse().unwrap_or(0);
+        let name = parse_object_name(rest2.trim());
+        if name.is_empty() && id == 0 {
             continue;
         }
-
-        // Sort object type keywords by length descending so longer keywords
-        // (extensions) win over their shorter base-type prefixes.
-        let mut sorted_types: Vec<&str> = al_syntax::language_data::object_types()
-            .iter()
-            .map(|ot| ot.keyword.as_str())
-            .collect();
-        sorted_types.sort_by_key(|k| Reverse(k.len()));
-
-        for ot in &sorted_types {
-            let Some(after) = lower.strip_prefix(ot) else {
-                continue;
-            };
-            // Require a word boundary after the keyword.
-            if !after.starts_with(|c: char| c.is_ascii_whitespace() || c.is_ascii_digit()) {
-                continue;
-            }
-            let rest = line[ot.len()..].trim();
-            let (id_str, rest2) = split_id_and_name(rest);
-            let id: u32 = id_str.parse().unwrap_or(0);
-            let name = parse_object_name(rest2.trim());
-            if name.is_empty() && id == 0 {
-                continue;
-            }
-            let kind = ot.parse::<al_symbols::ObjectKind>().ok();
-            let kind_display = kind
-                .map(|k| k.to_string())
-                .unwrap_or_else(|| capitalize(ot));
-            let is_table_like = matches!(
-                kind,
-                Some(al_symbols::ObjectKind::Table) | Some(al_symbols::ObjectKind::TableExtension)
-            );
-            return Some(ObjectHeader {
-                kind_display,
-                id,
-                name,
-                is_table_like,
-            });
-        }
-        // The first meaningful line is not an object declaration.
-        return None;
+        let kind = ot.parse::<al_symbols::ObjectKind>().ok();
+        let kind_display = kind
+            .map(|k| k.to_string())
+            .unwrap_or_else(|| capitalize(ot));
+        let is_table_like = matches!(
+            kind,
+            Some(al_symbols::ObjectKind::Table) | Some(al_symbols::ObjectKind::TableExtension)
+        );
+        return Some(ObjectHeader {
+            kind_display,
+            id,
+            name,
+            is_table_like,
+        });
     }
     None
 }
@@ -578,16 +683,18 @@ fn capitalize(s: &str) -> String {
     }
 }
 
-/// Parse a property like `Caption = 'Some text';` or `Caption = 'text', Comment = 'note';`
-fn parse_property_value(line: &str, property: &str) -> Option<String> {
-    let prefix = format!("{} =", property);
-    let prefix_lower = prefix.to_lowercase();
-    let line_lower = line.to_lowercase();
-    if !line_lower.starts_with(&prefix_lower) {
+/// Parse a property like `Caption = 'Some text'` or `Caption = 'text', Comment = 'note'`.
+///
+/// The name and the `=` are compared after trimming, so `Caption='X'` and
+/// `Caption  = 'X'` parse the same way alc accepts them. Matching on a literal
+/// `"{property} ="` prefix instead left both spellings out of the generated
+/// `.g.xlf` with nothing said about it.
+fn parse_property_value(statement: &str, property: &str) -> Option<String> {
+    let (name, value) = statement.split_once('=')?;
+    if !name.trim().eq_ignore_ascii_case(property) {
         return None;
     }
-    let after_eq = &line[prefix.len()..].trim_start_matches([' ', '\t']);
-    extract_single_quoted(after_eq)
+    extract_single_quoted(value)
 }
 
 /// Parse a `Label` variable declaration like `MyLabel: Label 'Some text';`,
@@ -831,15 +938,16 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
             }
         } else if trimmed.starts_with("</trans-unit>") {
             if let (Some(id), Some(source)) = (current_id.take(), current_source.take()) {
+                let note = current_note.take();
                 let unit = TranslationUnit {
-                    id: id.clone(),
-                    object_type: String::new(), // reconstructed from id
+                    object_type: object_type_from_id(&id),
                     object_id: 0,
-                    object_name: String::new(),
+                    object_name: object_name_from_note(note.as_deref()),
+                    id: id.clone(),
                     source,
                     target: current_target.take(),
                     state: current_state.clone(),
-                    note: current_note.take(),
+                    note,
                 };
                 // Duplicate ids are malformed input. Keep the *first*
                 // occurrence (deterministic and document-order) rather than
@@ -857,11 +965,36 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
                     }
                 }
             }
-            current_target = None;
         }
     }
 
     units
+}
+
+/// The object type from a translation-unit id.
+///
+/// The id opens with the object kind: `Table 1234 - Field 5678 - Property 90`.
+/// Leaving it empty made every row of `xlf.untranslated` report no object at
+/// all, so a translator asking which object a missing string belongs to got
+/// nothing back.
+fn object_type_from_id(id: &str) -> String {
+    id.split_whitespace().next().unwrap_or_default().to_string()
+}
+
+/// The object name from a developer note.
+///
+/// alc and this module both write the note as
+/// `<Type> <Object name> - <Member kind> <Member name> - Property <name>`, so
+/// the object name is what sits between the kind and the first ` - `.
+fn object_name_from_note(note: Option<&str>) -> String {
+    let Some(note) = note else {
+        return String::new();
+    };
+    let head = note.split(" - ").next().unwrap_or_default().trim();
+    match head.split_once(char::is_whitespace) {
+        Some((_kind, name)) => name.trim().to_string(),
+        None => String::new(),
+    }
 }
 
 /// Extract an XML attribute value from a tag string.
@@ -963,9 +1096,11 @@ pub fn refresh_xliff(
 
 /// Find all translation units that have no target translation.
 ///
-/// Returns units where `target` is `None` or empty, sorted by object type and ID.
+/// Returns units where `target` is `None` or empty, sorted by id. The caller
+/// builds its input from a `HashMap`'s values, so without the sort the
+/// `xlf.untranslated` output came out in a different order on every run.
 pub fn find_untranslated(units: &[TranslationUnit]) -> Vec<&TranslationUnit> {
-    units
+    let mut untranslated: Vec<&TranslationUnit> = units
         .iter()
         .filter(|u| {
             u.target
@@ -974,7 +1109,9 @@ pub fn find_untranslated(units: &[TranslationUnit]) -> Vec<&TranslationUnit> {
                 .unwrap_or(true)
         })
         .filter(|u| u.state != TranslationState::Final)
-        .collect()
+        .collect();
+    untranslated.sort_by(|a, b| a.id.cmp(&b.id));
+    untranslated
 }
 
 /// Where a translation suggestion came from, so callers/users can see *why* a
@@ -1351,8 +1488,7 @@ mod tests {
 
     #[test]
     fn test_detect_object_header() {
-        let text = "table 50100 \"Customer Extension\"\n{\n    fields\n    {};\n}";
-        let result = detect_object_header(text).unwrap();
+        let result = parse_object_header_line("table 50100 \"Customer Extension\"").unwrap();
         assert_eq!(result.kind_display, "Table");
         assert_eq!(result.id, 50100);
         assert_eq!(result.name, "Customer Extension");
@@ -1365,7 +1501,7 @@ mod tests {
     #[test]
     fn detect_object_header_quoted_name_stops_before_extends_clause() {
         let text = r#"pageextension 50101 "Sales Order Pageext" extends "Sales Order""#;
-        let header = detect_object_header(text).unwrap();
+        let header = parse_object_header_line(text).unwrap();
         assert_eq!(header.kind_display, "PageExtension");
         assert_eq!(header.id, 50101);
         assert_eq!(header.name, "Sales Order Pageext");
@@ -1374,7 +1510,7 @@ mod tests {
     #[test]
     fn detect_object_header_unquoted_name_stops_before_extends_clause() {
         let text = "tableextension 50100 MyExt extends MyBase";
-        let header = detect_object_header(text).unwrap();
+        let header = parse_object_header_line(text).unwrap();
         assert_eq!(header.kind_display, "TableExtension");
         assert_eq!(header.id, 50100);
         assert_eq!(header.name, "MyExt");
@@ -1652,6 +1788,200 @@ mod tests {
             units.iter().any(|u| u.source == "Description"),
             "Should extract Caption 'Description'"
         );
+    }
+
+    /// AL allows several objects in one file. Attributing the whole file to
+    /// the first one gave the second table's captions the first table's name
+    /// hash, and a shared field name then produced a duplicate id whose unit
+    /// was dropped.
+    #[test]
+    fn every_object_in_a_multi_object_file_is_extracted() {
+        let units = extract(
+            r#"table 50100 "Shipment Header"
+{
+    fields
+    {
+        field(1; "Document No."; Code[20])
+        {
+            Caption = 'Header Document No.';
+        }
+    }
+}
+
+table 50101 "Shipment Line"
+{
+    fields
+    {
+        field(1; "Document No."; Code[20])
+        {
+            Caption = 'Line Document No.';
+        }
+    }
+}"#,
+        );
+        assert_eq!(units.len(), 2, "{units:#?}");
+        assert_eq!(units[0].object_name, "Shipment Header");
+        assert_eq!(units[1].object_name, "Shipment Line");
+        assert_ne!(units[0].id, units[1].id, "the two ids must differ");
+        assert!(units[1].note.as_ref().unwrap().contains("Shipment Line"));
+    }
+
+    /// A brace inside a block comment used to push a frame that was never
+    /// popped, so every id built after it anchored one level too deep.
+    #[test]
+    fn an_unbalanced_brace_in_a_block_comment_is_ignored() {
+        let balanced = extract(
+            r#"table 50100 "T"
+{
+    fields
+    {
+        field(1; Name; Text[100])
+        {
+            Caption = 'Name';
+        }
+    }
+}"#,
+        );
+        let commented = extract(
+            r#"table 50100 "T"
+{
+    fields
+    {
+        /* the old layout used a { here */
+        field(1; Name; Text[100])
+        {
+            Caption = 'Name';
+        }
+    }
+}"#,
+        );
+        assert_eq!(commented.len(), 1);
+        assert_eq!(commented[0].id, balanced[0].id);
+    }
+
+    /// alc emits `Action` for a group inside `actions`. Keying it `Control`
+    /// made refresh report the unit as both added and removed on every run,
+    /// losing the existing translation.
+    #[test]
+    fn an_action_group_is_keyed_as_an_action() {
+        let units = extract(
+            r#"page 50100 "P"
+{
+    actions
+    {
+        area(Processing)
+        {
+            group(Posting)
+            {
+                Caption = 'Posting';
+
+                action(Post)
+                {
+                    Caption = 'Post';
+                }
+            }
+        }
+    }
+}"#,
+        );
+        let group = units
+            .iter()
+            .find(|u| u.source == "Posting")
+            .expect("group caption");
+        assert!(
+            group.note.as_ref().unwrap().contains("Action Posting"),
+            "{:?}",
+            group.note
+        );
+        let action = units
+            .iter()
+            .find(|u| u.source == "Post")
+            .expect("action caption");
+        assert!(action.note.as_ref().unwrap().contains("Action Post"));
+    }
+
+    /// A one-line member declares the block its property belongs to, so the
+    /// property has to anchor to the member, not to the enclosing section.
+    #[test]
+    fn a_one_line_member_anchors_its_own_property() {
+        let units = extract(
+            r#"table 50100 "T"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { Caption = 'No.'; }
+        field(2; "Name"; Text[100]) { Caption = 'Name'; }
+    }
+}"#,
+        );
+        assert_eq!(units.len(), 2, "{units:#?}");
+        assert_ne!(units[0].id, units[1].id);
+        assert!(units[0].note.as_ref().unwrap().contains("Field No."));
+        assert!(units[1].note.as_ref().unwrap().contains("Field Name"));
+    }
+
+    /// alc accepts any spacing around `=`; requiring exactly one space left
+    /// the caption out of the generated file with nothing said about it.
+    #[test]
+    fn a_caption_parses_with_any_spacing_around_equals() {
+        let units = extract(
+            r#"page 50100 "P"
+{
+    Caption='Posted Shipment';
+}"#,
+        );
+        assert_eq!(units.len(), 1, "{units:#?}");
+        assert_eq!(units[0].source, "Posted Shipment");
+
+        let padded = extract(
+            r#"page 50100 "P"
+{
+    Caption  =  'Posted Shipment';
+}"#,
+        );
+        assert_eq!(padded.len(), 1, "{padded:#?}");
+        assert_eq!(padded[0].source, "Posted Shipment");
+    }
+
+    /// The word inside a Comment is text, not the `Locked` modifier.
+    #[test]
+    fn a_comment_mentioning_locked_does_not_lock_the_caption() {
+        let units = extract(
+            r#"page 50100 "P"
+{
+    Caption = 'Closed', Comment = 'Shown when the period is locked; %1 is the date';
+}"#,
+        );
+        assert_eq!(units.len(), 1, "{units:#?}");
+        assert_eq!(units[0].source, "Closed");
+
+        let also = extract(
+            r#"page 50100 "P"
+{
+    Caption = 'Closed', Comment = 'locked, see the manual';
+}"#,
+        );
+        assert_eq!(also.len(), 1, "{also:#?}");
+    }
+
+    /// A genuinely locked string still stays out of the generated file.
+    #[test]
+    fn a_locked_caption_is_still_dropped() {
+        assert!(extract(
+            r#"page 50100 "P"
+{
+    Caption = 'SEPA', Locked = true;
+}"#
+        )
+        .is_empty());
+        assert!(extract(
+            r#"codeunit 50100 "C"
+{
+    var
+        Tag: Label 'SEPA', Locked = true;
+}"#
+        )
+        .is_empty());
     }
 
     #[test]
@@ -2266,10 +2596,55 @@ le monde</target>
         assert_eq!(units[0].object_type, "Table");
     }
 
+    /// Every row of `xlf.untranslated` reported an empty object, for every
+    /// string, because nothing ever reconstructed the three fields.
+    #[test]
+    fn a_parsed_unit_carries_its_object_type_and_name() {
+        let xlf = r#"<?xml version="1.0" encoding="utf-8"?>
+<xliff version="1.2">
+  <file datatype="xml" source-language="en-US" target-language="da-DK" original="App">
+    <body>
+      <group id="body">
+        <trans-unit id="Table 2764513245 - Field 1296262074 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Document No.</source>
+          <note from="Developer" annotates="general" priority="2">Table Shipment Header - Field Document No. - Property Caption</note>
+        </trans-unit>
+      </group>
+    </body>
+  </file>
+</xliff>"#;
+        let units = parse_xliff(xlf);
+        let unit = units.values().next().expect("one unit");
+        assert_eq!(unit.object_type, "Table");
+        assert_eq!(unit.object_name, "Shipment Header");
+    }
+
+    /// `units_map.into_values()` is HashMap order, so the query output moved
+    /// between runs until the sort was real.
+    #[test]
+    fn untranslated_units_come_back_in_id_order() {
+        let unit = |id: &str| TranslationUnit {
+            id: id.to_string(),
+            object_type: "Table".to_string(),
+            object_id: 0,
+            object_name: String::new(),
+            source: id.to_string(),
+            target: None,
+            state: TranslationState::New,
+            note: None,
+        };
+        let units = vec![unit("Table 3 - Property 1"), unit("Table 1 - Property 1")];
+        let ids: Vec<&str> = find_untranslated(&units)
+            .iter()
+            .map(|u| u.id.as_str())
+            .collect();
+        assert_eq!(ids, ["Table 1 - Property 1", "Table 3 - Property 1"]);
+    }
+
     #[test]
     fn header_detection_returns_none_when_the_file_has_no_object() {
-        assert!(detect_object_header("// just a comment\n\n").is_none());
-        assert!(detect_object_header("").is_none());
+        assert!(extract("// just a comment\n\n").is_empty());
+        assert!(extract("").is_empty());
     }
 
     /// A `.g.xlf` with duplicate ids silently collapses in `parse_xliff`'s map;
