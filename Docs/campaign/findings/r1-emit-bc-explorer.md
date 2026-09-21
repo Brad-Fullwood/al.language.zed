@@ -225,7 +225,7 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - severity: low
 - scenario: `JsonFieldKind`/`validate_array_object_fields`/`validate_named_array_object_fields`/`validate_object_items`/`require_object_field`/`json_type_name` in `commands/mod.rs` duplicate `Kind`/`array_objects`/`named_array_objects`/`fields`/`type_name` in `response_contract.rs`, down to the `label()` strings and the type-name match arms. `request_checked` (mod.rs:432-437) tries `response_contract` first and only falls back to the copy, so the copy shrinks as contracts migrate and a reviewer has to check both to know which one governs a method. The `"tests.last_results"` arm at mod.rs:647-660 is already unreachable, because response_contract.rs:113 claims that method; only the direct-call test at mod.rs:1119 keeps it alive.
 - fix: move the remaining `validate_run_command_result` contracts into `response_contract` and delete the duplicate module.
-- status: open
+- status: partly fixed 637d52ee. The unreachable `tests.last_results` arm is gone and the direct-call test now skips every method `response_contract::handles` claims, so the copy can only shrink. Migrating the remaining ~20 `validate_run_command_result` contracts is still open: it is a mechanical move of ~300 lines whose error strings several tests assert on, so it wants its own change rather than riding along with bug fixes.
 
 ### [SLOP] three comments in the CLI describe behaviour that is not there
 - where: crates/al-explorer/src/cli/args.rs:355-359 (and commands/mod.rs:47-52); commands/build.rs:272-276; commands/lsp/tests.rs:346-347
@@ -282,6 +282,25 @@ regression test and a comment naming the old behaviour:
 - Docs: the `generate-completions` and XLIFF-id claims both match the code now.
 
 No item is carried forward as [STILL-OPEN]. Findings above are new.
+
+## Fix pass, 2026-09-21 (branch `campaign/fix-r1-emit-bc-explorer`)
+
+24 of the 28 findings are fixed, 2 are rejected against evidence from Microsoft's own `alc`
+17.0.34.45391, and 2 remain open. Three findings were added while fixing.
+
+Rejected, with the compiler run to settle them:
+
+- The packaged `TextData/<App>.TextData.en-US.xliff` and the generated `Translations/<App>.g.xlf`
+  are different artifacts. alc writes Label (`NamedType`) and `ReportLabel` units only into the
+  `.g.xlf`, and writes locked captions and tooltips only into the packaged XLIFF. Two findings
+  applied one file's rules to the other; the emitter already matched alc on both. What the probe
+  did find is that the whole attribute list reached the property value
+  (`Caption` recorded as `'SEPA CT',Locked=true`), which is fixed.
+
+Still open: the `Variables` array missing from `SymbolReference.json`, the `.g.xlf` scanner
+dropping properties on a one-line member block (al-analysis, another agent's branch), the two BC
+publish clients targeting different dev endpoints (needs a live server), and the remaining half of
+the duplicated response-validation framework.
 
 ## Review complete
 
