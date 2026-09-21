@@ -593,33 +593,57 @@ fn is_url(s: &str) -> bool {
     s.starts_with("http://") || s.starts_with("https://")
 }
 
+/// The `kind` label control-add-in resources are reported under, shared by the
+/// path check and the reads so a rejected path names the same thing twice.
+const ADDIN_RESOURCE_KIND: &str = "control add-in resource";
+
+/// Normalise a local add-in resource reference to a project-relative,
+/// `/`-separated path, rejecting `..`, absolute and drive-relative values the
+/// way report layouts and the app logo are already rejected.
+fn addin_resource_path(value: &str) -> Result<String, EmitError> {
+    Ok(project_relative_resource_path(value, ADDIN_RESOURCE_KIND)?
+        .to_string_lossy()
+        .replace('\\', "/"))
+}
+
 /// Resolve a control add-in's resources, reading local script/stylesheet/image
 /// and inline-script files relative to `project_root` (skipped when `None`).
+/// Every local reference is containment-checked even when there is no project
+/// root, so a bad path fails the build rather than reaching `manifest.xml`.
 fn resolve_addin_resources(
     props: &[al_symbols::model::PropertyValue],
     project_root: Option<&std::path::Path>,
 ) -> Result<AddinResources, EmitError> {
     let read = |rel: &str| -> Result<Option<String>, EmitError> {
-        project_root
-            .map(|root| std::fs::read_to_string(root.join(rel)).map_err(EmitError::from))
-            .transpose()
+        let relative = addin_resource_path(rel)?;
+        let Some(root) = project_root else {
+            return Ok(None);
+        };
+        let (_, bytes) = read_project_resource(root, &relative, ADDIN_RESOURCE_KIND)?;
+        String::from_utf8(bytes).map(Some).map_err(|error| {
+            EmitError::Project(format!(
+                "{ADDIN_RESOURCE_KIND} {relative} is not valid UTF-8: {error}"
+            ))
+        })
     };
     let mut r = AddinResources::default();
     for s in list_prop(props, "Scripts") {
         if is_url(&s) {
             r.script_urls.push(s);
         } else {
-            r.local_scripts.push(s);
+            r.local_scripts.push(addin_resource_path(&s)?);
         }
     }
     for s in list_prop(props, "StyleSheets") {
         if is_url(&s) {
             r.stylesheet_urls.push(s);
         } else {
-            r.local_stylesheets.push(s);
+            r.local_stylesheets.push(addin_resource_path(&s)?);
         }
     }
-    r.images = list_prop(props, "Images");
+    for s in list_prop(props, "Images") {
+        r.images.push(addin_resource_path(&s)?);
+    }
     let inline = |name: &str| -> Result<Option<String>, EmitError> {
         match props.iter().find(|p| p.name.eq_ignore_ascii_case(name)) {
             Some(property) => read(&property.value),
@@ -791,7 +815,7 @@ fn control_addin_bundle(
                 continue;
             }
             let content = match project_root {
-                Some(root) => std::fs::read(root.join(rel))?,
+                Some(root) => read_project_resource(root, rel, ADDIN_RESOURCE_KIND)?.1,
                 None => Vec::new(),
             };
             inner_entries.push((rel.clone(), content));
@@ -823,7 +847,7 @@ fn control_addin_bundle(
                 continue;
             }
             let content = match project_root {
-                Some(root) => std::fs::read(root.join(rel))?,
+                Some(root) => read_project_resource(root, rel, ADDIN_RESOURCE_KIND)?.1,
                 None => Vec::new(),
             };
             out.push((archive_path, content));
@@ -1009,7 +1033,11 @@ pub fn assemble_app(
         package_manifest.to_navx_xml().into_bytes(),
     ));
     for s in sources {
-        entries.push((s.archive_path.clone(), s.content.clone().into_bytes()));
+        // `as_bytes().to_vec()` rather than `content.clone().into_bytes()`:
+        // the clone made a second String and then moved it, so peak memory
+        // held the project's source twice over on top of the copies already
+        // in `sources` and `objects`.
+        entries.push((s.archive_path.clone(), s.content.as_bytes().to_vec()));
     }
     entries.push((
         "DocComments.xml".to_string(),
@@ -1519,7 +1547,68 @@ pageextension 50101 "Customer Card Ext" extends "Customer Card"
 
         let error = control_addin_bundle(&objects, "App", Some(dir.path()))
             .expect_err("missing local resource must fail");
-        assert!(matches!(error, EmitError::Io(_)));
+        assert!(
+            matches!(&error, EmitError::Project(message) if message.contains("src/missing.js")),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn control_addin_resource_cannot_escape_the_project() {
+        // `Scripts`/`Images`/`StartupScript` used to be read with a bare
+        // `root.join(rel)`, so `..` and absolute paths read any file on the
+        // machine into the shipped .app and wrote the archive entry at the
+        // traversing path.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("outside.txt"), "secret\n").unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+
+        for property in [
+            "Scripts = '../outside.txt';",
+            "Images = '../outside.txt';",
+            "StyleSheets = '../outside.txt';",
+            "StartupScript = '../outside.txt';",
+        ] {
+            let src = format!("controladdin Escape {{ {property} }}");
+            let objects = super::super::symbol_extract::extract_objects(&src, "src/Lib.al");
+            let error = control_addin_bundle(&objects, "App", Some(&project))
+                .expect_err("traversing add-in resource must be refused: {property}");
+            assert!(
+                matches!(&error, EmitError::Project(message)
+                    if message.contains("project-relative")),
+                "unexpected error for {property}: {error}"
+            );
+        }
+
+        let absolute = dir.path().join("outside.txt");
+        let src = format!(
+            "controladdin Escape {{ Scripts = '{}'; }}",
+            absolute.display()
+        );
+        let objects = super::super::symbol_extract::extract_objects(&src, "src/Lib.al");
+        control_addin_bundle(&objects, "App", Some(&project))
+            .expect_err("absolute add-in resource must be refused");
+    }
+
+    #[test]
+    fn traversing_archive_entry_names_cannot_be_written() {
+        // Second line of defence: even if a traversing path reached the entry
+        // list, `write_zip` must refuse to store it verbatim.
+        for name in [
+            "addin/src/../../../../etc/passwd",
+            "/etc/passwd",
+            "addin\\src\\x.js",
+            "C:/Windows/x.js",
+            "addin/./x.js",
+            "",
+        ] {
+            let entries = vec![(name.to_string(), b"x".to_vec())];
+            super::super::package::write_zip(&entries)
+                .expect_err("write_zip must refuse the entry name {name}");
+        }
+        super::super::package::write_zip(&[("addin/src/x.js".to_string(), b"x".to_vec())])
+            .expect("a plain relative entry name is accepted");
     }
 
     #[test]

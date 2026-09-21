@@ -390,7 +390,14 @@ fn every_top_level_command_has_a_structured_black_box_path() {
         &["impact", "Hello World"],
         &["suggest-event", "--object", "Hello World"],
         &["debug", "stop"],
-        &["snapshot", "list", "--server", "http://127.0.0.1:1/BC"],
+        &[
+            "snapshot",
+            "list",
+            "--server",
+            "http://127.0.0.1:1/BC",
+            "--company",
+            "CRONUS",
+        ],
         &["profile", "analyze", "missing.alcpuprofile"],
         &["xlf", "generate"],
         &["add-application-area", "--dry-run"],
@@ -435,6 +442,10 @@ fn every_top_level_command_has_a_structured_black_box_path() {
         &["breaking"],
         &["arch-lint"],
         &["native-check"],
+        &["free-ids", "--kind", "table"],
+        // The temporary project has no launch configuration, so this exercises
+        // the structured failure path without contacting a server.
+        &["publish"],
         &["duplicates"],
         &["upgrade"],
         &["profiler-hints", "Hello World.DoSomething"],

@@ -531,10 +531,15 @@ fn rename_exit_code(result: &serde_json::Value) -> ExitCode {
 /// objects (`{ range: { start, end }, newText }`).  Edits are applied in
 /// reverse position order so that later offsets are not invalidated by earlier
 /// mutations.  Returns the number of files that were written.
+///
+/// The whole edit is all-or-nothing. Every file's new content is computed
+/// first, then written; a rename touching five files whose third is read-only
+/// used to leave the first two rewritten, exit 1, and hand the user a
+/// workspace carrying both the old and the new name.
 fn apply_workspace_edit(
     changes: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<usize, String> {
-    let mut files_changed = 0;
+    let mut staged: Vec<(std::path::PathBuf, String)> = Vec::new();
 
     for (uri, edits_val) in changes {
         let edits = match edits_val.as_array() {
@@ -640,18 +645,132 @@ fn apply_workspace_edit(
         }
 
         if new_content != content {
-            std::fs::write(&path, &new_content)
-                .map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
-            files_changed += 1;
+            staged.push((path, new_content));
         }
     }
 
-    Ok(files_changed)
+    write_all_or_nothing(staged)
+}
+
+/// Write every staged `(path, content)` pair, or none of them.
+///
+/// Each file is written to a temp file in its own directory and persisted over
+/// the original, so a crash mid-write cannot truncate a source file. If any
+/// write fails, the files already persisted are restored from the contents read
+/// before the first write.
+fn write_all_or_nothing(staged: Vec<(std::path::PathBuf, String)>) -> Result<usize, String> {
+    let mut rollback: Vec<(std::path::PathBuf, String)> = Vec::with_capacity(staged.len());
+    for (path, new_content) in &staged {
+        let previous = std::fs::read_to_string(path)
+            .map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
+        match persist_atomically(path, new_content) {
+            Ok(()) => rollback.push((path.clone(), previous)),
+            Err(error) => {
+                let mut report = error;
+                for (done, content) in rollback.iter().rev() {
+                    if let Err(error) = persist_atomically(done, content) {
+                        report.push_str(&format!(
+                            "\nand {} could not be rolled back: {error}",
+                            done.display()
+                        ));
+                    }
+                }
+                return Err(report);
+            }
+        }
+    }
+    Ok(staged.len())
+}
+
+/// Replace `path`'s contents through a temp file in the same directory.
+fn persist_atomically(path: &std::path::Path, content: &str) -> Result<(), String> {
+    use std::io::Write;
+
+    let directory = path.parent().unwrap_or(std::path::Path::new("."));
+    let mut temp = tempfile::NamedTempFile::new_in(directory)
+        .map_err(|error| format!("Cannot stage {}: {error}", path.display()))?;
+    temp.write_all(content.as_bytes())
+        .and_then(|()| temp.as_file().sync_all())
+        .map_err(|error| format!("Cannot write {}: {error}", path.display()))?;
+    // `NamedTempFile` is 0600; a source file must keep the mode it had.
+    if let Ok(metadata) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(temp.path(), metadata.permissions());
+    }
+    temp.persist(path)
+        .map_err(|error| format!("Cannot replace {}: {error}", path.display()))?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod exit_status_tests {
     use super::*;
+
+    /// A `changes` map renaming `old` to `new` on line 0 of each file.
+    fn rename_edit(paths: &[&std::path::Path]) -> serde_json::Map<String, serde_json::Value> {
+        paths
+            .iter()
+            .map(|path| {
+                (
+                    url::Url::from_file_path(path).unwrap().to_string(),
+                    serde_json::json!([{
+                        "range": {
+                            "start": { "line": 0, "character": 0 },
+                            "end": { "line": 0, "character": 3 },
+                        },
+                        "newText": "new",
+                    }]),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_failed_file_write_leaves_the_whole_workspace_unchanged() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        // "A.al" sorts before "locked/B.al", and `changes` is a BTreeMap, so
+        // the writable file is written before the failure is hit.
+        let writable = dir.path().join("A.al");
+        let locked_dir = dir.path().join("locked");
+        std::fs::create_dir(&locked_dir).unwrap();
+        let unwritable = locked_dir.join("B.al");
+        std::fs::write(&writable, "old text\n").unwrap();
+        std::fs::write(&unwritable, "old text\n").unwrap();
+        std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = apply_workspace_edit(&rename_edit(&[&writable, &unwritable]));
+
+        let writable_after = std::fs::read_to_string(&writable).unwrap();
+        let unwritable_after = std::fs::read_to_string(&unwritable).unwrap();
+        std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let error = result.expect_err("an unwritable directory must fail the edit");
+        assert!(error.contains("B.al"), "{error}");
+        assert_eq!(
+            writable_after, "old text\n",
+            "the file written before the failure must be rolled back"
+        );
+        assert_eq!(unwritable_after, "old text\n");
+    }
+
+    #[test]
+    fn a_successful_edit_writes_every_file_and_keeps_its_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("A.al");
+        let second = dir.path().join("B.al");
+        std::fs::write(&first, "old text\n").unwrap();
+        std::fs::write(&second, "old text\n").unwrap();
+        let before = std::fs::metadata(&first).unwrap().permissions();
+
+        let changed = apply_workspace_edit(&rename_edit(&[&first, &second])).unwrap();
+
+        assert_eq!(changed, 2);
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "new text\n");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "new text\n");
+        assert_eq!(std::fs::metadata(&first).unwrap().permissions(), before);
+    }
 
     #[test]
     fn lint_counts_findings_in_single_and_all_responses() {

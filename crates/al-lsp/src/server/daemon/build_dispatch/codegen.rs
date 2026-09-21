@@ -61,8 +61,8 @@ pub(in crate::server::daemon) fn dispatch_permissions(
             }
         },
     };
-    let entries = match al_analysis::permissions::collect_permissions(workspace) {
-        Ok(entries) => entries,
+    let collection = match al_analysis::permissions::collect_permissions(workspace) {
+        Ok(collection) => collection,
         Err(error) => {
             return rpc_error(
                 id,
@@ -71,34 +71,40 @@ pub(in crate::server::daemon) fn dispatch_permissions(
             );
         }
     };
+    let entries = collection.entries;
+    // Files that could not contribute an entry travel with the result: the set
+    // is usable, and the caller can see which sources it does not cover.
+    let skipped: Vec<serde_json::Value> = collection
+        .skipped
+        .iter()
+        .map(|skip| {
+            serde_json::json!({
+                "path": skip.path.to_string_lossy(),
+                "reason": skip.reason,
+            })
+        })
+        .collect();
 
-    match format {
-        "xml" => {
-            let output = al_analysis::permissions::render_xml(&entries, role_id, name);
-            Response {
-                id,
-                result: Some(serde_json::json!({
-                    "format": "xml",
-                    "content": output,
-                    "objectCount": entries.len(),
-                })),
-                error: None,
-                ..Default::default()
-            }
-        }
-        _ => {
-            let output = al_analysis::permissions::render_al(&entries, name, perm_id);
-            Response {
-                id,
-                result: Some(serde_json::json!({
-                    "format": "al",
-                    "content": output,
-                    "objectCount": entries.len(),
-                })),
-                error: None,
-                ..Default::default()
-            }
-        }
+    let (format_name, output) = match format {
+        "xml" => (
+            "xml",
+            al_analysis::permissions::render_xml(&entries, role_id, name),
+        ),
+        _ => (
+            "al",
+            al_analysis::permissions::render_al(&entries, name, perm_id),
+        ),
+    };
+    Response {
+        id,
+        result: Some(serde_json::json!({
+            "format": format_name,
+            "content": output,
+            "objectCount": entries.len(),
+            "skipped": skipped,
+        })),
+        error: None,
+        ..Default::default()
     }
 }
 pub(in crate::server::daemon) fn dispatch_new_project(
@@ -295,6 +301,10 @@ pub(in crate::server::daemon) fn dispatch_setup(workspace: &Workspace, id: u64) 
     let report = crate::toolchain::doctor(workspace);
     serialized_response(id, "setup report", &report)
 }
+/// Last object ID in Microsoft's own range. Partner and per-tenant objects
+/// start above it, so an ID at or below this cannot belong to generated code.
+const MICROSOFT_ID_RANGE_END: i32 = 50_000;
+
 pub(in crate::server::daemon) fn dispatch_generate(
     workspace: &Workspace,
     id: u64,
@@ -315,6 +325,25 @@ pub(in crate::server::daemon) fn dispatch_generate(
             None => return invalid_params(id),
         },
     };
+    // An AL object ID is positive, and 1..=50000 is Microsoft's own range:
+    // `al generate page --id -5` used to emit `page -5 "NewPage"`.
+    if object_id <= 0 {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            &format!("Object ID {object_id} is not valid: AL object IDs are positive"),
+        );
+    }
+    if object_id <= MICROSOFT_ID_RANGE_END {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            &format!(
+                "Object ID {object_id} is inside Microsoft's reserved range \
+                 (1-{MICROSOFT_ID_RANGE_END}) — pass an `id` from your own range"
+            ),
+        );
+    }
     let table_name = params.get("table").and_then(|v| v.as_str()).unwrap_or("");
 
     // Object-ID conflict check. The default of 50100 makes it
@@ -569,6 +598,34 @@ mod tests {
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
     }
 
+    /// `al generate page --id -5` used to emit `page -5 "NewPage"`, and
+    /// `--id 18` an object inside Microsoft's own range.
+    #[test]
+    fn dispatch_generate_rejects_non_positive_and_base_range_object_ids() {
+        for (object_id, expected) in [
+            (-5, "positive"),
+            (0, "positive"),
+            (18, "reserved range"),
+            (50_000, "reserved range"),
+        ] {
+            let ws = empty_ws();
+            let resp = dispatch_generate(
+                &ws,
+                1,
+                &serde_json::json!({ "kind": "page", "id": object_id, "table": "Customer" }),
+            );
+            let error = resp
+                .error
+                .unwrap_or_else(|| panic!("id {object_id} must be rejected"));
+            assert_eq!(error.code, error_codes::INVALID_PARAMS);
+            assert!(
+                error.message.contains(expected),
+                "id {object_id}: {}",
+                error.message
+            );
+        }
+    }
+
     #[test]
     fn dispatch_generate_rejects_object_id_collision() {
         let ws = empty_ws();
@@ -736,21 +793,39 @@ mod tests {
         assert!(content.contains("50123"), "rendered AL: {content}");
     }
 
+    /// A malformed source used to fail the whole request. It is now reported
+    /// beside a permission set built from the files that do parse.
     #[test]
-    fn dispatch_permissions_rejects_malformed_workspace_source() {
+    fn dispatch_permissions_reports_a_malformed_source_and_covers_the_rest() {
         let ws = empty_ws();
         ws.file_index.add_file(
             std::path::PathBuf::from("/project/Broken.al"),
             "codeunit 50100 Broken { procedure Incomplete(".to_string(),
         );
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/project/Good.al"),
+            r#"codeunit 50101 "Good Codeunit" { procedure Run() begin end; }"#.to_string(),
+        );
 
         let resp = dispatch_permissions(&ws, 3, &serde_json::json!({}));
-        let error = resp
-            .error
-            .expect("incomplete permission input must return an error");
-        assert_eq!(error.code, error_codes::INTERNAL_ERROR);
-        assert!(error.message.contains("refused incomplete workspace input"));
-        assert!(resp.result.is_none());
+        assert!(resp.error.is_none(), "got error: {:?}", resp.error);
+        let result = resp.result.expect("a permission set");
+        assert_eq!(result.get("objectCount").and_then(|v| v.as_u64()), Some(1));
+        let content = result
+            .get("content")
+            .and_then(|v| v.as_str())
+            .expect("content");
+        assert!(content.contains("Good Codeunit"), "rendered AL: {content}");
+
+        let skipped = result
+            .get("skipped")
+            .and_then(|v| v.as_array())
+            .expect("skipped list");
+        assert_eq!(skipped.len(), 1, "{skipped:?}");
+        assert!(skipped[0]
+            .get("path")
+            .and_then(|v| v.as_str())
+            .is_some_and(|path| path.ends_with("Broken.al")));
     }
 
     #[test]

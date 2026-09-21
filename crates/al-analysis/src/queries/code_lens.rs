@@ -1259,8 +1259,10 @@ codeunit 50100 MyCodeunit
         );
     }
 
+    /// A partial line left by a killed process must not take the run/debug
+    /// lenses away from every test in the file.
     #[test]
-    fn code_lens_reports_corrupt_test_result_history() {
+    fn code_lens_survives_a_corrupt_test_result_line() {
         let uri = Url::parse("file:///test_results_corrupt.al").unwrap();
         let ws = workspace_with_doc(&uri, TEST_CODEUNIT_SRC);
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1268,17 +1270,19 @@ codeunit 50100 MyCodeunit
         std::fs::write(&path, "not json\n").expect("write corrupt history");
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
         let store = runtime
-            .block_on(al_workspace::TestResultStore::open(path))
+            .block_on(al_workspace::TestResultStore::open(path.clone()))
             .expect("open");
+        let store = std::sync::Arc::new(store);
         *ws.test_results
             .write()
-            .unwrap_or_else(|error| error.into_inner()) = Some(std::sync::Arc::new(store));
+            .unwrap_or_else(|error| error.into_inner()) = Some(std::sync::Arc::clone(&store));
 
-        let error = match code_lens(&ws, &uri) {
-            Err(error) => error,
-            Ok(_) => panic!("corrupt history must fail code lenses"),
-        };
-        assert!(error.contains("malformed test result record"), "{error}");
-        assert!(error.contains("line 1"), "{error}");
+        let lenses = code_lens(&ws, &uri).expect("one unreadable line must not fail code lenses");
+        assert!(!lenses.is_empty());
+
+        let error = runtime
+            .block_on(store.verify())
+            .expect_err("the damage is still reportable");
+        assert!(error.to_string().contains("line 1"), "{error}");
     }
 }

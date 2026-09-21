@@ -1002,9 +1002,13 @@ impl LanguageServer for AlServer {
             let al_settings = extract_al_settings(init_opts);
             let cap = {
                 let mut config = self.workspace.config.write().await;
-                let unknown = config.merge(&al_settings);
-                if !unknown.is_empty() {
-                    tracing::warn!("Unknown settings in initializationOptions: {:?}", unknown);
+                let report = config.merge_reporting(&al_settings);
+                if !report.is_empty() {
+                    tracing::warn!(
+                        unknown = ?report.unknown_keys,
+                        invalid = ?report.invalid_values,
+                        "settings in initializationOptions were not applied"
+                    );
                 }
                 config.max_document_size_bytes
             };
@@ -1508,11 +1512,17 @@ impl LanguageServer for AlServer {
         let mut staged_config = self.workspace.config.read().await.clone();
         let old_cache_path = staged_config.package_cache_path.clone();
         let old_local_paths = staged_config.app_local_folder_paths.clone();
-        let unknown = staged_config.merge(&al_settings);
+        let report = staged_config.merge_reporting(&al_settings);
         let symbol_paths_changed = old_cache_path != staged_config.package_cache_path
             || old_local_paths != staged_config.app_local_folder_paths;
-        if !unknown.is_empty() {
-            let msg = format!("Unknown AL settings: {}", unknown.join(", "));
+        if !report.unknown_keys.is_empty() {
+            tracing::warn!(
+                keys = ?report.unknown_keys,
+                "ignoring AL settings this server does not model"
+            );
+        }
+        if !report.invalid_values.is_empty() {
+            let msg = format!("Invalid AL settings: {}", report.invalid_values.join(", "));
             self.client.show_message(MessageType::WARNING, &msg).await;
         }
         if let Err(error) = self

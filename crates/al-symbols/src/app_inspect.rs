@@ -337,7 +337,11 @@ fn extraction_temp_path(target: &Path) -> std::path::PathBuf {
 
 /// Join an archive entry name under `base`, rejecting absolute paths and any
 /// component that would escape `base` (`..`). Returns `None` for unsafe names.
-fn safe_join(base: &Path, entry: &str) -> Option<std::path::PathBuf> {
+///
+/// Dropping `Component::Prefix` is what stops a Windows drive-relative name
+/// such as `C:evil.app`, which `PathBuf::push` would otherwise let replace the
+/// whole path.
+pub(crate) fn safe_join(base: &Path, entry: &str) -> Option<std::path::PathBuf> {
     use std::path::Component;
     let candidate = Path::new(entry);
     let mut out = base.to_path_buf();

@@ -4,7 +4,10 @@ use serde_json::Value;
 
 use super::super::XlfCommands;
 
-use super::{connect, print_json, project_root, report_error, request_checked, run_command};
+use super::{
+    connect, print_json, project_root, report_error, request_checked, run_command,
+    run_command_with_exit,
+};
 
 /// Print a build/package result in human-readable form and return the exit code.
 ///
@@ -86,6 +89,84 @@ pub fn cmd_compile(project_dir: Option<&str>, json: bool) -> ExitCode {
     }
 }
 
+/// Publish can compile a whole project and then upload it, so it needs both
+/// the build deadline and the upload's.
+const PUBLISH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1200);
+
+/// Compile the project and publish the `.app` to the BC dev API.
+///
+/// The daemon's `publish` method is the only publish path: it calls
+/// `al_publish::publish`, which resolves the launch configuration, compiles,
+/// and uploads (or RAD-deploys with `--incremental`).
+pub fn cmd_publish(config: Option<&str>, incremental: bool, json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(client) => client,
+        Err(error) => return report_error(&error, json),
+    };
+    client.set_request_timeout(PUBLISH_TIMEOUT);
+    let mut params = serde_json::json!({ "incremental": incremental });
+    if let Some(config) = config {
+        params["config"] = serde_json::json!(config);
+    }
+    match request_checked(&mut client, "publish", Some(params)) {
+        Ok(result) => {
+            let success = result
+                .get("success")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            if json {
+                print_json(&result);
+            } else {
+                let server = result.get("server").and_then(|v| v.as_str()).unwrap_or("?");
+                let method = result.get("method").and_then(|v| v.as_str()).unwrap_or("?");
+                println!("Publish to {server} ({method}):");
+                for step in result
+                    .get("steps")
+                    .and_then(|value| value.as_array())
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[])
+                {
+                    let phase = step.get("phase").and_then(|v| v.as_str()).unwrap_or("?");
+                    let ok = step
+                        .get("success")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let message = step.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                    let mark = if ok { "[OK]" } else { "[!!]" };
+                    println!("  {mark} {phase}: {message}");
+                }
+                for diagnostic in result
+                    .get("diagnostics")
+                    .and_then(|value| value.as_array())
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[])
+                {
+                    let file = diagnostic
+                        .get("file")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let line = diagnostic.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let code = diagnostic
+                        .get("code")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let message = diagnostic
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    eprintln!("{file}:{line}: {code}: {message}");
+                }
+            }
+            if success {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(error) => report_error(&error, json),
+    }
+}
+
 pub fn cmd_package(json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
@@ -107,8 +188,6 @@ pub fn cmd_pack_native(
     validate: bool,
     json: bool,
 ) -> ExitCode {
-    use std::io::Write;
-
     let dir = match project_dir {
         Some(d) => std::path::PathBuf::from(d),
         None => match std::env::current_dir() {
@@ -209,13 +288,7 @@ pub fn cmd_pack_native(
         return report_error(&format!("creating {}: {e}", parent.display()), json);
     }
     let write_started = std::time::Instant::now();
-    let write_result = tempfile::NamedTempFile::new_in(parent).and_then(|mut temp| {
-        temp.write_all(&built.bytes)?;
-        temp.as_file_mut().sync_all()?;
-        temp.persist(&out_path)
-            .map(|_| ())
-            .map_err(|error| error.error)
-    });
+    let write_result = al_emit::package::write_artifact_atomically(&out_path, &built.bytes);
     timings.output_write_ns = u64::try_from(write_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
     timings.total_ns = timings.total_ns.saturating_add(timings.output_write_ns);
     if let Err(e) = write_result {
@@ -269,11 +342,6 @@ fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()>
     Ok(())
 }
 
-/// Compile `dir` with the Microsoft AL compiler (alc) and,
-/// if it reports errors (or no toolchain is available), return an exit code so
-/// the caller refuses to emit. Returns `None` when validation passes and the
-/// native emit should proceed. Runs in a temp copy of the project so alc's
-/// output never pollutes the user's tree.
 /// Create a private, per-invocation temp dir for `--validate`'s alc copy.
 ///
 /// `tempfile::tempdir()` creates the directory with owner-only permissions and
@@ -288,6 +356,11 @@ fn create_validation_tempdir() -> std::io::Result<tempfile::TempDir> {
     tempfile::tempdir()
 }
 
+/// Compile `dir` with the Microsoft AL compiler (alc) and, if it reports
+/// errors (or no toolchain is available), return an exit code so the caller
+/// refuses to emit. Returns `None` when validation passes and the native emit
+/// should proceed. Runs in a temp copy of the project so alc's output never
+/// pollutes the user's tree.
 fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
     let toolchain = match al_project::toolchain::find_toolchain() {
         Ok(t) => t,
@@ -424,6 +497,15 @@ fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
     }
 }
 
+/// The `.g.xlf` path an `xlf.generate` response reports, if it wrote one.
+pub(crate) fn xlf_generated_path(result: &serde_json::Value) -> Option<&str> {
+    result
+        .get("path")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+}
+
 pub fn cmd_xlf(subcmd: &XlfCommands, json: bool) -> ExitCode {
     match subcmd {
         XlfCommands::Generate { project } => {
@@ -432,20 +514,29 @@ pub fn cmd_xlf(subcmd: &XlfCommands, json: bool) -> ExitCode {
                 Err(error) => return report_error(&error, json),
             };
             let params = serde_json::json!({ "project": proj_root.to_string_lossy().as_ref() });
-            run_command(
+            // Writing no `.g.xlf` is a failed gate, not a success: the project
+            // asked for a translation file and did not get one. `path` is null
+            // when the daemon found nothing translatable.
+            run_command_with_exit(
                 "xlf.generate",
                 Some(params),
                 json,
                 project.as_deref(),
                 |result| {
-                    let path = result.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                    let path = xlf_generated_path(result);
                     let units = result.get("units").and_then(|v| v.as_u64()).unwrap_or(0);
-                    if path.is_empty() || path == "null" {
-                        eprintln!(
+                    match path {
+                        Some(path) => println!("Generated: {path}  ({units} units)"),
+                        None => eprintln!(
                             "No translatable texts found (check features.TranslationFile in app.json)"
-                        );
+                        ),
+                    }
+                },
+                |result| {
+                    if xlf_generated_path(result).is_some() {
+                        ExitCode::SUCCESS
                     } else {
-                        println!("Generated: {path}  ({units} units)");
+                        ExitCode::FAILURE
                     }
                 },
             )

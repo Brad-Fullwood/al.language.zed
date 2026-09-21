@@ -2,6 +2,13 @@
 
 use serde::Serialize;
 
+/// Upper bound on a `.alcpuprofile` file read into memory, matching every
+/// other BC input cap in this workspace. It lives here because two readers
+/// enforce it — `al_bc::profiling::analyze_profile_file` and the explorer's
+/// profiler pane — and a pane that reads without the cap freezes the TUI's
+/// single thread on a stray multi-gigabyte file, then OOMs.
+pub const MAX_PROFILE_FILE_BYTES: u64 = 500 * 1024 * 1024;
+
 /// A single procedure hotspot extracted from a profile.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -215,7 +215,9 @@ pub fn cmd_setup(json: bool) -> ExitCode {
             println!("[!!] .NET SDK not found");
         }
     }
-    ExitCode::SUCCESS
+    // `setup` printed `[!!] ALTool NOT installed` and still exited 0, while
+    // `doctor` returns FAILURE for the identical payload.
+    doctor_exit_code(&result)
 }
 
 pub fn cmd_doctor(json: bool) -> ExitCode {
@@ -299,7 +301,7 @@ pub fn cmd_doctor(json: bool) -> ExitCode {
     exit_code
 }
 
-fn doctor_exit_code(result: &serde_json::Value) -> ExitCode {
+pub(crate) fn doctor_exit_code(result: &serde_json::Value) -> ExitCode {
     let configured = result
         .get("altoolInstalled")
         .and_then(|value| value.as_bool())

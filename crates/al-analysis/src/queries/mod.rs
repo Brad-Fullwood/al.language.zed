@@ -19,6 +19,7 @@ pub mod diagnostics;
 pub mod duplicates;
 pub mod folding;
 pub mod format;
+pub mod free_ids;
 pub mod hover;
 pub mod impact;
 pub mod implementation;

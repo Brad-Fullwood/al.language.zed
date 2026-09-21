@@ -635,16 +635,10 @@ fn extract_primary_expression_name(node: tree_sitter::Node, source: &[u8]) -> Op
         node
     };
 
-    match inner.kind() {
-        "name" | "name_or_keyword" | "identifier" | "quoted_identifier" => inner
-            .utf8_text(source)
-            .ok()
-            .map(|t| t.trim_matches('"').to_string()),
-        _ => inner
-            .utf8_text(source)
-            .ok()
-            .map(|t| t.trim_matches('"').to_string()),
-    }
+    inner
+        .utf8_text(source)
+        .ok()
+        .map(|t| t.trim_matches('"').to_string())
 }
 
 /// Parse the `RunTrigger` argument from a record-operation call suffix.

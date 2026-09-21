@@ -4,32 +4,35 @@ Updated: 2026-09-21 01:30 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
-Round 1: four of seven reviews are done (58 findings) and their fix agents are running. Three reviews and two follow-up reviews are still running.
+Round 1 reviews are complete: 224 verified findings in 11 files. Six of seven first-pass fix branches are merged. Follow-up fix branches for the second and third review passes are running.
 
 ## In flight
 
 | Item | Kind | Output |
 |------|------|--------|
-| Fix R1 symbols and project layer (24 findings) | worktree fix | branch `campaign/fix-r1-symbols-project` |
-| Fix R1 emit, compile, BC, explorer (28 findings) | worktree fix | branch `campaign/fix-r1-emit-bc-explorer` |
-| Fix R1 analysis and insight (18 findings) | worktree fix | branch `campaign/fix-r1-analysis-insight` |
-| AI tooling daemon work: limit and fields projection, scope, `source --list-procedures`, fix `subscribers` and `impact --table`, errors an agent can act on, compact JSON, CLI `location`, workspace object members, index progress | worktree build | branch `campaign/ai-daemon-projection` |
+| Fix merge regression: `edit_lifecycle` tests fail with LSP -32801 ContentModified on documentSymbol and workspace/symbol, then run the whole al-test-harness suite | worktree fix | branch `campaign/fix-lsp-content-modified` |
 | Fix R1b runtime, test runner, DAP session, harness (28 findings) | worktree fix | branch `campaign/fix-r1b-runtime-dap` |
+| Fix R1b analysis: rename, resolution, breaking changes, xliff, obsolescence (35 findings) | worktree fix | branch `campaign/fix-r1b-analysis` |
+| Fix R1c analysis: coverage, multi-object files, permission audit, signature help, code lens (29 findings) | worktree fix | branch `campaign/fix-r1c-analysis` |
+| AI tooling daemon work: wrong answers first, then limit, fields, scope, `source --list-procedures`, CLI `location`, index progress, plugin simplification | worktree build | branch `campaign/ai-daemon-projection` |
+| Blog: delete six posts, site cleanup, fact sheet, series plan, draft 1 | blog repo branch `campaign/2026-09-rewrite` | `findings/blog-plan.md` |
 
-Queued for a free build slot (at most 7 building agents, RAM is the limit):
+Queued:
 
-- AI tooling build list items 1, 2, 3, 5, 7, 8 (`findings/ai-tooling-ideas.md` section 6: limit and fields projection, `scope` parameter, `source --list-procedures`, fix `subscribers` and `impact --table`, index progress, compact JSON). They edit the daemon dispatchers, so start after `campaign/fix-r1-lsp-protocol` merges. Item 4 (free object ID allocator, new file) can start as soon as a build slot frees. Items 9 and 10 (package version diff, persisted symbol index) later in the week.
-- Fix `findings/r1b-analysis-insight.md` (35 findings: quoted identifiers cannot be renamed, rename misses EventSubscriber strings, fields with `)` in the name dropped from resolution). Start after `campaign/fix-r1-analysis-insight` merges.
-- Fix `findings/r1c-analysis-insight.md` (29 findings, 5 high: unreachable coverage pass keyed on node kinds the grammar does not have, multi-object files read as first object only by 14 consumers, permission audit recommends dropping needed permissions, `Table::` where AL needs `Database::`, signature help picks a local procedure over the receiver's). Same crate as the analysis fix branch, start after it merges.
-- Fix `findings/r1b-scaffold-generators.md` (11 findings): handed to the analysis fix agent.
+- 124 `trim_matches('"')` identifier cleanups in al-analysis (102) and al-insight (22), replace with `al_syntax::node_text_clean`. Start after both analysis fix branches merge.
+- `al_syntax::LineIndex` and `al_syntax::SourceLines` are two line tables added by two agents in the same round. Merge into one type.
+- New findings from the emit fix agent (in `findings/r1-emit-bc-explorer.md`): `SymbolReference.json` has no `Variables` array for global variables, `xlf generate` drops properties declared on a one-line member block, al-dap and al-publish post to different BC dev endpoints (needs a live server to settle), the duplicated response validation framework (about 300 lines to move).
+- `[UNVERIFIED]` scaffold items: copilot template API calls, empty repeater, `UsageCategory = Lists` on Card pages. Check against Microsoft Learn.
+- desloppify fix batches (`findings/desloppify.md` section 4), file splits after the owning fix branch merges.
+- Workstream E (tests): coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis. Start when a build slot frees.
+- Workstream D (security): dedicated review after round 1 fixes are in, covering what changed.
+- AI tooling build items 9 and 10: dependency package version diff, persisted symbol index (2.9 GB RSS and 54 s cold index today).
+- Plugin leftovers: `plugin/evals/`, release binary download hook, test on a project with `.alpackages`.
 
 A review file without a `## Review complete` line means the agent died. Re-dispatch it to
 continue from the unticked coverage items. A fix branch on origin with findings still `open`
 means the fix agent died. Re-dispatch a fix agent onto that branch for the open findings.
-Merge a fix branch into `campaign/2026-09-21` only after the full gates pass on the merge.
-
-Disk: 32 GB free at 02:20 on 2026-09-21. Fix agents build with `CARGO_PROFILE_DEV_DEBUG=0`
-and `-p` package filters. Remove merged worktrees and their target directories promptly.
+Merge a fix branch into `campaign/2026-09-21` only after its gates pass on the merge.
 
 ## Workstreams
 
@@ -75,6 +78,10 @@ round on the areas with the most findings.
 
 ## Done
 
+- Merged `campaign/fix-r1-symbols-project`: 24 of 24. Multi-app workspaces keep both objects and go-to-definition prefers the referring file's app. Unknown or ill-typed `al.*` editor settings warn and no longer stop startup. Source index cache bounded at 64 entries. ZIP-slip closed in nupkg extraction. All seven first-pass fix branches are in.
+- Merged `campaign/ai-free-ids`: `freeIds` daemon method, `al_freeids` MCP tool, `al-explorer free-ids`. Object IDs per kind, field numbers and enum ordinals with extension collision checks. Responses are 200 to 280 bytes.
+- Merged `campaign/fix-r1-emit-bc-explorer`: 24 fixed, 2 rejected after running Microsoft alc 17 (the packaged XLIFF and the generated `.g.xlf` follow different rules and the emitter already matched both), 3 new findings. `al-explorer publish` and a daemon `publish` method now exist. Archive entry names are checked. `rename` is all or nothing.
+- Merged `campaign/fix-r1-analysis-insight`: 21 of 21 plus the 11 scaffold and generator findings.
 - Merged `campaign/fix-r1-lsp-protocol`: 15 of 15 fixed. Cached tokens only reach hosts the project's launch configuration names. Every daemon path parameter goes through `daemon/containment.rs`. No generation read guard is held across a long await. Behavior change: a relative `file` parameter resolves against the project root.
 - Merged `campaign/ai-plugin`: Claude Code plugin `al-bc` under `plugin/` with 8 skills, 2 subagents, a SessionStart hook, `.claude-plugin/marketplace.json`, and `make plugin-validate`. 7 of 7 Haiku test questions answered correctly on the fixture project (`plugin/TESTING.md`). Left: agent runs for `bc-test-locally`, `bc-upgrade-impact`, `bc-cop-fixer`, a test on a project with `.alpackages`, `plugin/evals/`, a setup hook that downloads release binaries. `plugin/ROADMAP.md` lists the workarounds to remove once the daemon projection work lands.
 - Merged `campaign/fix-r1-runtime-dap`: 13 of 13 fixed, each cited to Microsoft Learn. Left open: a real `line-rate` for dynamic Cobertura needs a statement-line query in al-analysis (the document now says `line-coverage="unavailable"`), and `Assert.RecordIsEmpty`, `RecordIsNotEmpty`, `TableIsEmpty` still route to live BC.

@@ -225,9 +225,13 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
 /// - `"Item" WHERE("Type" = CONST(Inventory))` — with filter clause
 /// - `Customer WHERE(...)`
 ///
+/// For the conditional form this is the *first declared* branch's table.
+/// Callers that need every branch — anything asking "does this relation reach
+/// table X" — want [`extract_table_relation_tables`] instead.
+///
 /// Returns `None` if the value is empty after stripping. Pre-allocates no
 /// `String` on the happy path; returns a borrowed `&str` of the table-name
-/// slice. Used by `table_impact` to detect cross-table relations.
+/// slice.
 pub fn extract_table_relation_table(value: &str) -> Option<&str> {
     extract_table_relation_tables(value).into_iter().next()
 }
@@ -278,8 +282,11 @@ pub fn extract_table_relation_tables(value: &str) -> Vec<&str> {
         }
     }
 
-    tables.sort_unstable();
-    tables.dedup();
+    // Declaration order, deduplicated in place: the first branch is the
+    // primary relation and `extract_table_relation_table` returns it. Sorting
+    // here used to make that the alphabetically first branch instead.
+    let mut seen = std::collections::HashSet::new();
+    tables.retain(|table| seen.insert(table.to_ascii_lowercase()));
     tables
 }
 
@@ -810,17 +817,42 @@ mod tests {
     #[test]
     fn extract_table_relation_tables_handles_a_trailing_else_branch() {
         let value = r#"IF (Type=CONST(Item)) Item ELSE "G/L Account""#;
-        let mut tables = extract_table_relation_tables(value);
-        tables.sort_unstable();
-        assert_eq!(tables, vec!["G/L Account", "Item"]);
+        assert_eq!(
+            extract_table_relation_tables(value),
+            vec!["Item", "G/L Account"]
+        );
     }
 
     #[test]
     fn extract_table_relation_tables_handles_conditional_branches_with_where() {
         let value = r#"IF (Type=CONST(Item)) Item WHERE("Blocked"=CONST(false)) ELSE Resource"#;
-        let mut tables = extract_table_relation_tables(value);
-        tables.sort_unstable();
-        assert_eq!(tables, vec!["Item", "Resource"]);
+        assert_eq!(
+            extract_table_relation_tables(value),
+            vec!["Item", "Resource"]
+        );
+    }
+
+    /// The doc promises declaration order, and the singular helper promises
+    /// the primary relation. Sorting made both wrong: `Resource` came back as
+    /// "the" table for a relation whose first branch is `Zebra`.
+    #[test]
+    fn extract_table_relation_tables_keeps_declaration_order() {
+        let value = r#"IF (Type=CONST(Zebra)) Zebra."No." ELSE IF (Type=CONST(Apple)) Apple."No.""#;
+        assert_eq!(
+            extract_table_relation_tables(value),
+            vec!["Zebra", "Apple"],
+            "branches must come back in the order they are declared"
+        );
+        assert_eq!(extract_table_relation_table(value), Some("Zebra"));
+    }
+
+    #[test]
+    fn extract_table_relation_tables_drops_a_repeated_branch_table() {
+        let value = r#"IF (Type=CONST(A)) Item ELSE IF (Type=CONST(B)) Item ELSE Resource"#;
+        assert_eq!(
+            extract_table_relation_tables(value),
+            vec!["Item", "Resource"]
+        );
     }
 
     #[test]

@@ -149,15 +149,14 @@ pub fn generate_test(config: &GenerateTestConfig) -> String {
     // for generate_page / generate_report).
     let test_name = crate::permissions::al_escape_name(&config.test_name);
 
+    // No `var Assert: Codeunit "Library Assert";`: it needs Microsoft's test
+    // library, which a fresh project does not depend on, and no stub uses it.
     format!(
         r#"codeunit {id} "{name}"
 {{
     Subtype = Test;
 
-{stubs}
-    var
-        Assert: Codeunit "Library Assert";
-}}
+{stubs}}}
 "#,
         id = config.object_id,
         name = test_name,
@@ -170,7 +169,6 @@ fn collect_normal_fields(fields: &[FieldSymbol]) -> Vec<&FieldSymbol> {
         .iter()
         .filter(|f| {
             !is_flow_field(f)
-                && !f.name.starts_with('$')
                 && !f.name.eq_ignore_ascii_case("SystemId")
                 && !f.name.eq_ignore_ascii_case("SystemCreatedAt")
                 && !f.name.eq_ignore_ascii_case("SystemModifiedAt")
@@ -235,45 +233,71 @@ fn generate_test_stubs(subject: &SymbolEntry) -> String {
         return default_test_stub();
     }
 
+    // `sanitize_identifier` drops the characters an identifier cannot hold, so
+    // `PostSale` and `"Post Sale"` both become `PostSale` and emitted two
+    // procedures with the same name. Suffix the repeats.
+    let mut taken: Vec<String> = Vec::with_capacity(public_methods.len());
     public_methods
         .iter()
         .map(|m| {
             let method_name = m.name.replace('\'', "''");
+            let base = sanitize_identifier(&m.name);
+            let mut stub_name = base.clone();
+            let mut suffix = 1u32;
+            while taken.contains(&stub_name.to_ascii_lowercase()) {
+                suffix += 1;
+                stub_name = format!("{base}{suffix}");
+            }
+            taken.push(stub_name.to_ascii_lowercase());
             format!(
-                "    [Test]\n    procedure Test{}()\n    begin\n        Error('TODO: implement test for {}');\n    end;\n",
-                sanitize_identifier(&m.name), method_name,
+                "    [Test]\n    procedure Test{stub_name}()\n    begin\n        Error('TODO: implement test for {method_name}');\n    end;\n",
             )
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-fn default_test_stub() -> String {
+/// The single placeholder `[Test]` procedure emitted when there is nothing to
+/// derive stubs from. Shared with `scaffold`'s test template, which emitted a
+/// byte-identical copy.
+pub(crate) fn default_test_stub() -> String {
     "    [Test]\n    procedure TestSomething()\n    begin\n        Error('Placeholder test: implementation required');\n    end;\n".to_string()
 }
 
+/// Camel-case `name` into a bare AL identifier for a page control or report
+/// column.
+///
+/// The result has to be a legal unquoted identifier, so only `[A-Za-z0-9_]`
+/// survives. Base-app field names are full of characters that are not:
+/// `Amount (LCY)` used to come out as `amount(LCY)` and `Line Discount %` as
+/// `lineDiscount%`, neither of which compiles. An identifier also cannot start
+/// with a digit, so `2nd Reminder` gets the `field` prefix.
 fn al_identifier(name: &str) -> String {
-    let mut out = String::new();
+    const FALLBACK: &str = "field";
+    let mut out = String::with_capacity(name.len());
     let mut capitalize_next = false;
     for ch in name.chars() {
-        if ch == ' ' || ch == '-' || ch == '_' || ch == '.' {
-            capitalize_next = true;
-        } else if capitalize_next {
-            out.extend(ch.to_uppercase());
-            capitalize_next = false;
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            if capitalize_next {
+                out.extend(ch.to_uppercase());
+                capitalize_next = false;
+            } else {
+                out.push(ch);
+            }
         } else {
-            out.push(ch);
+            // Any separator or punctuation starts a new word.
+            capitalize_next = !out.is_empty();
         }
     }
-    if out.is_empty() {
-        "field".to_string()
-    } else {
-        let mut chars = out.chars();
-        match chars.next() {
-            None => String::new(),
-            Some(c) => c.to_lowercase().collect::<String>() + chars.as_str(),
-        }
+
+    let mut chars = out.chars();
+    let Some(first) = chars.next() else {
+        return FALLBACK.to_string();
+    };
+    if first.is_ascii_digit() {
+        return format!("{FALLBACK}{}", out);
     }
+    first.to_lowercase().collect::<String>() + chars.as_str()
 }
 
 fn sanitize_identifier(name: &str) -> String {
@@ -285,6 +309,7 @@ fn sanitize_identifier(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::assert_al_parses;
     use al_symbols::model::{FieldSymbol, ObjectKind, SymbolEntry};
 
     fn make_table(name: &str, fields: Vec<FieldSymbol>) -> SymbolEntry {
@@ -470,6 +495,101 @@ mod tests {
         assert_eq!(al_identifier("Unit of Measure"), "unitOfMeasure");
     }
 
+    /// Base-app field names carry punctuation that is not legal in a bare AL
+    /// identifier. Passing it through produced `field(amount(LCY); …)`.
+    #[test]
+    fn al_identifier_drops_characters_an_identifier_cannot_hold() {
+        assert_eq!(al_identifier("Amount (LCY)"), "amountLCY");
+        assert_eq!(al_identifier("Line Discount %"), "lineDiscount");
+        assert_eq!(
+            al_identifier("Qty. per Unit of Measure"),
+            "qtyPerUnitOfMeasure"
+        );
+        assert_eq!(al_identifier("2nd Reminder"), "field2ndReminder");
+        assert_eq!(al_identifier("%"), "field");
+        assert_eq!(al_identifier(""), "field");
+    }
+
+    /// `var Assert: Codeunit "Library Assert";` needs Microsoft's test library,
+    /// which a fresh project does not depend on, and nothing in the stub uses
+    /// it.
+    #[test]
+    fn generated_test_codeunit_declares_no_unsatisfied_dependency() {
+        let src = generate_test(&GenerateTestConfig {
+            object_id: 50100,
+            test_name: "My Tests".to_string(),
+            subject: None,
+        });
+        assert_al_parses("test codeunit", &src);
+        assert!(!src.contains("Library Assert"), "{src}");
+        assert!(!src.contains("var"), "{src}");
+    }
+
+    /// `sanitize_identifier` maps `PostSale` and `"Post Sale"` to the same
+    /// name, so both procedures produced `procedure TestPostSale()`.
+    #[test]
+    fn test_stub_names_are_unique_even_when_sanitised_names_collide() {
+        let mut subject = make_table("Posting", vec![]);
+        subject.kind = al_symbols::model::ObjectKind::Codeunit;
+        subject.methods = ["PostSale", "Post Sale", "Post-Sale"]
+            .into_iter()
+            .map(|name| al_symbols::model::MethodSymbol {
+                name: name.to_string(),
+                parameters: vec![],
+                return_type: None,
+                attributes: vec![],
+                is_local: false,
+            })
+            .collect();
+
+        let src = generate_test(&GenerateTestConfig {
+            object_id: 50100,
+            test_name: "Posting Tests".to_string(),
+            subject: Some(subject),
+        });
+        assert_al_parses("test codeunit with colliding names", &src);
+        assert!(src.contains("procedure TestPostSale()"), "{src}");
+        assert!(src.contains("procedure TestPostSale2()"), "{src}");
+        assert!(src.contains("procedure TestPostSale3()"), "{src}");
+    }
+
+    /// The whole point of the sanitisation: a page over a table with such a
+    /// field has to compile.
+    #[test]
+    fn generate_page_over_punctuated_field_names_parses() {
+        let table = make_table(
+            "Cust. Ledger Entry",
+            vec![
+                make_field(1, "Amount (LCY)", "Decimal"),
+                make_field(2, "Line Discount %", "Decimal"),
+                make_field(3, "2nd Reminder", "Boolean"),
+            ],
+        );
+        let config = GeneratePageConfig {
+            object_id: 50100,
+            page_name: "Cust Ledger List".to_string(),
+            page_type: PageType::List,
+            source_table: table.clone(),
+        };
+        let src = generate_page(&config);
+        assert_al_parses("page over punctuated field names", &src);
+        assert!(
+            src.contains("field(amountLCY; Rec.\"Amount (LCY)\")"),
+            "{src}"
+        );
+
+        let report = generate_report(&GenerateReportConfig {
+            object_id: 50101,
+            report_name: "Cust Ledger Report".to_string(),
+            source_table: table,
+        });
+        assert_al_parses("report over punctuated field names", &report);
+        assert!(
+            report.contains("column(lineDiscount; \"Line Discount %\")"),
+            "{report}"
+        );
+    }
+
     #[test]
     fn generate_page_escapes_double_quote_in_table_name() {
         let table = make_table(r#"Bad"Table"#, vec![make_field(1, "No.", "Code[20]")]);
@@ -546,15 +666,6 @@ mod tests {
         assert!(
             out.contains(r#"; "Bad""Field")"#),
             "report column field name must escape `\"` → `\"\"`, got:\n{out}"
-        );
-    }
-
-    fn assert_al_parses(label: &str, source: &str) {
-        let result = al_syntax::parser::AlParser::parse_quick(source);
-        assert!(
-            result.errors.is_empty(),
-            "{label} did not parse cleanly:\n{source}\nerrors: {:?}",
-            result.errors
         );
     }
 

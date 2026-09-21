@@ -47,7 +47,7 @@ const CORPUS: &[(&str, &str)] = &[
     ),
     (
         "Widget.Table.al",
-        "table 50100 Widget\n{\n    fields { field(1;\"No.\";Code[20]){} field(2;Name;Text[100]){} field(3;Qty;Decimal){} field(4;Kind;Enum Color){} }\n    keys { key(PK;\"No.\"){Clustered=true;} }\n}",
+        "table 50100 Widget\n{\n    fields { field(1;\"No.\";Code[20]){} field(2;Name;Text[100]){Caption='SEPA CT',Locked=true;} field(3;Qty;Decimal){} field(4;Kind;Enum Color){} }\n    keys { key(PK;\"No.\"){Clustered=true;} }\n}",
     ),
     (
         "WidgetCard.Page.al",
@@ -116,7 +116,13 @@ const APP_JSON: &str = r#"{
   "target": "Cloud",
   "logo": "res/logo.png",
   "idRanges": [{ "from": 50100, "to": 50199 }],
-  "dependencies": []
+  "dependencies": [],
+  "resourceExposurePolicy": {
+    "applyToDevExtension": true,
+    "allowDebugging": true,
+    "allowDownloadingSource": false,
+    "includeSourceInSymbolFile": true
+  }
 }"#;
 
 /// Locate `alc.dll` from `AL_TOOL_PATH`, returning the dll path if a live run is

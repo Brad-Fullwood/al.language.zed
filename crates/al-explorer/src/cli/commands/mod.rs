@@ -46,10 +46,8 @@ pub fn kind_has_numeric_id(kind: &str) -> bool {
 ///
 /// `username`/`password` fall back to the `BC_USERNAME`/`BC_PASSWORD`
 /// environment variables when the corresponding `--username`/`--password`
-/// flag is omitted, matching what the `authenticate` command's help text
-/// already promises ("prefer reading credentials from a file or environment
-/// variable") — previously that alternative did not exist for these commands
-/// and `--password` was the only way to authenticate.
+/// flag is omitted, which keeps the credential out of shell history and
+/// `/proc/<pid>/cmdline`. There is no credentials-file reader.
 pub fn bc_server_params(
     cmd: &str,
     server: &str,
@@ -580,6 +578,12 @@ fn validate_run_command_result(method: &str, result: &serde_json::Value) -> Resu
             require_object_field(result, "nodes", serde_json::Value::is_u64, "integer")?;
             require_object_field(result, "edges", serde_json::Value::is_u64, "integer")?;
         }
+        // `mode` selects which of the remaining fields are present, so it is
+        // the one field the formatter cannot do without.
+        "freeIds" => {
+            require_object_field(result, "mode", serde_json::Value::is_string, "string")?;
+            require_object_field(result, "usedCount", serde_json::Value::is_i64, "integer")?;
+        }
         "xlf.generate" => {
             require_object_field(result, "units", serde_json::Value::is_u64, "integer")?;
             let path = result
@@ -643,20 +647,6 @@ fn validate_run_command_result(method: &str, result: &serde_json::Value) -> Resu
                     ("line", JsonFieldKind::Integer),
                 ],
             )?;
-        }
-        "tests.last_results" => {
-            let Some(object) = result.as_object() else {
-                return Err(response_error("a test-history object"));
-            };
-            match (object.get("lastResult"), object.get("results")) {
-                (Some(last), _) if last.is_null() || last.is_object() => {}
-                (_, Some(results)) if results.is_array() => {}
-                _ => {
-                    return Err(response_error(
-                        "an object with object/null 'lastResult' or array 'results'",
-                    ));
-                }
-            }
         }
         "tests.classify" => {
             require_object_field(
@@ -1089,6 +1079,11 @@ mod path_tests {
         }
         assert!(!methods.is_empty());
         for method in methods {
+            // `request_checked` consults `response_contract` first, so a method
+            // it claims never reaches this fallback module.
+            if super::response_contract::handles(&method) {
+                continue;
+            }
             let probe = match method.as_str() {
                 "entrypoints"
                 | "obsolete"
@@ -1105,6 +1100,7 @@ mod path_tests {
                 | "builtinTypes"
                 | "tests.discover" => serde_json::json!([]),
                 "insightStats" => serde_json::json!({"nodes": 0, "edges": 0}),
+                "freeIds" => serde_json::json!({"mode": "summary", "usedCount": 0}),
                 "xlf.refresh" => {
                     serde_json::json!({
                         "added": [],
@@ -1116,7 +1112,6 @@ mod path_tests {
                 "xlf.untranslated" => serde_json::json!({"count": 0, "untranslated": []}),
                 "xlf.suggest" => serde_json::json!({"count": 0, "suggestions": []}),
                 "tests.affected" => serde_json::json!({"affected": []}),
-                "tests.last_results" => serde_json::json!({"results": []}),
                 "tests.classify" => serde_json::json!({"classifications": []}),
                 "tests.coverage" => serde_json::json!({"coverage": [], "untested": []}),
                 "permissions.audit" => serde_json::json!({
@@ -1234,6 +1229,91 @@ mod path_tests {
             assert!(
                 !error.contains("has no registered daemon response contract"),
                 "{method} has no response contract"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod subcommand_exit_code_tests {
+    use std::process::ExitCode;
+
+    use super::build::xlf_generated_path;
+    use super::insight::dead_code_exit_code;
+    use super::lsp::env::doctor_exit_code;
+    use super::lsp::project::any_tenant_authenticated;
+    use super::lsp::refactor::captured_test_failures;
+
+    fn is_success(code: ExitCode) -> bool {
+        format!("{code:?}") == format!("{:?}", ExitCode::SUCCESS)
+    }
+
+    /// `Docs/reference/cli-commands.md` says exit 0 means the gate passed, and
+    /// that a non-empty report is not silently treated as success. One row per
+    /// command that can report a failed gate through a *valid* response, which
+    /// is the case `report_error` does not cover.
+    #[test]
+    fn a_failed_gate_never_exits_zero() {
+        // (command, the passing response reads as success, the failing one does)
+        let rows: Vec<(&str, bool, bool)> = vec![
+            (
+                "dead-code",
+                is_success(dead_code_exit_code(&serde_json::json!([]))),
+                // Every finding is medium confidence, which is what
+                // al-analysis emits for an unreferenced object.
+                is_success(dead_code_exit_code(
+                    &serde_json::json!([{ "n": "Unused", "confidence": "Medium" }]),
+                )),
+            ),
+            (
+                "setup",
+                is_success(doctor_exit_code(&serde_json::json!({
+                    "altoolInstalled": true,
+                    "dotnetVersion": "8.0.100",
+                    "project": {},
+                    "indexedSymbols": 10,
+                    "workspaceFiles": 3,
+                }))),
+                is_success(doctor_exit_code(&serde_json::json!({
+                    "altoolInstalled": false,
+                    "dotnetVersion": serde_json::Value::Null,
+                    "project": {},
+                }))),
+            ),
+            (
+                "authenticate status",
+                any_tenant_authenticated(&serde_json::json!({
+                    "tenants": [{ "tenant": "contoso", "authenticated": true, "expired": false }]
+                })),
+                any_tenant_authenticated(&serde_json::json!({
+                    "tenants": [
+                        { "tenant": "contoso", "authenticated": false, "expired": true },
+                        { "tenant": "fabrikam", "authenticated": true, "expired": true },
+                    ]
+                })),
+            ),
+            (
+                "xlf generate",
+                xlf_generated_path(&serde_json::json!({ "path": "Translations/App.g.xlf" }))
+                    .is_some(),
+                xlf_generated_path(&serde_json::json!({ "path": serde_json::Value::Null }))
+                    .is_some(),
+            ),
+            (
+                "test-snapshot capture",
+                captured_test_failures(&serde_json::json!({ "testResult": { "failed": 0 } })) == 0,
+                captured_test_failures(&serde_json::json!({ "testResult": { "failed": 2 } })) == 0,
+            ),
+        ];
+
+        for (command, passing_is_zero, failing_is_zero) in rows {
+            assert!(
+                passing_is_zero,
+                "{command} must exit 0 when the gate passes"
+            );
+            assert!(
+                !failing_is_zero,
+                "{command} must not exit 0 when the gate fails"
             );
         }
     }

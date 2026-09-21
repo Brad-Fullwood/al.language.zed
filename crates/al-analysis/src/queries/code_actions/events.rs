@@ -2,7 +2,7 @@
 
 use url::Url;
 
-use super::{annotation_edit, detect_object_kind, single_edit_ws};
+use super::{annotation_edit, detect_object_kind, single_edit_ws, strip_literals_and_comment};
 use super::{AlObjectKind, CodeActionEntry, CodeActionKind, Range, TextEdit, WorkspaceEdit};
 use al_workspace::Workspace;
 
@@ -55,12 +55,23 @@ pub(super) fn source_action_move_tooltip(
     let table_path = workspace
         .file_index
         .find_by_object_name(&source_table.to_lowercase())?;
-    let table_text = workspace
-        .file_index
-        .files
-        .get(&table_path)
-        .map(|entry| entry.value().clone())?;
     let table_uri = Url::from_file_path(&table_path).ok()?;
+    // The client applies the returned `TextEdit` to its *buffer*. Deriving the
+    // line from the indexed on-disk snapshot while the table is open with
+    // unsaved edits puts the property wherever that field used to be — inside
+    // another field's block, or mid-word. The file index is the fallback for a
+    // table that is not open.
+    let table_text = workspace
+        .documents
+        .get_text_arc(&table_uri)
+        .map(|text| text.as_str().to_string())
+        .or_else(|| {
+            workspace
+                .file_index
+                .files
+                .get(&table_path)
+                .map(|entry| entry.value().clone())
+        })?;
 
     let field_decl_line = find_table_field_declaration(&table_text, &table_field)?;
     if table_field_block_has_tooltip(&table_text, field_decl_line) {
@@ -174,33 +185,6 @@ fn parse_member_head(trimmed: &str) -> Option<MemberHead> {
         keyword,
         args: trimmed[open + 1..close].to_string(),
     })
-}
-
-/// Blank out single/double-quoted spans and drop a trailing line comment so
-/// braces inside AL captions do not corrupt the nesting count.
-fn strip_literals_and_comment(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut chars = line.char_indices().peekable();
-    let mut in_single = false;
-    let mut in_double = false;
-    while let Some((_, ch)) = chars.next() {
-        if !in_single && !in_double && ch == '/' && chars.peek().is_some_and(|(_, n)| *n == '/') {
-            break;
-        }
-        match ch {
-            '\'' if !in_double => {
-                in_single = !in_single;
-                out.push(ch);
-            }
-            '"' if !in_single => {
-                in_double = !in_double;
-                out.push(ch);
-            }
-            _ if in_single => out.push(' '),
-            _ => out.push(ch),
-        }
-    }
-    out
 }
 
 /// Table field name displayed by a page control's `field(Name; Source)` args.
@@ -348,7 +332,9 @@ pub(super) fn source_action_convert_event_subscriber(
         .skip(search_start)
         .take(search_end - search_start)
     {
-        if line.trim_start().starts_with('[') && line.to_lowercase().contains("eventsubscriber") {
+        if line.trim_start().starts_with('[')
+            && line.to_ascii_lowercase().contains("eventsubscriber")
+        {
             attr_line_idx = Some(offset);
             attr_line_text = line.to_string();
             break;
@@ -360,7 +346,12 @@ pub(super) fn source_action_convert_event_subscriber(
 
     // Find the third argument (index 2) in the EventSubscriber(arg0, arg1, arg2, ...) call.
     // The third argument is the event name. We detect it as a single-quoted string: 'EventName'
-    let lower = line.to_lowercase();
+    // ASCII fold only: `str::to_lowercase` is not length-preserving (`\u{1E9E}`
+    // is 3 bytes, its lowercase 2), and `es_start` indexes the *original*
+    // line. AL identifiers are ASCII-case-insensitive, so this is also the
+    // correct fold.
+    let lower = line.to_ascii_lowercase();
+    debug_assert_eq!(lower.len(), line.len());
     let es_start = lower.find("eventsubscriber(")?;
     let args_start = es_start + "eventsubscriber(".len();
 
@@ -496,6 +487,48 @@ mod tests {
                 .iter()
                 .any(|e| e.new_text.contains("OnBeforeInsertEvent") && !e.new_text.contains('\'')),
             "Should replace string literal with identifier"
+        );
+    }
+
+    /// `str::to_lowercase` is not length-preserving: `ẞ` (U+1E9E, 3 bytes)
+    /// folds to `ß` (2 bytes). Deriving `eventsubscriber(`'s offset from the
+    /// lowercased line and then slicing the original shifts every later index.
+    #[test]
+    fn event_subscriber_conversion_survives_a_non_ascii_character_before_the_attribute() {
+        let ws = Workspace::new();
+        let al_code = "codeunit 50100 \"My Subscriber\"\n{\n    [Obsolete('ẞ replaced', '25.0')] [EventSubscriber(ObjectType::Table, Database::\"Sales Header\", 'OnBeforeInsertEvent', '', false, false)]\n    procedure OnSalesHeaderInsert(var Rec: Record \"Sales Header\"; RunTrigger: Boolean)\n    begin\n    end;\n}\n";
+        let uri = Url::parse("file:///test/EventSubUnicode.al").unwrap();
+        open_doc(&ws, &uri, al_code);
+
+        let action = source_action_convert_event_subscriber(
+            &ws,
+            &uri,
+            al_code,
+            Range {
+                start: super::super::Position {
+                    line: 2,
+                    character: 5,
+                },
+                end: super::super::Position {
+                    line: 2,
+                    character: 5,
+                },
+            },
+        )
+        .expect("conversion should still be offered");
+
+        let updated = super::super::test_support::assert_action_applies_cleanly(
+            al_code,
+            &action,
+            "event subscriber non-ascii attribute",
+        );
+        assert!(
+            updated.contains("[Obsolete('ẞ replaced', '25.0')]"),
+            "the earlier attribute must be untouched: {updated}"
+        );
+        assert!(
+            updated.contains("Database::\"Sales Header\", OnBeforeInsertEvent, '', false, false)"),
+            "only the quoted event name is replaced: {updated}"
         );
     }
 
@@ -665,6 +698,54 @@ mod tests {
         }
     }
 
+    /// The client applies the returned edit to its *buffer*. Computing the
+    /// table-side line from the indexed on-disk snapshot puts the tooltip
+    /// wherever that field used to be.
+    #[test]
+    fn tooltip_insert_targets_the_open_buffer_not_the_on_disk_snapshot() {
+        let ws = Workspace::new();
+        let page_uri = Url::parse("file:///test/MyPage.al").unwrap();
+        let table_uri = Url::parse("file:///test/MyTable.al").unwrap();
+        add_indexed(&ws, &page_uri, PAGE_WITH_TOOLTIP);
+
+        // On disk the table has the field at line 4. The open buffer has three
+        // unsaved lines above it, so the field is at line 7.
+        ws.file_index.add_file(
+            table_uri.to_file_path().unwrap(),
+            TABLE_WITHOUT_TOOLTIP.to_string(),
+        );
+        let edited_table = format!("// unsaved\n// unsaved\n// unsaved\n{TABLE_WITHOUT_TOOLTIP}");
+        open_doc(&ws, &table_uri, &edited_table);
+
+        let action =
+            source_action_move_tooltip(&ws, &page_uri, PAGE_WITH_TOOLTIP, tooltip_cursor(11))
+                .expect("should offer move-tooltip on a page field");
+        let table_edits = action
+            .edit
+            .as_ref()
+            .expect("has edit")
+            .changes
+            .iter()
+            .find(|(u, _)| u == &table_uri)
+            .map(|(_, e)| e.clone())
+            .expect("table edit");
+
+        let updated = super::super::test_support::apply_text_edits(&edited_table, &table_edits);
+        assert!(
+            updated.contains(
+                "        field(1; Name; Text[100])\n        {\n            ToolTip = 'Specifies the name.';"
+            ),
+            "tooltip must land inside the field block of the open buffer:\n{updated}"
+        );
+        assert!(
+            !al_syntax::AlParser::parse_quick(&updated)
+                .tree
+                .root_node()
+                .has_error(),
+            "buffer must still parse after the move:\n{updated}"
+        );
+    }
+
     /// Never offer an action that would only delete the tooltip.
     #[test]
     fn tooltip_not_offered_when_table_is_not_resolvable() {
@@ -798,12 +879,4 @@ mod tests {
         let member = enclosing_member(PAGE_WITH_TOOLTIP, action_line).expect("action");
         assert_eq!(member.keyword, "action");
     }
-
-    // if_to_case UTF-16 column vs byte offset
-    // When a non-ASCII character appears before the cursor on the same line,
-    // tree-sitter Point::column must be a byte offset, not a UTF-16 code unit.
-    // The two differ for characters with len_utf16 > 1 (e.g. emoji, surrogate pairs)
-    // but we can also test with a 2-byte UTF-8 sequence (1 UTF-16 unit = still 2 bytes).
-    // A simpler but valid test: verify the action is still offered when the procedure
-    // contains a non-ASCII comment, ensuring we use utf16_col_to_byte_offset.
 }

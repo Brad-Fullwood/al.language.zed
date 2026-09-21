@@ -251,6 +251,7 @@ pub fn cmd_authenticate(cmd: &str, tenant: Option<&str>, json: bool) -> ExitCode
 
     match request_checked(&mut client, "authenticate", Some(params)) {
         Ok(result) => {
+            let usable = cmd != "status" || any_tenant_authenticated(&result);
             if json {
                 print_json(&result);
             } else {
@@ -301,10 +302,37 @@ pub fn cmd_authenticate(cmd: &str, tenant: Option<&str>, json: bool) -> ExitCode
                     }
                 }
             }
-            ExitCode::SUCCESS
+            if usable {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
         }
         Err(e) => report_error(&e, json),
     }
+}
+
+/// Whether at least one tenant has a token that is present and unexpired.
+///
+/// `authenticate status` printed `not authenticated` for every tenant and
+/// still exited 0, so `al authenticate status && al download-symbols --source
+/// server` went on to run unauthenticated.
+pub(crate) fn any_tenant_authenticated(result: &serde_json::Value) -> bool {
+    result
+        .get("tenants")
+        .and_then(|value| value.as_array())
+        .is_some_and(|tenants| {
+            tenants.iter().any(|tenant| {
+                tenant
+                    .get("authenticated")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false)
+                    && !tenant
+                        .get("expired")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(true)
+            })
+        })
 }
 
 pub fn cmd_init_debug(project_root: &std::path::Path, json: bool) -> ExitCode {
@@ -479,9 +507,201 @@ pub fn cmd_new(
     }
 }
 
+pub fn cmd_free_ids(
+    kind: Option<&str>,
+    object: Option<&str>,
+    count: u32,
+    include_used: bool,
+    json: bool,
+) -> ExitCode {
+    let mut params = serde_json::Map::new();
+    if let Some(kind) = kind {
+        params.insert("kind".to_string(), serde_json::json!(kind));
+    }
+    if let Some(object) = object {
+        params.insert("object".to_string(), serde_json::json!(object));
+    }
+    params.insert("count".to_string(), serde_json::json!(count));
+    if include_used {
+        params.insert("includeUsed".to_string(), serde_json::json!(true));
+    }
+    run_command(
+        "freeIds",
+        Some(serde_json::Value::Object(params)),
+        json,
+        None,
+        print_free_ids,
+    )
+}
+
+/// Human-readable form of a `freeIds` report. The JSON path prints the result
+/// unchanged; this is the only place that reshapes it.
+fn print_free_ids(result: &serde_json::Value) {
+    let number_list = |value: &serde_json::Value| {
+        value
+            .as_array()
+            .map(|numbers| {
+                numbers
+                    .iter()
+                    .filter_map(serde_json::Value::as_i64)
+                    .map(|number| number.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default()
+    };
+
+    match result.get("mode").and_then(|value| value.as_str()) {
+        Some("summary") => {
+            println!("Declared idRanges:");
+            for range in result["ranges"].as_array().unwrap_or(&Vec::new()) {
+                println!(
+                    "  {}-{} ({} IDs per kind)",
+                    range["from"].as_i64().unwrap_or(0),
+                    range["to"].as_i64().unwrap_or(0),
+                    range["free"].as_i64().unwrap_or(0)
+                );
+            }
+            let kinds = result["kinds"].as_array().cloned().unwrap_or_default();
+            if kinds.is_empty() {
+                println!("No object in the workspace uses a declared range yet.");
+            } else {
+                println!(
+                    "\n{:<24} {:>6} {:>6} {:>10}",
+                    "kind", "used", "free", "next free"
+                );
+                for row in &kinds {
+                    println!(
+                        "{:<24} {:>6} {:>6} {:>10}",
+                        row["kind"].as_str().unwrap_or("?"),
+                        row["used"].as_i64().unwrap_or(0),
+                        row["free"].as_i64().unwrap_or(0),
+                        row["nextFree"]
+                            .as_i64()
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                    );
+                }
+            }
+        }
+        Some(mode) => {
+            let what = match mode {
+                "field" => "field number",
+                "value" => "enum value ordinal",
+                _ => "object ID",
+            };
+            let subject = result["object"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| result["kind"].as_str().map(str::to_string))
+                .unwrap_or_else(|| "?".to_string());
+            println!(
+                "Next free {what} for {subject}: {}",
+                result["nextFree"]
+                    .as_i64()
+                    .map(|number| number.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            );
+            let free = number_list(&result["free"]);
+            if result["free"].as_array().is_some_and(|list| list.len() > 1) {
+                println!("Free: {free}");
+            }
+            if let Some(base) = result["baseObject"].as_str() {
+                println!("Shares numbering with base object: {base}");
+            }
+            for range in result["ranges"].as_array().unwrap_or(&Vec::new()) {
+                println!(
+                    "Range {}-{}: {} used, {} free",
+                    range["from"].as_i64().unwrap_or(0),
+                    range["to"].as_i64().unwrap_or(0),
+                    range["used"].as_i64().unwrap_or(0),
+                    range["free"].as_i64().unwrap_or(0),
+                );
+            }
+            if result["ranges"]
+                .as_array()
+                .is_none_or(|ranges| ranges.is_empty())
+            {
+                println!("Used: {}", result["usedCount"].as_i64().unwrap_or(0));
+            }
+            let sources = result["sources"].as_array().cloned().unwrap_or_default();
+            if sources.len() > 1 {
+                let names: Vec<&str> = sources
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect();
+                println!("Counted from: {}", names.join(", "));
+            }
+            if !result["used"].as_array().unwrap_or(&Vec::new()).is_empty() {
+                println!("Used numbers: {}", number_list(&result["used"]));
+            }
+            if result["truncated"].as_bool().unwrap_or(false) {
+                eprintln!("Fewer numbers are left than were requested.");
+            }
+        }
+        None => println!("The daemon returned no free-ID mode."),
+    }
+
+    for warning in result["warnings"].as_array().unwrap_or(&Vec::new()) {
+        if let Some(warning) = warning.as_str() {
+            eprintln!("warning: {warning}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The human formatter must not panic on any shape the daemon can send,
+    /// including the modes that carry no `ranges` and the summary that carries
+    /// no `nextFree`.
+    #[test]
+    fn free_ids_formatter_handles_every_report_shape() {
+        for report in [
+            serde_json::json!({"mode": "summary", "usedCount": 0, "ranges": []}),
+            serde_json::json!({
+                "mode": "summary",
+                "usedCount": 2,
+                "ranges": [{"from": 50100, "to": 50199, "used": 0, "free": 100}],
+                "kinds": [{"kind": "table", "used": 2, "free": 98, "nextFree": 50101}],
+            }),
+            serde_json::json!({
+                "mode": "object",
+                "kind": "table",
+                "ranges": [{"from": 50100, "to": 50199, "used": 2, "free": 98}],
+                "nextFree": 50101,
+                "free": [50101, 50102],
+                "usedCount": 2,
+                "freeCount": 98,
+                "truncated": true,
+            }),
+            serde_json::json!({
+                "mode": "field",
+                "kind": "tableextension",
+                "object": "Customer Ext",
+                "baseObject": "Customer",
+                "ranges": [{"from": 50100, "to": 50199, "used": 1, "free": 99}],
+                "nextFree": 50101,
+                "free": [50101],
+                "usedCount": 1,
+                "sources": ["Customer (Base Application)", "Customer Ext"],
+                "used": [50100],
+            }),
+            serde_json::json!({
+                "mode": "value",
+                "kind": "enum",
+                "object": "Work Order Status",
+                "nextFree": 2,
+                "free": [2],
+                "usedCount": 2,
+                "warnings": ["app.json declares no idRanges"],
+            }),
+            serde_json::json!({}),
+        ] {
+            print_free_ids(&report);
+        }
+    }
 
     #[test]
     fn parse_error_count_preserves_failure_information_for_json_mode() {

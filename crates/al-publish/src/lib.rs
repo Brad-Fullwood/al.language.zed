@@ -355,11 +355,19 @@ fn extract_app_id_from_manifest(project_root: &Path) -> Result<String, PublishEr
     let json: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
         PublishError::InvalidManifest(format!("cannot parse {}: {e}", path.display()))
     })?;
-    json.get("id")
+    let id = json
+        .get("id")
         .and_then(|value| value.as_str())
-        .filter(|id| !id.trim().is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| PublishError::InvalidManifest("`id` must be a non-empty string".to_string()))
+        .map(str::trim)
+        .unwrap_or_default();
+    // BC requires a GUID here, and the value is interpolated into the RAD
+    // request path, so a repository must not be able to choose that path.
+    if !al_bc::bc_client::is_guid(id) {
+        return Err(PublishError::InvalidManifest(format!(
+            "`id` must be a GUID, got {id:?}"
+        )));
+    }
+    Ok(id.to_owned())
 }
 
 #[cfg(test)]
@@ -408,11 +416,40 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("app.json"),
-            r#"{"id":"test-guid-123","name":"Test","publisher":"Me","version":"1.0.0"}"#,
+            r#"{"id":"33333333-4444-5555-6666-777777777773","name":"Test","publisher":"Me","version":"1.0.0"}"#,
         )
         .unwrap();
         let id = extract_app_id_from_manifest(dir.path()).unwrap();
-        assert_eq!(id, "test-guid-123");
+        assert_eq!(id, "33333333-4444-5555-6666-777777777773");
+    }
+
+    #[test]
+    fn extract_app_id_rejects_an_id_that_steers_the_request_path() {
+        // The id is interpolated into `PATCH {base}/dev/applications/{id}`.
+        // `Url::parse` normalises `..` segments away, so a cloned repository
+        // could aim an authenticated PATCH carrying the whole .app body at a
+        // path of its choosing, and a `?` or `#` truncates the path instead.
+        for id in [
+            "../../../admin/SomeEndpoint",
+            "33333333-4444-5555-6666-777777777773/../admin",
+            "33333333-4444-5555-6666-777777777773?x=1",
+            "",
+            "   ",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(
+                dir.path().join("app.json"),
+                serde_json::json!({ "id": id, "name": "Test" }).to_string(),
+            )
+            .unwrap();
+            assert!(
+                matches!(
+                    extract_app_id_from_manifest(dir.path()),
+                    Err(PublishError::InvalidManifest(_))
+                ),
+                "{id:?} must be refused"
+            );
+        }
     }
 
     #[test]
@@ -781,9 +818,11 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
-            .and(path("/BC/dev/applications/app-guid-1"))
+            .and(path(
+                "/BC/dev/applications/33333333-4444-5555-6666-777777777701",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "appId": "app-guid-1",
+                "appId": "33333333-4444-5555-6666-777777777701",
                 "version": "2.1.0.0",
                 "status": "Completed"
             })))
@@ -796,11 +835,19 @@ mod tests {
         let client = BcClient::new(&mock_config(&server.uri()));
         let mut steps = Vec::new();
 
-        let (app_id, version, success) =
-            do_rad_publish(&client, "app-guid-1", &app, &mut steps).await;
+        let (app_id, version, success) = do_rad_publish(
+            &client,
+            "33333333-4444-5555-6666-777777777701",
+            &app,
+            &mut steps,
+        )
+        .await;
 
         assert!(success);
-        assert_eq!(app_id.as_deref(), Some("app-guid-1"));
+        assert_eq!(
+            app_id.as_deref(),
+            Some("33333333-4444-5555-6666-777777777701")
+        );
         assert_eq!(version.as_deref(), Some("2.1.0.0"));
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].phase, PublishPhase::Rad);
@@ -815,9 +862,11 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
-            .and(path("/BC/dev/applications/app-guid-2"))
+            .and(path(
+                "/BC/dev/applications/33333333-4444-5555-6666-777777777702",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "appId": "app-guid-2",
+                "appId": "33333333-4444-5555-6666-777777777702",
                 "status": "InProgress"
             })))
             .mount(&server)
@@ -828,7 +877,13 @@ mod tests {
         let client = BcClient::new(&mock_config(&server.uri()));
         let mut steps = Vec::new();
 
-        let (_, _, success) = do_rad_publish(&client, "app-guid-2", &app, &mut steps).await;
+        let (_, _, success) = do_rad_publish(
+            &client,
+            "33333333-4444-5555-6666-777777777702",
+            &app,
+            &mut steps,
+        )
+        .await;
 
         assert!(!success);
         assert_eq!(steps[0].phase, PublishPhase::Rad);
@@ -845,7 +900,9 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
-            .and(path("/BC/dev/applications/app-guid-3"))
+            .and(path(
+                "/BC/dev/applications/33333333-4444-5555-6666-777777777703",
+            ))
             .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
             .mount(&server)
             .await;
@@ -855,8 +912,13 @@ mod tests {
         let client = BcClient::new(&mock_config(&server.uri()));
         let mut steps = Vec::new();
 
-        let (app_id, version, success) =
-            do_rad_publish(&client, "app-guid-3", &app, &mut steps).await;
+        let (app_id, version, success) = do_rad_publish(
+            &client,
+            "33333333-4444-5555-6666-777777777703",
+            &app,
+            &mut steps,
+        )
+        .await;
 
         assert!(!success);
         assert!(app_id.is_none());

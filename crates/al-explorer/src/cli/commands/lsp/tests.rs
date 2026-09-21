@@ -343,8 +343,9 @@ pub fn cmd_test_classify(json: bool) -> ExitCode {
 /// `al test-run-all [--parallel] [--junit-out X] [--cobertura-out Y] [--filter PATTERN] [--timeout-ms N] [--coverage]`
 ///
 /// Runs every discovered test codeunit through the daemon's `tests.run_auto`
-/// endpoint. Streams a per-codeunit summary then a final totals line; exits
-/// non-zero if any test failed.
+/// endpoint. One blocking request runs the whole suite, then a per-codeunit
+/// summary and a final totals line are printed. Exits non-zero if any test
+/// failed.
 ///
 /// `--coverage` collects *dynamic* executed-line coverage on
 /// interpreter-routed tests: the daemon returns a `coverage` object and, when

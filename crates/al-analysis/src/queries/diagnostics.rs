@@ -489,7 +489,10 @@ fn native_finding_range(
                 workspace.generation_revision()
             )
         })?;
-        return Ok(ts_range_to_query_range(info.range, text.as_bytes()));
+        return Ok(ts_range_to_query_range(
+            info.range,
+            &al_syntax::SourceLines::new(text.as_bytes()),
+        ));
     }
 
     if path
@@ -562,13 +565,13 @@ fn collect_diagnostics_from_tree(
 ) -> Vec<SyntaxDiagnostic> {
     let mut diags = Vec::new();
 
-    let source = text.as_bytes();
+    let lines = al_syntax::SourceLines::new(text.as_bytes());
 
     for err in al_syntax::AlParser::errors_from_tree(tree) {
         let ts_range = err.range;
         diags.push(SyntaxDiagnostic {
             message: err.message,
-            range: ts_range_to_query_range(ts_range, source),
+            range: ts_range_to_query_range(ts_range, &lines),
             severity: SyntaxDiagnosticSeverity::Error,
             code: "syntax".to_string(),
             source: "al".to_string(),
@@ -587,7 +590,7 @@ fn collect_diagnostics_from_tree(
         };
         diags.push(SyntaxDiagnostic {
             message: lint.message,
-            range: ts_range_to_query_range(lint.range, source),
+            range: ts_range_to_query_range(lint.range, &lines),
             severity,
             code: lint.code,
             source: "al-lint".to_string(),
@@ -598,12 +601,15 @@ fn collect_diagnostics_from_tree(
 }
 
 /// Converts tree-sitter byte-offset columns to UTF-16 code unit columns for LSP.
-fn ts_range_to_query_range(r: tree_sitter::Range, source: &[u8]) -> crate::queries::Range {
-    let start_line = source_line(source, r.start_point.row);
+fn ts_range_to_query_range(
+    r: tree_sitter::Range,
+    lines: &al_syntax::SourceLines<'_>,
+) -> crate::queries::Range {
+    let start_line = lines.line(r.start_point.row);
     let end_line = if r.end_point.row == r.start_point.row {
         start_line
     } else {
-        source_line(source, r.end_point.row)
+        lines.line(r.end_point.row)
     };
     crate::queries::Range {
         start: crate::queries::Position {
@@ -615,14 +621,6 @@ fn ts_range_to_query_range(r: tree_sitter::Range, source: &[u8]) -> crate::queri
             character: al_syntax::byte_col_to_utf16_col(end_line, r.end_point.column),
         },
     }
-}
-
-fn source_line(source: &[u8], row: usize) -> &str {
-    source
-        .split(|&b| b == b'\n')
-        .nth(row)
-        .and_then(|b| std::str::from_utf8(b).ok())
-        .unwrap_or("")
 }
 
 #[cfg(test)]
@@ -984,7 +982,7 @@ mod tests {
                 column: byte_col_x + 1,
             },
         };
-        let q = ts_range_to_query_range(ts_range, source);
+        let q = ts_range_to_query_range(ts_range, &al_syntax::SourceLines::new(source));
         assert_eq!(
             q.start.character, 5,
             "expected UTF-16 column 5 for 'X', got {} — looks like raw byte column",

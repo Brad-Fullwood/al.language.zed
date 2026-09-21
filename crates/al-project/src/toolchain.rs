@@ -403,37 +403,44 @@ fn search_dir_recursive(root: &Path) -> Result<Option<AlToolchain>, DiscoveryErr
             source,
         })?;
 
-    let mut queue = vec![root.to_path_buf()];
     let mut visited = std::collections::HashSet::new();
     visited.insert(canonical_root.clone());
+    // Only a failure to read `root` itself aborts the search. Deeper down, a
+    // dangling symlink (routine in a dotnet tool store after a version is
+    // removed) or a directory the user cannot read would otherwise hide every
+    // toolchain under that root.
+    let mut queue = vec![root.to_path_buf()];
+    let mut root_visited = false;
     while let Some(dir) = queue.pop() {
-        let entries =
-            std::fs::read_dir(&dir).map_err(|source| DiscoveryError::ToolchainDirectory {
-                path: dir.clone(),
-                source,
-            })?;
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(source) if !root_visited => {
+                return Err(DiscoveryError::ToolchainDirectory {
+                    path: dir.clone(),
+                    source,
+                });
+            }
+            Err(source) => {
+                tracing::debug!(path = %dir.display(), %source, "skipping unreadable toolchain directory");
+                continue;
+            }
+        };
+        root_visited = true;
         for entry in entries {
-            let entry = entry.map_err(|source| DiscoveryError::ToolchainDirectory {
-                path: dir.clone(),
-                source,
-            })?;
+            let Ok(entry) = entry else {
+                continue;
+            };
             let path = entry.path();
-            let file_type =
-                entry
-                    .file_type()
-                    .map_err(|source| DiscoveryError::ToolchainDirectory {
-                        path: path.clone(),
-                        source,
-                    })?;
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
             if file_type.is_dir() || file_type.is_symlink() {
                 // `is_dir()` follows symlinks, so validate the canonical path
-                // before descending.
-                let canon = std::fs::canonicalize(&path).map_err(|source| {
-                    DiscoveryError::ToolchainDirectory {
-                        path: path.clone(),
-                        source,
-                    }
-                })?;
+                // before descending. A symlink with no target fails here.
+                let Ok(canon) = std::fs::canonicalize(&path) else {
+                    tracing::debug!(path = %path.display(), "skipping toolchain path that cannot be resolved");
+                    continue;
+                };
                 if !canon.starts_with(&canonical_root) || !canon.is_dir() {
                     continue;
                 }
@@ -892,6 +899,39 @@ mod tests {
             "17.x must win over 9.x/16.x"
         );
         assert_eq!(tc.version, "17.0.34.45391");
+    }
+
+    /// A dotnet tool store routinely holds a dangling symlink after a version
+    /// is removed, and a store may hold a directory the user cannot read.
+    /// Neither may hide the toolchain that is there.
+    #[test]
+    fn search_dir_recursive_walks_past_a_dangling_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let leaf = tmp.path().join("pkg/17.0.0.0/tools/net8.0/any");
+        std::fs::create_dir_all(&leaf).unwrap();
+        std::fs::write(leaf.join(ALC_DLL), b"").unwrap();
+        std::fs::write(leaf.join(CODE_ANALYSIS_DLL), b"").unwrap();
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            tmp.path().join("pkg/removed-version"),
+            tmp.path().join("pkg/dangling"),
+        )
+        .unwrap();
+
+        let tc = search_dir_recursive(tmp.path())
+            .expect("a dangling symlink must not abort the search")
+            .expect("the installed toolchain must still be found");
+        assert_eq!(tc.alc, leaf.join(ALC_DLL));
+    }
+
+    /// A root that cannot be read is still an error: there is nothing to
+    /// search and the caller asked for that exact directory.
+    #[test]
+    fn search_dir_recursive_reports_an_unreadable_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("not-there");
+        assert!(search_dir_recursive(&missing).is_err());
     }
 
     /// An incomplete newer candidate (alc.dll without CodeAnalysis) must not

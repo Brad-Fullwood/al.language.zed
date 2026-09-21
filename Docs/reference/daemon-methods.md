@@ -15,12 +15,27 @@ below is available through MCP's `al_call`, whether or not it also has a named M
 
 `lint`, `format`, `fix`, `fix.applicationArea`, `fix.tooltips`, `fix.dataClassification`, `rules`,
 `parse`, `metrics`, `sqlPatterns`, `sortMembers`, `organizeFiles`, `source`, `eventSource`,
-`location`, `permissions`, `compile`, `package`, `newProject`, `errorCodes`, `builtinTypes`, `setup`,
+`location`, `permissions`, `compile`, `package`, `publish`, `newProject`, `errorCodes`, `builtinTypes`, `setup`,
 `clearCache`, `authenticate`, `downloadSymbols`, `snapshot`, `profiling`, `generate`, `obsolete`,
 `audit.dataClassification`, `permissions.audit`, `deps.graph`, `breaking`, `arch.lint`, `duplicates`,
-`upgrade`, `profiler.hints`, `nativeCheck`, `diag`.
+`upgrade`, `profiler.hints`, `nativeCheck`, `freeIds`, `diag`.
 
 XLIFF: `xlf.generate`, `xlf.refresh`, `xlf.untranslated`, `xlf.suggest`.
+
+`publish` compiles the project and uploads it to the Business Central dev endpoint named by a
+launch configuration in the project. Params: `config` (launch configuration name, optional),
+`incremental` (boolean, default false). The target server comes only from the project's own
+launch configuration.
+
+`freeIds` allocates inside the `idRanges` declared in `app.json`. Params: `kind` (object kind
+keyword, omit for a per-kind summary), `object` (a table, tableextension, enum or enumextension
+whose next free field number or enum ordinal is wanted; wins over `kind`, which then disambiguates
+the name), `count` (1 to 100, default 1) and `includeUsed` (default false). Used numbers come from
+every object declared in the workspace, including the second and later objects in a multi-object
+file, plus the package objects that sit inside a declared range. A tableextension's fields must fall
+inside `idRanges` and avoid the base table and every other extension of it that is visible; an
+enumextension's ordinals work the same way. An exhausted range is an `INVALID_PARAMS` error naming
+the range, and an `app.json` without `idRanges` returns a `warnings` entry.
 
 `compile` is native by default. A native response includes `backend: "native"`, `validated: true`,
 `verificationLevel: "native-syntax-project-binding-symbol-graph"`, `appPath` (or `null` on

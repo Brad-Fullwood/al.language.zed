@@ -112,6 +112,7 @@ frequently used workflows also have named aliases documented in the
 | `duplicates` | `--min-tokens N --min-similarity R` | Duplicate code blocks |
 | `arch-lint` | — | `.alarch.json` architecture rules |
 | `native-check` | — | Native object/member/range and project semantic checks |
+| `free-ids` | `--kind K --object NAME --count N --include-used` | Next free object ID, table field number or enum ordinal inside the `app.json` idRanges |
 | `breaking` | `--baseline-app <old.app>` | Breaking API changes; reports unevaluated when omitted |
 | `upgrade` | `--baseline-app <old.app>` | Upgrade impact report; reports unevaluated when omitted |
 | `obsolete` | — | `[Obsolete]` timeline |

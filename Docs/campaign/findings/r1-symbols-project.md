@@ -52,7 +52,7 @@ current code are tagged [STILL-OPEN].
   the data and that the bytes there are `PK\x01\x02`. Alternatively move the
   `archive.len() > MAX_ARCHIVE_ENTRIES` check inside the probe by using
   `ZipArchive::with_config`/a bounded reader so a probe cannot parse an unbounded directory.
-- status: open
+- status: fixed 8095dcd7
 
 ### [PERF] Every entry lookup inside a `.app` walks the archive with `by_index`
 - where: crates/al-symbols/src/app_reader.rs:296-328 (`find_file_in_archive`), called twice
@@ -66,7 +66,9 @@ current code are tagged [STILL-OPEN].
   cold `load_packages_cached` pays two seek-heavy scans per package on top of the JSON parse.
 - fix: iterate `archive.file_names()` (index-only, no local-header read) to resolve the
   entry name, and resolve both wanted names in a single pass.
-- status: open
+- status: fixed 96d7c300, severity overstated. Measured on a 30 000-entry archive read from
+  disk, the two `by_index` passes cost about the same as opening the archive, so the win is
+  simplification rather than time. The single pass landed anyway.
 
 ### [SIMPLIFY] `read_app_file` and `read_app_bytes` locate the ZIP payload by different rules
 - where: crates/al-symbols/src/app_reader.rs:57-91
@@ -82,7 +84,8 @@ current code are tagged [STILL-OPEN].
   `find_zip_offset` from `read_app_bytes` too, or make `read_app_file` memory-map/read and
   go through the same probe. Keeping both means a package that loads from disk may fail
   when the same bytes arrive over the wire.
-- status: open
+- status: fixed 229e8bbf. Both paths read the trailer and share the entry-count refusal; the
+  byte path falls back to the zip reader's own prefix inference.
 
 ### [BUG] `render_outline` quotes object/field/enum names but not key, method, parameter or variable names
 - where: crates/al-symbols/src/virtual_file.rs:546-575 (method + parameters), :605-612 (keys),
@@ -98,7 +101,7 @@ current code are tagged [STILL-OPEN].
   identifiers that appear in real packages), each rendered bare.
 - fix: route `k.name`, every entry of `k.field_names`, `m.name`, `p.name` and `v.name`
   through the existing `format_name`.
-- status: open
+- status: fixed c0e57362
 
 ### [GAP] The process-global `.app` source-index cache is never evicted in production
 - where: crates/al-symbols/src/source_index.rs:30-31, :337-397
@@ -115,7 +118,8 @@ current code are tagged [STILL-OPEN].
   `SymbolIndex::clear_loaded_packages` / `remove_package_identities`. The memory report in
   `SymbolIndex::memory_stats` also does not count these allocations, so the growth is
   invisible to the workspace diagnostics endpoint.
-- status: open
+- status: fixed ddaad70f. Per-path removal on package unload, plus a 64-entry LRU bound, plus
+  the cached bytes in `SymbolIndexMemoryStats`.
 
 ### [GAP] Only the first object in a multi-object embedded `.al` is reachable by navigation
 - where: crates/al-symbols/src/source_index.rs:409-488 (`parse_object_header_inner` returns
@@ -130,7 +134,8 @@ current code are tagged [STILL-OPEN].
   gap, so the two should be fixed with one shared multi-declaration scanner.
 - fix: keep scanning after the first header and record every `(kind, id, name)` found in the
   entry.
-- status: open
+- status: fixed aa9c8a36. The `al-source/src/file_index.rs` half was already collecting every
+  declaration; its ownership keying was the separate bug fixed in a8ead4ab.
 
 ### [BUG] A corrupt `.zed/settings.json` in the symbol cache fails every package navigation
 - where: crates/al-symbols/src/virtual_file.rs:51 and :656-673
@@ -143,7 +148,7 @@ current code are tagged [STILL-OPEN].
 - fix: this file only makes the editor mark the generated files read only. Log and continue
   on a malformed settings file (or overwrite it) rather than failing the navigation that
   triggered it.
-- status: open
+- status: fixed 06b1eb57
 
 ### [BUG] Background virtual-file GC can delete a cache entry between the existence check and the read
 - where: crates/al-symbols/src/virtual_file.rs:65 (`if !file_path.is_file()`), :110-111,
@@ -158,7 +163,7 @@ current code are tagged [STILL-OPEN].
   true for the write path and not for the reuse path.
 - fix: treat a `NotFound` from `enforce_readonly`/`materialized_availability` as a cache miss
   and regenerate once, or have the sweep skip files whose mtime it cannot claim exclusively.
-- status: open
+- status: fixed 06b1eb57
 
 ### [PERF] Every cache save re-scans the whole symbol cache directory, from every rayon worker
 - where: crates/al-symbols/src/cache.rs:256 (`self.cleanup_stale_tmp()` inside `save`),
@@ -172,7 +177,7 @@ current code are tagged [STILL-OPEN].
   `gc_once`, which the three cached entry points call before the batch.
 - fix: drop `cleanup_stale_tmp` from `save` and fold the `.tmp.` sweep into `gc`, which is
   already once-per-process.
-- status: open
+- status: fixed 936bc5c7
 
 ### [PERF] Symbol cache GC runs synchronously on the workspace initialization path
 - where: crates/al-symbols/src/cache.rs:310-380, called from
@@ -186,7 +191,7 @@ current code are tagged [STILL-OPEN].
   this reason.
 - fix: spawn the sweep like `virtual_file::gc_cache_once` does, or run it after the batch
   completes rather than before it.
-- status: open
+- status: fixed 936bc5c7
 
 ### [SLOP] `is_workspace_entry` duplicates the workspace-package test from `source_availability`
 - where: crates/al-symbols/src/composition.rs:65-68 vs
@@ -199,7 +204,7 @@ current code are tagged [STILL-OPEN].
   availability reporting but not both.
 - fix: export one `pub fn is_workspace_package(package: &str) -> bool` from
   `source_availability` and call it from `composition`.
-- status: open
+- status: fixed 861c667a
 
 ### [BUG] The workspace file index keeps only one owner per (object name, kind), across all files
 - where: crates/al-source/src/file_index.rs:540-547
@@ -216,7 +221,7 @@ current code are tagged [STILL-OPEN].
 - fix: keep one owner per (path, kind) rather than one per kind — `retain(|e| e.path != path
   || !e.kind.eq_ignore_ascii_case(&info.kind))` — and make `object_path`/`object_path_of_kind`
   prefer the owner under the same project root as the referring file.
-- status: open
+- status: fixed a8ead4ab
 
 ### [BUG] A dangling symlink or unreadable subdirectory aborts the whole toolchain search
 - where: crates/al-project/src/toolchain.rs:409-448 (`search_dir_recursive`)
@@ -230,7 +235,7 @@ current code are tagged [STILL-OPEN].
 - fix: skip an entry whose `canonicalize`/`file_type` fails and continue the walk, the same
   way `search_dotnet_tool_store` already tolerates a failing package directory. Only an error
   reading `root` itself should abort.
-- status: open
+- status: fixed e705e010
 
 ### [SIMPLIFY] Three separate JSONC strippers
 - where: crates/al-types/src/jsonc.rs:11 (`strip_json_comments`),
@@ -245,7 +250,7 @@ current code are tagged [STILL-OPEN].
   three times.
 - fix: delete `al-project::config::strip_jsonc` and the al-lsp copy's stripper and call
   `al_types::jsonc::strip_json_comments`.
-- status: open
+- status: fixed 861c667a
 
 ### [SLOP] `CoreInitError::SymbolPackages` is unreachable
 - where: crates/al-workspace/src/lib.rs:775
@@ -255,7 +260,7 @@ current code are tagged [STILL-OPEN].
   `load_packages_cached_lenient`, which returns failures in `CoreInitResult`, and nothing else
   in `al-workspace` produces a `PackageLoadError`. The variant and its `#[from]` remain.
 - fix: remove the variant.
-- status: open
+- status: fixed 58645d20
 
 ### [BUG] [STILL-OPEN] The dependency source index is still all-or-nothing per package
 - where: crates/al-workspace/src/lib.rs:407-419
@@ -269,7 +274,7 @@ current code are tagged [STILL-OPEN].
   features go dark for every package rather than for that one.
 - fix: collect per-package failures into a list the way `load_packages_cached_lenient` does
   and index the packages that succeed.
-- status: open
+- status: fixed 58645d20
 
 ### [BUG] A call-graph build in flight republishes a stale graph over a concurrent invalidation
 - where: crates/al-workspace/src/lib.rs:518-637 (`get_or_build_call_graph`), :331-340
@@ -288,7 +293,9 @@ current code are tagged [STILL-OPEN].
   this staging pattern. Capture `generation_revision()` before `build`, and at publication
   time only store the result if the revision is unchanged. Otherwise take
   `call_graph_build_lock` in the invalidators.
-- status: open
+- status: fixed 8432281a. Uses two dedicated counters bumped by the invalidators rather than
+  `generation_revision`, which the invalidators do not bump, and tags each published graph with
+  the counter read before the build so a stale publication is a cache miss.
 
 ### [BUG] Deleting one `.app` while the daemon runs disables the call graph for every package
 - where: crates/al-workspace/src/lib.rs:484-507 (`dependency_package_fingerprint`)
@@ -301,7 +308,7 @@ current code are tagged [STILL-OPEN].
   even though every other package is still present and indexed.
 - fix: skip a package whose metadata cannot be read, record it, and build from the rest; the
   fingerprint change alone already forces the rebuild.
-- status: open
+- status: fixed 58645d20
 
 ### [SLOP] Two `DependencySourceError` variants are never constructed
 - where: crates/al-workspace/src/lib.rs:102-117 (`ParseSource`, `MissingObjectDeclaration`)
@@ -311,7 +318,7 @@ current code are tagged [STILL-OPEN].
   `DependencySourceError::ParseSource` / `::MissingObjectDeclaration` finds no construction
   site. The variants and their format strings remain as dead surface on a public enum.
 - fix: remove both variants.
-- status: open
+- status: fixed 58645d20
 
 ### [BUG] One unrecognized `al.*` key in `.vscode/settings.json` fails daemon and CLI startup
 - where: crates/al-project/src/config.rs:414 (`key.starts_with("al.")`), :595-598
@@ -333,7 +340,10 @@ current code are tagged [STILL-OPEN].
 - fix: treat an unknown `al.*` key from an editor settings file as a warning: log it, keep the
   keys that did parse, and reserve the hard error for a key whose *value shape* is wrong. Keep
   the strict behaviour for `AlConfig::load` of this project's own persisted settings file.
-- status: open
+- status: fixed db935d62. A wrong value shape is also a warning, not an error: Microsoft types
+  `al.backgroundCodeAnalysis` as an enum string and `al.compilationOptions` as an object, so a
+  real settings file hits that path too. Only an unreadable settings root still fails.
+
 
 ### [PERF] [STILL-OPEN] Substring search still scans the whole name catalogue
 - where: crates/al-symbols/src/index.rs:960-969
@@ -346,7 +356,7 @@ current code are tagged [STILL-OPEN].
   the `by_package` bucket).
 - fix: if this shows up on the hot path, add a trigram or suffix-start index over
   `sorted_names`; otherwise cap the substring stage at a fixed scan budget.
-- status: open
+- status: fixed 75b96eac (scan budget of 20 000 names; no new index)
 
 ### [GAP] Dependency source index and package source indexes are missing from memory stats
 - where: crates/al-workspace/src/lib.rs:640-696 (`memory_stats`), :180-186
@@ -360,7 +370,7 @@ current code are tagged [STILL-OPEN].
   endpoint therefore reports a small `tracked_bytes` while RSS is dominated by these two.
 - fix: add a `FileIndexMemoryStats` for the dependency index and an accessor on
   `source_index` that sums its cached indexes.
-- status: open
+- status: fixed e5ad9e1d (dependency index) and ddaad70f (package source indexes).
 
 ### [SECURITY] nupkg `.app` extraction misses the Windows drive-relative ZIP-slip case
 - where: crates/al-symbols/src/nuget.rs:700-721
@@ -375,7 +385,7 @@ current code are tagged [STILL-OPEN].
   `Component::Prefix`.
 - fix: replace the string checks with the existing `safe_join` helper, or require
   `Path::new(raw_filename).components()` to be exactly one `Component::Normal`.
-- status: open
+- status: fixed 5e4dc1e6
 
 ### [BUG] One truncated line permanently bricks the test result store
 - where: crates/al-workspace/src/test_results.rs:44-84 (`append`), :88-91 (`read_all`),
@@ -391,7 +401,7 @@ current code are tagged [STILL-OPEN].
 - fix: skip and log a line that does not deserialize (keeping the strict behaviour behind an
   explicit "verify" entry point), or rewrite the file dropping trailing garbage on the first
   corrupt read.
-- status: open
+- status: fixed 22cc74bc (both: skip on read, repair on the next append, strict `verify`)
 
 ## Review complete
 

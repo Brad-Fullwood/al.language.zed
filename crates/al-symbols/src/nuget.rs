@@ -700,21 +700,23 @@ fn extract_app_from_nupkg_reader<R: std::io::Read + std::io::Seek>(
         let name = file.name().to_string();
 
         if name.to_lowercase().ends_with(".app") {
-            // Extract the bare filename, stripping both Unix and Windows path
-            // separators to prevent ZIP-slip attacks.
-            let raw_filename = name.rsplit(['/', '\\']).next().unwrap_or(&name);
-
-            // Reject filenames that are empty, traverse directories, or contain
-            // embedded separators that survived splitting.
-            if raw_filename.is_empty()
-                || raw_filename.contains("..")
-                || raw_filename.contains('/')
-                || raw_filename.contains('\\')
-            {
+            // Take the bare filename, then resolve it with the same joiner the
+            // package inspector uses, which drops root and drive prefixes and
+            // rejects traversal. String checks alone let `C:evil.app` through,
+            // and on Windows `PathBuf::push` would then write it to the current
+            // directory of drive C instead of under `dest`.
+            let bare = name.rsplit(['/', '\\']).next().unwrap_or(&name);
+            let out_path = super::app_inspect::safe_join(dest, bare)
+                .filter(|path| path.parent() == Some(dest) && path.file_name().is_some());
+            let Some(out_path) = out_path else {
                 warn!(entry = %name, "Skipping unsafe ZIP entry (potential ZIP-slip)");
                 continue;
-            }
-            let out_path = dest.join(raw_filename);
+            };
+            let raw_filename = out_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string();
             static EXTRACT_SEQUENCE: std::sync::atomic::AtomicU64 =
                 std::sync::atomic::AtomicU64::new(0);
             let sequence = EXTRACT_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1159,11 +1161,73 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dest);
     }
 
+    /// Entry names a feed could use to escape `dest`: a Windows drive-relative
+    /// name, an absolute path, traversal, and backslash separators. Each has
+    /// to land directly in `dest`.
     #[test]
-    fn extract_app_rejects_dotdot_basename() {
-        // The guard rejects any .app whose *basename* (after stripping path
-        // separators) still contains "..". Such an entry is skipped, and with
-        // no other safe .app the result is NoAppInNupkg — nothing is written.
+    fn extract_app_contains_hostile_entry_names() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+
+        for (entry, expected) in [
+            ("C:evil.app", Some("evil.app")),
+            ("/etc/cron.d/evil.app", Some("evil.app")),
+            ("..\\..\\evil.app", Some("evil.app")),
+            ("lib\\net\\Nested.app", Some("Nested.app")),
+            ("../evil.app", Some("evil.app")),
+        ] {
+            let mut nupkg_buf = Vec::new();
+            {
+                let cursor = std::io::Cursor::new(&mut nupkg_buf);
+                let mut zip = zip::ZipWriter::new(cursor);
+                let options = SimpleFileOptions::default();
+                zip.start_file(format!("{entry}.app"), options).unwrap();
+                zip.write_all(&valid_app_bytes()).unwrap();
+                zip.finish().unwrap();
+            }
+
+            let dest = std::env::temp_dir().join(format!(
+                "al-symbols-hostile-{}",
+                entry.replace(['/', '\\', ':', '.'], "_")
+            ));
+            let _ = std::fs::remove_dir_all(&dest);
+            let result = extract_app_from_nupkg(&nupkg_buf, &dest, "Test");
+
+            match expected {
+                Some(filename) => {
+                    let path = result.unwrap_or_else(|error| {
+                        panic!("entry {entry:?} should extract safely: {error}")
+                    });
+                    assert_eq!(
+                        path.parent(),
+                        Some(dest.as_path()),
+                        "entry {entry:?} escaped the destination"
+                    );
+                    // A drive prefix is only a prefix on Windows; elsewhere
+                    // `C:evil.app` is an ordinary file name.
+                    let landed = path.file_name().unwrap().to_str().unwrap();
+                    assert!(
+                        landed == format!("{filename}.app") || !landed.contains(['/', '\\']),
+                        "entry {entry:?} landed as {landed}"
+                    );
+                }
+                None => assert!(
+                    result.is_err(),
+                    "entry {entry:?} must be skipped, got {result:?}"
+                ),
+            }
+            assert!(
+                !std::path::Path::new("/tmp/evil.app").exists(),
+                "entry {entry:?} wrote outside the destination"
+            );
+            let _ = std::fs::remove_dir_all(&dest);
+        }
+    }
+
+    #[test]
+    fn a_doubled_dot_inside_a_basename_is_not_traversal() {
+        // Traversal is a `..` path *component*. A file name that merely
+        // contains two dots is ordinary and extracts under dest.
         use std::io::Write;
         use zip::write::SimpleFileOptions;
 
@@ -1172,21 +1236,15 @@ mod tests {
             let cursor = std::io::Cursor::new(&mut nupkg_buf);
             let mut zip = zip::ZipWriter::new(cursor);
             let options = SimpleFileOptions::default();
-            // Basename survives splitting and still contains "..".
             zip.start_file("lib/evil..payload.app", options).unwrap();
-            zip.write_all(b"NAVX").unwrap();
+            zip.write_all(&valid_app_bytes()).unwrap();
             zip.finish().unwrap();
         }
 
         let dest = std::env::temp_dir().join("al-symbols-test-dotdot");
         let _ = std::fs::remove_dir_all(&dest);
-        let result = extract_app_from_nupkg(&nupkg_buf, &dest, "Test");
-        assert!(
-            matches!(result, Err(NuGetError::NoAppInNupkg)),
-            "entry with '..' in basename must be skipped, got {result:?}"
-        );
-        // The unsafe basename must never be materialised under dest.
-        assert!(!dest.join("evil..payload.app").exists());
+        let path = extract_app_from_nupkg(&nupkg_buf, &dest, "Test").expect("extracts");
+        assert_eq!(path, dest.join("evil..payload.app"));
         let _ = std::fs::remove_dir_all(&dest);
     }
 
