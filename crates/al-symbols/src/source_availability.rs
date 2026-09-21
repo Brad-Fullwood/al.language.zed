@@ -60,15 +60,19 @@ impl SourceAvailabilitySummary {
     }
 }
 
+/// Whether a symbol was contributed by the open workspace rather than by a
+/// loaded `.app`. The loaders spell the pseudo-package both ways.
+pub fn is_workspace_package(package: &str) -> bool {
+    package.eq_ignore_ascii_case("workspace") || package.eq_ignore_ascii_case("(workspace)")
+}
+
 /// Classify a symbol entry using its already-warmed package source index.
 ///
 /// This function deliberately does not open or scan an archive. Package
 /// loaders warm the source-index cache before publishing entries so ordinary
 /// search, browse, and package-summary requests stay bounded.
 pub fn classify(entry: &SymbolEntry, app_path: Option<&Path>) -> SourceAvailability {
-    if entry.package.eq_ignore_ascii_case("workspace")
-        || entry.package.eq_ignore_ascii_case("(workspace)")
-    {
+    if is_workspace_package(&entry.package) {
         return SourceAvailability::WorkspaceSource;
     }
 

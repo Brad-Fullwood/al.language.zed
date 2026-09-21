@@ -120,14 +120,55 @@ pub struct CachedObjectInfo {
     pub range: tree_sitter::Range,
 }
 
-/// One owner of an object name: the declaring file plus the object kind
-/// (`"table"`, `"page"`, …). AL object names are unique only *within* a kind,
-/// so a name maps to a list of these — a table `Customer` and a page `Customer`
-/// are distinct owners that must not collapse onto one another.
+/// One owner of an object name: the declaring file, the object kind
+/// (`"table"`, `"page"`, …) and the app the file belongs to. AL object names
+/// are unique only within one kind *of one extension*, so a name maps to a
+/// list of these: a table `Customer` and a page `Customer` are distinct
+/// owners, and so are `codeunit "Install"` in an app and in its test app.
 #[derive(Debug, Clone)]
 pub struct ObjectEntry {
     pub kind: String,
     pub path: PathBuf,
+    /// Directory of the `app.json` above `path`, when there is one.
+    pub app_root: Option<PathBuf>,
+}
+
+/// The `app.json` facts the index needs to rank owners of one object name.
+#[derive(Debug, Clone, Default)]
+struct AppIdentity {
+    id: String,
+    dependency_ids: Vec<String>,
+}
+
+impl AppIdentity {
+    fn read(app_json: &Path) -> Self {
+        let Ok(text) = std::fs::read_to_string(app_json) else {
+            return Self::default();
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return Self::default();
+        };
+        let id = value
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_lowercase();
+        let dependency_ids = value
+            .get("dependencies")
+            .and_then(|v| v.as_array())
+            .map(|deps| {
+                deps.iter()
+                    .filter_map(|dep| {
+                        dep.get("id")
+                            .or_else(|| dep.get("appId"))
+                            .and_then(|v| v.as_str())
+                            .map(str::to_lowercase)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self { id, dependency_ids }
+    }
 }
 
 /// A procedure/event location cached at index time.
@@ -174,6 +215,11 @@ pub struct FileIndex {
     pub procedures: DashMap<String, Vec<CachedProcedureInfo>>,
     /// File path → list of procedure names (for cleanup on file remove/update).
     path_to_procedures: DashMap<PathBuf, Vec<String>>,
+    /// Directory → the app root above it (`None` when the directory is outside
+    /// any app). Memoizes the ancestor walk done once per indexed directory.
+    dir_app_root: DashMap<PathBuf, Option<PathBuf>>,
+    /// App root → the identity read from its `app.json`.
+    apps: DashMap<PathBuf, AppIdentity>,
 }
 
 /// Deterministic accounting for the text and secondary indexes owned by a
@@ -200,6 +246,8 @@ impl FileIndex {
             file_symbols: DashMap::new(),
             procedures: DashMap::new(),
             path_to_procedures: DashMap::new(),
+            dir_app_root: DashMap::new(),
+            apps: DashMap::new(),
         }
     }
 
@@ -220,6 +268,8 @@ impl FileIndex {
         self.file_symbols.clear();
         self.procedures.clear();
         self.path_to_procedures.clear();
+        self.dir_app_root.clear();
+        self.apps.clear();
 
         for (key, value) in replacement.files {
             self.files.insert(key, value);
@@ -250,6 +300,12 @@ impl FileIndex {
         }
         for (key, value) in replacement.path_to_procedures {
             self.path_to_procedures.insert(key, value);
+        }
+        for (key, value) in replacement.dir_app_root {
+            self.dir_app_root.insert(key, value);
+        }
+        for (key, value) in replacement.apps {
+            self.apps.insert(key, value);
         }
     }
 
@@ -527,21 +583,23 @@ impl FileIndex {
             self.object_info.remove(&path);
             self.object_infos.remove(&path);
         } else {
+            let app_root = self.app_root_for(&path);
             let mut declared_names = Vec::with_capacity(infos.len());
             for info in &infos {
                 if info.name.is_empty() {
                     continue;
                 }
                 let obj_name = info.name.to_lowercase();
-                // Record this owner under its name, replacing any prior entry
-                // from this same path (re-index) or of the same kind
-                // (redefinition) — owners of *other* kinds are preserved so
-                // they never collapse.
+                // Ownership is keyed by (path, kind): an owner is replaced only
+                // by a declaration of the same kind in the same file. Owners of
+                // other kinds, and same-kind owners in other files (a second app
+                // in the same workspace root declaring the same name), survive.
                 let mut owners = self.objects.entry(obj_name.clone()).or_default();
-                owners.retain(|e| e.path != path && !e.kind.eq_ignore_ascii_case(&info.kind));
+                owners.retain(|e| e.path != path || !e.kind.eq_ignore_ascii_case(&info.kind));
                 owners.push(ObjectEntry {
                     kind: info.kind.clone(),
                     path: path.clone(),
+                    app_root: app_root.clone(),
                 });
                 drop(owners);
                 declared_names.push(obj_name);
@@ -642,6 +700,99 @@ impl FileIndex {
                 .find(|e| kinds.iter().any(|k| e.kind.eq_ignore_ascii_case(k)))
                 .map(|e| e.path.clone())
         })
+    }
+
+    /// The app root of `file`: the nearest ancestor directory holding an
+    /// `app.json`. Memoized per directory.
+    pub fn app_root_for(&self, file: &Path) -> Option<PathBuf> {
+        let start = file.parent()?;
+        if let Some(cached) = self.dir_app_root.get(start) {
+            return cached.value().clone();
+        }
+        let mut visited = Vec::new();
+        let mut found = None;
+        for dir in start.ancestors() {
+            if let Some(cached) = self.dir_app_root.get(dir) {
+                found = cached.value().clone();
+                break;
+            }
+            visited.push(dir.to_path_buf());
+            if dir.join("app.json").is_file() {
+                found = Some(dir.to_path_buf());
+                break;
+            }
+        }
+        for dir in visited {
+            self.dir_app_root.insert(dir, found.clone());
+        }
+        found
+    }
+
+    fn app_identity(&self, app_root: &Path) -> AppIdentity {
+        if let Some(cached) = self.apps.get(app_root) {
+            return cached.value().clone();
+        }
+        let identity = AppIdentity::read(&app_root.join("app.json"));
+        self.apps.insert(app_root.to_path_buf(), identity.clone());
+        identity
+    }
+
+    /// Rank an owner against the app that `from` belongs to: 0 for the same
+    /// app, 1 for an app the referring app depends on, 2 for anything else.
+    fn owner_rank(&self, owner: &ObjectEntry, from_app: Option<&PathBuf>) -> u8 {
+        let Some(from_app) = from_app else {
+            return 2;
+        };
+        let Some(owner_app) = owner.app_root.as_ref() else {
+            return 2;
+        };
+        if owner_app == from_app {
+            return 0;
+        }
+        let owner_id = self.app_identity(owner_app).id;
+        if !owner_id.is_empty()
+            && self
+                .app_identity(from_app)
+                .dependency_ids
+                .contains(&owner_id)
+        {
+            return 1;
+        }
+        2
+    }
+
+    /// Like [`object_path`], but resolved from the perspective of `from`: an
+    /// owner in the same app wins, then one in an app that app depends on.
+    ///
+    /// [`object_path`]: Self::object_path
+    pub fn object_path_near(&self, name: &str, from: &Path) -> Option<PathBuf> {
+        self.best_owner(name, None, from)
+    }
+
+    /// Like [`object_path_of_kind`], with the same app preference as
+    /// [`object_path_near`].
+    ///
+    /// [`object_path_of_kind`]: Self::object_path_of_kind
+    /// [`object_path_near`]: Self::object_path_near
+    pub fn object_path_of_kind_near(
+        &self,
+        name: &str,
+        kinds: &[&str],
+        from: &Path,
+    ) -> Option<PathBuf> {
+        self.best_owner(name, Some(kinds), from)
+    }
+
+    fn best_owner(&self, name: &str, kinds: Option<&[&str]>, from: &Path) -> Option<PathBuf> {
+        let from_app = self.app_root_for(from);
+        let owners = self.objects.get(&name.to_lowercase())?;
+        owners
+            .iter()
+            .filter(|e| {
+                kinds.is_none_or(|kinds| kinds.iter().any(|k| e.kind.eq_ignore_ascii_case(k)))
+            })
+            .min_by_key(|e| self.owner_rank(e, from_app.as_ref()))
+            .map(|e| e.path.clone())
     }
 
     /// Every file that declares an object named `name` (all kinds).
@@ -1464,6 +1615,132 @@ codeunit 50101 "Second Codeunit"
             Some(path.as_path())
         );
         assert_eq!(index.object_count(), 1, "no stale duplicate owner");
+    }
+
+    /// Lay out `<root>/app/app.json` and `<root>/test/app.json`, both declaring
+    /// `codeunit "Install"`, with the test app depending on the main app.
+    fn two_app_workspace() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let root = tempfile::tempdir().expect("tempdir");
+        let app_dir = root.path().join("app");
+        let test_dir = root.path().join("test");
+        std::fs::create_dir_all(&app_dir).expect("create app dir");
+        std::fs::create_dir_all(&test_dir).expect("create test dir");
+        std::fs::write(
+            app_dir.join("app.json"),
+            r#"{"id":"11111111-1111-1111-1111-111111111111","name":"Main","dependencies":[]}"#,
+        )
+        .expect("write app.json");
+        std::fs::write(
+            test_dir.join("app.json"),
+            r#"{"id":"22222222-2222-2222-2222-222222222222","name":"Test","dependencies":[{"id":"11111111-1111-1111-1111-111111111111","name":"Main"}]}"#,
+        )
+        .expect("write test app.json");
+
+        let index_source = r#"codeunit 50100 "Install" { }"#.to_string();
+        let app_file = app_dir.join("Install.Codeunit.al");
+        let test_file = test_dir.join("Install.Codeunit.al");
+        std::fs::write(&app_file, &index_source).expect("write app source");
+        std::fs::write(&test_file, &index_source).expect("write test source");
+        (root, app_file, test_file)
+    }
+
+    #[test]
+    fn same_named_object_in_two_apps_keeps_both_owners() {
+        let (_root, app_file, test_file) = two_app_workspace();
+        let index = FileIndex::new();
+        let source = r#"codeunit 50100 "Install" { }"#.to_string();
+        index.add_file(app_file.clone(), source.clone());
+        index.add_file(test_file.clone(), source);
+
+        assert_eq!(
+            index.object_count(),
+            2,
+            "one app's codeunit evicted the other app's"
+        );
+        let mut paths = index.object_paths("install");
+        paths.sort();
+        let mut expected = vec![app_file.clone(), test_file.clone()];
+        expected.sort();
+        assert_eq!(paths, expected);
+    }
+
+    #[test]
+    fn lookup_prefers_the_owner_in_the_referring_file_app() {
+        let (_root, app_file, test_file) = two_app_workspace();
+        for test_first in [false, true] {
+            let index = FileIndex::new();
+            let source = r#"codeunit 50100 "Install" { }"#.to_string();
+            if test_first {
+                index.add_file(test_file.clone(), source.clone());
+                index.add_file(app_file.clone(), source);
+            } else {
+                index.add_file(app_file.clone(), source.clone());
+                index.add_file(test_file.clone(), source);
+            }
+
+            let from_app = app_file.parent().unwrap().join("Other.Codeunit.al");
+            let from_test = test_file.parent().unwrap().join("Other.Codeunit.al");
+            assert_eq!(
+                index.object_path_near("install", &from_app).as_deref(),
+                Some(app_file.as_path())
+            );
+            assert_eq!(
+                index.object_path_near("install", &from_test).as_deref(),
+                Some(test_file.as_path())
+            );
+            assert_eq!(
+                index
+                    .object_path_of_kind_near("install", &["codeunit"], &from_test)
+                    .as_deref(),
+                Some(test_file.as_path())
+            );
+        }
+    }
+
+    #[test]
+    fn lookup_falls_back_to_a_dependency_app() {
+        let (_root, app_file, test_file) = two_app_workspace();
+        let index = FileIndex::new();
+        // Only the main app declares the object; the referring file is in the
+        // test app, which depends on the main app.
+        index.add_file(
+            app_file.clone(),
+            r#"codeunit 50100 "Install" { }"#.to_string(),
+        );
+        let unrelated = test_file.parent().unwrap().parent().unwrap().join("loose");
+        std::fs::create_dir_all(&unrelated).expect("create dir");
+        let loose_file = unrelated.join("Install.Codeunit.al");
+        index.add_file(
+            loose_file.clone(),
+            r#"codeunit 50101 "Install" { }"#.to_string(),
+        );
+
+        let from_test = test_file.parent().unwrap().join("Other.Codeunit.al");
+        assert_eq!(
+            index.object_path_near("install", &from_test).as_deref(),
+            Some(app_file.as_path()),
+            "an app the referring app depends on must win over an unrelated file"
+        );
+    }
+
+    #[test]
+    fn one_file_declaring_two_kinds_of_one_name_keeps_both() {
+        let index = FileIndex::new();
+        let path = PathBuf::from("/c22/Both.al");
+        index.add_file(
+            path.clone(),
+            "table 50100 \"Foo\" { fields { } }\npage 50100 \"Foo\" { layout { } actions { } }"
+                .to_string(),
+        );
+        assert_eq!(index.object_count(), 2);
+        assert_eq!(
+            index.object_path_of_kind("foo", &["table"]).as_deref(),
+            Some(path.as_path())
+        );
+        assert_eq!(
+            index.object_path_of_kind("foo", &["page"]).as_deref(),
+            Some(path.as_path())
+        );
     }
 
     #[test]
