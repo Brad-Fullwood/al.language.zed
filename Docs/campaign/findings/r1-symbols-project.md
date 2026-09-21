@@ -354,7 +354,7 @@ current code are tagged [STILL-OPEN].
   the `by_package` bucket).
 - fix: if this shows up on the hot path, add a trigram or suffix-start index over
   `sorted_names`; otherwise cap the substring stage at a fixed scan budget.
-- status: open
+- status: fixed 75b96eac (scan budget of 20 000 names; no new index)
 
 ### [GAP] Dependency source index and package source indexes are missing from memory stats
 - where: crates/al-workspace/src/lib.rs:640-696 (`memory_stats`), :180-186
