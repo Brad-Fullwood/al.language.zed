@@ -526,23 +526,129 @@ pub fn list_rows(result: &serde_json::Value) -> &serde_json::Value {
     }
 }
 
+/// Daemon methods that answer from one file and never write it.
+///
+/// The daemon refuses a path outside the project it has loaded, because the
+/// same dispatchers are published over MCP, where the caller may be an agent
+/// and the path may be anything it asks for. The person running the CLI can
+/// already read their own files, so for these methods the CLI reads the file
+/// and sends its text, and the daemon answers without opening the path.
+/// Methods that rewrite the file are absent on purpose: content a caller
+/// supplies can be analysed, never written back over a path the daemon was not
+/// allowed to name.
+const READ_ONLY_FILE_METHODS: &[&str] = &[
+    "parse",
+    "lint",
+    "metrics",
+    "hover",
+    "definition",
+    "references",
+    "implementations",
+    "completions",
+    "signatureHelp",
+    "documentSymbols",
+    "foldingRanges",
+    "semanticTokens",
+    "inlayHints",
+    "codeActions",
+];
+
+/// Whether a daemon error is the refusal to touch the path a request named.
+///
+/// `DaemonClient::request` flattens the JSON-RPC error to a string ending in
+/// `(code N)`, so the code is matched in that form rather than re-parsed.
+fn is_path_not_authorized(error: &str) -> bool {
+    error.contains(&format!(
+        "(code {})",
+        al_protocol::jsonrpc::error_codes::PATH_NOT_AUTHORIZED
+    ))
+}
+
+/// The path a request named, as `file` or as a `file://` URI.
+fn requested_path(params: Option<&serde_json::Value>) -> Option<PathBuf> {
+    let params = params?;
+    if let Some(file) = params.get("file").and_then(|value| value.as_str()) {
+        return Some(PathBuf::from(file));
+    }
+    let uri = params.get("uri").and_then(|value| value.as_str())?;
+    url::Url::parse(uri).ok()?.to_file_path().ok()
+}
+
+/// The same request with the file's text attached, for a read-only method the
+/// daemon refused to open the path for.
+fn params_with_text(
+    method: &str,
+    params: Option<&serde_json::Value>,
+    error: &str,
+) -> Option<serde_json::Value> {
+    if !READ_ONLY_FILE_METHODS.contains(&method) || !is_path_not_authorized(error) {
+        return None;
+    }
+    if params.is_some_and(|params| params.get("text").is_some()) {
+        // The text was already sent and still refused: nothing left to try.
+        return None;
+    }
+    let path = requested_path(params)?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    let mut retry = params?.clone();
+    retry.as_object_mut()?.insert("text".into(), text.into());
+    Some(retry)
+}
+
+/// Whether the request narrowed each row to a chosen set of keys.
+fn asked_for_fields(params: Option<&serde_json::Value>) -> bool {
+    params
+        .and_then(|params| params.get("fields"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|fields| !fields.is_empty())
+}
+
 pub fn request_checked(
     client: &mut DaemonClient,
     method: &str,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    let params = with_projection(params);
-    let contract_params = params.clone();
-    let result = client.request(method, params)?;
-    // The contracts describe the method's own result shape, so validate the
-    // rows rather than the projection envelope wrapped around them.
-    let checked = list_rows(&result).clone();
-    if response_contract::handles(method) {
-        response_contract::validate(method, contract_params.as_ref(), &checked)?;
-    } else {
-        validate_run_command_result(method, &checked)?;
+    let mut sent = with_projection(params);
+    // At most two passes: the second carries the text for a file the daemon
+    // may not open, and `params_with_text` returns None once it is attached.
+    loop {
+        let result = client.request(method, sent.clone());
+        let error = match result {
+            Ok(result) => {
+                // The contracts describe the method's own result shape, so
+                // validate the rows rather than the projection envelope
+                // wrapped around them. `--fields` removes the very keys they
+                // check, and a caller who asked for a subset is not owed an
+                // error for getting one.
+                if !asked_for_fields(sent.as_ref()) {
+                    let checked = list_rows(&result).clone();
+                    if response_contract::handles(method) {
+                        response_contract::validate(method, sent.as_ref(), &checked)?;
+                    } else {
+                        validate_run_command_result(method, &checked)?;
+                    }
+                }
+                return Ok(result);
+            }
+            Err(error) => error,
+        };
+        match params_with_text(method, sent.as_ref(), &error) {
+            Some(retry) => sent = Some(retry),
+            None => return Err(explain_path_refusal(&error)),
+        }
     }
-    Ok(result)
+}
+
+/// Say why a path was refused when the CLI cannot work around it.
+fn explain_path_refusal(error: &str) -> String {
+    if is_path_not_authorized(error) {
+        format!(
+            "{error}\n\nHint: this command rewrites the file it is given, and the daemon changes \
+             only files inside the project named above. Run it from that file's own project."
+        )
+    } else {
+        error.to_string()
+    }
 }
 
 fn validate_run_command_result(method: &str, result: &serde_json::Value) -> Result<(), String> {

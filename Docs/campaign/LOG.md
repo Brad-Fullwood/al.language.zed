@@ -74,3 +74,19 @@ Append-only. Newest entry last.
 - Limit hit about 13:20, reset 16:00. Five agents resumed.
 - Merged `campaign/fix-r1-symbols-project`. All seven first-pass fix branches are in. Workspace clippy clean. 2471 tests pass across the nine crates the merge touches.
 - The full workspace test run found a regression: `al-test-harness --test edit_lifecycle` fails 3 of 3 runs. documentSymbol and workspace/symbol return LSP error -32801 after a file closes. Source is `content_modified_error()` in `al-lsp/src/server/lsp.rs`, introduced with the LSP fix branch. `cargo test` stopped at that suite, so later suites are unverified. A fix agent is on it and will run the whole harness suite.
+
+## 2026-09-21 17:10 BST: regression root cause and a containment decision
+
+- Root cause of the `edit_lifecycle` failures: `offload_after_ready` reported ContentModified whenever the global `generation_revision` moved during a read, and `did_close` bumps it twice. Fixed on `campaign/fix-lsp-content-modified` by recomputing against the new generation, at most 3 attempts.
+- The whole harness suite then showed one more merge effect: `al-explorer parse <file outside the project>` is refused by the new daemon path containment. Decision: the daemon keeps containment. For read-only commands the CLI reads an outside file itself and sends the text. Commands that write stay refused outside the project.
+- Lesson for gates: fix agents test their own crates, so merges need `cargo test -p al-test-harness` as well. Added to the merge gate.
+
+## 2026-09-21 18:00 BST: campaign branch green
+
+- Merged `campaign/fix-lsp-content-modified`. Full gates with `--no-fail-fast`: clippy clean, 80 suites, 4564 tests pass, 0 fail, 10 ignored. Baseline this morning was 4380, so the day added 184 tests net.
+- Day 1 totals: 224 review findings, 9 fix branches merged (about 150 findings fixed, 4 rejected with evidence), the `al-bc` plugin, the free ID allocator, 4 of 9 blog articles drafted.
+
+## 2026-09-21 21:05 BST: fourth usage limit, CI red on three platforms
+
+- Limit hit about 18:25, reset 21:00. Six agents resumed.
+- PR #30 CI: cargo-deny, WASM and the .NET bridge pass. Ubuntu, macOS and Windows each fail one test that passes locally. macOS shows a real bug (1.9.0 chosen over 1.10.0, selection depends on directory enumeration order). Windows fails the new out-of-project refusal test, probably path form. Ubuntu fails a harness test strengthened today, so something it needs exists on this machine and not on a clean runner. A fix agent has its own draft PR to iterate on real runners.

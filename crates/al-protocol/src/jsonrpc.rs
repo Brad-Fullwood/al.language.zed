@@ -226,6 +226,14 @@ pub mod error_codes {
     pub const INTERNAL_ERROR: i32 = -32603;
     pub const CODE_ANALYSIS_ERROR: i32 = -32000;
     pub const FILE_NOT_FOUND: i32 = -32001;
+    /// The daemon will not touch the path a request named: it lies outside the
+    /// loaded project, or no project is loaded to authorise it against.
+    ///
+    /// Separate from [`INVALID_PARAMS`] because a client can act on it. A
+    /// read-only request can be resent with the file's `text`, which the caller
+    /// supplies and the daemon analyses without opening the path. A request
+    /// that writes the file cannot: it is refused and stays refused.
+    pub const PATH_NOT_AUTHORIZED: i32 = -32002;
 }
 
 #[cfg(test)]

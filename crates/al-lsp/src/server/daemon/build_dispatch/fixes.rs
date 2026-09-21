@@ -3,7 +3,7 @@
 
 use super::super::{
     ensure_document, file_not_found, file_uri_from_params, invalid_params, optional_bool_param,
-    require_document_text, require_project_root, rpc_error,
+    read_document_from_params, require_document_text, require_project_root, rpc_error,
 };
 use super::build::write_al_file_and_refresh;
 use super::serialized_response;
@@ -63,10 +63,9 @@ pub(in crate::server::daemon) async fn dispatch_lint(
         };
     }
 
-    let uri = match file_uri_from_params(workspace, params) {
-        Ok(Some(uri)) => uri,
-        Ok(None) => return invalid_params(id),
-        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
     };
     let _text = match require_document_text(workspace, &uri, id).await {
         Ok(t) => t,
@@ -106,7 +105,7 @@ pub(in crate::server::daemon) async fn dispatch_format(
 
     let file_uri = match file_uri_from_params(workspace, params) {
         Ok(file_uri) => file_uri,
-        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+        Err(rejection) => return rejection.into_response(id),
     };
     if params.get("content").is_some() && file_uri.is_some() {
         return rpc_error(
@@ -247,7 +246,7 @@ pub(in crate::server::daemon) fn dispatch_fix(
 
     let file_uri = match file_uri_from_params(workspace, params) {
         Ok(uri) => uri,
-        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+        Err(rejection) => return rejection.into_response(id),
     };
     let targets = if let Some(uri) = file_uri {
         let path = match uri.to_file_path() {
@@ -557,14 +556,10 @@ pub(in crate::server::daemon) fn dispatch_parse(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let uri = match file_uri_from_params(workspace, params) {
-        Ok(Some(uri)) => uri,
-        Ok(None) => return invalid_params(id),
-        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
 
     let Some(text) = workspace.documents.get_text(&uri) else {
         return file_not_found(id);

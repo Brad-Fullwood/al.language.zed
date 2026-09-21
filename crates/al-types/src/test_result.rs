@@ -13,6 +13,18 @@ pub enum TestStatus {
     Skip,
 }
 
+/// Why a test failed, for report formats that separate a red test from a red
+/// environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TestFailureKind {
+    /// The backend stopped waiting for the server before it answered.
+    Timeout,
+    /// The run never reached the test: no client, transport error, HTTP 5xx,
+    /// or a response the backend could not match to the request.
+    Infrastructure,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TestMethodResult {
@@ -22,6 +34,10 @@ pub struct TestMethodResult {
     pub error: Option<String>,
     /// Execution duration in milliseconds.
     pub duration_ms: Option<u64>,
+    /// `None` on a result that did not fail, and on a failure that came from
+    /// an AL assertion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<TestFailureKind>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

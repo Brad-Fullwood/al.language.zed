@@ -10,22 +10,28 @@ Round 1 reviews are complete: 224 verified findings in 11 files. Six of seven fi
 
 | Item | Kind | Output |
 |------|------|--------|
-| Fix merge regression: `edit_lifecycle` tests fail with LSP -32801 ContentModified on documentSymbol and workspace/symbol, then run the whole al-test-harness suite | worktree fix | branch `campaign/fix-lsp-content-modified` |
-| Fix R1b runtime, test runner, DAP session, harness (28 findings) | worktree fix | branch `campaign/fix-r1b-runtime-dap` |
+| Test depth: coverage by crate, property tests for grammar, formatter and interpreter | worktree build | branch `campaign/test-depth`, `findings/test-depth.md` |
 | Fix R1b analysis: rename, resolution, breaking changes, xliff, obsolescence (35 findings) | worktree fix | branch `campaign/fix-r1b-analysis` |
 | Fix R1c analysis: coverage, multi-object files, permission audit, signature help, code lens (29 findings) | worktree fix | branch `campaign/fix-r1c-analysis` |
 | AI tooling daemon work: wrong answers first, then limit, fields, scope, `source --list-procedures`, CLI `location`, index progress, plugin simplification | worktree build | branch `campaign/ai-daemon-projection` |
-| Blog: delete six posts, site cleanup, fact sheet, series plan, draft 1 | blog repo branch `campaign/2026-09-rewrite` | `findings/blog-plan.md` |
+| desloppify batch: split `formatting.rs`, `symbols.rs`, `index.rs`, `oauth.rs`, remove the duplicate data loader, merge the two line tables | worktree refactor | branch `campaign/slop-syntax-symbols`, `findings/slop-syntax-symbols.md` |
+| Round 2 security review: bypass attempts on today's security fixes, threat model of the agent-facing surface | review | `findings/r2-security.md` |
+| CI fails on PR #30 on three platforms while local Linux is green: `test_completion_after_dot` on ubuntu, numeric version selection depends on directory order on macOS, out-of-project format refusal on Windows | worktree fix with its own draft PR for runner access | branch `campaign/fix-ci-platforms` |
+
+Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, CI runs on every push).
 
 Queued:
 
 - 124 `trim_matches('"')` identifier cleanups in al-analysis (102) and al-insight (22), replace with `al_syntax::node_text_clean`. Start after both analysis fix branches merge.
-- `al_syntax::LineIndex` and `al_syntax::SourceLines` are two line tables added by two agents in the same round. Merge into one type.
 - New findings from the emit fix agent (in `findings/r1-emit-bc-explorer.md`): `SymbolReference.json` has no `Variables` array for global variables, `xlf generate` drops properties declared on a one-line member block, al-dap and al-publish post to different BC dev endpoints (needs a live server to settle), the duplicated response validation framework (about 300 lines to move).
 - `[UNVERIFIED]` scaffold items: copilot template API calls, empty repeater, `UsageCategory = Lists` on Card pages. Check against Microsoft Learn.
 - desloppify fix batches (`findings/desloppify.md` section 4), file splits after the owning fix branch merges.
 - Workstream E (tests): coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis. Start when a build slot frees.
 - Workstream D (security): dedicated review after round 1 fixes are in, covering what changed.
+- `al-explorer packages` prints per-package source counts keyed by folded display name (`al-symbols` `index.rs:259`), so two `System` packages with one app id and different versions both show `0/502/1` against 529 manifest objects. Key by app id and version. Details in `findings/blog-progress.md`.
+- `Docs/gaps-and-future-work.md:33` says 23 and 9 fixtures, the directories hold 25 and 10.
+- Blog: article 1 repeats a wrong diagnosis of the `trace` timeout (it is the cold call-graph build, 86 s with Base Application). Rewrite that paragraph. Articles 2, 4, 5, 8 after the daemon work and fix branches merge, then article 9, then the fact pass list in `findings/blog-progress.md`.
+- README.md line 339 omits `publish` from the CLI list. Rebuild `target/release` before measuring for articles (it predates `publish` and `free-ids`).
 - AI tooling build items 9 and 10: dependency package version diff, persisted symbol index (2.9 GB RSS and 54 s cold index today).
 - Plugin leftovers: `plugin/evals/`, release binary download hook, test on a project with `.alpackages`.
 
@@ -46,12 +52,12 @@ whichever ones pay off most. Record progress per workstream below so gaps are vi
 | A | Correctness: review rounds, triage, fixes with a failing test first | R1 reviews running | Triage each `findings/r1-*.md` as it completes, dispatch fix agents per crate group |
 | B | Old audit: mark each of the 227 `AUDIT-BACKLOG.md` findings fixed or open | R1 reviewers report still-open ones | Collect `[STILL-OPEN]` tags, queue them under A |
 | C | Slop and simplification: desloppify plan, per-crate simplify pass | Triage done (`findings/desloppify.md`). Scores 2026-09-21: strict 80.2, objective 84.7. Weakest: file health 62.2, type safety 72, stale migration 74, contracts 75. 12 fix batches, about 198 hours | Start batches that do not collide with open fix branches. File splits of `resolution.rs`, `dispatch.rs`, `formatting.rs`, `symbols.rs`, `file_index.rs` wait for their fix branch to merge |
-| D | Security: credentials in al-bc and al-publish, `.app` and zip parsing, MCP and daemon input, extension binary download, `cargo deny`, `cargo audit` | covered in part by R1 | Dedicated security review after R1 triage |
-| E | Tests: coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis | not started | Measure coverage, list the weakest modules |
+| D | Security: credentials, archive parsing, MCP and daemon input, extension binary download, supply chain | Round 1 security findings fixed and merged. Round 2 review running | Fix agent for `findings/r2-security.md` |
+| E | Tests: coverage by crate, property tests, `cargo mutants` | Test depth agent running on `campaign/test-depth` | Merge, then `cargo mutants` on its shortlist |
 | F | Grammar: corpus tests, query drift between `languages/al` and `tree-sitter-al/queries` | R1 review running | From R1 findings |
 | G | AI tooling: make this project speed up and sharpen AI work on Business Central (see below) | Inventory, measurements and design done (`findings/ai-tooling-ideas.md`): latency is 4 to 150 ms warm, but 14 of 20 measured answers are too large for an agent (up to 9.4 MB). Plugin build running | Daemon projection work after the LSP fix branch merges |
 | H | Docs: `Docs/`, `README.md`, `ROADMAP.md` match the code, then unsloppify | R1 docs review running | From R1 findings |
-| I | Blog: replace the six articles with a new series on the current project, unsloppify each | inventory done | Outline the series, work on a blog branch, merge to `main` only when ready (Vercel deploys `main`) |
+| I | Blog: replace the six articles with a new series on the current project, unsloppify each | On blog branch `campaign/2026-09-rewrite`: six posts deleted, site cleaned, `pnpm validate` passes (it failed on `main`), fact sheet and nine-article plan in `findings/blog-plan.md`, articles 1, 3, 6, 7 drafted (4 of 9) | Articles 2, 4, 5, 8 after the fix branches settle, article 9 last, final fact pass, merge to `main` |
 
 ### G: AI tooling detail
 
@@ -78,6 +84,9 @@ round on the areas with the most findings.
 
 ## Done
 
+- Merged `campaign/fix-lsp-content-modified`: read requests recompute across generation swaps, read-only daemon methods take `text` for files outside the project, the `lsp_dispatch` queries gained the path containment they lacked, error code -32002 for refused paths.
+- Full gates on 2026-09-21 18:00 after nine merges: clippy clean, 80 suites, 4564 passed, 0 failed, 10 ignored (baseline was 4380).
+- Merged `campaign/fix-r1b-runtime-dap`: 26 fixed, 1 rejected, 1 no action. Glob filter no longer drops tests from a green summary. JUnit output stays parseable and names timeouts. SignalR reader no longer blocks on a full channel. Nine harness tests now assert what their names claim. The harness refuses to run against stale binaries (`AL_HARNESS_ALLOW_STALE_BINARY=1` overrides), so build al-lsp and al-explorer before `cargo test -p al-test-harness`.
 - Merged `campaign/fix-r1-symbols-project`: 24 of 24. Multi-app workspaces keep both objects and go-to-definition prefers the referring file's app. Unknown or ill-typed `al.*` editor settings warn and no longer stop startup. Source index cache bounded at 64 entries. ZIP-slip closed in nupkg extraction. All seven first-pass fix branches are in.
 - Merged `campaign/ai-free-ids`: `freeIds` daemon method, `al_freeids` MCP tool, `al-explorer free-ids`. Object IDs per kind, field numbers and enum ordinals with extension collision checks. Responses are 200 to 280 bytes.
 - Merged `campaign/fix-r1-emit-bc-explorer`: 24 fixed, 2 rejected after running Microsoft alc 17 (the packaged XLIFF and the generated `.g.xlf` follow different rules and the emitter already matched both), 3 new findings. `al-explorer publish` and a daemon `publish` method now exist. Archive entry names are checked. `rename` is all or nothing.

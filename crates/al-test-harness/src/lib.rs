@@ -11,6 +11,15 @@
 //! single client. Tests that need to exercise the daemon should drive
 //! `DaemonClient` directly.
 //!
+//! # This crate does not build what it runs
+//!
+//! Nothing in this manifest depends on `al-lsp` or `al-explorer`, so cargo
+//! will not rebuild them for a plain `cargo test -p al-test-harness`: the
+//! suite measures whichever binaries are sitting in `target/`. Build the
+//! workspace first, as the `Makefile` targets do. [`find_binary`] refuses a
+//! binary older than the crate sources rather than reporting a result for the
+//! previous build.
+//!
 //! # Usage
 //! ```no_run
 //! use al_test_harness::LspClient;
@@ -48,6 +57,90 @@ use tokio::sync::{mpsc, Mutex};
 
 pub use protocol::*;
 
+/// Crates no spawned binary links, so editing them cannot make one stale:
+/// this harness itself, and the Zed extension, which builds to wasm.
+const NOT_LINKED_BY_ANY_BINARY: [&str; 2] = ["al-test-harness", "zed-al"];
+
+/// Newest modification time under the `src/` or `Cargo.toml` of a crate a
+/// spawned binary could link.
+fn newest_source_mtime(workspace_root: &Path) -> Option<std::time::SystemTime> {
+    fn walk(dir: &Path, newest: &mut Option<std::time::SystemTime>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.is_dir() {
+                walk(&path, newest);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                if let Ok(modified) = metadata.modified() {
+                    if newest.is_none_or(|current| modified > current) {
+                        *newest = Some(modified);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut newest = None;
+    let crates = workspace_root.join("crates");
+    let Ok(entries) = std::fs::read_dir(&crates) else {
+        return None;
+    };
+    for entry in entries.flatten() {
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| NOT_LINKED_BY_ANY_BINARY.contains(&name))
+        {
+            continue;
+        }
+        let src = entry.path().join("src");
+        if src.is_dir() {
+            walk(&src, &mut newest);
+        }
+        if let Ok(metadata) = std::fs::metadata(entry.path().join("Cargo.toml")) {
+            if let Ok(modified) = metadata.modified() {
+                if newest.is_none_or(|current| modified > current) {
+                    newest = Some(modified);
+                }
+            }
+        }
+    }
+    newest
+}
+
+/// Refuse a binary older than the crate sources.
+///
+/// The harness spawns whatever is in `target/`, and nothing makes cargo
+/// rebuild it for a `cargo test -p al-test-harness`, so a stale binary would
+/// silently make the suite describe the previous build. Set
+/// `AL_HARNESS_ALLOW_STALE_BINARY=1` to run against a binary on purpose.
+fn assert_binary_is_current(binary: &Path, workspace_root: &Path) {
+    if std::env::var_os("AL_HARNESS_ALLOW_STALE_BINARY").is_some() {
+        return;
+    }
+    let (Ok(metadata), Some(newest_source)) = (
+        std::fs::metadata(binary),
+        newest_source_mtime(workspace_root),
+    ) else {
+        return;
+    };
+    let Ok(built) = metadata.modified() else {
+        return;
+    };
+    assert!(
+        built >= newest_source,
+        "{} is older than the crate sources, so this run would describe the \
+         previous build. Run `cargo build --workspace` first, or set \
+         AL_HARNESS_ALLOW_STALE_BINARY=1 to use it anyway.",
+        binary.display()
+    );
+}
+
 fn find_binary() -> PathBuf {
     // Explicit override wins. The harness starts al-lsp as a subprocess, so a
     // coverage run must point this at its instrumented build for that process to
@@ -65,14 +158,15 @@ fn find_binary() -> PathBuf {
         .to_path_buf();
 
     let binary_name = format!("al-lsp{}", std::env::consts::EXE_SUFFIX);
-    let debug_bin = workspace_root.join("target/debug").join(&binary_name);
-    if debug_bin.exists() {
-        return debug_bin;
-    }
-
-    let release_bin = workspace_root.join("target/release").join(&binary_name);
-    if release_bin.exists() {
-        return release_bin;
+    for profile in ["debug", "release"] {
+        let candidate = workspace_root
+            .join("target")
+            .join(profile)
+            .join(&binary_name);
+        if candidate.exists() {
+            assert_binary_is_current(&candidate, &workspace_root);
+            return candidate;
+        }
     }
 
     PathBuf::from(binary_name)
@@ -95,6 +189,7 @@ pub fn workspace_binary(name: &str) -> PathBuf {
             .join(profile)
             .join(&binary_name);
         if candidate.exists() {
+            assert_binary_is_current(&candidate, &workspace_root);
             return candidate;
         }
     }
@@ -130,13 +225,6 @@ pub fn stop_project_daemon(project_dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Stdio mode owns the language-server child process.
-enum Lifecycle {
-    Stdio(Child),
-}
-
-type Writer = Box<dyn tokio::io::AsyncWrite + Unpin + Send>;
-
 fn response_array(method: &str, result: Value) -> Vec<Value> {
     if result.is_null() {
         return Vec::new();
@@ -148,8 +236,11 @@ fn response_array(method: &str, result: Value) -> Vec<Value> {
 }
 
 pub struct LspClient {
-    writer: Option<Writer>,
-    lifecycle: Lifecycle,
+    /// `None` after `shutdown` drops it to signal EOF to the server.
+    writer: Option<tokio::process::ChildStdin>,
+    /// The language server this client speaks to. Transport is stdio only,
+    /// so there is exactly one kind of child to wait on.
+    child: Child,
     next_id: AtomicI64,
     pending: Arc<Mutex<HashMap<i64, tokio::sync::oneshot::Sender<Value>>>>,
     notifications: mpsc::Receiver<(String, Value)>,
@@ -190,26 +281,20 @@ impl LspClient {
             .take()
             .ok_or("al-lsp child stdout not available")?;
 
-        let mut client = Self::from_transport(
-            Box::new(stdin),
-            BufReader::new(stdout),
-            Lifecycle::Stdio(child),
-            root_path,
-        );
+        let mut client = Self::from_transport(stdin, BufReader::new(stdout), child, root_path);
 
         client.initialize().await?;
         Ok(client)
     }
 
-    /// Construct an LspClient from transport halves.
+    /// Construct an LspClient from the child's stdio halves.
     ///
-    /// This is the shared constructor used by both `spawn` and `connect`.
-    /// The reader is consumed by a background task; the writer is stored
-    /// for sending requests and notifications.
+    /// The reader is consumed by a background task; the writer is stored for
+    /// sending requests and notifications.
     fn from_transport(
-        writer: Writer,
-        reader: impl tokio::io::AsyncBufRead + Unpin + Send + 'static,
-        lifecycle: Lifecycle,
+        writer: tokio::process::ChildStdin,
+        reader: BufReader<tokio::process::ChildStdout>,
+        child: Child,
         root_path: PathBuf,
     ) -> Self {
         let pending: Arc<Mutex<HashMap<i64, tokio::sync::oneshot::Sender<Value>>>> =
@@ -229,7 +314,7 @@ impl LspClient {
 
         LspClient {
             writer: Some(writer),
-            lifecycle,
+            child,
             next_id: AtomicI64::new(1),
             pending,
             notifications: notif_rx,
@@ -843,7 +928,7 @@ impl LspClient {
         // Drop writer to signal EOF
         self.writer.take();
 
-        let Lifecycle::Stdio(child) = &mut self.lifecycle;
+        let child = &mut self.child;
         // A timeout is a failed lifecycle contract, not successful cleanup.
         let status =
             match tokio::time::timeout(tokio::time::Duration::from_secs(3), child.wait()).await {
@@ -869,7 +954,7 @@ impl LspClient {
 /// Terminates the child when a test exits without calling `shutdown()`.
 impl Drop for LspClient {
     fn drop(&mut self) {
-        let Lifecycle::Stdio(child) = &mut self.lifecycle;
+        let child = &mut self.child;
         if let Err(e) = child.start_kill() {
             tracing::warn!(error = %e, "LspClient::drop: start_kill failed; child may be a zombie");
         }

@@ -35,10 +35,13 @@ pub(super) struct SignalRMessage {
 /// A blanket 60 s timeout (the prior default) was too short for slow-network
 /// attach flows and too long for the user to notice that "Step Over" was
 /// silently stuck.
+///
+/// Stepping goes out as `SetBreakpointResponse`, so that is the budget a step
+/// waits on. There is no `Next`/`StepIn`/`StepOut`/`Continue`/`Break` target:
+/// only the names listed here are ever invoked.
 pub(super) fn default_invoke_timeout(target: &str) -> tokio::time::Duration {
     use tokio::time::Duration;
     match target {
-        "Next" | "StepIn" | "StepOut" | "Continue" | "Break" => Duration::from_secs(10),
         "IsAlive" => Duration::from_secs(5),
         "GetVariables" | "GetStackTrace" | "ExpandGlobals" | "ExpandNode" | "GetWatchNode"
         | "GetSource" => Duration::from_secs(30),
@@ -172,10 +175,6 @@ pub(super) fn resolve_negotiate_connection(
     }
 }
 
-/// Replace the value of `connectionToken` (SignalR session credential) in a
-/// JSON response body with a `<redacted>` placeholder before logging or
-/// surfacing in errors. Falls back to the original text if the body is not
-/// valid JSON or has no such field.
 /// Validate the SignalR handshake response.
 ///
 /// After the client sends `{"protocol":"json","version":1}`, a spec-compliant
@@ -216,6 +215,10 @@ pub(super) fn validate_signalr_handshake_response(frame: &str) -> Result<()> {
     Ok(())
 }
 
+/// Replace the value of `connectionToken` (SignalR session credential) in a
+/// JSON response body with a `<redacted>` placeholder before logging or
+/// surfacing in errors. Falls back to the original text if the body is not
+/// valid JSON or has no such field.
 pub(super) fn redact_connection_token(body: &str) -> String {
     let Ok(mut v) = serde_json::from_str::<serde_json::Value>(body) else {
         return body.to_string();
@@ -238,17 +241,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn invoke_timeout_step_ops_are_short() {
-        // Positive: step / continue / break should respond within seconds;
-        // they get a short timeout so a hung server fails fast and the user
-        // notices instead of waiting a full minute.
-        for target in ["Next", "StepIn", "StepOut", "Continue", "Break"] {
-            let t = default_invoke_timeout(target);
-            assert!(
-                t <= tokio::time::Duration::from_secs(15),
-                "{target} timeout {t:?} should be ≤ 15s"
-            );
-        }
+    fn invoke_timeout_for_a_step_is_the_breakpoint_budget() {
+        // A step is sent as SetBreakpointResponse (session.rs), so that is what
+        // the user waits on when "Step Over" hangs.
+        assert_eq!(
+            default_invoke_timeout("SetBreakpointResponse"),
+            tokio::time::Duration::from_secs(30)
+        );
     }
 
     #[test]
@@ -318,20 +317,27 @@ mod tests {
 
     #[test]
     fn invoke_timeout_dead_entries_are_gone() {
-        // The old table had entries for
-        // `ExpandVariableTree` and `ExpandLocalsTree` that no caller ever
-        // produced. Those strings should now fall through to the 60s
-        // catch-all (since they are unreachable by the codebase). This
-        // test pins the cleanup so a future revert doesn't silently
-        // reintroduce dead table entries.
-        assert_eq!(
-            default_invoke_timeout("ExpandVariableTree"),
-            tokio::time::Duration::from_secs(60)
-        );
-        assert_eq!(
-            default_invoke_timeout("ExpandLocalsTree"),
-            tokio::time::Duration::from_secs(60)
-        );
+        // The table has carried entries for targets no caller ever produces:
+        // ExpandVariableTree and ExpandLocalsTree, and the stepping names
+        // Next / StepIn / StepOut / Continue / Break, which never go over the
+        // wire because stepping is sent as SetBreakpointResponse. Each must
+        // fall through to the 60s catch-all. This pins the cleanup so a revert
+        // does not quietly reintroduce them.
+        for target in [
+            "ExpandVariableTree",
+            "ExpandLocalsTree",
+            "Next",
+            "StepIn",
+            "StepOut",
+            "Continue",
+            "Break",
+        ] {
+            assert_eq!(
+                default_invoke_timeout(target),
+                tokio::time::Duration::from_secs(60),
+                "{target} is never invoked and must not have its own budget"
+            );
+        }
     }
 
     #[test]

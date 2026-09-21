@@ -48,6 +48,10 @@ const DIAGNOSTICS_DEBOUNCE: std::time::Duration = std::time::Duration::from_mill
 /// generation follows a typing burst (and every save).
 const WORKSPACE_DIAGNOSTICS_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How many times a read request recomputes its answer after the workspace
+/// generation moved under it. See [`AlServer::offload_after_ready`].
+const MAX_OFFLOAD_ATTEMPTS: u32 = 3;
+
 /// Every `al.*` command the server advertises in `executeCommandProvider` and
 /// handles in [`AlServer::execute_command`]. Single source of truth: the
 /// capability list and the dispatch both derive from this slice, and the
@@ -631,37 +635,56 @@ impl AlServer {
     }
 
     /// Wait for a usable workspace generation, run `work` on the blocking pool
-    /// with the generation read guard released, and reject the result if the
+    /// with the generation read guard released, and recompute it if the
     /// workspace moved on while it ran.
     ///
     /// `tokio::sync::RwLock` is fair: a read guard held across an await queues
     /// `did_change`'s writer behind it, and every later reader behind that
     /// writer. A whole-workspace walk under the guard therefore froze typing
     /// for as long as the walk took, and the editor's text and the server's
-    /// diverged meanwhile. Releasing the guard first and comparing
-    /// `generation_revision` afterwards keeps the same consistency guarantee —
-    /// a result computed across a generation swap is never returned — at the
-    /// cost of a `ContentModified`, which LSP clients answer by re-requesting.
+    /// diverged meanwhile. The guard is released first and
+    /// `generation_revision` compared afterwards, so a result computed across a
+    /// generation swap is never returned as current.
+    ///
+    /// Answering such a pass with `ContentModified` made a read request fail
+    /// for a swap that had nothing to do with it: `did_close` bumps the
+    /// generation twice (once on close, once when the saved file has been read
+    /// back), and a `documentSymbol` or `workspace/symbol` issued right after a
+    /// close landed on the second bump. The invalidated pass is recomputed
+    /// against the new generation instead. The retry is bounded, and once the
+    /// bound is reached the newest computed result is returned: a read request
+    /// must produce an answer even while the workspace keeps churning.
     async fn offload_after_ready<T, F>(&self, what: &'static str, work: F) -> Result<T>
     where
-        F: FnOnce() -> T + Send + 'static,
+        F: Fn() -> T + Send + Sync + 'static,
         T: Send + 'static,
     {
-        let generation = self.await_ready().await?;
-        let revision = self.workspace.generation_revision();
-        drop(generation);
+        let work = Arc::new(work);
+        let mut newest = None;
+        for attempt in 1..=MAX_OFFLOAD_ATTEMPTS {
+            let generation = self.await_ready().await?;
+            let revision = self.workspace.generation_revision();
+            drop(generation);
 
-        let result = tokio::task::spawn_blocking(work)
-            .await
-            .map_err(|error| internal_error(format!("{what} worker failed: {error}")))?;
+            let pass = Arc::clone(&work);
+            let result = tokio::task::spawn_blocking(move || pass())
+                .await
+                .map_err(|error| internal_error(format!("{what} worker failed: {error}")))?;
 
-        let generation = self.workspace.generation_lock.read().await;
-        let moved = self.workspace.generation_revision() != revision;
-        drop(generation);
-        if moved {
-            return Err(content_modified_error());
+            let generation = self.workspace.generation_lock.read().await;
+            let moved = self.workspace.generation_revision() != revision;
+            drop(generation);
+            newest = Some(result);
+            if !moved {
+                break;
+            }
+            tracing::debug!(
+                request = what,
+                attempt,
+                "workspace generation moved under a read request, recomputing"
+            );
         }
-        Ok(result)
+        Ok(newest.expect("the offload loop runs at least one pass"))
     }
 
     /// Whether `uri` still holds the exact snapshot a request started from.
@@ -1971,7 +1994,6 @@ impl LanguageServer for AlServer {
         params: DocumentDiagnosticParams,
     ) -> Result<DocumentDiagnosticReportResult> {
         let generation = self.await_ready().await?;
-        let revision = self.workspace.generation_revision();
         let uri = &params.text_document.uri;
 
         // skip diagnostics for virtual symbol cache files.
@@ -1994,18 +2016,16 @@ impl LanguageServer for AlServer {
         let diags = diagnostics::compute_diagnostics(self, uri, &text).await;
         let elapsed = start.elapsed();
         let generation = self.workspace.generation_lock.read().await;
-        let snapshot_current = self
-            .workspace
-            .documents
-            .get_text_and_client_version(uri)
-            .is_some_and(|(current_text, current_version)| {
-                current_version == client_version && Arc::ptr_eq(&current_text, &text)
-            });
-        if self.workspace.generation_revision() != revision || !snapshot_current {
-            drop(generation);
+        // Only this request's own document invalidates it. An edit elsewhere in
+        // the workspace, or the generation bump `did_close` publishes when it
+        // has read the saved file back, says nothing about these diagnostics,
+        // and answering those with ContentModified made a read request fail for
+        // an unrelated change.
+        let snapshot_current = self.snapshot_is_current(uri, &Some((text, client_version)));
+        drop(generation);
+        if !snapshot_current {
             return Err(content_modified_error());
         }
-        drop(generation);
         tracing::debug!(uri = %uri, count = diags.len(), elapsed_us = elapsed.as_micros() as u64, "diagnostic (pull)");
 
         Ok(diagnostics::full_diagnostic_report(diags))
@@ -2017,19 +2037,31 @@ impl LanguageServer for AlServer {
     ) -> Result<WorkspaceDiagnosticReportResult> {
         // Project-scope pull diagnostics aggregate parse and syntax errors
         // across every indexed file plus bridge diagnostics for open documents.
-        let generation = self.await_ready().await?;
-        let revision = self.workspace.generation_revision();
-        drop(generation);
         let start = std::time::Instant::now();
-        let reports = diagnostics::compute_workspace_diagnostics(self)
-            .await
-            .map_err(|error| internal_error(error.to_string()))?;
-        let generation = self.workspace.generation_lock.read().await;
-        if self.workspace.generation_revision() != revision {
+        // A pass invalidated by a concurrent edit is recomputed against the new
+        // generation rather than answered with ContentModified. After
+        // `MAX_OFFLOAD_ATTEMPTS` the newest computed set is reported: a client
+        // that polls project diagnostics while the user types has to get an
+        // answer, and the debounced push pass corrects whatever moved since.
+        let mut reports = Vec::new();
+        for attempt in 1..=MAX_OFFLOAD_ATTEMPTS {
+            let generation = self.await_ready().await?;
+            let revision = self.workspace.generation_revision();
             drop(generation);
-            return Err(content_modified_error());
+            reports = diagnostics::compute_workspace_diagnostics(self)
+                .await
+                .map_err(|error| internal_error(error.to_string()))?;
+            let generation = self.workspace.generation_lock.read().await;
+            let moved = self.workspace.generation_revision() != revision;
+            drop(generation);
+            if !moved {
+                break;
+            }
+            tracing::debug!(
+                attempt,
+                "workspace generation moved under workspace_diagnostic, recomputing"
+            );
         }
-        drop(generation);
         let file_count = reports.len();
         let items = reports
             .into_iter()
@@ -2879,8 +2911,15 @@ mod generation_guard_tests {
             .unwrap();
 
         let (release, blocked) = std::sync::mpsc::channel::<()>();
+        // Only the first pass waits for the edit. The edit moves the
+        // generation, so `offload_after_ready` recomputes, and the recompute
+        // must not block on a channel nobody sends to again.
+        let gate = std::sync::Mutex::new(Some(blocked));
         let slow = server.offload_after_ready("slow", move || {
-            blocked.recv().expect("the edit releases the slow worker");
+            let first_pass = gate.lock().expect("gate is never poisoned").take();
+            if let Some(blocked) = first_pass {
+                blocked.recv().expect("the edit releases the slow worker");
+            }
         });
 
         let edit = async {
@@ -2915,9 +2954,78 @@ mod generation_guard_tests {
             2,
             "the edit must have been applied"
         );
-        let error = slow_result
-            .expect_err("a result computed across the edit must not be returned as current");
-        assert_eq!(error.code, content_modified_error().code);
+        slow_result.expect("the request is recomputed against the new generation, not failed");
+    }
+
+    /// `did_close` bumps the generation twice: once on the close, once when the
+    /// saved file has been read back from disk. A `documentSymbol` or
+    /// `workspace/symbol` issued right after a close landed on the second bump
+    /// and came back `ContentModified`, so closing a file broke reads of every
+    /// other file.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unrelated_generation_bump_is_recomputed_not_reported() {
+        let (service, _socket) = LspService::new(AlServer::new);
+        let server = service.inner();
+        server
+            .workspace_init_state
+            .send_replace(WorkspaceInitState::Ready);
+
+        let passes = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter = Arc::clone(&passes);
+        let workspace = Arc::clone(&server.workspace);
+        let result = server
+            .offload_after_ready("read", move || {
+                if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                    // The first pass runs across a generation swap, the way a
+                    // did_close disk restore lands under an in-flight read.
+                    workspace.mark_generation_changed();
+                }
+                "symbols"
+            })
+            .await;
+
+        assert_eq!(
+            result.expect("an unrelated generation swap must not fail a read request"),
+            "symbols"
+        );
+        assert_eq!(
+            passes.load(Ordering::SeqCst),
+            2,
+            "the invalidated pass is recomputed against the new generation"
+        );
+    }
+
+    /// Typing does not stop for a read request. Once the bounded recompute is
+    /// spent the newest result is returned, because a read request that never
+    /// answers is worse than one answered from a generation old by a keystroke.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_read_request_answers_while_the_workspace_keeps_churning() {
+        let (service, _socket) = LspService::new(AlServer::new);
+        let server = service.inner();
+        server
+            .workspace_init_state
+            .send_replace(WorkspaceInitState::Ready);
+
+        let passes = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter = Arc::clone(&passes);
+        let workspace = Arc::clone(&server.workspace);
+        let result = server
+            .offload_after_ready("read", move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                workspace.mark_generation_changed();
+                "symbols"
+            })
+            .await;
+
+        assert_eq!(
+            result.expect("a churning workspace must not fail a read request"),
+            "symbols"
+        );
+        assert_eq!(
+            passes.load(Ordering::SeqCst),
+            MAX_OFFLOAD_ATTEMPTS,
+            "the recompute is bounded"
+        );
     }
 }
 

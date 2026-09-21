@@ -47,6 +47,10 @@ cargo clippy --workspace --exclude zed-al --all-targets -- -D warnings
 cargo test --workspace --exclude zed-al
 ```
 
+After merging a fix branch also run `cargo test -p al-test-harness --no-fail-fast`. It is the
+only suite that crosses crates, and it caught two regressions that no fix agent's own gates
+could see. Use `--no-fail-fast` on workspace runs so one failing suite does not hide the rest.
+
 Grammar changes also run the `tree-sitter-al` gates in `ROADMAP.md`, and the grammar
 repository is committed and pushed before the superproject pointer moves.
 

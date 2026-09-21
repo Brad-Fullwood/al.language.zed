@@ -29,6 +29,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 
+use crate::interpreter::dispatch::render_value;
 use crate::interpreter::scope::Eval;
 use crate::interpreter::value::{Decimal, ErrorInfo, Value};
 
@@ -132,7 +133,7 @@ pub fn assert_full(_args: &[Value]) -> Eval {
             ok_empty()
         } else {
             err(format!(
-                "Library Variable Storage: AssertFull failed — queue has {}/{} items. Queue is empty.",
+                "Library Variable Storage: AssertFull failed — queue has {}/{} items. Queue is not full.",
                 q.borrow().len(),
                 MAX_QUEUE_SIZE
             ))
@@ -235,7 +236,7 @@ pub fn max_length(_args: &[Value]) -> Eval {
 /// `DequeueText(): Text` — dequeue and coerce to Text via Format().
 pub fn dequeue_text(_args: &[Value]) -> Eval {
     QUEUE.with(|q| match q.borrow_mut().dequeue() {
-        Ok(v) => ok(Value::Text(format_value(&v))),
+        Ok(v) => ok(Value::Text(render_value(&v))),
         Err(msg) => err(format!("Library Variable Storage: {msg}")),
     })
 }
@@ -314,7 +315,7 @@ pub fn peek_text(args: &[Value]) -> Eval {
         _ => return err("Library Variable Storage: PeekText expects (Integer)"),
     };
     QUEUE.with(|q| match q.borrow().peek(index) {
-        Ok(v) => ok(Value::Text(format_value(v))),
+        Ok(v) => ok(Value::Text(render_value(v))),
         Err(msg) => err(format!("Library Variable Storage: {msg}")),
     })
 }
@@ -393,24 +394,6 @@ pub fn peek_boolean(args: &[Value]) -> Eval {
         )),
         Err(msg) => err(format!("Library Variable Storage: {msg}")),
     })
-}
-
-fn format_value(v: &Value) -> String {
-    match v {
-        Value::Integer(n) | Value::BigInteger(n) => n.to_string(),
-        Value::Decimal(n) => n.normalize().to_string(),
-        Value::Boolean(true) => "Yes".to_string(),
-        Value::Boolean(false) => "No".to_string(),
-        Value::Text(s) | Value::Code(s) => s.clone(),
-        Value::Date(d) => d.to_string(),
-        Value::Time(t) => t.to_string(),
-        Value::DateTime(dt) => dt.to_string(),
-        Value::Duration(d) => d.to_string(),
-        Value::Guid(g) => g.clone(),
-        Value::Char(c) => c.to_string(),
-        Value::Null | Value::Empty => String::new(),
-        other => format!("<{}>", other.type_name()),
-    }
 }
 
 /// Resolve a procedure name (case-insensitive) to its Rust implementation.
@@ -618,7 +601,57 @@ mod tests {
     #[test]
     fn assert_full_fails_when_not_full() {
         setup();
-        assert_fail_contains(assert_full(&[]), "empty");
+        enqueue(&[Value::Integer(1)]);
+        enqueue(&[Value::Integer(2)]);
+        enqueue(&[Value::Integer(3)]);
+        let failure = match assert_full(&[]) {
+            Eval::Error(e) => e.message,
+            other => panic!("expected Eval::Error, got {other:?}"),
+        };
+        assert!(failure.contains("3/25"), "got: {failure}");
+        assert!(
+            !failure.contains("Queue is empty"),
+            "the message must not contradict the count it just printed: {failure}"
+        );
+        assert!(failure.contains("not full"), "got: {failure}");
+    }
+
+    /// DequeueText is `Format()`, so a Date must come back as a date rather
+    /// than as the AL day carrier, and a Duration as BC spells it.
+    #[test]
+    fn dequeue_text_formats_dates_and_durations_like_format() {
+        setup();
+        // 2024-07-01 as AL days since 0001-01-01.
+        let day = crate::interpreter::value::al_days_from_ymd(2024, 7, 1);
+        enqueue(&[Value::Date(day)]);
+        assert_eq!(
+            assert_value(dequeue_text(&[])),
+            Value::Text("07/01/2024".to_string())
+        );
+
+        // 2 hours 5 minutes.
+        enqueue(&[Value::Duration(2 * 3_600_000 + 5 * 60_000)]);
+        assert_eq!(
+            assert_value(dequeue_text(&[])),
+            Value::Text("2 hours 5 minutes".to_string())
+        );
+
+        enqueue(&[Value::Time(13 * 3_600_000 + 30 * 60_000 + 1_000)]);
+        assert_eq!(
+            assert_value(dequeue_text(&[])),
+            Value::Text("13:30:01".to_string())
+        );
+    }
+
+    #[test]
+    fn peek_text_formats_a_date_like_format() {
+        setup();
+        let day = crate::interpreter::value::al_days_from_ymd(2024, 7, 1);
+        enqueue(&[Value::Date(day)]);
+        assert_eq!(
+            assert_value(peek_text(&[Value::Integer(1)])),
+            Value::Text("07/01/2024".to_string())
+        );
     }
 
     #[test]

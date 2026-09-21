@@ -6,14 +6,17 @@
 //! caller-supplied `mpsc::Sender`.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
 
 use crate::error::TestRunnerError;
-use crate::result::{TestCodeunitResult, TestMethodResult, TestStatus};
-use crate::session::{method_name_matches, RunOptions, TestEvent, TestId, TestSession};
+use crate::result::{TestCodeunitResult, TestFailureKind, TestMethodResult, TestStatus};
+use crate::session::{
+    method_name_matches, RunOptions, TestEvent, TestId, TestSession, DEFAULT_MAX_PARALLEL,
+};
 use crate::test_runner::TestRunnerClient;
 use al_bc::launch::BcServerConfig;
 
@@ -27,9 +30,6 @@ impl LiveBcMode {
     }
 }
 
-/// Match `name` against a simple-glob `pattern`. Supports `*` (zero-or-more
-/// of any char) and is case-insensitive — matches AL's identifier rules.
-/// No-asterisk patterns require an exact case-insensitive match.
 async fn send_event(tx: &mpsc::Sender<TestEvent>, event: TestEvent) -> Result<(), TestRunnerError> {
     tx.send(event).await.map_err(|_| {
         tracing::warn!("test event channel closed; receiver dropped — aborting run");
@@ -37,26 +37,37 @@ async fn send_event(tx: &mpsc::Sender<TestEvent>, event: TestEvent) -> Result<()
     })
 }
 
-fn failure_result(name: String, message: String) -> TestMethodResult {
+fn failure_result(name: String, message: String, kind: TestFailureKind) -> TestMethodResult {
     TestMethodResult {
         name,
         status: TestStatus::Fail,
         error: Some(message),
         duration_ms: None,
+        failure_kind: Some(kind),
     }
 }
 
+/// Emit an `Error`, a failed `CaseResult` and a one-test `SuiteComplete` for a
+/// target the server never reported on.
+///
+/// `kind` reaches the JUnit `type` attribute, so a timeout or a dead server is
+/// not filed under `AssertionError` alongside a genuinely red test.
 fn append_failed_case(
     events: &mut Vec<TestEvent>,
     codeunit_id: i32,
     codeunit_name: &str,
     method_name: Option<&str>,
     message: String,
+    kind: TestFailureKind,
 ) {
     events.push(TestEvent::Error {
         message: message.clone(),
     });
-    let result = failure_result(method_name.unwrap_or(codeunit_name).to_string(), message);
+    let result = failure_result(
+        method_name.unwrap_or(codeunit_name).to_string(),
+        message,
+        kind,
+    );
     events.push(TestEvent::CaseResult {
         id: TestId {
             codeunit_id,
@@ -77,6 +88,51 @@ fn append_failed_case(
             skipped: 0,
         },
     });
+}
+
+/// Index every specifically named method by `(codeunit_id, lowercased name)`.
+///
+/// Keyed case-insensitively because BC echoes a method name with its own
+/// casing. `tally` removes an entry when its result arrives, so whatever is
+/// left at the end of a run was requested and never reported.
+fn requested_targets(
+    codeunits: &[(i32, String, Vec<Option<String>>)],
+) -> HashMap<(i32, String), (String, String)> {
+    let mut targets = HashMap::new();
+    for (codeunit_id, codeunit_name, methods) in codeunits {
+        for method in methods.iter().flatten() {
+            targets.insert(
+                (*codeunit_id, method.to_ascii_lowercase()),
+                (codeunit_name.clone(), method.clone()),
+            );
+        }
+    }
+    targets
+}
+
+/// Fold one event into the session totals and tick off the method it reports.
+fn tally(
+    event: &TestEvent,
+    unreported: &mut HashMap<(i32, String), (String, String)>,
+    total: &mut usize,
+    passed: &mut usize,
+    failed: &mut usize,
+    skipped: &mut usize,
+) {
+    match event {
+        TestEvent::SuiteComplete { summary, .. } => {
+            *total += summary.total;
+            *passed += summary.passed;
+            *failed += summary.failed;
+            *skipped += summary.skipped;
+        }
+        TestEvent::CaseResult { id, .. } => {
+            if let Some(method) = &id.method_name {
+                unreported.remove(&(id.codeunit_id, method.to_ascii_lowercase()));
+            }
+        }
+        _ => {}
+    }
 }
 
 async fn run_one_codeunit(
@@ -104,6 +160,7 @@ async fn run_one_codeunit(
                     codeunit_name,
                     method.as_deref(),
                     format!("Failed to construct the BC test client: {error}"),
+                    TestFailureKind::Infrastructure,
                 );
             }
             return events;
@@ -154,6 +211,7 @@ async fn run_one_codeunit(
                         codeunit_name,
                         method_str,
                         e.to_string(),
+                        TestFailureKind::Infrastructure,
                     );
                 }
                 Err(_elapsed) => {
@@ -163,6 +221,7 @@ async fn run_one_codeunit(
                         codeunit_name,
                         method_str,
                         format!("timeout after {} ms", timeout_dur.as_millis()),
+                        TestFailureKind::Timeout,
                     );
                 }
             }
@@ -199,7 +258,14 @@ async fn run_one_codeunit(
                 });
             }
             Ok(Err(e)) => {
-                append_failed_case(&mut events, codeunit_id, codeunit_name, None, e.to_string());
+                append_failed_case(
+                    &mut events,
+                    codeunit_id,
+                    codeunit_name,
+                    None,
+                    e.to_string(),
+                    TestFailureKind::Infrastructure,
+                );
             }
             Err(_elapsed) => {
                 append_failed_case(
@@ -208,6 +274,7 @@ async fn run_one_codeunit(
                     codeunit_name,
                     None,
                     format!("timeout after {} ms", timeout_dur.as_millis()),
+                    TestFailureKind::Timeout,
                 );
             }
         }
@@ -228,6 +295,7 @@ impl TestSession for LiveBcMode {
         // Apply the method-name filter before grouping. Whole-codeunit targets
         // are expanded through the dev API so `--filter` never silently runs
         // every method merely because the caller supplied `method_name: None`.
+        let requested = tests.len();
         let tests = match opts.filter.as_deref() {
             None => tests,
             Some(pattern) => {
@@ -256,6 +324,18 @@ impl TestSession for LiveBcMode {
             }
         };
 
+        // A filter that selects nothing is a typo in the pattern far more often
+        // than it is an empty suite. Returning an error stops `al test run
+        // --filter '*Post'` from printing a green summary over zero tests.
+        if let Some(pattern) = opts.filter.as_deref() {
+            if requested > 0 && tests.is_empty() {
+                return Err(TestRunnerError::FilterMatchedNothing {
+                    pattern: pattern.to_string(),
+                    requested,
+                });
+            }
+        }
+
         // Deduplicate identical (codeunit_id, method_name) targets before
         // grouping. A malformed RPC call can repeat the same TestId; without
         // this guard the BC API would be invoked once per duplicate and every
@@ -274,10 +354,26 @@ impl TestSession for LiveBcMode {
             entry.1.push(test.method_name);
         }
 
-        let codeunits: Vec<(i32, String, Vec<Option<String>>)> = groups
+        let mut codeunits: Vec<(i32, String, Vec<Option<String>>)> = groups
             .into_iter()
             .map(|(id, (name, methods))| (id, name, methods))
             .collect();
+        codeunits.sort_by_key(|(id, _, _)| *id);
+
+        // Reconcile against what was asked for, before the collapse below
+        // removes the individually named methods from the work list.
+        let mut unreported = requested_targets(&codeunits);
+
+        // "Run selected" in a tree UI sends the codeunit node and a method node
+        // under it in one request, so a group can hold both `None` and
+        // `Some("TestA")`. Running both issues two BC calls and counts TestA in
+        // two SuiteComplete summaries. The whole-codeunit run covers every
+        // named method, so it wins and the named entries are dropped.
+        for (_, _, methods) in codeunits.iter_mut() {
+            if methods.iter().any(Option::is_none) {
+                methods.retain(Option::is_none);
+            }
+        }
 
         let mut total_total: usize = 0;
         let mut total_passed: usize = 0;
@@ -285,10 +381,17 @@ impl TestSession for LiveBcMode {
         let mut total_skipped: usize = 0;
 
         if opts.parallel && codeunits.len() > 1 {
+            let permits = opts.max_parallel.unwrap_or(DEFAULT_MAX_PARALLEL).max(1);
+            let gate = Arc::new(Semaphore::new(permits));
             let mut join_set: JoinSet<Vec<TestEvent>> = JoinSet::new();
             for (codeunit_id, codeunit_name, methods) in codeunits {
                 let config = self.config.clone();
+                let gate = Arc::clone(&gate);
                 join_set.spawn(async move {
+                    let _permit = gate
+                        .acquire_owned()
+                        .await
+                        .expect("the parallelism gate is never closed");
                     run_one_codeunit(&config, codeunit_id, &codeunit_name, &methods, timeout_dur)
                         .await
                 });
@@ -298,12 +401,14 @@ impl TestSession for LiveBcMode {
                 let events =
                     result.map_err(|error| TestRunnerError::WorkerFailed(error.to_string()))?;
                 for event in events {
-                    if let TestEvent::SuiteComplete { ref summary, .. } = event {
-                        total_total += summary.total;
-                        total_passed += summary.passed;
-                        total_failed += summary.failed;
-                        total_skipped += summary.skipped;
-                    }
+                    tally(
+                        &event,
+                        &mut unreported,
+                        &mut total_total,
+                        &mut total_passed,
+                        &mut total_failed,
+                        &mut total_skipped,
+                    );
                     send_event(&tx, event).await?;
                 }
             }
@@ -318,14 +423,48 @@ impl TestSession for LiveBcMode {
                 )
                 .await;
                 for event in events {
-                    if let TestEvent::SuiteComplete { ref summary, .. } = event {
-                        total_total += summary.total;
-                        total_passed += summary.passed;
-                        total_failed += summary.failed;
-                        total_skipped += summary.skipped;
-                    }
+                    tally(
+                        &event,
+                        &mut unreported,
+                        &mut total_total,
+                        &mut total_passed,
+                        &mut total_failed,
+                        &mut total_skipped,
+                    );
                     send_event(&tx, event).await?;
                 }
+            }
+        }
+
+        // Report the dropped tests as failures rather than letting them shrink
+        // the summary: a silently smaller `total` reads as a green run.
+        let mut dropped: Vec<(i32, String, String)> = unreported
+            .into_iter()
+            .map(|((codeunit_id, _), (codeunit_name, method_name))| {
+                (codeunit_id, codeunit_name, method_name)
+            })
+            .collect();
+        dropped.sort();
+        for (codeunit_id, codeunit_name, method_name) in dropped {
+            let message = format!(
+                "{codeunit_name}.{method_name} was requested but the backend reported no result for it"
+            );
+            tracing::error!("{message}");
+            let mut events = Vec::new();
+            append_failed_case(
+                &mut events,
+                codeunit_id,
+                &codeunit_name,
+                Some(&method_name),
+                message,
+                TestFailureKind::Infrastructure,
+            );
+            for event in events {
+                if let TestEvent::SuiteComplete { ref summary, .. } = event {
+                    total_total += summary.total;
+                    total_failed += summary.failed;
+                }
+                send_event(&tx, event).await?;
             }
         }
 
@@ -346,6 +485,8 @@ impl TestSession for LiveBcMode {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use tokio::sync::mpsc;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -711,6 +852,138 @@ mod tests {
         }));
     }
 
+    /// A method whose name repeats the filter's trailing chunk used to be
+    /// dropped from `expanded`, so it never reached BC and never appeared in
+    /// any event, while the summary still said the run was green.
+    #[tokio::test]
+    async fn filter_keeps_a_method_whose_name_repeats_the_pattern() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/BC/dev/tests/50100"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "value": [
+                    { "name": "TestPostPost" },
+                    { "name": "TestShip" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/BC/dev/tests/50100/run"))
+            .and(query_param("method", "TestPostPost"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "value": [{ "name": "TestPostPost", "result": "pass" }]
+            })))
+            .mount(&server)
+            .await;
+
+        let mode = LiveBcMode::new(config_for(&server.uri()));
+        let (tx, mut rx) = mpsc::channel::<TestEvent>(32);
+        mode.run(
+            vec![test_id(50100, "PostingTests")],
+            RunOptions {
+                filter: Some("*Post".to_string()),
+                ..Default::default()
+            },
+            tx,
+        )
+        .await
+        .expect("filtered live run");
+
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                TestEvent::CaseResult { id, result }
+                    if id.method_name.as_deref() == Some("TestPostPost")
+                        && result.status == TestStatus::Pass
+            )),
+            "TestPostPost ends with the pattern and must run: {events:?}"
+        );
+        assert!(
+            matches!(
+                events.last(),
+                Some(TestEvent::SessionComplete { total: 1, .. })
+            ),
+            "the matched test must be counted: {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn filter_matching_nothing_is_an_error_not_a_green_run() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/BC/dev/tests/50100"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "value": [{ "name": "TestShip" }]
+            })))
+            .mount(&server)
+            .await;
+
+        let mode = LiveBcMode::new(config_for(&server.uri()));
+        let (tx, mut rx) = mpsc::channel::<TestEvent>(32);
+        let error = mode
+            .run(
+                vec![test_id(50100, "PostingTests")],
+                RunOptions {
+                    filter: Some("*Nonexistent".to_string()),
+                    ..Default::default()
+                },
+                tx,
+            )
+            .await
+            .expect_err("a filter that selects nothing must fail loudly");
+        assert!(
+            matches!(error, TestRunnerError::FilterMatchedNothing { .. }),
+            "got {error:?}"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "no SessionComplete may be emitted for an empty selection"
+        );
+    }
+
+    /// A requested method whose result never arrives stays in the reconciliation
+    /// map, which is what turns it into a reported failure at the end of `run`.
+    #[test]
+    fn a_requested_method_without_a_case_result_stays_unreported() {
+        use crate::backends::live_bc::{requested_targets, tally};
+
+        let codeunits = vec![(
+            50100,
+            "MyTests".to_string(),
+            vec![Some("TestA".to_string()), Some("TestB".to_string())],
+        )];
+        let mut unreported = requested_targets(&codeunits);
+        assert_eq!(unreported.len(), 2);
+
+        let (mut total, mut passed, mut failed, mut skipped) = (0, 0, 0, 0);
+        // BC echoes its own casing; the reconciliation must still tick it off.
+        tally(
+            &TestEvent::CaseResult {
+                id: method_test_id(50100, "MyTests", "testa"),
+                result: crate::result::TestMethodResult {
+                    name: "testa".into(),
+                    status: TestStatus::Pass,
+                    error: None,
+                    duration_ms: None,
+                    failure_kind: None,
+                },
+            },
+            &mut unreported,
+            &mut total,
+            &mut passed,
+            &mut failed,
+            &mut skipped,
+        );
+
+        let left: Vec<_> = unreported.into_values().collect();
+        assert_eq!(left, vec![("MyTests".to_string(), "TestB".to_string())]);
+    }
+
     #[tokio::test]
     async fn test_live_bc_mode_two_codeunits_parallel() {
         let server = MockServer::start().await;
@@ -780,6 +1053,100 @@ mod tests {
             }
             other => panic!("expected SessionComplete last, got {other:?}"),
         }
+    }
+
+    /// Serve every request with a fixed JSON body after a short hold, and
+    /// record the highest number of requests held at once.
+    ///
+    /// wiremock answers from a shared pool and does not expose in-flight
+    /// counts, so the concurrency ceiling needs a socket the test owns.
+    async fn counting_server(
+        hold: Duration,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let in_flight = std::sync::Arc::new(AtomicUsize::new(0));
+        let peak = std::sync::Arc::new(AtomicUsize::new(0));
+        let peak_handle = std::sync::Arc::clone(&peak);
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let in_flight = std::sync::Arc::clone(&in_flight);
+                let peak = std::sync::Arc::clone(&peak);
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = socket.read(&mut buf).await;
+                    let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    tokio::time::sleep(hold).await;
+                    in_flight.fetch_sub(1, Ordering::SeqCst);
+                    let body = r#"{"value":[{"name":"TestA","result":"pass"}]}"#;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+
+        (format!("http://127.0.0.1:{port}"), peak_handle)
+    }
+
+    #[tokio::test]
+    async fn parallel_runs_are_capped_at_max_parallel() {
+        let (base_url, peak) = counting_server(Duration::from_millis(120)).await;
+        let mode = LiveBcMode::new(config_for(&base_url));
+
+        let tests: Vec<TestId> = (0..8)
+            .map(|index| test_id(50100 + index, &format!("Suite{index}")))
+            .collect();
+        let (tx, mut rx) = mpsc::channel::<TestEvent>(256);
+        mode.run(
+            tests,
+            RunOptions {
+                parallel: true,
+                max_parallel: Some(2),
+                ..Default::default()
+            },
+            tx,
+        )
+        .await
+        .expect("parallel run completes");
+
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        match events.last() {
+            Some(TestEvent::SessionComplete { total, .. }) => assert_eq!(*total, 8),
+            other => panic!("expected SessionComplete last, got {other:?}"),
+        }
+        let observed = peak.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            observed <= 2,
+            "at most 2 codeunit runs may be in flight, saw {observed}"
+        );
+        assert!(
+            observed >= 2,
+            "the run must still be parallel, saw {observed}"
+        );
+    }
+
+    #[test]
+    fn the_default_fan_out_is_bounded() {
+        assert!(
+            (1..=8).contains(&crate::session::DEFAULT_MAX_PARALLEL),
+            "an unbounded default would open one BC session per codeunit"
+        );
+        assert_eq!(RunOptions::default().max_parallel, None);
     }
 
     #[tokio::test]
@@ -923,6 +1290,65 @@ mod tests {
                 assert_eq!(*passed, 1);
                 assert_eq!(*failed, 0);
                 assert_eq!(*skipped, 0);
+            }
+            other => panic!("expected SessionComplete last, got {other:?}"),
+        }
+    }
+
+    /// A tree UI that sends the codeunit node and one of its method nodes in
+    /// the same request used to run the codeunit twice and count the named
+    /// method in both summaries.
+    #[tokio::test]
+    async fn codeunit_plus_one_of_its_methods_runs_the_codeunit_once() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/BC/dev/tests/50100/run"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "value": [
+                    { "name": "TestA", "result": "pass" },
+                    { "name": "TestB", "result": "pass" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let mode = LiveBcMode::new(config_for(&server.uri()));
+        let (tx, mut rx) = mpsc::channel::<TestEvent>(64);
+        mode.run(
+            vec![
+                test_id(50100, "MyTests"),
+                method_test_id(50100, "MyTests", "TestA"),
+            ],
+            RunOptions::default(),
+            tx,
+        )
+        .await
+        .expect("run completes");
+
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            1,
+            "the whole-codeunit run already covers TestA"
+        );
+        let suites = events
+            .iter()
+            .filter(|event| matches!(event, TestEvent::SuiteComplete { .. }))
+            .count();
+        assert_eq!(suites, 1, "expected one SuiteComplete, got {events:?}");
+        match events.last() {
+            Some(TestEvent::SessionComplete {
+                total,
+                passed,
+                failed,
+                ..
+            }) => {
+                assert_eq!(*total, 2, "TestA must not be counted twice: {events:?}");
+                assert_eq!(*passed, 2);
+                assert_eq!(*failed, 0);
             }
             other => panic!("expected SessionComplete last, got {other:?}"),
         }

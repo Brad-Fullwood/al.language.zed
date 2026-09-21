@@ -15,5 +15,6 @@ pub use jsonc::{strip_json_comments, strip_trailing_commas};
 pub use procedure::ProcedureSource;
 pub use profiler::{ProfilerHint, ProfilerSession, MAX_PROFILE_FILE_BYTES};
 pub use test_result::{
-    PersistenceError, TestCodeunitResult, TestMethodResult, TestRunRecord, TestStatus,
+    PersistenceError, TestCodeunitResult, TestFailureKind, TestMethodResult, TestRunRecord,
+    TestStatus,
 };

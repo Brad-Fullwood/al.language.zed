@@ -639,11 +639,21 @@ async fn test_edit_h02_edit_to_invalid_al() {
         .change_file("src/edit_test.al", "this is not valid AL code at all!!!")
         .await;
 
-    // Queries should not crash
-    let _symbols = client.document_symbols("src/edit_test.al").await;
-    // May have some symbols from error recovery, but shouldn't panic
+    // Text that declares no AL object yields no object symbols, whatever error
+    // recovery makes of it.
+    let symbols = client.document_symbols("src/edit_test.al").await;
+    assert!(
+        symbols.is_empty(),
+        "invalid AL declares no symbols, got: {symbols:?}"
+    );
 
-    let _hover = client.hover("src/edit_test.al", 0, 0).await;
+    // The stale codeunit must be gone too: a query still answering from the
+    // pre-edit tree is the regression this guards.
+    let hover = client.hover("src/edit_test.al", 0, 0).await;
+    assert!(
+        hover.is_none(),
+        "hover must not answer from the replaced document, got: {hover:?}"
+    );
 
     client.shutdown().await;
 }
