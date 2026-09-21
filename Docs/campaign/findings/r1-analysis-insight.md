@@ -133,14 +133,14 @@ Insight:
 - severity: medium
 - scenario: the audit's conditional-`TableRelation` fix added `extract_table_relation_tables` (plural), but `check_object_consumers` still calls the singular `extract_table_relation_table`, which is `extract_table_relation_tables(value).into_iter().next()`. Line 250 of analysis.rs sorts the branch tables alphabetically before returning them, so for `Sales Line."No."` with `TableRelation = IF (Type=CONST(Item)) Item."No." ELSE IF (Type=CONST(Resource)) Resource."No."` the singular helper returns `Item`. An impact query on `Resource` never lists `Sales Line` as a `Filter` consumer, and a query on `Item` succeeds only by alphabetical accident.
 - fix: have `check_object_consumers` call `extract_table_relation_tables` and test every branch with `eq_ignore_ascii_case`.
-- status: open
+- status: fixed 88a5fd98
 
 ### [BUG] `extract_table_relation_tables` sorts its result while its doc says declaration order
 - where: crates/al-insight/src/analysis.rs:204 (doc) vs 250-252 (code)
 - severity: low
 - scenario: the doc comment says "Every table referenced by a `TableRelation` value, **in declaration order**", but the function ends with `tables.sort_unstable(); tables.dedup();`. `extract_table_relation_table` then documents itself as the "single-table helper" while actually returning the alphabetically first branch. Any caller that treats element 0 as the primary relation gets the wrong table.
 - fix: either drop the sort and dedup while preserving order, or correct both doc comments and make the singular helper explicit about which table it returns.
-- status: open
+- status: fixed 88a5fd98
 
 ### [GAP] One unparseable `.al` file aborts the whole permission-set generation
 - where: crates/al-analysis/src/permissions.rs:66-92
