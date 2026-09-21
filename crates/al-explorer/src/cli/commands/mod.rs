@@ -642,20 +642,6 @@ fn validate_run_command_result(method: &str, result: &serde_json::Value) -> Resu
                 ],
             )?;
         }
-        "tests.last_results" => {
-            let Some(object) = result.as_object() else {
-                return Err(response_error("a test-history object"));
-            };
-            match (object.get("lastResult"), object.get("results")) {
-                (Some(last), _) if last.is_null() || last.is_object() => {}
-                (_, Some(results)) if results.is_array() => {}
-                _ => {
-                    return Err(response_error(
-                        "an object with object/null 'lastResult' or array 'results'",
-                    ));
-                }
-            }
-        }
         "tests.classify" => {
             require_object_field(
                 result,
@@ -1087,6 +1073,11 @@ mod path_tests {
         }
         assert!(!methods.is_empty());
         for method in methods {
+            // `request_checked` consults `response_contract` first, so a method
+            // it claims never reaches this fallback module.
+            if super::response_contract::handles(&method) {
+                continue;
+            }
             let probe = match method.as_str() {
                 "entrypoints"
                 | "obsolete"
@@ -1114,7 +1105,6 @@ mod path_tests {
                 "xlf.untranslated" => serde_json::json!({"count": 0, "untranslated": []}),
                 "xlf.suggest" => serde_json::json!({"count": 0, "suggestions": []}),
                 "tests.affected" => serde_json::json!({"affected": []}),
-                "tests.last_results" => serde_json::json!({"results": []}),
                 "tests.classify" => serde_json::json!({"classifications": []}),
                 "tests.coverage" => serde_json::json!({"coverage": [], "untested": []}),
                 "permissions.audit" => serde_json::json!({
