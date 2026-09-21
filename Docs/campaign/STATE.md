@@ -11,7 +11,9 @@ Round 1 reviews are complete: 224 verified findings in 11 files. Six of seven fi
 | Item | Kind | Output |
 |------|------|--------|
 | Fix R1c analysis (29 findings, 26 fixed): now merging the campaign branch into its own, resolving three conflicts, and closing the three items it had left for other owners | worktree fix | branch `campaign/fix-r1c-analysis` |
-| desloppify batch: split `formatting.rs`, `symbols.rs`, `index.rs`, `oauth.rs`, remove the duplicate data loader, merge the two line tables | worktree refactor | branch `campaign/slop-syntax-symbols`, `findings/slop-syntax-symbols.md` |
+| desloppify batch (done, 10 commits: four file splits, one data loader, one line table): waiting for the analysis third pass to merge, then merges the campaign branch into its own and re-applies campaign changes to the split files | worktree refactor | branch `campaign/slop-syntax-symbols`, `findings/slop-syntax-symbols.md` |
+| Daemon lifecycle: build identity in the handshake, idle exit, PATH fallback version check, `daemon-shutdown` waits for the socket, harness stops leaking daemons | worktree fix | branch `campaign/fix-daemon-lifecycle` |
+| Blog: articles 5 (`mcp-and-the-claude-code-plugin`) and 2 (`running-bc-tests-locally`), fix the `trace` paragraph in article 1 | blog repo branch `campaign/2026-09-rewrite` | `findings/blog-progress.md` |
 | Fix round 2 security findings (8: 1 critical, 3 high). Project trust: repository settings that name code, programs, feeds or credential targets apply only after `al-explorer trust`. Dangling symlink containment bypass. Scheme check on token targets | worktree fix | branch `campaign/fix-r2-security` |
 | CI fails on PR #30 on three platforms while local Linux is green: `test_completion_after_dot` on ubuntu, numeric version selection depends on directory order on macOS, out-of-project format refusal on Windows | worktree fix with its own draft PR for runner access | branch `campaign/fix-ci-platforms` |
 
@@ -19,7 +21,7 @@ Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, 
 
 Queued:
 
-- Stale daemon reuse: `al-explorer` connects to a running `al-lsp daemon` for the project even when that process was built from older code, and then rejects its responses (`missing required field 'members'`). Add a build identity to the handshake (version plus build hash), and restart a mismatched daemon. Daemons also outlive their worktrees: check the idle exit. Found when a gate failed on 2026-09-21.
+- After the desloppify branch merges: run `desloppify --lang rust scan --path .` from the main checkout and record the scores (the agent did not rescan, a forced rescan would reset the plan in the shared state file).
 
 - 124 `trim_matches('"')` identifier cleanups in al-analysis (102) and al-insight (22), replace with `al_syntax::node_text_clean`. Start after both analysis fix branches merge.
 - New findings from the emit fix agent (in `findings/r1-emit-bc-explorer.md`): `SymbolReference.json` has no `Variables` array for global variables, `xlf generate` drops properties declared on a one-line member block, al-dap and al-publish post to different BC dev endpoints (needs a live server to settle), the duplicated response validation framework (about 300 lines to move).
