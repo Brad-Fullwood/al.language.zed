@@ -14,11 +14,14 @@ Round 1 reviews are complete: 224 verified findings in 11 files. Six of seven fi
 | Fix R1b analysis: rename, resolution, breaking changes, xliff, obsolescence (35 findings) | worktree fix | branch `campaign/fix-r1b-analysis` |
 | Fix R1c analysis: coverage, multi-object files, permission audit, signature help, code lens (29 findings) | worktree fix | branch `campaign/fix-r1c-analysis` |
 | AI tooling daemon work: wrong answers first, then limit, fields, scope, `source --list-procedures`, CLI `location`, index progress, plugin simplification | worktree build | branch `campaign/ai-daemon-projection` |
+| desloppify batch: split `formatting.rs`, `symbols.rs`, `index.rs`, `oauth.rs`, remove the duplicate data loader, merge the two line tables | worktree refactor | branch `campaign/slop-syntax-symbols`, `findings/slop-syntax-symbols.md` |
+| Round 2 security review: bypass attempts on today's security fixes, threat model of the agent-facing surface | review | `findings/r2-security.md` |
+
+Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, CI runs on every push).
 
 Queued:
 
 - 124 `trim_matches('"')` identifier cleanups in al-analysis (102) and al-insight (22), replace with `al_syntax::node_text_clean`. Start after both analysis fix branches merge.
-- `al_syntax::LineIndex` and `al_syntax::SourceLines` are two line tables added by two agents in the same round. Merge into one type.
 - New findings from the emit fix agent (in `findings/r1-emit-bc-explorer.md`): `SymbolReference.json` has no `Variables` array for global variables, `xlf generate` drops properties declared on a one-line member block, al-dap and al-publish post to different BC dev endpoints (needs a live server to settle), the duplicated response validation framework (about 300 lines to move).
 - `[UNVERIFIED]` scaffold items: copilot template API calls, empty repeater, `UsageCategory = Lists` on Card pages. Check against Microsoft Learn.
 - desloppify fix batches (`findings/desloppify.md` section 4), file splits after the owning fix branch merges.
@@ -48,8 +51,8 @@ whichever ones pay off most. Record progress per workstream below so gaps are vi
 | A | Correctness: review rounds, triage, fixes with a failing test first | R1 reviews running | Triage each `findings/r1-*.md` as it completes, dispatch fix agents per crate group |
 | B | Old audit: mark each of the 227 `AUDIT-BACKLOG.md` findings fixed or open | R1 reviewers report still-open ones | Collect `[STILL-OPEN]` tags, queue them under A |
 | C | Slop and simplification: desloppify plan, per-crate simplify pass | Triage done (`findings/desloppify.md`). Scores 2026-09-21: strict 80.2, objective 84.7. Weakest: file health 62.2, type safety 72, stale migration 74, contracts 75. 12 fix batches, about 198 hours | Start batches that do not collide with open fix branches. File splits of `resolution.rs`, `dispatch.rs`, `formatting.rs`, `symbols.rs`, `file_index.rs` wait for their fix branch to merge |
-| D | Security: credentials in al-bc and al-publish, `.app` and zip parsing, MCP and daemon input, extension binary download, `cargo deny`, `cargo audit` | covered in part by R1 | Dedicated security review after R1 triage |
-| E | Tests: coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis | not started | Measure coverage, list the weakest modules |
+| D | Security: credentials, archive parsing, MCP and daemon input, extension binary download, supply chain | Round 1 security findings fixed and merged. Round 2 review running | Fix agent for `findings/r2-security.md` |
+| E | Tests: coverage by crate, property tests, `cargo mutants` | Test depth agent running on `campaign/test-depth` | Merge, then `cargo mutants` on its shortlist |
 | F | Grammar: corpus tests, query drift between `languages/al` and `tree-sitter-al/queries` | R1 review running | From R1 findings |
 | G | AI tooling: make this project speed up and sharpen AI work on Business Central (see below) | Inventory, measurements and design done (`findings/ai-tooling-ideas.md`): latency is 4 to 150 ms warm, but 14 of 20 measured answers are too large for an agent (up to 9.4 MB). Plugin build running | Daemon projection work after the LSP fix branch merges |
 | H | Docs: `Docs/`, `README.md`, `ROADMAP.md` match the code, then unsloppify | R1 docs review running | From R1 findings |
