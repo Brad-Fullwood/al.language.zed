@@ -110,7 +110,10 @@ fn field_cmp(value: &Value, bound: &Value) -> Option<std::cmp::Ordering> {
     }
     if let (Some(x), Some(y)) = (flow_text(value), flow_text(bound)) {
         return Some(if matches!(value, Value::Code(_)) {
-            x.to_ascii_uppercase().cmp(&y.to_ascii_uppercase())
+            // Full Unicode folding, matching `normalize_key_value`. Folding only ASCII
+            // here would make `SetRange('A', 'É')` reject a row the key index files
+            // under `'É'`.
+            x.to_uppercase().cmp(&y.to_uppercase())
         } else {
             x.cmp(&y)
         });
@@ -162,10 +165,14 @@ impl SortKey {
         SortKey { fields }
     }
 
+    /// The sort key normalises each cell exactly as the primary-key index does. A BC
+    /// `Code` cell is caseless, so `'a'` must sort next to `'A'` rather than after every
+    /// upper-case value, and an `Integer` cell must sort among `Decimal` cells by value
+    /// rather than ahead of them all on `Value`'s variant tag.
     fn key_of(&self, row: &Row) -> Vec<Value> {
         self.fields
             .iter()
-            .map(|f| row.get(f).cloned().unwrap_or(Value::Empty))
+            .map(|f| row.get(f).map(normalize_key_value).unwrap_or(Value::Empty))
             .collect()
     }
 }
@@ -903,7 +910,8 @@ fn flow_value_eq(a: &Value, b: &Value) -> bool {
         return x == y;
     }
     match (flow_text(a), flow_text(b)) {
-        (Some(x), Some(y)) => x.eq_ignore_ascii_case(&y),
+        // Full Unicode folding, matching the rest of the caseless text comparisons.
+        (Some(x), Some(y)) => x.to_uppercase() == y.to_uppercase(),
         _ => false,
     }
 }
@@ -944,6 +952,103 @@ mod tests {
             rec.field_set(*f, v.clone());
         }
         rec.insert(false).expect("insert should succeed");
+    }
+
+    fn insert_code(rec: &mut MockRecord, code: &str) {
+        rec.init();
+        rec.field_set(1, Value::Code(code.to_string()));
+        rec.insert(false).expect("insert should succeed");
+    }
+
+    fn iterate_codes(rec: &mut MockRecord) -> Vec<String> {
+        let mut out = Vec::new();
+        if !rec.find_set().unwrap() {
+            return out;
+        }
+        loop {
+            match rec.field_get(1) {
+                Some(Value::Code(c)) => out.push(c.clone()),
+                other => panic!("key field is {other:?}"),
+            }
+            if rec.next(1).unwrap() == 0 {
+                break;
+            }
+        }
+        out
+    }
+
+    /// A `Code` cell is caseless, so `FindSet` must order `'a'` next to `'A'` rather
+    /// than after every upper-case value. The primary-key index already folded case;
+    /// only the sort key read the raw cell. Found by
+    /// `tests/property_record_model.rs::record_operations_match_a_btreemap_model`
+    /// with the two inserts below.
+    #[test]
+    fn find_set_orders_code_keys_caselessly() {
+        let mut rec = MockRecord::new(50100, "Prop", vec![1]);
+        insert_code(&mut rec, "a");
+        insert_code(&mut rec, "AA");
+        assert_eq!(iterate_codes(&mut rec), vec!["a", "AA"]);
+    }
+
+    /// An `Integer` cell and a `Decimal` cell in the same sort field order by value,
+    /// not by `Value`'s variant tag.
+    #[test]
+    fn find_set_orders_integer_and_decimal_cells_by_value() {
+        let mut rec = MockRecord::new(50100, "Prop", vec![1]);
+        for v in [
+            Value::Decimal(dec!(1.5)),
+            Value::Integer(1),
+            Value::Integer(2),
+        ] {
+            rec.init();
+            rec.field_set(1, v);
+            rec.insert(false).unwrap();
+        }
+        rec.find_set().unwrap();
+        let mut seen = Vec::new();
+        loop {
+            seen.push(rec.field_get(1).cloned().unwrap());
+            if rec.next(1).unwrap() == 0 {
+                break;
+            }
+        }
+        assert_eq!(
+            seen,
+            vec![
+                Value::Integer(1),
+                Value::Decimal(dec!(1.5)),
+                Value::Integer(2)
+            ]
+        );
+    }
+
+    /// The caseless `Code` rule is one rule: the key index folds with full Unicode
+    /// uppercase, so `SetRange` must too. Folding only ASCII made
+    /// `SetRange('A', 'É')` reject a row filed under `'É'`. Found by the same property
+    /// test with `SetRange("A", "É")` followed by `Insert("é")`.
+    #[test]
+    fn set_range_folds_non_ascii_code_like_the_key_index() {
+        let mut rec = MockRecord::new(50100, "Prop", vec![1]);
+        insert_code(&mut rec, "é");
+        rec.set_range(1, Value::Code("A".into()), Value::Code("É".into()));
+        assert_eq!(
+            rec.count(),
+            1,
+            "SetRange must match the row filed under 'É'"
+        );
+        assert!(!rec.is_empty());
+    }
+
+    /// The same rule through `SetFilter`'s ordered comparisons.
+    #[test]
+    fn set_filter_folds_non_ascii_code_like_the_key_index() {
+        let mut rec = MockRecord::new(50100, "Prop", vec![1]);
+        insert_code(&mut rec, "é");
+        rec.set_filter(1, ">=É").unwrap();
+        assert_eq!(rec.count(), 1);
+        rec.clear_filter(1);
+        rec.set_filter(1, "<=é").unwrap();
+        assert_eq!(rec.count(), 1);
     }
 
     #[test]

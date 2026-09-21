@@ -82,6 +82,74 @@ Fix: `ropey = { version = "1", default-features = false, features = ["cr_lines",
 `documents::tests::unicode_separators_are_not_line_breaks` and
 `edit_spanning_a_vertical_tab_replaces_the_whole_range`.
 
+### F3. `MockRecord` iterated `Code` keys in case-sensitive order — fixed
+
+`crates/al-runtime/src/mock/record.rs`, `SortKey::key_of`. Status: fixed on this branch.
+
+A BC `Code` cell is caseless. `MockRecord` already indexed rows under a caseless primary
+key (`normalize_key_value` uppercases `Code`), but `SortKey::key_of` handed the raw cell to
+the sort, so `FindSet` ordered by the ASCII bytes. Every upper-case code therefore came
+before every lower-case one, which is not the order BC returns.
+
+Minimal input: insert `'a'`, then insert `'AA'`, then `FindSet` + `Next`. The table yielded
+`["AA", "a"]`; BC yields `["a", "AA"]`, since `'A' < 'AA'`.
+
+The same line also left an `Integer` cell and a `Decimal` cell in one sort field ordered by
+`Value`'s variant tag rather than by value: `1`, `1.5`, `2` came back as `1`, `2`, `1.5`.
+
+Impact: an AL test that walks a Code-keyed table with `FindSet` + `repeat … until Next() = 0`
+and asserts on order, or on the first record, gets a different answer offline than against a
+live server.
+
+Fix: `SortKey::key_of` normalises each cell through `normalize_key_value`, the same function
+the key index uses. Regression tests: `record::tests::find_set_orders_code_keys_caselessly`
+and `find_set_orders_integer_and_decimal_cells_by_value`.
+
+### F4. Caseless `Code` comparison folded ASCII only, the key index folded Unicode — fixed
+
+`crates/al-runtime/src/mock/record.rs` (`field_cmp`, `flow_value_eq`) and
+`crates/al-runtime/src/mock/filter.rs` (`cmp_value`). Status: fixed on this branch.
+
+One caselessness rule, two implementations. `normalize_key_value` folds with
+`to_uppercase()` (full Unicode); the three comparison sites folded with
+`to_ascii_uppercase()` / `eq_ignore_ascii_case`. A row whose `Code` key contains a non-ASCII
+letter is filed under the folded key but compared unfolded, so a filter that brackets it
+rejects it.
+
+Minimal input: `SetRange(KEY, 'A', 'É')`, then insert `'é'`. `Count` returned 0 although the
+row sits inside the range (the index filed it under `'É'`).
+
+Reachable three ways: `SetRange` bounds (`field_cmp`), `SetFilter` ordered comparisons on a
+`Code` field (`cmp_value`, e.g. `>=É`), and FlowField `CONST` equality (`flow_value_eq`).
+
+Fix: all three fold with `to_uppercase()`, matching the index. Regression tests:
+`record::tests::set_range_folds_non_ascii_code_like_the_key_index` and
+`set_filter_folds_non_ascii_code_like_the_key_index`.
+
+### Runtime properties that hold
+
+- `Round` agrees with scaled-integer reference arithmetic at every direction (`=`, `<`, `>`),
+  returns an exact multiple of the precision, never moves more than one precision step, is
+  idempotent and sign-symmetric, and rejects a non-positive precision or an unknown
+  direction. Checked at quotients up to 10^18, where 96-bit decimal division starts to bite.
+  No defect found.
+- The filter parser never panics, on arbitrary text or on strings built from its own
+  operator alphabet, and neither does `matches`. `parse` is deterministic;
+  `parse -> print -> parse` returns the same AST and the same accepted values; `<>x` is the
+  complement of `x`; `a..b` is `>=a & <=b`; `|` is disjunction and `&` is conjunction.
+  No defect found.
+- Record `Insert`/`Get`/`Modify`/`Delete`/`DeleteAll`/`SetRange`/`SetFilter`/`FindSet`/`Next`
+  match a `BTreeMap` model over sequences of up to 30 operations, after F3 and F4.
+  The canonical `if FindSet then repeat Delete until Next() = 0` loop removes exactly the
+  filtered rows and terminates, and `Next(n)` then `Next(-n)` returns to the same row.
+
+### Not implemented, so not tested
+
+`CalcDate` and `DateFormula` have no implementation in al-runtime (`supports_global_builtin`
+explicitly excludes `CalcDate`), so the planned date-arithmetic round trips have nothing to
+run against. `mock/calcformula_parser.rs` is the FlowField `CalcFormula` parser, a different
+thing.
+
 ### Formatter properties that hold
 
 At `PROPTEST_CASES=20000` over generated objects and mutated fixtures, with the fix in place:
