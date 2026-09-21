@@ -119,14 +119,14 @@ Insight:
 - severity: high
 - scenario: `inject_tooltips` emits `format!("ToolTip = 'Specifies {escaped}';")`, hardcoding the "Specifies " prefix. The only production caller (crates/al-lsp/src/server/daemon/build_dispatch/fixes.rs:681-691, driven by `al-explorer fix tooltips --from-table Customer`) takes the *base-app table field's own `ToolTip` property value*, which by Microsoft's own convention (UICop AA0218) already reads `Specifies the number of the customer.`. Running `fix.tooltips` non-dry-run writes `ToolTip = 'Specifies Specifies the number of the customer.';` into every matching page field across the project, atomically and with no undo. The doc comment at bulk_fix.rs:77-81 describes `tooltips` as "tooltip text", not a sentence fragment.
 - fix: emit the tooltip value verbatim and leave prefixing to the caller, or prepend "Specifies " only when the value does not already begin with it (case-insensitive).
-- status: open
+- status: fixed c375402b
 
 ### [TEST] The bulk tooltip test never asserts the generated text
 - where: crates/al-analysis/src/queries/bulk_fix.rs:956-975 (`inject_tooltips_adds_missing_tooltip`)
 - severity: medium
 - scenario: the test passes the tooltip `"the item number"` and asserts only `result.contains("ToolTip")`. Because it never compares the emitted string, the hardcoded `Specifies ` prefix above is invisible to the suite. Every other bulk-fix test asserts the re-parse, not the content.
 - fix: assert the full emitted line, and add a case whose input already starts with "Specifies".
-- status: open
+- status: fixed c375402b
 
 ### [GAP] Impact analysis still misses conditional `TableRelation` branches
 - where: crates/al-analysis/src/queries/impact.rs:346-349, calling crates/al-insight/src/analysis.rs:200-202
