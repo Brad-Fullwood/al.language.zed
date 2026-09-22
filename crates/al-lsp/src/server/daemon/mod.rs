@@ -106,6 +106,11 @@ fn ensure_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
 }
 
 pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    // Capture the build identity before anything can overwrite the executable
+    // on disk, so a rebuild cannot make this process claim the new build.
+    let identity = al_protocol::identity::current_identity();
+    tracing::info!(build = %identity, "daemon: build identity");
+
     let endpoint = socket_path(&project_root).ok_or(
         "Cannot determine a local daemon endpoint: no per-user runtime directory is available",
     )?;
@@ -852,6 +857,22 @@ async fn dispatch_method(
             error: None,
             ..Default::default()
         },
+        // Which build this daemon came from. A client compares it with its own
+        // before it uses a daemon it did not start, and replaces a daemon that
+        // answers with a different one. See `al_protocol::identity`.
+        "handshake" => {
+            let identity = al_protocol::identity::current_identity();
+            Response {
+                id,
+                result: Some(serde_json::json!({
+                    "version": identity.version,
+                    "build": identity.build,
+                    "pid": std::process::id(),
+                })),
+                error: None,
+                ..Default::default()
+            }
+        }
         "shutdown" => {
             tracing::info!("daemon: shutdown requested");
             shutdown.notify_one();
