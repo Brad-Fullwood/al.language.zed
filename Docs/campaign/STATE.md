@@ -4,33 +4,29 @@ Updated: 2026-09-21 01:30 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
-Round 1 reviews are complete: 224 verified findings in 11 files. Six of seven first-pass fix branches are merged. Follow-up fix branches for the second and third review passes are running.
+Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two adversarial reviewers read the whole campaign diff (`git diff dev..campaign/2026-09-21`, 277 files) looking for fixes that do not fix, merge damage and regressions. A fix agent works the queued items.
 
 ## In flight
 
 | Item | Kind | Output |
 |------|------|--------|
 | desloppify review queue: work all 112 subjective items to empty (resolve, skip with reason, or defer items in files other branches hold), then rescan and record scores | worktree refactor | branch `campaign/slop-review-queue`, `findings/slop-review-queue.md` |
-| Daemon lifecycle: build identity in the handshake, idle exit, PATH fallback version check, `daemon-shutdown` waits for the socket, harness stops leaking daemons | worktree fix | branch `campaign/fix-daemon-lifecycle` |
+| R2 review A: analysis, insight, syntax, source, symbols, runtime, test, emit | review | `findings/r2-review-a.md` |
+| R2 review B: lsp, protocol, explorer, project, compile, bc, dap, extension, plugin, CI, docs, plus trust bypass attempts | review | `findings/r2-review-b.md` |
+| Fix queued items: `test-run <id>`, MCP schema parity, nine multi-object queries, bare field rename, doc drift, scaffold unverified items, emit leftovers | worktree fix | branch `campaign/fix-queued-2` |
 
 Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, CI runs on every push).
 
 Queued:
 
-- `al-explorer test-run <id>` passes the numeric ID where an object name is expected: a test calling a sibling procedure fails with `object '50144' not found in workspace`, while `test-run-all --filter` passes. Reproduced on a minimal codeunit. Found writing the tests article.
-- The named MCP tool `al_getdiagnostics` rejects `text` at its schema while `al_call` method `lint` accepts it.
-- Doc drift found by the blog writer: README.md:199-205 still describes removed plugin workarounds. `Docs/features/native-test-runtime.md:51-52` still says Round uses banker's rounding. `blog-plan.md` has `--include_used` (flag is `--include-used`).
 
-- Nine whole-workspace queries (dead_code, duplicates, sql_patterns, complexity, arch_lint, impact, native_check, obsolescence, obsolete_usage) walk each file from the root, so a multi-object file attributes every finding to the first object. `WorkspaceSource::objects` and `object_at_byte` exist for the fix.
 
 - 124 `trim_matches('"')` identifier cleanups in al-analysis (102) and al-insight (22), replace with `al_syntax::node_text_clean`. Start after both analysis fix branches merge.
-- New findings from the emit fix agent (in `findings/r1-emit-bc-explorer.md`): `SymbolReference.json` has no `Variables` array for global variables, `xlf generate` drops properties declared on a one-line member block, al-dap and al-publish post to different BC dev endpoints (needs a live server to settle), the duplicated response validation framework (about 300 lines to move).
-- `[UNVERIFIED]` scaffold items: copilot template API calls, empty repeater, `UsageCategory = Lists` on Card pages. Check against Microsoft Learn.
+- al-dap and al-publish post to different BC dev endpoints (needs a live server to settle). The duplicated response validation framework in al-explorer (about 300 lines to move).
 - desloppify fix batches (`findings/desloppify.md` section 4), file splits after the owning fix branch merges.
 - Workstream E (tests): coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis. Start when a build slot frees.
 - Workstream D (security): dedicated review after round 1 fixes are in, covering what changed.
 - `al-explorer packages` prints per-package source counts keyed by folded display name (`al-symbols` `index.rs:259`), so two `System` packages with one app id and different versions both show `0/502/1` against 529 manifest objects. Key by app id and version. Details in `findings/blog-progress.md`.
-- `Docs/gaps-and-future-work.md:33` says 23 and 9 fixtures, the directories hold 25 and 10.
 - Blog: article 1 repeats a wrong diagnosis of the `trace` timeout (it is the cold call-graph build, 86 s with Base Application). Rewrite that paragraph. Articles 2, 4, 5, 8 after the daemon work and fix branches merge, then article 9, then the fact pass list in `findings/blog-progress.md`.
 - README.md line 339 omits `publish` from the CLI list. Rebuild `target/release` before measuring for articles (it predates `publish` and `free-ids`).
 - AI tooling build items 9 and 10: dependency package version diff, persisted symbol index (2.9 GB RSS and 54 s cold index today).
@@ -85,6 +81,7 @@ round on the areas with the most findings.
 
 ## Done
 
+- Merged `campaign/fix-daemon-lifecycle`: build identity handshake replaces a daemon built from other code, idle exit (30 minutes, `AL_DAEMON_IDLE_SECS`), exit when the project root is gone, PATH daemon refused on version mismatch, `daemon-shutdown` waits, plugin SessionEnd hook, harness stops its daemons. Open: a wedged request can hold a daemon past its idle window (warns every 60 s). Full gates: 92 suites, 4839 passed, 0 failed.
 - Merged `campaign/fix-r2-security`: 8 of 8 fixed. Project trust (`Docs/features/project-trust.md`, `al-explorer trust`), symlink-safe containment, one credential authorisation function, https required for credentials to non-loopback servers (`AL_ALLOW_INSECURE_BC_HTTP=1` overrides), NuGet feeds https only, daemon socket directory ownership check, checksum docs corrected. Full gates including zed-al: 92 suites, 4884 passed, 0 failed.
 - Merged `campaign/slop-syntax-symbols`: `formatting.rs`, `symbols.rs`, `index.rs` and `oauth.rs` split into module directories (largest file now 796 lines), the duplicate data loader in al-symbols removed, `LineIndex` and `SourceLines` merged, one HTTP retry policy, one temp path helper, typed `ObjectKind` error. Gates: 2825 tests across al-syntax, al-symbols, al-analysis, al-lsp and the harness. desloppify refuses to rescan until its 112 item review queue is empty.
 - Merged `campaign/fix-r1c-analysis`: 28 of 29 fixed plus the three items left by the second pass (type-position completion, the `attribute_list` dead branch, `EdgeKind::TriggerInvocation` removed). A node-kind guard test now fails if code names a syntax node the grammar lacks. Open: nine whole-workspace queries still attribute findings in a multi-object file to its first object. Full gates: 91 suites, 4770 passed, 0 failed.

@@ -122,14 +122,18 @@ waits while it makes progress, so let a slow first call finish.
 ## Free the daemon when you are done
 
 The daemon holds up to 2.9 GB resident once it has indexed a project with Base
-Application, and nothing releases it:
+Application, and nothing releases it while it runs. Check what it is costing
+with `al-explorer --json diag` (`process.residentBytes`), and stop it when a
+long session is finished with it:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer daemon-shutdown
 ```
 
-The next call after a shutdown can race the dying socket and fail with
-`Connection reset by peer`. Retry once; it starts a fresh daemon.
+The command returns only once the daemon has stopped accepting, so the next
+call starts a fresh one rather than racing the dying socket. A session that
+ends without this leaves the daemon to the plugin's `SessionEnd` hook, or to
+the 30-minute idle exit.
 
 ## Do not
 

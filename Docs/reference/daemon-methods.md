@@ -98,8 +98,15 @@ default to `workspace`, because that is the code the project can change.
 
 ## Conventions & limits
 
-- Lifecycle methods: `ping` returns an empty object, `status` returns daemon/workspace state, and
-  `shutdown` requests an orderly daemon stop.
+- Lifecycle methods: `ping` returns an empty object, `status` returns daemon/workspace state,
+  `shutdown` requests an orderly daemon stop, and `handshake` returns `{version, build, pid}` — the
+  build this daemon was started from. A client compares `version` and `build` with its own before
+  it uses a daemon it did not start, and replaces one that does not match, because a daemon from
+  other code answers with that code's response shapes.
+- `status` reports `memory` and `diag/summary` reports `process`, both
+  `{residentBytes, peakResidentBytes}`. `residentBytes` is null off Linux. These are what the
+  operating system sees, unlike the per-structure byte totals in `diag`, which count only
+  allocations the workspace owns.
 - `status` and `diag` report `sourceIndex` as `{state, packagesDone, packagesTotal, filesDone,
   elapsedMs}`, where `state` is `idle`, `building`, `ready` or `failed`. The dependency AL source
   index takes about a minute on Base Application, and `subscribers`, `composed`, `events`, `lint`,
@@ -114,7 +121,9 @@ default to `workspace`, because that is the code the project can change.
   `null` results are serialized explicitly.
 - `duplicates` clamps `minTokens` and `minSimilarity`; `graphExport` is capped at
   50k nodes+edges; `trace`/`traceChain` depth bounded; 64 MB max request line; ≤64 concurrent
-  connections; 30-minute idle shutdown (skipped during an active debug session).
+  connections; 30-minute idle shutdown, skipped while a request is in flight or a debug session is
+  open, and settable with `--idle-timeout-secs` or `AL_DAEMON_IDLE_SECS` (`0` never exits). A daemon
+  also stops once its project directory no longer exists, whatever the idle window.
 - Local-only IPC: Unix-domain socket at `$XDG_RUNTIME_DIR/al-lsp/{hash}.sock` (with platform
   runtime-directory fallbacks) on Linux/macOS; per-user named pipe on Windows.
 

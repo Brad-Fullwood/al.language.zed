@@ -4,7 +4,8 @@
 //! - Listens on a deterministic local endpoint
 //! - Initializes a Workspace for the given project
 //! - Accepts JSON-RPC requests and routes them to core queries
-//! - Auto-shuts down after 30 minutes of idle
+//! - Exits after 30 minutes with no connections and no running work, or as
+//!   soon as its project root stops existing
 //!
 //! # Platform support
 //!
@@ -18,6 +19,7 @@ mod containment;
 mod debug_dispatch;
 mod insight_dispatch;
 mod lsp_dispatch;
+mod process_memory;
 mod projection;
 mod scope;
 
@@ -75,7 +77,22 @@ impl Drop for SocketCleanup {
     }
 }
 
-const IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// How long a daemon with no connections and no running work stays alive.
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Overrides [`DEFAULT_IDLE_TIMEOUT`]. `0` keeps the daemon alive until it is
+/// stopped.
+const IDLE_TIMEOUT_ENV: &str = "AL_DAEMON_IDLE_SECS";
+/// How often the lifecycle task looks at the idle clock and the project root.
+/// Both checks are two atomic loads and one `stat`, so a one-second cadence
+/// costs nothing and lets a deleted project root be noticed while the tooling
+/// that deleted it is still running.
+const LIFECYCLE_POLL: Duration = Duration::from_secs(1);
+/// How often the lifecycle task repeats a reason for not exiting.
+const SKIP_LOG_INTERVAL: Duration = Duration::from_secs(60);
+/// Consecutive polls that must find the project root missing before the daemon
+/// stops. Two polls keep a network filesystem's momentary failure from
+/// stopping a daemon whose project is still there.
+const MISSING_ROOT_POLLS: u32 = 2;
 const MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 const MAX_CONNECTIONS: usize = 64;
 /// How many requests one connection may have running at once.
@@ -171,7 +188,41 @@ fn ensure_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
 }
 
-pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+/// How long this daemon stays alive with nothing to do.
+///
+/// `explicit` is the `--idle-timeout-secs` argument. Without it the
+/// [`IDLE_TIMEOUT_ENV`] environment variable decides, and without that
+/// [`DEFAULT_IDLE_TIMEOUT`] does. `Some(0)` from either source means the
+/// daemon never exits on its own.
+fn resolve_idle_timeout(explicit: Option<Duration>) -> Option<Duration> {
+    let configured = match explicit {
+        Some(timeout) => timeout,
+        None => match std::env::var(IDLE_TIMEOUT_ENV) {
+            Err(_) => DEFAULT_IDLE_TIMEOUT,
+            Ok(raw) => match raw.trim().parse::<u64>() {
+                Ok(secs) => Duration::from_secs(secs),
+                Err(_) => {
+                    tracing::warn!(
+                        value = %raw,
+                        "daemon: {IDLE_TIMEOUT_ENV} is not a number of seconds, using the default"
+                    );
+                    DEFAULT_IDLE_TIMEOUT
+                }
+            },
+        },
+    };
+    (!configured.is_zero()).then_some(configured)
+}
+
+pub async fn run_daemon(
+    project_root: PathBuf,
+    idle_timeout: Option<Duration>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Capture the build identity before anything can overwrite the executable
+    // on disk, so a rebuild cannot make this process claim the new build.
+    let identity = al_protocol::identity::current_identity();
+    tracing::info!(build = %identity, "daemon: build identity");
+
     let endpoint = socket_path(&project_root).ok_or(
         "Cannot determine a local daemon endpoint: no per-user runtime directory is available",
     )?;
@@ -247,51 +298,92 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
     let in_flight_reaper = Arc::clone(&in_flight);
     let ws_clone = Arc::clone(&workspace);
     let shutdown_idle = Arc::clone(&shutdown_signal);
+    let watched_root = project_root.clone();
+    let idle_timeout = resolve_idle_timeout(idle_timeout);
+    match idle_timeout {
+        Some(timeout) => tracing::info!(
+            idle_secs = timeout.as_secs(),
+            "daemon: will exit after this much idle time"
+        ),
+        None => tracing::info!("daemon: idle exit disabled ({IDLE_TIMEOUT_ENV}=0)"),
+    }
     let idle_timeout_handle = tokio::spawn(async move {
+        let mut missing_root_polls = 0_u32;
+        let mut last_skip_log: Option<Instant> = None;
         loop {
-            tokio::time::sleep(Duration::from_secs(60)).await;
+            tokio::time::sleep(LIFECYCLE_POLL).await;
+
+            // A project root that no longer exists cannot be served, and the
+            // work in flight for it cannot mean anything either. This is the
+            // case that left daemons for deleted git worktrees resident: the
+            // idle clock is not the thing that notices.
+            if watched_root.exists() {
+                missing_root_polls = 0;
+            } else {
+                missing_root_polls += 1;
+                if missing_root_polls >= MISSING_ROOT_POLLS {
+                    tracing::info!(
+                        project = %watched_root.display(),
+                        "daemon: project root is gone, shutting down"
+                    );
+                    shutdown_idle.notify_one();
+                    return;
+                }
+                continue;
+            }
+
+            let Some(idle_timeout) = idle_timeout else {
+                continue;
+            };
             let elapsed = Duration::from_millis(
                 now_activity_ms().saturating_sub(activity_clone.load(Ordering::Relaxed)),
             );
-            if elapsed >= IDLE_TIMEOUT {
-                // Don't shut down while a request is still being served. The
-                // activity timestamp is bumped when a request starts and again
-                // when it finishes, but a single operation can legitimately run
-                // longer than the whole idle window (a large symbol download, a
-                // live-BC snapshot with a long `timeoutMs`), and reaping it
-                // mid-flight cut the operation off after only the 10 s drain.
-                if in_flight_reaper.load(Ordering::Acquire) > 0 {
-                    tracing::info!("daemon: idle timeout skipped (requests in flight)");
-                    continue;
-                }
-                // Don't shut down if a debug session is active.
-                //
-                // the `try_lock` here is intentional — if the
-                // `debug_session` mutex is currently held by another task
-                // (mid-RPC) we treat that as "session active" via the
-                // `unwrap_or(true)` fallback. The invariant: the only way
-                // this mutex is held for >60 ms is during an in-flight
-                // debug-session RPC, which by definition means a session
-                // exists. If a future contributor ever changes this mutex
-                // to be held for long stretches outside debug RPCs, the
-                // daemon will never time out — flag it as a deliberate
-                // trade-off rather than a bug.
-                let has_debug_session = ws_clone
+            if elapsed < idle_timeout {
+                continue;
+            }
+
+            // Don't shut down while a request is still being served. The
+            // activity timestamp is bumped when a request starts and again
+            // when it finishes, but a single operation can legitimately run
+            // longer than the whole idle window (a large symbol download, a
+            // live-BC snapshot with a long `timeoutMs`), and reaping it
+            // mid-flight cut the operation off after only the 10 s drain.
+            let running = in_flight_reaper.load(Ordering::Acquire);
+            // A debug session keeps the daemon alive too. The `try_lock` is
+            // deliberate: a held `debug_session` mutex counts as a live
+            // session, because the only thing that holds it for longer than a
+            // few milliseconds is a debug-session RPC, which means a session
+            // exists. Holding it anywhere else would keep the daemon resident
+            // for good, so this reports which guard fired.
+            let has_debug_session = running == 0
+                && ws_clone
                     .debug_session
                     .try_lock()
-                    .map(|g| g.is_some())
+                    .map(|session| session.is_some())
                     .unwrap_or(true);
-                if has_debug_session {
-                    tracing::info!("daemon: idle timeout skipped (debug session active)");
-                    continue;
+            if running > 0 || has_debug_session {
+                // At warn, because past the idle window these are the two
+                // reasons a daemon outlives the session that started it, and
+                // the log is the only place that says which one it was.
+                let due = last_skip_log.is_none_or(|at| at.elapsed() >= SKIP_LOG_INTERVAL);
+                if due {
+                    last_skip_log = Some(Instant::now());
+                    tracing::warn!(
+                        idle_secs = elapsed.as_secs(),
+                        in_flight = running,
+                        debug_session = has_debug_session,
+                        "daemon: past its idle window but still holding work"
+                    );
                 }
-                tracing::info!(
-                    idle_secs = elapsed.as_secs(),
-                    "daemon: idle timeout, shutting down"
-                );
-                shutdown_idle.notify_one();
-                return;
+                continue;
             }
+
+            tracing::info!(
+                idle_secs = elapsed.as_secs(),
+                "daemon: idle timeout, shutting down"
+            );
+            shutdown_idle.notify_one();
+            return;
         }
     });
 
@@ -926,6 +1018,22 @@ async fn dispatch_method(
             error: None,
             ..Default::default()
         },
+        // Which build this daemon came from. A client compares it with its own
+        // before it uses a daemon it did not start, and replaces a daemon that
+        // answers with a different one. See `al_protocol::identity`.
+        "handshake" => {
+            let identity = al_protocol::identity::current_identity();
+            Response {
+                id,
+                result: Some(serde_json::json!({
+                    "version": identity.version,
+                    "build": identity.build,
+                    "pid": std::process::id(),
+                })),
+                error: None,
+                ..Default::default()
+            }
+        }
         "shutdown" => {
             tracing::info!("daemon: shutdown requested");
             shutdown.notify_one();
@@ -985,6 +1093,9 @@ async fn dispatch_method(
                 // `impact` and `entrypoints` all wait for this. A client that
                 // sees `building` should keep waiting rather than retry.
                 "sourceIndex": workspace.dependency_source_progress(),
+                // What the process costs the machine, which the per-structure
+                // totals in `diag` do not show.
+                "memory": process_memory::ResidentMemory::read().to_json(),
             });
             Response {
                 id,
@@ -1034,6 +1145,10 @@ fn dispatch_diag(workspace: &Workspace, id: u64, params: &serde_json::Value) -> 
             match serde_json::to_value(&stats) {
                 Ok(mut value) => {
                     if let Some(object) = value.as_object_mut() {
+                        object.insert(
+                            "process".into(),
+                            process_memory::ResidentMemory::read().to_json(),
+                        );
                         match serde_json::to_value(workspace.dependency_source_progress()) {
                             Ok(progress) => {
                                 object.insert("sourceIndex".into(), progress);
@@ -1790,14 +1905,70 @@ mod tests {
     use super::{
         dispatch_diag, dispatch_request, ensure_document, extract_i32, extract_position,
         extract_uri, file_not_found, file_uri_from_params, invalid_params, parse_object_kind,
-        read_bounded_line, require_document_text, require_project_root, rpc_error,
-        set_test_project_root,
+        read_bounded_line, require_document_text, require_project_root, resolve_idle_timeout,
+        rpc_error, set_test_project_root, DEFAULT_IDLE_TIMEOUT, IDLE_TIMEOUT_ENV,
     };
     use al_protocol::jsonrpc::{error_codes, Request};
     use futures::FutureExt;
     use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
+    use std::time::Duration;
     use tokio::sync::Notify;
+
+    /// Serialises the tests that set `AL_DAEMON_IDLE_SECS`.
+    static IDLE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_idle_env<T>(value: Option<&str>, body: impl FnOnce() -> T) -> T {
+        let _guard = IDLE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = std::env::var_os(IDLE_TIMEOUT_ENV);
+        match value {
+            Some(value) => std::env::set_var(IDLE_TIMEOUT_ENV, value),
+            None => std::env::remove_var(IDLE_TIMEOUT_ENV),
+        }
+        let result = body();
+        match saved {
+            Some(value) => std::env::set_var(IDLE_TIMEOUT_ENV, value),
+            None => std::env::remove_var(IDLE_TIMEOUT_ENV),
+        }
+        result
+    }
+
+    #[test]
+    fn idle_timeout_defaults_to_thirty_minutes() {
+        let resolved = with_idle_env(None, || resolve_idle_timeout(None));
+        assert_eq!(resolved, Some(DEFAULT_IDLE_TIMEOUT));
+        assert_eq!(DEFAULT_IDLE_TIMEOUT, Duration::from_secs(30 * 60));
+    }
+
+    #[test]
+    fn the_command_line_beats_the_environment() {
+        let resolved = with_idle_env(Some("900"), || {
+            resolve_idle_timeout(Some(Duration::from_secs(5)))
+        });
+        assert_eq!(resolved, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn the_environment_sets_a_short_timeout() {
+        let resolved = with_idle_env(Some("2"), || resolve_idle_timeout(None));
+        assert_eq!(resolved, Some(Duration::from_secs(2)));
+    }
+
+    /// Zero is the way to keep a daemon that an editor session owns.
+    #[test]
+    fn zero_disables_the_idle_exit() {
+        assert_eq!(
+            with_idle_env(Some("0"), || resolve_idle_timeout(None)),
+            None
+        );
+        assert_eq!(resolve_idle_timeout(Some(Duration::ZERO)), None);
+    }
+
+    #[test]
+    fn an_unparsable_timeout_falls_back_to_the_default() {
+        let resolved = with_idle_env(Some("half an hour"), || resolve_idle_timeout(None));
+        assert_eq!(resolved, Some(DEFAULT_IDLE_TIMEOUT));
+    }
 
     /// A `ping` pipelined behind a long call on the same connection used to
     /// wait for it, because the loop awaited each dispatch before reading the
@@ -2400,6 +2571,36 @@ mod tests {
         assert!(
             result.get("sourceIndex").is_some(),
             "diag/summary must carry sourceIndex: {result}"
+        );
+    }
+
+    /// The daemon that reached 2.9 GB resident reported small totals for every
+    /// structure it owns, because the allocator was holding the rest. Both
+    /// answers now carry what the operating system sees.
+    #[tokio::test]
+    async fn status_and_diag_report_resident_memory() {
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+        let shutdown = Notify::new();
+
+        let status = dispatch_request(&ws, Request::new(7, "status", None), &shutdown)
+            .await
+            .result
+            .expect("status must return a result");
+        let memory = status.get("memory").expect("status must carry memory");
+        assert!(
+            memory.get("residentBytes").is_some() && memory.get("peakResidentBytes").is_some(),
+            "both resident figures must be present, null where unavailable: {memory}"
+        );
+
+        let diag = dispatch_request(&ws, Request::new(8, "diag", None), &shutdown)
+            .await
+            .result
+            .expect("diag must return a result");
+        assert!(
+            diag.get("process")
+                .and_then(|process| process.get("residentBytes"))
+                .is_some(),
+            "diag/summary must carry the process footprint: {diag}"
         );
     }
 

@@ -30,12 +30,39 @@ path does **not** use the daemon — it uses LSP handlers directly. See
   request timeout, 60 s init wait with 250 ms retries while the daemon reports "initializing".
   When a request deadline expires the client remembers that id and drains the daemon's late answer
   before reading the next response, so one slow request does not skew the connection.
+- **Build identity (`identity.rs`, `handshake`):** a daemon outlives the command that started it, so
+  `connect` asks a daemon it did not start which build it came from and compares that with its own.
+  A mismatch, or a daemon too old to answer `handshake`, is asked to shut down; the client waits for
+  the endpoint to stop accepting, starts the `al-lsp` beside its own executable, and retries once,
+  never in a loop. `AL_ALLOW_MISMATCHED_DAEMON` keeps the running daemon instead. The identity is the
+  `al-lsp` version plus the git commit with a dirty marker, and a hash of the `al-lsp` executable's
+  size and mtime when the tree is dirty or is not a git checkout — a rebuild of uncommitted work
+  does not change the commit, and that is the case this catches. `connect_existing` does no
+  handshake, so lifecycle tooling can reach a daemon without replacing it.
+- **Binary resolution (`find_al_lsp_binary`):** the `al-lsp` beside the running executable wins. A
+  fallback to PATH is logged at warn level with the path and version, and refused when that version
+  differs from the client's, with an error naming both and how to install a matching pair.
+  `AL_ALLOW_MISMATCHED_DAEMON` allows it. `al-lsp --version` prints `al-lsp <version> (<build>)`,
+  which is what the client runs for the check.
 - **Lifecycle (`daemon/mod.rs`):** ≤64 concurrent connections (semaphore) — a connection over the
   limit receives a JSON-RPC "server busy" error frame before the socket is closed, rather than being
-  dropped silently; 30-minute idle timeout, measured from the *start* as well as the end of each
-  request and suspended entirely while any request is in flight, so a long build/download/live-BC
-  capture cannot be reaped mid-request (it is also skipped while a debug session is active);
-  graceful 10 s drain on shutdown; 64 MB max request line.
+  dropped silently; graceful 10 s drain on shutdown; 64 MB max request line. A lifecycle task polls
+  once a second and stops the daemon in two cases:
+  - **Idle:** 30 minutes by default, measured from the *start* as well as the end of each request and
+    suspended entirely while any request is in flight, so a long build/download/live-BC capture
+    cannot be reaped mid-request (it is also skipped while a debug session is active). Both skips
+    are logged at warn with the in-flight count, because past the idle window they are the two
+    reasons a daemon outlives the session that started it. `--idle-timeout-secs` or
+    `AL_DAEMON_IDLE_SECS` change the window, and `0` keeps a daemon that an editor session owns.
+  - **Project root gone:** the daemon stops once its project directory has been missing for two
+    consecutive polls, whatever the idle window and whatever is in flight. Nothing can use such a
+    daemon, and deleted git worktrees were the largest source of resident ones. Two polls, so a
+    momentary filesystem failure does not stop a live daemon.
+- **Memory:** `status` reports `memory.residentBytes` and `memory.peakResidentBytes`, and
+  `diag/summary` the same pair under `process`. The per-structure totals beside them count
+  allocations the workspace owns; these are what the operating system sees, which is the number that
+  decides whether a daemon is worth restarting. Current resident size comes from `/proc/self/status`
+  on Linux and is null elsewhere; the peak comes from `getrusage` on every Unix.
 - **Startup resilience:** a workspace file the document store rejects (over `maxDocumentSizeBytes`,
   unreadable, or without a file URI) is skipped with a warning; it no longer aborts daemon and MCP
   startup.
@@ -97,10 +124,14 @@ size, idle shutdown) and one place to add a new capability. MCP receives it imme
 You rarely talk to it directly — `al-explorer` and MCP do. To run it explicitly:
 
 ```
-al-lsp daemon --project /path/to/project
+al-lsp daemon --project /path/to/project [--idle-timeout-secs 1800]
 ```
 
 Then any `al-explorer <command>` in that project connects to it (auto-starting it if needed).
+
+To stop one, `al-explorer daemon-shutdown` in the project directory. It returns only once the
+endpoint has stopped accepting, so the next command cannot reach a dying daemon. The plugin runs it
+from a `SessionEnd` hook.
 
 ## Platform verification
 
