@@ -267,10 +267,12 @@ dependencies = [
 name = "al-protocol"
 version = "0.2.2"
 dependencies = [
+ "getrandom 0.2.17",
  "interprocess",
  "libc",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tracing",
  "windows-sys 0.61.2",
 ]

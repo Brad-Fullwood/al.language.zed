@@ -191,7 +191,17 @@ Tests
   check in the previous finding is the control. State that in
   `Docs/features/daemon-protocol.md:37-45`, which currently reads as if the identity decided
   whether a daemon may be used.
-- status: open
+- status: fixed, both halves. `Docs/features/daemon-protocol.md` now says the identity answers
+  which build and not who, and names the endpoint peer check as the control. The handshake is
+  also no longer forgeable: the client sends a nonce, the daemon answers with an HMAC-SHA256
+  over the nonce and the identity keyed by `handshake.key` in the per-user runtime directory
+  (32 random bytes, mode 0600, `create_new` so a race has one winner, read by whichever side
+  starts second), and the client verifies it in constant time. A daemon that answers without
+  a proof is treated as a build mismatch and replaced, which is what a daemon predating this
+  needs. HMAC is nine lines over `sha2` rather than a new dependency. Tests:
+  `an_identity_without_the_proof_does_not_pass_as_this_build` replays the reviewer's forged
+  answer and asserts the three outcomes (no proof, proof under another key, the real proof),
+  and `the_proof_covers_the_build_it_claims` shows the nonce and the identity both change it.
 
 ### [SECURITY] `snapshot` and `profiling` take a server URL and credentials straight from RPC params with no trust gate
 

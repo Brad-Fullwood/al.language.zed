@@ -84,6 +84,17 @@ fn unix_socket_path_fits(path: &Path) -> bool {
     path.as_os_str().as_encoded_bytes().len() <= MAX_PATH_BYTES
 }
 
+/// The per-user directory the daemon endpoints and the handshake secret live
+/// in, or `None` when no runtime directory can be determined.
+///
+/// The secret is per user rather than per project, so both sides agree on it
+/// even when an overlong runtime path pushed one project's socket into the
+/// compacted fallback.
+#[must_use]
+pub fn runtime_al_lsp_dir() -> Option<PathBuf> {
+    Some(PathBuf::from(runtime_dir()?).join("al-lsp"))
+}
+
 /// Filesystem lock used to serialize daemon auto-start for one project.
 ///
 /// The IPC endpoint itself is not a filesystem path on Windows, so the lock

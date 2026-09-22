@@ -544,9 +544,51 @@ impl DaemonClient {
     /// A daemon too old to know `handshake` answers "Unknown method", which is
     /// itself the answer the caller needs: it predates this check.
     fn daemon_identity(&mut self) -> Result<BuildIdentity, String> {
-        let value = self.request_with_timeout("handshake", None, HANDSHAKE_TIMEOUT)?;
-        serde_json::from_value(value)
-            .map_err(|error| format!("handshake did not carry a build identity: {error}"))
+        let challenge = identity::nonce();
+        let params =
+            (!challenge.is_empty()).then(|| serde_json::json!({ "nonce": challenge.clone() }));
+        let value = self.request_with_timeout("handshake", params, HANDSHAKE_TIMEOUT)?;
+        let identity: BuildIdentity = serde_json::from_value(value.clone())
+            .map_err(|error| format!("handshake did not carry a build identity: {error}"))?;
+        self.verify_handshake_proof(&challenge, &identity, &value)?;
+        Ok(identity)
+    }
+
+    /// Check that the daemon knows the per-user secret, not just what the
+    /// identity looks like.
+    ///
+    /// Everything the identity is made of is world-readable, so a process on
+    /// the endpoint can answer with whatever the client expects. The proof is
+    /// an HMAC over the nonce and the identity, keyed by a file only this user
+    /// can read.
+    ///
+    /// No secret and no nonce means no challenge to make. A daemon too old to
+    /// answer one reports no proof, and that is treated as a build mismatch
+    /// rather than as an authentication failure: the replace path stops it and
+    /// starts one from this binary, which is what a stale daemon needs anyway.
+    fn verify_handshake_proof(
+        &self,
+        challenge: &str,
+        identity: &BuildIdentity,
+        answer: &serde_json::Value,
+    ) -> Result<(), String> {
+        if challenge.is_empty() {
+            return Ok(());
+        }
+        let Some(secret) = handshake_secret() else {
+            return Ok(());
+        };
+        let expected = identity::proof(&secret, challenge, identity);
+        let actual = answer.get("proof").and_then(serde_json::Value::as_str);
+        match actual {
+            Some(actual) if identity::proofs_match(&expected, actual) => Ok(()),
+            Some(_) => Err(
+                "the handshake proof did not match: whatever is answering on this project's \
+                 daemon endpoint cannot read this user's runtime directory"
+                    .to_string(),
+            ),
+            None => Err("the daemon answered the handshake without a proof".to_string()),
+        }
     }
 
     /// Best-effort stop, used before replacing a daemon. The wait for the
@@ -1095,6 +1137,21 @@ fn binary_version(binary: &Path) -> Option<String> {
     fields.next().map(str::to_string)
 }
 
+/// The per-user handshake secret, created on first use.
+///
+/// `None` when there is no runtime directory to keep it in, or the directory
+/// is one this user does not own. Both are reasons not to make a challenge
+/// rather than reasons to refuse the daemon: the peer check already decided
+/// who may answer.
+pub fn handshake_secret() -> Option<Vec<u8>> {
+    let dir = crate::socket::runtime_al_lsp_dir()?;
+    #[cfg(unix)]
+    crate::endpoint::ensure_private_dir(&dir).ok()?;
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(&dir).ok()?;
+    identity::shared_secret(&dir).ok()
+}
+
 /// Connect to the daemon endpoint, refusing anything that is not this user's.
 ///
 /// The endpoint path is derived from the project path, so it is guessable, and
@@ -1634,10 +1691,29 @@ mod tests {
                             break;
                         };
                         let response = match (request.method.as_str(), &identity) {
-                            ("handshake", Some(identity)) => Response::ok(
-                                request.dispatch_id(),
-                                serde_json::to_value(identity).expect("serialize identity"),
-                            ),
+                            ("handshake", Some(identity)) => {
+                                // The real daemon answers the nonce with an
+                                // HMAC keyed by the per-user secret. A fake
+                                // that cannot read that file is exactly the
+                                // planted daemon the client must refuse, so
+                                // this one reads it too.
+                                let mut answer =
+                                    serde_json::to_value(identity).expect("serialize identity");
+                                let nonce = request
+                                    .params
+                                    .as_ref()
+                                    .and_then(|params| params.get("nonce"))
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or_default();
+                                if !nonce.is_empty() {
+                                    if let Some(secret) = handshake_secret() {
+                                        answer["proof"] = serde_json::json!(
+                                            super::identity::proof(&secret, nonce, identity)
+                                        );
+                                    }
+                                }
+                                Response::ok(request.dispatch_id(), answer)
+                            }
                             ("handshake", None) => Response::error(
                                 request.dispatch_id(),
                                 -32601,
@@ -1760,6 +1836,73 @@ mod tests {
 
     /// The other half: a daemon from this build is worth keeping, and
     /// restarting it would throw away a warm index on every command.
+    /// The forgery the reviewer ran: a fake daemon answered
+    /// `{"version":"0.4.0","build":"git:45341c128570"}` and the client accepted
+    /// it and sent its next request. Every input is world-readable, so the
+    /// right words are one `echo` away. The proof is not: it is an HMAC keyed
+    /// by a file only this user can read.
+    #[test]
+    fn an_identity_without_the_proof_does_not_pass_as_this_build() {
+        let secret = handshake_secret().expect("this user has a runtime directory");
+        let identity = expected_for_test();
+        let challenge = identity::nonce();
+        assert!(!challenge.is_empty(), "the test needs a nonce");
+
+        // What a forger can produce: the identity, and nothing else.
+        let forged = serde_json::to_value(&identity).expect("serialize");
+        let client =
+            DaemonClient::from_stream(test_stream(UnixStream::pair().expect("socketpair").0))
+                .expect("client");
+        let error = client
+            .verify_handshake_proof(&challenge, &identity, &forged)
+            .expect_err("an identity with no proof must not pass");
+        assert!(error.contains("without a proof"), "{error}");
+
+        // Keyed by something else, which is what a process that cannot read
+        // the secret would have to guess.
+        let mut wrong = forged.clone();
+        wrong["proof"] =
+            serde_json::json!(identity::proof(b"not the secret", &challenge, &identity));
+        let error = client
+            .verify_handshake_proof(&challenge, &identity, &wrong)
+            .expect_err("a proof under another key must not pass");
+        assert!(error.contains("did not match"), "{error}");
+
+        // The real answer.
+        let mut real = forged;
+        real["proof"] = serde_json::json!(identity::proof(&secret, &challenge, &identity));
+        client
+            .verify_handshake_proof(&challenge, &identity, &real)
+            .expect("the daemon that can read the secret is accepted");
+    }
+
+    /// The proof covers the identity, so a daemon cannot answer one challenge
+    /// and reuse it for a build it is not.
+    #[test]
+    fn the_proof_covers_the_build_it_claims() {
+        let secret = b"a fixed test secret";
+        let first = BuildIdentity {
+            version: "0.4.0".to_string(),
+            build: "git:aaaaaaaaaaaa".to_string(),
+        };
+        let second = BuildIdentity {
+            version: "0.4.0".to_string(),
+            build: "git:bbbbbbbbbbbb".to_string(),
+        };
+        assert_ne!(
+            identity::proof(secret, "n", &first),
+            identity::proof(secret, "n", &second)
+        );
+        assert_ne!(
+            identity::proof(secret, "n1", &first),
+            identity::proof(secret, "n2", &first)
+        );
+        assert_eq!(
+            identity::proof(secret, "n", &first),
+            identity::proof(secret, "n", &first)
+        );
+    }
+
     #[test]
     fn a_daemon_from_this_build_is_reused() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());

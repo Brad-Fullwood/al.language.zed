@@ -14,6 +14,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 interprocess = { workspace = true }
 tracing = { workspace = true }
+# HMAC over the handshake nonce, so a daemon's build identity is not something
+# any process on the endpoint can echo back.
+sha2 = "0.10"
+getrandom = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 # SO_PEERCRED / getpeereid: who is answering on the endpoint, read from the

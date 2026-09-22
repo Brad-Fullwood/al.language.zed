@@ -948,13 +948,29 @@ async fn dispatch_method(
         // answers with a different one. See `al_protocol::identity`.
         "handshake" => {
             let identity = al_protocol::identity::current_identity();
+            let mut result = serde_json::json!({
+                "version": identity.version,
+                "build": identity.build,
+                "pid": std::process::id(),
+            });
+            // Everything the identity is made of is world-readable, so a
+            // process answering on this endpoint could say the same words. The
+            // proof is an HMAC over the client's nonce and the identity, keyed
+            // by a file only this user can read, so the answer is something a
+            // planted daemon cannot produce.
+            let nonce = params
+                .get("nonce")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if !nonce.is_empty() {
+                if let Some(secret) = al_protocol::client::handshake_secret() {
+                    result["proof"] =
+                        serde_json::json!(al_protocol::identity::proof(&secret, nonce, &identity));
+                }
+            }
             Response {
                 id,
-                result: Some(serde_json::json!({
-                    "version": identity.version,
-                    "build": identity.build,
-                    "pid": std::process::id(),
-                })),
+                result: Some(result),
                 error: None,
                 ..Default::default()
             }
