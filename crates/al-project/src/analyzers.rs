@@ -245,7 +245,7 @@ fn compare_versioned_paths(left: &PathBuf, right: &PathBuf) -> Ordering {
 }
 
 /// A path component, keyed so that dotted numbers compare numerically.
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum ComponentKey {
     /// Anything that is not a dotted number. Ordered below every version so a
     /// numbered release outranks a directory named `current` or `beta`.
@@ -643,11 +643,20 @@ mod tests {
         assert!(
             version_key(Path::new("pkg/2.0.0/lib")) > version_key(Path::new("pkg/1.99.99/lib"))
         );
-        assert_eq!(version_key(Path::new("pkg/1.2.3/lib")), vec![1, 2, 3]);
-        assert_eq!(version_key(Path::new("pkg/1.2.3-4/lib")), vec![1, 2, 3, 4]);
+        let versions = |path: &str| -> Vec<Vec<u64>> {
+            version_key(Path::new(path))
+                .into_iter()
+                .filter_map(|key| match key {
+                    ComponentKey::Version(numbers) => Some(numbers),
+                    ComponentKey::Name(_) => None,
+                })
+                .collect()
+        };
+        assert_eq!(versions("pkg/1.2.3/lib"), vec![vec![1, 2, 3]]);
+        assert_eq!(versions("pkg/1.2.3-4/lib"), vec![vec![1, 2, 3, 4]]);
         // `net8.0` is not a version: `net8` is not a number.
-        assert_eq!(version_key(Path::new("pkg/lib/net8.0")), Vec::<u64>::new());
-        assert_eq!(version_key(Path::new("pkg/lib")), Vec::<u64>::new());
+        assert!(versions("pkg/lib/net8.0").is_empty());
+        assert!(versions("pkg/lib").is_empty());
         assert!(
             version_key(Path::new("pkg/1.0.0/lib/net8.0"))
                 > version_key(Path::new("pkg/lib/net8.0"))
