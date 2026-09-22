@@ -1256,6 +1256,29 @@ pub(crate) fn completion_items_for_receiver(
             });
         }
     }
+    drop(cache);
+
+    if builtin_methods == 0 && receiver.type_name.eq_ignore_ascii_case("Record") {
+        // The semantic cache carries `TableClass` only once a Microsoft AL
+        // toolchain has been found and its metadata extracted. An editor
+        // install usually has no toolchain, and `Customer.` then offered the
+        // table's own fields and procedures but not one platform method. The
+        // bundled catalog was generated from that same `TableClass` metadata,
+        // so use it when the cache has nothing. Names only: a real cache
+        // supplies signatures, and its entries are added first, so dedup keeps
+        // them.
+        for name in al_syntax::language_data::record_methods() {
+            builtin_methods += 1;
+            items.push(CompletionCandidate {
+                label: name.clone(),
+                kind: CompletionCandidateKind::Method,
+                detail: Some("Record method".to_string()),
+                documentation: None,
+                insert_text: None,
+                sort_text: None,
+            });
+        }
+    }
 
     tracing::debug!(
         receiver = %receiver.type_name,
@@ -2450,6 +2473,74 @@ mod tests {
             "extension field present"
         );
         assert!(labels.contains(&"AddPoints"), "extension method present");
+    }
+
+    /// Without a Microsoft AL toolchain the semantic cache is empty, which is
+    /// what an editor install and a CI runner both look like. Member
+    /// completion on a Record must still offer the platform methods.
+    #[test]
+    fn record_completion_offers_platform_methods_with_an_empty_semantic_cache() {
+        let ws = workspace_with(vec![table_entry(
+            18,
+            "Customer",
+            vec![field(1, "No.", "Code")],
+        )]);
+        assert!(
+            ws.semantic_cache.read().unwrap().is_empty(),
+            "this test is about the no-toolchain case"
+        );
+        let receiver = ResolvedType {
+            type_name: "Record".to_string(),
+            type_subtype: Some("Customer".to_string()),
+        };
+
+        let items = completion_items_for_receiver(&ws, &receiver);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"No."), "the table's own field");
+        for method in ["FindSet", "Insert", "Modify", "SetRange", "CalcFields"] {
+            assert!(labels.contains(&method), "{method} missing from {labels:?}");
+        }
+    }
+
+    /// A loaded cache carries signatures, so its entries must survive dedup
+    /// against the bare names in the bundled catalog.
+    #[test]
+    fn a_loaded_semantic_cache_supplies_the_record_method_signatures() {
+        let ws = workspace_with(vec![table_entry(
+            18,
+            "Customer",
+            vec![field(1, "No.", "Code")],
+        )]);
+        al_workspace::set_builtins(
+            &ws,
+            vec![al_semantic::BuiltinType {
+                name: "TableClass".to_string(),
+                methods: vec![al_semantic::BuiltinMethod {
+                    name: "FindSet".to_string(),
+                    parameters: Vec::new(),
+                    return_type: Some("Boolean".to_string()),
+                    documentation: "Finds a set of records".to_string(),
+                }],
+                enum_values: Vec::new(),
+            }],
+            "17.0.0.0",
+        );
+        let receiver = ResolvedType {
+            type_name: "Record".to_string(),
+            type_subtype: Some("Customer".to_string()),
+        };
+
+        let items = completion_items_for_receiver(&ws, &receiver);
+        let find_set: Vec<&CompletionCandidate> = items
+            .iter()
+            .filter(|item| item.label == "FindSet")
+            .collect();
+        assert_eq!(find_set.len(), 1, "the catalog must not be added as well");
+        assert_eq!(
+            find_set[0].documentation.as_deref(),
+            Some("Finds a set of records"),
+            "the cache entry must be the one kept"
+        );
     }
 
     #[test]
