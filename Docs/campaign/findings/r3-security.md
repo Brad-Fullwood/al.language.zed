@@ -281,7 +281,15 @@ Tests
 - fix: add `/lsp/al-lsp/binary/arguments` to `executable_path_privileges` and render it into
   the value, so both the digest and the printed line carry the whole command. While there,
   cover `/lsp/al-lsp/initialization_options` and any other Zed LSP key that reaches a process.
-- status: open
+- status: fixed. `executable_path_privileges` now also records
+  `/lsp/al-lsp/binary/arguments`, `/lsp/al-lsp/binary/env` and
+  `/lsp/al-lsp/initialization_options`, rendered as compact JSON so a value of any shape
+  renders one way and two values never render the same. Tests:
+  `the_language_server_command_line_is_in_the_digest` trusts a project with `/bin/sh` plus a
+  payload, rewrites the payload and asserts `stale`;
+  `the_other_zed_keys_that_reach_a_process_are_in_the_digest` covers the other two. They are
+  recorded for the digest and the printed line only, since the extension now ignores the
+  binary block (previous finding).
 
 ### [SECURITY] `al-explorer trust` records trust with no confirmation, and every refusal tells the reader to run it
 

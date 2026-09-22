@@ -26,6 +26,14 @@ else applies as it always has.
 | `al.nugetFeeds` | Every symbol package, including Base Application, comes from these URLs |
 | `al.useOnlyCustomFeeds` | Removes Microsoft's feeds, leaving only the configured ones |
 | `launch.json` / `debug.json` on-premises `server` | Receives the cached Business Central token and, with `acceptInvalidCerts`, decides whether TLS is verified |
+| `al.dotnetPath` | Names the `dotnet` host the toolchain spawns |
+| `lsp.al-lsp.binary.path`, `.arguments`, `.env` | Name a program, its command line and its environment |
+| `lsp.al-lsp.initialization_options` | Reaches the language server as configuration |
+
+The four Zed `lsp.al-lsp` keys are in the digest but are not applied from here: the extension
+ignores `binary.path` and `binary.arguments` outright (see Limits). They are in the digest so
+a record made while `binary.path` said `/bin/sh` goes stale when the arguments change, and so
+a future extension API that exposes `binary.env` does not widen an existing record silently.
 
 `${CodeCop}`, `${AppSourceCop}`, `${UICop}`, `${PerTenantExtensionCop}` and their bare
 spellings are built-in tokens: the toolchain resolves them to Microsoft's own assemblies, so
