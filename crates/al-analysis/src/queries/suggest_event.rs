@@ -5,10 +5,10 @@
 //! execution path). Supports filtering results to events that expose a
 //! specific table as a `var` parameter.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use al_symbols::{ObjectKind, SymbolIndex};
+use al_symbols::{ObjectKind, SymbolEntry, SymbolIndex};
 use serde::{Deserialize, Serialize};
 
 use al_insight::graph::{EventNodeType, InsightGraph, InsightNode, NodeKey};
@@ -153,7 +153,8 @@ pub struct IntegrationPoint {
     pub params: Vec<ParamInfo>,
     /// Breadcrumb trace from the query source to this event.
     pub path: Vec<TraceHop>,
-    /// Ready-to-paste [EventSubscriber] attribute.
+    /// Ready-to-paste `[EventSubscriber]` attribute. Empty when the
+    /// publisher's object kind cannot carry a subscriber.
     pub example: String,
 }
 
@@ -214,7 +215,7 @@ fn query_procedure(
     let object_kind = resolve_object_kind(workspace, object_name, requested_kind)?;
 
     let mut points: Vec<IntegrationPoint> = Vec::new();
-    let mut visited: HashSet<NodeId> = HashSet::new();
+    let mut visited: HashMap<NodeId, usize> = HashMap::new();
     let mut partial = false;
 
     if let Some(proc_name) = procedure_name {
@@ -256,17 +257,20 @@ fn query_procedure(
         }
     } else {
         let obj_lower = object_name.to_lowercase();
-        for key in insight.index.keys() {
-            let proc_id = match key {
+        // `insight.index` is a HashMap, so iterating its keys directly made
+        // which procedures were traced first depend on key hashes — and with a
+        // shared `visited` set that changed which events came back.
+        for key in sorted_index_keys(&insight) {
+            let proc_id = match &key {
                 NodeKey::Procedure(kind, obj, _name)
                     if *kind == object_kind && obj == &obj_lower =>
                 {
-                    CallGraph::node_id_for(&insight, key)
+                    CallGraph::node_id_for(&insight, &key)
                 }
                 _ => None,
             };
             if let Some(node_id) = proc_id {
-                if visited.contains(&node_id) {
+                if visited.contains_key(&node_id) {
                     continue;
                 }
                 let proc_name = match &insight.graph[petgraph::graph::NodeIndex::new(node_id.0)] {
@@ -308,7 +312,7 @@ fn query_procedure(
     }
 
     points = dedup_points(points);
-    points = apply_filters(points, filter_table, filter_field);
+    points = apply_filters(&workspace.symbols, points, filter_table, filter_field);
     Ok(SuggestEventResult {
         integration_points: points,
         partial,
@@ -355,7 +359,12 @@ fn query_table(
 
         let params = map_parameters_to_param_info(&pub_event.method.parameters);
 
-        let example = format_example(obj.kind, &obj.name, &pub_event.method.name);
+        let example = format_example(
+            &workspace.symbols,
+            obj.kind,
+            &obj.name,
+            &pub_event.method.name,
+        );
 
         points.push(IntegrationPoint {
             event: pub_event.method.name.clone(),
@@ -368,7 +377,7 @@ fn query_table(
     }
 
     points = dedup_points(points);
-    points = apply_filters(points, None, filter_field);
+    points = apply_filters(&workspace.symbols, points, None, filter_field);
     Ok(SuggestEventResult {
         integration_points: points,
         partial: false,
@@ -389,7 +398,7 @@ fn query_event(
     let object_kind = resolve_object_kind(workspace, object_name, requested_kind)?;
 
     let mut points: Vec<IntegrationPoint> = Vec::new();
-    let mut visited: HashSet<NodeId> = HashSet::new();
+    let mut visited: HashMap<NodeId, usize> = HashMap::new();
     let mut partial = false;
 
     let event_key = NodeKey::Event(
@@ -401,7 +410,7 @@ fn query_event(
     if let Some(event_node_id) = CallGraph::node_id_for(&insight, &event_key) {
         let (event_type_str, params) =
             resolve_event_details(&insight, &workspace.symbols, &event_key);
-        let example = format_example(object_kind, object_name, event_name);
+        let example = format_example(&workspace.symbols, object_kind, object_name, event_name);
 
         points.push(IntegrationPoint {
             event: event_name.to_string(),
@@ -412,11 +421,11 @@ fn query_event(
             example,
         });
 
-        visited.insert(event_node_id);
+        visited.insert(event_node_id, 0);
 
         if let Some(cg) = cg_opt {
             for sub_id in cg.subscribers_of(event_node_id) {
-                if visited.contains(&sub_id) {
+                if visited.contains_key(&sub_id) {
                     continue;
                 }
                 let sub_hop = match &insight.graph[petgraph::graph::NodeIndex::new(sub_id.0)] {
@@ -456,7 +465,7 @@ fn query_event(
     }
 
     points = dedup_points(points);
-    points = apply_filters(points, filter_table, filter_field);
+    points = apply_filters(&workspace.symbols, points, filter_table, filter_field);
     Ok(SuggestEventResult {
         integration_points: points,
         partial,
@@ -474,16 +483,26 @@ fn trace_from_node(
     cg: &CallGraph,
     symbols: &Arc<SymbolIndex>,
     points: &mut Vec<IntegrationPoint>,
-    visited: &mut HashSet<NodeId>,
+    visited: &mut HashMap<NodeId, usize>,
     partial: &mut bool,
     path: Vec<TraceHop>,
     depth: usize,
     max_depth: usize,
 ) {
-    if depth >= max_depth || visited.contains(&node_id) {
+    if depth >= max_depth {
+        // The branch below this node is not in the result. Say so rather than
+        // report a silently truncated set as complete.
+        *partial = true;
         return;
     }
-    visited.insert(node_id);
+    // Best depth per node, not a plain visited set. A node first reached at
+    // depth 9 had its own callees refused at depth 10, and a later trace that
+    // reached it at depth 1 then skipped it entirely, so every event below it
+    // was missing.
+    match visited.get(&node_id) {
+        Some(&seen) if seen <= depth => return,
+        _ => visited.insert(node_id, depth),
+    };
 
     let node_idx = petgraph::graph::NodeIndex::new(node_id.0);
     let node = &insight.graph[node_idx];
@@ -503,7 +522,7 @@ fn trace_from_node(
 
             let params =
                 lookup_event_params(symbols, *object_kind, &object_name.to_lowercase(), name);
-            let example = format_example(*object_kind, object_name, name);
+            let example = format_example(symbols, *object_kind, object_name, name);
 
             points.push(IntegrationPoint {
                 event: name.clone(),
@@ -514,10 +533,10 @@ fn trace_from_node(
                 example,
             });
 
+            // No pre-check against `visited` here: the recursive call keeps
+            // the best depth per node, and skipping a node already recorded at
+            // a worse depth is exactly the bug that dropped events.
             for sub_id in cg.subscribers_of(node_id) {
-                if visited.contains(&sub_id) {
-                    continue;
-                }
                 let sub_hop = match &insight.graph[petgraph::graph::NodeIndex::new(sub_id.0)] {
                     InsightNode::Subscriber {
                         object_name: obj,
@@ -559,9 +578,6 @@ fn trace_from_node(
             }
 
             for edge in cg.callees_of(node_id) {
-                if visited.contains(&edge.to) {
-                    continue;
-                }
                 let hop = TraceHop {
                     object: object_name.clone(),
                     procedure: name.clone(),
@@ -599,11 +615,11 @@ fn collect_published_events(
     points: &mut Vec<IntegrationPoint>,
 ) {
     let obj_lower = object_name.to_lowercase();
-    for key in insight.index.keys() {
-        if let NodeKey::Event(kind, obj, _event_lower) = key {
+    for key in sorted_index_keys(insight) {
+        if let NodeKey::Event(kind, obj, _event_lower) = &key {
             if *kind == object_kind && obj == &obj_lower {
-                let (event_type_str, params) = resolve_event_details(insight, symbols, key);
-                let first_idx = match insight.index[key].first() {
+                let (event_type_str, params) = resolve_event_details(insight, symbols, &key);
+                let first_idx = match insight.index[&key].first() {
                     Some(idx) => *idx,
                     None => continue,
                 };
@@ -611,7 +627,7 @@ fn collect_published_events(
                     InsightNode::Event { ref name, .. } => name.clone(),
                     _ => continue,
                 };
-                let example = format_example(object_kind, object_name, &event_name);
+                let example = format_example(symbols, object_kind, object_name, &event_name);
                 points.push(IntegrationPoint {
                     event: event_name,
                     object: object_name.to_string(),
@@ -672,16 +688,99 @@ fn lookup_event_params(
     Vec::new()
 }
 
-/// Generate a ready-to-paste [EventSubscriber] attribute.
-fn format_example(object_kind: ObjectKind, object_name: &str, event_name: &str) -> String {
-    let kind_str = format!("{object_kind}");
+/// AL's `ObjectType::` member and object-reference scope for a publisher kind.
+///
+/// The two arguments of an `[EventSubscriber]` do not use the same word. A
+/// table subscriber is
+/// `[EventSubscriber(ObjectType::Table, Database::"Sales Header", ...)]`:
+/// Microsoft's EventSubscriber page states "For a table event, specify ObjectId
+/// by name with `Database::<ObjectName>`, not `Table::<ObjectName>`".
+///
+/// `None` for a kind that cannot publish a subscribable event: AL's `ObjectType`
+/// option has only Codeunit, MenuSuite, Page, Query, Report, Table and XmlPort.
+fn subscriber_scope(object_kind: ObjectKind) -> Option<(&'static str, &'static str)> {
+    match object_kind {
+        ObjectKind::Table | ObjectKind::TableExtension => Some(("Table", "Database")),
+        ObjectKind::Page | ObjectKind::PageExtension => Some(("Page", "Page")),
+        ObjectKind::Report | ObjectKind::ReportExtension => Some(("Report", "Report")),
+        ObjectKind::Codeunit => Some(("Codeunit", "Codeunit")),
+        ObjectKind::XmlPort => Some(("XmlPort", "Xmlport")),
+        ObjectKind::Query => Some(("Query", "Query")),
+        _ => None,
+    }
+}
+
+/// Generate a ready-to-paste `[EventSubscriber]` attribute.
+///
+/// Empty when the publisher's kind carries no subscriber, and empty for an
+/// extension object whose base cannot be resolved: an event declared in a
+/// `tableextension` is subscribed through the table it extends, so writing the
+/// extension's own name would not compile.
+fn format_example(
+    symbols: &SymbolIndex,
+    object_kind: ObjectKind,
+    object_name: &str,
+    event_name: &str,
+) -> String {
+    let Some((object_type, scope)) = subscriber_scope(object_kind) else {
+        return String::new();
+    };
+    let target = if matches!(
+        object_kind,
+        ObjectKind::TableExtension | ObjectKind::PageExtension | ObjectKind::ReportExtension
+    ) {
+        match extended_object_name(symbols, object_kind, object_name) {
+            Some(base) => base,
+            None => return String::new(),
+        }
+    } else {
+        object_name.to_string()
+    };
     format!(
-        "[EventSubscriber(ObjectType::{kind_str}, {kind_str}::\"{object_name}\", '{event_name}', '', false, false)]"
+        "[EventSubscriber(ObjectType::{object_type}, {scope}::\"{target}\", '{event_name}', '', false, false)]"
     )
 }
 
-/// Remove duplicate integration points by (object, event) key.
-fn dedup_points(points: Vec<IntegrationPoint>) -> Vec<IntegrationPoint> {
+/// The object an extension object extends, from the symbol index.
+fn extended_object_name(
+    symbols: &SymbolIndex,
+    object_kind: ObjectKind,
+    object_name: &str,
+) -> Option<String> {
+    symbols
+        .get_by_name(object_name)
+        .into_iter()
+        .find(|entry| entry.kind == object_kind)
+        .and_then(|entry| entry.extends.clone())
+}
+
+/// The insight index's keys in a stable order.
+fn sorted_index_keys(insight: &InsightGraph) -> Vec<NodeKey> {
+    let mut keys: Vec<NodeKey> = insight.index.keys().cloned().collect();
+    keys.sort();
+    keys
+}
+
+/// Order integration points and drop duplicates of the same `(object, event)`.
+///
+/// Sorting before the dedup decides which duplicate's `path` breadcrumb the
+/// user is shown: the shortest trace wins, and ties break on the rendered
+/// path, so the answer no longer depends on which duplicate the traversal
+/// happened to reach first.
+fn dedup_points(mut points: Vec<IntegrationPoint>) -> Vec<IntegrationPoint> {
+    points.sort_by(|left, right| {
+        (
+            left.object.to_lowercase(),
+            left.event.to_lowercase(),
+            left.path.len(),
+        )
+            .cmp(&(
+                right.object.to_lowercase(),
+                right.event.to_lowercase(),
+                right.path.len(),
+            ))
+            .then_with(|| path_key(&left.path).cmp(&path_key(&right.path)))
+    });
     let mut seen: HashSet<(String, String)> = HashSet::new();
     points
         .into_iter()
@@ -689,7 +788,31 @@ fn dedup_points(points: Vec<IntegrationPoint>) -> Vec<IntegrationPoint> {
         .collect()
 }
 
+fn path_key(path: &[TraceHop]) -> Vec<(String, String, String)> {
+    path.iter()
+        .map(|hop| {
+            (
+                hop.object.to_lowercase(),
+                hop.procedure.to_lowercase(),
+                hop.edge_kind.clone(),
+            )
+        })
+        .collect()
+}
+
+/// Keep only the points matching the caller's table and field filters.
+///
+/// `filter_field` names a *table field*, as the MCP tool and `al-explorer
+/// --field` both document. It used to be matched against the parameter's own
+/// name and type text, with no `is_var` check and no notion of a field at all,
+/// so `--field Amount` against
+/// `OnAfterPostSalesDoc(var SalesHeader: Record "Sales Header")` returned
+/// nothing although the table has an `Amount` field, while `--field Record`
+/// returned every event with a record parameter. The field is now resolved
+/// through the symbol index, against the base table and any tableextension of
+/// it.
 fn apply_filters(
+    symbols: &SymbolIndex,
     points: Vec<IntegrationPoint>,
     filter_table: Option<&str>,
     filter_field: Option<&str>,
@@ -710,10 +833,10 @@ fn apply_filters(
                 }
             }
             if let Some(ref fld) = field_lower {
-                let has_field = p.params.iter().any(|param| {
-                    param.name.to_lowercase().contains(fld.as_str())
-                        || param.type_name.to_lowercase().contains(fld.as_str())
-                });
+                let has_field = p
+                    .params
+                    .iter()
+                    .any(|param| param_exposes_field(symbols, param, fld));
                 if !has_field {
                     return false;
                 }
@@ -721,6 +844,53 @@ fn apply_filters(
             true
         })
         .collect()
+}
+
+/// True when `param` is a `var Record "T"` whose table declares a field named
+/// `field_lower`.
+fn param_exposes_field(symbols: &SymbolIndex, param: &ParamInfo, field_lower: &str) -> bool {
+    if !param.is_var {
+        return false;
+    }
+    let Some(table) = record_table_name(&param.type_name) else {
+        return false;
+    };
+    let declares_field = |entry: &SymbolEntry| {
+        entry
+            .fields
+            .iter()
+            .any(|field| field.name.to_lowercase() == field_lower)
+    };
+    let base_has_field = symbols
+        .get_by_name(&table)
+        .into_iter()
+        .any(|entry| entry.kind == ObjectKind::Table && declares_field(&entry));
+    if base_has_field {
+        return true;
+    }
+    // A tableextension's fields belong to the table it extends.
+    symbols
+        .get_by_kind(ObjectKind::TableExtension)
+        .into_iter()
+        .any(|entry| {
+            entry
+                .extends
+                .as_deref()
+                .is_some_and(|extends| extends.to_lowercase() == table)
+                && declares_field(&entry)
+        })
+}
+
+/// The table named by a `Record "T"` / `Record T` type reference, lowercased.
+fn record_table_name(type_name: &str) -> Option<String> {
+    let rest = type_name.to_lowercase();
+    let rest = rest.strip_prefix("record")?.trim();
+    let clean = rest.trim_matches('"').trim_matches('\'').trim();
+    if clean.is_empty() {
+        None
+    } else {
+        Some(clean.to_string())
+    }
 }
 
 /// Check whether `type_name` is a `Record "TableName"` or `Record TableName` reference.
@@ -1039,18 +1209,94 @@ mod tests {
         assert_eq!(result.integration_points[0].event, "OnBeforePostSalesDoc");
     }
 
-    #[test]
-    fn format_example_produces_event_subscriber_attribute() {
-        let example = format_example(ObjectKind::Codeunit, "Sales-Post", "OnAfterPost");
-        assert!(
-            example.contains("EventSubscriber"),
-            "Should contain EventSubscriber"
+    /// The attribute must parse as AL and spell the object reference the way
+    /// AL requires — `Database::` for a table, not `Table::`.
+    fn assert_example_parses(example: &str, expected: &str) {
+        assert_eq!(example, expected);
+        let source = format!(
+            "codeunit 50100 \"Sub\"\n{{\n    {example}\n    local procedure Handle()\n    begin\n    end;\n}}"
         );
-        assert!(example.contains("Sales-Post"), "Should contain object name");
-        assert!(example.contains("OnAfterPost"), "Should contain event name");
+        let parsed = al_syntax::AlParser::parse_quick(&source);
         assert!(
-            example.contains("ObjectType::Codeunit"),
-            "Should contain ObjectType"
+            !parsed.tree.root_node().has_error(),
+            "emitted attribute does not parse:\n{source}"
+        );
+        let mut attributes = Vec::new();
+        al_syntax::walk_tree(parsed.tree.root_node(), &mut |node| {
+            if node.kind() == "attribute" {
+                attributes.push(node.utf8_text(source.as_bytes()).unwrap().to_string());
+            }
+        });
+        assert_eq!(
+            attributes,
+            vec![example.to_string()],
+            "the attribute must survive a parse round trip"
+        );
+    }
+
+    #[test]
+    fn format_example_names_a_table_with_the_database_scope() {
+        let symbols = SymbolIndex::new();
+        assert_example_parses(
+            &format_example(&symbols, ObjectKind::Table, "Sales Header", "OnAfterInsertEvent"),
+            "[EventSubscriber(ObjectType::Table, Database::\"Sales Header\", 'OnAfterInsertEvent', '', false, false)]",
+        );
+    }
+
+    #[test]
+    fn format_example_covers_every_subscribable_kind() {
+        let symbols = SymbolIndex::new();
+        let cases = [
+            (
+                ObjectKind::Codeunit,
+                "ObjectType::Codeunit, Codeunit::\"X\"",
+            ),
+            (ObjectKind::Page, "ObjectType::Page, Page::\"X\""),
+            (ObjectKind::Report, "ObjectType::Report, Report::\"X\""),
+            (ObjectKind::XmlPort, "ObjectType::XmlPort, Xmlport::\"X\""),
+            (ObjectKind::Query, "ObjectType::Query, Query::\"X\""),
+        ];
+        for (kind, expected) in cases {
+            assert_example_parses(
+                &format_example(&symbols, kind, "X", "OnEvent"),
+                &format!("[EventSubscriber({expected}, 'OnEvent', '', false, false)]"),
+            );
+        }
+    }
+
+    #[test]
+    fn format_example_subscribes_to_an_extension_through_its_base_object() {
+        let symbols = SymbolIndex::new();
+        symbols.add_entries_owned(vec![SymbolEntry {
+            kind: ObjectKind::TableExtension,
+            id: 50100,
+            name: "Cust Ext".to_string(),
+            extends: Some("Customer".to_string()),
+            ..Default::default()
+        }]);
+        assert_example_parses(
+            &format_example(&symbols, ObjectKind::TableExtension, "Cust Ext", "OnMyEvent"),
+            "[EventSubscriber(ObjectType::Table, Database::\"Customer\", 'OnMyEvent', '', false, false)]",
+        );
+    }
+
+    #[test]
+    fn format_example_is_empty_for_a_kind_that_cannot_publish_a_subscriber() {
+        let symbols = SymbolIndex::new();
+        assert_eq!(
+            format_example(&symbols, ObjectKind::Interface, "IFoo", "OnEvent"),
+            "",
+            "AL's ObjectType option has no Interface member"
+        );
+        assert_eq!(
+            format_example(
+                &symbols,
+                ObjectKind::TableExtension,
+                "Unknown Ext",
+                "OnEvent"
+            ),
+            "",
+            "without the base table there is no name to write"
         );
     }
 
@@ -1068,6 +1314,133 @@ mod tests {
         let points = vec![dup.clone(), dup];
         let deduped = dedup_points(points);
         assert_eq!(deduped.len(), 1);
+    }
+
+    fn point(object: &str, event: &str, path_len: usize) -> IntegrationPoint {
+        IntegrationPoint {
+            event: event.to_string(),
+            object: object.to_string(),
+            event_type: "integration".to_string(),
+            params: Vec::new(),
+            path: (0..path_len)
+                .map(|index| TraceHop {
+                    object: format!("Hop{index}"),
+                    procedure: "P".to_string(),
+                    edge_kind: "direct_call".to_string(),
+                })
+                .collect(),
+            example: String::new(),
+        }
+    }
+
+    /// `points` was never sorted, so the JSON array's order changed run to run
+    /// and `dedup_points` kept whichever duplicate arrived first, which decided
+    /// the `path` breadcrumb the user was shown.
+    #[test]
+    fn dedup_orders_points_and_keeps_the_shortest_path() {
+        let deduped = dedup_points(vec![
+            point("Sales-Post", "OnPost", 4),
+            point("Purch-Post", "OnPost", 1),
+            point("Sales-Post", "OnAfterPost", 2),
+            point("Sales-Post", "OnPost", 2),
+        ]);
+
+        assert_eq!(
+            deduped
+                .iter()
+                .map(|p| (p.object.as_str(), p.event.as_str(), p.path.len()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Purch-Post", "OnPost", 1),
+                ("Sales-Post", "OnAfterPost", 2),
+                ("Sales-Post", "OnPost", 2),
+            ]
+        );
+    }
+
+    /// The filter used to match the parameter's *name* and *type text*, so
+    /// `--field Amount` against a `Sales Header` parameter returned nothing
+    /// while `--field Record` returned every event with a record parameter.
+    #[test]
+    fn filter_field_resolves_the_table_s_fields() {
+        let symbols = SymbolIndex::new();
+        symbols.add_entries_owned(vec![
+            SymbolEntry {
+                kind: ObjectKind::Table,
+                id: 36,
+                name: "Sales Header".to_string(),
+                fields: vec![al_symbols::FieldSymbol {
+                    id: 60,
+                    name: "Amount".to_string(),
+                    type_name: "Decimal".to_string(),
+                    properties: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            SymbolEntry {
+                kind: ObjectKind::TableExtension,
+                id: 50100,
+                name: "Sales Header Ext".to_string(),
+                extends: Some("Sales Header".to_string()),
+                fields: vec![al_symbols::FieldSymbol {
+                    id: 50100,
+                    name: "Ship Reference".to_string(),
+                    type_name: "Code[20]".to_string(),
+                    properties: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        ]);
+
+        let mut event = point("Sales-Post", "OnAfterPostSalesDoc", 0);
+        event.params = vec![ParamInfo {
+            name: "SalesHeader".to_string(),
+            type_name: "Record \"Sales Header\"".to_string(),
+            is_var: true,
+        }];
+
+        let keeps = |field: &str| {
+            !apply_filters(&symbols, vec![event.clone()], None, Some(field)).is_empty()
+        };
+        assert!(keeps("Amount"), "the table declares an Amount field");
+        assert!(keeps("amount"), "field names are case-insensitive");
+        assert!(
+            keeps("Ship Reference"),
+            "a tableextension's fields belong to the table it extends"
+        );
+        assert!(!keeps("Record"), "the type text is not a field");
+        assert!(!keeps("SalesHeader"), "the parameter name is not a field");
+        assert!(!keeps("e"), "a substring of a field name is not a field");
+        assert!(!keeps("Quantity"), "the table has no Quantity field");
+    }
+
+    #[test]
+    fn filter_field_ignores_a_non_var_parameter() {
+        let symbols = SymbolIndex::new();
+        symbols.add_entries_owned(vec![SymbolEntry {
+            kind: ObjectKind::Table,
+            id: 36,
+            name: "Sales Header".to_string(),
+            fields: vec![al_symbols::FieldSymbol {
+                id: 60,
+                name: "Amount".to_string(),
+                type_name: "Decimal".to_string(),
+                properties: Vec::new(),
+            }],
+            ..Default::default()
+        }]);
+
+        let mut event = point("Sales-Post", "OnAfterPostSalesDoc", 0);
+        event.params = vec![ParamInfo {
+            name: "SalesHeader".to_string(),
+            type_name: "Record \"Sales Header\"".to_string(),
+            is_var: false,
+        }];
+
+        assert!(
+            apply_filters(&symbols, vec![event], None, Some("Amount")).is_empty(),
+            "the documented contract is a `var` parameter"
+        );
     }
 
     use al_insight::graph::InsightEdge;
@@ -1164,7 +1537,7 @@ mod tests {
         let symbols = SymbolIndex::new();
         let symbols = Arc::new(symbols);
         let mut points = Vec::new();
-        let mut visited = HashSet::new();
+        let mut visited = HashMap::new();
         let mut partial = false;
         trace_from_node(
             chain[0],
@@ -1228,7 +1601,7 @@ mod tests {
 
         let symbols = Arc::new(SymbolIndex::new());
         let mut points = Vec::new();
-        let mut visited = HashSet::new();
+        let mut visited = HashMap::new();
         let mut partial = false;
         // Must return (not hang / overflow) despite the cycle.
         trace_from_node(
@@ -1292,7 +1665,7 @@ mod tests {
 
         let symbols = Arc::new(SymbolIndex::new());
         let mut points = Vec::new();
-        let mut visited = HashSet::new();
+        let mut visited = HashMap::new();
         let mut partial = false;
         trace_from_node(
             root,

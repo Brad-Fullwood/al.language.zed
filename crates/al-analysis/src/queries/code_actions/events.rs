@@ -651,51 +651,27 @@ mod tests {
             edit.changes
         );
 
-        let page_edits = edit
-            .changes
-            .iter()
-            .find(|(u, _)| u == &page_uri)
-            .map(|(_, e)| e.clone())
-            .expect("page edit");
-        let table_edits = edit
-            .changes
-            .iter()
-            .find(|(u, _)| u == &table_uri)
-            .map(|(_, e)| e.clone())
-            .expect("table edit");
-
-        let updated_page =
-            super::super::test_support::apply_text_edits(PAGE_WITH_TOOLTIP, &page_edits);
-        let updated_table =
-            super::super::test_support::apply_text_edits(TABLE_WITHOUT_TOOLTIP, &table_edits);
+        // Each change list is applied to the source of its own URI and every
+        // result is re-parsed.
+        let updated = super::super::test_support::assert_action_applies_cleanly_to(
+            &[
+                (&page_uri, PAGE_WITH_TOOLTIP),
+                (&table_uri, TABLE_WITHOUT_TOOLTIP),
+            ],
+            &action,
+            "move tooltip",
+        );
 
         assert!(
-            !updated_page.contains("Specifies the name."),
-            "page tooltip removed: {updated_page}"
+            !updated[&page_uri].contains("Specifies the name."),
+            "page tooltip removed: {}",
+            updated[&page_uri]
         );
         assert!(
-            updated_table.contains("ToolTip = 'Specifies the name.';"),
-            "tooltip must land in the table field: {updated_table}"
+            updated[&table_uri].contains("ToolTip = 'Specifies the name.';"),
+            "tooltip must land in the table field: {}",
+            updated[&table_uri]
         );
-        for (source, updated, label) in [
-            (PAGE_WITH_TOOLTIP, &updated_page, "page"),
-            (TABLE_WITHOUT_TOOLTIP, &updated_table, "table"),
-        ] {
-            assert!(
-                !al_syntax::AlParser::parse_quick(source)
-                    .tree
-                    .root_node()
-                    .has_error(),
-                "{label} fixture must parse"
-            );
-            assert!(
-                !al_syntax::AlParser::parse_quick(updated)
-                    .tree
-                    .root_node()
-                    .has_error(),
-                "{label} must still parse after the move:\n{updated}"
-            );
-        }
     }
 
     /// The client applies the returned edit to its *buffer*. Computing the

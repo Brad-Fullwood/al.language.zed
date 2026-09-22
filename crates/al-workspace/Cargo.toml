@@ -25,10 +25,10 @@ tracing = { workspace = true }
 url = "2"
 
 [features]
-# Passthrough so the in-process .NET bridge can be enabled when building/testing
-# al-workspace in isolation. In a full `al-core --features semantic` build,
-# Cargo feature unification already turns this on via al-core's direct
-# al-semantic dependency, so the passthrough is belt-and-suspenders.
+# Passthrough so the in-process .NET bridge can be enabled when building or
+# testing al-workspace in isolation. In a full `al-lsp --features semantic`
+# build, Cargo feature unification already turns this on through al-lsp's own
+# al-semantic dependency.
 semantic = ["al-semantic/semantic"]
 
 [dev-dependencies]

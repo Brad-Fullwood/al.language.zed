@@ -382,6 +382,27 @@ pub struct Workspace {
     /// new compile result needs an empty (or syntax-only) republish so
     /// the editor squiggles disappear after a clean rebuild.
     pub last_compile_affected: tokio::sync::Mutex<std::collections::HashSet<String>>,
+    /// Reference counts behind the code-lens "N references" titles.
+    ///
+    /// Building them walks every workspace file, so a fresh build per
+    /// `textDocument/codeLens` made the lens cost proportional to the project
+    /// on every document open. The entry is reusable only while both its
+    /// generation and its document match.
+    pub code_lens_reference_counts: std::sync::RwLock<Option<CodeLensReferenceCounts>>,
+}
+
+/// Cached code-lens reference counts, keyed to the generation and document
+/// they were computed for.
+pub struct CodeLensReferenceCounts {
+    /// [`Workspace::generation_revision`] at build time.
+    pub generation: u64,
+    /// The `current_uri` the counts were built for. The open document's own
+    /// text takes part in the count, so counts built for another document are
+    /// not reusable.
+    pub document: String,
+    /// `(uri, line, character)` of a canonical declaration -> distinct call
+    /// sites binding to it.
+    pub counts: Arc<std::collections::HashMap<(String, u32, u32), usize>>,
 }
 
 impl Workspace {
@@ -420,6 +441,7 @@ impl Workspace {
             profiler_session: std::sync::RwLock::new(None),
             test_results: std::sync::RwLock::new(None),
             last_compile_affected: tokio::sync::Mutex::new(std::collections::HashSet::new()),
+            code_lens_reference_counts: std::sync::RwLock::new(None),
         }
     }
 

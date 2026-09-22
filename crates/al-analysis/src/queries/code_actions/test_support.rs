@@ -7,8 +7,17 @@
 //! that needs quoting. The only way to catch those is to apply the edit to the
 //! source and re-parse the result.
 //!
-//! [`assert_action_applies_cleanly`] does exactly that and is used by the tests
-//! for every code action that produces AL source.
+//! [`assert_action_applies_cleanly`] does exactly that for a single-document
+//! action. An action that edits several files goes through
+//! [`assert_action_applies_cleanly_to`], which keys the sources by URI: the
+//! single-document form used to apply *every* change list to the same source,
+//! so a two-file action would have had the table's edits, whose line numbers
+//! are relative to the table file, spliced into the page's text before the
+//! re-parse, and the assertion would have said nothing about either file.
+
+use std::collections::HashMap;
+
+use url::Url;
 
 use super::{CodeActionEntry, Position, TextEdit};
 
@@ -100,9 +109,23 @@ fn first_error_description(tree: &tree_sitter::Tree, text: &str) -> Option<Strin
     None
 }
 
+/// Assert `source` parses without any `ERROR`/missing node.
+fn assert_parses(source: &str, label: &str, stage: &str) {
+    let parsed = al_syntax::AlParser::parse_quick(source);
+    assert!(
+        !parsed.tree.root_node().has_error(),
+        "{label}: {stage} — {}\n--- source ---\n{source}\n--------------",
+        first_error_description(&parsed.tree, source).unwrap_or_default()
+    );
+}
+
 /// Apply `action`'s workspace edit to `source` and assert the result still
 /// parses without any `ERROR`/missing nodes. Returns the rewritten source so
 /// callers can make further content assertions on it.
+///
+/// For a single-document action. An action that edits a second file fails here
+/// rather than having that file's edits applied to this source; use
+/// [`assert_action_applies_cleanly_to`] for those.
 ///
 /// `label` names the case in failure output.
 pub(super) fn assert_action_applies_cleanly(
@@ -110,29 +133,72 @@ pub(super) fn assert_action_applies_cleanly(
     action: &CodeActionEntry,
     label: &str,
 ) -> String {
-    let before = al_syntax::AlParser::parse_quick(source);
-    assert!(
-        !before.tree.root_node().has_error(),
-        "{label}: test fixture does not parse cleanly before the edit ({})",
-        first_error_description(&before.tree, source).unwrap_or_default()
+    assert_parses(source, label, "test fixture does not parse before the edit");
+
+    let workspace_edit = action
+        .edit
+        .as_ref()
+        .unwrap_or_else(|| panic!("{label}: action '{}' carries no edit", action.title));
+    assert_eq!(
+        workspace_edit.changes.len(),
+        1,
+        "{label}: action '{}' edits {} documents; use assert_action_applies_cleanly_to",
+        action.title,
+        workspace_edit.changes.len()
     );
+
+    let updated = apply_text_edits(source, &workspace_edit.changes[0].1);
+    assert_parses(
+        &updated,
+        label,
+        &format!("applying '{}' produced invalid AL", action.title),
+    );
+    updated
+}
+
+/// Apply `action`'s workspace edit across several documents, each change list
+/// to the source of its own URI, and assert every result still parses.
+///
+/// Returns the rewritten source per URI. A change list naming a URI that is not
+/// in `documents` is a test failure: the action is editing a file the case did
+/// not set up.
+pub(super) fn assert_action_applies_cleanly_to(
+    documents: &[(&Url, &str)],
+    action: &CodeActionEntry,
+    label: &str,
+) -> HashMap<Url, String> {
+    let mut sources: HashMap<Url, String> = HashMap::new();
+    for (uri, source) in documents {
+        assert_parses(
+            source,
+            label,
+            &format!("fixture {uri} does not parse before the edit"),
+        );
+        sources.insert((*uri).clone(), (*source).to_string());
+    }
 
     let workspace_edit = action
         .edit
         .as_ref()
         .unwrap_or_else(|| panic!("{label}: action '{}' carries no edit", action.title));
 
-    let mut updated = source.to_string();
-    for (_, edits) in &workspace_edit.changes {
-        updated = apply_text_edits(&updated, edits);
+    for (uri, edits) in &workspace_edit.changes {
+        let source = sources.get(uri).unwrap_or_else(|| {
+            panic!(
+                "{label}: action '{}' edits {uri}, which the case did not supply",
+                action.title
+            )
+        });
+        let updated = apply_text_edits(source, edits);
+        sources.insert(uri.clone(), updated);
     }
 
-    let after = al_syntax::AlParser::parse_quick(&updated);
-    assert!(
-        !after.tree.root_node().has_error(),
-        "{label}: applying '{}' produced invalid AL — {}\n--- result ---\n{updated}\n--------------",
-        action.title,
-        first_error_description(&after.tree, &updated).unwrap_or_default()
-    );
-    updated
+    for (uri, updated) in &sources {
+        assert_parses(
+            updated,
+            label,
+            &format!("applying '{}' produced invalid AL in {uri}", action.title),
+        );
+    }
+    sources
 }

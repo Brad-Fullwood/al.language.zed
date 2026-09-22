@@ -19,44 +19,96 @@ pub struct WorkspaceSearchResult {
     pub info: CachedObjectInfo,
 }
 
-/// Case-insensitive ASCII substring check without allocation.
-/// `query_lower` must already be lowercase.
-fn ascii_contains_ci(haystack: &str, query_lower: &str) -> bool {
-    let q = query_lower.as_bytes();
-    let h = haystack.as_bytes();
-    if q.len() > h.len() {
-        return false;
+/// How well a name matched the query. Lower sorts first.
+///
+/// An editor's symbol picker shows the first `limit` results, so the rank has
+/// to decide *which* matches survive truncation, not just their order. Without
+/// it the exact object whose full name the user typed could be cut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum MatchRank {
+    Exact,
+    Prefix,
+    Substring,
+}
+
+/// The rank of `name` against an already-folded query, or `None` for no match.
+///
+/// An empty query matches everything at [`MatchRank::Substring`].
+///
+/// Both sides are folded with `str::to_lowercase`. A per-byte ASCII fold left
+/// `Ü` (`0xC3 0x9C`) alone while lowercasing the query to `ü` (`0xC3 0xBC`), so
+/// searching `MÜNCHEN` found nothing in Nordic and German projects while
+/// `München` did.
+fn match_rank(name: &str, query_lower: &str) -> Option<MatchRank> {
+    if query_lower.is_empty() {
+        return Some(MatchRank::Substring);
     }
-    h.windows(q.len())
-        .any(|w| w.iter().zip(q).all(|(a, b)| a.to_ascii_lowercase() == *b))
+    let folded = name.to_lowercase();
+    if folded == query_lower {
+        Some(MatchRank::Exact)
+    } else if folded.starts_with(query_lower) {
+        Some(MatchRank::Prefix)
+    } else if folded.contains(query_lower) {
+        Some(MatchRank::Substring)
+    } else {
+        None
+    }
 }
 
 /// Search workspace .al file objects whose name contains `query` (case-insensitive).
 ///
 /// - When `query` is empty, all objects are returned up to `limit`.
 /// - When `query` is non-empty, only objects whose name contains the query are returned.
-/// - Results are limited to `limit` entries.
+/// - Every match is collected and ranked (exact, then prefix, then substring,
+///   then by name and path) before the list is cut to `limit`, so the same
+///   query over an unchanged workspace always returns the same results in the
+///   same order. Truncating a DashMap iteration instead returned an arbitrary
+///   subset in shard order.
 pub fn workspace_search(
     workspace: &Workspace,
     query: &str,
     limit: usize,
 ) -> Vec<WorkspaceSearchResult> {
-    let mut results = Vec::new();
     let query_lower = query.to_lowercase();
+    let mut ranked: Vec<(MatchRank, WorkspaceSearchResult)> = Vec::new();
 
-    for entry in workspace.file_index.object_info.iter() {
-        if results.len() >= limit {
-            break;
+    // `object_infos`, not `object_info`: the singular map holds the first
+    // declaration of each file, so the second and later objects of a
+    // multi-object file were not findable by `workspace/symbol` at all.
+    for entry in workspace.file_index.object_infos.iter() {
+        let file_path = entry.key();
+        for info in entry.value() {
+            let Some(rank) = match_rank(&info.name, &query_lower) else {
+                continue;
+            };
+            ranked.push((
+                rank,
+                WorkspaceSearchResult {
+                    file_path: file_path.clone(),
+                    info: info.clone(),
+                },
+            ));
         }
-        let file_path = entry.key().clone();
-        let info = entry.value().clone();
-        if !query.is_empty() && !ascii_contains_ci(&info.name, &query_lower) {
-            continue;
-        }
-        results.push(WorkspaceSearchResult { file_path, info });
     }
 
-    results
+    ranked.sort_by(|(left_rank, left), (right_rank, right)| {
+        left_rank.cmp(right_rank).then_with(|| {
+            (
+                left.info.name.to_lowercase(),
+                &left.info.name,
+                &left.file_path,
+                left.info.range.start_byte,
+            )
+                .cmp(&(
+                    right.info.name.to_lowercase(),
+                    &right.info.name,
+                    &right.file_path,
+                    right.info.range.start_byte,
+                ))
+        })
+    });
+    ranked.truncate(limit);
+    ranked.into_iter().map(|(_, result)| result).collect()
 }
 
 /// A single child symbol search result (procedure, trigger, event, etc.).
@@ -80,22 +132,22 @@ pub struct WorkspaceChildSearchResult {
 /// Uses cached parse trees from the file index to avoid re-parsing.
 /// - When `query` is empty, all child symbols are returned up to `limit`.
 /// - When `query` is non-empty, only symbols whose name contains the query are returned.
-/// - Results are limited to `limit` entries.
+/// - Ranked and truncated the same way as [`workspace_search`].
 pub fn workspace_search_children(
     workspace: &Workspace,
     query: &str,
     limit: usize,
 ) -> Vec<WorkspaceChildSearchResult> {
-    let mut results = Vec::new();
     let query_lower = query.to_lowercase();
+    let mut ranked: Vec<(MatchRank, WorkspaceChildSearchResult)> = Vec::new();
 
-    for entry in workspace.file_index.files.iter() {
-        if results.len() >= limit {
-            break;
-        }
-        let file_path = entry.key().clone();
-        drop(entry); // release dashmap lock before accessing symbols
-
+    let paths: Vec<PathBuf> = workspace
+        .file_index
+        .files
+        .iter()
+        .map(|entry| entry.key().clone())
+        .collect();
+    for file_path in paths {
         let doc_symbols: Vec<super::AlDocumentSymbol> =
             match workspace.file_index.get_cached_symbols(&file_path) {
                 Some(s) => s.into_iter().map(Into::into).collect(),
@@ -103,27 +155,47 @@ pub fn workspace_search_children(
             };
         for sym in &doc_symbols {
             let container_name = sym.name.clone();
-            if let Some(children) = &sym.children {
-                for child in children {
-                    if results.len() >= limit {
-                        break;
-                    }
-                    if !query.is_empty() && !ascii_contains_ci(&child.name, &query_lower) {
-                        continue;
-                    }
-                    results.push(WorkspaceChildSearchResult {
+            let Some(children) = &sym.children else {
+                continue;
+            };
+            for child in children {
+                let Some(rank) = match_rank(&child.name, &query_lower) else {
+                    continue;
+                };
+                ranked.push((
+                    rank,
+                    WorkspaceChildSearchResult {
                         file_path: file_path.clone(),
                         name: child.name.clone(),
                         kind: child.kind,
                         range: child.range,
                         container_name: container_name.clone(),
-                    });
-                }
+                    },
+                ));
             }
         }
     }
 
-    results
+    ranked.sort_by(|(left_rank, left), (right_rank, right)| {
+        left_rank.cmp(right_rank).then_with(|| {
+            (
+                left.name.to_lowercase(),
+                &left.name,
+                &left.container_name,
+                &left.file_path,
+                left.range.start.line,
+            )
+                .cmp(&(
+                    right.name.to_lowercase(),
+                    &right.name,
+                    &right.container_name,
+                    &right.file_path,
+                    right.range.start.line,
+                ))
+        })
+    });
+    ranked.truncate(limit);
+    ranked.into_iter().map(|(_, result)| result).collect()
 }
 
 #[cfg(test)]
@@ -133,41 +205,37 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn ascii_contains_ci_matches_case_insensitively() {
-        assert!(ascii_contains_ci("CustomerLedgerEntry", "customer"));
-        assert!(ascii_contains_ci("customerledgerentry", "customer"));
-        assert!(ascii_contains_ci("CUSTOMERLEDGERENTRY", "customer"));
+    fn match_rank_orders_exact_then_prefix_then_substring() {
+        assert_eq!(match_rank("Customer", "customer"), Some(MatchRank::Exact));
+        assert_eq!(
+            match_rank("Customer Ledger", "customer"),
+            Some(MatchRank::Prefix)
+        );
+        assert_eq!(
+            match_rank("Posted Customer Entry", "customer"),
+            Some(MatchRank::Substring)
+        );
+        assert_eq!(match_rank("Vendor", "customer"), None);
+        assert_eq!(match_rank("Anything", ""), Some(MatchRank::Substring));
     }
 
+    /// The query was folded with Unicode-aware `to_lowercase` and the haystack
+    /// with a per-byte ASCII fold, so `MÜNCHEN` found nothing while `München`
+    /// did. Nordic and German BC projects hit this on every accented name.
     #[test]
-    fn ascii_contains_ci_matches_interior_and_boundary_substrings() {
-        assert!(ascii_contains_ci("MyTestTable", "my"));
-        assert!(ascii_contains_ci("MyTestTable", "test"));
-        assert!(ascii_contains_ci("MyTestTable", "table"));
-    }
-
-    #[test]
-    fn ascii_contains_ci_rejects_non_substring() {
-        assert!(!ascii_contains_ci("MyTestTable", "vendor"));
-    }
-
-    #[test]
-    fn ascii_contains_ci_query_longer_than_haystack_is_false() {
-        assert!(!ascii_contains_ci("abc", "abcd"));
-        assert!(!ascii_contains_ci("", "x"));
-    }
-
-    #[test]
-    fn ascii_contains_ci_single_byte_query_boundary() {
-        // `windows(0)` panics; callers guard `!query.is_empty()` so the minimum input is 1 byte.
-        assert!(ascii_contains_ci("Foo", "f"));
-        assert!(ascii_contains_ci("Foo", "o"));
-        assert!(!ascii_contains_ci("Foo", "z"));
-    }
-
-    #[test]
-    fn ascii_contains_ci_full_string_equality_matches() {
-        assert!(ascii_contains_ci("Foo", "foo"));
+    fn match_rank_folds_non_ascii_names() {
+        assert_eq!(
+            match_rank("München Setup", &"MÜNCHEN".to_lowercase()),
+            Some(MatchRank::Prefix)
+        );
+        assert_eq!(
+            match_rank("Ørnamental Entry", &"ØRNAMENTAL".to_lowercase()),
+            Some(MatchRank::Prefix)
+        );
+        assert_eq!(
+            match_rank("Æble Setup", &"ÆBLE".to_lowercase()),
+            Some(MatchRank::Prefix)
+        );
     }
 
     fn ws_with_objects() -> Workspace {
@@ -242,6 +310,70 @@ mod tests {
             results.is_empty(),
             "a limit of 0 must short-circuit before pushing any result"
         );
+    }
+
+    /// Truncating a DashMap iteration returned an arbitrary subset in shard
+    /// order, so the object whose full name the user typed could be cut and
+    /// the list reordered between identical requests.
+    #[test]
+    fn workspace_search_ranks_before_it_truncates() {
+        let ws = Workspace::new();
+        for index in 0..40 {
+            ws.file_index.add_file(
+                PathBuf::from(format!("/proj/Sales{index}.al")),
+                format!(r#"page {} "Posted Sales {index}" {{ }}"#, 50200 + index),
+            );
+        }
+        ws.file_index.add_file(
+            PathBuf::from("/proj/Sales.al"),
+            r#"table 50100 "Sales" { fields { field(1; "No."; Code[20]) { } } }"#.to_string(),
+        );
+        ws.file_index.add_file(
+            PathBuf::from("/proj/SalesHeader.al"),
+            r#"table 50101 "Sales Header" { fields { field(1; "No."; Code[20]) { } } }"#
+                .to_string(),
+        );
+
+        let first = workspace_search(&ws, "Sales", 3);
+        assert_eq!(
+            first
+                .iter()
+                .map(|result| result.info.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Sales", "Sales Header", "Posted Sales 0"],
+            "exact, then prefix, then substring"
+        );
+
+        let second = workspace_search(&ws, "Sales", 3);
+        assert_eq!(
+            first
+                .iter()
+                .map(|result| result.info.name.clone())
+                .collect::<Vec<_>>(),
+            second
+                .iter()
+                .map(|result| result.info.name.clone())
+                .collect::<Vec<_>>(),
+            "identical requests must return an identical list"
+        );
+    }
+
+    /// `object_info` holds the first declaration of each file, so the second
+    /// object of a multi-object file was not findable at all.
+    #[test]
+    fn workspace_search_finds_a_second_object_in_a_file() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/proj/Setup.al"),
+            "table 50100 \"Ship Setup\" { fields { field(1; Key1; Code[10]) { } } }\n\
+             page 50101 \"Ship Setup Card\" { PageType = Card; }\n"
+                .to_string(),
+        );
+
+        let results = workspace_search(&ws, "Ship Setup Card", 10);
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(results[0].info.name, "Ship Setup Card");
+        assert_eq!(results[0].info.kind, "page");
     }
 
     #[test]

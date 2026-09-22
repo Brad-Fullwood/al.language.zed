@@ -255,20 +255,33 @@ fn source_candidates(
     let mut workspace_candidates = Vec::new();
     if workspace_requested {
         for path in workspace.file_index.object_paths(name) {
-            let info = workspace.file_index.object_info.get(&path).ok_or_else(|| {
-                SourceLookupError::InvalidWorkspaceDeclaration {
+            // A file can declare several objects. Take the declaration that
+            // carries the requested *name*, not the file's first one.
+            let infos = workspace.file_index.object_infos_in(&path);
+            let mut matched = false;
+            for info in infos
+                .iter()
+                .filter(|info| info.name.eq_ignore_ascii_case(name))
+            {
+                let kind = info.kind.parse::<ObjectKind>().map_err(|reason| {
+                    SourceLookupError::InvalidWorkspaceDeclaration {
+                        path: path.clone(),
+                        reason,
+                    }
+                })?;
+                matched = true;
+                if kind_filter.is_none_or(|expected| expected == kind) {
+                    workspace_candidates.push(SourceCandidate::Workspace {
+                        path: path.clone(),
+                        kind,
+                    });
+                }
+            }
+            if !matched {
+                return Err(SourceLookupError::InvalidWorkspaceDeclaration {
                     path: path.clone(),
                     reason: "object-name index has no matching declaration metadata".to_string(),
-                }
-            })?;
-            let kind = info.kind.parse::<ObjectKind>().map_err(|reason| {
-                SourceLookupError::InvalidWorkspaceDeclaration {
-                    path: path.clone(),
-                    reason,
-                }
-            })?;
-            if kind_filter.is_none_or(|expected| expected == kind) {
-                workspace_candidates.push(SourceCandidate::Workspace { path, kind });
+                });
             }
         }
     }
@@ -335,11 +348,22 @@ fn try_workspace_source(
             name: name.to_string(),
         })?;
 
-    let obj_info = al_syntax::find_object_declaration(&tree, &text).ok_or_else(|| {
-        SourceLookupError::ObjectNotFound {
+    // Re-read the declarations from the text and tree in hand rather than the
+    // index, so an open, edited buffer answers about itself. The declaration
+    // wanted is the one named `name`, which in a multi-object file is not
+    // necessarily the first.
+    let declarations = al_syntax::find_object_declarations(&tree, &text);
+    let obj_info = declarations
+        .iter()
+        .find(|info| info.name.eq_ignore_ascii_case(name) && kind_matches(&info.kind, kind))
+        .or_else(|| {
+            declarations
+                .iter()
+                .find(|info| info.name.eq_ignore_ascii_case(name))
+        })
+        .ok_or_else(|| SourceLookupError::ObjectNotFound {
             name: name.to_string(),
-        }
-    })?;
+        })?;
     let declared_kind = obj_info.kind.parse::<ObjectKind>().map_err(|reason| {
         SourceLookupError::InvalidWorkspaceDeclaration {
             path: file_path.to_path_buf(),
@@ -358,10 +382,14 @@ fn try_workspace_source(
             path: file_path.to_path_buf(),
             reason: error.to_string(),
         })?;
+    let object_range = obj_info.range;
+    let object_node = tree
+        .root_node()
+        .descendant_for_byte_range(object_range.start_byte, object_range.end_byte)
+        .unwrap_or_else(|| tree.root_node());
 
     if let Some(member) = member {
-        let root = tree.root_node();
-        if let Some((node, sig)) = find_member_node(&root, &text, member) {
+        if let Some((node, sig)) = find_member_node(&object_node, &text, member) {
             let start_line = node.start_position().row;
             let end_line = node.end_position().row;
             let code = node.utf8_text(text.as_bytes()).unwrap_or("").to_string();
@@ -399,13 +427,9 @@ fn try_workspace_source(
 
     // A whole-object lookup used to return `code` with no `range`, so an agent
     // that asked where the object lives got `null` and fell back to `find`.
-    // The declaration's own span and path answer that without a second call.
-    let declaration = al_syntax::find_object_declaration(&tree, &text);
-    let range = declaration.map(|info| SourceRange {
-        f: file_path.to_string_lossy().to_string(),
-        l: info.range.start_point.row as u32 + 1,
-        end: info.range.end_point.row as u32 + 1,
-    });
+    // The declaration's own span and path answer that without a second call —
+    // the span of the object that was asked for, which in a multi-object file
+    // is not necessarily the file's first.
     Ok(SourceResult {
         k: kind,
         id,
@@ -415,10 +439,21 @@ fn try_workspace_source(
         source_availability: SourceAvailability::WorkspaceSource,
         pkg: None,
         sig: None,
-        range,
-        code: text.clone(),
+        range: Some(SourceRange {
+            f: file_path.to_string_lossy().to_string(),
+            l: object_range.start_point.row as u32 + 1,
+            end: object_range.end_point.row as u32 + 1,
+        }),
+        code: text[object_range.start_byte..object_range.end_byte.min(text.len())].to_string(),
         note: None,
     })
+}
+
+/// Compare a parsed declaration kind string against a resolved [`ObjectKind`].
+fn kind_matches(declared: &str, kind: ObjectKind) -> bool {
+    declared
+        .parse::<ObjectKind>()
+        .is_ok_and(|parsed| parsed == kind)
 }
 
 fn try_package_source(
@@ -574,11 +609,9 @@ fn find_member_node<'a>(
         if kind == member.kind.declaration_kind() {
             if let Some(name_node) = node.child_by_field_name("name") {
                 let node_name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
-                let clean = node_name.trim_matches('"');
+                let clean = al_syntax::clean_identifier(node_name);
                 if clean.eq_ignore_ascii_case(member.name) {
-                    let text = node.utf8_text(source.as_bytes()).unwrap_or("");
-                    let sig = extract_signature_from_text(text);
-                    return Some((node, sig));
+                    return Some((node, member_signature(node, source)));
                 }
             }
         }
@@ -593,39 +626,64 @@ fn find_member_node<'a>(
     None
 }
 
-fn extract_signature_from_text(text: &str) -> String {
-    // Take text up to and including the first closing paren that completes the signature
-    let mut depth = 0i32;
-    let mut end = 0;
-    for (i, ch) in text.char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    end = i + 1;
-                    let rest = &text[end..];
-                    let same_line = rest.split('\n').next().unwrap_or("");
-                    if let Some(colon_pos) = same_line.find(':') {
-                        // Include the return type (everything after ':' on same line)
-                        let return_part = same_line[colon_pos..].trim_end_matches(';').trim_end();
-                        end = end + colon_pos + return_part.len();
-                    }
-                    break;
-                }
-            }
-            '\n' if depth == 0 => {
-                end = i;
-                break;
-            }
-            _ => {}
+/// The signature line of a procedure/trigger declaration node.
+///
+/// Built from the declaration's own children rather than by scanning its text:
+/// the grammar nests `repeat($.attribute)` inside `procedure_declaration`, so a
+/// text scan for the first balanced `(...)` finds the *attribute's* argument
+/// list. Every `[EventSubscriber]`, `[IntegrationEvent]` and `[Test]`
+/// procedure reported its attribute, truncated before the closing `]`, as its
+/// signature.
+fn member_signature(node: tree_sitter::Node<'_>, source: &str) -> String {
+    let bytes = source.as_bytes();
+    let keyword_row = al_syntax::procedure_keyword_row(node);
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return signature_from_row(node, source, keyword_row);
+    };
+    // The declaration's own leading keyword: `procedure`, `function` or
+    // `trigger`. A trigger rendered as "procedure OnInsert()" is a signature
+    // no AL file contains.
+    let mut cursor = node.walk();
+    let keyword = node
+        .children(&mut cursor)
+        .find(|child| matches!(child.kind(), "kw_procedure" | "kw_function" | "kw_trigger"))
+        .and_then(|child| child.utf8_text(bytes).ok())
+        .unwrap_or("procedure")
+        .to_string();
+    let name = name_node.utf8_text(bytes).unwrap_or("");
+    let parameters = node
+        .child_by_field_name("parameters")
+        .and_then(|child| child.utf8_text(bytes).ok())
+        .unwrap_or("()");
+    let return_type = node
+        .child_by_field_name("return_type")
+        .and_then(|child| child.utf8_text(bytes).ok());
+    let return_var = node
+        .child_by_field_name("return_var")
+        .and_then(|child| child.utf8_text(bytes).ok());
+
+    let mut signature = format!("{keyword} {name}{parameters}");
+    if let Some(return_type) = return_type {
+        // AL names an optional return variable before the colon:
+        // `procedure Total(Amount: Decimal) Result: Decimal`.
+        match return_var {
+            Some(return_var) => signature.push_str(&format!(" {}: ", return_var.trim())),
+            None => signature.push_str(": "),
         }
+        signature.push_str(return_type.trim());
     }
-    if end == 0 {
-        text.lines().next().unwrap_or(text).to_string()
-    } else {
-        text[..end].trim().to_string()
-    }
+    signature
+}
+
+/// The declaration's first non-attribute line, for a node whose fields the
+/// parser did not populate.
+fn signature_from_row(
+    node: tree_sitter::Node<'_>,
+    source: &str,
+    keyword_row: Option<usize>,
+) -> String {
+    let row = keyword_row.unwrap_or_else(|| node.start_position().row);
+    source.lines().nth(row).unwrap_or("").trim().to_string()
 }
 
 /// One member of an object, without its body.
@@ -701,11 +759,14 @@ fn member_outlines(source: &str) -> Vec<MemberOutline> {
                 .child_by_field_name("name")
                 .and_then(|name| name.utf8_text(source.as_bytes()).ok())
             {
-                let text = node.utf8_text(source.as_bytes()).unwrap_or("");
                 outlines.push(MemberOutline {
-                    name: name.trim().trim_matches('"').to_string(),
+                    name: al_syntax::clean_identifier(name),
                     kind: member_kind,
-                    signature: extract_signature_from_text(text),
+                    // From the declaration's children, not a text scan: the
+                    // grammar nests a procedure's attributes inside it, so
+                    // scanning for the first balanced `(...)` finds the
+                    // attribute's argument list.
+                    signature: member_signature(node, source),
                     start_line: node.start_position().row as u32 + 1,
                     end_line: node.end_position().row as u32 + 1,
                 });
@@ -1012,7 +1073,7 @@ fn find_procedure_decl_line(
             if child.kind() == "procedure_declaration" || child.kind() == "trigger_declaration" {
                 if let Some(name_node) = child.child_by_field_name("name") {
                     if let Ok(text) = name_node.utf8_text(source.as_bytes()) {
-                        let clean = text.trim_matches('"');
+                        let clean = al_syntax::clean_identifier(text);
                         if clean.eq_ignore_ascii_case(name) {
                             let row = name_node.start_position().row;
                             let sig = source
@@ -1313,20 +1374,6 @@ mod tests {
     }
 
     #[test]
-    fn extract_signature_from_simple_procedure() {
-        let text = "procedure DoWork(x: Integer)\nvar\n    y: Text;\nbegin\nend;";
-        let sig = extract_signature_from_text(text);
-        assert_eq!(sig, "procedure DoWork(x: Integer)");
-    }
-
-    #[test]
-    fn extract_signature_with_return_type() {
-        let text = "procedure GetValue(): Decimal\nbegin\nend;";
-        let sig = extract_signature_from_text(text);
-        assert_eq!(sig, "procedure GetValue(): Decimal");
-    }
-
-    #[test]
     fn render_outline_empty_object() {
         let entry = SymbolEntry {
             synthetic: false,
@@ -1384,30 +1431,53 @@ mod tests {
     }
 
     #[test]
-    fn extract_signature_no_parens_falls_back_to_first_line() {
-        let text = "trigger OnInsert\nbegin\nend;";
-        let sig = extract_signature_from_text(text);
-        assert_eq!(sig, "trigger OnInsert");
-    }
+    /// The signature cases the deleted `extract_signature_from_text` covered,
+    /// now asserted against the node-based `member_signature` that replaced it
+    /// — plus the attributed procedure the text scan got wrong.
+    fn member_signatures_cover_the_shapes_a_text_scan_used_to() {
+        let signature = |source: &str, name: &str| {
+            member_outlines(source)
+                .into_iter()
+                .find(|outline| outline.name == name)
+                .unwrap_or_else(|| panic!("no member named {name} in:\n{source}"))
+                .signature
+        };
 
-    #[test]
-    fn extract_signature_strips_trailing_semicolon_on_return_type() {
-        let text = "procedure GetValue(): Decimal;\nbegin\nend;";
-        let sig = extract_signature_from_text(text);
-        assert_eq!(sig, "procedure GetValue(): Decimal");
-    }
+        let source = "table 50100 \"Ship Log\"\n\
+                      {\n\
+                      \x20   trigger OnInsert()\n\
+                      \x20   begin\n\
+                      \x20   end;\n\
+                      \n\
+                      \x20   procedure GetValue(): Decimal\n\
+                      \x20   begin\n\
+                      \x20   end;\n\
+                      \n\
+                      \x20   procedure Foo(a: Integer)\n\
+                      \x20   begin\n\
+                      \x20   end;\n\
+                      \n\
+                      \x20   [EventSubscriber(ObjectType::Codeunit, Codeunit::\"Sales-Post\", 'OnAfterPost', '', false, false)]\n\
+                      \x20   local procedure HandlePost(var SalesHeader: Record \"Sales Header\")\n\
+                      \x20   begin\n\
+                      \x20   end;\n\
+                      }\n";
 
-    #[test]
-    fn extract_signature_empty_input_returns_empty() {
-        let sig = extract_signature_from_text("");
-        assert_eq!(sig, "");
-    }
-
-    #[test]
-    fn extract_signature_no_return_type_after_close_paren() {
-        let text = "procedure Foo(a: Integer) // comment\nbegin\nend;";
-        let sig = extract_signature_from_text(text);
-        assert_eq!(sig, "procedure Foo(a: Integer)");
+        assert_eq!(signature(source, "OnInsert"), "trigger OnInsert()");
+        assert_eq!(
+            signature(source, "GetValue"),
+            "procedure GetValue(): Decimal"
+        );
+        assert_eq!(signature(source, "Foo"), "procedure Foo(a: Integer)");
+        assert_eq!(
+            signature(source, "HandlePost"),
+            "procedure HandlePost(var SalesHeader: Record \"Sales Header\")",
+            "the attribute's argument list is not the signature"
+        );
+        assert!(
+            member_outlines("").is_empty(),
+            "empty source has no members"
+        );
     }
 
     /// `source` answers with either shape, and the CLI's response contract
@@ -1740,6 +1810,170 @@ mod tests {
             source(&ws, "Workspace Source", None, None, procedure("OnInsert")),
             Err(SourceLookupError::MemberNotFound { .. })
         ));
+    }
+
+    const TWO_TABLES: &str = r#"table 50100 "Shipment Header"
+{
+    fields { field(1; "No."; Code[20]) { } }
+
+    procedure HeaderWork()
+    begin
+    end;
+}
+
+table 50101 "Shipment Line"
+{
+    fields { field(1; "Line No."; Integer) { } }
+
+    procedure LineWork()
+    begin
+    end;
+}
+"#;
+
+    /// AL escapes an embedded `"` in a quoted name by doubling it, so
+    /// `"Do ""It"" Now"` names the procedure `Do "It" Now`. Stripping quote
+    /// runs yields `Do ""It"" Now` with its outer quotes gone but the doubling
+    /// left in, which matches neither the symbol index nor another occurrence.
+    #[test]
+    fn source_finds_a_member_whose_name_contains_an_escaped_quote() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/project/Quoted.al"),
+            "codeunit 50100 \"Quoted CU\"\n\
+             {\n\
+             \x20   procedure \"Do \"\"It\"\" Now\"()\n\
+             \x20   begin\n\
+             \x20   end;\n\
+             }\n"
+            .to_string(),
+        );
+
+        let result = source(&ws, "Quoted CU", None, None, procedure("Do \"It\" Now"))
+            .expect("the doubled quote is an escape, not part of the name");
+        assert_eq!(result.proc_name.as_deref(), Some("Do \"It\" Now"));
+    }
+
+    /// The grammar nests attributes inside `procedure_declaration`, so a text
+    /// scan for the first balanced `(...)` found the attribute's argument list
+    /// and reported `[EventSubscriber(...` as the signature.
+    #[test]
+    fn source_reports_the_signature_of_an_attributed_procedure() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/project/Sub.al"),
+            r#"codeunit 50100 "Ship Sub"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Sales-Post", 'OnAfterPost', '', false, false)]
+    local procedure MyHandler(var SalesHeader: Record "Sales Header")
+    begin
+    end;
+
+    procedure Total(Amount: Decimal) Result: Decimal
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+
+        let handler = source(&ws, "Ship Sub", None, None, procedure("MyHandler"))
+            .expect("attributed procedure");
+        assert_eq!(
+            handler.sig.as_deref(),
+            Some("procedure MyHandler(var SalesHeader: Record \"Sales Header\")")
+        );
+
+        let total = source(&ws, "Ship Sub", None, None, procedure("Total"))
+            .expect("return-typed procedure");
+        assert_eq!(
+            total.sig.as_deref(),
+            Some("procedure Total(Amount: Decimal) Result: Decimal")
+        );
+    }
+
+    #[test]
+    fn source_returns_the_named_object_in_a_multi_object_file() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/project/Shipment.al"),
+            TWO_TABLES.to_string(),
+        );
+
+        let header = source(&ws, "Shipment Header", None, None, None).expect("first object");
+        assert_eq!(header.id, 50100);
+        assert!(header.code.starts_with("table 50100"));
+        assert!(
+            !header.code.contains("Shipment Line"),
+            "the first object's source must stop before the second"
+        );
+
+        let line = source(&ws, "Shipment Line", None, None, None).expect("second object");
+        assert_eq!(line.id, 50101, "the second object reports its own id");
+        assert_eq!(line.n, "Shipment Line");
+        assert!(line.code.starts_with("table 50101"));
+        assert!(
+            !line.code.contains("Shipment Header"),
+            "the second object's source must not include the first"
+        );
+    }
+
+    #[test]
+    fn source_finds_a_second_object_of_a_different_kind() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/project/Setup.al"),
+            r#"table 50110 "Ship Setup"
+{
+    fields { field(1; "Primary Key"; Code[10]) { } }
+}
+
+page 50110 "Ship Setup Card"
+{
+    PageType = Card;
+    SourceTable = "Ship Setup";
+
+    procedure Refresh()
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+
+        let page = source(&ws, "Ship Setup Card", None, None, None)
+            .expect("a page declared after a table is still findable");
+        assert_eq!(page.k, ObjectKind::Page);
+        assert_eq!(page.id, 50110);
+
+        let filtered = source(&ws, "Ship Setup Card", Some(ObjectKind::Page), None, None)
+            .expect("an explicit --kind page must not drop the candidate");
+        assert_eq!(filtered.k, ObjectKind::Page);
+
+        let table = source(&ws, "Ship Setup", Some(ObjectKind::Table), None, None)
+            .expect("the table is still findable by its own kind");
+        assert_eq!(table.k, ObjectKind::Table);
+    }
+
+    #[test]
+    fn source_member_lookup_is_scoped_to_the_named_object() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/project/Shipment.al"),
+            TWO_TABLES.to_string(),
+        );
+
+        let line_member = source(&ws, "Shipment Line", None, None, procedure("LineWork"))
+            .expect("the second object's own procedure");
+        assert!(line_member.code.contains("procedure LineWork"));
+
+        assert!(
+            matches!(
+                source(&ws, "Shipment Line", None, None, procedure("HeaderWork")),
+                Err(SourceLookupError::MemberNotFound { .. })
+            ),
+            "a procedure of the sibling object is not a member of this one"
+        );
     }
 
     #[test]

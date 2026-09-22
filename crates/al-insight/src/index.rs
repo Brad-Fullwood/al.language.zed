@@ -52,10 +52,6 @@ pub enum EdgeKind {
     /// A direct procedure-to-procedure call (source-derived).
     DirectCall,
     EventSubscription,
-    /// No pass produces this kind. A trigger's calls are ordinary
-    /// `DirectCall` edges out of the trigger's own node, so it carries no
-    /// information the graph does not already have.
-    TriggerInvocation,
     /// A record operation (Insert/Modify/Delete/Validate) triggers table events.
     RecordTrigger,
     /// A *polymorphic / indirect* call that cannot be resolved to a single
@@ -84,7 +80,6 @@ impl std::fmt::Display for EdgeKind {
         match self {
             EdgeKind::DirectCall => write!(f, "direct_call"),
             EdgeKind::EventSubscription => write!(f, "event_subscription"),
-            EdgeKind::TriggerInvocation => write!(f, "trigger_invocation"),
             EdgeKind::RecordTrigger => write!(f, "record_trigger"),
             EdgeKind::IndirectCall => write!(f, "indirect_call"),
         }

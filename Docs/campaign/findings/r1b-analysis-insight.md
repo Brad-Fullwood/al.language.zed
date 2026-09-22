@@ -270,11 +270,9 @@ Files the first checklist does not list at all:
 - severity: low
 - scenario: `add_trigger_invocation` is the only function that constructs a `TriggerInvocation` edge, and a grep across the repo finds exactly one call, in its own unit test at index.rs:646. No production code path creates one. The module header still advertises it as one of "three kinds of edges tracked", `search.rs:142` includes it in the traversal filter, `search.rs:430` assigns it a hop cost of 1, and `test_coverage.rs:327` matches it when deciding what counts as coverage. All four are unreachable. The feature the doc describes, "Trigger A invokes Procedure B", is not implemented.
 - fix: either wire it up where triggers are parsed (calls.rs already emits `RecordTrigger` at line 890) or delete the variant and the four dead branches.
-- status: partly fixed 80cb7756 — `add_trigger_invocation` and the module header claim are gone,
-  and the variant now documents that no pass produces it. The variant itself, `search.rs:142`,
-  `search.rs:430` and `test_coverage.rs:327` are still there: removing the variant needs an edit
-  to `crates/al-analysis/src/queries/test_coverage.rs`, which another agent owned during this round.
-  See the open finding below.
+- status: fixed 80cb7756 and 6d5f4e96 — `add_trigger_invocation` and the module header claim went
+  first; the variant, its `Display` arm, `search.rs:142`, `search.rs:430` and
+  `test_coverage.rs:327` followed once `test_coverage.rs` was free.
 
 ### [SLOP] `CallGraph::remove_edges_from` is dead, and it would leave stale resolution state if it were used
 - where: crates/al-insight/src/index.rs:245-254
@@ -323,7 +321,8 @@ Files the first checklist does not list at all:
   node, so the variant carries nothing the graph does not already have.
 - fix: delete the variant and the three branches. `test_coverage.rs` was owned by a concurrent fix
   agent during round 1b, which is why the removal stopped short.
-- status: open
+- status: fixed 6d5f4e96 — the variant, its `Display` arm and all three branches are gone, and
+  `Docs/features/analysis-and-insight.md` lists the four edge kinds that exist.
 
 ### [BUG] A bare field reference inside a table's own procedure is dropped by rename
 - where: crates/al-analysis/src/queries/binding.rs:38-47 (`decl_loc`'s go-to-definition fallback)

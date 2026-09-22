@@ -702,6 +702,39 @@ impl FileIndex {
         })
     }
 
+    /// Every object declared in `path`, in document order.
+    pub fn object_infos_in(&self, path: &Path) -> Vec<CachedObjectInfo> {
+        self.object_infos
+            .get(path)
+            .map(|infos| infos.value().clone())
+            .or_else(|| self.object_info.get(path).map(|info| vec![info.clone()]))
+            .unwrap_or_default()
+    }
+
+    /// The declaration of `name` in `path`, of `kind` when one is given.
+    ///
+    /// A file declaring `table 50100 "Shipment Header"` then
+    /// `table 50101 "Shipment Line"` answers for either, where
+    /// [`Self::object_info`] only ever describes the header.
+    pub fn object_info_named(
+        &self,
+        path: &Path,
+        name: &str,
+        kind: Option<&str>,
+    ) -> Option<CachedObjectInfo> {
+        self.object_infos_in(path).into_iter().find(|info| {
+            info.name.eq_ignore_ascii_case(name)
+                && kind.is_none_or(|expected| info.kind.eq_ignore_ascii_case(expected))
+        })
+    }
+
+    /// The object declaration whose source range covers `byte_offset`.
+    pub fn object_info_at_byte(&self, path: &Path, byte_offset: usize) -> Option<CachedObjectInfo> {
+        self.object_infos_in(path)
+            .into_iter()
+            .find(|info| byte_offset >= info.range.start_byte && byte_offset < info.range.end_byte)
+    }
+
     /// The app root of `file`: the nearest ancestor directory holding an
     /// `app.json`. Memoized per directory.
     pub fn app_root_for(&self, file: &Path) -> Option<PathBuf> {
@@ -867,49 +900,19 @@ impl FileIndex {
 /// all subsequent objects invisible to name lookup. Falls back to the
 /// single-object helper for grammar variants that expose the object type
 /// directly at the root.
-fn collect_object_declarations(tree: &tree_sitter::Tree, content: &str) -> Vec<CachedObjectInfo> {
-    let root = tree.root_node();
-    let source = content.as_bytes();
-    let mut infos = Vec::new();
-    let mut cursor = root.walk();
-    for child in root.children(&mut cursor) {
-        if child.kind() != "object_declaration" {
-            continue;
-        }
-        let mut kind = String::new();
-        if let Some(kind_node) = child.child_by_field_name("kind") {
-            kind = kind_node.kind().to_string();
-            if kind == "object_keyword" {
-                if let Ok(text) = kind_node.utf8_text(source) {
-                    kind = text.to_lowercase();
-                }
-            } else {
-                kind = kind.strip_prefix("kw_").unwrap_or(&kind).to_string();
-            }
-        }
-        let id = child
-            .child_by_field_name("id")
-            .and_then(|node| node.utf8_text(source).ok())
-            .and_then(|text| text.parse::<i64>().ok());
-        let name = al_syntax::extract_object_name(child, source).unwrap_or_default();
-        infos.push(CachedObjectInfo {
-            kind,
-            id,
-            name,
-            range: child.range(),
-        });
-    }
-    if infos.is_empty() {
-        if let Some(info) = al_syntax::find_object_declaration(tree, content) {
-            infos.push(CachedObjectInfo {
-                kind: info.kind,
-                id: info.id,
-                name: info.name,
-                range: info.range,
-            });
-        }
-    }
-    infos
+pub fn collect_object_declarations(
+    tree: &tree_sitter::Tree,
+    content: &str,
+) -> Vec<CachedObjectInfo> {
+    al_syntax::find_object_declarations(tree, content)
+        .into_iter()
+        .map(|info| CachedObjectInfo {
+            kind: info.kind,
+            id: info.id,
+            name: info.name,
+            range: info.range,
+        })
+        .collect()
 }
 
 /// Read one on-disk AL source with the same size, UTF-8, file-type, and

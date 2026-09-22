@@ -14,7 +14,7 @@ both package symbols and your code contribute.
 | Component | File | Role |
 | --- | --- | --- |
 | Graph model | `graph.rs` | petgraph `DiGraph` of `InsightNode` (Object/Procedure/Event/Subscriber) and `InsightEdge` (Extends/Calls/Publishes/SubscribesTo/Contains/RelatesTo/Triggers); O(1) node lookup and edge dedup |
-| Call graph | `calls.rs`, `index.rs` | adjacency lists with **both** outgoing and incoming edges (so "callers of X" is O(deg) not O(\|E\|)); edge kinds DirectCall/EventSubscription/TriggerInvocation/RecordTrigger |
+| Call graph | `calls.rs`, `index.rs` | adjacency lists with **both** outgoing and incoming edges (so "callers of X" is O(deg) not O(\|E\|)); edge kinds DirectCall/EventSubscription/RecordTrigger/IndirectCall |
 | Traversal/search | `search.rs` | event tracing, entry-point discovery, DOT/JSON export |
 | Helpers | `analysis.rs` | table-impact, TableRelation parsing, record-type matching |
 | Discovery | `discovery.rs` | full publisher/subscriber map + orphan subscribers |

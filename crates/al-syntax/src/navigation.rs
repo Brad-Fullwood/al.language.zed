@@ -63,12 +63,100 @@ fn is_object_type_kind(kind: &str) -> bool {
     super::language_data::is_object_keyword_node(kind)
 }
 
-/// Find the object declaration in the tree.
+/// The 0-based row of the `procedure`/`function` keyword in a declaration node.
+///
+/// tree-sitter-al puts `repeat($.attribute)` inside `procedure_declaration`
+/// (grammar.js, `procedure_declaration`), so the node's own `start_position()`
+/// is the first attribute's line. For
+///
+/// ```al
+/// [EventSubscriber(ObjectType::Codeunit, Codeunit::"Sales-Post", 'OnAfterPost', '', false, false)]
+/// procedure HandlePost()
+/// ```
+///
+/// the node starts on the attribute line, one above the signature — and with
+/// several attributes, further above still. Subscribers and `[Test]`
+/// procedures are exactly the ones that carry attributes, so anything
+/// reporting "the procedure's line" has to ask for the keyword.
+///
+/// `None` for a node that is not a procedure-like declaration.
+pub fn procedure_keyword_row(node: Node) -> Option<usize> {
+    let mut cursor = node.walk();
+    let keyword = node
+        .children(&mut cursor)
+        .find(|child| matches!(child.kind(), "kw_procedure" | "kw_function"));
+    if let Some(keyword) = keyword {
+        return Some(keyword.start_position().row);
+    }
+    // `procedure_declaration` wraps `event_procedure_declaration`, which holds
+    // the keyword.
+    let mut inner_cursor = node.walk();
+    let nested = node
+        .children(&mut inner_cursor)
+        .find(|child| child.kind() == "event_procedure_declaration");
+    match nested {
+        Some(inner) => procedure_keyword_row(inner),
+        None => None,
+    }
+}
+
+/// Read one `object_declaration` node into an [`ObjectInfo`].
+fn object_declaration_info(node: Node, source: &[u8]) -> ObjectInfo {
+    let mut kind = String::new();
+    if let Some(kind_node) = node.child_by_field_name("kind") {
+        kind = kind_node.kind().to_string();
+        if kind == "object_keyword" {
+            if let Ok(text) = kind_node.utf8_text(source) {
+                kind = text.to_lowercase();
+            }
+        } else {
+            kind = kind.strip_prefix("kw_").unwrap_or(&kind).to_string();
+        }
+    }
+
+    let id = node
+        .child_by_field_name("id")
+        .and_then(|id_node| id_node.utf8_text(source).ok())
+        .and_then(|text| text.parse::<i64>().ok());
+
+    ObjectInfo {
+        kind,
+        id,
+        name: super::extract_object_name(node, source).unwrap_or_default(),
+        range: node.range(),
+    }
+}
+
+/// Every top-level object declaration in the tree, in document order.
+///
+/// AL allows several objects in one `.al` file — a setup table followed by its
+/// card page is routine. Callers that hold a position, a name or a kind must
+/// use this and pick the matching declaration; [`find_object_declaration`]
+/// answers only for the first one.
+pub fn find_object_declarations(tree: &Tree, text: &str) -> Vec<ObjectInfo> {
+    let root = tree.root_node();
+    let source = text.as_bytes();
+    let mut cursor = root.walk();
+    let infos: Vec<ObjectInfo> = root
+        .children(&mut cursor)
+        .filter(|child| child.kind() == "object_declaration")
+        .map(|child| object_declaration_info(child, source))
+        .collect();
+    if !infos.is_empty() {
+        return infos;
+    }
+    find_object_declaration(tree, text).into_iter().collect()
+}
+
+/// Find the first object declaration in the tree.
 ///
 /// Handles all AL object types: table, page, codeunit, report, query, xmlport,
 /// enum, interface, permissionset, profile, pagecustomization, controladdin,
 /// tableextension, pageextension, reportextension, enumextension,
 /// permissionsetextension, entitlement, profileextension, dotnet.
+///
+/// A file with several objects has only its first one described here; use
+/// [`find_object_declarations`] for the rest.
 pub fn find_object_declaration(tree: &Tree, text: &str) -> Option<ObjectInfo> {
     let root = tree.root_node();
     let source = text.as_bytes();
@@ -76,40 +164,7 @@ pub fn find_object_declaration(tree: &Tree, text: &str) -> Option<ObjectInfo> {
     let mut cursor = root.walk();
     for child in root.children(&mut cursor) {
         if child.kind() == "object_declaration" {
-            let mut kind_str = String::new();
-            let mut id = None;
-            let mut name = String::new();
-
-            if let Some(kind_node) = child.child_by_field_name("kind") {
-                kind_str = kind_node.kind().to_string();
-                if kind_str == "object_keyword" {
-                    if let Ok(t) = kind_node.utf8_text(source) {
-                        kind_str = t.to_lowercase();
-                    }
-                } else {
-                    kind_str = kind_str
-                        .strip_prefix("kw_")
-                        .unwrap_or(&kind_str)
-                        .to_string();
-                }
-            }
-
-            if let Some(id_node) = child.child_by_field_name("id") {
-                if let Ok(id_text) = id_node.utf8_text(source) {
-                    id = id_text.parse::<i64>().ok();
-                }
-            }
-
-            if let Some(n) = super::extract_object_name(child, source) {
-                name = n;
-            }
-
-            return Some(ObjectInfo {
-                kind: kind_str,
-                id,
-                name,
-                range: child.range(),
-            });
+            return Some(object_declaration_info(child, source));
         }
     }
 
@@ -186,6 +241,41 @@ pub fn find_variable_references(tree: &Tree, text: &str, name: &str) -> Vec<tree
     let mut seen = std::collections::HashSet::new();
     refs.retain(|r| seen.insert((r.start_byte, r.end_byte)));
     refs
+}
+
+/// Count every identifier occurrence in the tree, keyed by lowercased name.
+///
+/// Same predicate and same span de-duplication as
+/// [`find_variable_references`], answered for every name in one walk. Asking
+/// `find_variable_references` once per name over F files is one full tree walk
+/// per (name, file) pair; a permission set with 300 grants over a 2000-file
+/// project did 600 000 walks for its first check and the same again for its
+/// second.
+pub fn count_identifier_occurrences(
+    tree: &Tree,
+    text: &str,
+) -> std::collections::HashMap<String, usize> {
+    let source = text.as_bytes();
+    let mut seen: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    walk_tree(tree.root_node(), &mut |node| {
+        if !matches!(node.kind(), "identifier" | "quoted_identifier" | "name") {
+            return;
+        }
+        let Ok(node_text) = node.utf8_text(source) else {
+            return;
+        };
+        let clean = crate::clean_identifier(node_text);
+        if clean.is_empty() {
+            return;
+        }
+        let range = node.range();
+        if !seen.insert((range.start_byte, range.end_byte)) {
+            return;
+        }
+        *counts.entry(clean.to_lowercase()).or_default() += 1;
+    });
+    counts
 }
 
 /// Find references to an event raised through `[EventSubscriber(...)]`
@@ -661,6 +751,72 @@ pub fn collect_primary_expression_names(
 mod tests {
     use super::*;
     use crate::AlParser;
+
+    /// The grammar nests `repeat($.attribute)` inside `procedure_declaration`,
+    /// so the node's own row is the first attribute's line. Subscribers and
+    /// `[Test]` procedures always carry one.
+    #[test]
+    fn procedure_keyword_row_skips_the_attributes() {
+        let src = "codeunit 50100 \"Subs\"\n\
+                   {\n\
+                   \x20   [EventSubscriber(ObjectType::Codeunit, Codeunit::\"Sales-Post\", 'OnAfterPost', '', false, false)]\n\
+                   \x20   [Obsolete('gone')]\n\
+                   \x20   local procedure HandlePost()\n\
+                   \x20   begin\n\
+                   \x20   end;\n\
+                   \x20\n\
+                   \x20   procedure Plain()\n\
+                   \x20   begin\n\
+                   \x20   end;\n\
+                   }\n";
+        let parsed = AlParser::parse_quick(src);
+        let mut rows = Vec::new();
+        crate::walk_tree(parsed.tree.root_node(), &mut |node| {
+            if node.kind() == "procedure_declaration" {
+                rows.push((node.start_position().row, procedure_keyword_row(node)));
+            }
+        });
+        assert_eq!(
+            rows,
+            vec![(2, Some(4)), (8, Some(8))],
+            "the attributed procedure's node starts two lines above its keyword"
+        );
+    }
+
+    /// The one-pass count has to agree with the per-name query it replaces,
+    /// including its span de-duplication of the `name`/`identifier` pair.
+    #[test]
+    fn identifier_counts_match_the_per_name_query() {
+        let src = "codeunit 50100 \"Ship Mgt\"\n\
+                   {\n\
+                   \x20   procedure Post(var Cust: Record Customer)\n\
+                   \x20   var\n\
+                   \x20       \"Ship Log\": Record \"Ship Log\";\n\
+                   \x20   begin\n\
+                   \x20       Cust.Modify();\n\
+                   \x20       \"Ship Log\".Insert();\n\
+                   \x20       Post(Cust);\n\
+                   \x20   end;\n\
+                   }\n";
+        let parsed = AlParser::parse_quick(src);
+        let counts = count_identifier_occurrences(&parsed.tree, src);
+
+        for name in ["Ship Mgt", "Post", "Cust", "Customer", "Ship Log", "Modify"] {
+            assert_eq!(
+                counts.get(&name.to_lowercase()).copied().unwrap_or(0),
+                find_variable_references(&parsed.tree, src, name).len(),
+                "count for {name}"
+            );
+        }
+        assert_eq!(counts.get("post"), Some(&2), "declaration plus one call");
+    }
+
+    #[test]
+    fn procedure_keyword_row_is_none_for_a_non_procedure_node() {
+        let src = "codeunit 50100 \"X\" { }\n";
+        let parsed = AlParser::parse_quick(src);
+        assert_eq!(procedure_keyword_row(parsed.tree.root_node()), None);
+    }
 
     /// `"Do ""It"" Now"` names the procedure `Do "It" Now`. A caller that
     /// strips quote runs instead reports the escaped spelling, so rename and
