@@ -314,6 +314,10 @@ fn worker_join_error(error: tokio::task::JoinError) -> TestRunnerError {
     })
 }
 
+// Workspace, codeunit list and codeunit identity come from the caller loop;
+// timeout, dispatch mode, coverage flag and coverage sink are run options the
+// caller already unpacked from RunOptions. Regrouping them here would put the
+// options back together only to take them apart again.
 #[allow(clippy::too_many_arguments)]
 fn run_codeunit_interp(
     workspace: &Workspace,

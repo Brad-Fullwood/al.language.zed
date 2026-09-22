@@ -54,6 +54,19 @@ pub fn access_token_from_env() -> Result<Option<String>, AccessTokenEnvError> {
     resolve_access_token_values(access_token.as_deref(), legacy_token.as_deref())
 }
 
+/// Read `BC_USERNAME` / `BC_PASSWORD`, the HTTP Basic credentials every BC
+/// client accepts for `AuthMethod::UserPassword` and `AuthMethod::Windows`.
+///
+/// `None` when either is missing. No client in this workspace implements an
+/// NTLM or Negotiate handshake, so Basic is the only credential a
+/// Windows-auth-configured server can be given from here.
+#[must_use]
+pub fn basic_auth_from_env() -> Option<(String, String)> {
+    let username = std::env::var("BC_USERNAME").ok()?;
+    let password = std::env::var("BC_PASSWORD").ok()?;
+    Some((username, password))
+}
+
 /// Canonical, user-facing message warning that TLS verification is disabled.
 /// `context` names the surface (e.g. "BcClient", "DAP launch") so identical
 /// wording appears across every code path that honours `acceptInvalidCerts`.
@@ -106,6 +119,30 @@ pub(crate) fn apply_basic_auth(
         req.basic_auth(user, Some(pass))
     } else {
         req
+    }
+}
+
+/// Authenticate a snapshot or profiling request.
+///
+/// Configured Basic credentials win. Otherwise the headless bearer override
+/// (`BC_ACCESS_TOKEN`, or the legacy `BC_TOKEN`) is used, which is the same
+/// source `BcClient` and the test runner read for AAD. With neither, the
+/// request carries no `Authorization` header: there is no Windows-integrated
+/// fallback anywhere in this workspace.
+pub(crate) fn apply_snapshot_auth(
+    req: reqwest::RequestBuilder,
+    username: &Option<String>,
+    password: &Option<String>,
+) -> reqwest::RequestBuilder {
+    if username.is_some() && password.is_some() {
+        return apply_basic_auth(req, username, password);
+    }
+    match access_token_from_env() {
+        Ok(Some(token)) => req.bearer_auth(token),
+        // A malformed or conflicting override is not a credential. The request
+        // goes unauthenticated and the server answers 401, which is the same
+        // outcome as before the override existed.
+        Ok(None) | Err(_) => req,
     }
 }
 
@@ -197,6 +234,51 @@ mod tests {
         // Boundary value: a very large timeout must not overflow the Duration.
         let client = build_http_client(false, u64::MAX);
         assert!(client.is_ok(), "max timeout should still build: {client:?}");
+    }
+
+    /// Before this, snapshot and profiling modelled auth as optional Basic and
+    /// documented a Windows-integrated fallback that does not exist, so a
+    /// headless run with only `BC_ACCESS_TOKEN` set sent no credentials at all
+    /// while every other BC client in the workspace sent the bearer token.
+    #[test]
+    #[serial_test::serial]
+    fn apply_snapshot_auth_falls_back_to_the_bearer_override() {
+        std::env::remove_var("BC_TOKEN");
+        std::env::set_var("BC_ACCESS_TOKEN", "env-token-123");
+        let header = authorization_header(apply_snapshot_auth(get_request(), &None, &None));
+        std::env::remove_var("BC_ACCESS_TOKEN");
+        assert_eq!(header.as_deref(), Some("Bearer env-token-123"));
+    }
+
+    /// Configured Basic credentials win over the environment override.
+    #[test]
+    #[serial_test::serial]
+    fn apply_snapshot_auth_prefers_configured_basic_credentials() {
+        std::env::remove_var("BC_TOKEN");
+        std::env::set_var("BC_ACCESS_TOKEN", "env-token-123");
+        let header = authorization_header(apply_snapshot_auth(
+            get_request(),
+            &Some("admin".to_string()),
+            &Some("password".to_string()),
+        ));
+        std::env::remove_var("BC_ACCESS_TOKEN");
+        assert_eq!(
+            header.as_deref(),
+            Some("Basic YWRtaW46cGFzc3dvcmQ="),
+            "configured credentials must win over the bearer override"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn apply_snapshot_auth_without_credentials_or_override_sends_nothing() {
+        std::env::remove_var("BC_TOKEN");
+        std::env::remove_var("BC_ACCESS_TOKEN");
+        assert_eq!(
+            authorization_header(apply_snapshot_auth(get_request(), &None, &None)),
+            None,
+            "there is no Windows-integrated fallback"
+        );
     }
 
     #[test]

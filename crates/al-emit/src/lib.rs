@@ -18,7 +18,7 @@ pub mod project;
 pub mod symbol_extract;
 pub mod symbol_reference;
 #[cfg(test)]
-mod symbol_reference_test;
+mod symbol_reference_tests;
 pub mod verification;
 
 pub use assemble::{assemble_app, SourceFile};

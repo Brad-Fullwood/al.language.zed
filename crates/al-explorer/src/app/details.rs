@@ -109,258 +109,202 @@ impl App {
         self.details_items.clear();
 
         if let Some(selected) = self.object_list_state.selected()
-            && let Some(entry) = self.current_objects.get(selected)
+            && let Some(entry) = self.current_objects.get(selected).cloned()
         {
-            self.details_items.push((
-                None,
-                Line::from(vec![
-                    Span::styled(
-                        format!("{:?} ", entry.kind),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        display_object_id(entry)
-                            .map(|id| id.to_string())
-                            .unwrap_or_default(),
-                        Style::default().fg(Color::Cyan),
-                    ),
-                    Span::raw(" ".to_string()),
-                    Span::styled(
-                        entry.name.clone(),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
-                ]),
-            ));
+            self.push_line(Line::from(vec![
+                Span::styled(
+                    format!("{:?} ", entry.kind),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    display_object_id(&entry)
+                        .map(|id| id.to_string())
+                        .unwrap_or_default(),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::raw(" ".to_string()),
+                Span::styled(
+                    entry.name.clone(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+            ]));
 
             if let Some(extends) = &entry.extends {
-                self.details_items.push((
-                    None,
-                    Line::from(vec![
-                        Span::styled(
-                            "Extends: ".to_string(),
-                            Style::default().add_modifier(Modifier::BOLD),
-                        ),
-                        Span::raw(extends.clone()),
-                    ]),
-                ));
+                self.push_line(label_line("Extends", extends.clone()));
             }
-
-            self.details_items.push((
-                None,
-                Line::from(vec![
-                    Span::styled(
-                        "Package: ".to_string(),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(entry.package.clone()),
-                ]),
-            ));
-
+            self.push_line(label_line("Package", entry.package.clone()));
             if let Some(availability) = &entry.source_availability {
-                self.details_items.push((
-                    None,
-                    Line::from(vec![
-                        Span::styled(
-                            "Source: ".to_string(),
-                            Style::default().add_modifier(Modifier::BOLD),
-                        ),
-                        Span::raw(availability.replace('_', " ")),
-                    ]),
-                ));
+                self.push_line(label_line("Source", availability.replace('_', " ")));
             }
 
             if !entry.properties.is_empty() {
-                self.details_items.push((None, Line::from("".to_string())));
-                self.details_items.push((
-                    None,
-                    Line::from(Span::styled(
-                        "Properties:".to_string(),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    )),
-                ));
-                for p in entry.properties.iter() {
-                    self.details_items.push((
-                        None,
-                        Line::from(vec![
-                            Span::raw("    ".to_string()),
-                            Span::styled(
-                                format!("{:<20}", p.name),
-                                Style::default().fg(Color::DarkGray),
-                            ),
-                            Span::raw(" = ".to_string()),
-                            Span::raw(p.value.clone()),
-                        ]),
+                self.push_section("Properties:".to_string());
+                for property in &entry.properties {
+                    self.push_line(indented_pair(
+                        &property.name,
+                        format!(" = {}", property.value),
+                        Color::DarkGray,
+                        20,
                     ));
                 }
             }
 
             if !entry.keys.is_empty() {
-                self.details_items.push((None, Line::from("".to_string())));
-                self.details_items.push((
-                    None,
-                    Line::from(Span::styled(
-                        format!("Keys ({}):", entry.keys.len()),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    )),
-                ));
-                for k in entry.keys.iter() {
-                    let fields = k.field_names.join(", ");
-                    self.details_items.push((
-                        Some(DetailTarget {
-                            name: k.name.clone(),
-                        }),
-                        Line::from(vec![
-                            Span::raw("    ".to_string()),
-                            Span::styled(
-                                format!("{:<20}", k.name),
-                                Style::default().fg(Color::Cyan),
-                            ),
-                            Span::raw(format!(" ({})", fields)),
-                        ]),
-                    ));
+                self.push_section(format!("Keys ({}):", entry.keys.len()));
+                for key in &entry.keys {
+                    let line = indented_pair(
+                        &key.name,
+                        format!(" ({})", key.field_names.join(", ")),
+                        Color::Cyan,
+                        20,
+                    );
+                    self.push_member(&key.name, line);
                 }
             }
 
             if !entry.fields.is_empty() {
-                self.details_items.push((None, Line::from("".to_string())));
-                self.details_items.push((
-                    None,
-                    Line::from(Span::styled(
-                        format!("Fields ({}):", entry.fields.len()),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    )),
-                ));
-                for f in entry.fields.iter() {
-                    self.details_items.push((
-                        Some(DetailTarget {
-                            name: f.name.clone(),
-                        }),
-                        Line::from(vec![
-                            Span::styled(
-                                format!("    {:<4} ", f.id),
-                                Style::default().fg(Color::DarkGray),
-                            ),
-                            Span::styled(
-                                format!("{:<30}", f.name),
-                                Style::default().fg(Color::White),
-                            ),
-                            Span::styled(
-                                format!(" : {}", f.type_name),
-                                Style::default().fg(Color::Cyan),
-                            ),
-                        ]),
-                    ));
+                self.push_section(format!("Fields ({}):", entry.fields.len()));
+                for field in &entry.fields {
+                    let line = Line::from(vec![
+                        Span::styled(
+                            format!("    {:<4} ", field.id),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                        Span::styled(
+                            format!("{:<30}", field.name),
+                            Style::default().fg(Color::White),
+                        ),
+                        Span::styled(
+                            format!(" : {}", field.type_name),
+                            Style::default().fg(Color::Cyan),
+                        ),
+                    ]);
+                    self.push_member(&field.name, line);
                 }
             }
 
             if !entry.controls.is_empty() {
-                self.details_items.push((None, Line::from("".to_string())));
-                self.details_items.push((
-                    None,
-                    Line::from(Span::styled(
-                        format!("Controls/Actions ({}):", entry.controls.len()),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    )),
-                ));
-                for c in entry.controls.iter() {
-                    self.details_items.push((
-                        Some(DetailTarget {
-                            name: c.name.clone(),
-                        }),
-                        Line::from(vec![
-                            Span::raw("    ".to_string()),
-                            Span::styled(
-                                format!("{:<15}", c.kind),
-                                Style::default().fg(Color::Magenta),
-                            ),
-                            Span::raw(format!(" {}", c.name)),
-                        ]),
-                    ));
+                self.push_section(format!("Controls/Actions ({}):", entry.controls.len()));
+                for control in &entry.controls {
+                    let line = indented_pair(
+                        &control.kind,
+                        format!(" {}", control.name),
+                        Color::Magenta,
+                        15,
+                    );
+                    self.push_member(&control.name, line);
                 }
             }
 
             if !entry.enum_values.is_empty() {
-                self.details_items.push((None, Line::from("".to_string())));
-                self.details_items.push((
-                    None,
-                    Line::from(Span::styled(
-                        format!("Values ({}):", entry.enum_values.len()),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    )),
-                ));
-                for v in entry.enum_values.iter() {
-                    self.details_items.push((
-                        Some(DetailTarget {
-                            name: v.name.clone(),
-                        }),
-                        Line::from(vec![
-                            Span::styled(
-                                format!("    {:<4} ", v.ordinal),
-                                Style::default().fg(Color::DarkGray),
-                            ),
-                            Span::raw(v.name.clone()),
-                        ]),
-                    ));
+                self.push_section(format!("Values ({}):", entry.enum_values.len()));
+                for value in &entry.enum_values {
+                    let line = Line::from(vec![
+                        Span::styled(
+                            format!("    {:<4} ", value.ordinal),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                        Span::raw(value.name.clone()),
+                    ]);
+                    self.push_member(&value.name, line);
                 }
             }
 
             if !entry.methods.is_empty() {
-                self.details_items.push((None, Line::from("".to_string())));
-                self.details_items.push((
-                    None,
-                    Line::from(Span::styled(
-                        format!("Procedures ({}):", entry.methods.len()),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    )),
-                ));
-                for m in entry.methods.iter() {
-                    let mut spans = vec![Span::raw("    ".to_string())];
-                    if m.is_local {
-                        spans.push(Span::styled("local ", Style::default().fg(Color::DarkGray)));
-                    } else {
-                        spans.push(Span::raw("      ".to_string()));
-                    }
-                    spans.push(Span::styled(
-                        m.name.clone(),
-                        Style::default().fg(Color::Green),
-                    ));
-                    spans.push(Span::raw("(".to_string()));
-
-                    let params = m
-                        .parameters
-                        .iter()
-                        .map(|p| p.name.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    spans.push(Span::raw(params));
-
-                    spans.push(Span::raw(")".to_string()));
-
-                    if let Some(ret) = &m.return_type {
-                        spans.push(Span::styled(
-                            format!(" : {}", ret),
-                            Style::default().fg(Color::Cyan),
-                        ));
-                    }
-
-                    self.details_items.push((
-                        Some(DetailTarget {
-                            name: m.name.clone(),
-                        }),
-                        Line::from(spans),
-                    ));
+                self.push_section(format!("Procedures ({}):", entry.methods.len()));
+                for method in &entry.methods {
+                    self.push_member(&method.name, procedure_line(method));
                 }
             }
         }
 
         if self.details_items.is_empty() {
-            self.details_items
-                .push((None, Line::from("No object selected".to_string())));
+            self.push_line(Line::from("No object selected".to_string()));
         }
     }
 
+    /// A details row that is not a member, so pressing enter on it does
+    /// nothing.
+    fn push_line(&mut self, line: Line<'static>) {
+        self.details_items.push((None, line));
+    }
+
+    /// A blank separator followed by a bold heading.
+    fn push_section(&mut self, heading: String) {
+        self.push_line(Line::from(String::new()));
+        self.push_line(Line::from(Span::styled(
+            heading,
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+    }
+
+    /// A details row naming a member, so `open_selected_object` can jump to it.
+    fn push_member(&mut self, name: &str, line: Line<'static>) {
+        self.details_items.push((
+            Some(DetailTarget {
+                name: name.to_string(),
+            }),
+            line,
+        ));
+    }
+}
+
+/// `Label: value`, with the label bold.
+fn label_line(label: &str, value: String) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("{label}: "),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(value),
+    ])
+}
+
+/// An indented body row: a coloured name padded to `width`, then `rest`
+/// verbatim.
+fn indented_pair(name: &str, rest: String, name_color: Color, width: usize) -> Line<'static> {
+    Line::from(vec![
+        Span::raw("    ".to_string()),
+        Span::styled(format!("{name:<width$}"), Style::default().fg(name_color)),
+        Span::raw(rest),
+    ])
+}
+
+/// `local Name(a, b) : Return`, with the modifier column kept even when the
+/// procedure is public so the names line up.
+fn procedure_line(method: &types::MethodSymbol) -> Line<'static> {
+    let mut spans = vec![Span::raw("    ".to_string())];
+    if method.is_local {
+        spans.push(Span::styled("local ", Style::default().fg(Color::DarkGray)));
+    } else {
+        spans.push(Span::raw("      ".to_string()));
+    }
+    spans.push(Span::styled(
+        method.name.clone(),
+        Style::default().fg(Color::Green),
+    ));
+    spans.push(Span::raw("(".to_string()));
+    spans.push(Span::raw(
+        method
+            .parameters
+            .iter()
+            .map(|parameter| parameter.name.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+    ));
+    spans.push(Span::raw(")".to_string()));
+    if let Some(return_type) = &method.return_type {
+        spans.push(Span::styled(
+            format!(" : {return_type}"),
+            Style::default().fg(Color::Cyan),
+        ));
+    }
+    Line::from(spans)
+}
+
+impl App {
     pub(crate) fn open_selected_object(&mut self) {
         let target_member: Option<DetailTarget> = self
             .details_list_state
@@ -546,5 +490,163 @@ mod tests {
     fn an_ascii_member_name_still_matches_on_its_own_line() {
         let (_dir, path) = write("field(1; Amount; Decimal)\n");
         assert_eq!(find_member_line_in_file(&path, "Amount").unwrap(), Some(0));
+    }
+}
+
+#[cfg(test)]
+mod details_items_tests {
+    use super::*;
+    use crate::types::{
+        FieldSymbol, KeySymbol, MethodSymbol, ObjectKind, ParameterSymbol, PropertyValue,
+    };
+
+    /// An entry carrying members, so `hydrate_selected_object` returns before
+    /// it would reach for a daemon connection.
+    fn hydrated_table() -> types::SymbolEntry {
+        types::SymbolEntry {
+            kind: ObjectKind::Table,
+            id: 50100,
+            name: "Customer Ext".to_string(),
+            extends: Some("Customer".to_string()),
+            package: "MyApp".to_string(),
+            source_availability: Some("from_source".to_string()),
+            methods: vec![MethodSymbol {
+                name: "Recalculate".to_string(),
+                parameters: vec![ParameterSymbol {
+                    name: "Amount".to_string(),
+                    type_name: "Decimal".to_string(),
+                    is_var: false,
+                }],
+                return_type: Some("Boolean".to_string()),
+                is_local: true,
+            }],
+            fields: vec![FieldSymbol {
+                id: 1,
+                name: "No.".to_string(),
+                type_name: "Code[20]".to_string(),
+            }],
+            controls: Vec::new(),
+            enum_values: Vec::new(),
+            keys: vec![KeySymbol {
+                name: "PK".to_string(),
+                field_names: vec!["No.".to_string()],
+            }],
+            properties: vec![PropertyValue {
+                name: "DataClassification".to_string(),
+                value: "CustomerContent".to_string(),
+            }],
+        }
+    }
+
+    fn app_with(entry: types::SymbolEntry) -> App {
+        let mut app = App::new();
+        app.current_objects = vec![Arc::new(entry)];
+        app.object_list_state.select(Some(0));
+        app
+    }
+
+    fn rendered(app: &App) -> Vec<String> {
+        app.details_items
+            .iter()
+            .map(|(_, line)| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// The rows a reader sees, in order, for a hydrated table.
+    #[test]
+    fn a_hydrated_entry_renders_header_then_one_section_per_member_kind() {
+        let mut app = app_with(hydrated_table());
+        app.update_details_items();
+
+        let lines = rendered(&app);
+        assert_eq!(lines[0], "Table 50100 Customer Ext");
+        assert_eq!(lines[1], "Extends: Customer");
+        assert_eq!(lines[2], "Package: MyApp");
+        assert_eq!(lines[3], "Source: from source");
+        assert!(
+            lines.iter().any(|l| l == "Properties:"),
+            "expected a Properties heading in {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l == "Keys (1):"),
+            "expected a Keys heading in {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l == "Fields (1):"),
+            "expected a Fields heading in {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l == "Procedures (1):"),
+            "expected a Procedures heading in {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("local Recalculate(Amount) : Boolean")),
+            "expected the rendered procedure signature in {lines:?}"
+        );
+    }
+
+    /// Only member rows carry a `DetailTarget`; headings, blanks and the
+    /// identity lines carry `None`, which is what stops enter from acting on
+    /// them.
+    #[test]
+    fn only_member_rows_are_jump_targets() {
+        let mut app = app_with(hydrated_table());
+        app.update_details_items();
+
+        let targets: Vec<String> = app
+            .details_items
+            .iter()
+            .filter_map(|(target, _)| target.as_ref().map(|t| t.name.clone()))
+            .collect();
+        assert_eq!(
+            targets,
+            vec![
+                "PK".to_string(),
+                "No.".to_string(),
+                "Recalculate".to_string()
+            ],
+            "keys, fields and procedures are the jumpable rows"
+        );
+    }
+
+    /// An entry with no members at all would send `hydrate_selected_object`
+    /// looking for a daemon, so an empty section must not be rendered either.
+    #[test]
+    fn sections_are_omitted_when_the_member_list_is_empty() {
+        let mut entry = hydrated_table();
+        entry.keys.clear();
+        entry.fields.clear();
+        entry.extends = None;
+        entry.source_availability = None;
+        let mut app = app_with(entry);
+        app.update_details_items();
+
+        let lines = rendered(&app);
+        assert!(
+            !lines.iter().any(|l| l.starts_with("Keys (")),
+            "no keys means no Keys heading: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.starts_with("Fields (")),
+            "no fields means no Fields heading: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.starts_with("Extends: ")),
+            "no base object means no Extends row: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn no_selection_renders_the_placeholder() {
+        let mut app = App::new();
+        app.update_details_items();
+        assert_eq!(rendered(&app), vec!["No object selected".to_string()]);
     }
 }

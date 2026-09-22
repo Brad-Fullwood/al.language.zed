@@ -93,7 +93,10 @@ pub fn collect_permissions(
     Ok(PermissionCollection { entries, skipped })
 }
 
-pub fn render_al(entries: &[PermissionEntry], name: &str, id: i64) -> String {
+/// Render a permission set as AL source.
+///
+/// Takes (entries, id, name) to match [`render_xml`].
+pub fn render_al(entries: &[PermissionEntry], id: i64, name: &str) -> String {
     let mut out = String::new();
     writeln!(out, "permissionset {id} \"{}\"", al_escape_name(name)).unwrap();
     writeln!(out, "{{").unwrap();
@@ -128,6 +131,9 @@ pub(crate) fn al_escape_name(name: &str) -> String {
     name.replace('"', "\"\"")
 }
 
+/// Render a permission set as the XML the BC dev tools import.
+///
+/// Takes (entries, id, name) to match [`render_al`].
 pub fn render_xml(entries: &[PermissionEntry], role_id: &str, role_name: &str) -> String {
     let mut out = String::new();
     writeln!(out, r#"<?xml version="1.0" encoding="utf-8"?>"#).unwrap();
@@ -395,7 +401,7 @@ mod tests {
             },
         ];
 
-        let output = render_al(&entries, "My Extension Permissions", 50100);
+        let output = render_al(&entries, 50100, "My Extension Permissions");
 
         assert!(output.contains(r#"permissionset 50100 "My Extension Permissions""#));
         assert!(output.contains("Assignable = true;"));
@@ -406,7 +412,7 @@ mod tests {
 
     #[test]
     fn render_al_empty_entries() {
-        let output = render_al(&[], "Empty Perms", 50100);
+        let output = render_al(&[], 50100, "Empty Perms");
         assert!(output.contains(r#"permissionset 50100 "Empty Perms""#));
         assert!(output.contains("Assignable = true;"));
     }
@@ -484,7 +490,7 @@ mod tests {
             object_id: Some(50200),
             permissions: "X".into(),
         }];
-        let output = render_al(&entries, "My \"Perms\"", 50100);
+        let output = render_al(&entries, 50100, "My \"Perms\"");
         assert!(output.contains(r#"permissionset 50100 "My ""Perms"""#));
         assert!(output.contains(r#"codeunit "Say ""Hello"""#));
     }

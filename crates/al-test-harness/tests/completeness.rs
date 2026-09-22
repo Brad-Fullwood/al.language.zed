@@ -402,21 +402,22 @@ async fn test_completeness_d03_close_file_clears_diagnostics() {
     // Close the file
     client.close_file("src/close_diag.al").await;
 
-    // Give server a moment to process and publish cleared diagnostics
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
     let symbols = client.workspace_symbol("").await;
     assert!(!symbols.is_empty(), "server should work after close");
 
-    let diags2 = client.drain_diagnostics();
-    // After closing the file, the server should either publish an empty
-    // diagnostics array for the closed URI, or stop publishing for it.
-    if let Some(closed_diags) = diags2.get(&uri) {
-        assert!(
-            closed_diags.is_empty(),
-            "diagnostics for closed file must be empty, got: {:?}",
-            closed_diags
-        );
+    // After closing the file the server either publishes an empty diagnostics
+    // array for the closed URI or stops publishing for it. Poll for the first
+    // publish instead of waiting a fixed 500ms and reading once.
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+    while tokio::time::Instant::now() < deadline {
+        if let Some(closed_diags) = client.drain_diagnostics().get(&uri) {
+            assert!(
+                closed_diags.is_empty(),
+                "diagnostics for closed file must be empty, got: {closed_diags:?}"
+            );
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     }
     // If the URI is absent, that is also acceptable (server stopped reporting)
 

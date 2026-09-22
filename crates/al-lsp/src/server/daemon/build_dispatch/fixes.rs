@@ -259,9 +259,9 @@ pub(in crate::server::daemon) fn dispatch_fix(
             Ok(root) => root,
             Err(response) => return response,
         };
-        let paths = match al_analysis::queries::bulk_fix::collect_al_files(&root) {
+        let paths = match al_source::file_index::collect_al_files(&root) {
             Ok(paths) => paths,
-            Err(error) => return rpc_error(id, error_codes::INTERNAL_ERROR, &error),
+            Err(error) => return super::scan_error_response(id, &error),
         };
         let mut targets = Vec::with_capacity(paths.len());
         for path in paths {

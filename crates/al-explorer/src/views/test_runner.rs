@@ -1,3 +1,6 @@
+//! Test runner view: AL test codeunits, their run state and the last result
+//! for each, driven through the daemon's test methods.
+
 use al_protocol::DaemonClient;
 use crossterm::event::KeyCode;
 use ratatui::{

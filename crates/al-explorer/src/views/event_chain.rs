@@ -1,3 +1,6 @@
+//! Event chain view: the publisher/subscriber chain for a selected event,
+//! fetched from the daemon and rendered as a depth-indented tree.
+
 use al_protocol::DaemonClient;
 use crossterm::event::KeyCode;
 use ratatui::layout::Rect;

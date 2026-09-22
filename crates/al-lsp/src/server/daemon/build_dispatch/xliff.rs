@@ -393,8 +393,7 @@ pub(in crate::server::daemon) async fn dispatch_xlf_suggest(
     // suggestions prefer existing project translations (tm-exact/tm-fuzzy) over
     // bare symbol-name matching. `from_units` filters to trustworthy pairs.
     let memory: Vec<&al_analysis::xliff::TranslationUnit> = all_units.iter().collect();
-    let suggestions =
-        al_analysis::xliff::suggest_translations_with_memory(&untranslated, &memory, workspace);
+    let suggestions = al_analysis::xliff::suggest_translations(workspace, &untranslated, &memory);
 
     #[derive(serde::Serialize)]
     struct SuggestionResponse<'a> {

@@ -7,7 +7,8 @@
 //!
 //! Two APIs are available:
 //!
-//! - [`trace_event`] — simple flattened list, uses only the insight graph.
+//! - [`trace_event`] — flattened list; pass a [`CallGraph`] to follow the
+//!   events a subscriber's body raises, or `None` for insight-graph edges only.
 //! - [`trace_event_chain`] — full tree, uses the [`CallGraph`] for richer
 //!   traversal through direct/trigger calls as well as event subscriptions.
 //!   Cycle detection prevents infinite loops.
@@ -44,17 +45,11 @@ pub struct TraceStep {
     pub object: String,
 }
 
-/// Flattened event trace using only the insight graph.
-///
-/// Without a call graph the analysis cannot know which events a subscriber's
-/// *body* raises, so no `publishes` hops are emitted. Pass a call graph to
-/// [`trace_event_with_calls`] for the full chain.
-pub fn trace_event(graph: &InsightGraph, event_name: &str, max_depth: usize) -> Vec<TraceStep> {
-    trace_event_with_calls(graph, None, event_name, max_depth)
-}
-
 /// Flattened event trace, optionally following the events a subscriber's body
 /// actually raises (via `call_graph`).
+///
+/// With `call_graph` as `None` the analysis cannot know which events a
+/// subscriber's body raises, so no `publishes` hops are emitted.
 ///
 /// The previous implementation pushed *every* event published by a subscriber's
 /// **object** as a depth+1 "publishes" step, without checking that the
@@ -62,7 +57,7 @@ pub fn trace_event(graph: &InsightGraph, event_name: &str, max_depth: usize) -> 
 /// happened to also contain subscribers. It also shared one `visited` set
 /// across all same-named root events, which truncated every root's chain after
 /// the first.
-pub fn trace_event_with_calls(
+pub fn trace_event(
     graph: &InsightGraph,
     call_graph: Option<&CallGraph>,
     event_name: &str,
@@ -487,17 +482,6 @@ fn recurse_subscriber(
     children
 }
 
-/// Find entry points using only the insight graph.
-///
-/// **Call edges do not live in the insight graph** — production code only ever
-/// records them in the separate [`CallGraph`] — so this variant can only see
-/// `SubscribesTo`/`Publishes`/`Triggers` relationships and consequently reports
-/// nearly every procedure. Prefer [`find_entry_points_with_calls`], which is
-/// what the `entrypoints` command uses.
-pub fn find_entry_points(graph: &InsightGraph) -> Vec<&InsightNode> {
-    find_entry_points_with_calls(graph, None)
-}
-
 /// Find entry points: procedures that nothing else calls, subscribes through,
 /// or triggers.
 ///
@@ -506,7 +490,7 @@ pub fn find_entry_points(graph: &InsightGraph) -> Vec<&InsightNode> {
 /// is where direct/indirect/trigger call edges actually live — a procedure with
 /// any incoming call edge is excluded. Without it the result degenerates to
 /// "every procedure", which is why the daemon passes its call graph.
-pub fn find_entry_points_with_calls<'g>(
+pub fn find_entry_points<'g>(
     graph: &'g InsightGraph,
     call_graph: Option<&CallGraph>,
 ) -> Vec<&'g InsightNode> {
@@ -718,7 +702,7 @@ mod tests {
         let mut graph = InsightGraph::new();
         graph.build_from_index(&index);
 
-        let trace = trace_event(&graph, "OnPost", 10);
+        let trace = trace_event(&graph, None, "OnPost", 10);
         assert!(!trace.is_empty());
         assert_eq!(trace[0].name, "OnPost");
         assert_eq!(trace[0].node_type, "event");
@@ -754,7 +738,7 @@ mod tests {
         for _ in 0..5 {
             let mut graph = InsightGraph::new();
             graph.build_from_index(&index);
-            let trace = trace_event(&graph, "Shared", 10);
+            let trace = trace_event(&graph, None, "Shared", 10);
             match &reference {
                 None => reference = Some(trace),
                 Some(prev) => {
@@ -782,7 +766,7 @@ mod tests {
         let mut graph = InsightGraph::new();
         graph.build_from_index(&index);
 
-        let trace = trace_event(&graph, "MyEvent", 0);
+        let trace = trace_event(&graph, None, "MyEvent", 0);
         assert_eq!(trace.len(), 1);
     }
 
@@ -838,7 +822,7 @@ mod tests {
         let mut graph = InsightGraph::new();
         graph.build_from_index(&index);
 
-        let entry_points = find_entry_points(&graph);
+        let entry_points = find_entry_points(&graph, None);
         assert!(entry_points.is_empty());
     }
 
@@ -1282,7 +1266,7 @@ mod tests {
         cg.add_direct_call(NodeId::from(entry), NodeId::from(helper));
 
         // Without a call graph both procedures look like entry points.
-        let names_without: Vec<String> = find_entry_points(&insight)
+        let names_without: Vec<String> = find_entry_points(&insight, None)
             .into_iter()
             .filter_map(|node| match node {
                 InsightNode::Procedure { name, .. } => Some(name.clone()),
@@ -1291,7 +1275,7 @@ mod tests {
             .collect();
         assert_eq!(names_without.len(), 2);
 
-        let mut names: Vec<String> = find_entry_points_with_calls(&insight, Some(&cg))
+        let mut names: Vec<String> = find_entry_points(&insight, Some(&cg))
             .into_iter()
             .filter_map(|node| match node {
                 InsightNode::Procedure { name, .. } => Some(name.clone()),
@@ -1325,7 +1309,7 @@ mod tests {
         let mut insight = InsightGraph::new();
         insight.build_from_index(&index);
 
-        let steps = trace_event(&insight, "OnPost", 10);
+        let steps = trace_event(&insight, None, "OnPost", 10);
         assert!(
             steps.iter().any(|s| s.name == "Handle"),
             "the subscriber must still be listed: {steps:?}"
@@ -1371,7 +1355,7 @@ mod tests {
             .unwrap();
         cg.add_direct_call(NodeId::from(handler), NodeId::from(secondary));
 
-        let steps = trace_event_with_calls(&insight, Some(&cg), "OnPost", 10);
+        let steps = trace_event(&insight, Some(&cg), "OnPost", 10);
         assert!(
             steps
                 .iter()
@@ -1402,7 +1386,7 @@ mod tests {
         let mut insight = InsightGraph::new();
         insight.build_from_index(&index);
 
-        let steps = trace_event(&insight, "OnPost", 10);
+        let steps = trace_event(&insight, None, "OnPost", 10);
         let origins = steps.iter().filter(|s| s.edge_type == "origin").count();
         assert_eq!(origins, 2, "both publishers are roots: {steps:?}");
         assert!(steps.iter().any(|s| s.name == "HandleA"), "{steps:?}");

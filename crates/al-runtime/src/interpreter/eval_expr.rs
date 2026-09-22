@@ -7,6 +7,7 @@
 
 use tree_sitter::Node;
 
+use super::error_info;
 use crate::interpreter::dispatch::DispatchCtx;
 use crate::interpreter::records;
 use crate::interpreter::scope::{Eval, ScopeStack};
@@ -21,7 +22,7 @@ pub fn eval_expr(
     // Expression evaluation recurses per AST nesting level. About 400 nested
     // parentheses overflow a 2 MiB worker stack, so mirror eval_stmt's guard.
     if !stack.enter_expr() {
-        return Eval::Error(simple_error(&format!(
+        return Eval::Error(error_info(format!(
             "expression nesting depth exceeded (max {} levels) — likely a pathological or generated test source",
             crate::interpreter::scope::MAX_EXPR_DEPTH
         )));
@@ -80,14 +81,14 @@ fn eval_expr_inner(
         "integer_literal" | "integer" => match utf8_text(node, source) {
             Some(t) => match int_literal_value(t) {
                 Some(v) => Eval::Normal(v),
-                None => Eval::Error(simple_error(&format!("malformed integer literal: {t}"))),
+                None => Eval::Error(error_info(format!("malformed integer literal: {t}"))),
             },
-            None => Eval::Error(simple_error("invalid integer literal text")),
+            None => Eval::Error(error_info("invalid integer literal text")),
         },
         "decimal_literal" | "decimal" => {
             match utf8_text(node, source).and_then(|t| t.parse::<Decimal>().ok()) {
                 Some(n) => Eval::Normal(Value::Decimal(n)),
-                None => Eval::Error(simple_error("malformed decimal literal")),
+                None => Eval::Error(error_info("malformed decimal literal")),
             }
         }
         "boolean_literal" => eval_literal(node, source),
@@ -113,7 +114,7 @@ fn eval_expr_inner(
         "parenthesized_expression" | "primary_expression" | "case_label_expression" => {
             match named_child(node, 0) {
                 Some(inner) => eval_expr(inner, source, stack, ctx),
-                None => Eval::Error(simple_error("empty expression wrapper")),
+                None => Eval::Error(error_info("empty expression wrapper")),
             }
         }
         // In expression position the grammar's lossless generic bracket block
@@ -136,26 +137,16 @@ fn eval_expr_inner(
                     // not shadowed by a bound variable of the same name.
                     None => match niladic_clock_builtin(name, ctx) {
                         Some(v) => Eval::Normal(v),
-                        None => Eval::Error(simple_error(&format!("unbound identifier: {name}"))),
+                        None => Eval::Error(error_info(format!("unbound identifier: {name}"))),
                     },
                 }
             }
-            None => Eval::Error(simple_error("invalid identifier text")),
+            None => Eval::Error(error_info("invalid identifier text")),
         },
         "unary_expression" => eval_unary(node, source, stack, ctx),
         // Anything else: signal a clear error rather than silently
         // returning a default — failing loud is better than failing wrong.
-        other => Eval::Error(simple_error(&format!(
-            "unsupported expression kind: {other}"
-        ))),
-    }
-}
-
-fn simple_error(message: &str) -> ErrorInfo {
-    ErrorInfo {
-        message: message.to_string(),
-        error_type: None,
-        source: None,
+        other => Eval::Error(error_info(format!("unsupported expression kind: {other}"))),
     }
 }
 
@@ -198,23 +189,23 @@ fn named_child(node: Node<'_>, index: usize) -> Option<Node<'_>> {
 
 fn eval_literal(node: Node<'_>, source: &[u8]) -> Eval {
     let Some(text) = utf8_text(node, source) else {
-        return Eval::Error(simple_error("invalid literal text"));
+        return Eval::Error(error_info("invalid literal text"));
     };
     match node.kind() {
         "integer_literal" => match int_literal_value(text) {
             Some(v) => Eval::Normal(v),
-            None => Eval::Error(simple_error(&format!("malformed integer literal: {text}"))),
+            None => Eval::Error(error_info(format!("malformed integer literal: {text}"))),
         },
         "decimal_literal" => match text.parse::<Decimal>() {
             Ok(n) => Eval::Normal(Value::Decimal(n)),
-            Err(_) => Eval::Error(simple_error(&format!("malformed decimal literal: {text}"))),
+            Err(_) => Eval::Error(error_info(format!("malformed decimal literal: {text}"))),
         },
         "boolean_literal" => match text.eq_ignore_ascii_case("true") {
             true => Eval::Normal(Value::Boolean(true)),
             false => Eval::Normal(Value::Boolean(false)),
         },
         "string_literal" => Eval::Normal(Value::Text(unescape_al_string(text))),
-        other => Eval::Error(simple_error(&format!("unknown literal kind: {other}"))),
+        other => Eval::Error(error_info(format!("unknown literal kind: {other}"))),
     }
 }
 
@@ -231,16 +222,16 @@ fn eval_unary(
     if named_count <= 1 {
         return match named_child(node, 0) {
             Some(inner) => eval_expr(inner, source, stack, ctx),
-            None => Eval::Error(simple_error("unary expression: empty node")),
+            None => Eval::Error(error_info("unary expression: empty node")),
         };
     }
     let op_node = match named_child(node, 0) {
         Some(n) => n,
-        None => return Eval::Error(simple_error("unary expression missing operator")),
+        None => return Eval::Error(error_info("unary expression missing operator")),
     };
     let operand_node = match named_child(node, 1) {
         Some(n) => n,
-        None => return Eval::Error(simple_error("unary expression missing operand")),
+        None => return Eval::Error(error_info("unary expression missing operand")),
     };
     let operator_text = utf8_text(op_node, source).unwrap_or("").trim();
 
@@ -259,7 +250,7 @@ fn eval_unary(
         ("-", Value::Decimal(n)) => Eval::Normal(Value::Decimal(-n)),
         ("-", Value::Option { ordinal, .. }) => checked_int(ordinal.checked_neg(), false),
         ("not", Value::Boolean(b)) => Eval::Normal(Value::Boolean(!b)),
-        (op, v) => Eval::Error(simple_error(&format!(
+        (op, v) => Eval::Error(error_info(format!(
             "unary operator `{op}` not supported on {}",
             v.type_name()
         ))),
@@ -275,17 +266,17 @@ fn eval_set_literal(
     ctx: &mut DispatchCtx,
 ) -> Eval {
     let Some(text) = utf8_text(node, source) else {
-        return Eval::Error(simple_error("set literal: invalid source text"));
+        return Eval::Error(error_info("set literal: invalid source text"));
     };
     let Some(inner) = text
         .strip_prefix('[')
         .and_then(|text| text.strip_suffix(']'))
     else {
-        return Eval::Error(simple_error("set literal: missing brackets"));
+        return Eval::Error(error_info("set literal: missing brackets"));
     };
     let members = match split_set_members(inner) {
         Ok(members) => members,
-        Err(message) => return Eval::Error(simple_error(&message)),
+        Err(message) => return Eval::Error(error_info(&message)),
     };
     let mut values = Vec::with_capacity(members.len());
     for member in members {
@@ -440,7 +431,7 @@ fn eval_expression_fragment(
             );
             let parsed = al_syntax::AlParser::parse_quick(&wrapper);
             if !parsed.errors.is_empty() {
-                return Eval::Error(simple_error(&format!(
+                return Eval::Error(error_info(format!(
                     "set literal member is not a valid expression: `{expression}`"
                 )));
             }
@@ -483,7 +474,7 @@ fn eval_expression_fragment(
     }
 
     let Some(node) = find_expression(tree.root_node()) else {
-        return Eval::Error(simple_error(
+        return Eval::Error(error_info(
             "set literal member expression could not be recovered",
         ));
     };
@@ -532,7 +523,7 @@ fn eval_postfix(
     // Plain wrapper — evaluate the primary expression.
     match named_child(node, 0) {
         Some(inner) => eval_expr(inner, source, stack, ctx),
-        None => Eval::Error(simple_error("empty postfix expression")),
+        None => Eval::Error(error_info("empty postfix expression")),
     }
 }
 
@@ -573,18 +564,18 @@ fn eval_scope_access(
             // `Enum::Member` with a single suffix is malformed without a type;
             // treat the suffix as the member with an unknown type.
             (Some(t), _) => (String::new(), t),
-            _ => return Eval::Error(simple_error("scope access: missing enum member")),
+            _ => return Eval::Error(error_info("scope access: missing enum member")),
         }
     } else {
         // `"Type"::Member` — primary is the type, the suffix is the member.
         let Some(member) = scope_members.last().and_then(|n| member_name(*n)) else {
-            return Eval::Error(simple_error("scope access: missing enum member"));
+            return Eval::Error(error_info("scope access: missing enum member"));
         };
         (primary_text, member)
     };
 
     let Some(ordinal) = resolve_workspace_enum_ordinal(ctx, &type_name, &member) else {
-        return Eval::Error(simple_error(&format!(
+        return Eval::Error(error_info(format!(
             "enum member '{type_name}::{member}' has no workspace declaration; live BC execution is required"
         )));
     };
@@ -623,7 +614,7 @@ fn resolve_workspace_enum_ordinal(ctx: &DispatchCtx, type_name: &str, member: &s
 /// Evaluate an AL date literal (`20240701D`, `0D`) into a `Value::Date`.
 fn eval_date_literal(node: Node<'_>, source: &[u8]) -> Eval {
     let Some(text) = utf8_text(node, source) else {
-        return Eval::Error(simple_error("invalid date literal text"));
+        return Eval::Error(error_info("invalid date literal text"));
     };
     let digits = text.trim().trim_end_matches(['d', 'D']);
     // `0D` is AL's undefined/zero date.
@@ -631,11 +622,11 @@ fn eval_date_literal(node: Node<'_>, source: &[u8]) -> Eval {
         return Eval::Normal(Value::Date(0));
     }
     if digits.len() != 8 || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return Eval::Error(simple_error(&format!("malformed date literal: {text}")));
+        return Eval::Error(error_info(format!("malformed date literal: {text}")));
     }
     let parse_component = |digits: &str, component: &str| {
         digits.parse::<i64>().map_err(|error| {
-            simple_error(&format!(
+            error_info(format!(
                 "malformed {component} in date literal {text}: {error}"
             ))
         })
@@ -660,7 +651,7 @@ fn eval_date_literal(node: Node<'_>, source: &[u8]) -> Eval {
         _ => 0,
     };
     if !(1..=9999).contains(&year) || day < 1 || day > max_day {
-        return Eval::Error(simple_error(&format!("date literal out of range: {text}")));
+        return Eval::Error(error_info(format!("date literal out of range: {text}")));
     }
     Eval::Normal(Value::Date(value::al_days_from_ymd(year, month, day)))
 }
@@ -670,18 +661,18 @@ fn eval_date_literal(node: Node<'_>, source: &[u8]) -> Eval {
 /// optional trailing thousandths group.
 fn eval_time_literal(node: Node<'_>, source: &[u8]) -> Eval {
     let Some(text) = utf8_text(node, source) else {
-        return Eval::Error(simple_error("invalid time literal text"));
+        return Eval::Error(error_info("invalid time literal text"));
     };
     let digits = text.trim().trim_end_matches(['t', 'T']);
     if digits == "0" {
         return Eval::Normal(Value::Time(0));
     }
     if !(6..=9).contains(&digits.len()) || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return Eval::Error(simple_error(&format!("malformed time literal: {text}")));
+        return Eval::Error(error_info(format!("malformed time literal: {text}")));
     }
     let parse_component = |digits: &str, component: &str| {
         digits.parse::<i64>().map_err(|error| {
-            simple_error(&format!(
+            error_info(format!(
                 "malformed {component} in time literal {text}: {error}"
             ))
         })
@@ -710,7 +701,7 @@ fn eval_time_literal(node: Node<'_>, source: &[u8]) -> Eval {
         0
     };
     if hours > 23 || minutes > 59 || seconds > 59 {
-        return Eval::Error(simple_error(&format!("time literal out of range: {text}")));
+        return Eval::Error(error_info(format!("time literal out of range: {text}")));
     }
     let ms = ((hours * 60 + minutes) * 60 + seconds) * 1000 + millis;
     Eval::Normal(Value::Time(ms))
@@ -763,7 +754,7 @@ fn eval_expression_node(
         .collect();
 
     if children.is_empty() {
-        return Eval::Error(simple_error("expression: no children"));
+        return Eval::Error(error_info("expression: no children"));
     }
     if children.len() == 1 {
         // Transparent wrapper.
@@ -805,7 +796,7 @@ fn eval_expression_node(
                     AssignKind::Compound(base_op) => {
                         let Some((table, handle)) = records::record_binding(&recv, stack, ctx)
                         else {
-                            return Eval::Error(simple_error(&format!(
+                            return Eval::Error(error_info(format!(
                                 "record variable '{recv}' is not bound"
                             )));
                         };
@@ -821,7 +812,7 @@ fn eval_expression_node(
                 };
                 return records::try_field_assign(lhs_node, source, &new_val, stack, ctx)
                     .unwrap_or_else(|| {
-                        Eval::Error(simple_error(&format!(
+                        Eval::Error(error_info(format!(
                             "record field assignment failed for '{recv}.{field}'"
                         )))
                     });
@@ -838,7 +829,7 @@ fn eval_expression_node(
             .unwrap_or_default();
 
         if lhs_name.is_empty() {
-            return Eval::Error(simple_error(
+            return Eval::Error(error_info(
                 "expression: cannot resolve LHS name for assignment",
             ));
         }
@@ -850,7 +841,7 @@ fn eval_expression_node(
             AssignKind::Plain => rhs_val,
             AssignKind::Compound(base_op) => {
                 let Some(current) = stack.lookup(&lhs_name).cloned() else {
-                    return Eval::Error(simple_error(&format!(
+                    return Eval::Error(error_info(format!(
                         "compound assignment to unbound identifier: {lhs_name}"
                     )));
                 };
@@ -867,12 +858,12 @@ fn eval_expression_node(
             // width) rather than adopting the RHS's — see `coerce_into_slot`.
             match Value::coerce_into_slot(slot, new_val, capacity) {
                 Ok(value) => *slot = value,
-                Err(message) => return Eval::Error(simple_error(&message)),
+                Err(message) => return Eval::Error(error_info(&message)),
             }
         } else {
             // AL has no implicit declaration: a typo'd LHS must fail loudly
             // instead of silently creating a fresh variable.
-            return Eval::Error(simple_error(&format!(
+            return Eval::Error(error_info(format!(
                 "assignment to unbound identifier '{lhs_name}' — variables must be declared"
             )));
         }
@@ -982,7 +973,7 @@ fn eval_computation_chain(
         }
     }
     let Some(colon_index) = colon_index else {
-        return Eval::Error(simple_error(
+        return Eval::Error(error_info(
             "conditional expression: `?` has no matching `:`",
         ));
     };
@@ -991,7 +982,7 @@ fn eval_computation_chain(
     let true_children = &children[(question_index + 1)..colon_index];
     let false_children = &children[(colon_index + 1)..];
     if condition_children.is_empty() || true_children.is_empty() || false_children.is_empty() {
-        return Eval::Error(simple_error(
+        return Eval::Error(error_info(
             "conditional expression: condition and both result branches are required",
         ));
     }
@@ -1006,7 +997,7 @@ fn eval_computation_chain(
     ) {
         Eval::Normal(Value::Boolean(value)) => value,
         Eval::Normal(other) => {
-            return Eval::Error(simple_error(&format!(
+            return Eval::Error(error_info(format!(
                 "conditional expression requires Boolean condition, got {}",
                 other.type_name()
             )));
@@ -1039,14 +1030,14 @@ fn eval_expr_chain(
     condition_trace: &mut Option<Vec<bool>>,
 ) -> Eval {
     if children.is_empty() {
-        return Eval::Error(simple_error("expression chain: empty"));
+        return Eval::Error(error_info("expression chain: empty"));
     }
     if children.len() == 1 {
         return eval_expr(children[0], source, stack, ctx);
     }
 
     if children.len().is_multiple_of(2) {
-        return Eval::Error(simple_error(
+        return Eval::Error(error_info(
             "expression chain: expected alternating operands and operators",
         ));
     }
@@ -1066,7 +1057,7 @@ fn eval_expr_chain(
             .trim()
             .to_ascii_lowercase();
         let Some(precedence) = binary_precedence(&operator) else {
-            return Eval::Error(simple_error(&format!(
+            return Eval::Error(error_info(format!(
                 "unsupported binary operator in expression: `{operator}`"
             )));
         };
@@ -1100,12 +1091,12 @@ fn eval_expr_chain(
             },
             ChainToken::Operator(operator) => {
                 let Some(right) = values.pop() else {
-                    return Eval::Error(simple_error(
+                    return Eval::Error(error_info(
                         "expression chain: binary operator missing right operand",
                     ));
                 };
                 let Some(left) = values.pop() else {
-                    return Eval::Error(simple_error(
+                    return Eval::Error(error_info(
                         "expression chain: binary operator missing left operand",
                     ));
                 };
@@ -1153,7 +1144,7 @@ fn eval_expr_chain(
             *condition_trace = value.conditions;
             Eval::Normal(value.value)
         }
-        _ => Eval::Error(simple_error(
+        _ => Eval::Error(error_info(
             "expression chain: invalid operand/operator structure",
         )),
     }
@@ -1229,11 +1220,11 @@ fn whole_offset(value: &Value) -> Result<i64, ErrorInfo> {
         Some(Num::Dec(decimal)) if decimal.fract().is_zero() => decimal
             .to_string()
             .parse::<i64>()
-            .map_err(|_| simple_error("Date/Time arithmetic offset is out of range")),
-        Some(Num::Dec(_)) => Err(simple_error(
+            .map_err(|_| error_info("Date/Time arithmetic offset is out of range")),
+        Some(Num::Dec(_)) => Err(error_info(
             "Date/Time arithmetic requires a whole-number offset",
         )),
-        None => Err(simple_error(&format!(
+        None => Err(error_info(format!(
             "Date/Time arithmetic does not support {}",
             value.type_name()
         ))),
@@ -1246,26 +1237,26 @@ fn apply_temporal_arithmetic(operator: &str, left: &Value, right: &Value) -> Opt
         // DateTime difference → Duration (milliseconds).
         ("-", Value::DateTime(l), Value::DateTime(r)) => {
             if *l == 0 || *r == 0 {
-                return Some(Eval::Error(simple_error(
+                return Some(Eval::Error(error_info(
                     "DateTime arithmetic is undefined for the zero DateTime",
                 )));
             }
             Some(match l.checked_sub(*r) {
                 Some(ms) => Eval::Normal(Value::Duration(ms)),
-                None => Eval::Error(simple_error("DateTime arithmetic overflow")),
+                None => Eval::Error(error_info("DateTime arithmetic overflow")),
             })
         }
         // DateTime ± Duration/number → DateTime.
         ("+", Value::DateTime(dt), offset) | ("+", offset, Value::DateTime(dt)) => {
             if *dt == 0 {
-                return Some(Eval::Error(simple_error(
+                return Some(Eval::Error(error_info(
                     "DateTime arithmetic is undefined for the zero DateTime",
                 )));
             }
             Some(
                 match whole_offset(offset).and_then(|offset| {
                     dt.checked_add(offset)
-                        .ok_or_else(|| simple_error("DateTime arithmetic overflow"))
+                        .ok_or_else(|| error_info("DateTime arithmetic overflow"))
                 }) {
                     Ok(value) => Eval::Normal(Value::DateTime(value)),
                     Err(error) => Eval::Error(error),
@@ -1274,14 +1265,14 @@ fn apply_temporal_arithmetic(operator: &str, left: &Value, right: &Value) -> Opt
         }
         ("-", Value::DateTime(dt), offset) => {
             if *dt == 0 {
-                return Some(Eval::Error(simple_error(
+                return Some(Eval::Error(error_info(
                     "DateTime arithmetic is undefined for the zero DateTime",
                 )));
             }
             Some(
                 match whole_offset(offset).and_then(|offset| {
                     dt.checked_sub(offset)
-                        .ok_or_else(|| simple_error("DateTime arithmetic overflow"))
+                        .ok_or_else(|| error_info("DateTime arithmetic overflow"))
                 }) {
                     Ok(value) => Eval::Normal(Value::DateTime(value)),
                     Err(error) => Eval::Error(error),
@@ -1290,14 +1281,14 @@ fn apply_temporal_arithmetic(operator: &str, left: &Value, right: &Value) -> Opt
         }
         ("+", Value::Date(date), offset) | ("+", offset, Value::Date(date)) => {
             if *date == 0 {
-                return Some(Eval::Error(simple_error(
+                return Some(Eval::Error(error_info(
                     "Date arithmetic is undefined for 0D",
                 )));
             }
             Some(
                 match whole_offset(offset).and_then(|offset| {
                     date.checked_add(offset)
-                        .ok_or_else(|| simple_error("Date arithmetic overflow"))
+                        .ok_or_else(|| error_info("Date arithmetic overflow"))
                 }) {
                     Ok(value) => Eval::Normal(Value::Date(value)),
                     Err(error) => Eval::Error(error),
@@ -1306,7 +1297,7 @@ fn apply_temporal_arithmetic(operator: &str, left: &Value, right: &Value) -> Opt
         }
         ("-", Value::Date(left), Value::Date(right)) => {
             if *left == 0 || *right == 0 {
-                return Some(Eval::Error(simple_error(
+                return Some(Eval::Error(error_info(
                     "Date arithmetic is undefined for 0D",
                 )));
             }
@@ -1314,14 +1305,14 @@ fn apply_temporal_arithmetic(operator: &str, left: &Value, right: &Value) -> Opt
         }
         ("-", Value::Date(date), offset) => {
             if *date == 0 {
-                return Some(Eval::Error(simple_error(
+                return Some(Eval::Error(error_info(
                     "Date arithmetic is undefined for 0D",
                 )));
             }
             Some(
                 match whole_offset(offset).and_then(|offset| {
                     date.checked_sub(offset)
-                        .ok_or_else(|| simple_error("Date arithmetic overflow"))
+                        .ok_or_else(|| error_info("Date arithmetic overflow"))
                 }) {
                     Ok(value) => Eval::Normal(Value::Date(value)),
                     Err(error) => Eval::Error(error),
@@ -1330,7 +1321,7 @@ fn apply_temporal_arithmetic(operator: &str, left: &Value, right: &Value) -> Opt
         }
         ("+", Value::Time(time), offset) | ("+", offset, Value::Time(time)) => {
             if *time == 0 {
-                return Some(Eval::Error(simple_error(
+                return Some(Eval::Error(error_info(
                     "Time arithmetic is undefined for 0T",
                 )));
             }
@@ -1338,7 +1329,7 @@ fn apply_temporal_arithmetic(operator: &str, left: &Value, right: &Value) -> Opt
                 match whole_offset(offset).and_then(|offset| {
                     time.checked_add(offset)
                         .filter(|value| (0..value::MS_PER_DAY).contains(value))
-                        .ok_or_else(|| simple_error("Time arithmetic overflow"))
+                        .ok_or_else(|| error_info("Time arithmetic overflow"))
                 }) {
                     Ok(value) => Eval::Normal(Value::Time(value)),
                     Err(error) => Eval::Error(error),
@@ -1347,7 +1338,7 @@ fn apply_temporal_arithmetic(operator: &str, left: &Value, right: &Value) -> Opt
         }
         ("-", Value::Time(left), Value::Time(right)) => {
             if *left == 0 || *right == 0 {
-                return Some(Eval::Error(simple_error(
+                return Some(Eval::Error(error_info(
                     "Time arithmetic is undefined for 0T",
                 )));
             }
@@ -1355,12 +1346,12 @@ fn apply_temporal_arithmetic(operator: &str, left: &Value, right: &Value) -> Opt
             // not an Integer.
             Some(match left.checked_sub(*right) {
                 Some(ms) => Eval::Normal(Value::Duration(ms)),
-                None => Eval::Error(simple_error("Time arithmetic overflow")),
+                None => Eval::Error(error_info("Time arithmetic overflow")),
             })
         }
         ("-", Value::Time(time), offset) => {
             if *time == 0 {
-                return Some(Eval::Error(simple_error(
+                return Some(Eval::Error(error_info(
                     "Time arithmetic is undefined for 0T",
                 )));
             }
@@ -1368,7 +1359,7 @@ fn apply_temporal_arithmetic(operator: &str, left: &Value, right: &Value) -> Opt
                 match whole_offset(offset).and_then(|offset| {
                     time.checked_sub(offset)
                         .filter(|value| (0..value::MS_PER_DAY).contains(value))
-                        .ok_or_else(|| simple_error("Time arithmetic overflow"))
+                        .ok_or_else(|| error_info("Time arithmetic overflow"))
                 }) {
                     Ok(value) => Eval::Normal(Value::Time(value)),
                     Err(error) => Eval::Error(error),
@@ -1384,7 +1375,7 @@ fn apply_temporal_arithmetic(operator: &str, left: &Value, right: &Value) -> Opt
         ("+", Value::Duration(l), offset) | ("+", offset, Value::Duration(l)) => Some(
             match whole_offset(offset).and_then(|offset| {
                 l.checked_add(offset)
-                    .ok_or_else(|| simple_error("Duration arithmetic overflow"))
+                    .ok_or_else(|| error_info("Duration arithmetic overflow"))
             }) {
                 Ok(value) => Eval::Normal(Value::Duration(value)),
                 Err(error) => Eval::Error(error),
@@ -1393,7 +1384,7 @@ fn apply_temporal_arithmetic(operator: &str, left: &Value, right: &Value) -> Opt
         ("-", Value::Duration(l), offset) => Some(
             match whole_offset(offset).and_then(|offset| {
                 l.checked_sub(offset)
-                    .ok_or_else(|| simple_error("Duration arithmetic overflow"))
+                    .ok_or_else(|| error_info("Duration arithmetic overflow"))
             }) {
                 Ok(value) => Eval::Normal(Value::Duration(value)),
                 Err(error) => Eval::Error(error),
@@ -1415,7 +1406,7 @@ fn checked_int(result: Option<i64>, big: bool) -> Eval {
         Some(n) if (i32::MIN as i64..=i32::MAX as i64).contains(&n) => {
             Eval::Normal(Value::Integer(n))
         }
-        _ => Eval::Error(simple_error("integer overflow")),
+        _ => Eval::Error(error_info("integer overflow")),
     }
 }
 
@@ -1424,7 +1415,7 @@ fn checked_int(result: Option<i64>, big: bool) -> Eval {
 fn checked_decimal(d: Option<Decimal>) -> Eval {
     match d {
         Some(v) => Eval::Normal(Value::Decimal(v)),
-        None => Eval::Error(simple_error("decimal arithmetic overflow")),
+        None => Eval::Error(error_info("decimal arithmetic overflow")),
     }
 }
 
@@ -1439,7 +1430,7 @@ fn apply_numeric(op: &str, l: Num, r: Num) -> Eval {
     if op == "/" {
         let (a, b) = (l.to_decimal(), r.to_decimal());
         if b == Decimal::ZERO {
-            return Eval::Error(simple_error("division by zero"));
+            return Eval::Error(error_info("division by zero"));
         }
         return checked_decimal(a.checked_div(b));
     }
@@ -1452,7 +1443,7 @@ fn apply_numeric(op: &str, l: Num, r: Num) -> Eval {
                 "*" => checked_int(a.checked_mul(b), big),
                 "div" => {
                     if b == 0 {
-                        Eval::Error(simple_error("division by zero"))
+                        Eval::Error(error_info("division by zero"))
                     } else {
                         // i32::MIN / -1 (or i64::MIN / -1) overflows → error.
                         checked_int(a.checked_div(b), big)
@@ -1460,7 +1451,7 @@ fn apply_numeric(op: &str, l: Num, r: Num) -> Eval {
                 }
                 "mod" => {
                     if b == 0 {
-                        Eval::Error(simple_error("modulo by zero"))
+                        Eval::Error(error_info("modulo by zero"))
                     } else {
                         checked_int(a.checked_rem(b), big)
                     }
@@ -1475,7 +1466,7 @@ fn apply_numeric(op: &str, l: Num, r: Num) -> Eval {
                 "+" => checked_decimal(a.checked_add(b)),
                 "-" => checked_decimal(a.checked_sub(b)),
                 "*" => checked_decimal(a.checked_mul(b)),
-                "div" | "mod" => Eval::Error(simple_error(&format!(
+                "div" | "mod" => Eval::Error(error_info(format!(
                     "binary operator `{op}` is integer-only (not supported on Decimal)"
                 ))),
                 _ => unreachable!("op pre-filtered by apply_binary"),
@@ -1541,7 +1532,7 @@ pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
             Eval::Normal(Value::Boolean(false))
         }
 
-        (op, a, b) => Eval::Error(simple_error(&format!(
+        (op, a, b) => Eval::Error(error_info(format!(
             "binary operator `{op}` not supported on ({}, {})",
             a.type_name(),
             b.type_name()
@@ -1592,7 +1583,7 @@ fn value_ordering(a: &Value, b: &Value) -> Result<std::cmp::Ordering, ErrorInfo>
         }
         (Date(x), Date(y)) | (Time(x), Time(y)) | (DateTime(x), DateTime(y)) => x.cmp(y),
         (l, r) => {
-            return Err(simple_error(&format!(
+            return Err(error_info(format!(
                 "cannot compare {} and {}",
                 l.type_name(),
                 r.type_name()
@@ -1633,7 +1624,7 @@ mod tests {
         }
     }
 
-    fn err(eval: Eval) -> ErrorInfo {
+    fn error_of(eval: Eval) -> ErrorInfo {
         match eval {
             Eval::Error(e) => e,
             Eval::Normal(v) => panic!("expected error, got Normal({})", v.type_name()),
@@ -1807,10 +1798,12 @@ mod tests {
             Value::Duration(750),
             "Time - Time is a Duration in BC, not an Integer"
         );
-        assert!(err(apply_binary("+", Value::Date(0), Value::Integer(1)))
-            .message
-            .contains("0D"));
-        assert!(err(apply_binary(
+        assert!(
+            error_of(apply_binary("+", Value::Date(0), Value::Integer(1)))
+                .message
+                .contains("0D")
+        );
+        assert!(error_of(apply_binary(
             "+",
             Value::Time(value::MS_PER_DAY - 1),
             Value::Integer(1)
@@ -1903,21 +1896,21 @@ mod tests {
 
     #[test]
     fn divide_by_zero_is_error() {
-        let e = err(apply_binary("/", Value::Integer(1), Value::Integer(0)));
+        let e = error_of(apply_binary("/", Value::Integer(1), Value::Integer(0)));
         assert!(e.message.contains("division by zero"));
-        let e = err(apply_binary("mod", Value::Integer(1), Value::Integer(0)));
+        let e = error_of(apply_binary("mod", Value::Integer(1), Value::Integer(0)));
         assert!(e.message.contains("modulo by zero"));
     }
 
     #[test]
     fn integer_arithmetic_traps_i32_overflow() {
-        let e = err(apply_binary(
+        let e = error_of(apply_binary(
             "*",
             Value::Integer(2_147_483_647),
             Value::Integer(3),
         ));
         assert!(e.message.contains("overflow"), "got {}", e.message);
-        let e = err(apply_binary(
+        let e = error_of(apply_binary(
             "+",
             Value::Integer(i32::MAX as i64),
             Value::Integer(1),
@@ -1950,14 +1943,14 @@ mod tests {
 
     #[test]
     fn decimal_overflow_on_add_and_mul_errors() {
-        assert!(err(apply_binary(
+        assert!(error_of(apply_binary(
             "*",
             Value::Decimal(Decimal::MAX),
             Value::Decimal(Decimal::MAX),
         ))
         .message
         .contains("overflow"));
-        assert!(err(apply_binary(
+        assert!(error_of(apply_binary(
             "+",
             Value::Decimal(Decimal::MAX),
             Value::Decimal(Decimal::MAX),
@@ -2011,7 +2004,7 @@ mod tests {
 
     #[test]
     fn integer_arithmetic_still_traps_at_i32() {
-        assert!(err(apply_binary(
+        assert!(error_of(apply_binary(
             "*",
             Value::Integer(2_000_000_000),
             Value::Integer(2)
@@ -2034,7 +2027,7 @@ mod tests {
 
     #[test]
     fn biginteger_overflow_at_i64_traps() {
-        assert!(err(apply_binary(
+        assert!(error_of(apply_binary(
             "*",
             Value::BigInteger(i64::MAX),
             Value::BigInteger(2)
@@ -2135,13 +2128,13 @@ mod tests {
 
     #[test]
     fn mixed_integer_decimal_division_by_zero_is_error() {
-        let e = err(apply_binary(
+        let e = error_of(apply_binary(
             "/",
             Value::Decimal(dec!(1.0)),
             Value::Integer(0),
         ));
         assert!(e.message.contains("division by zero"));
-        let e = err(apply_binary(
+        let e = error_of(apply_binary(
             "/",
             Value::Integer(1),
             Value::Decimal(dec!(0.0)),
@@ -2251,7 +2244,7 @@ mod tests {
 
     #[test]
     fn unsupported_operator_yields_error() {
-        let e = err(apply_binary("**", Value::Integer(2), Value::Integer(3)));
+        let e = error_of(apply_binary("**", Value::Integer(2), Value::Integer(3)));
         assert!(
             e.message.contains("not supported"),
             "expected helpful error, got: {}",
@@ -2261,7 +2254,7 @@ mod tests {
 
     #[test]
     fn comparing_incompatible_types_errors() {
-        let e = err(apply_binary(
+        let e = error_of(apply_binary(
             "<",
             Value::Text("a".into()),
             Value::Integer(1),
@@ -2283,7 +2276,7 @@ mod tests {
         let root = tree.root_node();
         let bytes = wrapper.as_bytes();
         if root.has_error() {
-            return Eval::Error(simple_error("test harness wrapper contains a syntax error"));
+            return Eval::Error(error_info("test harness wrapper contains a syntax error"));
         }
 
         fn find_expression<'a>(node: tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
@@ -2319,7 +2312,7 @@ mod tests {
         let expr = match find_exit_arg(root) {
             Some(n) => n,
             None => {
-                return Eval::Error(simple_error(
+                return Eval::Error(error_info(
                     "test harness could not find the wrapped expression",
                 ));
             }
@@ -2400,7 +2393,7 @@ mod tests {
 
     #[test]
     fn parsed_conditional_expression_requires_boolean_condition() {
-        let error = err(parse_and_eval("1 ? 2 : 3"));
+        let error = error_of(parse_and_eval("1 ? 2 : 3"));
         assert!(error.message.contains("requires Boolean condition"));
     }
 

@@ -32,6 +32,7 @@
 
 use tree_sitter::Node;
 
+use super::error_info;
 use crate::interpreter::dispatch::{dispatch_call_scoped, DispatchCtx, MAX_AST_DEPTH};
 use crate::interpreter::eval_expr::eval_expr;
 use crate::interpreter::records;
@@ -58,7 +59,7 @@ pub fn eval_stmt(
     // inside the interpreter thread's stack when accounting for each frame's
     // locals + Node payload.
     if ctx.ast_depth >= MAX_AST_DEPTH {
-        return Eval::Error(simple_error(&format!(
+        return Eval::Error(error_info(format!(
             "AST nesting depth exceeded (max {} levels) — likely a pathological or generated test source",
             MAX_AST_DEPTH
         )));
@@ -163,7 +164,7 @@ fn eval_if(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Disp
         Some(n) => n,
         None => match named_stmt_child(node, 0) {
             Some(n) => n,
-            None => return Eval::Error(simple_error("if_statement: missing condition node")),
+            None => return Eval::Error(error_info("if_statement: missing condition node")),
         },
     };
 
@@ -173,7 +174,7 @@ fn eval_if(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Disp
     };
 
     if !matches!(cond, Value::Boolean(_)) {
-        return Eval::Error(simple_error(&format!(
+        return Eval::Error(error_info(format!(
             "if condition must be Boolean, got {}",
             cond.type_name()
         )));
@@ -213,7 +214,7 @@ fn eval_while(
         .or_else(|| named_stmt_child(node, 0))
     {
         Some(n) => n,
-        None => return Eval::Error(simple_error("while_statement: missing condition")),
+        None => return Eval::Error(error_info("while_statement: missing condition")),
     };
     let body_node = node
         .child_by_field_name("body")
@@ -221,10 +222,10 @@ fn eval_while(
 
     loop {
         if ctx.is_cancelled() {
-            return Eval::Error(simple_error("interpreter cancelled in while loop"));
+            return Eval::Error(error_info("interpreter cancelled in while loop"));
         }
         if ctx.deadline_exceeded() {
-            return Eval::Error(simple_error("interpreter deadline exceeded in while loop"));
+            return Eval::Error(error_info("interpreter deadline exceeded in while loop"));
         }
         let cond = match eval_decision_condition(cond_node, node, source, stack, ctx) {
             Eval::Normal(v) => v,
@@ -265,9 +266,9 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
     let var_name = match var_node {
         Some(n) => match n.utf8_text(source) {
             Ok(t) => t.trim_matches('"').to_string(),
-            Err(_) => return Eval::Error(simple_error("for_statement: invalid variable name")),
+            Err(_) => return Eval::Error(error_info("for_statement: invalid variable name")),
         },
-        None => return Eval::Error(simple_error("for_statement: missing variable")),
+        None => return Eval::Error(error_info("for_statement: missing variable")),
     };
 
     let start_val = match start_node {
@@ -275,7 +276,7 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
             Eval::Normal(v) => v,
             other => return other,
         },
-        None => return Eval::Error(simple_error("for_statement: missing start value")),
+        None => return Eval::Error(error_info("for_statement: missing start value")),
     };
 
     let end_val = match end_node {
@@ -283,7 +284,7 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
             Eval::Normal(v) => v,
             other => return other,
         },
-        None => return Eval::Error(simple_error("for_statement: missing end value")),
+        None => return Eval::Error(error_info("for_statement: missing end value")),
     };
 
     // Determine direction by consulting the grammar's `direction` field,
@@ -301,7 +302,7 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
     let start_i = match start_val.as_int() {
         Some(n) => n,
         None => {
-            return Eval::Error(simple_error(&format!(
+            return Eval::Error(error_info(format!(
                 "for_statement: start must be Integer, got {}",
                 start_val.type_name()
             )))
@@ -310,7 +311,7 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
     let end_i = match end_val.as_int() {
         Some(n) => n,
         None => {
-            return Eval::Error(simple_error(&format!(
+            return Eval::Error(error_info(format!(
                 "for_statement: end must be Integer, got {}",
                 end_val.type_name()
             )))
@@ -334,10 +335,10 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
     let mut i = start_i;
     loop {
         if ctx.is_cancelled() {
-            return Eval::Error(simple_error("interpreter cancelled in for loop"));
+            return Eval::Error(error_info("interpreter cancelled in for loop"));
         }
         if ctx.deadline_exceeded() {
-            return Eval::Error(simple_error("interpreter deadline exceeded in for loop"));
+            return Eval::Error(error_info("interpreter deadline exceeded in for loop"));
         }
         let in_range = if is_downto { i >= end_i } else { i <= end_i };
         ctx.cov_record_decision(node, in_range);
@@ -394,9 +395,9 @@ fn eval_foreach(
     let var_name = match var_node {
         Some(n) => match n.utf8_text(source) {
             Ok(t) => t.trim_matches('"').to_string(),
-            Err(_) => return Eval::Error(simple_error("foreach: invalid variable name")),
+            Err(_) => return Eval::Error(error_info("foreach: invalid variable name")),
         },
-        None => return Eval::Error(simple_error("foreach: missing variable")),
+        None => return Eval::Error(error_info("foreach: missing variable")),
     };
 
     let list_val = match list_node {
@@ -404,13 +405,13 @@ fn eval_foreach(
             Eval::Normal(v) => v,
             other => return other,
         },
-        None => return Eval::Error(simple_error("foreach: missing collection")),
+        None => return Eval::Error(error_info("foreach: missing collection")),
     };
 
     let items = match list_val {
         Value::List(v) | Value::Array(v) => v,
         other => {
-            return Eval::Error(simple_error(&format!(
+            return Eval::Error(error_info(format!(
                 "foreach: expected List or Array, got {}",
                 other.type_name()
             )))
@@ -421,12 +422,10 @@ fn eval_foreach(
     for item in items {
         ctx.cov_record_decision(node, true);
         if ctx.is_cancelled() {
-            return Eval::Error(simple_error("interpreter cancelled in foreach loop"));
+            return Eval::Error(error_info("interpreter cancelled in foreach loop"));
         }
         if ctx.deadline_exceeded() {
-            return Eval::Error(simple_error(
-                "interpreter deadline exceeded in foreach loop",
-            ));
+            return Eval::Error(error_info("interpreter deadline exceeded in foreach loop"));
         }
         if let Some(slot) = stack.lookup_mut(&var_name) {
             *slot = item.clone();
@@ -466,10 +465,10 @@ fn eval_repeat(
 
     loop {
         if ctx.is_cancelled() {
-            return Eval::Error(simple_error("interpreter cancelled in repeat loop"));
+            return Eval::Error(error_info("interpreter cancelled in repeat loop"));
         }
         if ctx.deadline_exceeded() {
-            return Eval::Error(simple_error("interpreter deadline exceeded in repeat loop"));
+            return Eval::Error(error_info("interpreter deadline exceeded in repeat loop"));
         }
         if let Some(body) = body_node {
             match eval_stmt(body, source, stack, ctx) {
@@ -485,7 +484,7 @@ fn eval_repeat(
                 Eval::Normal(v) => v,
                 other => return other,
             },
-            None => return Eval::Error(simple_error("repeat_statement: missing until condition")),
+            None => return Eval::Error(error_info("repeat_statement: missing until condition")),
         };
 
         ctx.cov_record_decision(node, cond.is_truthy());
@@ -502,7 +501,7 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
         .or_else(|| named_stmt_child(node, 0))
     {
         Some(n) => n,
-        None => return Eval::Error(simple_error("case_statement: missing selector")),
+        None => return Eval::Error(error_info("case_statement: missing selector")),
     };
     let selector = match eval_expr(selector_node, source, stack, ctx) {
         Eval::Normal(v) => v,
@@ -614,14 +613,14 @@ fn eval_assignment(
         .or_else(|| named_stmt_child(node, 0))
     {
         Some(n) => n,
-        None => return Eval::Error(simple_error("assignment: missing LHS")),
+        None => return Eval::Error(error_info("assignment: missing LHS")),
     };
     let rhs_node = match node
         .child_by_field_name("value")
         .or_else(|| named_stmt_child(node, 1))
     {
         Some(n) => n,
-        None => return Eval::Error(simple_error("assignment: missing RHS")),
+        None => return Eval::Error(error_info("assignment: missing RHS")),
     };
 
     let rhs_val = match eval_expr(rhs_node, source, stack, ctx) {
@@ -637,7 +636,7 @@ fn eval_assignment(
 
     let lhs_name = match lhs_node.utf8_text(source) {
         Ok(t) => t.trim_matches('"').to_ascii_lowercase(),
-        Err(_) => return Eval::Error(simple_error("assignment: invalid LHS identifier")),
+        Err(_) => return Eval::Error(error_info("assignment: invalid LHS identifier")),
     };
 
     let capacity = stack.declared_text_length(&lhs_name);
@@ -646,13 +645,13 @@ fn eval_assignment(
         // rather than adopting the RHS's — see `coerce_into_slot`.
         match Value::coerce_into_slot(slot, rhs_val, capacity) {
             Ok(value) => *slot = value,
-            Err(message) => return Eval::Error(simple_error(&message)),
+            Err(message) => return Eval::Error(error_info(&message)),
         }
     } else {
         // AL has no implicit declaration: assigning to an unknown name is a
         // compile error in BC, so a typo'd LHS must fail loudly instead of
         // silently creating a fresh variable.
-        return Eval::Error(simple_error(&format!(
+        return Eval::Error(error_info(format!(
             "assignment to unbound identifier '{lhs_name}' — variables must be declared"
         )));
     }
@@ -696,7 +695,7 @@ fn eval_asserterror(
 ) -> Eval {
     let body_node = match named_stmt_child(node, 0) {
         Some(n) => n,
-        None => return Eval::Error(simple_error("asserterror: missing body statement")),
+        None => return Eval::Error(error_info("asserterror: missing body statement")),
     };
 
     match eval_stmt(body_node, source, stack, ctx) {
@@ -825,7 +824,7 @@ pub(crate) fn eval_call(
         match stack.lookup(recv) {
             Some(Value::Record(_)) if records::supports_record_method(&proc_name) => {
                 let Some((table, handle)) = records::record_binding(recv, stack, ctx) else {
-                    return Eval::Error(simple_error(&format!(
+                    return Eval::Error(error_info(format!(
                         "record variable '{recv}' is not bound"
                     )));
                 };
@@ -1143,7 +1142,7 @@ fn eval_args_into(
             // An expression cannot legally produce break/continue (they are
             // statements); treat as an error rather than silently dropping.
             Eval::Break | Eval::Continue => {
-                return Err(ArgsShort::Error(simple_error(
+                return Err(ArgsShort::Error(error_info(
                     "break/continue is not valid in an expression",
                 )))
             }
@@ -1174,14 +1173,6 @@ fn collect_arg_nodes<'a>(node: Node<'a>, out: &mut Vec<Node<'a>>) {
             continue;
         }
         out.push(child);
-    }
-}
-
-fn simple_error(msg: &str) -> ErrorInfo {
-    ErrorInfo {
-        message: msg.to_string(),
-        error_type: None,
-        source: None,
     }
 }
 

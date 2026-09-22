@@ -1,11 +1,11 @@
-//! al-analysis: AL code-analysis & generation layer (tier 5).
+//! al-analysis: AL code-analysis & generation layer (T4 in `Docs/architecture.md`).
 //!
 //! Owns the LSP/CLI query engine (`queries`), AL type
 //! & member resolution (`resolution`), permission-set collection
 //! (`permissions`), object/page/report/test generators (`generators`), project
 //! scaffolding (`scaffold`), and XLIFF translation tooling (`xliff`).
 //!
-//! Depends *downward* on the `al_workspace::Workspace` hub (tier 4) and the
+//! Depends *downward* on the `al_workspace::Workspace` hub (T3) and the
 //! syntax / symbols / source / semantic / insight / project / types layers.
 //! It deliberately does NOT depend on the transport tier (al-lsp / `tower_lsp`)
 //! or the test-runner tier (al-test): ranges come from
@@ -17,8 +17,9 @@ pub mod generators;
 pub mod lsp;
 pub mod permissions;
 pub mod queries;
-// `pub` so al-lsp can reach the resolver, and so the query layer keeps
-// reaching its `pub(crate)` helpers intra-crate.
+// `pub` because the query layer and the generators both build on the resolver
+// and it is part of what a consumer of this crate analyses AL with. No crate
+// in this workspace imports it today.
 pub mod resolution;
 pub mod scaffold;
 #[cfg(test)]

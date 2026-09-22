@@ -1,3 +1,6 @@
+//! Object browser view: the workspace object list, its filter input and the
+//! details pane, including mouse hit-testing against the laid-out panes.
+
 use crossterm::event::{MouseButton, MouseEventKind};
 use ratatui::{
     Frame,

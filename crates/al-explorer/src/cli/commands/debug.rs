@@ -1,3 +1,6 @@
+//! `al-explorer debug`, `snapshot` and `profile` subcommands: the CLI front
+//! for the daemon's debug-session, snapshot and profiling methods.
+
 use std::process::ExitCode;
 
 use super::super::{DebugCommands, ProfileCommands, SnapshotCommands};

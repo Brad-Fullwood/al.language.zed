@@ -6,6 +6,19 @@ use super::{Position, Range};
 use crate::resolution::{self, ResolvedMemberKind};
 use al_workspace::{Workspace, WorkspaceStateError};
 
+/// Why a hover query failed.
+///
+/// `hover_native` can only hit workspace state; `hover_full` adds the
+/// CodeAnalysis bridge, so the pair differs by one variant rather than by
+/// error type.
+#[derive(Debug, thiserror::Error)]
+pub enum HoverError {
+    #[error(transparent)]
+    WorkspaceState(#[from] WorkspaceStateError),
+    #[error("semantic hover bridge failed: {0}")]
+    Bridge(#[from] al_semantic::SemanticError),
+}
+
 /// Hover result: markdown content and optional highlight range.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct HoverResult {
@@ -13,7 +26,12 @@ pub struct HoverResult {
     pub range: Option<Range>,
 }
 
-pub fn hover(
+/// Hover from workspace state alone, without the .NET CodeAnalysis bridge.
+///
+/// [`hover_full`] is what the LSP and daemon entry points call; this is the
+/// half of it that needs no bridge, which is what the benches and the
+/// integration tests want.
+pub fn hover_native(
     workspace: &Workspace,
     uri: &Url,
     position: Position,
@@ -324,8 +342,8 @@ pub async fn hover_full(
     workspace: &Workspace,
     uri: &Url,
     position: Position,
-) -> Result<Option<HoverResult>, String> {
-    if let Some(result) = hover(workspace, uri, position).map_err(|error| error.to_string())? {
+) -> Result<Option<HoverResult>, HoverError> {
+    if let Some(result) = hover_native(workspace, uri, position)? {
         return Ok(Some(result));
     }
 
@@ -380,7 +398,7 @@ pub async fn hover_full(
                     tracing::warn!(error = %restart_error, "hover_full: bridge restart failed");
                 }
             }
-            return Err(format!("semantic hover bridge failed: {e}"));
+            return Err(HoverError::Bridge(e));
         }
     };
     let mut contents = format!(
@@ -465,7 +483,7 @@ mod tests {
     use url::Url;
 
     fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<HoverResult> {
-        super::hover(workspace, uri, position).unwrap()
+        super::hover_native(workspace, uri, position).unwrap()
     }
 
     async fn hover_full(

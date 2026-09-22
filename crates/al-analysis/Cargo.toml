@@ -20,12 +20,12 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 petgraph = { workspace = true }
-tree-sitter = "0.25"
-url = { version = "2", features = ["serde"] }
+tree-sitter = { workspace = true }
+url = { workspace = true }
 tower-lsp = { workspace = true, optional = true }
-rayon = "1"
+rayon = { workspace = true }
 regex = { workspace = true }
-tempfile = "3"
+tempfile = { workspace = true }
 
 [features]
 # Enable the in-process .NET bridge in both semantic dependencies.

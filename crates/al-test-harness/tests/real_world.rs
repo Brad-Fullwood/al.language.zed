@@ -768,21 +768,28 @@ async fn test_diagnostics_lint_empty_begin_end() {
 }"#;
 
     client.open_file("objects/test.al", code).await;
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-
-    let diags = client.drain_diagnostics();
-    let all_codes: Vec<&str> = diags
-        .values()
-        .flat_map(|d| d.iter())
-        .filter_map(|d| d.get("code").and_then(|c| c.as_str()))
-        .collect();
+    // Poll until the server publishes rather than betting that 200ms is enough
+    // to have produced the diagnostics this assertion reads.
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+    let mut all_codes: Vec<String> = Vec::new();
+    while tokio::time::Instant::now() < deadline {
+        let published = client.drain_diagnostics();
+        if !published.is_empty() {
+            all_codes.extend(published.into_values().flatten().filter_map(|d| {
+                d.get("code")
+                    .and_then(|c| c.as_str())
+                    .map(std::string::ToString::to_string)
+            }));
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
 
     // AL-L001 belongs to the retired legacy native-lint catalog. Verify the
     // server never resurrects that code now that native rules use AL-NL IDs.
     assert!(
-        !all_codes.contains(&"AL-L001"),
-        "retired legacy code AL-L001 must not appear. Got codes: {:?}",
-        all_codes
+        !all_codes.iter().any(|code| code == "AL-L001"),
+        "retired legacy code AL-L001 must not appear. Got codes: {all_codes:?}"
     );
 
     client.shutdown().await;

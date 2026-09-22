@@ -44,7 +44,7 @@ pub(super) fn generate_random_string(len: usize) -> Result<String, OAuthError> {
 /// Uses `getrandom` which works on Linux, macOS, Windows, and WASM.
 fn random_bytes(n: usize) -> Result<Vec<u8>, OAuthError> {
     let mut buf = vec![0u8; n];
-    getrandom::getrandom(&mut buf).map_err(|e| OAuthError::Protocol {
+    getrandom::fill(&mut buf).map_err(|e| OAuthError::Protocol {
         error: "getrandom_failed".to_string(),
         description: format!("Failed to get random bytes: {e}"),
     })?;

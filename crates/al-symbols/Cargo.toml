@@ -20,9 +20,9 @@ quick-xml = { workspace = true }
 futures = { workspace = true }
 getrandom = { workspace = true }
 tokio = { workspace = true }
-dirs = "6"
-rayon = "1"
-sha2 = "0.10"
+dirs = { workspace = true }
+rayon = { workspace = true }
+sha2 = { workspace = true }
 reqwest = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 # OS secret store for OAuth token persistence; crypto-rust keeps the pure-Rust /
@@ -46,7 +46,7 @@ nuget = ["dep:al-bc", "dep:keyring", "dep:zeroize", "dep:reqwest"]
 
 [dev-dependencies]
 proptest = "1"
-tempfile = "3"
+tempfile = { workspace = true }
 serial_test = "3"
 wiremock = "0.6"
 tokio = { workspace = true, features = ["full"] }

@@ -63,8 +63,26 @@ impl serde::Serialize for CompletionKind {
 
 use al_syntax::context::{detect_context, CompletionContext};
 
-/// Get completions at a position in a document.
-pub fn completions(
+/// Why a completions query failed.
+///
+/// `completions_native` can only hit workspace state; `completions_full` adds
+/// the CodeAnalysis bridge, so the pair differs by one variant rather than by
+/// error type.
+#[derive(Debug, thiserror::Error)]
+pub enum CompletionError {
+    #[error(transparent)]
+    WorkspaceState(#[from] al_workspace::WorkspaceStateError),
+    #[error("semantic completion bridge failed: {0}")]
+    Bridge(#[from] al_semantic::SemanticError),
+}
+
+/// Completions from workspace state alone, without the .NET CodeAnalysis
+/// bridge.
+///
+/// [`completions_full`] is what the LSP and daemon entry points call; this is
+/// the half of it that needs no bridge, which is what the benches and the
+/// integration tests want.
+pub fn completions_native(
     workspace: &Workspace,
     uri: &Url,
     position: Position,
@@ -197,8 +215,8 @@ pub async fn completions_full(
     workspace: &Workspace,
     uri: &Url,
     position: Position,
-) -> Result<Vec<CompletionEntry>, String> {
-    let items = completions(workspace, uri, position).map_err(|error| error.to_string())?;
+) -> Result<Vec<CompletionEntry>, CompletionError> {
+    let items = completions_native(workspace, uri, position)?;
     if !items.is_empty() {
         return Ok(items);
     }
@@ -264,7 +282,7 @@ pub async fn completions_full(
                     tracing::warn!(error = %restart_error, "completions_full: bridge restart failed");
                 }
             }
-            return Err(format!("semantic completion bridge failed: {e}"));
+            return Err(CompletionError::Bridge(e));
         }
     };
     if bridge_items.is_empty() {
@@ -554,7 +572,7 @@ mod tests {
     use al_workspace::Workspace;
 
     fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<CompletionEntry> {
-        super::completions(workspace, uri, position).unwrap()
+        super::completions_native(workspace, uri, position).unwrap()
     }
 
     fn add_default_completions(
@@ -778,7 +796,7 @@ mod tests {
             line: 0,
             character: 0,
         };
-        let result = completions(&ws, &uri, pos);
+        let result = completions_native(&ws, &uri, pos).expect("workspace state is healthy");
         assert!(
             result.is_empty(),
             "unopened document should return empty completions"
@@ -794,7 +812,7 @@ mod tests {
             line: 0,
             character: 0,
         };
-        let result = completions(&ws, &uri, pos);
+        let result = completions_native(&ws, &uri, pos).expect("workspace state is healthy");
         // Empty file — may return keywords but should not panic
         let _ = result;
     }
@@ -810,7 +828,7 @@ mod tests {
             line: 0,
             character: 5,
         };
-        let result = completions(&ws, &uri, pos);
+        let result = completions_native(&ws, &uri, pos).expect("workspace state is healthy");
         // Should not panic on malformed code
         let _ = result;
     }
@@ -827,7 +845,7 @@ mod tests {
             line: 100,
             character: 0,
         };
-        let result = completions(&ws, &uri, pos);
+        let result = completions_native(&ws, &uri, pos).expect("workspace state is healthy");
         let _ = result; // just ensure no panic
     }
 
@@ -852,7 +870,7 @@ mod tests {
             line: 4,
             character: 8,
         }; // inside begin block
-        let result = completions(&ws, &uri, pos);
+        let result = completions_native(&ws, &uri, pos).expect("workspace state is healthy");
         let labels: Vec<&str> = result.iter().map(|c| c.label.as_str()).collect();
         assert!(
             labels.contains(&"if"),
@@ -1062,7 +1080,7 @@ mod tests {
             line: 8,
             character: 8,
         };
-        let result = completions(&ws, &uri, pos);
+        let result = completions_native(&ws, &uri, pos).expect("workspace state is healthy");
         let labels: Vec<&str> = result.iter().map(|c| c.label.as_str()).collect();
         assert!(
             labels.contains(&"Helper"),

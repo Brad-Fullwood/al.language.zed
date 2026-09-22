@@ -50,12 +50,7 @@ pub(super) fn dispatch_trace(
     // Supply the call graph so the trace can follow the events a subscriber's
     // body actually raises instead of fabricating hops from its object's
     // unrelated publishers.
-    let steps = al_insight::search::trace_event_with_calls(
-        &graph,
-        _cg_guard.as_ref(),
-        event_name,
-        max_depth,
-    );
+    let steps = al_insight::search::trace_event(&graph, _cg_guard.as_ref(), event_name, max_depth);
     serialized_response(id, &steps, "trace")
 }
 
@@ -67,7 +62,7 @@ pub(super) fn dispatch_entrypoints(workspace: &Workspace, id: u64) -> Response {
     // Call edges live in the CallGraph, not the InsightGraph — pass it, or the
     // filter has nothing to exclude and every procedure looks like an entry
     // point.
-    let entry_points = al_insight::search::find_entry_points_with_calls(&graph, _cg_guard.as_ref());
+    let entry_points = al_insight::search::find_entry_points(&graph, _cg_guard.as_ref());
     serialized_response(id, &entry_points, "entrypoints")
 }
 

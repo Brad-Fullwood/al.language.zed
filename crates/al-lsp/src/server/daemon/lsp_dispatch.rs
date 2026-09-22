@@ -145,8 +145,11 @@ pub(super) fn dispatch_implementations(
         Ok(document) => document,
         Err(response) => return response,
     };
+    // `None` (document not loaded) and an empty list are both an empty array
+    // on the wire: the daemon already rejected an unknown document above.
     let locations =
-        al_analysis::queries::implementation::find_implementations(workspace, &uri, position);
+        al_analysis::queries::implementation::find_implementations(workspace, &uri, position)
+            .unwrap_or_default();
     ok_response(id, &locations, "textDocument/implementation")
 }
 
@@ -268,7 +271,8 @@ pub(super) fn dispatch_semantic_tokens(
         Ok(document) => document,
         Err(response) => return response,
     };
-    let tokens = al_analysis::queries::semantic_tokens::semantic_tokens_full(workspace, &uri);
+    let tokens = al_analysis::queries::semantic_tokens::semantic_tokens_full(workspace, &uri)
+        .unwrap_or_default();
     ok_response(id, &tokens, "textDocument/semanticTokens/full")
 }
 
@@ -681,7 +685,7 @@ fn dedup_objects_by_identity(objects: &mut Vec<serde_json::Value>) -> Result<(),
 /// `info.kind` is the tree-sitter node kind (lowercase, e.g. "table"). The wire
 /// schema for SymbolEntry uses the al_symbols ObjectKind enum, whose serde
 /// representation is PascalCase. Normalize via `ObjectKind::from_str` so the
-/// payload deserializes cleanly on al-cli / al-explorer.
+/// payload deserializes cleanly on al-explorer.
 fn workspace_object_identity(
     info: &al_source::file_index::CachedObjectInfo,
 ) -> Result<(al_symbols::ObjectKind, i32), String> {

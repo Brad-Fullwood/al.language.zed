@@ -32,19 +32,22 @@ impl From<al_syntax::SemanticToken> for SemanticToken {
     }
 }
 
+/// `None` means the document is not loaded; an empty `Vec` means the document
+/// produced no tokens. Matches the `Option` that `document_symbols` and
+/// `folding_ranges` use for the same distinction.
 #[must_use]
-pub fn semantic_tokens_full(workspace: &Workspace, uri: &Url) -> Vec<SemanticToken> {
+pub fn semantic_tokens_full(workspace: &Workspace, uri: &Url) -> Option<Vec<SemanticToken>> {
     let _span = tracing::debug_span!("semantic_tokens_full", uri = %uri).entered();
     let Some((text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, uri) else {
-        tracing::debug!("document not parsed; returning empty token list");
-        return Vec::new();
+        tracing::debug!("document not loaded");
+        return None;
     };
     let tokens: Vec<SemanticToken> = al_syntax::extract_semantic_tokens(&tree, &text)
         .into_iter()
         .map(SemanticToken::from)
         .collect();
     tracing::debug!(count = tokens.len(), "semantic tokens emitted");
-    tokens
+    Some(tokens)
 }
 
 #[cfg(test)]
@@ -68,7 +71,7 @@ mod tests {
         ws.documents
             .open(uri.clone(), SAMPLE_AL.to_string())
             .unwrap();
-        let tokens = semantic_tokens_full(&ws, &uri);
+        let tokens = semantic_tokens_full(&ws, &uri).expect("document is open");
         assert!(
             !tokens.is_empty(),
             "A non-empty AL document must yield at least one semantic token"
@@ -85,7 +88,7 @@ mod tests {
         ws.documents
             .open(uri.clone(), SAMPLE_AL.to_string())
             .unwrap();
-        let tokens = semantic_tokens_full(&ws, &uri);
+        let tokens = semantic_tokens_full(&ws, &uri).expect("document is open");
         let first = tokens.first().expect("expected at least one token");
         // First meaningful token in the sample is the `codeunit` keyword on
         // line 0, column 0.
@@ -107,7 +110,7 @@ mod tests {
 
         // The wrapper must map each syntax token field-for-field with no
         // reordering or mutation. Compare against the syntax layer directly.
-        let tokens = semantic_tokens_full(&ws, &uri);
+        let tokens = semantic_tokens_full(&ws, &uri).expect("document is open");
         assert_eq!(
             tokens.len(),
             syntax_tokens.len(),
@@ -136,7 +139,7 @@ mod tests {
         // non-zero, delta_start is reset to an absolute column. This test
         // guards that the wrapper hands back a well-formed delta stream rather
         // than, say, absolute positions or a shuffled order.
-        let tokens = semantic_tokens_full(&ws, &uri);
+        let tokens = semantic_tokens_full(&ws, &uri).expect("document is open");
         assert!(tokens.len() >= 2, "sample must yield multiple tokens");
 
         for window in tokens.windows(2) {
@@ -158,10 +161,10 @@ mod tests {
         ws.documents
             .open(uri.clone(), SAMPLE_AL.to_string())
             .unwrap();
-        let first = semantic_tokens_full(&ws, &uri);
+        let first = semantic_tokens_full(&ws, &uri).expect("document is open");
         // The second call hits the cached parse tree inside get_or_parse rather
         // than re-parsing. The cache path must yield byte-identical tokens.
-        let second = semantic_tokens_full(&ws, &uri);
+        let second = semantic_tokens_full(&ws, &uri).expect("document is open");
 
         assert_eq!(
             first.len(),
@@ -190,14 +193,14 @@ mod tests {
         ws.documents
             .open(small_uri.clone(), SAMPLE_AL.to_string())
             .unwrap();
-        let small = semantic_tokens_full(&ws, &small_uri);
+        let small = semantic_tokens_full(&ws, &small_uri).expect("document is open");
         assert!(!small.is_empty());
 
         let bigger = format!(
             "{SAMPLE_AL}\n\ncodeunit 50101 \"Other\"\n{{\n    procedure More()\n    begin\n    end;\n}}"
         );
         ws.documents.open(big_uri.clone(), bigger).unwrap();
-        let big = semantic_tokens_full(&ws, &big_uri);
+        let big = semantic_tokens_full(&ws, &big_uri).expect("document is open");
 
         assert!(
             big.len() > small.len(),
@@ -208,13 +211,14 @@ mod tests {
     }
 
     #[test]
-    fn semantic_tokens_full_unknown_uri_returns_empty() {
+    /// An unloaded document is `None`, distinct from a loaded document that
+    /// yields no tokens, which is `Some(vec![])`.
+    fn semantic_tokens_full_unknown_uri_returns_none() {
         let ws = Workspace::new();
         let uri = Url::parse("file:///nonexistent/missing.al").expect("test");
-        let tokens = semantic_tokens_full(&ws, &uri);
         assert!(
-            tokens.is_empty(),
-            "Unknown URI must produce an empty token list, not panic"
+            semantic_tokens_full(&ws, &uri).is_none(),
+            "an unknown URI must be None, not an empty token list"
         );
     }
 
@@ -223,7 +227,7 @@ mod tests {
         let ws = Workspace::new();
         let uri = Url::parse("file:///test/empty.al").expect("test");
         ws.documents.open(uri.clone(), String::new()).unwrap();
-        let tokens = semantic_tokens_full(&ws, &uri);
+        let tokens = semantic_tokens_full(&ws, &uri).expect("document is open");
         assert!(
             tokens.is_empty(),
             "An empty document has no tokens to highlight"
@@ -247,7 +251,7 @@ mod tests {
         // syntax layer; whatever index it picks, the wrapper's first token must
         // equal the syntax layer's first token type (no remapping in the
         // boundary conversion).
-        let tokens = semantic_tokens_full(&ws, &uri);
+        let tokens = semantic_tokens_full(&ws, &uri).expect("document is open");
         let first = tokens.first().expect("wrapper yields a token");
         assert_eq!(
             first.token_type, syntax_first.token_type,
@@ -286,7 +290,7 @@ mod tests {
         // string literal, so a correct pipeline yields at least two distinct
         // `token_type` values. This guards against a regression that drops the
         // per-token type during the boundary conversion.
-        let tokens = semantic_tokens_full(&ws, &uri);
+        let tokens = semantic_tokens_full(&ws, &uri).expect("document is open");
         assert!(!tokens.is_empty(), "sample must produce tokens");
 
         let mut seen = std::collections::HashSet::new();
@@ -312,7 +316,7 @@ mod tests {
         // sequence is non-decreasing by line and, within a line, strictly
         // increasing by column. A wrapper that shuffled order, emitted absolute
         // positions in the delta fields, or zeroed deltas would break this.
-        let tokens = semantic_tokens_full(&ws, &uri);
+        let tokens = semantic_tokens_full(&ws, &uri).expect("document is open");
         assert!(tokens.len() >= 2, "need multiple tokens to test ordering");
 
         let mut abs_line: u32 = 0;
@@ -360,7 +364,7 @@ mod tests {
         // spanning two source lines around it; the token *after* it must carry a
         // non-zero delta_line. This pins the cross-line path that single-line
         // samples never reach.
-        let tokens = semantic_tokens_full(&ws, &uri);
+        let tokens = semantic_tokens_full(&ws, &uri).expect("document is open");
         assert!(!tokens.is_empty(), "multi-line doc must produce tokens");
         assert!(
             tokens.iter().any(|t| t.delta_line > 0),

@@ -1,6 +1,9 @@
 [package]
 name = "al-explorer"
 version = "0.4.0"
+# 2024, not the workspace's 2021: the TUI state machines use let chains
+# (`if let Some(x) = a && let Some(y) = b`), which 2021 rejects. Formatting
+# still follows the workspace default style edition.
 edition = "2024"
 license.workspace = true
 repository.workspace = true
@@ -31,12 +34,12 @@ crossterm = "0.29.0"
 ratatui = "0.30.0"
 serde = { workspace = true }
 serde_json = { workspace = true }
-# Folded in from al-cli (stage 8):
+# CLI argument parsing and shell completions:
 clap = { workspace = true }
 clap_complete = { workspace = true }
-dirs = "6"
-url = "2"
-tempfile = "3"
+dirs = { workspace = true }
+url = { workspace = true }
+tempfile = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

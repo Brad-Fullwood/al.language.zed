@@ -21,7 +21,6 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use crate::toolchain::AlToolchain;
 use al_dap::dap::framing::{read_dap_body, write_dap_frame};
-use thiserror::Error;
 use tokio::io::{self, AsyncBufReadExt, BufReader};
 use tracing::{debug, error, info, warn};
 
@@ -78,20 +77,9 @@ fn redact_dap_body_for_log(body: &[u8]) -> String {
     }
 }
 
-#[derive(Debug, Error)]
-pub enum DapError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("EditorServices.Host not found: {0}")]
-    EditorServicesNotFound(String),
-
-    #[error("EditorServices.Host failed to start: {0}")]
-    SpawnFailed(String),
-
-    #[error("AL compilation failed: {0}")]
-    CompilationFailed(String),
-}
+// The EditorServices proxy raises the same four failures al-dap already names,
+// and al-lsp depends on al-dap, so there is one DapError in the workspace.
+pub use al_dap::dap::DapError;
 
 pub async fn run_dap_server(toolchain: &AlToolchain) -> Result<(), DapError> {
     let project_root = std::env::current_dir()

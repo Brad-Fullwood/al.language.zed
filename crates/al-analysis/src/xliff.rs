@@ -1305,23 +1305,11 @@ impl TranslationMemory {
     }
 }
 
-/// Suggest translations for untranslated units by matching against base app symbols.
-///
-/// Backward-compatible entry point (used by the LSP `xlf suggest` dispatch). It
-/// carries no translation memory, so every suggestion has origin `name`. Prefer
-/// [`suggest_translations_with_memory`] when the project's already-translated
-/// units are available — that path adds the `tm-exact` / `tm-fuzzy` backends.
-///
-/// Returns suggestions sorted by confidence (highest first).
-pub fn suggest_translations(
-    untranslated: &[&TranslationUnit],
-    workspace: &Workspace,
-) -> Vec<TranslationSuggestion> {
-    suggest_translations_with_memory(untranslated, &[], workspace)
-}
-
 /// Suggest translations for untranslated units, preferring the project's
 /// translation memory and falling back to symbol-name matching.
+///
+/// An empty `memory` means no translation memory is available, so every
+/// suggestion has origin `name`.
 ///
 /// `memory` is the pool of units to mine for existing translations — typically
 /// every unit parsed from the project's XLIFF; the trustworthy (target present,
@@ -1333,10 +1321,10 @@ pub fn suggest_translations(
 ///
 /// Suggestions are sorted by confidence (highest first), then unit id so the
 /// output is deterministic.
-pub fn suggest_translations_with_memory(
+pub fn suggest_translations(
+    workspace: &Workspace,
     untranslated: &[&TranslationUnit],
     memory: &[&TranslationUnit],
-    workspace: &Workspace,
 ) -> Vec<TranslationSuggestion> {
     let tm = TranslationMemory::from_units(memory.iter().copied());
     let mut suggestions = Vec::new();
@@ -2079,7 +2067,7 @@ table 50101 "Shipment Line"
     fn test_suggest_translations_empty() {
         let ws = al_workspace::Workspace::new();
         let unit = make_test_unit("Customer");
-        let result = suggest_translations(&[&unit], &ws);
+        let result = suggest_translations(&ws, &[&unit], &[]);
         assert!(
             result.is_empty(),
             "empty workspace should produce no suggestions"
@@ -2097,7 +2085,7 @@ table 50101 "Shipment Line"
             ..Default::default()
         }]);
         let unit = make_test_unit("Customer");
-        let result = suggest_translations(&[&unit], &ws);
+        let result = suggest_translations(&ws, &[&unit], &[]);
         assert!(!result.is_empty(), "should find exact match suggestion");
         assert_eq!(
             result[0].confidence, 1.0,
@@ -2131,7 +2119,7 @@ table 50101 "Shipment Line"
         let ws = al_workspace::Workspace::new();
         let translated = translated_unit("Customer", "Kunde");
         let unit = make_test_unit("Customer");
-        let result = suggest_translations_with_memory(&[&unit], &[&translated], &ws);
+        let result = suggest_translations(&ws, &[&unit], &[&translated]);
         assert_eq!(result.len(), 1, "exactly one TM suggestion expected");
         assert_eq!(result[0].suggested_translation, "Kunde");
         assert_eq!(result[0].origin, SuggestionOrigin::TmExact);
@@ -2144,7 +2132,7 @@ table 50101 "Shipment Line"
         let ws = al_workspace::Workspace::new();
         let translated = translated_unit("Customer", "Kunde");
         let unit = make_test_unit("  customer ");
-        let result = suggest_translations_with_memory(&[&unit], &[&translated], &ws);
+        let result = suggest_translations(&ws, &[&unit], &[&translated]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].suggested_translation, "Kunde");
         assert_eq!(result[0].origin, SuggestionOrigin::TmExact);
@@ -2157,7 +2145,7 @@ table 50101 "Shipment Line"
         let ws = al_workspace::Workspace::new();
         let translated = translated_unit("Post Sales Document", "Verkaufsbeleg buchen");
         let unit = make_test_unit("Post Sales Documents");
-        let result = suggest_translations_with_memory(&[&unit], &[&translated], &ws);
+        let result = suggest_translations(&ws, &[&unit], &[&translated]);
         assert_eq!(result.len(), 1, "near-match should produce a fuzzy hit");
         assert_eq!(result[0].suggested_translation, "Verkaufsbeleg buchen");
         assert_eq!(result[0].origin, SuggestionOrigin::TmFuzzy);
@@ -2182,7 +2170,7 @@ table 50101 "Shipment Line"
         }]);
         let translated = translated_unit("Vendor Ledger Entry", "Kreditorenposten");
         let unit = make_test_unit("Customer");
-        let result = suggest_translations_with_memory(&[&unit], &[&translated], &ws);
+        let result = suggest_translations(&ws, &[&unit], &[&translated]);
         assert!(
             !result.is_empty(),
             "name fallback should produce a suggestion"
@@ -2199,7 +2187,7 @@ table 50101 "Shipment Line"
         let ws = al_workspace::Workspace::new();
         let translated = translated_unit("Customer", "Kunde");
         let unit = make_test_unit("Totally Unrelated Phrase");
-        let result = suggest_translations_with_memory(&[&unit], &[&translated], &ws);
+        let result = suggest_translations(&ws, &[&unit], &[&translated]);
         assert!(
             result.is_empty(),
             "no TM or name match should yield nothing"
@@ -2216,7 +2204,7 @@ table 50101 "Shipment Line"
         let mut empty_target = translated_unit("Customer", "Kunde");
         empty_target.target = Some("   ".to_string());
         let unit = make_test_unit("Customer");
-        let result = suggest_translations_with_memory(&[&unit], &[&not_done, &empty_target], &ws);
+        let result = suggest_translations(&ws, &[&unit], &[&not_done, &empty_target]);
         assert!(
             result.is_empty(),
             "unfinished/empty translations must not seed the TM"

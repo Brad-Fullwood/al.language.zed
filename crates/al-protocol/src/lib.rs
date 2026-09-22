@@ -4,7 +4,7 @@
 //! and a synchronous local-socket client with auto-start and retry logic.
 //! The transport is a Unix-domain socket on Linux/macOS and a named pipe on
 //! Windows.
-//! Used by al-cli, al-explorer, and al-lsp.
+//! Used by al-explorer and al-lsp.
 
 pub mod client;
 pub mod identity;

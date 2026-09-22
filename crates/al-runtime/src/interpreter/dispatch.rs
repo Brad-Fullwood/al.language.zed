@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::eval_error;
 use crate::interpreter::records::{self, RecordStore};
 use crate::interpreter::scope::{CallFrame, Eval, ScopeStack};
 use crate::interpreter::value::{ErrorInfo, Value};
@@ -384,7 +385,7 @@ pub(crate) fn dispatch_call_scoped(
             "message" => {
                 if let Some((object, handler)) = ctx.test_handlers.message.clone() {
                     if args.is_empty() {
-                        return simple_error("Message requires a message argument");
+                        return eval_error("Message requires a message argument");
                     }
                     let message = formatted_dialog_text(&args);
                     let result = dispatch_workspace_procedure(
@@ -397,14 +398,14 @@ pub(crate) fn dispatch_call_scoped(
                     ctx.var_writebacks.clear();
                     return result;
                 }
-                return simple_error(
+                return eval_error(
                     "Message requires a configured [MessageHandler] in the local test runtime",
                 );
             }
             "confirm" => {
                 if let Some((object, handler)) = ctx.test_handlers.confirm.clone() {
                     if args.is_empty() {
-                        return simple_error("Confirm requires a question argument");
+                        return eval_error("Confirm requires a question argument");
                     }
                     let question = formatted_dialog_text(&args);
                     let result = dispatch_workspace_procedure(
@@ -429,13 +430,13 @@ pub(crate) fn dispatch_call_scoped(
                     ctx.var_writebacks.clear();
                     return Eval::Normal(Value::Boolean(reply));
                 }
-                return simple_error(
+                return eval_error(
                     "Confirm requires a configured [ConfirmHandler] in the local test runtime",
                 );
             }
             "strmenu" => {
                 if args.is_empty() {
-                    return simple_error("StrMenu requires a menu-options argument");
+                    return eval_error("StrMenu requires a menu-options argument");
                 }
                 let default_choice = args
                     .get(1)
@@ -473,14 +474,14 @@ pub(crate) fn dispatch_call_scoped(
                     ctx.var_writebacks.clear();
                     return Eval::Normal(Value::Integer(choice));
                 }
-                return simple_error(
+                return eval_error(
                     "StrMenu requires a configured [StrMenuHandler] in the local test runtime",
                 );
             }
             "hyperlink" => {
                 if let Some((object, handler)) = ctx.test_handlers.hyperlink.clone() {
                     if args.is_empty() {
-                        return simple_error("Hyperlink requires a link argument");
+                        return eval_error("Hyperlink requires a link argument");
                     }
                     let link = args.first().map(render_value).unwrap_or_default();
                     let result = dispatch_workspace_procedure(
@@ -493,7 +494,7 @@ pub(crate) fn dispatch_call_scoped(
                     ctx.var_writebacks.clear();
                     return result;
                 }
-                return simple_error(
+                return eval_error(
                     "Hyperlink requires a configured [HyperlinkHandler] in the local test runtime",
                 );
             }
@@ -527,7 +528,7 @@ pub(crate) fn dispatch_call_scoped(
             "randomize" => return builtin_randomize(&args, ctx),
             "getlasterrortext" => {
                 if !args.is_empty() {
-                    return simple_error("GetLastErrorText expects no arguments");
+                    return eval_error("GetLastErrorText expects no arguments");
                 }
                 let text = ctx
                     .last_error
@@ -538,7 +539,7 @@ pub(crate) fn dispatch_call_scoped(
             }
             "clearlasterror" => {
                 if !args.is_empty() {
-                    return simple_error("ClearLastError expects no arguments");
+                    return eval_error("ClearLastError expects no arguments");
                 }
                 ctx.last_error = None;
                 return Eval::Normal(Value::Empty);
@@ -562,7 +563,7 @@ fn dispatch_stub_with_context(
     if procedure.eq_ignore_ascii_case("ExpectedError") {
         return crate::stubs::library_assert::expected_error(args, ctx.last_error.as_ref());
     }
-    simple_error(format!(
+    eval_error(format!(
         "stub member '{receiver}.{procedure}' is listed as context-aware but has no implementation"
     ))
 }
@@ -588,7 +589,7 @@ fn dispatch_workspace_procedure(
     // inclusive upper bound on simultaneous frames — without this, one
     // extra frame slipped through (101 instead of the documented 100).
     if ctx.recursion_depth >= MAX_RECURSION_DEPTH {
-        return simple_error(format!(
+        return eval_error(format!(
             "call depth of {MAX_RECURSION_DEPTH} exceeded at '{procedure}'. This is a limit of \
              the local test runner, not of Business Central: re-run this test on live BC if the \
              recursion is genuine."
@@ -602,18 +603,18 @@ fn dispatch_workspace_procedure(
         match ctx.source.find_by_object_name(&target_object) {
             Some(path) => vec![path],
             None => {
-                return simple_error(format!("object '{}' not found in workspace", target_object));
+                return eval_error(format!("object '{}' not found in workspace", target_object));
             }
         }
     } else {
-        return simple_error(format!(
+        return eval_error(format!(
             "procedure not found: workspace call '{procedure}' has no current object context"
         ));
     };
 
     for path in &candidate_paths {
         let Some((text, tree)) = ctx.source.get_cached_parse(path) else {
-            return simple_error(format!(
+            return eval_error(format!(
                 "object source '{}' has no coherent cached parse",
                 path.display()
             ));
@@ -623,7 +624,7 @@ fn dispatch_workspace_procedure(
         let root = tree.root_node();
 
         let Some(object_name) = ctx.source.object_name(path) else {
-            return simple_error(format!(
+            return eval_error(format!(
                 "object source '{}' has no indexed object identity",
                 path.display()
             ));
@@ -631,7 +632,7 @@ fn dispatch_workspace_procedure(
         let needs_object_globals = object_has_global_declarations(root);
         let install_root_globals = needs_object_globals && !stack.has_object_globals(&object_name);
         if install_root_globals && stack.depth() != 0 {
-            return simple_error(format!(
+            return eval_error(format!(
                 "stateful codeunit '{}' requires live BC execution",
                 object_name
             ));
@@ -670,7 +671,7 @@ fn dispatch_workspace_procedure(
         };
 
         if args.len() != params.len() {
-            return simple_error(format!(
+            return eval_error(format!(
                 "procedure '{}' expects {} argument(s), got {}",
                 procedure,
                 params.len(),
@@ -703,7 +704,7 @@ fn dispatch_workspace_procedure(
         };
 
         let Some(body) = body_node else {
-            return simple_error(format!("procedure '{}' has no body", procedure));
+            return eval_error(format!("procedure '{}' has no body", procedure));
         };
 
         let mut frame = CallFrame::new(object_name.as_str(), procedure);
@@ -811,13 +812,13 @@ fn dispatch_workspace_procedure(
             Eval::Exit(Value::Empty) => Eval::Normal(fallthrough_value),
             Eval::Exit(v) => Eval::Normal(v),
             Eval::Normal(_) => Eval::Normal(fallthrough_value),
-            Eval::Break => simple_error("break statement not inside a loop"),
-            Eval::Continue => simple_error("continue statement not inside a loop"),
+            Eval::Break => eval_error("break statement not inside a loop"),
+            Eval::Continue => eval_error("continue statement not inside a loop"),
             other => other,
         };
     }
 
-    simple_error(format!(
+    eval_error(format!(
         "procedure not found: {}{}",
         receiver.map(|r| format!("{r}.")).unwrap_or_default(),
         procedure
@@ -1238,14 +1239,6 @@ fn coerce_int_width(val: Value, type_name: &str) -> Value {
     }
 }
 
-fn simple_error(msg: impl Into<String>) -> Eval {
-    Eval::Error(ErrorInfo {
-        message: msg.into(),
-        error_type: None,
-        source: None,
-    })
-}
-
 /// `Error(msg[, arg1, …])` — raise a runtime error.
 ///
 /// The first argument is the format string; subsequent arguments are
@@ -1254,7 +1247,7 @@ fn builtin_error(args: &[Value]) -> Eval {
     let msg = match args.first() {
         Some(Value::Text(s)) | Some(Value::Code(s)) => s.clone(),
         Some(v) => render_value(v),
-        None => return simple_error("Error() called with no arguments"),
+        None => return eval_error("Error() called with no arguments"),
     };
     let formatted = if args.len() > 1 {
         substitute_placeholders(&msg, &args[1..])
@@ -1286,7 +1279,7 @@ fn builtin_strsubstno(args: &[Value]) -> Eval {
     let fmt = match args.first() {
         Some(Value::Text(s)) | Some(Value::Code(s)) => s.clone(),
         Some(v) => render_value(v),
-        None => return simple_error("StrSubstNo requires at least 1 argument"),
+        None => return eval_error("StrSubstNo requires at least 1 argument"),
     };
     let result = substitute_placeholders(&fmt, &args[1..]);
     Eval::Normal(Value::Text(result))
@@ -1302,27 +1295,27 @@ fn builtin_strsubstno(args: &[Value]) -> Eval {
 /// unconstrained.
 fn builtin_format(args: &[Value]) -> Eval {
     let Some(value) = args.first() else {
-        return simple_error("Format() requires at least 1 argument");
+        return eval_error("Format() requires at least 1 argument");
     };
     if args.len() > 3 {
-        return simple_error("Format expects at most 3 arguments");
+        return eval_error("Format expects at most 3 arguments");
     }
     let rendered = match args.get(2) {
         None | Some(Value::Integer(0)) => render_value(value),
         Some(Value::Integer(9)) => render_value_xml(value),
         Some(Value::Integer(n)) => {
-            return simple_error(format!(
+            return eval_error(format!(
                 "Format: format number {n} is not supported by the local runtime (supported: 0, 9)"
             ))
         }
         Some(Value::Text(s)) | Some(Value::Code(s)) if s.is_empty() => render_value(value),
         Some(Value::Text(s)) | Some(Value::Code(s)) => {
-            return simple_error(format!(
+            return eval_error(format!(
                 "Format: custom format strings are not supported by the local runtime: '{s}'"
             ))
         }
         Some(other) => {
-            return simple_error(format!(
+            return eval_error(format!(
                 "Format: format argument must be an Integer or Text, got {}",
                 other.type_name()
             ))
@@ -1332,7 +1325,7 @@ fn builtin_format(args: &[Value]) -> Eval {
         None => 0,
         Some(Value::Integer(n)) => *n,
         Some(other) => {
-            return simple_error(format!(
+            return eval_error(format!(
                 "Format: length must be an Integer, got {}",
                 other.type_name()
             ))
@@ -1394,11 +1387,11 @@ fn builtin_strlen(args: &[Value]) -> Eval {
         [Value::Text(s)] | [Value::Code(s)] => {
             Eval::Normal(Value::Integer(s.chars().count() as i64))
         }
-        [v] => simple_error(format!(
+        [v] => eval_error(format!(
             "StrLen expects Text or Code, got {}",
             v.type_name()
         )),
-        _ => simple_error("StrLen expects exactly 1 argument"),
+        _ => eval_error("StrLen expects exactly 1 argument"),
     }
 }
 
@@ -1411,25 +1404,25 @@ fn builtin_copystr(args: &[Value]) -> Eval {
         | [Value::Code(s), Value::Integer(pos)]
         | [Value::Text(s), Value::Integer(pos), _]
         | [Value::Code(s), Value::Integer(pos), _] => (s.clone(), *pos),
-        _ => return simple_error("CopyStr expects (Text, Integer[, Integer])"),
+        _ => return eval_error("CopyStr expects (Text, Integer[, Integer])"),
     };
     let len = match args.get(2) {
         Some(Value::Integer(n)) => {
             if *n < 0 {
-                return simple_error(format!("CopyStr: len must be >= 0, got {n}"));
+                return eval_error(format!("CopyStr: len must be >= 0, got {n}"));
             }
             *n as usize
         }
         None => s.chars().count(),
         Some(v) => {
-            return simple_error(format!(
+            return eval_error(format!(
                 "CopyStr: len must be Integer, got {}",
                 v.type_name()
             ))
         }
     };
     if pos <= 0 {
-        return simple_error("CopyStr: position must be >= 1");
+        return eval_error("CopyStr: position must be >= 1");
     }
     let pos = pos as usize;
     let chars: Vec<char> = s.chars().collect();
@@ -1447,11 +1440,11 @@ fn builtin_lowercase(args: &[Value]) -> Eval {
     match args {
         [Value::Text(s)] => Eval::Normal(Value::Text(s.to_lowercase())),
         [Value::Code(s)] => Eval::Normal(Value::Text(s.to_lowercase())),
-        [v] => simple_error(format!(
+        [v] => eval_error(format!(
             "LowerCase expects Text or Code, got {}",
             v.type_name()
         )),
-        _ => simple_error("LowerCase expects exactly 1 argument"),
+        _ => eval_error("LowerCase expects exactly 1 argument"),
     }
 }
 
@@ -1459,11 +1452,11 @@ fn builtin_uppercase(args: &[Value]) -> Eval {
     match args {
         [Value::Text(s)] => Eval::Normal(Value::Text(s.to_uppercase())),
         [Value::Code(s)] => Eval::Normal(Value::Code(s.to_uppercase())),
-        [v] => simple_error(format!(
+        [v] => eval_error(format!(
             "UpperCase expects Text or Code, got {}",
             v.type_name()
         )),
-        _ => simple_error("UpperCase expects exactly 1 argument"),
+        _ => eval_error("UpperCase expects exactly 1 argument"),
     }
 }
 
@@ -1475,7 +1468,7 @@ fn builtin_indexof(args: &[Value]) -> Eval {
         | [Value::Code(s), Value::Text(n)]
         | [Value::Text(s), Value::Code(n)]
         | [Value::Code(s), Value::Code(n)] => (s.as_str(), n.as_str()),
-        _ => return simple_error("IndexOf expects (Text, Text)"),
+        _ => return eval_error("IndexOf expects (Text, Text)"),
     };
     if needle.is_empty() {
         return Eval::Normal(Value::Integer(0));
@@ -1490,14 +1483,14 @@ fn builtin_indexof(args: &[Value]) -> Eval {
 /// `MaxStrLen` requires declared type metadata that `Value` does not carry.
 fn builtin_maxstrlen(args: &[Value]) -> Eval {
     match args {
-        [Value::Text(_)] | [Value::Code(_)] => simple_error(
+        [Value::Text(_)] | [Value::Code(_)] => eval_error(
             "MaxStrLen is unavailable because the interpreter does not retain declared text lengths",
         ),
-        [v] => simple_error(format!(
+        [v] => eval_error(format!(
             "MaxStrLen expects Text or Code, got {}",
             v.type_name()
         )),
-        _ => simple_error("MaxStrLen expects exactly 1 argument"),
+        _ => eval_error("MaxStrLen expects exactly 1 argument"),
     }
 }
 
@@ -1514,15 +1507,15 @@ fn builtin_createdatetime(args: &[Value]) -> Eval {
                 .and_then(|ms| ms.checked_add(*t))
             {
                 Some(dt) => Eval::Normal(Value::DateTime(dt)),
-                None => simple_error("CreateDateTime: datetime overflow"),
+                None => eval_error("CreateDateTime: datetime overflow"),
             }
         }
-        [a, b] => simple_error(format!(
+        [a, b] => eval_error(format!(
             "CreateDateTime expects (Date, Time), got ({}, {})",
             a.type_name(),
             b.type_name()
         )),
-        _ => simple_error("CreateDateTime expects exactly 2 arguments"),
+        _ => eval_error("CreateDateTime expects exactly 2 arguments"),
     }
 }
 
@@ -1586,18 +1579,18 @@ fn builtin_abs(args: &[Value]) -> Eval {
             Some(a) if (i32::MIN as i64..=i32::MAX as i64).contains(&a) => {
                 Eval::Normal(Value::Integer(a))
             }
-            _ => simple_error("Abs: integer overflow"),
+            _ => eval_error("Abs: integer overflow"),
         },
         [Value::BigInteger(n)] => match n.checked_abs() {
             Some(a) => Eval::Normal(Value::BigInteger(a)),
-            None => simple_error("Abs: integer overflow"),
+            None => eval_error("Abs: integer overflow"),
         },
         [Value::Decimal(d)] => Eval::Normal(Value::Decimal(d.abs())),
-        [v] => simple_error(format!(
+        [v] => eval_error(format!(
             "Abs expects a numeric value, got {}",
             v.type_name()
         )),
-        _ => simple_error("Abs expects exactly 1 argument"),
+        _ => eval_error("Abs expects exactly 1 argument"),
     }
 }
 
@@ -1611,10 +1604,10 @@ fn builtin_abs(args: &[Value]) -> Eval {
 fn builtin_round(args: &[Value]) -> Eval {
     use crate::interpreter::value::Decimal;
     if args.is_empty() || args.len() > 3 {
-        return simple_error("Round expects 1 to 3 arguments");
+        return eval_error("Round expects 1 to 3 arguments");
     }
     let Some(number) = arg_decimal(&args[0]) else {
-        return simple_error(format!(
+        return eval_error(format!(
             "Round expects a numeric value, got {}",
             args[0].type_name()
         ));
@@ -1623,9 +1616,9 @@ fn builtin_round(args: &[Value]) -> Eval {
         None => Decimal::new(1, 2), // 0.01, BC's default rounding precision
         Some(v) => match arg_decimal(v) {
             Some(p) if p > Decimal::ZERO => p,
-            Some(_) => return simple_error("Round: precision must be greater than zero"),
+            Some(_) => return eval_error("Round: precision must be greater than zero"),
             None => {
-                return simple_error(format!(
+                return eval_error(format!(
                     "Round: precision must be numeric, got {}",
                     v.type_name()
                 ))
@@ -1636,14 +1629,14 @@ fn builtin_round(args: &[Value]) -> Eval {
         None => "=".to_string(),
         Some(Value::Text(s)) | Some(Value::Code(s)) => s.clone(),
         Some(v) => {
-            return simple_error(format!(
+            return eval_error(format!(
                 "Round: direction must be Text, got {}",
                 v.type_name()
             ))
         }
     };
     let Some(quotient) = number.checked_div(precision) else {
-        return simple_error("Round: arithmetic overflow");
+        return eval_error("Round: arithmetic overflow");
     };
     // '<' and '>' move the magnitude, not the signed value: the System.Round
     // page rounds -1234.56789 to -1234.567 with '<' and to -1234.568 with '>'.
@@ -1654,14 +1647,14 @@ fn builtin_round(args: &[Value]) -> Eval {
         "<" => quotient.round_dp_with_strategy(0, rust_decimal::RoundingStrategy::ToZero),
         ">" => quotient.round_dp_with_strategy(0, rust_decimal::RoundingStrategy::AwayFromZero),
         other => {
-            return simple_error(format!(
+            return eval_error(format!(
                 "Round: direction must be '=', '<' or '>', got '{other}'"
             ))
         }
     };
     match rounded.checked_mul(precision) {
         Some(result) => Eval::Normal(Value::Decimal(result.normalize())),
-        None => simple_error("Round: arithmetic overflow"),
+        None => eval_error("Round: arithmetic overflow"),
     }
 }
 
@@ -1672,18 +1665,18 @@ fn builtin_power(args: &[Value]) -> Eval {
         [a, b] => match (arg_decimal(a), arg_decimal(b)) {
             (Some(base), Some(exponent)) => (base, exponent),
             _ => {
-                return simple_error(format!(
+                return eval_error(format!(
                     "Power expects numeric arguments, got ({}, {})",
                     a.type_name(),
                     b.type_name()
                 ))
             }
         },
-        _ => return simple_error("Power expects exactly 2 arguments"),
+        _ => return eval_error("Power expects exactly 2 arguments"),
     };
     match base.checked_powd(exponent) {
         Some(result) => Eval::Normal(Value::Decimal(result.normalize())),
-        None => simple_error("Power: arithmetic overflow or undefined result"),
+        None => eval_error("Power: arithmetic overflow or undefined result"),
     }
 }
 
@@ -1694,7 +1687,7 @@ fn builtin_strpos(args: &[Value]) -> Eval {
         [Value::Text(s) | Value::Code(s), Value::Text(n) | Value::Code(n)] => {
             (s.as_str(), n.as_str())
         }
-        _ => return simple_error("StrPos expects (Text, Text)"),
+        _ => return eval_error("StrPos expects (Text, Text)"),
     };
     if needle.is_empty() {
         return Eval::Normal(Value::Integer(0));
@@ -1712,28 +1705,24 @@ fn builtin_strpos(args: &[Value]) -> Eval {
 fn builtin_delchr(args: &[Value]) -> Eval {
     let s = match args.first() {
         Some(Value::Text(s) | Value::Code(s)) => s.clone(),
-        Some(v) => return simple_error(format!("DelChr expects Text, got {}", v.type_name())),
-        None => return simple_error("DelChr expects 1 to 3 arguments"),
+        Some(v) => return eval_error(format!("DelChr expects Text, got {}", v.type_name())),
+        None => return eval_error("DelChr expects 1 to 3 arguments"),
     };
     if args.len() > 3 {
-        return simple_error("DelChr expects 1 to 3 arguments");
+        return eval_error("DelChr expects 1 to 3 arguments");
     }
     let where_ = match args.get(1) {
         None => "<".to_string(),
         Some(Value::Text(w) | Value::Code(w)) => w.clone(),
-        Some(v) => {
-            return simple_error(format!("DelChr: where must be Text, got {}", v.type_name()))
-        }
+        Some(v) => return eval_error(format!("DelChr: where must be Text, got {}", v.type_name())),
     };
     let which: Vec<char> = match args.get(2) {
         None => vec![' '],
         Some(Value::Text(w) | Value::Code(w)) => w.chars().collect(),
-        Some(v) => {
-            return simple_error(format!("DelChr: which must be Text, got {}", v.type_name()))
-        }
+        Some(v) => return eval_error(format!("DelChr: which must be Text, got {}", v.type_name())),
     };
     if let Some(bad) = where_.chars().find(|c| !matches!(c, '<' | '>' | '=')) {
-        return simple_error(format!(
+        return eval_error(format!(
             "DelChr: where must contain only '<', '>' or '=', got '{bad}'"
         ));
     }
@@ -1762,14 +1751,12 @@ fn builtin_convertstr(args: &[Value]) -> Eval {
         [Value::Text(s) | Value::Code(s), Value::Text(f) | Value::Code(f), Value::Text(t) | Value::Code(t)] => {
             (s, f, t)
         }
-        _ => return simple_error("ConvertStr expects (Text, Text, Text)"),
+        _ => return eval_error("ConvertStr expects (Text, Text, Text)"),
     };
     let from: Vec<char> = from.chars().collect();
     let to: Vec<char> = to.chars().collect();
     if from.len() != to.len() {
-        return simple_error(
-            "ConvertStr: FromCharacters and ToCharacters must have the same length",
-        );
+        return eval_error("ConvertStr: FromCharacters and ToCharacters must have the same length");
     }
     let converted: String = s
         .chars()
@@ -1787,19 +1774,19 @@ fn builtin_padstr(args: &[Value]) -> Eval {
     let (s, length) = match args {
         [Value::Text(s) | Value::Code(s), Value::Integer(n)]
         | [Value::Text(s) | Value::Code(s), Value::Integer(n), _] => (s.clone(), *n),
-        _ => return simple_error("PadStr expects (Text, Integer[, Text])"),
+        _ => return eval_error("PadStr expects (Text, Integer[, Text])"),
     };
     if length < 0 {
-        return simple_error("PadStr: length must be >= 0");
+        return eval_error("PadStr: length must be >= 0");
     }
     let fill = match args.get(2) {
         None => ' ',
         Some(Value::Text(f) | Value::Code(f)) => match f.chars().next() {
             Some(c) => c,
-            None => return simple_error("PadStr: fill character cannot be empty"),
+            None => return eval_error("PadStr: fill character cannot be empty"),
         },
         Some(v) => {
-            return simple_error(format!(
+            return eval_error(format!(
                 "PadStr: fill character must be Text, got {}",
                 v.type_name()
             ))
@@ -1820,14 +1807,14 @@ fn builtin_padstr(args: &[Value]) -> Eval {
 fn builtin_selectstr(args: &[Value]) -> Eval {
     let (index, list) = match args {
         [Value::Integer(n), Value::Text(s) | Value::Code(s)] => (*n, s.as_str()),
-        _ => return simple_error("SelectStr expects (Integer, Text)"),
+        _ => return eval_error("SelectStr expects (Integer, Text)"),
     };
     if index < 1 {
-        return simple_error("SelectStr: index must be >= 1");
+        return eval_error("SelectStr: index must be >= 1");
     }
     match list.split(',').nth(index as usize - 1) {
         Some(part) => Eval::Normal(Value::Text(part.to_string())),
-        None => simple_error(format!(
+        None => eval_error(format!(
             "SelectStr: index {index} is beyond the number of elements in '{list}'"
         )),
     }
@@ -1839,7 +1826,7 @@ fn builtin_selectstr(args: &[Value]) -> Eval {
 fn builtin_incstr(args: &[Value]) -> Eval {
     let s = match args {
         [Value::Text(s) | Value::Code(s)] => s.clone(),
-        _ => return simple_error("IncStr expects exactly 1 Text argument"),
+        _ => return eval_error("IncStr expects exactly 1 Text argument"),
     };
     let chars: Vec<char> = s.chars().collect();
     let mut end = None;
@@ -1863,7 +1850,7 @@ fn builtin_incstr(args: &[Value]) -> Eval {
         .ok()
         .and_then(|number| number.checked_add(1))
     else {
-        return simple_error(format!("IncStr: number '{digits}' is out of range"));
+        return eval_error(format!("IncStr: number '{digits}' is out of range"));
     };
     let incremented = format!("{number:0width$}");
     let mut result: String = chars[..start].iter().collect();
@@ -1876,10 +1863,10 @@ fn builtin_incstr(args: &[Value]) -> Eval {
 fn builtin_date2dmy(args: &[Value]) -> Eval {
     let (date, what) = match args {
         [Value::Date(d), Value::Integer(w)] => (*d, *w),
-        _ => return simple_error("Date2DMY expects (Date, Integer)"),
+        _ => return eval_error("Date2DMY expects (Date, Integer)"),
     };
     if date == 0 {
-        return simple_error("Date2DMY is undefined for 0D");
+        return eval_error("Date2DMY is undefined for 0D");
     }
     let (year, month, day) = crate::interpreter::value::ymd_from_al_days(date);
     let part = match what {
@@ -1887,7 +1874,7 @@ fn builtin_date2dmy(args: &[Value]) -> Eval {
         2 => month,
         3 => year,
         other => {
-            return simple_error(format!(
+            return eval_error(format!(
                 "Date2DMY: the what argument must be 1 (day), 2 (month) or 3 (year), got {other}"
             ))
         }
@@ -1899,14 +1886,14 @@ fn builtin_date2dmy(args: &[Value]) -> Eval {
 /// from the session work date (BC behaviour).
 fn builtin_dmy2date(args: &[Value], ctx: &mut DispatchCtx) -> Eval {
     if args.is_empty() || args.len() > 3 {
-        return simple_error("DMY2Date expects 1 to 3 arguments");
+        return eval_error("DMY2Date expects 1 to 3 arguments");
     }
     let mut parts = [0i64; 3];
     for (i, arg) in args.iter().enumerate() {
         match arg {
             Value::Integer(n) => parts[i] = *n,
             other => {
-                return simple_error(format!(
+                return eval_error(format!(
                     "DMY2Date expects Integer arguments, got {}",
                     other.type_name()
                 ))
@@ -1924,7 +1911,7 @@ fn builtin_dmy2date(args: &[Value], ctx: &mut DispatchCtx) -> Eval {
     let year = if args.len() >= 3 { parts[2] } else { work_year };
     match checked_al_date(year, month, day) {
         Some(date) => Eval::Normal(Value::Date(date)),
-        None => simple_error(format!(
+        None => eval_error(format!(
             "DMY2Date: {day}/{month}/{year} is not a valid date"
         )),
     }
@@ -1956,7 +1943,7 @@ fn builtin_dt2date(args: &[Value]) -> Eval {
         [Value::DateTime(dt)] => Eval::Normal(Value::Date(
             dt.div_euclid(crate::interpreter::value::MS_PER_DAY),
         )),
-        _ => simple_error("DT2Date expects exactly 1 DateTime argument"),
+        _ => eval_error("DT2Date expects exactly 1 DateTime argument"),
     }
 }
 
@@ -1966,7 +1953,7 @@ fn builtin_dt2time(args: &[Value]) -> Eval {
         [Value::DateTime(dt)] => Eval::Normal(Value::Time(
             dt.rem_euclid(crate::interpreter::value::MS_PER_DAY),
         )),
-        _ => simple_error("DT2Time expects exactly 1 DateTime argument"),
+        _ => eval_error("DT2Time expects exactly 1 DateTime argument"),
     }
 }
 
@@ -1984,8 +1971,8 @@ fn builtin_workdate(args: &[Value], ctx: &mut DispatchCtx) -> Eval {
             ctx.work_date = Some(*d);
             Eval::Normal(Value::Date(*d))
         }
-        [v] => simple_error(format!("WorkDate expects a Date, got {}", v.type_name())),
-        _ => simple_error("WorkDate expects at most 1 argument"),
+        [v] => eval_error(format!("WorkDate expects a Date, got {}", v.type_name())),
+        _ => eval_error("WorkDate expects at most 1 argument"),
     }
 }
 
@@ -2025,10 +2012,10 @@ fn next_random(ctx: &mut DispatchCtx) -> i64 {
 fn builtin_random(args: &[Value], ctx: &mut DispatchCtx) -> Eval {
     let n = match args {
         [Value::Integer(n)] => *n,
-        _ => return simple_error("Random expects exactly 1 Integer argument"),
+        _ => return eval_error("Random expects exactly 1 Integer argument"),
     };
     if n < 1 {
-        return simple_error("Random: the maximum must be >= 1");
+        return eval_error("Random: the maximum must be >= 1");
     }
     Eval::Normal(Value::Integer(next_random(ctx) % n + 1))
 }
@@ -2045,7 +2032,7 @@ fn builtin_randomize(args: &[Value], ctx: &mut DispatchCtx) -> Eval {
             ctx.random_state = *seed as u64;
             Eval::Normal(Value::Empty)
         }
-        _ => simple_error("Randomize expects at most 1 Integer argument"),
+        _ => eval_error("Randomize expects at most 1 Integer argument"),
     }
 }
 
@@ -2220,7 +2207,7 @@ mod tests {
         }
     }
 
-    fn err(eval: Eval) -> ErrorInfo {
+    fn error_of(eval: Eval) -> ErrorInfo {
         match eval {
             Eval::Error(e) => e,
             Eval::Normal(v) => panic!("expected error, got Normal({})", v.type_name()),
@@ -2254,7 +2241,7 @@ mod tests {
             vec![Value::Integer(1), Value::Integer(2)],
             &mut ctx,
         );
-        let e = err(result);
+        let e = error_of(result);
         assert!(
             e.message.contains("expected"),
             "expected message containing 'expected', got: {}",
@@ -2266,7 +2253,7 @@ mod tests {
     fn error_builtin_produces_eval_error() {
         let mut ctx = ctx();
         let result = dispatch_call(None, "Error", vec![Value::Text("boom".into())], &mut ctx);
-        let e = err(result);
+        let e = error_of(result);
         assert_eq!(e.message, "boom");
     }
 
@@ -2290,7 +2277,7 @@ mod tests {
         ];
         for (procedure, args) in cases {
             let mut ctx = ctx();
-            let error = err(dispatch_call(None, procedure, args, &mut ctx));
+            let error = error_of(dispatch_call(None, procedure, args, &mut ctx));
             assert!(
                 error.message.contains("configured"),
                 "{procedure}: {}",
@@ -2339,7 +2326,7 @@ mod tests {
     fn unknown_procedure_returns_descriptive_error() {
         let mut ctx = ctx();
         let result = dispatch_call(None, "CompletelyUnknownProc", vec![], &mut ctx);
-        let e = err(result);
+        let e = error_of(result);
         assert!(
             e.message.contains("CompletelyUnknownProc"),
             "expected procedure name in error, got: {}",
@@ -2694,7 +2681,7 @@ mod tests {
         let ws = workspace_with_helper();
         let mut ctx = DispatchCtx::new_pure(ws);
         let result = dispatch_call(Some("Helper"), "NoSuchProc", vec![], &mut ctx);
-        let e = err(result);
+        let e = error_of(result);
         assert!(
             e.message.contains("not found"),
             "expected 'not found' in error message, got: {}",
@@ -2712,7 +2699,7 @@ mod tests {
             vec![Value::Text("hello".into()), Value::Integer(3)],
             &mut ctx,
         );
-        let e = err(result);
+        let e = error_of(result);
         assert!(
             e.message.to_lowercase().contains("type"),
             "expected 'type' in error message, got: {}",
@@ -2726,7 +2713,7 @@ mod tests {
         let mut ctx = DispatchCtx::new_pure(ws);
 
         let missing = dispatch_call(Some("Helper"), "Add", vec![Value::Integer(2)], &mut ctx);
-        assert!(err(missing)
+        assert!(error_of(missing)
             .message
             .contains("expects 2 argument(s), got 1"));
 
@@ -2736,7 +2723,9 @@ mod tests {
             vec![Value::Integer(2), Value::Integer(3), Value::Integer(4)],
             &mut ctx,
         );
-        assert!(err(extra).message.contains("expects 2 argument(s), got 3"));
+        assert!(error_of(extra)
+            .message
+            .contains("expects 2 argument(s), got 3"));
     }
 
     #[test]
@@ -2751,7 +2740,7 @@ mod tests {
                 let ws = workspace_with_helper();
                 let mut ctx = DispatchCtx::new_pure(ws);
                 let result = dispatch_call(Some("Helper"), "Forever", vec![], &mut ctx);
-                let e = err(result);
+                let e = error_of(result);
                 assert!(
                     e.message.contains("local test runner"),
                     "expected the message to name the runner limit, got: {}",
@@ -3149,7 +3138,7 @@ mod tests {
         let mut ctx = ctx();
         // u64::MAX parses, but incrementing it must be a range error, not a
         // wrap or panic.
-        let error = err(dispatch_call(
+        let error = error_of(dispatch_call(
             None,
             "IncStr",
             vec![Value::Text("X18446744073709551615".into())],

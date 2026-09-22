@@ -1,3 +1,6 @@
+//! `al-explorer` insight subcommands: event traces, call graphs, entry points,
+//! dead code and impact reports, printed as tables or raw JSON.
+
 use std::process::ExitCode;
 
 use super::{connect, list_rows, print_json, report_error, request_checked, run_command};
@@ -302,13 +305,13 @@ fn cmd_table_impact(table: &str, json: bool) -> ExitCode {
                         println!("  {kind} {oname}");
                         if let Some(impacts) = obj.get("impacts").and_then(|v| v.as_array()) {
                             for imp in impacts {
-                                let op =
+                                let operation =
                                     imp.get("operation").and_then(|v| v.as_str()).unwrap_or("?");
                                 let hint = imp
                                     .get("locationHint")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("");
-                                println!("      [{op}] {hint}");
+                                println!("      [{operation}] {hint}");
                             }
                         }
                     }
@@ -421,12 +424,16 @@ pub fn cmd_intercept(json: bool) -> ExitCode {
                             .unwrap_or(0);
                         println!("  {pubobj}::{ename}  ({count} subscriber(s))");
                         if let Some(subs) = ev.get("subscribers").and_then(|v| v.as_array()) {
-                            for s in subs {
-                                let so =
-                                    s.get("objectName").and_then(|v| v.as_str()).unwrap_or("?");
-                                let sm =
-                                    s.get("methodName").and_then(|v| v.as_str()).unwrap_or("?");
-                                println!("      <- {so}.{sm}");
+                            for subscriber in subs {
+                                let sub_object = subscriber
+                                    .get("objectName")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("?");
+                                let sub_method = subscriber
+                                    .get("methodName")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("?");
+                                println!("      <- {sub_object}.{sub_method}");
                             }
                         }
                     }
@@ -435,15 +442,26 @@ pub fn cmd_intercept(json: bool) -> ExitCode {
                             "\nOrphan subscribers ({}) — target an event with no workspace publisher:",
                             orphans.len()
                         );
-                        for o in orphans {
-                            let oo = o.get("objectName").and_then(|v| v.as_str()).unwrap_or("?");
-                            let om = o.get("methodName").and_then(|v| v.as_str()).unwrap_or("?");
-                            let to = o
+                        for orphan in orphans {
+                            let orphan_object = orphan
+                                .get("objectName")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?");
+                            let orphan_method = orphan
+                                .get("methodName")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?");
+                            let target_object = orphan
                                 .get("targetObject")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("?");
-                            let te = o.get("targetEvent").and_then(|v| v.as_str()).unwrap_or("?");
-                            println!("  {oo}.{om} -> {to}::{te} (missing)");
+                            let target_event = orphan
+                                .get("targetEvent")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?");
+                            println!(
+                                "  {orphan_object}.{orphan_method} -> {target_object}::{target_event} (missing)"
+                            );
                         }
                     }
                 }

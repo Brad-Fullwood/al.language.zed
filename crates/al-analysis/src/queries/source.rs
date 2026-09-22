@@ -90,15 +90,18 @@ pub struct SourceMember<'a> {
     pub name: &'a str,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SourceLookupError {
-    ObjectNotFound {
-        name: String,
-    },
-    Ambiguous {
-        name: String,
-        matches: Vec<String>,
-    },
+    #[error("Object '{name}' not found in workspace or symbol packages")]
+    ObjectNotFound { name: String },
+    #[error(
+        "Source lookup for '{name}' is ambiguous; specify --kind and/or --package. Matches: {}",
+        matches.join(", ")
+    )]
+    Ambiguous { name: String, matches: Vec<String> },
+    // The tail differs by whether any member names were recovered, which a
+    // single format string cannot express.
+    #[error(fmt = member_not_found_fmt)]
     MemberNotFound {
         object: String,
         member: String,
@@ -107,86 +110,44 @@ pub enum SourceLookupError {
         /// object's members could not be read.
         candidates: Vec<String>,
     },
+    #[error("{} '{member}' in object '{object}' is unavailable: {reason}", kind.label())]
     MemberUnavailable {
         object: String,
         member: String,
         kind: SourceMemberKind,
         reason: String,
     },
+    #[error(
+        "Source for object '{object}' in package '{package}' could not be read from '{path}': {reason}"
+    )]
     PackageSourceUnavailable {
         object: String,
         package: String,
         path: String,
         reason: String,
     },
-    InvalidWorkspaceDeclaration {
-        path: PathBuf,
-        reason: String,
-    },
+    #[error("Workspace source '{}' has an invalid AL object declaration: {reason}", path.display())]
+    InvalidWorkspaceDeclaration { path: PathBuf, reason: String },
 }
 
-impl fmt::Display for SourceLookupError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ObjectNotFound { name } => {
-                write!(
-                    f,
-                    "Object '{name}' not found in workspace or symbol packages"
-                )
-            }
-            Self::Ambiguous { name, matches } => write!(
-                f,
-                "Source lookup for '{name}' is ambiguous; specify --kind and/or --package. Matches: {}",
-                matches.join(", ")
-            ),
-            Self::MemberNotFound {
-                object,
-                member,
-                kind,
-                candidates,
-            } => {
-                write!(
-                    f,
-                    "{} '{}' was not found in object '{}'",
-                    kind.label(),
-                    member,
-                    object
-                )?;
-                if candidates.is_empty() {
-                    write!(f, ". List its members with listProcedures")
-                } else {
-                    write!(f, ". It declares: {}", candidates.join(", "))
-                }
-            }
-            Self::MemberUnavailable {
-                object,
-                member,
-                kind,
-                reason,
-            } => write!(
-                f,
-                "{} '{}' in object '{}' is unavailable: {}",
-                kind.label(),
-                member,
-                object,
-                reason
-            ),
-            Self::PackageSourceUnavailable {
-                object,
-                package,
-                path,
-                reason,
-            } => write!(
-                f,
-                "Source for object '{object}' in package '{package}' could not be read from '{}': {reason}",
-                path
-            ),
-            Self::InvalidWorkspaceDeclaration { path, reason } => write!(
-                f,
-                "Workspace source '{}' has an invalid AL object declaration: {reason}",
-                path.display()
-            ),
-        }
+fn member_not_found_fmt(
+    object: &String,
+    member: &String,
+    kind: &SourceMemberKind,
+    candidates: &[String],
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    write!(
+        f,
+        "{} '{}' was not found in object '{}'",
+        kind.label(),
+        member,
+        object
+    )?;
+    if candidates.is_empty() {
+        write!(f, ". List its members with listProcedures")
+    } else {
+        write!(f, ". It declares: {}", candidates.join(", "))
     }
 }
 

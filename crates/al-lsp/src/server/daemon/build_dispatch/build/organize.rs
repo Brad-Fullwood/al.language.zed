@@ -69,9 +69,9 @@ pub(in crate::server::daemon) fn dispatch_sort_members(
             Ok(root) => root,
             Err(response) => return response,
         };
-        let files = match al_analysis::queries::bulk_fix::collect_al_files(&root) {
+        let files = match al_source::file_index::collect_al_files(&root) {
             Ok(files) => files,
-            Err(message) => return rpc_error(id, error_codes::INTERNAL_ERROR, &message),
+            Err(error) => return super::super::scan_error_response(id, &error),
         };
         let revision = workspace.generation_revision();
         let mut pending = Vec::new();
@@ -292,9 +292,9 @@ pub(in crate::server::daemon) fn dispatch_organize_files(
         Err(e) => return e,
     };
 
-    let files = match al_analysis::queries::bulk_fix::collect_al_files(&root) {
+    let files = match al_source::file_index::collect_al_files(&root) {
         Ok(files) => files,
-        Err(message) => return rpc_error(id, error_codes::INTERNAL_ERROR, &message),
+        Err(error) => return super::super::scan_error_response(id, &error),
     };
     let revision = workspace.generation_revision();
     let mut plan = Vec::new();

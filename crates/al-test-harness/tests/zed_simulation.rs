@@ -214,16 +214,25 @@ async fn test_fixture_diagnostics_on_real_files() {
         .open_file("src/WorkOrderHelper.Codeunit.al", &content)
         .await;
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
     // Real AL code parses cleanly. Lint warnings are fine; an error-severity
-    // diagnostic means the parser or the analysis rejected valid AL.
-    let diagnostics = client.drain_diagnostics();
-    let errors: Vec<&serde_json::Value> = diagnostics
-        .values()
-        .flatten()
-        .filter(|diagnostic| diagnostic["severity"].as_u64() == Some(1))
-        .collect();
+    // diagnostic means the parser or the analysis rejected valid AL. Poll until
+    // the server publishes for this file rather than guessing how long the
+    // first parse takes.
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+    let mut errors: Vec<serde_json::Value> = Vec::new();
+    while tokio::time::Instant::now() < deadline {
+        let published = client.drain_diagnostics();
+        if !published.is_empty() {
+            errors.extend(
+                published
+                    .into_values()
+                    .flatten()
+                    .filter(|diagnostic| diagnostic["severity"].as_u64() == Some(1)),
+            );
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
     assert!(
         errors.is_empty(),
         "real AL must publish no error-severity diagnostics, got: {errors:?}"

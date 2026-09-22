@@ -83,6 +83,41 @@ pub fn syntax_diagnostics(
     syntax_diagnostics_at_root(workspace, uri, config, None)
 }
 
+/// The diagnostic a lint source emits when it could not run at all.
+///
+/// `AL-NL000` is the anchor code: the finding is about the analysis, not about
+/// the AL at that position, so it carries the default range.
+fn analysis_failed(message: String) -> SyntaxDiagnostic {
+    SyntaxDiagnostic {
+        message,
+        range: crate::queries::Range::default(),
+        severity: SyntaxDiagnosticSeverity::Error,
+        code: "AL-NL000".to_string(),
+        source: "al-native".to_string(),
+    }
+}
+
+impl From<super::native_check::NativeSeverity> for SyntaxDiagnosticSeverity {
+    fn from(severity: super::native_check::NativeSeverity) -> Self {
+        match severity {
+            super::native_check::NativeSeverity::Error => SyntaxDiagnosticSeverity::Error,
+            super::native_check::NativeSeverity::Warning => SyntaxDiagnosticSeverity::Warning,
+        }
+    }
+}
+
+impl From<super::transaction_lint::WorkspaceLintSeverity> for SyntaxDiagnosticSeverity {
+    fn from(severity: super::transaction_lint::WorkspaceLintSeverity) -> Self {
+        use super::transaction_lint::WorkspaceLintSeverity as Lint;
+        match severity {
+            Lint::Error => SyntaxDiagnosticSeverity::Error,
+            Lint::Warning => SyntaxDiagnosticSeverity::Warning,
+            Lint::Info => SyntaxDiagnosticSeverity::Info,
+            Lint::Hint => SyntaxDiagnosticSeverity::Hint,
+        }
+    }
+}
+
 pub fn syntax_diagnostics_at_root(
     workspace: &Workspace,
     uri: &Url,
@@ -90,15 +125,9 @@ pub fn syntax_diagnostics_at_root(
     project_root: Option<&std::path::Path>,
 ) -> Vec<SyntaxDiagnostic> {
     let Some((text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, uri) else {
-        return vec![SyntaxDiagnostic {
-            message: format!(
-                "Diagnostics could not be computed because document '{uri}' is not loaded"
-            ),
-            range: crate::queries::Range::default(),
-            severity: SyntaxDiagnosticSeverity::Error,
-            code: "AL-NL000".to_string(),
-            source: "al-native".to_string(),
-        }];
+        return vec![analysis_failed(format!(
+            "Diagnostics could not be computed because document '{uri}' is not loaded"
+        ))];
     };
 
     let mut diagnostics = collect_diagnostics_from_tree(&tree, &text, config);
@@ -202,10 +231,7 @@ pub fn native_workspace_diagnostics_at_root(
             std::path::PathBuf::from,
         );
         let location = native_finding_range(workspace, &path);
-        let severity = match finding.severity {
-            super::native_check::NativeSeverity::Error => SyntaxDiagnosticSeverity::Error,
-            super::native_check::NativeSeverity::Warning => SyntaxDiagnosticSeverity::Warning,
-        };
+        let severity = SyntaxDiagnosticSeverity::from(finding.severity);
         let (range, severity, message) = match location {
             Ok(range) => (range, severity, finding.message),
             Err(error) => (
@@ -243,20 +269,7 @@ pub fn native_workspace_diagnostics_at_root(
                     if !config.is_lint_rule_enabled(finding.code) {
                         continue;
                     }
-                    let severity = match finding.severity {
-                        super::transaction_lint::WorkspaceLintSeverity::Error => {
-                            SyntaxDiagnosticSeverity::Error
-                        }
-                        super::transaction_lint::WorkspaceLintSeverity::Warning => {
-                            SyntaxDiagnosticSeverity::Warning
-                        }
-                        super::transaction_lint::WorkspaceLintSeverity::Info => {
-                            SyntaxDiagnosticSeverity::Info
-                        }
-                        super::transaction_lint::WorkspaceLintSeverity::Hint => {
-                            SyntaxDiagnosticSeverity::Hint
-                        }
-                    };
+                    let severity = SyntaxDiagnosticSeverity::from(finding.severity);
                     diagnostics.push((
                         finding.file,
                         SyntaxDiagnostic {
@@ -272,15 +285,9 @@ pub fn native_workspace_diagnostics_at_root(
             Err(error) => {
                 diagnostics.push((
                     diagnostic_anchor_path(workspace, project_root),
-                    SyntaxDiagnostic {
-                        message: format!(
-                            "Resolved transaction analysis could not be completed: {error}"
-                        ),
-                        range: crate::queries::Range::default(),
-                        severity: SyntaxDiagnosticSeverity::Error,
-                        code: "AL-NL000".to_string(),
-                        source: "al-native".to_string(),
-                    },
+                    analysis_failed(format!(
+                        "Resolved transaction analysis could not be completed: {error}"
+                    )),
                 ));
             }
         }
@@ -305,13 +312,7 @@ pub fn native_workspace_diagnostics_at_root(
             Err(error) => {
                 diagnostics.push((
                     diagnostic_anchor_path(workspace, project_root),
-                    SyntaxDiagnostic {
-                        message: format!("Obsolete-usage analysis incomplete: {error}"),
-                        range: crate::queries::Range::default(),
-                        severity: SyntaxDiagnosticSeverity::Error,
-                        code: "AL-NL000".to_string(),
-                        source: "al-native".to_string(),
-                    },
+                    analysis_failed(format!("Obsolete-usage analysis incomplete: {error}")),
                 ));
             }
         }
@@ -348,16 +349,10 @@ pub fn native_workspace_diagnostics_at_root(
                     let Some(line) = violation.line.checked_sub(1) else {
                         diagnostics.push((
                             file,
-                            SyntaxDiagnostic {
-                                message: format!(
+                            analysis_failed(format!(
                                     "[{}] Architecture analysis produced an invalid zero source line: {}",
                                     violation.rule_id, violation.message
-                                ),
-                                range: crate::queries::Range::default(),
-                                severity: SyntaxDiagnosticSeverity::Error,
-                                code: "AL-NL000".to_string(),
-                                source: "al-native".to_string(),
-                            },
+                                )),
                         ));
                         continue;
                     };
@@ -368,16 +363,10 @@ pub fn native_workspace_diagnostics_at_root(
                                 Err(_) => {
                                     diagnostics.push((
                                         file,
-                                        SyntaxDiagnostic {
-                                            message: format!(
+                                        analysis_failed(format!(
                                                 "[{}] Architecture diagnostic source line exceeds the LSP position range: {}",
                                                 violation.rule_id, violation.message
-                                            ),
-                                            range: crate::queries::Range::default(),
-                                            severity: SyntaxDiagnosticSeverity::Error,
-                                            code: "AL-NL000".to_string(),
-                                            source: "al-native".to_string(),
-                                        },
+                                            )),
                                     ));
                                     continue;
                                 }
@@ -385,16 +374,10 @@ pub fn native_workspace_diagnostics_at_root(
                             None => {
                                 diagnostics.push((
                                     file,
-                                    SyntaxDiagnostic {
-                                        message: format!(
+                                    analysis_failed(format!(
                                             "[{}] Architecture diagnostic line {} is outside the indexed source: {}",
                                             violation.rule_id, violation.line, violation.message
-                                        ),
-                                        range: crate::queries::Range::default(),
-                                        severity: SyntaxDiagnosticSeverity::Error,
-                                        code: "AL-NL000".to_string(),
-                                        source: "al-native".to_string(),
-                                    },
+                                        )),
                                 ));
                                 continue;
                             }
@@ -402,16 +385,10 @@ pub fn native_workspace_diagnostics_at_root(
                         None => {
                             diagnostics.push((
                                 file,
-                                SyntaxDiagnostic {
-                                    message: format!(
+                                analysis_failed(format!(
                                         "[{}] Architecture diagnostic source is missing from the parse cache: {}",
                                         violation.rule_id, violation.message
-                                    ),
-                                    range: crate::queries::Range::default(),
-                                    severity: SyntaxDiagnosticSeverity::Error,
-                                    code: "AL-NL000".to_string(),
-                                    source: "al-native".to_string(),
-                                },
+                                    )),
                             ));
                             continue;
                         }

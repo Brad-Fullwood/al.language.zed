@@ -22,7 +22,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-url = "2"
+url = { workspace = true }
 
 [features]
 # Passthrough so the in-process .NET bridge can be enabled when building or
@@ -32,5 +32,5 @@ url = "2"
 semantic = ["al-semantic/semantic"]
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 zip = { workspace = true }

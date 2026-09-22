@@ -211,6 +211,80 @@ where
     CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send,
     A: Fn(&Path) -> std::result::Result<Option<PathBuf>, String> + Send + Sync + 'static,
 {
+    /// Write a successful response with no body.
+    async fn reply_ok<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        out: &mut W,
+        request_seq: i64,
+        command: &str,
+    ) -> Result<()> {
+        write_dap(
+            out,
+            &make_response(&self.seq, request_seq, command, true, None, None),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Write a successful response carrying `body`.
+    async fn reply_body<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        out: &mut W,
+        request_seq: i64,
+        command: &str,
+        body: serde_json::Value,
+    ) -> Result<()> {
+        write_dap(
+            out,
+            &make_response(&self.seq, request_seq, command, true, Some(body), None),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Write a failure response carrying `message`.
+    async fn reply_failure<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        out: &mut W,
+        request_seq: i64,
+        command: &str,
+        message: impl Into<String>,
+    ) -> Result<()> {
+        write_dap(
+            out,
+            &make_response(
+                &self.seq,
+                request_seq,
+                command,
+                false,
+                None,
+                Some(message.into()),
+            ),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Write an `output` event. `category` is the DAP console category
+    /// (`console`, `stdout`, `stderr`).
+    async fn emit_output<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        out: &mut W,
+        category: &str,
+        text: impl Into<String>,
+    ) -> Result<()> {
+        write_dap(
+            out,
+            &make_event(
+                &self.seq,
+                "output",
+                Some(serde_json::json!({ "category": category, "output": text.into() })),
+            ),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Dispatch one DAP request to its handler. Returns `Ok(true)` when the
     /// server loop should exit (disconnect/terminate).
     pub(crate) async fn handle_request<W: tokio::io::AsyncWrite + Unpin>(
@@ -320,11 +394,7 @@ where
             // in `NativeDebugSession::drain_events`).
             try_configuration_done(&s, &self.debug_config, &self.configured).await;
         }
-        write_dap(
-            out,
-            &make_response(&self.seq, request_seq, command, true, None, None),
-        )
-        .await?;
+        self.reply_ok(out, request_seq, command).await?;
         Ok(())
     }
 
@@ -337,11 +407,7 @@ where
     ) -> Result<()> {
         let config = BcDebugConfig::from_dap_args(arguments);
         if let Err(error) = config.validate_native() {
-            write_dap(
-                out,
-                &make_response(&self.seq, request_seq, command, false, None, Some(error)),
-            )
-            .await?;
+            self.reply_failure(out, request_seq, command, error).await?;
             return Ok(());
         }
         self.variable_handles.lock().await.reset();
@@ -351,18 +417,8 @@ where
 
         let mut onprem_web_base = None;
         if command == "launch" {
-            write_dap(
-                out,
-                &make_event(
-                    &self.seq,
-                    "output",
-                    Some(serde_json::json!({
-                        "category": "console",
-                        "output": "Compiling AL project...\r\n"
-                    })),
-                ),
-            )
-            .await?;
+            self.emit_output(out, "console", "Compiling AL project...\r\n")
+                .await?;
             // Native-first: build the deploy `.app` with the shared build
             // service. The native emitter needs neither `alc` nor a configured
             // Microsoft toolchain, so launch must never skip compilation merely
@@ -371,55 +427,20 @@ where
             match compile_outcome {
                 Ok(output) => {
                     if !output.is_empty() {
-                        write_dap(
-                            out,
-                            &make_event(
-                                &self.seq,
-                                "output",
-                                Some(serde_json::json!({
-                                    "category": "console",
-                                    "output": format!("{output}\r\n")
-                                })),
-                            ),
-                        )
-                        .await?;
+                        self.emit_output(out, "console", format!("{output}\r\n"))
+                            .await?;
                     }
-                    write_dap(
-                        out,
-                        &make_event(
-                            &self.seq,
-                            "output",
-                            Some(serde_json::json!({
-                                "category": "console",
-                                "output": "Compilation succeeded.\r\n"
-                            })),
-                        ),
-                    )
-                    .await?;
+                    self.emit_output(out, "console", "Compilation succeeded.\r\n")
+                        .await?;
                 }
                 Err(e) => {
-                    write_dap(
+                    self.emit_output(out, "stderr", format!("Compilation failed: {e}\r\n"))
+                        .await?;
+                    self.reply_failure(
                         out,
-                        &make_event(
-                            &self.seq,
-                            "output",
-                            Some(serde_json::json!({
-                                "category": "stderr",
-                                "output": format!("Compilation failed: {e}\r\n")
-                            })),
-                        ),
-                    )
-                    .await?;
-                    write_dap(
-                        out,
-                        &make_response(
-                            &self.seq,
-                            request_seq,
-                            command,
-                            false,
-                            None,
-                            Some(format!("Compilation failed: {e}")),
-                        ),
+                        request_seq,
+                        command,
+                        format!("Compilation failed: {e}"),
                     )
                     .await?;
                     return Ok(());
@@ -427,32 +448,21 @@ where
             }
         }
 
-        write_dap(
+        self.emit_output(
             out,
-            &make_event(
-                &self.seq,
-                "output",
-                Some(serde_json::json!({
-                    "category": "console",
-                    "output": format!("Authenticating to tenant {}...\r\n", config.tenant)
-                })),
-            ),
+            "console",
+            format!("Authenticating to tenant {}...\r\n", config.tenant),
         )
         .await?;
 
         let token = match (self.acquire_token)(config.tenant.clone()).await {
             Ok(t) => t,
             Err(e) => {
-                write_dap(
+                self.reply_failure(
                     out,
-                    &make_response(
-                        &self.seq,
-                        request_seq,
-                        command,
-                        false,
-                        None,
-                        Some(format!("Authentication failed: {e}")),
-                    ),
+                    request_seq,
+                    command,
+                    format!("Authentication failed: {e}"),
                 )
                 .await?;
                 return Ok(());
@@ -460,33 +470,17 @@ where
         };
 
         if command == "launch" {
-            write_dap(
-                out,
-                &make_event(
-                    &self.seq,
-                    "output",
-                    Some(serde_json::json!({
-                        "category": "console",
-                        "output": "Publishing package...\r\n"
-                    })),
-                ),
-            )
-            .await?;
+            self.emit_output(out, "console", "Publishing package...\r\n")
+                .await?;
 
             if config.accept_invalid_certs {
                 al_bc::http_auth::warn_insecure_tls("DAP launch");
-                write_dap(
+                self.emit_output(
                     out,
-                    &make_event(
-                        &self.seq,
-                        "output",
-                        Some(serde_json::json!({
-                            "category": "important",
-                            "output": format!(
-                                "{}\r\n",
-                                al_bc::http_auth::insecure_tls_message("DAP launch")
-                            ),
-                        })),
+                    "important",
+                    format!(
+                        "{}\r\n",
+                        al_bc::http_auth::insecure_tls_message("DAP launch")
                     ),
                 )
                 .await?;
@@ -501,18 +495,11 @@ where
                 match get_web_endpoint(&http, &config, &token).await {
                     Ok(endpoint) => onprem_web_base = Some(endpoint),
                     Err(error) => {
-                        write_dap(
+                        self.reply_failure(
                             out,
-                            &make_response(
-                                &self.seq,
-                                request_seq,
-                                command,
-                                false,
-                                None,
-                                Some(format!(
-                                    "Cannot resolve the on-premises Web client URL: {error}"
-                                )),
-                            ),
+                            request_seq,
+                            command,
+                            format!("Cannot resolve the on-premises Web client URL: {error}"),
                         )
                         .await?;
                         return Ok(());
@@ -523,16 +510,11 @@ where
             let app_path = match (self.find_app)(Path::new(&self.project_root)) {
                 Ok(app_path) => app_path,
                 Err(error) => {
-                    write_dap(
+                    self.reply_failure(
                         out,
-                        &make_response(
-                            &self.seq,
-                            request_seq,
-                            command,
-                            false,
-                            None,
-                            Some(format!("Cannot locate compiled package: {error}")),
-                        ),
+                        request_seq,
+                        command,
+                        format!("Cannot locate compiled package: {error}"),
                     )
                     .await?;
                     return Ok(());
@@ -541,30 +523,15 @@ where
             if let Some(app_path) = app_path {
                 match publish_app(&http, &config, &token, &app_path).await {
                     Ok(()) => {
-                        write_dap(
-                            out,
-                            &make_event(
-                                &self.seq,
-                                "output",
-                                Some(serde_json::json!({
-                                    "category": "console",
-                                    "output": "Package published successfully.\r\n"
-                                })),
-                            ),
-                        )
-                        .await?;
+                        self.emit_output(out, "console", "Package published successfully.\r\n")
+                            .await?;
                     }
                     Err(e) => {
-                        write_dap(
+                        self.reply_failure(
                             out,
-                            &make_response(
-                                &self.seq,
-                                request_seq,
-                                command,
-                                false,
-                                None,
-                                Some(format!("Publish failed: {e}")),
-                            ),
+                            request_seq,
+                            command,
+                            format!("Publish failed: {e}"),
                         )
                         .await?;
                         return Ok(());
@@ -597,34 +564,14 @@ where
             }
         }
 
-        write_dap(
-            out,
-            &make_event(
-                &self.seq,
-                "output",
-                Some(serde_json::json!({
-                    "category": "console",
-                    "output": "Connecting to debug hub...\r\n"
-                })),
-            ),
-        )
-        .await?;
+        self.emit_output(out, "console", "Connecting to debug hub...\r\n")
+            .await?;
 
         match BcDebugSession::connect(&config, &token).await {
             Ok(debug_session) => {
                 if let Err(e) = debug_session.attach(&config).await {
-                    write_dap(
-                        out,
-                        &make_response(
-                            &self.seq,
-                            request_seq,
-                            command,
-                            false,
-                            None,
-                            Some(format!("Attach failed: {e}")),
-                        ),
-                    )
-                    .await?;
+                    self.reply_failure(out, request_seq, command, format!("Attach failed: {e}"))
+                        .await?;
                     return Ok(());
                 }
 
@@ -634,16 +581,11 @@ where
                     match build_debug_browser_url(&config, &conn_id, onprem_web_base.as_deref()) {
                         Ok(url) => Some(url),
                         Err(error) => {
-                            write_dap(
+                            self.reply_failure(
                                 out,
-                                &make_response(
-                                    &self.seq,
-                                    request_seq,
-                                    command,
-                                    false,
-                                    None,
-                                    Some(format!("Cannot build the Web client URL: {error}")),
-                                ),
+                                request_seq,
+                                command,
+                                format!("Cannot build the Web client URL: {error}"),
                             )
                             .await?;
                             return Ok(());
@@ -657,18 +599,8 @@ where
 
                 self.spawn_event_forwarder();
 
-                write_dap(
-                    out,
-                    &make_event(
-                        &self.seq,
-                        "output",
-                        Some(serde_json::json!({
-                            "category": "console",
-                            "output": "Debug session started.\r\n"
-                        })),
-                    ),
-                )
-                .await?;
+                self.emit_output(out, "console", "Debug session started.\r\n")
+                    .await?;
 
                 write_dap(
                     out,
@@ -706,16 +638,11 @@ where
                 }
             }
             Err(e) => {
-                write_dap(
+                self.reply_failure(
                     out,
-                    &make_response(
-                        &self.seq,
-                        request_seq,
-                        command,
-                        false,
-                        None,
-                        Some(format!("Debug hub connection failed: {e}")),
-                    ),
+                    request_seq,
+                    command,
+                    format!("Debug hub connection failed: {e}"),
                 )
                 .await?;
             }
@@ -788,16 +715,11 @@ where
                 .collect()
         };
 
-        write_dap(
+        self.reply_body(
             out,
-            &make_response(
-                &self.seq,
-                request_seq,
-                command,
-                true,
-                Some(serde_json::json!({"breakpoints": result_bps})),
-                None,
-            ),
+            request_seq,
+            command,
+            serde_json::json!({"breakpoints": result_bps}),
         )
         .await?;
         Ok(())
@@ -963,27 +885,13 @@ where
                 _ => s.step_over().await,
             };
             if let Err(e) = step {
-                write_dap(
-                    out,
-                    &make_response(
-                        &self.seq,
-                        request_seq,
-                        command,
-                        false,
-                        None,
-                        Some(e.to_string()),
-                    ),
-                )
-                .await?;
+                self.reply_failure(out, request_seq, command, e.to_string())
+                    .await?;
                 return Ok(());
             }
             self.variable_handles.lock().await.reset();
         }
-        write_dap(
-            out,
-            &make_response(&self.seq, request_seq, command, true, None, None),
-        )
-        .await?;
+        self.reply_ok(out, request_seq, command).await?;
         Ok(())
     }
 
@@ -998,19 +906,11 @@ where
         // equivalent of a SIGSTOP that the client can trigger mid-execution.
         // Respond with failure so Zed shows the user a clear error instead of
         // silently doing nothing.
-        write_dap(
+        self.reply_failure(
             out,
-            &make_response(
-                &self.seq,
-                request_seq,
-                command,
-                false,
-                None,
-                Some(
-                    "pause is not supported by the BC debug hub; set a breakpoint instead"
-                        .to_string(),
-                ),
-            ),
+            request_seq,
+            command,
+            "pause is not supported by the BC debug hub; set a breakpoint instead".to_string(),
         )
         .await?;
         Ok(())
@@ -1043,18 +943,8 @@ where
             }
             _ => unreachable!("only capability-gated commands are dispatched here"),
         };
-        write_dap(
-            out,
-            &make_response(
-                &self.seq,
-                request_seq,
-                command,
-                false,
-                None,
-                Some(message.to_string()),
-            ),
-        )
-        .await?;
+        self.reply_failure(out, request_seq, command, message.to_string())
+            .await?;
         Ok(())
     }
 
@@ -1068,32 +958,17 @@ where
         if let Some(s) = session_arc {
             // BC expects BreakpointExitReason integer 0 (continue)
             if let Err(e) = s.continue_execution(serde_json::json!(0)).await {
-                write_dap(
-                    out,
-                    &make_response(
-                        &self.seq,
-                        request_seq,
-                        command,
-                        false,
-                        None,
-                        Some(e.to_string()),
-                    ),
-                )
-                .await?;
+                self.reply_failure(out, request_seq, command, e.to_string())
+                    .await?;
                 return Ok(());
             }
             self.variable_handles.lock().await.reset();
         }
-        write_dap(
+        self.reply_body(
             out,
-            &make_response(
-                &self.seq,
-                request_seq,
-                command,
-                true,
-                Some(serde_json::json!({"allThreadsContinued": true})),
-                None,
-            ),
+            request_seq,
+            command,
+            serde_json::json!({"allThreadsContinued": true}),
         )
         .await?;
         Ok(())
@@ -1105,16 +980,11 @@ where
         request_seq: i64,
         command: &str,
     ) -> Result<()> {
-        write_dap(
+        self.reply_body(
             out,
-            &make_response(
-                &self.seq,
-                request_seq,
-                command,
-                true,
-                Some(serde_json::json!({"threads": [{"id": 1, "name": "AL Thread"}]})),
-                None,
-            ),
+            request_seq,
+            command,
+            serde_json::json!({"threads": [{"id": 1, "name": "AL Thread"}]}),
         )
         .await?;
         Ok(())
@@ -1140,19 +1010,14 @@ where
             Vec::new()
         };
         let (page, total) = page_stack_frames(stack_frames, arguments);
-        write_dap(
+        self.reply_body(
             out,
-            &make_response(
-                &self.seq,
-                request_seq,
-                command,
-                true,
-                Some(serde_json::json!({
-                    "stackFrames": page,
-                    "totalFrames": total,
-                })),
-                None,
-            ),
+            request_seq,
+            command,
+            serde_json::json!({
+                "stackFrames": page,
+                "totalFrames": total,
+            }),
         )
         .await?;
         Ok(())
@@ -1188,34 +1053,22 @@ where
                     }));
                 }
                 _ => {
-                    write_dap(
+                    self.reply_failure(
                         out,
-                        &make_response(
-                            &self.seq,
-                            request_seq,
-                            command,
-                            false,
-                            None,
-                            Some(format!(
-                                "stack frame {frame_id} is outside the supported DAP range"
-                            )),
-                        ),
+                        request_seq,
+                        command,
+                        format!("stack frame {frame_id} is outside the supported DAP range"),
                     )
                     .await?;
                     return Ok(());
                 }
             }
         }
-        write_dap(
+        self.reply_body(
             out,
-            &make_response(
-                &self.seq,
-                request_seq,
-                command,
-                true,
-                Some(serde_json::json!({ "scopes": scopes })),
-                None,
-            ),
+            request_seq,
+            command,
+            serde_json::json!({ "scopes": scopes }),
         )
         .await?;
         Ok(())
@@ -1234,16 +1087,11 @@ where
             .unwrap_or(0);
         let session_arc = self.session.lock().await.clone();
         let Some(session) = session_arc else {
-            write_dap(
+            self.reply_body(
                 out,
-                &make_response(
-                    &self.seq,
-                    request_seq,
-                    command,
-                    true,
-                    Some(serde_json::json!({"variables": []})),
-                    None,
-                ),
+                request_seq,
+                command,
+                serde_json::json!({"variables": []}),
             )
             .await?;
             return Ok(());
@@ -1286,16 +1134,11 @@ where
         let (frame_id, parent_path, nodes) = match resolved {
             Ok(resolved) => resolved,
             Err(error) => {
-                write_dap(
+                self.reply_failure(
                     out,
-                    &make_response(
-                        &self.seq,
-                        request_seq,
-                        command,
-                        false,
-                        None,
-                        Some(format!("Business Central variable request failed: {error}")),
-                    ),
+                    request_seq,
+                    command,
+                    format!("Business Central variable request failed: {error}"),
                 )
                 .await?;
                 return Ok(());
@@ -1305,16 +1148,11 @@ where
             let mut handles = self.variable_handles.lock().await;
             bc_vars_to_dap(&nodes, frame_id, &parent_path, &mut handles)
         };
-        write_dap(
+        self.reply_body(
             out,
-            &make_response(
-                &self.seq,
-                request_seq,
-                command,
-                true,
-                Some(serde_json::json!({"variables": variables})),
-                None,
-            ),
+            request_seq,
+            command,
+            serde_json::json!({"variables": variables}),
         )
         .await?;
         Ok(())
@@ -1341,16 +1179,11 @@ where
             Some(session) => match session.evaluate(frame_id, expression).await {
                 Ok(result) => result,
                 Err(error) => {
-                    write_dap(
+                    self.reply_failure(
                         out,
-                        &make_response(
-                            &self.seq,
-                            request_seq,
-                            command,
-                            false,
-                            None,
-                            Some(format!("Business Central evaluation failed: {error}")),
-                        ),
+                        request_seq,
+                        command,
+                        format!("Business Central evaluation failed: {error}"),
                     )
                     .await?;
                     return Ok(());
@@ -1413,11 +1246,7 @@ where
         }
         *self.session.lock().await = None;
         self.variable_handles.lock().await.reset();
-        write_dap(
-            out,
-            &make_response(&self.seq, request_seq, command, true, None, None),
-        )
-        .await?;
+        self.reply_ok(out, request_seq, command).await?;
 
         write_dap(out, &make_event(&self.seq, "terminated", None)).await?;
         Ok(())
@@ -1429,16 +1258,11 @@ where
         request_seq: i64,
         command: &str,
     ) -> Result<()> {
-        write_dap(
+        self.reply_failure(
             out,
-            &make_response(
-                &self.seq,
-                request_seq,
-                command,
-                false,
-                None,
-                Some(format!("Unsupported command: {command}")),
-            ),
+            request_seq,
+            command,
+            format!("Unsupported command: {command}"),
         )
         .await?;
         Ok(())

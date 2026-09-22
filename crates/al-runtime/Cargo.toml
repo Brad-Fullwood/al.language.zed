@@ -13,7 +13,7 @@ thiserror = { workspace = true }
 # ProcedureSource. `in [...]` set members are reparsed as ordinary expressions
 # because the compatibility grammar intentionally preserves bracket bodies as
 # lossless generic blocks.
-tree-sitter = "0.25"
+tree-sitter = { workspace = true }
 # stubs/any.rs GuidValue() pulls OS entropy via getrandom (prod).
 getrandom = { workspace = true }
 # Value::Decimal is an exact 96-bit decimal (BC System.Decimal semantics, C3).
