@@ -193,7 +193,7 @@ Part B, agent-facing threat model:
 - fix: refuse the fallback unless every component of the runtime directory is owned by the
   current user and not group- or world-writable, and prefer failing to start over binding in a
   directory that fails that test.
-- status: open
+- status: fixed 388b9a0a
 
 ### [SECURITY] the release checksum is not a signature, and the extension has no key to check one against
 
