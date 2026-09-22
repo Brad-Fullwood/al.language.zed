@@ -325,13 +325,583 @@ pub(super) async fn acquire_bc_token(
     }
 }
 
+async fn debug_start(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    use al_dap::dap::bc_debug::BcDebugConfig;
+    use al_dap::native_debug::NativeDebugSession;
+    use al_protocol::jsonrpc::error_codes;
+
+    let supplied_access_token = match params.get("accessToken") {
+        None => String::new(),
+        Some(value) => match value.as_str() {
+            Some(token) => token.to_string(),
+            None => {
+                return Response::error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    "'accessToken' must be a string when supplied",
+                );
+            }
+        },
+    };
+    if let Err(message) = optional_non_empty_string(params, "config") {
+        return Response::error(id, error_codes::INVALID_PARAMS, message);
+    }
+
+    // Look up the named config in the project's debug configuration.
+    // or fall back to parsing full DAP args from params for backward compat.
+    let inline = params.get("config").is_none() && has_inline_debug_config(params);
+    let config = if inline {
+        BcDebugConfig::from_dap_args(params)
+    } else {
+        match resolve_debug_config(workspace, params) {
+            Ok(c) => c,
+            Err(msg) => {
+                return Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INVALID_PARAMS,
+                        message: msg,
+                    }),
+                    ..Default::default()
+                };
+            }
+        }
+    };
+    if let Err(message) = config.validate_native() {
+        return Response::error(id, error_codes::INVALID_PARAMS, message);
+    }
+
+    let source = if inline {
+        al_project::trust::TargetSource::Inline
+    } else {
+        al_project::trust::TargetSource::Repository
+    };
+    let access_token =
+        match acquire_bc_token(workspace, &config, &supplied_access_token, source).await {
+            Ok(token) => token,
+            Err((code, message)) => return Response::error(id, code, message),
+        };
+
+    let onprem_web_base =
+        if config.launch_browser && config.environment_type.eq_ignore_ascii_case("OnPrem") {
+            let http = match reqwest::Client::builder()
+                .danger_accept_invalid_certs(config.accept_invalid_certs)
+                .build()
+            {
+                Ok(client) => client,
+                Err(error) => {
+                    return Response::error(
+                        id,
+                        error_codes::INTERNAL_ERROR,
+                        format!("Cannot create the debug HTTP client: {error}"),
+                    );
+                }
+            };
+            match al_dap::dap::bc_debug::get_web_endpoint(&http, &config, &access_token).await {
+                Ok(endpoint) => Some(endpoint),
+                Err(error) => {
+                    return Response::error(
+                        id,
+                        error_codes::INTERNAL_ERROR,
+                        format!("Cannot resolve the on-premises Web client URL: {error}"),
+                    );
+                }
+            }
+        } else {
+            None
+        };
+    let launch_browser = config.launch_browser;
+
+    match NativeDebugSession::start(config, &access_token).await {
+        Ok(session) => {
+            let session_id = session.session_id().to_string();
+            let browser_url = if launch_browser {
+                match al_dap::dap::native_dap::build_debug_browser_url(
+                    &session.config,
+                    &session_id,
+                    onprem_web_base.as_deref(),
+                ) {
+                    Ok(url) => Some(url),
+                    Err(error) => {
+                        return Response::error(
+                            id,
+                            error_codes::INTERNAL_ERROR,
+                            format!("Cannot build the Web client URL: {error}"),
+                        );
+                    }
+                }
+            } else {
+                None
+            };
+            *workspace.debug_session.lock().await = Some(session);
+            Response {
+                id,
+                result: Some(serde_json::json!({
+                    "cmd": "start",
+                    "status": "running",
+                    "session": session_id,
+                    "browserUrl": browser_url,
+                })),
+                error: None,
+                ..Default::default()
+            }
+        }
+        Err(e) => Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INTERNAL_ERROR,
+                message: format!("Debug start failed: {e}"),
+            }),
+            ..Default::default()
+        },
+    }
+}
+
+async fn debug_breakpoint(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    use al_protocol::jsonrpc::error_codes;
+
+    let file = match optional_non_empty_string(params, "file") {
+        Ok(Some(file)) => file.to_string(),
+        Ok(None) => {
+            return Response::error(id, error_codes::INVALID_PARAMS, "Missing 'file' parameter");
+        }
+        Err(message) => {
+            return Response::error(id, error_codes::INVALID_PARAMS, message);
+        }
+    };
+    // Reject missing/overflowing `line` rather than silently defaulting
+    // to line 0 — a client bug that omits the field would otherwise
+    // create a phantom breakpoint at the top of the file.
+    let Some(line) = params
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|line| *line > 0)
+    else {
+        return Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: "Missing or out-of-range 'line' parameter (must be 1..=u32::MAX)"
+                    .to_string(),
+            }),
+            ..Default::default()
+        };
+    };
+    let condition = match optional_non_empty_string(params, "condition") {
+        Ok(condition) => condition.map(str::to_string),
+        Err(message) => {
+            return Response::error(id, error_codes::INVALID_PARAMS, message);
+        }
+    };
+
+    // Prefer caller-supplied objectType/objectId; otherwise
+    // resolve from the workspace file_index. Defaulting to (0, 0)
+    // routes the breakpoint at the wrong object — BC accepts the
+    // request but never hits the line.
+    //
+    // `as i32` would silently wrap an out-of-range value; `try_from`
+    // rejects it so an upstream caller bug surfaces instead of
+    // silently routing at the wrong object.
+    let resolved = resolve_object_metadata(workspace, &file);
+    let explicit_type = match optional_i32_param(params, "objectType") {
+        Ok(value) => value,
+        Err(message) => {
+            return Response::error(id, error_codes::INVALID_PARAMS, message);
+        }
+    };
+    let explicit_id = match optional_i32_param(params, "objectId") {
+        Ok(value) => value,
+        Err(message) => {
+            return Response::error(id, error_codes::INVALID_PARAMS, message);
+        }
+    };
+    if explicit_type.is_some() != explicit_id.is_some() {
+        return Response::error(
+            id,
+            error_codes::INVALID_PARAMS,
+            "'objectType' and 'objectId' must be supplied together",
+        );
+    }
+    let obj_type = explicit_type.or(resolved.map(|(object_type, _)| object_type));
+    let obj_id = explicit_id.or(resolved.map(|(_, object_id)| object_id));
+
+    let (obj_type, obj_id) = match (obj_type, obj_id) {
+        (Some(t), Some(i)) => (t, i),
+        _ => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INVALID_PARAMS,
+                    message: format!(
+                        "Cannot resolve object metadata for breakpoint in {file:?} — \
+                             file is not indexed and caller did not supply \
+                             objectType/objectId"
+                    ),
+                }),
+                ..Default::default()
+            };
+        }
+    };
+
+    let mut guard = workspace.debug_session.lock().await;
+    match guard.as_mut() {
+        None => no_session(id),
+        Some(session) => {
+            let bps: Vec<(u32, Option<&str>)> = vec![(line, condition.as_deref())];
+            match session.set_breakpoints(&file, &bps, obj_type, obj_id).await {
+                Ok(verified) => match serialize_each(id, verified, "breakpoint") {
+                    Ok(bp_json) => Response {
+                        id,
+                        result: Some(serde_json::json!({
+                            "cmd": "breakpoint",
+                            "breakpoints": bp_json,
+                        })),
+                        error: None,
+                        ..Default::default()
+                    },
+                    Err(err_response) => err_response,
+                },
+                Err(e) => Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INTERNAL_ERROR,
+                        message: format!("set_breakpoints failed: {e}"),
+                    }),
+                    ..Default::default()
+                },
+            }
+        }
+    }
+}
+
+async fn debug_state(workspace: &Workspace, id: u64, _params: &serde_json::Value) -> Response {
+    use al_protocol::jsonrpc::error_codes;
+
+    let mut guard = workspace.debug_session.lock().await;
+    match guard.as_mut() {
+        None => no_session(id),
+        Some(session) => match session.state().await {
+            Ok(state) => serialized_response(id, &state, "state"),
+            Err(e) => Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: format!("state() failed: {e}"),
+                }),
+                ..Default::default()
+            },
+        },
+    }
+}
+
+async fn debug_stack(workspace: &Workspace, id: u64, _params: &serde_json::Value) -> Response {
+    use al_protocol::jsonrpc::error_codes;
+
+    let mut guard = workspace.debug_session.lock().await;
+    match guard.as_mut() {
+        None => no_session(id),
+        Some(session) => match session.stack().await {
+            Ok(frames) => Response {
+                id,
+                result: Some(serde_json::json!({
+                    "cmd": "stack",
+                    "frames": frames,
+                })),
+                error: None,
+                ..Default::default()
+            },
+            Err(e) => Response::error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                format!("stack() failed: {e}"),
+            ),
+        },
+    }
+}
+
+async fn debug_variables(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+    cmd: &str,
+) -> Response {
+    use al_protocol::jsonrpc::error_codes;
+
+    let frame_id = match optional_frame_id(params) {
+        Ok(frame_id) => frame_id,
+        Err(message) => {
+            return Response::error(id, error_codes::INVALID_PARAMS, message);
+        }
+    };
+    let mut guard = workspace.debug_session.lock().await;
+    match guard.as_mut() {
+        None => no_session(id),
+        Some(session) => {
+            let values = if cmd == "globals" {
+                session.globals(frame_id).await
+            } else {
+                session.variables(frame_id).await
+            };
+            match values {
+                Ok(values) => match serialize_each(id, values, cmd) {
+                    Ok(values) => Response {
+                        id,
+                        result: Some(serde_json::json!({
+                            "cmd": cmd,
+                            "frameId": frame_id,
+                            "variables": values,
+                        })),
+                        error: None,
+                        ..Default::default()
+                    },
+                    Err(err_response) => err_response,
+                },
+                Err(e) => Response::error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    format!("{cmd}() failed: {e}"),
+                ),
+            }
+        }
+    }
+}
+
+async fn debug_expand(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    use al_protocol::jsonrpc::error_codes;
+
+    let path = match optional_non_empty_string(params, "path") {
+        Ok(Some(path)) => path,
+        Ok(None) => return missing_cmd(id, "Missing 'path' parameter for expand"),
+        Err(message) => {
+            return Response::error(id, error_codes::INVALID_PARAMS, message);
+        }
+    };
+    let frame_id = match optional_frame_id(params) {
+        Ok(frame_id) => frame_id,
+        Err(message) => {
+            return Response::error(id, error_codes::INVALID_PARAMS, message);
+        }
+    };
+    let mut guard = workspace.debug_session.lock().await;
+    match guard.as_mut() {
+        None => no_session(id),
+        Some(session) => match session.expand(frame_id, path).await {
+            Ok(values) => match serialize_each(id, values, "expand") {
+                Ok(values) => Response {
+                    id,
+                    result: Some(serde_json::json!({
+                        "cmd": "expand",
+                        "frameId": frame_id,
+                        "path": path,
+                        "variables": values,
+                    })),
+                    error: None,
+                    ..Default::default()
+                },
+                Err(err_response) => err_response,
+            },
+            Err(e) => Response::error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                format!("expand() failed: {e}"),
+            ),
+        },
+    }
+}
+
+async fn debug_eval(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    use al_protocol::jsonrpc::error_codes;
+
+    let expr = match optional_non_empty_string(params, "expr") {
+        Ok(Some(expression)) => expression.to_string(),
+        Ok(None) => {
+            return Response::error(id, error_codes::INVALID_PARAMS, "Missing 'expr' parameter");
+        }
+        Err(message) => {
+            return Response::error(id, error_codes::INVALID_PARAMS, message);
+        }
+    };
+    let frame_id = match optional_frame_id(params) {
+        Ok(frame_id) => frame_id,
+        Err(message) => {
+            return Response::error(id, error_codes::INVALID_PARAMS, message);
+        }
+    };
+
+    let mut guard = workspace.debug_session.lock().await;
+    match guard.as_mut() {
+        None => no_session(id),
+        Some(session) => match session.eval_at(frame_id, &expr).await {
+            Ok(eval_result) => Response {
+                id,
+                result: Some(serde_json::json!({
+                    "cmd": "eval",
+                    "frameId": frame_id,
+                    "result": eval_result.result,
+                    "typeName": eval_result.type_name,
+                })),
+                error: None,
+                ..Default::default()
+            },
+            Err(e) => Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: format!("eval() failed: {e}"),
+                }),
+                ..Default::default()
+            },
+        },
+    }
+}
+
+async fn debug_continue(workspace: &Workspace, id: u64, _params: &serde_json::Value) -> Response {
+    use al_protocol::jsonrpc::error_codes;
+
+    let mut guard = workspace.debug_session.lock().await;
+    match guard.as_mut() {
+        None => no_session(id),
+        Some(session) => match session.continue_exec().await {
+            Ok(state) => serialized_response(id, &state, "continue"),
+            Err(e) => Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: format!("continue() failed: {e}"),
+                }),
+                ..Default::default()
+            },
+        },
+    }
+}
+
+async fn debug_step(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    use al_protocol::jsonrpc::error_codes;
+
+    let step_type = match optional_non_empty_string(params, "stepType") {
+        Ok(None | Some("over")) => "over",
+        Ok(Some("in" | "into")) => "in",
+        Ok(Some("out")) => "out",
+        Ok(Some(other)) => {
+            return Response::error(
+                id,
+                error_codes::INVALID_PARAMS,
+                format!("'stepType' must be 'over', 'in'/'into', or 'out'; got '{other}'"),
+            );
+        }
+        Err(message) => {
+            return Response::error(id, error_codes::INVALID_PARAMS, message);
+        }
+    };
+
+    let mut guard = workspace.debug_session.lock().await;
+    match guard.as_mut() {
+        None => no_session(id),
+        Some(session) => match session.step(step_type).await {
+            Ok(state) => serialized_response(id, &state, "step"),
+            Err(e) => Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: format!("step() failed: {e}"),
+                }),
+                ..Default::default()
+            },
+        },
+    }
+}
+
+async fn debug_history(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    use al_protocol::jsonrpc::error_codes;
+
+    let var_filter = match optional_non_empty_string(params, "var") {
+        Ok(value) => value.map(str::to_string),
+        Err(message) => {
+            return Response::error(id, error_codes::INVALID_PARAMS, message);
+        }
+    };
+
+    let guard = workspace.debug_session.lock().await;
+    match guard.as_ref() {
+        None => no_session(id),
+        Some(session) => {
+            let history = session.history(var_filter.as_deref());
+            match serialize_each(id, history, "history") {
+                Ok(hits) => Response {
+                    id,
+                    result: Some(serde_json::json!({
+                        "cmd": "history",
+                        "hits": hits,
+                    })),
+                    error: None,
+                    ..Default::default()
+                },
+                Err(err_response) => err_response,
+            }
+        }
+    }
+}
+
+async fn debug_stop(workspace: &Workspace, id: u64, _params: &serde_json::Value) -> Response {
+    use al_protocol::jsonrpc::error_codes;
+
+    let mut guard = workspace.debug_session.lock().await;
+    match guard.as_mut() {
+        // No active session: say so instead of claiming a stop
+        // happened (`debug stop` printed
+        // "Debug session stopped." on a machine with no session).
+        None => Response {
+            id,
+            result: Some(serde_json::json!({"cmd": "stop", "status": "no active debug session"})),
+            error: None,
+            ..Default::default()
+        },
+        Some(session) => {
+            let stop_result = session.stop().await;
+            *guard = None;
+            match stop_result {
+                Ok(()) => Response {
+                    id,
+                    result: Some(serde_json::json!({"cmd": "stop", "status": "stopped"})),
+                    error: None,
+                    ..Default::default()
+                },
+                Err(e) => Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INTERNAL_ERROR,
+                        message: format!("stop() failed: {e}"),
+                    }),
+                    ..Default::default()
+                },
+            }
+        }
+    }
+}
+
+/// Route `debug` to the function for its `cmd`.
+///
+/// Each command is its own function above. They used to be inline arms of a
+/// 629-line match, which is how the twenty lines that decide whether a cached
+/// Business Central credential may be spent ended up buried in the `start`
+/// arm, and how `tests.snapshot_capture` came to repeat the acquisition
+/// without them. That decision lives in [`acquire_bc_token`] now.
 pub(super) async fn dispatch_debug(
     workspace: &Workspace,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    use al_dap::dap::bc_debug::BcDebugConfig;
-    use al_dap::native_debug::NativeDebugSession;
     use al_protocol::jsonrpc::error_codes;
 
     let cmd = match params.get("cmd").and_then(|v| v.as_str()) {
@@ -340,552 +910,17 @@ pub(super) async fn dispatch_debug(
     };
 
     match cmd {
-        "start" => {
-            let supplied_access_token = match params.get("accessToken") {
-                None => String::new(),
-                Some(value) => match value.as_str() {
-                    Some(token) => token.to_string(),
-                    None => {
-                        return Response::error(
-                            id,
-                            error_codes::INVALID_PARAMS,
-                            "'accessToken' must be a string when supplied",
-                        );
-                    }
-                },
-            };
-            if let Err(message) = optional_non_empty_string(params, "config") {
-                return Response::error(id, error_codes::INVALID_PARAMS, message);
-            }
-
-            // Look up the named config in the project's debug configuration.
-            // or fall back to parsing full DAP args from params for backward compat.
-            let inline = params.get("config").is_none() && has_inline_debug_config(params);
-            let config = if inline {
-                BcDebugConfig::from_dap_args(params)
-            } else {
-                match resolve_debug_config(workspace, params) {
-                    Ok(c) => c,
-                    Err(msg) => {
-                        return Response {
-                            id,
-                            result: None,
-                            error: Some(RpcError {
-                                code: error_codes::INVALID_PARAMS,
-                                message: msg,
-                            }),
-                            ..Default::default()
-                        };
-                    }
-                }
-            };
-            if let Err(message) = config.validate_native() {
-                return Response::error(id, error_codes::INVALID_PARAMS, message);
-            }
-
-            let source = if inline {
-                al_project::trust::TargetSource::Inline
-            } else {
-                al_project::trust::TargetSource::Repository
-            };
-            let access_token =
-                match acquire_bc_token(workspace, &config, &supplied_access_token, source).await {
-                    Ok(token) => token,
-                    Err((code, message)) => return Response::error(id, code, message),
-                };
-
-            let onprem_web_base = if config.launch_browser
-                && config.environment_type.eq_ignore_ascii_case("OnPrem")
-            {
-                let http = match reqwest::Client::builder()
-                    .danger_accept_invalid_certs(config.accept_invalid_certs)
-                    .build()
-                {
-                    Ok(client) => client,
-                    Err(error) => {
-                        return Response::error(
-                            id,
-                            error_codes::INTERNAL_ERROR,
-                            format!("Cannot create the debug HTTP client: {error}"),
-                        );
-                    }
-                };
-                match al_dap::dap::bc_debug::get_web_endpoint(&http, &config, &access_token).await {
-                    Ok(endpoint) => Some(endpoint),
-                    Err(error) => {
-                        return Response::error(
-                            id,
-                            error_codes::INTERNAL_ERROR,
-                            format!("Cannot resolve the on-premises Web client URL: {error}"),
-                        );
-                    }
-                }
-            } else {
-                None
-            };
-            let launch_browser = config.launch_browser;
-
-            match NativeDebugSession::start(config, &access_token).await {
-                Ok(session) => {
-                    let session_id = session.session_id().to_string();
-                    let browser_url = if launch_browser {
-                        match al_dap::dap::native_dap::build_debug_browser_url(
-                            &session.config,
-                            &session_id,
-                            onprem_web_base.as_deref(),
-                        ) {
-                            Ok(url) => Some(url),
-                            Err(error) => {
-                                return Response::error(
-                                    id,
-                                    error_codes::INTERNAL_ERROR,
-                                    format!("Cannot build the Web client URL: {error}"),
-                                );
-                            }
-                        }
-                    } else {
-                        None
-                    };
-                    *workspace.debug_session.lock().await = Some(session);
-                    Response {
-                        id,
-                        result: Some(serde_json::json!({
-                            "cmd": "start",
-                            "status": "running",
-                            "session": session_id,
-                            "browserUrl": browser_url,
-                        })),
-                        error: None,
-                        ..Default::default()
-                    }
-                }
-                Err(e) => Response {
-                    id,
-                    result: None,
-                    error: Some(RpcError {
-                        code: error_codes::INTERNAL_ERROR,
-                        message: format!("Debug start failed: {e}"),
-                    }),
-                    ..Default::default()
-                },
-            }
-        }
-
-        "breakpoint" => {
-            let file = match optional_non_empty_string(params, "file") {
-                Ok(Some(file)) => file.to_string(),
-                Ok(None) => {
-                    return Response::error(
-                        id,
-                        error_codes::INVALID_PARAMS,
-                        "Missing 'file' parameter",
-                    );
-                }
-                Err(message) => {
-                    return Response::error(id, error_codes::INVALID_PARAMS, message);
-                }
-            };
-            // Reject missing/overflowing `line` rather than silently defaulting
-            // to line 0 — a client bug that omits the field would otherwise
-            // create a phantom breakpoint at the top of the file.
-            let Some(line) = params
-                .get("line")
-                .and_then(|v| v.as_u64())
-                .and_then(|n| u32::try_from(n).ok())
-                .filter(|line| *line > 0)
-            else {
-                return Response {
-                    id,
-                    result: None,
-                    error: Some(RpcError {
-                        code: error_codes::INVALID_PARAMS,
-                        message: "Missing or out-of-range 'line' parameter (must be 1..=u32::MAX)"
-                            .to_string(),
-                    }),
-                    ..Default::default()
-                };
-            };
-            let condition = match optional_non_empty_string(params, "condition") {
-                Ok(condition) => condition.map(str::to_string),
-                Err(message) => {
-                    return Response::error(id, error_codes::INVALID_PARAMS, message);
-                }
-            };
-
-            // Prefer caller-supplied objectType/objectId; otherwise
-            // resolve from the workspace file_index. Defaulting to (0, 0)
-            // routes the breakpoint at the wrong object — BC accepts the
-            // request but never hits the line.
-            //
-            // `as i32` would silently wrap an out-of-range value; `try_from`
-            // rejects it so an upstream caller bug surfaces instead of
-            // silently routing at the wrong object.
-            let resolved = resolve_object_metadata(workspace, &file);
-            let explicit_type = match optional_i32_param(params, "objectType") {
-                Ok(value) => value,
-                Err(message) => {
-                    return Response::error(id, error_codes::INVALID_PARAMS, message);
-                }
-            };
-            let explicit_id = match optional_i32_param(params, "objectId") {
-                Ok(value) => value,
-                Err(message) => {
-                    return Response::error(id, error_codes::INVALID_PARAMS, message);
-                }
-            };
-            if explicit_type.is_some() != explicit_id.is_some() {
-                return Response::error(
-                    id,
-                    error_codes::INVALID_PARAMS,
-                    "'objectType' and 'objectId' must be supplied together",
-                );
-            }
-            let obj_type = explicit_type.or(resolved.map(|(object_type, _)| object_type));
-            let obj_id = explicit_id.or(resolved.map(|(_, object_id)| object_id));
-
-            let (obj_type, obj_id) = match (obj_type, obj_id) {
-                (Some(t), Some(i)) => (t, i),
-                _ => {
-                    return Response {
-                        id,
-                        result: None,
-                        error: Some(RpcError {
-                            code: error_codes::INVALID_PARAMS,
-                            message: format!(
-                                "Cannot resolve object metadata for breakpoint in {file:?} — \
-                                 file is not indexed and caller did not supply \
-                                 objectType/objectId"
-                            ),
-                        }),
-                        ..Default::default()
-                    };
-                }
-            };
-
-            let mut guard = workspace.debug_session.lock().await;
-            match guard.as_mut() {
-                None => no_session(id),
-                Some(session) => {
-                    let bps: Vec<(u32, Option<&str>)> = vec![(line, condition.as_deref())];
-                    match session.set_breakpoints(&file, &bps, obj_type, obj_id).await {
-                        Ok(verified) => match serialize_each(id, verified, "breakpoint") {
-                            Ok(bp_json) => Response {
-                                id,
-                                result: Some(serde_json::json!({
-                                    "cmd": "breakpoint",
-                                    "breakpoints": bp_json,
-                                })),
-                                error: None,
-                                ..Default::default()
-                            },
-                            Err(err_response) => err_response,
-                        },
-                        Err(e) => Response {
-                            id,
-                            result: None,
-                            error: Some(RpcError {
-                                code: error_codes::INTERNAL_ERROR,
-                                message: format!("set_breakpoints failed: {e}"),
-                            }),
-                            ..Default::default()
-                        },
-                    }
-                }
-            }
-        }
-
-        "state" => {
-            let mut guard = workspace.debug_session.lock().await;
-            match guard.as_mut() {
-                None => no_session(id),
-                Some(session) => match session.state().await {
-                    Ok(state) => serialized_response(id, &state, "state"),
-                    Err(e) => Response {
-                        id,
-                        result: None,
-                        error: Some(RpcError {
-                            code: error_codes::INTERNAL_ERROR,
-                            message: format!("state() failed: {e}"),
-                        }),
-                        ..Default::default()
-                    },
-                },
-            }
-        }
-
-        "stack" => {
-            let mut guard = workspace.debug_session.lock().await;
-            match guard.as_mut() {
-                None => no_session(id),
-                Some(session) => match session.stack().await {
-                    Ok(frames) => Response {
-                        id,
-                        result: Some(serde_json::json!({
-                            "cmd": "stack",
-                            "frames": frames,
-                        })),
-                        error: None,
-                        ..Default::default()
-                    },
-                    Err(e) => Response::error(
-                        id,
-                        error_codes::INTERNAL_ERROR,
-                        format!("stack() failed: {e}"),
-                    ),
-                },
-            }
-        }
-
-        "variables" | "globals" => {
-            let frame_id = match optional_frame_id(params) {
-                Ok(frame_id) => frame_id,
-                Err(message) => {
-                    return Response::error(id, error_codes::INVALID_PARAMS, message);
-                }
-            };
-            let mut guard = workspace.debug_session.lock().await;
-            match guard.as_mut() {
-                None => no_session(id),
-                Some(session) => {
-                    let values = if cmd == "globals" {
-                        session.globals(frame_id).await
-                    } else {
-                        session.variables(frame_id).await
-                    };
-                    match values {
-                        Ok(values) => match serialize_each(id, values, cmd) {
-                            Ok(values) => Response {
-                                id,
-                                result: Some(serde_json::json!({
-                                    "cmd": cmd,
-                                    "frameId": frame_id,
-                                    "variables": values,
-                                })),
-                                error: None,
-                                ..Default::default()
-                            },
-                            Err(err_response) => err_response,
-                        },
-                        Err(e) => Response::error(
-                            id,
-                            error_codes::INTERNAL_ERROR,
-                            format!("{cmd}() failed: {e}"),
-                        ),
-                    }
-                }
-            }
-        }
-
-        "expand" => {
-            let path = match optional_non_empty_string(params, "path") {
-                Ok(Some(path)) => path,
-                Ok(None) => return missing_cmd(id, "Missing 'path' parameter for expand"),
-                Err(message) => {
-                    return Response::error(id, error_codes::INVALID_PARAMS, message);
-                }
-            };
-            let frame_id = match optional_frame_id(params) {
-                Ok(frame_id) => frame_id,
-                Err(message) => {
-                    return Response::error(id, error_codes::INVALID_PARAMS, message);
-                }
-            };
-            let mut guard = workspace.debug_session.lock().await;
-            match guard.as_mut() {
-                None => no_session(id),
-                Some(session) => match session.expand(frame_id, path).await {
-                    Ok(values) => match serialize_each(id, values, "expand") {
-                        Ok(values) => Response {
-                            id,
-                            result: Some(serde_json::json!({
-                                "cmd": "expand",
-                                "frameId": frame_id,
-                                "path": path,
-                                "variables": values,
-                            })),
-                            error: None,
-                            ..Default::default()
-                        },
-                        Err(err_response) => err_response,
-                    },
-                    Err(e) => Response::error(
-                        id,
-                        error_codes::INTERNAL_ERROR,
-                        format!("expand() failed: {e}"),
-                    ),
-                },
-            }
-        }
-
-        "eval" => {
-            let expr = match optional_non_empty_string(params, "expr") {
-                Ok(Some(expression)) => expression.to_string(),
-                Ok(None) => {
-                    return Response::error(
-                        id,
-                        error_codes::INVALID_PARAMS,
-                        "Missing 'expr' parameter",
-                    );
-                }
-                Err(message) => {
-                    return Response::error(id, error_codes::INVALID_PARAMS, message);
-                }
-            };
-            let frame_id = match optional_frame_id(params) {
-                Ok(frame_id) => frame_id,
-                Err(message) => {
-                    return Response::error(id, error_codes::INVALID_PARAMS, message);
-                }
-            };
-
-            let mut guard = workspace.debug_session.lock().await;
-            match guard.as_mut() {
-                None => no_session(id),
-                Some(session) => match session.eval_at(frame_id, &expr).await {
-                    Ok(eval_result) => Response {
-                        id,
-                        result: Some(serde_json::json!({
-                            "cmd": "eval",
-                            "frameId": frame_id,
-                            "result": eval_result.result,
-                            "typeName": eval_result.type_name,
-                        })),
-                        error: None,
-                        ..Default::default()
-                    },
-                    Err(e) => Response {
-                        id,
-                        result: None,
-                        error: Some(RpcError {
-                            code: error_codes::INTERNAL_ERROR,
-                            message: format!("eval() failed: {e}"),
-                        }),
-                        ..Default::default()
-                    },
-                },
-            }
-        }
-
-        "continue" => {
-            let mut guard = workspace.debug_session.lock().await;
-            match guard.as_mut() {
-                None => no_session(id),
-                Some(session) => match session.continue_exec().await {
-                    Ok(state) => serialized_response(id, &state, "continue"),
-                    Err(e) => Response {
-                        id,
-                        result: None,
-                        error: Some(RpcError {
-                            code: error_codes::INTERNAL_ERROR,
-                            message: format!("continue() failed: {e}"),
-                        }),
-                        ..Default::default()
-                    },
-                },
-            }
-        }
-
-        "step" => {
-            let step_type = match optional_non_empty_string(params, "stepType") {
-                Ok(None | Some("over")) => "over",
-                Ok(Some("in" | "into")) => "in",
-                Ok(Some("out")) => "out",
-                Ok(Some(other)) => {
-                    return Response::error(
-                        id,
-                        error_codes::INVALID_PARAMS,
-                        format!("'stepType' must be 'over', 'in'/'into', or 'out'; got '{other}'"),
-                    );
-                }
-                Err(message) => {
-                    return Response::error(id, error_codes::INVALID_PARAMS, message);
-                }
-            };
-
-            let mut guard = workspace.debug_session.lock().await;
-            match guard.as_mut() {
-                None => no_session(id),
-                Some(session) => match session.step(step_type).await {
-                    Ok(state) => serialized_response(id, &state, "step"),
-                    Err(e) => Response {
-                        id,
-                        result: None,
-                        error: Some(RpcError {
-                            code: error_codes::INTERNAL_ERROR,
-                            message: format!("step() failed: {e}"),
-                        }),
-                        ..Default::default()
-                    },
-                },
-            }
-        }
-
-        "history" => {
-            let var_filter = match optional_non_empty_string(params, "var") {
-                Ok(value) => value.map(str::to_string),
-                Err(message) => {
-                    return Response::error(id, error_codes::INVALID_PARAMS, message);
-                }
-            };
-
-            let guard = workspace.debug_session.lock().await;
-            match guard.as_ref() {
-                None => no_session(id),
-                Some(session) => {
-                    let history = session.history(var_filter.as_deref());
-                    match serialize_each(id, history, "history") {
-                        Ok(hits) => Response {
-                            id,
-                            result: Some(serde_json::json!({
-                                "cmd": "history",
-                                "hits": hits,
-                            })),
-                            error: None,
-                            ..Default::default()
-                        },
-                        Err(err_response) => err_response,
-                    }
-                }
-            }
-        }
-
-        "stop" => {
-            let mut guard = workspace.debug_session.lock().await;
-            match guard.as_mut() {
-                // No active session: say so instead of claiming a stop
-                // happened (`debug stop` printed
-                // "Debug session stopped." on a machine with no session).
-                None => Response {
-                    id,
-                    result: Some(
-                        serde_json::json!({"cmd": "stop", "status": "no active debug session"}),
-                    ),
-                    error: None,
-                    ..Default::default()
-                },
-                Some(session) => {
-                    let stop_result = session.stop().await;
-                    *guard = None;
-                    match stop_result {
-                        Ok(()) => Response {
-                            id,
-                            result: Some(serde_json::json!({"cmd": "stop", "status": "stopped"})),
-                            error: None,
-                            ..Default::default()
-                        },
-                        Err(e) => Response {
-                            id,
-                            result: None,
-                            error: Some(RpcError {
-                                code: error_codes::INTERNAL_ERROR,
-                                message: format!("stop() failed: {e}"),
-                            }),
-                            ..Default::default()
-                        },
-                    }
-                }
-            }
-        }
+        "start" => debug_start(workspace, id, params).await,
+        "breakpoint" => debug_breakpoint(workspace, id, params).await,
+        "state" => debug_state(workspace, id, params).await,
+        "stack" => debug_stack(workspace, id, params).await,
+        "variables" | "globals" => debug_variables(workspace, id, params, cmd).await,
+        "expand" => debug_expand(workspace, id, params).await,
+        "eval" => debug_eval(workspace, id, params).await,
+        "continue" => debug_continue(workspace, id, params).await,
+        "step" => debug_step(workspace, id, params).await,
+        "history" => debug_history(workspace, id, params).await,
+        "stop" => debug_stop(workspace, id, params).await,
 
         other => Response {
             id,
