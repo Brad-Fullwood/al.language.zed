@@ -267,7 +267,7 @@ dependencies = [
 name = "al-protocol"
 version = "0.2.2"
 dependencies = [
- "getrandom 0.2.17",
+ "getrandom 0.4.2",
  "interprocess",
  "libc",
  "serde",

@@ -66,7 +66,7 @@ pub fn shared_secret(runtime_dir: &Path) -> std::io::Result<Vec<u8>> {
     }
 
     let mut secret = vec![0u8; SECRET_BYTES];
-    getrandom::getrandom(&mut secret)
+    getrandom::fill(&mut secret)
         .map_err(|error| std::io::Error::other(format!("no randomness available: {error}")))?;
     match create_secret_file(&path, &secret) {
         Ok(()) => Ok(secret),
@@ -133,7 +133,7 @@ pub fn proof(secret: &[u8], nonce: &str, identity: &BuildIdentity) -> String {
 #[must_use]
 pub fn nonce() -> String {
     let mut bytes = [0u8; 16];
-    if getrandom::getrandom(&mut bytes).is_err() {
+    if getrandom::fill(&mut bytes).is_err() {
         // Without randomness there is no challenge to make, and a fixed nonce
         // would be worse than none: the client treats a missing proof as a
         // daemon it cannot verify.
