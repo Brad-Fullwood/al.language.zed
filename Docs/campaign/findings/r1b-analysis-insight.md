@@ -335,7 +335,9 @@ Files the first checklist does not list at all:
   field ends up renamed in its declaration only. `Rec."Posting Date"` resolves and is renamed.
 - fix: resolve a bare name inside a table's member against the table's own fields (implicit `Rec`),
   in `queries/definition.rs` or in `enclosing_declaration_name`'s fallback.
-- status: open
+- status: fixed d5c4795e — `definition()` resolves a bare name inside a `table` or `tableextension`
+  member against that object's own fields, below the type resolver so a local still shadows a
+  field, and scoped to the enclosing object declaration.
 
 ## Not covered by this pass
 
