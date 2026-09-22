@@ -257,6 +257,68 @@ fn a_program_path_inside_the_worktree_is_refused() {
     assert!(!is_worktree_resident_program("   ", root));
 }
 
+/// The same program, spelled so that a string comparison misses it. Each of
+/// these names `/home/me/src/SomeApp/tools/al-lsp`, the executable the clone
+/// carries, and `find_or_download_binary` returns a configured path before any
+/// checksum is verified.
+#[test]
+fn a_worktree_program_is_refused_however_the_path_is_spelled() {
+    use crate::settings::is_worktree_resident_program;
+
+    let root = "/home/me/src/SomeApp";
+    for path in [
+        "/home/me/src/../src/SomeApp/tools/al-lsp",
+        "/home/me/src/SomeApp/./tools/al-lsp",
+        "/home/me/src//SomeApp/tools/al-lsp",
+        "/home/me/src/SomeApp/tools/../tools/dotnet",
+        "/home/me/src/SomeApp/",
+        "/home/me/src/SomeApp/tools/",
+    ] {
+        assert!(
+            is_worktree_resident_program(path, root),
+            "{path} is inside {root}"
+        );
+    }
+
+    // A Windows worktree, where the same directory is spelled in any case and
+    // with either separator.
+    let windows_root = r"C:\Users\Me\src\SomeApp";
+    for path in [
+        r"c:\users\me\src\someapp\tools\al-lsp.exe",
+        r"C:\Users\Me\src\..\src\SomeApp\tools\al-lsp.exe",
+        r"C:/Users/Me/src/SomeApp/tools/al-lsp.exe",
+        r"C:\Users\Me\src\SomeApp\\tools\al-lsp.exe",
+    ] {
+        assert!(
+            is_worktree_resident_program(path, windows_root),
+            "{path} is inside {windows_root}"
+        );
+    }
+
+    // A path that climbs above the filesystem root means nothing, so it is
+    // refused rather than interpreted.
+    assert!(is_worktree_resident_program("/../../etc/al-lsp", root));
+
+    // Normalisation must not start accepting a path that is genuinely outside.
+    for path in [
+        "/home/me/src/SomeApp/../Other/tools/al-lsp",
+        "/home/me/src/SomeAppOther/tools/al-lsp",
+        r"C:\Users\Me\src\SomeAppOther\tools\al-lsp.exe",
+        "/usr/bin/dotnet",
+    ] {
+        assert!(
+            !is_worktree_resident_program(path, root)
+                && !is_worktree_resident_program(path, windows_root),
+            "{path} is outside both roots"
+        );
+    }
+
+    // A non-ASCII path used to index into the middle of a character while
+    // looking for a drive letter. It names no filesystem root, so it counts as
+    // worktree-relative and is refused.
+    assert!(is_worktree_resident_program("é:/tools/al-lsp", root));
+}
+
 /// `set_nested_value_inner` used to bail out silently when an intermediate
 /// path element already held a non-object scalar, dropping the deeper
 /// setting with no error or fallback (e.g. `"al.formatting": "x"` alongside

@@ -18,6 +18,11 @@ pub(super) use tests_dispatch::*;
 pub(super) use xliff::*;
 
 use super::rpc_error;
+// One helper, in `daemon/mod.rs`. This module used to declare a second with the
+// same name and its last two arguments swapped, and because both are generic
+// over `Serialize` and `&str` is `Serialize`, moving a dispatcher between the
+// two modules compiled and answered with the label.
+pub(super) use super::serialized_response;
 use al_protocol::jsonrpc::{error_codes, Response};
 use al_workspace::Workspace;
 
@@ -40,39 +45,23 @@ pub(crate) fn scan_error_response(id: u64, error: &al_source::file_index::ScanEr
     rpc_error(id, code, &error.to_string())
 }
 
-fn serialized_response<T: serde::Serialize>(id: u64, label: &str, value: &T) -> Response {
-    match serde_json::to_value(value) {
-        Ok(value) => Response {
-            id,
-            result: Some(value),
-            error: None,
-            ..Default::default()
-        },
-        Err(error) => rpc_error(
-            id,
-            error_codes::INTERNAL_ERROR,
-            &format!("serialize {label} failed: {error}"),
-        ),
-    }
-}
-
 pub(super) fn dispatch_obsolete(workspace: &Workspace, id: u64) -> Response {
     match al_analysis::queries::obsolescence::obsolescence_timeline(workspace) {
-        Ok(entries) => serialized_response(id, "obsolescence timeline", &entries),
+        Ok(entries) => serialized_response(id, &entries, "obsolescence timeline"),
         Err(error) => rpc_error(id, error_codes::INTERNAL_ERROR, &error.to_string()),
     }
 }
 
 pub(super) fn dispatch_audit_data_classification(workspace: &Workspace, id: u64) -> Response {
     match al_analysis::queries::audit::data_classification_audit(workspace) {
-        Ok(entries) => serialized_response(id, "data-classification audit", &entries),
+        Ok(entries) => serialized_response(id, &entries, "data-classification audit"),
         Err(error) => rpc_error(id, error_codes::INTERNAL_ERROR, &error.to_string()),
     }
 }
 
 pub(super) fn dispatch_permission_set_audit(workspace: &Workspace, id: u64) -> Response {
     match al_analysis::queries::audit::permission_set_audit(workspace) {
-        Ok(entries) => serialized_response(id, "permission-set audit", &entries),
+        Ok(entries) => serialized_response(id, &entries, "permission-set audit"),
         Err(error) => rpc_error(id, error_codes::INTERNAL_ERROR, &error.to_string()),
     }
 }
@@ -308,7 +297,7 @@ pub(super) async fn dispatch_breaking_changes(
         Ok(changes) => changes,
         Err(error) => return rpc_error(id, error_codes::CODE_ANALYSIS_ERROR, &error),
     };
-    serialized_response(id, "breaking-change report", &changes)
+    serialized_response(id, &changes, "breaking-change report")
 }
 
 pub(super) fn dispatch_find_duplicates(
@@ -353,7 +342,7 @@ pub(super) fn dispatch_find_duplicates(
         },
     };
     match al_analysis::queries::duplicates::find_duplicates(workspace, min_tokens, min_similarity) {
-        Ok(duplicates) => serialized_response(id, "duplicate report", &duplicates),
+        Ok(duplicates) => serialized_response(id, &duplicates, "duplicate report"),
         Err(
             error @ (al_analysis::queries::duplicates::DuplicateError::InvalidMinTokens { .. }
             | al_analysis::queries::duplicates::DuplicateError::InvalidMinSimilarity {
@@ -381,7 +370,7 @@ pub(super) async fn dispatch_upgrade_report(
         Ok(issues) => issues,
         Err(error) => return rpc_error(id, error_codes::CODE_ANALYSIS_ERROR, &error),
     };
-    serialized_response(id, "upgrade report", &issues)
+    serialized_response(id, &issues, "upgrade report")
 }
 
 pub(super) fn dispatch_sql_patterns(
@@ -390,7 +379,7 @@ pub(super) fn dispatch_sql_patterns(
     _params: &serde_json::Value,
 ) -> Response {
     match al_analysis::queries::sql_patterns::detect_sql_patterns(workspace) {
-        Ok(findings) => serialized_response(id, "SQL-pattern report", &findings),
+        Ok(findings) => serialized_response(id, &findings, "SQL-pattern report"),
         Err(error) => rpc_error(id, error_codes::INTERNAL_ERROR, &error.to_string()),
     }
 }

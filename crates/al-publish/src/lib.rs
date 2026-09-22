@@ -348,14 +348,14 @@ fn resolve_server_config(
     }?;
 
     // Publishing sends the user's Business Central credential to the server
-    // this repository's launch file names.
+    // this repository's launch file names. The credential comes from the
+    // environment (`BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`), so
+    // it is the target the repository chose that needs authorising, not a
+    // cached token: nothing in publish reads the OAuth cache.
     al_project::trust::authorize_cached_credential(
         project_root,
         &al_project::trust::BcTarget::from_launch(&chosen),
-        match chosen.authentication {
-            al_bc::launch::AuthMethod::AAD => al_project::trust::CredentialKind::Bearer,
-            _ => al_project::trust::CredentialKind::Basic,
-        },
+        al_project::trust::CredentialKind::Environment,
         al_project::trust::TargetSource::Repository,
     )
     .map_err(PublishError::Unauthorized)?;
@@ -596,7 +596,15 @@ mod tests {
 
         match resolve_server_config(dir.path(), None) {
             Err(PublishError::Unauthorized(message)) => {
-                assert!(message.contains("not trusted"), "{message}")
+                assert!(message.contains("not trusted"), "{message}");
+                // Publish reads `BC_ACCESS_TOKEN` or `BC_USERNAME`/`BC_PASSWORD`
+                // from the environment and never touches the OAuth cache, so a
+                // refusal that names a cached token describes the wrong thing.
+                assert!(
+                    message.contains("Business Central credentials"),
+                    "{message}"
+                );
+                assert!(!message.contains("cached"), "{message}");
             }
             other => panic!("expected Unauthorized, got {other:?}"),
         }

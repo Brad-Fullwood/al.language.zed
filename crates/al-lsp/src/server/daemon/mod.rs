@@ -826,12 +826,186 @@ pub(crate) async fn dispatch_request(
 ) -> Response {
     let method = req.method.clone();
     let params = req.params.clone().unwrap_or(serde_json::Value::Null);
+    let declared = DISPATCHERS
+        .iter()
+        .find(|dispatcher| dispatcher.method == method);
+    if declared.is_some_and(|dispatcher| dispatcher.credential == CredentialUse::Authorized) {
+        // The methods that can put a Business Central credential on the wire,
+        // named in the log before they do it.
+        tracing::info!(%method, "daemon: request may spend a Business Central credential");
+    }
     let response = dispatch_method(workspace, req, shutdown).await;
+    let response = path_refusal_advice(declared, response);
     // `scope` first, so a `limit` counts the rows that survive it rather than
     // the rows it was about to drop. Both are applied once, here, for every
     // method that takes them. See `scope` and `projection`.
     let response = scope::apply(workspace, &method, &params, response);
     projection::apply(&method, &params, response)
+}
+
+/// Tell a caller whose path was refused what it can do instead, which depends
+/// on whether the method would have written the file.
+///
+/// `al-explorer` acts on the code alone, but the same refusal reaches an agent
+/// through MCP's `al_call`, where the message is all there is.
+fn path_refusal_advice(declared: Option<&Dispatcher>, mut response: Response) -> Response {
+    let Some(dispatcher) = declared else {
+        return response;
+    };
+    if let Some(error) = response.error.as_mut() {
+        if error.code == error_codes::PATH_NOT_AUTHORIZED {
+            match dispatcher.path {
+                PathUse::Read => error.message.push_str(
+                    "; send the file's 'text' with the request to have that content analysed \
+                     without the daemon opening the path",
+                ),
+                PathUse::Write => error.message.push_str(
+                    "; this method rewrites the file it names, so it takes a path inside the \
+                     project and nothing else",
+                ),
+                PathUse::None => {}
+            }
+        }
+    }
+    response
+}
+
+/// What a method does with a path its caller names.
+///
+/// Declared beside the arm that routes to it, because the arm is generated
+/// from the declaration: [`dispatch_table!`] builds [`DISPATCHERS`] and the
+/// dispatch match from the same list, so a method cannot be dispatched without
+/// stating what it reaches, and the tests below drive every entry. `rename`
+/// took a `uri` straight to the filesystem for a release because nothing tied
+/// the arm to the check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PathUse {
+    /// Opens no path the caller names. A `file` that only identifies an
+    /// already-indexed object, the way `debug breakpoint` uses it, is none of
+    /// it: nothing is opened.
+    None,
+    /// Reads the one file its `uri`/`file` names, through
+    /// [`read_document_from_params`], and accepts `text` in place of a path
+    /// the daemon may not open.
+    Read,
+    /// Rewrites the file its `uri`/`file` names, through
+    /// [`file_uri_from_params`], which takes no `text`.
+    Write,
+}
+
+impl PathUse {
+    /// Fold the capabilities one arm declares into a single value.
+    const fn or(self, other: Self) -> Self {
+        match self {
+            Self::None => other,
+            declared => declared,
+        }
+    }
+}
+
+/// Which Business Central credential a method can spend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CredentialUse {
+    /// Only what the request or the user's own environment carries, against a
+    /// target the caller chose.
+    Caller,
+    /// A credential the daemon holds, or the user's own sent to a server named
+    /// by a file the repository carries. Both go through
+    /// `al_project::trust::authorize_cached_credential`.
+    Authorized,
+}
+
+impl CredentialUse {
+    const fn or(self, other: Self) -> Self {
+        match self {
+            Self::Caller => other,
+            declared => declared,
+        }
+    }
+}
+
+/// One dispatched method and what it reaches.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Dispatcher {
+    pub(crate) method: &'static str,
+    pub(crate) path: PathUse,
+    pub(crate) credential: CredentialUse,
+}
+
+macro_rules! declared_path {
+    (read) => {
+        PathUse::Read
+    };
+    (write) => {
+        PathUse::Write
+    };
+    (authorized) => {
+        PathUse::None
+    };
+}
+
+macro_rules! declared_credential {
+    (read) => {
+        CredentialUse::Caller
+    };
+    (write) => {
+        CredentialUse::Caller
+    };
+    (authorized) => {
+        CredentialUse::Authorized
+    };
+}
+
+/// Build [`DISPATCHERS`] and the method match from one list of arms.
+///
+/// The capabilities in brackets are the ones [`PathUse`] and [`CredentialUse`]
+/// define: `read`, `write`, `authorized`. An arm that declares none reaches
+/// neither a caller-named path nor a credential.
+macro_rules! dispatch_table {
+    (
+        ($workspace:ident, $method:ident, $id:ident, $params:ident, $shutdown:ident)
+        $( $name:literal [$($cap:ident),*] => $body:expr, )*
+    ) => {
+        /// Every method the daemon dispatches, with what each one reaches.
+        pub(crate) const DISPATCHERS: &[Dispatcher] = &[
+            $(Dispatcher {
+                method: $name,
+                path: PathUse::None $(.or(declared_path!($cap)))*,
+                credential: CredentialUse::Caller $(.or(declared_credential!($cap)))*,
+            },)*
+        ];
+
+        async fn dispatch_known_method(
+            $workspace: &std::sync::Arc<Workspace>,
+            $method: &str,
+            $id: u64,
+            $params: serde_json::Value,
+            $shutdown: &Notify,
+        ) -> Response {
+            match $method {
+                $($name => $body,)*
+                unknown => unknown_method($id, unknown),
+            }
+        }
+    };
+}
+
+/// The answer for a method the daemon does not dispatch.
+///
+/// A method that differs only in case is named, because the spelling is the
+/// whole of that mistake and an agent calling `al_call` has no completion to
+/// correct it with.
+fn unknown_method(id: u64, method: &str) -> Response {
+    let suggestion = DISPATCHERS
+        .iter()
+        .find(|dispatcher| dispatcher.method.eq_ignore_ascii_case(method))
+        .map(|dispatcher| format!(". Did you mean '{}'?", dispatcher.method))
+        .unwrap_or_default();
+    rpc_error(
+        id,
+        error_codes::METHOD_NOT_FOUND,
+        &format!("Unknown method: {method}{suggestion}"),
+    )
 }
 
 async fn dispatch_method(
@@ -843,176 +1017,179 @@ async fn dispatch_method(
     // connection loop restores the original id on the wire.
     let id = req.dispatch_id();
     let params = req.params.unwrap_or(serde_json::Value::Null);
+    dispatch_known_method(workspace, &req.method, id, params, shutdown).await
+}
 
-    match req.method.as_str() {
-        "hover" => lsp_dispatch::dispatch_hover(workspace, id, &params).await,
-        "definition" => lsp_dispatch::dispatch_definition(workspace, id, &params),
-        "references" => lsp_dispatch::dispatch_references(workspace, id, &params),
-        "implementations" => lsp_dispatch::dispatch_implementations(workspace, id, &params),
-        "completions" => lsp_dispatch::dispatch_completions(workspace, id, &params).await,
-        "signatureHelp" => lsp_dispatch::dispatch_signature_help(workspace, id, &params),
-        "rename" => lsp_dispatch::dispatch_rename(workspace, id, &params),
-        "documentSymbols" => lsp_dispatch::dispatch_document_symbols(workspace, id, &params),
-        "foldingRanges" => lsp_dispatch::dispatch_folding_ranges(workspace, id, &params),
-        "semanticTokens" => lsp_dispatch::dispatch_semantic_tokens(workspace, id, &params),
-        "inlayHints" => lsp_dispatch::dispatch_inlay_hints(workspace, id, &params),
-        "codeActions" => lsp_dispatch::dispatch_code_actions(workspace, id, &params),
-        "search" => lsp_dispatch::dispatch_search(workspace, id, &params),
-        "object" => lsp_dispatch::dispatch_object(workspace, id, &params),
-        "byId" => lsp_dispatch::dispatch_by_id(workspace, id, &params),
-        "events" => lsp_dispatch::dispatch_events(workspace, id, &params),
-        "subscribers" => lsp_dispatch::dispatch_subscribers(workspace, id, &params),
-        "composed" => lsp_dispatch::dispatch_composed(workspace, id, &params),
-        "packages" => lsp_dispatch::dispatch_packages(workspace, id),
-        "deps" => lsp_dispatch::dispatch_deps(workspace, id),
-        "lint" => build_dispatch::dispatch_lint(workspace, id, &params).await,
-        "format" => build_dispatch::dispatch_format(workspace, id, &params).await,
-        "fix" => build_dispatch::dispatch_fix(workspace, id, &params),
-        "fix.applicationArea" => {
+dispatch_table! {
+    (workspace, method, id, params, shutdown)
+        "hover" [read] => lsp_dispatch::dispatch_hover(workspace, id, &params).await,
+        "definition" [read] => lsp_dispatch::dispatch_definition(workspace, id, &params),
+        "references" [read] => lsp_dispatch::dispatch_references(workspace, id, &params),
+        "implementations" [read] => lsp_dispatch::dispatch_implementations(workspace, id, &params),
+        "completions" [read] => lsp_dispatch::dispatch_completions(workspace, id, &params).await,
+        "signatureHelp" [read] => lsp_dispatch::dispatch_signature_help(workspace, id, &params),
+        "rename" [read] => lsp_dispatch::dispatch_rename(workspace, id, &params),
+        "documentSymbols" [read] => lsp_dispatch::dispatch_document_symbols(workspace, id, &params),
+        "foldingRanges" [read] => lsp_dispatch::dispatch_folding_ranges(workspace, id, &params),
+        "semanticTokens" [read] => lsp_dispatch::dispatch_semantic_tokens(workspace, id, &params),
+        "inlayHints" [read] => lsp_dispatch::dispatch_inlay_hints(workspace, id, &params),
+        "codeActions" [read] => lsp_dispatch::dispatch_code_actions(workspace, id, &params),
+        "search" [] => lsp_dispatch::dispatch_search(workspace, id, &params),
+        "object" [] => lsp_dispatch::dispatch_object(workspace, id, &params),
+        "byId" [] => lsp_dispatch::dispatch_by_id(workspace, id, &params),
+        "events" [] => lsp_dispatch::dispatch_events(workspace, id, &params),
+        "subscribers" [] => lsp_dispatch::dispatch_subscribers(workspace, id, &params),
+        "composed" [] => lsp_dispatch::dispatch_composed(workspace, id, &params),
+        "packages" [] => lsp_dispatch::dispatch_packages(workspace, id),
+        "deps" [] => lsp_dispatch::dispatch_deps(workspace, id),
+        "lint" [read] => build_dispatch::dispatch_lint(workspace, id, &params).await,
+        "format" [write] => build_dispatch::dispatch_format(workspace, id, &params).await,
+        "fix" [write] => build_dispatch::dispatch_fix(workspace, id, &params),
+        "fix.applicationArea" [] => {
             build_dispatch::dispatch_fix_application_area(workspace, id, &params)
-        }
-        "fix.tooltips" => build_dispatch::dispatch_fix_tooltips(workspace, id, &params),
-        "fix.dataClassification" => {
+        },
+        "fix.tooltips" [] => build_dispatch::dispatch_fix_tooltips(workspace, id, &params),
+        "fix.dataClassification" [] => {
             build_dispatch::dispatch_fix_data_classification(workspace, id, &params)
-        }
-        "rules" => build_dispatch::dispatch_rules(id),
-        "parse" => build_dispatch::dispatch_parse(workspace, id, &params),
-        "metrics" => build_dispatch::dispatch_metrics(workspace, id, &params),
-        "sqlPatterns" => build_dispatch::dispatch_sql_patterns(workspace, id, &params),
-        "sortMembers" => build_dispatch::dispatch_sort_members(workspace, id, &params),
-        "organizeFiles" => build_dispatch::dispatch_organize_files(workspace, id, &params),
-        "source" => build_dispatch::dispatch_source(workspace, id, &params),
-        "eventSource" => build_dispatch::dispatch_event_source(workspace, id, &params),
-        "location" => build_dispatch::dispatch_location(workspace, id, &params),
-        "trace" => {
+        },
+        "rules" [] => build_dispatch::dispatch_rules(id),
+        "parse" [read] => build_dispatch::dispatch_parse(workspace, id, &params),
+        "metrics" [read] => build_dispatch::dispatch_metrics(workspace, id, &params),
+        "sqlPatterns" [] => build_dispatch::dispatch_sql_patterns(workspace, id, &params),
+        "sortMembers" [write] => build_dispatch::dispatch_sort_members(workspace, id, &params),
+        "organizeFiles" [] => build_dispatch::dispatch_organize_files(workspace, id, &params),
+        "source" [] => build_dispatch::dispatch_source(workspace, id, &params),
+        "eventSource" [] => build_dispatch::dispatch_event_source(workspace, id, &params),
+        "location" [] => build_dispatch::dispatch_location(workspace, id, &params),
+        "trace" [] => {
             let (ws, args) = (Arc::clone(workspace), params.clone());
             offload(id, "trace", move || {
                 insight_dispatch::dispatch_trace(&ws, id, &args)
             })
             .await
-        }
-        "entrypoints" => {
+        },
+        "entrypoints" [] => {
             let ws = Arc::clone(workspace);
             offload(id, "entrypoints", move || {
                 insight_dispatch::dispatch_entrypoints(&ws, id)
             })
             .await
-        }
-        "graphExport" => {
+        },
+        "graphExport" [] => {
             let (ws, args) = (Arc::clone(workspace), params.clone());
             offload(id, "graphExport", move || {
                 insight_dispatch::dispatch_graph_export(&ws, id, &args)
             })
             .await
-        }
-        "insightStats" => {
+        },
+        "insightStats" [] => {
             let ws = Arc::clone(workspace);
             offload(id, "insightStats", move || {
                 insight_dispatch::dispatch_insight_stats(&ws, id)
             })
             .await
-        }
-        "deadCode" => {
+        },
+        "deadCode" [] => {
             let ws = Arc::clone(workspace);
             offload(id, "deadCode", move || {
                 insight_dispatch::dispatch_dead_code(&ws, id)
             })
             .await
-        }
-        "nativeCheck" => insight_dispatch::dispatch_native_check(workspace, id).await,
-        "impact" => {
+        },
+        "nativeCheck" [] => insight_dispatch::dispatch_native_check(workspace, id).await,
+        "impact" [] => {
             let (ws, args) = (Arc::clone(workspace), params.clone());
             offload(id, "impact", move || {
                 insight_dispatch::dispatch_impact(&ws, id, &args)
             })
             .await
-        }
-        "tableImpact" => {
+        },
+        "tableImpact" [] => {
             let (ws, args) = (Arc::clone(workspace), params.clone());
             offload(id, "tableImpact", move || {
                 insight_dispatch::dispatch_table_impact(&ws, id, &args)
             })
             .await
-        }
-        "suggestEvent" => {
+        },
+        "suggestEvent" [] => {
             let (ws, args) = (Arc::clone(workspace), params.clone());
             offload(id, "suggestEvent", move || {
                 insight_dispatch::dispatch_suggest_event(&ws, id, &args)
             })
             .await
-        }
-        "traceChain" => {
+        },
+        "traceChain" [] => {
             let (ws, args) = (Arc::clone(workspace), params.clone());
             offload(id, "traceChain", move || {
                 insight_dispatch::dispatch_trace_chain(&ws, id, &args)
             })
             .await
-        }
-        "eventMap" => {
+        },
+        "eventMap" [] => {
             let ws = Arc::clone(workspace);
             offload(id, "eventMap", move || {
                 insight_dispatch::dispatch_event_map(&ws, id)
             })
             .await
-        }
-        "freeIds" => build_dispatch::dispatch_free_ids(workspace, id, &params).await,
-        "permissions" => build_dispatch::dispatch_permissions(workspace, id, &params),
-        "compile" => build_dispatch::dispatch_compile(workspace, id).await,
-        "package" => build_dispatch::dispatch_package(workspace, id).await,
-        "publish" => build_dispatch::dispatch_publish(workspace, id, &params).await,
-        "newProject" => build_dispatch::dispatch_new_project(workspace, id, &params),
-        "errorCodes" => build_dispatch::dispatch_error_codes(workspace, id).await,
-        "builtinTypes" => build_dispatch::dispatch_builtin_types(workspace, id).await,
-        "setup" => build_dispatch::dispatch_setup(workspace, id),
-        "clearCache" => build_dispatch::dispatch_clear_cache(id).await,
-        "authenticate" => build_dispatch::dispatch_authenticate(workspace, id, &params).await,
-        "downloadSymbols" => {
+        },
+        "freeIds" [] => build_dispatch::dispatch_free_ids(workspace, id, &params).await,
+        "permissions" [] => build_dispatch::dispatch_permissions(workspace, id, &params),
+        "compile" [] => build_dispatch::dispatch_compile(workspace, id).await,
+        "package" [] => build_dispatch::dispatch_package(workspace, id).await,
+        "publish" [authorized] => build_dispatch::dispatch_publish(workspace, id, &params).await,
+        "newProject" [] => build_dispatch::dispatch_new_project(workspace, id, &params),
+        "errorCodes" [] => build_dispatch::dispatch_error_codes(workspace, id).await,
+        "builtinTypes" [] => build_dispatch::dispatch_builtin_types(workspace, id).await,
+        "setup" [] => build_dispatch::dispatch_setup(workspace, id),
+        "clearCache" [] => build_dispatch::dispatch_clear_cache(id).await,
+        "authenticate" [] => build_dispatch::dispatch_authenticate(workspace, id, &params).await,
+        "downloadSymbols" [authorized] => {
             build_dispatch::dispatch_download_symbols(workspace, id, &params).await
-        }
-        "debug" => debug_dispatch::dispatch_debug(workspace, id, &params).await,
-        "snapshot" => build_dispatch::dispatch_snapshot(workspace, id, &params).await,
-        "profiling" => build_dispatch::dispatch_profiling(workspace, id, &params).await,
-        "xlf.generate" => build_dispatch::dispatch_xlf_generate(workspace, id, &params).await,
-        "xlf.refresh" => build_dispatch::dispatch_xlf_refresh(workspace, id, &params).await,
-        "xlf.untranslated" => build_dispatch::dispatch_xlf_untranslated(id, &params),
-        "xlf.suggest" => build_dispatch::dispatch_xlf_suggest(workspace, id, &params).await,
-        "tests.discover" => build_dispatch::dispatch_tests_discover(workspace, id),
-        "tests.run" => build_dispatch::dispatch_tests_run(workspace, id, &params).await,
-        "tests.coverage" => build_dispatch::dispatch_tests_coverage(workspace, id),
-        "tests.run_batch" => build_dispatch::dispatch_tests_run_batch(workspace, id, &params).await,
-        "tests.run_auto" => build_dispatch::dispatch_tests_run_auto(workspace, id, &params).await,
-        "tests.last_results" => {
+        },
+        "debug" [authorized] => debug_dispatch::dispatch_debug(workspace, id, &params).await,
+        "snapshot" [] => build_dispatch::dispatch_snapshot(workspace, id, &params).await,
+        "profiling" [] => build_dispatch::dispatch_profiling(workspace, id, &params).await,
+        "xlf.generate" [] => build_dispatch::dispatch_xlf_generate(workspace, id, &params).await,
+        "xlf.refresh" [] => build_dispatch::dispatch_xlf_refresh(workspace, id, &params).await,
+        "xlf.untranslated" [] => build_dispatch::dispatch_xlf_untranslated(id, &params),
+        "xlf.suggest" [] => build_dispatch::dispatch_xlf_suggest(workspace, id, &params).await,
+        "tests.discover" [] => build_dispatch::dispatch_tests_discover(workspace, id),
+        "tests.run" [] => build_dispatch::dispatch_tests_run(workspace, id, &params).await,
+        "tests.coverage" [] => build_dispatch::dispatch_tests_coverage(workspace, id),
+        "tests.run_batch" [] => build_dispatch::dispatch_tests_run_batch(workspace, id, &params).await,
+        "tests.run_auto" [] => build_dispatch::dispatch_tests_run_auto(workspace, id, &params).await,
+        "tests.last_results" [] => {
             build_dispatch::dispatch_tests_last_results(workspace, id, &params).await
-        }
-        "tests.affected" => build_dispatch::dispatch_tests_affected(workspace, id, &params),
-        "tests.classify" => build_dispatch::dispatch_tests_classify(workspace, id),
-        "tests.snapshot_validate" => {
+        },
+        "tests.affected" [] => build_dispatch::dispatch_tests_affected(workspace, id, &params),
+        "tests.classify" [] => build_dispatch::dispatch_tests_classify(workspace, id),
+        "tests.snapshot_validate" [] => {
             build_dispatch::dispatch_tests_snapshot_validate(workspace, id, &params).await
-        }
-        "tests.snapshot_capture" => {
+        },
+        "tests.snapshot_capture" [authorized] => {
             build_dispatch::dispatch_tests_snapshot_capture(workspace, id, &params).await
-        }
-        "tests.snapshot_replay" => {
+        },
+        "tests.snapshot_replay" [authorized] => {
             build_dispatch::dispatch_tests_snapshot_replay(workspace, id, &params).await
-        }
-        "tests.snapshot_diff" => {
+        },
+        "tests.snapshot_diff" [] => {
             build_dispatch::dispatch_tests_snapshot_diff(workspace, id, &params).await
-        }
-        "tests.mutate" => build_dispatch::dispatch_tests_mutate(workspace, id, &params).await,
-        "generate" => build_dispatch::dispatch_generate(workspace, id, &params),
-        "obsolete" => build_dispatch::dispatch_obsolete(workspace, id),
-        "audit.dataClassification" => {
+        },
+        "tests.mutate" [] => build_dispatch::dispatch_tests_mutate(workspace, id, &params).await,
+        "generate" [] => build_dispatch::dispatch_generate(workspace, id, &params),
+        "obsolete" [] => build_dispatch::dispatch_obsolete(workspace, id),
+        "audit.dataClassification" [] => {
             build_dispatch::dispatch_audit_data_classification(workspace, id)
-        }
-        "permissions.audit" => build_dispatch::dispatch_permission_set_audit(workspace, id),
-        "deps.graph" => build_dispatch::dispatch_deps_graph(workspace, id, &params).await,
-        "breaking" => build_dispatch::dispatch_breaking_changes(workspace, id, &params).await,
-        "arch.lint" => build_dispatch::dispatch_arch_lint(workspace, id).await,
-        "duplicates" => build_dispatch::dispatch_find_duplicates(workspace, id, &params),
-        "upgrade" => build_dispatch::dispatch_upgrade_report(workspace, id, &params).await,
-        "profiler.hints" => build_dispatch::dispatch_profiler_hints(workspace, id, &params),
-        "diag" => dispatch_diag(workspace, id, &params),
-        "ping" => Response {
+        },
+        "permissions.audit" [] => build_dispatch::dispatch_permission_set_audit(workspace, id),
+        "deps.graph" [] => build_dispatch::dispatch_deps_graph(workspace, id, &params).await,
+        "breaking" [] => build_dispatch::dispatch_breaking_changes(workspace, id, &params).await,
+        "arch.lint" [] => build_dispatch::dispatch_arch_lint(workspace, id).await,
+        "duplicates" [] => build_dispatch::dispatch_find_duplicates(workspace, id, &params),
+        "upgrade" [] => build_dispatch::dispatch_upgrade_report(workspace, id, &params).await,
+        "profiler.hints" [] => build_dispatch::dispatch_profiler_hints(workspace, id, &params),
+        "diag" [] => dispatch_diag(workspace, id, &params),
+        "ping" [] => Response {
             id,
             result: Some(serde_json::json!("pong")),
             error: None,
@@ -1021,7 +1198,7 @@ async fn dispatch_method(
         // Which build this daemon came from. A client compares it with its own
         // before it uses a daemon it did not start, and replaces a daemon that
         // answers with a different one. See `al_protocol::identity`.
-        "handshake" => {
+        "handshake" [] => {
             let identity = al_protocol::identity::current_identity();
             Response {
                 id,
@@ -1033,8 +1210,8 @@ async fn dispatch_method(
                 error: None,
                 ..Default::default()
             }
-        }
-        "shutdown" => {
+        },
+        "shutdown" [] => {
             tracing::info!("daemon: shutdown requested");
             shutdown.notify_one();
             Response {
@@ -1043,8 +1220,8 @@ async fn dispatch_method(
                 error: None,
                 ..Default::default()
             }
-        }
-        "status" => {
+        },
+        "status" [] => {
             // Read the project before taking the std RwLock guards below: a
             // guard held across an await makes this dispatch future non-Send.
             let launch_config_error = workspace
@@ -1103,17 +1280,7 @@ async fn dispatch_method(
                 error: None,
                 ..Default::default()
             }
-        }
-        _ => Response {
-            id,
-            result: None,
-            error: Some(RpcError {
-                code: error_codes::METHOD_NOT_FOUND,
-                message: format!("Unknown method: {}", req.method),
-            }),
-            ..Default::default()
         },
-    }
 }
 
 fn dispatch_diag(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
@@ -1298,11 +1465,14 @@ pub(crate) fn serialized_response<T: serde::Serialize>(
             error: None,
             ..Default::default()
         },
-        Err(error) => rpc_error(
-            id,
-            error_codes::INTERNAL_ERROR,
-            &format!("Failed to serialize {method} response: {error}"),
-        ),
+        Err(error) => {
+            tracing::error!(method, %error, "daemon: serializing a result failed");
+            rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("serialization failed for {method}: {error}"),
+            )
+        }
     }
 }
 
@@ -1906,7 +2076,8 @@ mod tests {
         dispatch_diag, dispatch_request, ensure_document, extract_i32, extract_position,
         extract_uri, file_not_found, file_uri_from_params, invalid_params, parse_object_kind,
         read_bounded_line, require_document_text, require_project_root, resolve_idle_timeout,
-        rpc_error, set_test_project_root, DEFAULT_IDLE_TIMEOUT, IDLE_TIMEOUT_ENV,
+        rpc_error, set_test_project_root, CredentialUse, PathUse, DEFAULT_IDLE_TIMEOUT,
+        DISPATCHERS, IDLE_TIMEOUT_ENV,
     };
     use al_protocol::jsonrpc::{error_codes, Request};
     use futures::FutureExt;
@@ -2061,33 +2232,52 @@ mod tests {
         let _ = server.await;
     }
 
-    fn dispatched_method_literals(source: &str) -> BTreeSet<String> {
-        let dispatch = source
-            .split_once("match req.method.as_str() {")
-            .expect("dispatch_request method match")
-            .1
-            .split_once("\n        _ => Response {")
-            .expect("dispatch_request unknown-method arm")
-            .0;
-        dispatch
-            .lines()
-            .filter_map(|line| line.strip_prefix("        \""))
-            .filter_map(|line| line.split_once('"').map(|(method, _)| method))
-            .map(str::to_string)
+    fn dispatched_method_literals() -> BTreeSet<String> {
+        DISPATCHERS
+            .iter()
+            .map(|dispatcher| dispatcher.method.to_string())
             .collect()
+    }
+
+    /// The method names the reference lists as a catalogue: a line that holds
+    /// backticked names, separators and nothing else, with an optional label
+    /// such as `Tests:`. Prose lines that mention a method in passing, and the
+    /// `debug` subcommand list, do not match.
+    fn documented_method_catalog(reference: &str) -> BTreeSet<String> {
+        let mut methods = BTreeSet::new();
+        for line in reference.lines() {
+            // A heading names its subject, not the catalogue: "## Projection:
+            // `limit`, `offset`, `fields`" is three parameters.
+            if line.starts_with('#') {
+                continue;
+            }
+            let body = match line.split_once(": ") {
+                Some((label, rest)) if !label.contains('`') => rest,
+                _ => line,
+            };
+            let outside_ticks = body
+                .split('`')
+                .step_by(2)
+                .all(|text| text.chars().all(|c| matches!(c, ',' | '.' | ' ')));
+            let names = body.split('`').skip(1).step_by(2).collect::<Vec<_>>();
+            if !outside_ticks || names.is_empty() || body.matches('`').count() % 2 != 0 {
+                continue;
+            }
+            methods.extend(names.into_iter().map(str::to_string));
+        }
+        methods
     }
 
     /// The daemon reference and MCP's generic `al_call` promise the complete
     /// dispatcher, not a hand-picked subset. Keep the human reference pinned
-    /// directly to the executable method match so newly registered methods
-    /// cannot become undocumented agent-only knowledge.
+    /// directly to the dispatch table so newly registered methods cannot become
+    /// undocumented agent-only knowledge.
     #[test]
     fn daemon_reference_names_every_dispatched_method() {
-        let source = include_str!("mod.rs");
-        let methods = dispatched_method_literals(source);
+        let methods = dispatched_method_literals();
         assert!(
             methods.len() >= 80,
-            "dispatcher extraction unexpectedly found only {} methods",
+            "the dispatch table unexpectedly holds only {} methods",
             methods.len()
         );
         let reference = include_str!("../../../../../Docs/reference/daemon-methods.md");
@@ -2100,6 +2290,219 @@ mod tests {
             missing.is_empty(),
             "Docs/reference/daemon-methods.md omits dispatched methods: {missing:?}"
         );
+    }
+
+    /// The other direction, which the dispatcher-to-docs check cannot see: a
+    /// method that stopped dispatching, or was renamed, stays in the catalogue
+    /// and a caller follows the reference into `METHOD_NOT_FOUND`.
+    #[test]
+    fn the_reference_catalogue_lists_only_methods_that_dispatch() {
+        let reference = include_str!("../../../../../Docs/reference/daemon-methods.md");
+        let catalogue = documented_method_catalog(reference);
+        assert!(
+            catalogue.len() >= 80,
+            "the catalogue parser found only {} names: {catalogue:?}",
+            catalogue.len()
+        );
+        let dispatched = dispatched_method_literals();
+        let stale = catalogue
+            .difference(&dispatched)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(
+            stale.is_empty(),
+            "Docs/reference/daemon-methods.md lists methods the daemon does not dispatch: {stale:?}"
+        );
+    }
+
+    /// Every method that opens or rewrites the file its caller names refuses a
+    /// path outside the project, driven through the dispatcher rather than
+    /// through the helper the dispatcher is supposed to call. `rename` passed
+    /// the helper's own tests while skipping the helper.
+    #[tokio::test]
+    async fn every_path_dispatcher_refuses_a_file_outside_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let (workspace, _) = project_with_doc(&root);
+        let workspace = std::sync::Arc::new(workspace);
+        let outside = dir.path().join("id_rsa");
+        std::fs::write(&outside, b"PRIVATE KEY").unwrap();
+        let shutdown = Notify::new();
+
+        let mut checked = 0;
+        for dispatcher in DISPATCHERS {
+            if dispatcher.path == PathUse::None {
+                continue;
+            }
+            checked += 1;
+            // Every parameter any path method needs beside the path itself, so
+            // the request reaches the containment check rather than stopping at
+            // a missing argument.
+            let params = serde_json::json!({
+                "file": outside.to_str().unwrap(),
+                "line": 0,
+                "character": 0,
+                "newName": "Renamed",
+                "rule": "AL-NL002",
+            });
+            let response = dispatch_request(
+                &workspace,
+                Request::new(1, dispatcher.method, Some(params)),
+                &shutdown,
+            )
+            .await;
+            let error = response.error.unwrap_or_else(|| {
+                panic!(
+                    "{} answered for a path outside the project",
+                    dispatcher.method
+                )
+            });
+            assert_eq!(
+                error.code,
+                error_codes::PATH_NOT_AUTHORIZED,
+                "{} must refuse an outside path with the code the CLI retries on: {error}",
+                dispatcher.method
+            );
+            assert!(
+                !workspace
+                    .documents
+                    .contains(&url::Url::from_file_path(&outside).unwrap()),
+                "{} left the refused file in the document store",
+                dispatcher.method
+            );
+        }
+        assert!(
+            checked >= 15,
+            "only {checked} dispatchers declare a path parameter"
+        );
+    }
+
+    /// The daemon and `al-explorer` agree on which methods take `text` because
+    /// they read the same list. The dispatch table is the other half: a method
+    /// declared `Read` accepts `text`, and the CLI resends the file's text on a
+    /// refusal for exactly those.
+    #[test]
+    fn the_text_capable_methods_are_the_read_dispatchers() {
+        let declared = DISPATCHERS
+            .iter()
+            .filter(|dispatcher| dispatcher.path == PathUse::Read)
+            .map(|dispatcher| dispatcher.method)
+            .collect::<BTreeSet<_>>();
+        let shared = al_protocol::methods::TEXT_CAPABLE_METHODS
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            declared, shared,
+            "al_protocol::methods::TEXT_CAPABLE_METHODS and the read dispatchers have drifted"
+        );
+    }
+
+    /// A project whose launch file names an on-premises server nobody has
+    /// trusted, which is what a clone gives an attacker.
+    fn untrusted_project_with_a_launch_file(root: &Path) -> al_workspace::Workspace {
+        std::fs::create_dir_all(root.join(".vscode")).unwrap();
+        std::fs::write(
+            root.join("app.json"),
+            serde_json::json!({
+                "id": "00000000-0000-0000-0000-000000000001",
+                "name": "Test",
+                "publisher": "Test",
+                "version": "1.0.0.0",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".vscode/launch.json"),
+            serde_json::json!({
+                "configurations": [{
+                    "name": "Local",
+                    "type": "al",
+                    "request": "launch",
+                    "environmentType": "OnPrem",
+                    "server": "https://collector.example.test",
+                    "serverInstance": "BC",
+                    "authentication": "AAD",
+                    "tenant": "tenant-id",
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let workspace = al_workspace::Workspace::new();
+        set_test_project_root(&workspace, root);
+        workspace
+    }
+
+    /// Every method declared as reaching a Business Central credential refuses
+    /// the server an untrusted repository names.
+    ///
+    /// `tests.snapshot_capture` and `tests.snapshot_replay` reach the same
+    /// decision through `debug_dispatch::acquire_bc_token`, whose own tests
+    /// drive it directly: getting them this far needs an indexed test codeunit
+    /// and a live breakpoint set, which says nothing more about the gate.
+    #[tokio::test]
+    async fn an_authorized_dispatcher_refuses_an_untrusted_repository_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let workspace = std::sync::Arc::new(untrusted_project_with_a_launch_file(&root));
+        let shutdown = Notify::new();
+
+        for (method, params) in [
+            (
+                "debug",
+                serde_json::json!({ "cmd": "start", "config": "Local" }),
+            ),
+            ("publish", serde_json::json!({ "config": "Local" })),
+        ] {
+            let response =
+                dispatch_request(&workspace, Request::new(1, method, Some(params)), &shutdown)
+                    .await;
+            let text = serde_json::to_string(&response).unwrap();
+            assert!(
+                text.contains("not trusted"),
+                "{method} must refuse the repository's server: {text}"
+            );
+        }
+    }
+
+    /// Which methods reach a Business Central credential is a decision, not a
+    /// detail: adding one to the dispatch table has to be deliberate, and the
+    /// trust documentation names the same set.
+    #[test]
+    fn the_authorized_dispatchers_are_the_ones_the_trust_doc_names() {
+        let declared = DISPATCHERS
+            .iter()
+            .filter(|dispatcher| dispatcher.credential == CredentialUse::Authorized)
+            .map(|dispatcher| dispatcher.method)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            declared,
+            BTreeSet::from([
+                "debug",
+                "downloadSymbols",
+                "publish",
+                "tests.snapshot_capture",
+                "tests.snapshot_replay",
+            ]),
+            "a method that spends a Business Central credential was added or removed"
+        );
+
+        // The trust documentation is where a user reads which methods those
+        // are, so it names each one.
+        let trust_doc = include_str!("../../../../../Docs/features/project-trust.md");
+        let credentials = trust_doc
+            .split_once("## Credentials")
+            .expect("the trust doc has a Credentials section")
+            .1;
+        for method in &declared {
+            assert!(
+                credentials.contains(&format!("`{method}`")),
+                "Docs/features/project-trust.md does not name `{method}` under Credentials"
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -2467,6 +2870,42 @@ mod tests {
             .expect("a write method must refuse supplied text");
         assert_eq!(error.code, error_codes::INVALID_PARAMS, "{error}");
         assert!(error.message.contains("rewrites the file"), "{error}");
+    }
+
+    /// `rename` used to read its `uri` through `ensure_document`, which has no
+    /// containment check. The file was answered on and stayed in the document
+    /// store, so every later read method on the same `uri` was served from it.
+    #[tokio::test]
+    async fn rename_refuses_a_path_outside_the_project_and_leaves_no_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let (workspace, _) = project_with_doc(&root);
+        let workspace = std::sync::Arc::new(workspace);
+        let outside = dir.path().join("id_rsa");
+        std::fs::write(&outside, b"PRIVATE KEY").unwrap();
+        let uri = url::Url::from_file_path(&outside).unwrap();
+        let shutdown = Notify::new();
+
+        let request = Request::new(
+            1,
+            "rename",
+            Some(serde_json::json!({
+                "uri": uri,
+                "line": 0,
+                "character": 0,
+                "newName": "x",
+            })),
+        );
+        let error = dispatch_request(&workspace, request, &shutdown)
+            .await
+            .error
+            .expect("a path outside the project must be refused");
+        assert_eq!(error.code, error_codes::PATH_NOT_AUTHORIZED, "{error}");
+        assert!(
+            !workspace.documents.contains(&uri),
+            "the refused file must not be left in the document store"
+        );
     }
 
     #[tokio::test]

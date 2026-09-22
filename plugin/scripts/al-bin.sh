@@ -55,10 +55,12 @@ fi
 # 2. A target/ directory in an enclosing checkout of this repository, for
 #    someone developing the toolchain and the plugin together.
 if [ -z "$bin_dir" ]; then
-	search="${CLAUDE_PLUGIN_ROOT-}"
-	if [ -z "$search" ]; then
-		search="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
-	fi
+	# Absolute before the loop. A relative CLAUDE_PLUGIN_ROOT such as
+	# `plugins/al-bc` walked down to "." and stayed there, because `dirname .`
+	# is `.`, so the loop below never ended and the MCP server never started.
+	# An unset directory leaves `search` empty, which skips the loop.
+	search="${CLAUDE_PLUGIN_ROOT:-$(dirname -- "$0")/..}"
+	search="$(CDPATH='' cd -- "$search" 2>/dev/null && pwd || true)"
 	while [ -n "$search" ] && [ "$search" != "/" ]; do
 		for profile in release debug; do
 			if has_pair "$search/target/$profile"; then

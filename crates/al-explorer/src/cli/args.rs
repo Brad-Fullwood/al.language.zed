@@ -72,7 +72,8 @@ pub struct Cli {
     pub fields: Vec<String>,
 
     /// Which part of the loaded symbol space to report on: workspace,
-    /// packages or all. Applies to impact, entrypoints and event-map.
+    /// packages or all. Applies to impact, table-impact, entrypoints and
+    /// event-map.
     #[arg(long, global = true, value_name = "SCOPE")]
     pub scope: Option<String>,
 }

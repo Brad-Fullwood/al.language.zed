@@ -118,6 +118,14 @@ live in [ROADMAP.md](../ROADMAP.md).
   or that resolves inside the project, is dropped unless the project is trusted,
   and the toolchain falls back to `dotnet` from `PATH`. See
   [project trust](features/project-trust.md).
+- The refusal compares the path and the worktree root as component lists, so
+  `.`, `..` and repeated separators cannot spell the same program in a way the
+  comparison misses, and a Windows path is matched without regard to case. What
+  it cannot see is a symlink: the extension is a WASM module with no filesystem
+  API, so a path that reaches inside the worktree through a symlinked ancestor
+  is accepted. al-lsp's own check resolves symlinks, which covers
+  `AL_DOTNET_PATH`; `binary.path` names the server itself and has no second
+  line of defence.
 - The consequence for a legitimate setup: a `dotnet` or `al-lsp` you keep inside
   a project directory needs `al-explorer trust` on that project, or a path
   outside it.
@@ -158,8 +166,11 @@ live in [ROADMAP.md](../ROADMAP.md).
   ```
 
   That says the bytes came out of this repository's release workflow, which a
-  digest published beside them does not. The check is manual: the extension
-  cannot run it, and releases made before the attestation step have none.
+  digest published beside them does not. `checksums.txt` includes
+  `binary-checksums.txt`, so the file the extension verifies against is attested
+  along with the archives and can be checked the same way. The check is manual:
+  the extension cannot run it, and releases made before the attestation step
+  have none.
 - Releases published before `binary-checksums.txt` existed carry no per-binary
   digests, and the extension starts from them unverified. Their absence comes
   from the GitHub API asset listing rather than the asset download, so a

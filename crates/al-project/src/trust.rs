@@ -352,7 +352,7 @@ pub fn grant(project_root: &Path) -> Result<TrustDecision, GrantError> {
 /// Whether `entry` names one of the analyzers the AL toolchain ships, in
 /// either the bare (`CodeCop`) or the token (`${CodeCop}`) spelling.
 #[must_use]
-pub fn is_builtin_analyzer_token(entry: &str) -> bool {
+pub(crate) fn is_builtin_analyzer_token(entry: &str) -> bool {
     let entry = entry.trim();
     let entry = entry
         .strip_prefix("${")
@@ -362,6 +362,11 @@ pub fn is_builtin_analyzer_token(entry: &str) -> bool {
 }
 
 /// Whether `path`, resolved against `project_root`, stays inside it.
+///
+/// `..` is folded textually first, because the target need not exist, and then
+/// the deepest existing ancestor is resolved: a repository that ships
+/// `cache -> /home/you` and writes `"al.packageCachePath": "./cache"` is naming
+/// a directory outside the project, and only the second step can tell.
 fn stays_inside_project(path: &Path, project_root: &Path) -> bool {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -371,7 +376,6 @@ fn stays_inside_project(path: &Path, project_root: &Path) -> bool {
     let root = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
-    // The target need not exist, so compare the textually normalised path.
     let mut normalised = PathBuf::new();
     for component in absolute.components() {
         use std::path::Component;
@@ -385,7 +389,36 @@ fn stays_inside_project(path: &Path, project_root: &Path) -> bool {
             other => normalised.push(other.as_os_str()),
         }
     }
-    normalised.starts_with(&root) || normalised.starts_with(project_root)
+    let resolved = resolve_deepest_existing(&normalised);
+    resolved.starts_with(&root) || resolved.starts_with(project_root)
+}
+
+/// `path` with its deepest existing ancestor canonicalised and the rest
+/// re-appended, so a symlink anywhere along the path is followed even when the
+/// path itself does not exist yet.
+fn resolve_deepest_existing(path: &Path) -> PathBuf {
+    let mut existing = path;
+    let mut tail = PathBuf::new();
+    loop {
+        if let Ok(canonical) = existing.canonicalize() {
+            return if tail.as_os_str().is_empty() {
+                canonical
+            } else {
+                canonical.join(&tail)
+            };
+        }
+        let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else {
+            return path.to_path_buf();
+        };
+        tail = if tail.as_os_str().is_empty() {
+            PathBuf::from(name)
+        } else {
+            let mut deeper = PathBuf::from(name);
+            deeper.push(&tail);
+            deeper
+        };
+        existing = parent;
+    }
 }
 
 fn render_paths(paths: &[PathBuf]) -> String {
@@ -519,8 +552,14 @@ pub enum TargetSource {
 /// Which credential is about to be spent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialKind {
+    /// A bearer token from the keyring-backed OAuth cache.
     Bearer,
+    /// A stored basic credential.
     Basic,
+    /// Whatever the user's environment carries. `al-explorer publish` reads
+    /// `BC_ACCESS_TOKEN` or `BC_USERNAME`/`BC_PASSWORD` and never the cache, so
+    /// a refusal on that path must not claim a cached token was involved.
+    Environment,
 }
 
 impl CredentialKind {
@@ -528,6 +567,7 @@ impl CredentialKind {
         match self {
             CredentialKind::Bearer => "a cached Business Central token",
             CredentialKind::Basic => "Business Central basic credentials",
+            CredentialKind::Environment => "Business Central credentials",
         }
     }
 }
@@ -824,8 +864,12 @@ fn launch_privileges(project_root: &Path) -> Vec<PrivilegedSetting> {
         .collect()
 }
 /// Digest of the privileged values, stable across orderings.
+///
+/// Crate-private on purpose. It is the hash a trust record is keyed by, and a
+/// caller that could compute one could write a record without going through
+/// [`grant`], which is the one path that prints the values first.
 #[must_use]
-pub fn digest_of(privileged: &[PrivilegedSetting]) -> String {
+pub(crate) fn digest_of(privileged: &[PrivilegedSetting]) -> String {
     let mut lines: Vec<String> = privileged
         .iter()
         .map(|setting| {
@@ -849,14 +893,14 @@ pub fn digest_of(privileged: &[PrivilegedSetting]) -> String {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrustRecord {
+pub(crate) struct TrustRecord {
     pub digest: String,
     /// Seconds since the Unix epoch.
     pub trusted_at: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TrustStore {
+pub(crate) struct TrustStore {
     #[serde(default = "store_version")]
     pub version: u32,
     #[serde(default)]
@@ -879,7 +923,7 @@ pub fn store_path() -> Option<PathBuf> {
 
 /// Read the store. A missing, unreadable or malformed file trusts nothing.
 #[must_use]
-pub fn load_store() -> TrustStore {
+pub(crate) fn load_store() -> TrustStore {
     let Some(path) = store_path() else {
         return TrustStore {
             version: store_version(),
@@ -903,7 +947,7 @@ pub fn load_store() -> TrustStore {
 
 /// The recorded state of `root` against the current `digest`.
 #[must_use]
-pub fn state_for(root: &Path, digest: &str) -> TrustState {
+pub(crate) fn state_for(root: &Path, digest: &str) -> TrustState {
     let store = load_store();
     let key = root.display().to_string();
     match store.projects.get(&key) {
@@ -1087,6 +1131,77 @@ mod tests {
             .privileged
             .iter()
             .any(|setting| setting.key == "al.compilationOptions"));
+    }
+
+    /// A path that looks like a project-relative directory and resolves to one
+    /// outside the project is the interesting case: the package cache becomes a
+    /// containment root, so classing it as inside would apply it untrusted.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_package_cache_is_privileged() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings(r#"{"al.packageCachePath": "./cache"}"#);
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), project.path().join("cache")).unwrap();
+
+        let evaluated = evaluate(project.path()).unwrap();
+
+        assert!(
+            evaluated.config.package_cache_path.is_none(),
+            "a cache directory outside the project needs trust"
+        );
+        assert!(
+            evaluated
+                .decision
+                .privileged
+                .iter()
+                .any(|setting| setting.key == "al.packageCachePath"),
+            "{:?}",
+            evaluated.decision.privileged
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_real_directory_inside_the_project_stays_unprivileged() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings(r#"{"al.packageCachePath": "./cache"}"#);
+        std::fs::create_dir(project.path().join("cache")).unwrap();
+
+        let evaluated = evaluate(project.path()).unwrap();
+
+        assert_eq!(
+            evaluated.config.package_cache_path.as_deref(),
+            Some(Path::new("./cache")),
+            "the project's own directory needs no trust"
+        );
+    }
+
+    /// The settings reference is where a user looks a key up, so it has to say
+    /// which keys stop applying when the repository is the one asking.
+    #[test]
+    fn the_settings_reference_marks_every_gated_key() {
+        let reference = include_str!("../../../Docs/reference/settings.md");
+        for key in [
+            "al.codeAnalyzers",
+            "al.compilationOptions",
+            "al.ruleSetPath",
+            "al.assemblyProbingPaths",
+            "al.packageCachePath",
+            "al.appLocalFolderPaths",
+            "al.nugetFeeds",
+            "al.useOnlyCustomFeeds",
+            "al.dotnetPath",
+        ] {
+            let row = reference
+                .lines()
+                .find(|line| line.starts_with(&format!("| `{key}` ")))
+                .unwrap_or_else(|| panic!("Docs/reference/settings.md has no row for {key}"));
+            assert!(
+                row.contains('\u{1f512}'),
+                "Docs/reference/settings.md does not mark {key} as needing project trust: {row}"
+            );
+        }
     }
 
     #[test]

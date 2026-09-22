@@ -745,11 +745,16 @@ fn readme_task_count_matches_the_shipped_language_package() {
 /// without the wording a reader takes `binary-checksums.txt` for authenticity,
 /// which it is not, because the digests travel on the same release as the
 /// archives and the extension holds no key.
+///
+/// What the extension does verify is pinned by
+/// `binaries_are_verified_before_they_are_made_executable`. This test used to
+/// add `assert!(!lib.contains("signature"))`, which forbade the word anywhere
+/// in `src/lib.rs`, including in a comment explaining that no signature is
+/// checked. It constrained prose rather than behaviour.
 #[test]
 fn release_provenance_is_published_and_described_honestly() {
     let workflow = include_str!("../.github/workflows/release.yml");
     let limitations = include_str!("../Docs/current-limitations.md");
-    let lib = include_str!("lib.rs");
 
     assert!(
         workflow.contains("actions/attest-build-provenance@"),
@@ -777,10 +782,6 @@ fn release_provenance_is_published_and_described_honestly() {
     assert!(
         limitations.contains("It does not show who produced it."),
         "Docs/current-limitations.md must say what the checksum does not cover"
-    );
-    assert!(
-        !lib.contains("signature"),
-        "the extension verifies no signature, so its source must not claim one"
     );
 }
 
@@ -826,6 +827,16 @@ fn binary_checksum_asset_is_produced_by_the_release_workflow() {
     assert!(
         workflow.contains(r#""$hash  $archive/$name""#),
         "the Windows packaging step must key digests by <archive>/<binary>"
+    );
+
+    // The attestation's subjects come from checksums.txt, and the extension
+    // verifies against binary-checksums.txt, so that file has to be in there:
+    // otherwise the attested list covers the archives nothing hashes and
+    // leaves out the digest list that decides whether a binary runs.
+    assert!(
+        workflow.contains("sha256sum binary-checksums.txt >> checksums.txt"),
+        "release.yml must record binary-checksums.txt in checksums.txt, which \
+         is what the build attestation covers"
     );
 }
 

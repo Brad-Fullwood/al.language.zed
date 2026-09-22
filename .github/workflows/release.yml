@@ -329,6 +329,13 @@ jobs:
             echo "::error::binary-checksums.txt covers $covered of $expected platform archives — the extension would refuse to start from an uncovered one"
             exit 1
           fi
+          # binary-checksums.txt is the file the extension verifies against, so
+          # it belongs in checksums.txt and therefore among the attestation
+          # subjects below. Without this line the attestation covered the
+          # archives, which the extension never hashes, and left the digest
+          # list it does read unattested.
+          sha256sum binary-checksums.txt >> checksums.txt
+          cat checksums.txt
 
       # checksums.txt and binary-checksums.txt travel beside the archives on
       # the same release, so they show a download arrived intact and nothing

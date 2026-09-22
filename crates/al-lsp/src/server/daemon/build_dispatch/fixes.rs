@@ -739,7 +739,7 @@ fn apply_bulk_fix_plan(
 ) -> Response {
     let result = plan.result(dry_run);
     if dry_run {
-        return serialized_response(id, &format!("{label} fix result"), &result);
+        return serialized_response(id, &result, &format!("{label} fix result"));
     }
 
     for change in &plan.changes {
@@ -807,7 +807,7 @@ fn apply_bulk_fix_plan(
         }
         applied.push((change.path.clone(), change.original.clone()));
     }
-    serialized_response(id, &format!("{label} fix result"), &result)
+    serialized_response(id, &result, &format!("{label} fix result"))
 }
 
 fn property_value_param<'a>(

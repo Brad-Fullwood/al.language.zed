@@ -256,6 +256,10 @@ mod symbol_package_configuration_tests {
         std::fs::create_dir_all(&cache).unwrap();
         std::fs::create_dir_all(&local).unwrap();
         *server.workspace.project.write().await = Some(project(root.path().to_path_buf()));
+        // `packageCachePath` is privileged, so the trust gate needs the project
+        // root to ask whether the repository is what asked for it. This one is
+        // the user's own setting: the project carries no settings file.
+        *server.root_uri.write().await = Some(Url::from_directory_path(root.path()).unwrap());
         server
             .workspace_init_state
             .send_replace(WorkspaceInitState::Ready);
@@ -984,11 +988,27 @@ fn extract_al_settings(value: serde_json::Value) -> serde_json::Value {
 /// own settings before sending them, so what arrives here does not say where
 /// each value came from. `al_project::trust::gate` asks the repository files
 /// and takes back exactly what they contribute.
+/// With no root, or a root that is not a local file, there is no repository to
+/// ask, so every privileged value goes: the settings that arrived already carry
+/// whatever `.zed/settings.json` contributed, and nothing here can tell which
+/// ones those are. Containment answers the same situation the same way, with
+/// "No project is loaded, so no file path can be authorised".
 async fn gate_repository_settings(
     root_uri: Option<&Url>,
     config: &mut al_project::config::AlConfig,
 ) -> Option<String> {
-    let root = root_uri?.to_file_path().ok()?;
+    let root = match root_uri.and_then(|uri| uri.to_file_path().ok()) {
+        Some(root) => root,
+        None => {
+            al_project::trust::deny_privileged(config);
+            return Some(
+                "AL settings that can run code were not applied: this session names no local \
+                 project directory, so the settings a repository contributed cannot be told \
+                 apart from your own."
+                    .to_string(),
+            );
+        }
+    };
     let dotnet_advisory = al_project::trust::enforce_dotnet_path(&root);
     match al_project::trust::gate(&root, config) {
         Ok(decision) => match (decision.advisory(), dotnet_advisory) {
@@ -2933,6 +2953,53 @@ mod workspace_init_state_tests {
             .await_semantic_workspace()
             .await
             .expect("semantic phase should resume after workspace readiness");
+    }
+}
+
+#[cfg(test)]
+mod trust_gate_tests {
+    use super::*;
+
+    fn privileged_config() -> al_project::config::AlConfig {
+        al_project::config::AlConfig {
+            code_analyzers: vec!["${CodeCop}".to_string(), "./tools/Payload.dll".to_string()],
+            compilation_options: vec!["/analyzer:/tmp/x.dll".to_string()],
+            ..Default::default()
+        }
+    }
+
+    /// The settings the editor sends already carry whatever the worktree's
+    /// `.zed/settings.json` contributed. With no root there is no repository to
+    /// subtract, so applying them whole would apply the repository's.
+    #[tokio::test]
+    async fn no_root_uri_denies_every_privileged_setting() {
+        let mut config = privileged_config();
+
+        let advisory = gate_repository_settings(None, &mut config).await;
+
+        assert_eq!(
+            config.code_analyzers,
+            vec!["${CodeCop}".to_string()],
+            "an analyzer path must not survive a session with no project root"
+        );
+        assert!(config.compilation_options.is_empty());
+        let advisory = advisory.expect("the user is told why their settings were dropped");
+        assert!(
+            advisory.contains("no local project directory"),
+            "{advisory}"
+        );
+    }
+
+    /// A non-`file:` root is the same situation: nothing local to read.
+    #[tokio::test]
+    async fn a_non_file_root_denies_every_privileged_setting() {
+        let mut config = privileged_config();
+        let root = Url::parse("untitled:workspace").expect("valid uri");
+
+        let advisory = gate_repository_settings(Some(&root), &mut config).await;
+
+        assert_eq!(config.code_analyzers, vec!["${CodeCop}".to_string()]);
+        assert!(advisory.is_some_and(|text| text.contains("no local project directory")));
     }
 }
 

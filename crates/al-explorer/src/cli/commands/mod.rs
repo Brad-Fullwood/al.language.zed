@@ -527,32 +527,13 @@ pub fn list_rows(result: &serde_json::Value) -> &serde_json::Value {
     }
 }
 
-/// Daemon methods that answer from one file and never write it.
+/// Daemon methods that answer from one file and never write it, and so accept
+/// the file's `text` when the daemon refuses to open the path itself.
 ///
-/// The daemon refuses a path outside the project it has loaded, because the
-/// same dispatchers are published over MCP, where the caller may be an agent
-/// and the path may be anything it asks for. The person running the CLI can
-/// already read their own files, so for these methods the CLI reads the file
-/// and sends its text, and the daemon answers without opening the path.
-/// Methods that rewrite the file are absent on purpose: content a caller
-/// supplies can be analysed, never written back over a path the daemon was not
-/// allowed to name.
-const READ_ONLY_FILE_METHODS: &[&str] = &[
-    "parse",
-    "lint",
-    "metrics",
-    "hover",
-    "definition",
-    "references",
-    "implementations",
-    "completions",
-    "signatureHelp",
-    "documentSymbols",
-    "foldingRanges",
-    "semanticTokens",
-    "inlayHints",
-    "codeActions",
-];
+/// The list is `al_protocol::methods::TEXT_CAPABLE_METHODS`: the daemon
+/// declares the same capability on each dispatch arm, and its tests hold the
+/// two together.
+const READ_ONLY_FILE_METHODS: &[&str] = al_protocol::methods::TEXT_CAPABLE_METHODS;
 
 /// Whether a daemon error is the refusal to touch the path a request named.
 ///
