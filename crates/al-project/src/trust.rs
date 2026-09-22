@@ -352,7 +352,7 @@ pub fn grant(project_root: &Path) -> Result<TrustDecision, GrantError> {
 /// Whether `entry` names one of the analyzers the AL toolchain ships, in
 /// either the bare (`CodeCop`) or the token (`${CodeCop}`) spelling.
 #[must_use]
-pub fn is_builtin_analyzer_token(entry: &str) -> bool {
+pub(crate) fn is_builtin_analyzer_token(entry: &str) -> bool {
     let entry = entry.trim();
     let entry = entry
         .strip_prefix("${")
@@ -864,8 +864,12 @@ fn launch_privileges(project_root: &Path) -> Vec<PrivilegedSetting> {
         .collect()
 }
 /// Digest of the privileged values, stable across orderings.
+///
+/// Crate-private on purpose. It is the hash a trust record is keyed by, and a
+/// caller that could compute one could write a record without going through
+/// [`grant`], which is the one path that prints the values first.
 #[must_use]
-pub fn digest_of(privileged: &[PrivilegedSetting]) -> String {
+pub(crate) fn digest_of(privileged: &[PrivilegedSetting]) -> String {
     let mut lines: Vec<String> = privileged
         .iter()
         .map(|setting| {
@@ -889,14 +893,14 @@ pub fn digest_of(privileged: &[PrivilegedSetting]) -> String {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrustRecord {
+pub(crate) struct TrustRecord {
     pub digest: String,
     /// Seconds since the Unix epoch.
     pub trusted_at: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TrustStore {
+pub(crate) struct TrustStore {
     #[serde(default = "store_version")]
     pub version: u32,
     #[serde(default)]
@@ -919,7 +923,7 @@ pub fn store_path() -> Option<PathBuf> {
 
 /// Read the store. A missing, unreadable or malformed file trusts nothing.
 #[must_use]
-pub fn load_store() -> TrustStore {
+pub(crate) fn load_store() -> TrustStore {
     let Some(path) = store_path() else {
         return TrustStore {
             version: store_version(),
@@ -943,7 +947,7 @@ pub fn load_store() -> TrustStore {
 
 /// The recorded state of `root` against the current `digest`.
 #[must_use]
-pub fn state_for(root: &Path, digest: &str) -> TrustState {
+pub(crate) fn state_for(root: &Path, digest: &str) -> TrustState {
     let store = load_store();
     let key = root.display().to_string();
     match store.projects.get(&key) {
