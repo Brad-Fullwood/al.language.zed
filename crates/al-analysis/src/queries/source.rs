@@ -53,7 +53,8 @@ pub struct SourceResult {
 /// File range for workspace source.
 #[derive(Debug, Clone, Serialize)]
 pub struct SourceRange {
-    /// Relative file path.
+    /// File path relative to the app root that holds it, with forward
+    /// slashes. Never absolute: the answer goes to MCP agents.
     pub f: String,
     /// Start line (1-based).
     pub l: u32,
@@ -394,10 +395,7 @@ fn try_workspace_source(
             let end_line = node.end_position().row;
             let code = node.utf8_text(text.as_bytes()).unwrap_or("").to_string();
 
-            let relative_path = file_path
-                .file_name()
-                .map(|f| f.to_string_lossy().to_string())
-                .unwrap_or_default();
+            let relative_path = project_relative_path(workspace, file_path);
 
             return Ok(SourceResult {
                 k: kind,
@@ -440,13 +438,33 @@ fn try_workspace_source(
         pkg: None,
         sig: None,
         range: Some(SourceRange {
-            f: file_path.to_string_lossy().to_string(),
+            f: project_relative_path(workspace, file_path),
             l: object_range.start_point.row as u32 + 1,
             end: object_range.end_point.row as u32 + 1,
         }),
         code: text[object_range.start_byte..object_range.end_byte.min(text.len())].to_string(),
         note: None,
     })
+}
+
+/// `file_path` as `SourceRange.f` spells it: relative to the app root that
+/// holds the file, with forward slashes.
+///
+/// The whole-object exit used to answer the absolute path, which puts the
+/// developer's filesystem layout into a response MCP hands to an agent, and
+/// the member exit the bare file name, which cannot tell two `Shipment.al`
+/// files apart. Falls back to the absolute path only when the file sits under
+/// no app root, which an indexed workspace file does not.
+fn project_relative_path(workspace: &Workspace, file_path: &Path) -> String {
+    let relative = workspace
+        .file_index
+        .app_root_for(file_path)
+        .and_then(|root| file_path.strip_prefix(root).ok().map(Path::to_path_buf));
+    let path = relative.as_deref().unwrap_or(file_path);
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// Compare a parsed declaration kind string against a resolved [`ObjectKind`].
@@ -1953,6 +1971,51 @@ page 50110 "Ship Setup Card"
         let table = source(&ws, "Ship Setup", Some(ObjectKind::Table), None, None)
             .expect("the table is still findable by its own kind");
         assert_eq!(table.k, ObjectKind::Table);
+    }
+
+    /// `SourceRange.f` documents a relative path. Two merged changes gave it
+    /// two spellings: the whole-object exit wrote the absolute path, which put
+    /// the developer's filesystem layout into an answer MCP hands to an agent,
+    /// and the member exit wrote the bare file name, which cannot locate the
+    /// file in a project with two `Shipment.al` files.
+    #[test]
+    fn source_reports_one_project_relative_path_from_both_exits() {
+        let ws = al_workspace::Workspace::new();
+        std::fs::create_dir_all("/tmp/al-source-range-test/src").ok();
+        std::fs::write("/tmp/al-source-range-test/app.json", "{}").ok();
+        let path = PathBuf::from("/tmp/al-source-range-test/src/Shipment.al");
+        ws.file_index.add_file(
+            path.clone(),
+            r#"codeunit 50100 "Shipment Helper"
+{
+    procedure Stamp()
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+
+        let object = source(&ws, "Shipment Helper", None, None, None).expect("the object");
+        let member = source(
+            &ws,
+            "Shipment Helper",
+            None,
+            None,
+            Some(SourceMember {
+                kind: SourceMemberKind::Procedure,
+                name: "Stamp",
+            }),
+        )
+        .expect("the member");
+
+        let object_path = object.range.expect("object range").f;
+        let member_path = member.range.expect("member range").f;
+        assert_eq!(object_path, member_path, "one spelling from both exits");
+        assert_eq!(
+            object_path, "src/Shipment.al",
+            "the path is relative to the app root"
+        );
     }
 
     #[test]

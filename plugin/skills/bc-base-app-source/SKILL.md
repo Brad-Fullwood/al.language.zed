@@ -92,7 +92,8 @@ to scan the body, grep inside the pipe:
 ## Workspace source
 
 The same command reads the project's own objects, with `"src":"workspace"` and a
-file and line range you can open with Read:
+file and line range you can open with Read. `range.f` is relative to the app
+root, so join it to the project directory:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json source "Work Order Helper" --procedure SchedulePost \

@@ -118,7 +118,8 @@ index, so read "When a call is slow" below before using it.
 
 A package object is materialised as a virtual `.al` file, so there is a real
 path either way. `source "<name>"` also carries `range` with the file and line
-span now, and `--procedure <Name>` narrows it to that member.
+span now, and `--procedure <Name>` narrows it to that member. `range.f` is
+relative to the app root, the same spelling for a whole object and a member.
 
 ## Do not
 
