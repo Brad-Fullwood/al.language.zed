@@ -182,6 +182,14 @@ impl SymbolIndex {
             .fetch_add(1, std::sync::atomic::Ordering::Release);
     }
 
+    /// The current entry-set generation.
+    ///
+    /// Derived caches outside this crate key on it, so replacing or reloading
+    /// a symbol package invalidates whatever they built from the old entries.
+    pub fn generation(&self) -> u64 {
+        self.mutation.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     pub fn len(&self) -> usize {
         self.all.len()
     }

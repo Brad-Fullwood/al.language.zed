@@ -73,8 +73,11 @@ jobs:
       - name: Build binaries used by end-to-end tests
         run: cargo build -p al-lsp -p al-explorer
 
+      # `--no-fail-fast` so one failing crate does not hide the rest. Without
+      # it the first failure ended the step, and a platform-specific break in a
+      # later crate stayed unknown until the earlier one was fixed.
       - name: Test
-        run: cargo test --workspace --exclude zed-al
+        run: cargo test --workspace --exclude zed-al --no-fail-fast
 
       - name: Clippy
         run: cargo clippy --workspace --exclude zed-al --all-targets -- -D warnings
@@ -247,15 +250,15 @@ jobs:
         run: cargo build -p al-lsp -p al-explorer
 
       - name: Test cross-platform protocol and explorer crates
-        run: cargo test -p al-protocol -p al-explorer
+        run: cargo test -p al-protocol -p al-explorer --no-fail-fast
 
       - name: Build Windows daemon integration tests
         run: cargo test -p al-test-harness --test cli_smoke --test extension_smoke --no-run
 
       - name: Exercise Windows named-pipe CLI end to end
         timeout-minutes: 3
-        run: cargo test -p al-test-harness --test cli_smoke
+        run: cargo test -p al-test-harness --test cli_smoke --no-fail-fast
 
       - name: Exercise Windows extension integration end to end
         timeout-minutes: 3
-        run: cargo test -p al-test-harness --test extension_smoke
+        run: cargo test -p al-test-harness --test extension_smoke --no-fail-fast

@@ -47,3 +47,123 @@ into the worktree's own `target/debug` (both tests below fall back to an
   `a_read_answers_an_outside_path_from_the_supplied_text`,
   `supplied_text_is_refused_for_a_path_inside_the_project`,
   `a_write_refuses_supplied_text`).
+
+## [RESOLVED] Member completion offered no Record method without a Microsoft toolchain
+
+- job: CI (ubuntu-latest), run 35622921775
+- suite: `cargo test -p al-test-harness --test real_world`
+- test: `test_completion_after_dot`, `crates/al-test-harness/tests/real_world.rs:692`
+- symptom: `member completion must offer the Record methods; "FindSet" missing`.
+  The table's own fields came back, and not one platform method. Green on
+  the development machine, red on a clean runner.
+- root cause: `completion_items_for_receiver` read the Record methods from
+  `Workspace::semantic_cache`. That cache is filled by
+  `load_caches_from_disk` from `~/.cache/al-lsp/semantic/builtins-<toolchain
+  version>.json`, which exists only after a Microsoft AL toolchain has been
+  found and its CodeAnalysis metadata extracted through the `semantic`-feature
+  CLR bridge. A default build has no bridge, so the cache file is the only
+  source, and CI has neither the toolchain nor the file. The development
+  machine has both, which is the whole difference. This is a product defect,
+  not a test defect: every editor install without a Microsoft toolchain got an
+  empty method list after `Customer.`.
+- fix: `crates/al-analysis/src/resolution.rs` falls back to
+  `al_syntax::language_data::record_methods()`, the checked-in catalog
+  generated from the same `TableClass` metadata, when the cache holds nothing
+  for a Record receiver. A loaded cache is still consulted first and keeps its
+  signatures and documentation.
+- reproduced on Linux by pointing `XDG_CACHE_HOME` at an empty directory:
+  `builtin_methods=0, total=40` and the same panic before the change,
+  `builtin_methods=81, total=121` and a pass after it.
+- covered by `resolution::tests::record_completion_offers_platform_methods_with_an_empty_semantic_cache`
+  and `resolution::tests::a_loaded_semantic_cache_supplies_the_record_method_signatures`.
+
+## [RESOLVED] Analyzer version selection depended on where the project sat on disk
+
+- job: CI (macos-latest), run 35622921775
+- suite: `cargo test -p al-project`
+- test: `analyzers::tests::project_package_discovery_selects_highest_numeric_version`,
+  `crates/al-project/src/analyzers.rs:336`
+- symptom: `1.9.0` selected over `1.10.0` on macOS, `1.10.0` on Linux.
+- root cause: `version_key` returned the largest dotted number found anywhere
+  in a candidate's path. macOS hands a test its temporary directory under
+  `/private/var/folders/36/...`, so both candidates keyed on `36`, the
+  comparison tied, and the `left.cmp(right)` tiebreak compared the paths as
+  strings, where `1.10.0` sorts below `1.9.0`. Linux `/tmp/.tmpXXXXXX` holds no
+  number, so the package's own version directory decided it there. Directory
+  enumeration order was never involved: the candidate list is fully sorted.
+  The same shape would hit a real user whose project sits under a numbered
+  directory.
+- fix: `compare_versioned_paths` now keys each path component separately and
+  compares component by component. Candidates share their prefix, so the first
+  difference is the package's version directory. A named directory ranks below
+  any numbered release.
+- covered by `analyzers::tests::a_numeric_directory_above_the_project_does_not_decide_the_version`
+  (the macOS path shape, reproduced on any platform),
+  `the_highest_version_wins_in_either_enumeration_order` and
+  `a_numbered_release_outranks_a_named_directory`.
+- swept the workspace for the same pattern. `dedup_package_versions`
+  (`crates/al-project/src/project.rs`) keys on the file stem only,
+  `search_dotnet_tool_store` and `toolchain_version_rank`
+  (`crates/al-project/src/toolchain.rs`) key on one directory name and on the
+  deepest version-shaped component, and `resolve_version`
+  (`crates/al-symbols/src/nuget.rs`) parses version strings. None of them takes
+  a maximum over a whole path.
+
+## [RESOLVED] The Windows containment refusal printed a verbatim path
+
+- job: Windows native build, run 35622921775
+- suite: `cargo test -p al-test-harness --test cli_smoke`
+- test: `formatting_a_file_outside_the_project_is_refused`,
+  `crates/al-test-harness/tests/cli_smoke.rs:274`
+- symptom: the refusal read `is outside the project at
+  '\\?\D:\a\al.language.zed\...\test_al_project'`, and the assertion that it
+  names the project failed against the plain `D:\a\...` form.
+- root cause: containment canonicalises the requested path and the project
+  root before comparing them, and Windows `canonicalize` returns the verbatim
+  `\\?\` form. Comparing two verbatim paths is correct and the refusal itself
+  was right. Printing one is not, because the caller never typed that path and
+  cannot match a message against it.
+- fix: `display_path` in `crates/al-lsp/src/server/daemon/containment.rs`
+  strips the `\\?\` prefix for the message only, handling the drive form and
+  `\\?\UNC\server\share`, and leaving `\\?\Volume{...}` alone because it has no
+  plainer spelling. The comparison still runs on the canonical paths.
+- covered by `containment::tests::a_verbatim_prefix_is_stripped_for_display`
+  and `a_path_with_no_plainer_spelling_is_left_alone` (plain text, so they run
+  everywhere) plus
+  `the_displayed_root_matches_the_path_the_caller_would_type` behind
+  `#[cfg(windows)]`.
+
+## [RESOLVED] `test_project_dir` built a mixed-separator path
+
+- job: Windows native build, run 35651190412 (the round after the refusal
+  message was fixed)
+- test: `formatting_a_file_outside_the_project_is_refused`
+- symptom: with the verbatim prefix gone the message read `is outside the
+  project at 'D:\a\al.language.zed\...\data\test_al_project'`, character for
+  character what the assertion wanted, and the assertion still failed.
+- root cause: `test_project_dir` was
+  `PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/test_al_project")`, and
+  `join` does not rewrite separators. On Windows that string ends
+  `...\al-test-harness\data/test_al_project`, with one forward slash, while the
+  daemon reports its canonical root with backslashes throughout.
+- fix: join the two directories separately in
+  `crates/al-test-harness/src/lib.rs`.
+
+## [RESOLVED] A newer clippy denies `chunks_exact` with a constant size
+
+- job: CI (ubuntu-latest) and CI (macos-latest), run 35651190412
+- symptom: `error: using chunks_exact with a constant chunk size` at
+  `crates/al-test-harness/src/protocol.rs:43`, breaking the Clippy step on both
+  platforms.
+- root cause: nothing to do with these changes. Both jobs stopped at the Test
+  step before, so the Clippy step had never run on this branch. CI's clippy is
+  newer than the one installed here, where the lint does not fire.
+- fix: `semantic_token_data` uses `as_chunks::<5>()`.
+
+## CI ran only as far as the first failing suite
+
+Each of the three jobs stopped at its first failure, so everything after it
+stayed unverified on that platform: on macOS that was almost the whole
+workspace, since `al-project` sorts early. The `cargo test` steps in
+`.github/workflows/ci.yml` now pass `--no-fail-fast`, so one failing crate
+reports alongside the rest instead of hiding it.

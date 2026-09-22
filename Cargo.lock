@@ -138,6 +138,7 @@ dependencies = [
  "al-syntax",
  "al-types",
  "getrandom 0.2.17",
+ "proptest",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -332,6 +333,7 @@ dependencies = [
  "al-syntax",
  "al-types",
  "dashmap 6.2.1",
+ "proptest",
  "ropey",
  "serde",
  "serde_json",
@@ -354,6 +356,7 @@ dependencies = [
  "futures",
  "getrandom 0.2.17",
  "keyring",
+ "proptest",
  "quick-xml",
  "rayon",
  "reqwest",
@@ -376,6 +379,7 @@ name = "al-syntax"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "proptest",
  "serde",
  "serde_json",
  "tracing",

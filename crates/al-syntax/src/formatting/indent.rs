@@ -16,6 +16,12 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     // track of the source convention so a no-op format check stays a no-op on
     // Windows checkouts instead of rewriting every line ending to LF.
     let uses_crlf = text.contains("\r\n");
+    // The brace merge runs *before* the indentation pass. Merging a stand-alone
+    // `{` onto the line above changes what the indentation state machine sees on
+    // that line, so a merge applied afterwards would leave the file indented for
+    // the pre-merge layout and the next format run would move it again.
+    let merged = apply_brace_style(text, options);
+    let text: &str = &merged;
     let indent_str = if options.insert_spaces {
         " ".repeat(options.tab_size)
     } else {
@@ -346,12 +352,12 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     }
 
     // The pass order is significant for idempotence: sort properties, normalize
-    // procedure gaps, wrap long properties, then merge braces.
+    // procedure gaps, then wrap long properties. The brace merge already ran
+    // ahead of the indentation pass.
     let result = sort_object_properties(result, options);
     let result = normalize_blank_lines_between_procedures(result, options);
     let result = wrap_long_property_lines(result, options);
 
-    let result = apply_brace_style(result, options);
     if uses_crlf {
         result.replace('\n', "\r\n")
     } else {

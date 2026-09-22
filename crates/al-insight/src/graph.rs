@@ -67,6 +67,18 @@ pub enum EventNodeType {
     Business,
 }
 
+/// The spelling that reaches the `al subscribers` JSON, so renaming a variant
+/// is a compile-visible change to the published contract rather than a silent
+/// one through a `{:?}`.
+impl std::fmt::Display for EventNodeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Integration => "Integration",
+            Self::Business => "Business",
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum InsightEdge {
     /// Object A extends Object B (table extension, page extension, etc.)

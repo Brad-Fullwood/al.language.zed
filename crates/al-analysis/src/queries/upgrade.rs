@@ -56,24 +56,6 @@ fn build_upgrade_report(
         issues.push(issue);
     }
 
-    let baseline_tables: std::collections::HashMap<_, _> = baseline
-        .iter()
-        .filter(|entry| !entry.synthetic && matches!(entry.kind, al_symbols::ObjectKind::Table))
-        .map(|entry| (surface_key(entry), entry))
-        .collect();
-
-    let current_tables: std::collections::HashMap<_, _> = current
-        .iter()
-        .filter(|entry| !entry.synthetic && matches!(entry.kind, al_symbols::ObjectKind::Table))
-        .map(|entry| (surface_key(entry), entry))
-        .collect();
-
-    for (identity, old_table) in &baseline_tables {
-        if let Some(new_table) = current_tables.get(identity) {
-            check_data_migration_needs(old_table, new_table, &mut issues);
-        }
-    }
-
     detect_obsolete_transitions(baseline, current, &mut issues);
     detect_new_permissions(baseline, current, &mut issues);
     issues.sort_by(|left, right| {
@@ -87,6 +69,15 @@ fn build_upgrade_report(
 }
 
 fn breaking_change_to_upgrade_issue(change: BreakingChange) -> UpgradeIssue {
+    // Severity follows `is_breaking`: a change that no dependent app has to
+    // react to is a warning, everything else an error.
+    let severity_for = |change: &BreakingChange| {
+        if change.is_breaking {
+            "error".to_string()
+        } else {
+            "warning".to_string()
+        }
+    };
     let (migration_hint, severity) = match &change.kind {
         BreakingChangeKind::ObjectRemoved => (
             format!("Remove all references to '{}' and its dependent code.", change.object),
@@ -104,7 +95,14 @@ fn breaking_change_to_upgrade_issue(change: BreakingChange) -> UpgradeIssue {
                 "Update all callers of '{}' to match the new signature.",
                 change.member.as_deref().unwrap_or("(unknown)")
             ),
-            if change.is_breaking { "error".to_string() } else { "warning".to_string() },
+            severity_for(&change),
+        ),
+        BreakingChangeKind::ParameterRenamed => (
+            format!(
+                "No caller has to change: AL calls are positional, so the name of parameter in '{}' is not part of the call contract.",
+                change.member.as_deref().unwrap_or("(unknown)")
+            ),
+            severity_for(&change),
         ),
         BreakingChangeKind::ReturnTypeChanged => (
             "Update code that uses the return value to handle the new type.".to_string(),
@@ -141,11 +139,16 @@ fn breaking_change_to_upgrade_issue(change: BreakingChange) -> UpgradeIssue {
                 .to_string(),
             "error".to_string(),
         ),
-        BreakingChangeKind::FieldRenamed
-        | BreakingChangeKind::FieldIdChanged
-        | BreakingChangeKind::FieldTypeChanged => (
+        BreakingChangeKind::FieldRenamed | BreakingChangeKind::FieldIdChanged => (
             "Add upgrade code that preserves existing table data and update all field references."
                 .to_string(),
+            "error".to_string(),
+        ),
+        BreakingChangeKind::FieldTypeChanged => (
+            format!(
+                "Convert the stored data for '{}' in an upgrade codeunit, on OnUpgradePerCompany or OnUpgradePerDatabase, and update every reference to the field.",
+                change.member.as_deref().unwrap_or("(unknown)")
+            ),
             "error".to_string(),
         ),
         BreakingChangeKind::EnumValueOrdinalChanged => (
@@ -157,6 +160,16 @@ fn breaking_change_to_upgrade_issue(change: BreakingChange) -> UpgradeIssue {
             "Review dependent runtime flows and restore required permission flags or provide an explicit replacement permission set."
                 .to_string(),
             "error".to_string(),
+        ),
+        BreakingChangeKind::KeyRemoved | BreakingChangeKind::KeyFieldsChanged => (
+            "Restore the published key, or plan a data upgrade: a key's field list is the record identity every dependent Get() relies on."
+                .to_string(),
+            severity_for(&change),
+        ),
+        BreakingChangeKind::ControlRemoved => (
+            "Restore the control or update every pageextension that targets it with addafter, addbefore or modify."
+                .to_string(),
+            severity_for(&change),
         ),
     };
 
@@ -348,10 +361,31 @@ fn detect_new_permissions(
                     | al_symbols::ObjectKind::PermissionSetExtension
             )
     }) {
-        let old_permissions = baseline_map
-            .get(&surface_key(current_entry))
-            .map(|entry| entry.permissions.as_slice())
-            .unwrap_or(&[]);
+        let baseline_entry = baseline_map.get(&surface_key(current_entry));
+        // A brand-new permission set adds every one of its grants, and a set
+        // over 200 tables then buried the fact that matters (a new set exists)
+        // under 200 identical rows.
+        let Some(baseline_entry) = baseline_entry else {
+            if current_entry.permissions.is_empty() {
+                continue;
+            }
+            issues.push(UpgradeIssue {
+                kind: UpgradeIssueKind::NewPermission,
+                object: current_entry.name.clone(),
+                member: None,
+                description: format!(
+                    "New permission set '{}' grants {} permissions",
+                    current_entry.name,
+                    current_entry.permissions.len()
+                ),
+                migration_hint:
+                    "Review the whole set against least-privilege and AppSource policy before publishing."
+                        .to_string(),
+                severity: "warning".to_string(),
+            });
+            continue;
+        };
+        let old_permissions = baseline_entry.permissions.as_slice();
         for permission in &current_entry.permissions {
             let old_value = old_permissions
                 .iter()
@@ -402,45 +436,6 @@ fn same_method_contract(
                     .eq_ignore_ascii_case(current.type_name.trim().trim_matches('"'))
                     && baseline.is_var == current.is_var
             })
-}
-
-fn check_data_migration_needs(
-    old_table: &SymbolEntry,
-    new_table: &SymbolEntry,
-    issues: &mut Vec<UpgradeIssue>,
-) {
-    let old_fields: std::collections::HashMap<String, &al_symbols::FieldSymbol> = old_table
-        .fields
-        .iter()
-        .map(|f| (f.name.to_lowercase(), f))
-        .collect();
-
-    let new_fields: std::collections::HashMap<String, &al_symbols::FieldSymbol> = new_table
-        .fields
-        .iter()
-        .map(|f| (f.name.to_lowercase(), f))
-        .collect();
-
-    for (name_lower, old_field) in &old_fields {
-        if let Some(new_field) = new_fields.get(name_lower) {
-            if old_field.type_name.to_lowercase() != new_field.type_name.to_lowercase() {
-                issues.push(UpgradeIssue {
-                    kind: UpgradeIssueKind::DataMigration,
-                    object: old_table.name.clone(),
-                    member: Some(old_field.name.clone()),
-                    description: format!(
-                        "Field '{}' type changed from '{}' to '{}' — data migration required",
-                        old_field.name, old_field.type_name, new_field.type_name
-                    ),
-                    migration_hint: format!(
-                        "Create an upgrade codeunit that converts data in '{}' from {} to {}. Use OnUpgradePerDatabase or OnUpgradePerCompany trigger.",
-                        old_field.name, old_field.type_name, new_field.type_name
-                    ),
-                    severity: "error".to_string(),
-                });
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -559,12 +554,18 @@ mod tests {
         };
 
         let issues = upgrade_report(&[old_table], &[new_table]);
+        // One change, one issue: the breaking-change arm carries the upgrade
+        // trigger hint that a second, separate data-migration pass used to
+        // repeat almost word for word.
+        let migration: Vec<&UpgradeIssue> = issues
+            .iter()
+            .filter(|i| i.member.as_deref() == Some("Amount"))
+            .collect();
+        assert_eq!(migration.len(), 1, "{issues:?}");
         assert!(
-            issues
-                .iter()
-                .any(|i| i.kind == UpgradeIssueKind::DataMigration),
-            "Field type change should trigger data migration: {:?}",
-            issues
+            migration[0].migration_hint.contains("OnUpgradePerCompany"),
+            "{:?}",
+            migration[0]
         );
     }
 

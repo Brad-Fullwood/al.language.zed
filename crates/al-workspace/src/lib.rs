@@ -64,6 +64,138 @@ struct DependencySourceCache {
     skipped_packages: Vec<String>,
 }
 
+/// Live counters for the dependency AL source index build.
+///
+/// Plain atomics rather than a lock: every reader is a status query that must
+/// answer while the build holds the index write lock, which is exactly when a
+/// lock-based field would be unreadable.
+#[derive(Debug, Default)]
+struct DependencySourceProgress {
+    /// 0 idle, 1 building, 2 ready, 3 failed. See [`DependencySourceState`].
+    state: std::sync::atomic::AtomicU8,
+    packages_done: std::sync::atomic::AtomicUsize,
+    packages_total: std::sync::atomic::AtomicUsize,
+    files_done: std::sync::atomic::AtomicUsize,
+    /// Milliseconds the current or last build has taken.
+    elapsed_ms: std::sync::atomic::AtomicU64,
+    started_at: std::sync::RwLock<Option<std::time::Instant>>,
+}
+
+/// What the dependency source index is doing right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DependencySourceState {
+    /// No query has needed the index yet.
+    Idle,
+    Building,
+    Ready,
+    Failed,
+}
+
+impl DependencySourceState {
+    fn from_code(code: u8) -> Self {
+        match code {
+            1 => Self::Building,
+            2 => Self::Ready,
+            3 => Self::Failed,
+            _ => Self::Idle,
+        }
+    }
+
+    fn code(self) -> u8 {
+        match self {
+            Self::Idle => 0,
+            Self::Building => 1,
+            Self::Ready => 2,
+            Self::Failed => 3,
+        }
+    }
+}
+
+impl DependencySourceProgress {
+    fn begin(&self, packages_total: usize) {
+        use std::sync::atomic::Ordering::Relaxed;
+        if let Ok(mut started) = self.started_at.write() {
+            *started = Some(std::time::Instant::now());
+        }
+        self.packages_total.store(packages_total, Relaxed);
+        self.packages_done.store(0, Relaxed);
+        self.files_done.store(0, Relaxed);
+        self.elapsed_ms.store(0, Relaxed);
+        self.state
+            .store(DependencySourceState::Building.code(), Relaxed);
+    }
+
+    fn finished_package(&self, files_indexed: usize) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.packages_done.fetch_add(1, Relaxed);
+        self.files_done.store(files_indexed, Relaxed);
+        self.tick();
+    }
+
+    fn indexed_file(&self) {
+        self.files_done
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn finish(&self, files_indexed: usize) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.files_done.store(files_indexed, Relaxed);
+        self.tick();
+        self.state
+            .store(DependencySourceState::Ready.code(), Relaxed);
+    }
+
+    fn tick(&self) {
+        let elapsed = self
+            .started_at
+            .read()
+            .ok()
+            .and_then(|started| *started)
+            .map(|started| started.elapsed().as_millis().min(u64::MAX as u128) as u64)
+            .unwrap_or(0);
+        self.elapsed_ms
+            .store(elapsed, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn snapshot(&self) -> DependencySourceProgressSnapshot {
+        use std::sync::atomic::Ordering::Relaxed;
+        let state = DependencySourceState::from_code(self.state.load(Relaxed));
+        // A running build only writes `elapsed_ms` at package boundaries, and
+        // a package can take tens of seconds, so recompute while building.
+        let elapsed_ms = if state == DependencySourceState::Building {
+            self.started_at
+                .read()
+                .ok()
+                .and_then(|started| *started)
+                .map(|started| started.elapsed().as_millis().min(u64::MAX as u128) as u64)
+                .unwrap_or(0)
+        } else {
+            self.elapsed_ms.load(Relaxed)
+        };
+        DependencySourceProgressSnapshot {
+            state,
+            packages_done: self.packages_done.load(Relaxed),
+            packages_total: self.packages_total.load(Relaxed),
+            files_done: self.files_done.load(Relaxed),
+            elapsed_ms,
+        }
+    }
+}
+
+/// A snapshot of the dependency source index build, for `status` and `diag`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DependencySourceProgressSnapshot {
+    pub state: DependencySourceState,
+    pub packages_done: usize,
+    pub packages_total: usize,
+    /// Files indexed so far. While building this only grows; there is no total
+    /// because the file count of a package is not known until it is opened.
+    pub files_done: usize,
+    pub elapsed_ms: u64,
+}
+
 /// A synchronization failure that makes workspace state unsafe to inspect.
 ///
 /// Rust lock poisoning means a writer panicked while it held the lock. Query
@@ -218,6 +350,19 @@ pub struct Workspace {
     /// workspace-file graph invalidation while still rebuilding after package
     /// download/replacement.
     dependency_source_index: std::sync::RwLock<Option<DependencySourceCache>>,
+    /// How far the dependency source index has got.
+    ///
+    /// The build takes about a minute on Base Application and every method
+    /// that needs it blocks until it finishes. Without a progress signal the
+    /// caller's only observation is a timeout, and the natural response to a
+    /// timeout is a retry into the next one.
+    dependency_source_progress: DependencySourceProgress,
+    /// How many times the call graph has actually been built.
+    ///
+    /// Exists so single-flight is testable: a cold build is 86 s on a project
+    /// with Base Application, and concurrent or retried callers running their
+    /// own copy of it is the difference between one wait and several.
+    call_graph_builds: std::sync::atomic::AtomicU64,
     /// Active profiler session loaded from a `.alcpuprofile` file.
     ///
     /// When a profile is loaded the hints are stored here so that `code_lens`
@@ -270,6 +415,8 @@ impl Workspace {
             insight_graph_revision: std::sync::RwLock::new(None),
             call_graph_revision: std::sync::RwLock::new(None),
             dependency_source_index: std::sync::RwLock::new(None),
+            dependency_source_progress: DependencySourceProgress::default(),
+            call_graph_builds: std::sync::atomic::AtomicU64::new(0),
             profiler_session: std::sync::RwLock::new(None),
             test_results: std::sync::RwLock::new(None),
             last_compile_affected: tokio::sync::Mutex::new(std::collections::HashSet::new()),
@@ -504,7 +651,10 @@ impl Workspace {
 
         let index = Arc::new(FileIndex::new());
         let mut skipped_files = 0usize;
+        self.dependency_source_progress.begin(fingerprint.len());
         for (app_path, _, _) in &fingerprint {
+            self.dependency_source_progress
+                .finished_package(index.len());
             // Degrade per package the way the loader degrades per file: one
             // `.app` whose embedded source trips a limit, or that was
             // rewritten mid-build, must not take call-graph and insight
@@ -590,8 +740,10 @@ impl Workspace {
                     source,
                     parsed.tree,
                 );
+                self.dependency_source_progress.indexed_file();
             }
         }
+        self.dependency_source_progress.finish(index.len());
         tracing::info!(
             packages = fingerprint.len(),
             source_files = index.len(),
@@ -607,6 +759,21 @@ impl Workspace {
             skipped_packages,
         });
         Ok((fingerprint, index_for_return))
+    }
+
+    /// How far the dependency AL source index has got.
+    ///
+    /// Readable while the build holds the index write lock, which is the only
+    /// time the answer matters.
+    pub fn dependency_source_progress(&self) -> DependencySourceProgressSnapshot {
+        self.dependency_source_progress.snapshot()
+    }
+
+    /// How many times the call graph has been built since this workspace was
+    /// created. Callers that join an in-flight build do not add to it.
+    pub fn call_graph_build_count(&self) -> u64 {
+        self.call_graph_builds
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The fingerprint plus one message per loaded package that could not be
@@ -739,6 +906,11 @@ impl Workspace {
         // the next query rebuilds instead of reusing them.
         let built_at_insight_revision = self.insight_revision();
         let built_at_call_revision = self.call_graph_revision_now();
+        // Counted so single-flight can be asserted: concurrent callers block
+        // on `call_graph_build_lock` above, find the published graph in the
+        // re-check, and never reach here.
+        self.call_graph_builds
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let build = || {
             let mut graph = InsightGraph::new();
             graph.build_from_index(&self.symbols);

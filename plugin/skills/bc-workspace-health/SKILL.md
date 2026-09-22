@@ -104,9 +104,10 @@ with the project.
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json lint src/WorkOrderHelper.Codeunit.al
 ```
 
-`lint` waits on the dependency source index. On a project with Base Application
-loaded the first call takes about 20 seconds and can hit the 30-second client
-timeout. Run `al-explorer --json packages` first and retry once.
+`lint` waits on the dependency source index, which takes about a minute on Base
+Application. The daemon starts it in the background at startup and the client
+waits while it makes progress, so let a slow first call finish.
+`al-explorer --json diag | jq -c '.sourceIndex'` shows how far it has got.
 
 ## Formatting
 

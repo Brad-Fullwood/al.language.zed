@@ -176,6 +176,52 @@ fn cli_commands_use_the_real_project_daemon() {
             "\"proc_name\": \"DoSomething\"",
             true,
         ),
+        (
+            &[
+                "source",
+                "Hello World",
+                "--kind",
+                "codeunit",
+                "--list-procedures",
+                "--json",
+            ],
+            "\"signature\"",
+            true,
+        ),
+        // A wrong member name must offer the ones that exist rather than
+        // dead-ending, so the agent's next call can be the right one.
+        (
+            &[
+                "source",
+                "Hello World",
+                "--kind",
+                "codeunit",
+                "--procedure",
+                "DoSomethin",
+                "--json",
+            ],
+            "DoSomething",
+            false,
+        ),
+        (
+            &["location", "Hello World", "--kind", "codeunit", "--json"],
+            "\"path\"",
+            true,
+        ),
+        // The projection envelope: `total` and `truncated` travel with a
+        // limited list so a page is not read as a complete answer.
+        (
+            &[
+                "--json", "--limit", "1", "--fields", "name", "search", "Hello",
+            ],
+            "\"truncated\"",
+            true,
+        ),
+        (
+            &["--compact", "--limit", "1", "search", "Hello"],
+            "{\"items\":",
+            true,
+        ),
         (&["tests"], "test codeunit", true),
         (&["dead-code"], "DEAD CODE", false),
         (&["sql-scan"], "anti-pattern", false),
@@ -372,6 +418,7 @@ fn every_top_level_command_has_a_structured_black_box_path() {
         &["object", "codeunit", "Hello World"],
         &["by-id", "codeunit", "50100"],
         &["source", "Hello World", "--kind", "codeunit"],
+        &["location", "Hello World", "--kind", "codeunit"],
         &["events", "On"],
         &["subscribers", "OnSomething"],
         &[

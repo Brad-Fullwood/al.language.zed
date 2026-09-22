@@ -825,7 +825,9 @@ fn documented_top_level_commands(reference: &str) -> BTreeSet<String> {
             })
             .next()
         })
-        .filter(|command| !command.is_empty())
+        // The reference also carries a table of the global flags, whose rows
+        // have the same shape as a command row. A flag is never a command.
+        .filter(|command| !command.is_empty() && !command.starts_with('-'))
         .map(str::to_string)
         .collect()
 }

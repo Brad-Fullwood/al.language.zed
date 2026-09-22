@@ -33,7 +33,7 @@ pub fn cmd_metrics(
     match request_checked(&mut client, "metrics", Some(params)) {
         Ok(result) => {
             let has_hotspots = if all {
-                result.as_array().is_some_and(|files| {
+                list_rows(&result).as_array().is_some_and(|files| {
                     files.iter().any(|file| {
                         file.get("hotspots")
                             .and_then(|value| value.as_array())
@@ -49,7 +49,7 @@ pub fn cmd_metrics(
             if json {
                 print_json(&result);
             } else if all {
-                if let Some(files) = result.as_array() {
+                if let Some(files) = list_rows(&result).as_array() {
                     let mut total_hotspots = 0usize;
                     for file_result in files {
                         let fname = file_result
@@ -117,7 +117,7 @@ pub fn cmd_sql_scan(json: bool) -> ExitCode {
         json,
         None,
         |result| {
-            let violations = result.as_array().cloned().unwrap_or_default();
+            let violations = list_rows(result).as_array().cloned().unwrap_or_default();
             if violations.is_empty() {
                 eprintln!("No SQL anti-patterns found");
             } else {
