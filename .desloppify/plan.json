@@ -1,26 +1,22 @@
 {
   "version": 8,
   "created": "2026-09-21T00:40:45+00:00",
-  "updated": "2026-09-22T01:47:24+00:00",
+  "updated": "2026-09-22T01:56:10+00:00",
   "queue_order": [
     "review::.::holistic::abstraction_fitness::mockrecord_default_view_api",
     "review::.::holistic::abstraction_fitness::workspace_context_bag",
     "review::.::holistic::ai_generated_debt::test_fixture_builders_copied",
     "review::.::holistic::ai_generated_debt::test_only_public_overloads",
-    "review::.::holistic::api_surface_coherence::lsp_query_failure_shapes",
     "review::.::holistic::api_surface_coherence::sibling_parameter_order_drift",
-    "review::.::holistic::api_surface_coherence::source_lookup_error_not_std_error",
     "review::.::holistic::api_surface_coherence::string_errors_beside_typed_siblings",
     "review::.::holistic::api_surface_coherence::sync_async_query_twins",
     "review::.::holistic::authorization_consistency::snapshot_profiling_basic_only_auth_model",
     "review::.::holistic::authorization_consistency::tenant_scoping_header_vs_query",
     "review::.::holistic::authorization_consistency::windows_auth_divergence",
-    "review::.::holistic::contract_coherence::error_erasing_passthrough",
     "review::.::holistic::contract_coherence::two_error_conventions_in_one_module",
     "review::.::holistic::convention_outlier::bulk_fix_dual_write_protocol",
     "review::.::holistic::convention_outlier::explorer_edition_style_island",
     "review::.::holistic::convention_outlier::explorer_missing_module_docs",
-    "review::.::holistic::convention_outlier::source_lookup_error_manual_display",
     "review::.::holistic::convention_outlier::test_module_filename_shapes",
     "review::.::holistic::cross_module_architecture::al_analysis_bundles_unrelated_capabilities",
     "review::.::holistic::cross_module_architecture::generation_lock_lsp_only",
@@ -30,11 +26,9 @@
     "review::.::holistic::design_coherence::high_arity_helpers",
     "review::.::holistic::design_coherence::workspace_god_struct",
     "review::.::holistic::error_consistency::al_analysis_dual_error_convention",
-    "review::.::holistic::error_consistency::collect_al_files_erases_scanerror",
     "review::.::holistic::error_consistency::duplicate_dap_error_enum",
     "review::.::holistic::error_consistency::typed_error_flattened_in_entrypoints",
     "review::.::holistic::high_level_elegance::debug_session_parked_on_workspace_hub",
-    "review::.::holistic::logic_clarity::empty_result_means_two_things",
     "review::.::holistic::low_level_elegance::dap_response_boilerplate_inline",
     "review::.::holistic::low_level_elegance::lint_source_block_repeated_four_times",
     "review::.::holistic::low_level_elegance::tui_details_render_monolith",
@@ -3908,6 +3902,246 @@
         "kind": "permanent",
         "reason": null
       }
+    },
+    {
+      "timestamp": "2026-09-22T01:56:05+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::convention_outlier::source_lookup_error_manual_display"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:56:05+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::convention_outlier::source_lookup_error_manual_display"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "SourceLookupError derives thiserror::Error now, matching the other eight error enums in queries/. The five simple variants carry #[error(...)] with the same strings and MemberNotFound keeps its conditional tail via #[error(fmt = member_not_found_fmt)]. Clone/PartialEq/Eq are unchanged.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:56:06+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::convention_outlier::source_lookup_error_manual_display"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "SourceLookupError derives thiserror::Error now, matching the other eight error enums in queries/. The five simple variants carry #[error(...)] with the same strings and MemberNotFound keeps its conditional tail via #[error(fmt = member_not_found_fmt)]. Clone/PartialEq/Eq are unchanged.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually SourceLookupError derives thiserror::Error now, matching the other eight error enums in queries/. The five simple variants carry #[error(...)] with the same strings and MemberNotFound keeps its conditional tail via #[error(fmt = member_not_found_fmt)]. Clone/PartialEq/Eq are unchanged. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:56:06+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::api_surface_coherence::source_lookup_error_not_std_error"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:56:06+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::api_surface_coherence::source_lookup_error_not_std_error"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "The thiserror derive gives SourceLookupError the std::error::Error impl it was missing, so it matches every other public error type in al-analysis. No message text changed.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:56:06+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::api_surface_coherence::source_lookup_error_not_std_error"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "The thiserror derive gives SourceLookupError the std::error::Error impl it was missing, so it matches every other public error type in al-analysis. No message text changed.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually The thiserror derive gives SourceLookupError the std::error::Error impl it was missing, so it matches every other public error type in al-analysis. No message text changed. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:56:07+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::error_consistency::collect_al_files_erases_scanerror"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:56:07+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::error_consistency::collect_al_files_erases_scanerror"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Deleted bulk_fix::collect_al_files. The four al-lsp call sites call al_source::file_index::collect_al_files directly and go through build_dispatch::scan_error_response, which maps FileLimit, FileTooLarge and WorkspaceTooLarge to INVALID_PARAMS and the rest to INTERNAL_ERROR. Covered by a new test.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:56:07+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::error_consistency::collect_al_files_erases_scanerror"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Deleted bulk_fix::collect_al_files. The four al-lsp call sites call al_source::file_index::collect_al_files directly and go through build_dispatch::scan_error_response, which maps FileLimit, FileTooLarge and WorkspaceTooLarge to INVALID_PARAMS and the rest to INTERNAL_ERROR. Covered by a new test.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Deleted bulk_fix::collect_al_files. The four al-lsp call sites call al_source::file_index::collect_al_files directly and go through build_dispatch::scan_error_response, which maps FileLimit, FileTooLarge and WorkspaceTooLarge to INVALID_PARAMS and the rest to INTERNAL_ERROR. Covered by a new test. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:56:08+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::contract_coherence::error_erasing_passthrough"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:56:08+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::contract_coherence::error_erasing_passthrough"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Same deletion: the wrapper is gone and callers handle ScanError, so a file-size or workspace limit reaches the editor as INVALID_PARAMS while a disk fault stays INTERNAL_ERROR.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:56:08+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::contract_coherence::error_erasing_passthrough"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Same deletion: the wrapper is gone and callers handle ScanError, so a file-size or workspace limit reaches the editor as INVALID_PARAMS while a disk fault stays INTERNAL_ERROR.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Same deletion: the wrapper is gone and callers handle ScanError, so a file-size or workspace limit reaches the editor as INVALID_PARAMS while a disk fault stays INTERNAL_ERROR. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:56:08+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::logic_clarity::empty_result_means_two_things"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:56:09+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::logic_clarity::empty_result_means_two_things"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "find_implementations returns Option<Vec<Location>>: None when the document is not loaded or the caret is not on a name, Some(vec![]) when nothing implements it. The two al-lsp call sites and the tests distinguish the cases.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:56:09+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::logic_clarity::empty_result_means_two_things"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "find_implementations returns Option<Vec<Location>>: None when the document is not loaded or the caret is not on a name, Some(vec![]) when nothing implements it. The two al-lsp call sites and the tests distinguish the cases.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually find_implementations returns Option<Vec<Location>>: None when the document is not loaded or the caret is not on a name, Some(vec![]) when nothing implements it. The two al-lsp call sites and the tests distinguish the cases. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:56:09+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::api_surface_coherence::lsp_query_failure_shapes"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:56:09+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::api_surface_coherence::lsp_query_failure_shapes"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Reduced the document-missing encoding in the query family to one shape. find_implementations and semantic_tokens_full returned a bare Vec and now return Option<Vec<_>>, matching document_symbols and folding_ranges. Option rather than Result because no error value exists at that point, only absence; the String-returning code_lens and inlay_hints belong to the al-analysis error-convention item.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:56:10+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::api_surface_coherence::lsp_query_failure_shapes"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Reduced the document-missing encoding in the query family to one shape. find_implementations and semantic_tokens_full returned a bare Vec and now return Option<Vec<_>>, matching document_symbols and folding_ranges. Option rather than Result because no error value exists at that point, only absence; the String-returning code_lens and inlay_hints belong to the al-analysis error-convention item.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Reduced the document-missing encoding in the query family to one shape. find_implementations and semantic_tokens_full returned a bare Vec and now return Option<Vec<_>>, matching document_symbols and folding_ranges. Option rather than Result because no error value exists at that point, only absence; the String-returning code_lens and inlay_hints belong to the al-analysis error-convention item. and I am not gaming the score."
+      }
     }
   ],
   "epic_triage_meta": {},
@@ -3930,7 +4164,13 @@
     "review::.::holistic::abstraction_fitness::jsonc_helper_bypassed_via_facade",
     "review::.::holistic::naming_quality::runtime_error_helper_name_collision",
     "review::.::holistic::contract_coherence::same_name_two_return_types",
-    "review::.::holistic::abstraction_fitness::default_arg_wrappers_no_prod_caller"
+    "review::.::holistic::abstraction_fitness::default_arg_wrappers_no_prod_caller",
+    "review::.::holistic::convention_outlier::source_lookup_error_manual_display",
+    "review::.::holistic::api_surface_coherence::source_lookup_error_not_std_error",
+    "review::.::holistic::error_consistency::collect_al_files_erases_scanerror",
+    "review::.::holistic::contract_coherence::error_erasing_passthrough",
+    "review::.::holistic::logic_clarity::empty_result_means_two_things",
+    "review::.::holistic::api_surface_coherence::lsp_query_failure_shapes"
   ],
   "commit_tracking_branch": null,
   "scan_count_at_plan_start": 1

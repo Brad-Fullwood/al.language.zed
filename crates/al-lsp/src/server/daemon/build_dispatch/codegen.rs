@@ -92,7 +92,7 @@ pub(in crate::server::daemon) fn dispatch_permissions(
         ),
         _ => (
             "al",
-            al_analysis::permissions::render_al(&entries, name, perm_id),
+            al_analysis::permissions::render_al(&entries, perm_id, name),
         ),
     };
     Response {

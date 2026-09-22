@@ -9,11 +9,11 @@ pub mod scope;
 pub mod value;
 
 #[cfg(test)]
+mod coverage_tests;
+#[cfg(test)]
+mod records_tests;
+#[cfg(test)]
 mod regression_tests;
-#[cfg(test)]
-mod tests_coverage;
-#[cfg(test)]
-mod tests_records;
 
 pub use coverage::{Coverage, DynamicCoverageReport};
 pub use dispatch::{DispatchCtx, DispatchMode};

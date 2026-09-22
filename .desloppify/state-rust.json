@@ -12,8 +12,8 @@
     "auto_resolved": 0,
     "deferred": 0,
     "false_positive": 0,
-    "fixed": 38,
-    "open": 1182,
+    "fixed": 44,
+    "open": 1176,
     "triaged_out": 0,
     "wontfix": 45,
     "by_tier": {
@@ -21,8 +21,8 @@
         "auto_resolved": 0,
         "deferred": 0,
         "false_positive": 0,
-        "fixed": 16,
-        "open": 21,
+        "fixed": 19,
+        "open": 18,
         "triaged_out": 0,
         "wontfix": 28
       },
@@ -30,8 +30,8 @@
         "auto_resolved": 0,
         "deferred": 0,
         "false_positive": 0,
-        "fixed": 2,
-        "open": 250,
+        "fixed": 5,
+        "open": 247,
         "triaged_out": 0,
         "wontfix": 17
       },
@@ -36928,11 +36928,11 @@
         "reasoning": "",
         "summary_hash": "f94a0612"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "SourceLookupError derives thiserror::Error now, matching the other eight error enums in queries/. The five simple variants carry #[error(...)] with the same strings and MemberNotFound keeps its conditional tail via #[error(fmt = member_not_found_fmt)]. Clone/PartialEq/Eq are unchanged.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:56:05+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -36940,7 +36940,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually SourceLookupError derives thiserror::Error now, matching the other eight error enums in queries/. The five simple variants carry #[error(...)] with the same strings and MemberNotFound keeps its conditional tail via #[error(fmt = member_not_found_fmt)]. Clone/PartialEq/Eq are unchanged. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:56:05+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::error_consistency::al_analysis_dual_error_convention": {
       "id": "review::.::holistic::error_consistency::al_analysis_dual_error_convention",
@@ -37010,11 +37016,11 @@
         "reasoning": "",
         "summary_hash": "951f94af"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Deleted bulk_fix::collect_al_files. The four al-lsp call sites call al_source::file_index::collect_al_files directly and go through build_dispatch::scan_error_response, which maps FileLimit, FileTooLarge and WorkspaceTooLarge to INVALID_PARAMS and the rest to INTERNAL_ERROR. Covered by a new test.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:56:07+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -37022,7 +37028,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Deleted bulk_fix::collect_al_files. The four al-lsp call sites call al_source::file_index::collect_al_files directly and go through build_dispatch::scan_error_response, which maps FileLimit, FileTooLarge and WorkspaceTooLarge to INVALID_PARAMS and the rest to INTERNAL_ERROR. Covered by a new test. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:56:07+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::error_consistency::typed_error_flattened_in_entrypoints": {
       "id": "review::.::holistic::error_consistency::typed_error_flattened_in_entrypoints",
@@ -39635,11 +39647,11 @@
         "reasoning": "",
         "summary_hash": "d89d411a"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Reduced the document-missing encoding in the query family to one shape. find_implementations and semantic_tokens_full returned a bare Vec and now return Option<Vec<_>>, matching document_symbols and folding_ranges. Option rather than Result because no error value exists at that point, only absence; the String-returning code_lens and inlay_hints belong to the al-analysis error-convention item.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:56:09+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39647,7 +39659,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Reduced the document-missing encoding in the query family to one shape. find_implementations and semantic_tokens_full returned a bare Vec and now return Option<Vec<_>>, matching document_symbols and folding_ranges. Option rather than Result because no error value exists at that point, only absence; the String-returning code_lens and inlay_hints belong to the al-analysis error-convention item. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:56:09+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::api_surface_coherence::string_errors_beside_typed_siblings": {
       "id": "review::.::holistic::api_surface_coherence::string_errors_beside_typed_siblings",
@@ -39969,11 +39987,11 @@
         "reasoning": "",
         "summary_hash": "84da6fc9"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "The thiserror derive gives SourceLookupError the std::error::Error impl it was missing, so it matches every other public error type in al-analysis. No message text changed.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:56:06+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39981,7 +39999,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually The thiserror derive gives SourceLookupError the std::error::Error impl it was missing, so it matches every other public error type in al-analysis. No message text changed. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:56:06+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::api_surface_coherence::mcp_tool_name_outlier": {
       "id": "review::.::holistic::api_surface_coherence::mcp_tool_name_outlier",
@@ -41287,11 +41311,11 @@
         "reasoning": "",
         "summary_hash": "eb079ad9"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Same deletion: the wrapper is gone and callers handle ScanError, so a file-size or workspace limit reaches the editor as INVALID_PARAMS while a disk fault stays INTERNAL_ERROR.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:56:08+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -41299,7 +41323,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Same deletion: the wrapper is gone and callers handle ScanError, so a file-size or workspace limit reaches the editor as INVALID_PARAMS while a disk fault stays INTERNAL_ERROR. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:56:08+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::contract_coherence::two_error_conventions_in_one_module": {
       "id": "review::.::holistic::contract_coherence::two_error_conventions_in_one_module",
@@ -41426,11 +41456,11 @@
         "reasoning": "",
         "summary_hash": "55edee72"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "find_implementations returns Option<Vec<Location>>: None when the document is not loaded or the caret is not on a name, Some(vec![]) when nothing implements it. The two al-lsp call sites and the tests distinguish the cases.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:56:09+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -41438,7 +41468,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually find_implementations returns Option<Vec<Location>>: None when the document is not loaded or the caret is not on a name, Some(vec![]) when nothing implements it. The two al-lsp call sites and the tests distinguish the cases. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:56:09+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::type_safety::untyped_rpc_boundary": {
       "id": "review::.::holistic::type_safety::untyped_rpc_boundary",
@@ -41663,8 +41699,8 @@
       "source": "holistic",
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
-      "refresh_reason": "review_issue_wontfix",
-      "stale_since": "2026-09-22T01:47:20+00:00"
+      "refresh_reason": "review_issue_fixed",
+      "stale_since": "2026-09-22T01:56:09+00:00"
     },
     "authorization_consistency": {
       "score": 78.5,
@@ -41680,15 +41716,15 @@
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
       "refresh_reason": "review_issue_fixed",
-      "stale_since": "2026-09-22T01:45:51+00:00"
+      "stale_since": "2026-09-22T01:56:08+00:00"
     },
     "convention_outlier": {
       "score": 80.0,
       "source": "holistic",
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
-      "refresh_reason": "review_issue_wontfix",
-      "stale_since": "2026-09-22T01:47:18+00:00"
+      "refresh_reason": "review_issue_fixed",
+      "stale_since": "2026-09-22T01:56:05+00:00"
     },
     "cross_module_architecture": {
       "score": 79.5,
@@ -41717,7 +41753,10 @@
     "error_consistency": {
       "score": 81.5,
       "source": "holistic",
-      "assessed_at": "2026-09-21T10:09:03+00:00"
+      "assessed_at": "2026-09-21T10:09:03+00:00",
+      "needs_review_refresh": true,
+      "refresh_reason": "review_issue_fixed",
+      "stale_since": "2026-09-22T01:56:07+00:00"
     },
     "high_level_elegance": {
       "score": 84.5,
@@ -41748,8 +41787,8 @@
       "source": "holistic",
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
-      "refresh_reason": "review_issue_wontfix",
-      "stale_since": "2026-09-22T01:47:19+00:00"
+      "refresh_reason": "review_issue_fixed",
+      "stale_since": "2026-09-22T01:56:09+00:00"
     },
     "low_level_elegance": {
       "score": 78.0,
@@ -81286,13 +81325,13 @@
       "strict": 81.5,
       "verified_strict_score": 81.5,
       "checks": 10,
-      "failing": 5,
+      "failing": 3,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.815,
-          "failing": 5,
+          "failing": 3,
           "weighted_failures": 1.85,
           "assessment_score": 81.5,
           "placeholder": false,
@@ -81328,13 +81367,13 @@
       "strict": 75.0,
       "verified_strict_score": 75.0,
       "checks": 10,
-      "failing": 2,
+      "failing": 1,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.75,
-          "failing": 2,
+          "failing": 1,
           "weighted_failures": 2.5,
           "assessment_score": 75.0,
           "placeholder": false,
@@ -81349,13 +81388,13 @@
       "strict": 80.0,
       "verified_strict_score": 80.0,
       "checks": 10,
-      "failing": 5,
+      "failing": 4,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.8,
-          "failing": 5,
+          "failing": 4,
           "weighted_failures": 2.0,
           "assessment_score": 80.0,
           "placeholder": false,
@@ -81433,13 +81472,13 @@
       "strict": 81.5,
       "verified_strict_score": 81.5,
       "checks": 10,
-      "failing": 4,
+      "failing": 3,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.815,
-          "failing": 4,
+          "failing": 3,
           "weighted_failures": 1.85,
           "assessment_score": 81.5,
           "placeholder": false,
@@ -81517,13 +81556,13 @@
       "strict": 86.0,
       "verified_strict_score": 86.0,
       "checks": 10,
-      "failing": 1,
+      "failing": 0,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.86,
-          "failing": 1,
+          "failing": 0,
           "weighted_failures": 1.4,
           "assessment_score": 86.0,
           "placeholder": false,

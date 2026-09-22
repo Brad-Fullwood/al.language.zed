@@ -1,3 +1,5 @@
+//! Profiler view: the loaded profile's hot procedures and their call sites.
+
 use crossterm::event::KeyCode;
 use ratatui::{
     Frame,

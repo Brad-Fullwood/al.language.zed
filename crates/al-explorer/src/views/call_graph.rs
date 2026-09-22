@@ -1,3 +1,6 @@
+//! Call graph view: callers and callees of the selected procedure, fetched
+//! from the daemon and navigated as a stack of visited nodes.
+
 use al_protocol::DaemonClient;
 use crossterm::event::KeyCode;
 use ratatui::{
