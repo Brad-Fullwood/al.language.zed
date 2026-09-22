@@ -174,7 +174,7 @@ Multi-object open item:
   look at it.
 - fix: print a line per skipped file to stderr from `cmd_permissions`, and add `skipped` to the
   `permissions` contract.
-- status: fixed PLACEHOLDER6 — `cmd_permissions` prints a line per skipped file and a closing count,
+- status: fixed 452ccf28 — `cmd_permissions` prints a line per skipped file and a closing count,
   and the `permissions` contract requires `skipped` with `path` and `reason` on every entry.
   `permissions_names_the_files_it_could_not_read` runs the CLI over a project holding one
   unparsable file.
@@ -193,7 +193,7 @@ Multi-object open item:
   direction the audit's own module doc (audit.rs:16-19) promises not to fail in.
 - fix: print the parse issues and add `parseIssues` to the `permissions.audit` contract in
   commands/mod.rs:889.
-- status: fixed PLACEHOLDER6 — `cmd_permission_audit` prints each unreadable clause with its set,
+- status: fixed 452ccf28 — `cmd_permission_audit` prints each unreadable clause with its set,
   file, clause number and reason, and the contract requires `parseIssues` with all five fields.
   `permission_audit_names_the_clauses_it_could_not_read` runs the CLI over a permission set with
   an unsupported object type.
