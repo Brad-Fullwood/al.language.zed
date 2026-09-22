@@ -7,75 +7,75 @@ Read-only. Every finding checked against code with file:line and a concrete inpu
 
 Part 1, fixes that do not fix the finding (sample of 25+):
 
-- [ ] r1-lsp: generation guard across awaits (92da8dd9)
-- [ ] r1-lsp: al.compile holds the guard (92da8dd9)
-- [ ] r1-lsp: partial frame desync (620956ba)
-- [ ] r1-lsp: daemon path containment (0949a7ae)
-- [ ] r1-lsp: block_in_place guard (00667357)
-- [ ] r1-lsp: sequential dispatch (f4fe24a4)
-- [ ] r1-lsp: Response::null (00667357)
-- [ ] r1-lsp: diagnostics retry loop (0255a549)
-- [ ] r1-lsp: staging loops (0255a549)
-- [ ] r1-lsp: reindex abort half-publish (8981419e)
-- [ ] r1-lsp: four insight dispatchers offload (00667357)
-- [ ] r1-lsp: al_debug inline config (6d765b94)
-- [ ] r1-lsp: configs[0] launch config selection (4af032d6)
-- [ ] r1-lsp: did_change reparse (ff9f60a1)
-- [ ] r1-ext: cached binary never replaced (4c377a73)
-- [ ] r1-ext: archive integrity check (4c377a73)
-- [ ] r1-ext: action SHA pinning (af051aa3)
-- [ ] r1-ext: cross --locked (af051aa3)
-- [ ] r1-ext: release-dryrun gates (96e4945c)
-- [ ] r1-ext: debug schema reverse contract (6648ba17)
-- [ ] r1-ext: RUSTSEC lock update (f1aa7659)
-- [ ] r1-ext: README tasks claim (fb58b642)
-- [ ] r1-emit/bc/explorer: sample
-- [ ] r1-project: sample (analyzers, config, toolchain)
-- [ ] r1-dap / r1b-dap: sample
-- [ ] r2-security: all eight
-- [ ] r2-merge-regressions: all
+- [x] r1-lsp: generation guard across awaits (92da8dd9)
+- [x] r1-lsp: al.compile holds the guard (92da8dd9)
+- [x] r1-lsp: partial frame desync (620956ba)
+- [x] r1-lsp: daemon path containment (0949a7ae)
+- [x] r1-lsp: block_in_place guard (00667357)
+- [x] r1-lsp: sequential dispatch (f4fe24a4)
+- [x] r1-lsp: Response::null (00667357)
+- [x] r1-lsp: diagnostics retry loop (0255a549)
+- [x] r1-lsp: staging loops (0255a549)
+- [x] r1-lsp: reindex abort half-publish (8981419e)
+- [x] r1-lsp: four insight dispatchers offload (00667357)
+- [x] r1-lsp: al_debug inline config (6d765b94)
+- [x] r1-lsp: configs[0] launch config selection (4af032d6)
+- [x] r1-lsp: did_change reparse (ff9f60a1)
+- [x] r1-ext: cached binary never replaced (4c377a73)
+- [x] r1-ext: archive integrity check (4c377a73)
+- [x] r1-ext: action SHA pinning (af051aa3)
+- [x] r1-ext: cross --locked (af051aa3)
+- [x] r1-ext: release-dryrun gates (96e4945c)
+- [x] r1-ext: debug schema reverse contract (6648ba17)
+- [x] r1-ext: RUSTSEC lock update (f1aa7659)
+- [x] r1-ext: README tasks claim (fb58b642)
+- [x] r1-emit/bc/explorer: sample
+- [x] r1-project: sample (analyzers, config, toolchain)
+- [x] r1-dap / r1b-dap: sample (al-dap half only)
+- [x] r2-security: all eight
+- [x] r2-merge-regressions: all
 
 Part 2, security fixes under attack:
 
-- [ ] project trust digest coverage (settings value shapes)
-- [ ] symlinked project root
-- [ ] trust file writable by the repo
-- [ ] environment variables a repo can set
-- [ ] launch config resolving to a trusted host via DNS/redirect
-- [ ] MCP/daemon method reaching a privileged setting without the gate
-- [ ] `authorize_cached_credential`
-- [ ] containment: deepest-existing-ancestor walk, races, Windows forms
-- [ ] the `text` parameter
-- [ ] build identity handshake (only if campaign/fix-daemon-lifecycle landed)
+- [x] project trust digest coverage (settings value shapes)
+- [x] symlinked project root
+- [x] trust file writable by the repo
+- [x] environment variables a repo can set
+- [x] launch config resolving to a trusted host via DNS/redirect
+- [x] MCP/daemon method reaching a privileged setting without the gate
+- [x] `authorize_cached_credential`
+- [x] containment: deepest-existing-ancestor walk, races, Windows forms
+- [x] the `text` parameter
+- [x] build identity handshake (only if campaign/fix-daemon-lifecycle landed)
 
 Part 3, merge damage:
 
-- [ ] daemon dispatch match: every arm once, right dispatcher
-- [ ] projection and scope layer applies to every list method claimed
-- [ ] method catalog vs dispatcher vs MCP tool list vs Docs/reference
-- [ ] which of these the repo tests miss
+- [x] daemon dispatch match: every arm once, right dispatcher
+- [x] projection and scope layer applies to every list method claimed
+- [x] method catalog vs dispatcher vs MCP tool list vs Docs/reference
+- [x] which of these the repo tests miss
 
 Part 4, flagged behaviour changes:
 
-- [ ] relative `file` resolving against project root
-- [ ] error -32002
-- [ ] `--company` required on `snapshot list`
-- [ ] https required for credentials
-- [ ] CLI exit codes
-- [ ] `al-explorer publish` and daemon `publish`
-- [ ] extension `choose_release` and binary verification
-- [ ] `binary-checksums.txt` in release.yml
-- [ ] plugin resolver script
+- [x] relative `file` resolving against project root
+- [x] error -32002
+- [x] `--company` required on `snapshot list`
+- [x] https required for credentials
+- [x] CLI exit codes
+- [x] `al-explorer publish` and daemon `publish`
+- [x] extension `choose_release` and binary verification
+- [x] `binary-checksums.txt` in release.yml
+- [x] plugin resolver script
 
 Part 5, quality of the new code:
 
-- [ ] tests that assert nothing
-- [ ] duplicated helpers
-- [ ] panics reachable from client input
-- [ ] over-long functions, needless public items
-- [ ] shell script bugs
-- [ ] workflow YAML mistakes
-- [ ] plugin skill text vs current tool behaviour
+- [x] tests that assert nothing
+- [x] duplicated helpers
+- [x] panics reachable from client input
+- [x] over-long functions, needless public items
+- [x] shell script bugs
+- [x] workflow YAML mistakes
+- [x] plugin skill text vs current tool behaviour
 
 ## Findings
 
@@ -334,4 +334,259 @@ Part 5, quality of the new code:
 - fix: add `table-impact` to the help text.
 - status: open
 
+### [REGRESSION] publish is gated as if it spent a cached credential, and it never does
+
+- where: `crates/al-publish/src/lib.rs:350-360` calls `authorize_cached_credential` with
+  `CredentialKind::Bearer`/`Basic` and `TargetSource::Repository`. Every credential publish
+  actually uses comes from the environment: `crates/al-bc/src/bc_client.rs:412-413`
+  (`BC_USERNAME`/`BC_PASSWORD`) and `:446` (`access_token_from_env`, which reads
+  `BC_ACCESS_TOKEN`/`BC_TOKEN` at `crates/al-bc/src/http_auth.rs:44-52`). Nothing in
+  `al-publish` touches the keyring cache.
+- severity: medium
+- scenario: a developer with an on-premises project that has never been trusted runs
+  `al-explorer publish` (or the daemon `publish` method) with `BC_USERNAME` and `BC_PASSWORD`
+  set. The refusal reads "Refusing to send Business Central basic credentials to
+  https://erp.example.com:7049: that server is named by a file this repository carries, and
+  this project is not trusted." No cached credential was involved, and the message names one.
+  `debug start` draws the distinction the gate needs: `spends_cached_credential =
+  supplied_access_token.is_empty() && debug_uses_oauth(&config)`
+  (`crates/al-lsp/src/server/daemon/debug_dispatch.rs:347-348`). Publish has no equivalent.
+  `Docs/features/project-trust.md` "Settings you wrote yourself" says an environment variable is
+  a user-level decision that is not gated, which contradicts what publish does.
+- the case for keeping the gate: aiming a developer's `BC_USERNAME`/`BC_PASSWORD` at a server
+  the repository chose is still a credential leak, so gating is right. What is wrong is the
+  message, and the absence of the `debug start` carve-out for a credential the caller passed
+  explicitly.
+- fix: say "Business Central credentials" rather than "a cached Business Central token" on this
+  path, and reconcile the doc with the rule the code applies.
+- status: open
+
+### [DOCS] the settings reference never mentions trust
+
+- where: `Docs/reference/settings.md:21`, `:23`, `:24`, `:46`, `:47`, `:48`, `:49`, `:56`, `:59`
+  document `al.codeAnalyzers`, `al.ruleSetPath`, `al.assemblyProbingPaths`,
+  `al.packageCachePath`, `al.appLocalFolderPaths`, `al.nugetFeeds`, `al.useOnlyCustomFeeds`,
+  `al.compilationOptions` and `al.dotnetPath`. The word "trust" appears zero times in the file.
+- severity: medium
+- scenario: every one of those keys is now silently dropped when it comes from the repository's
+  own settings file and the project is not trusted
+  (`crates/al-project/src/trust.rs:313-324`, `:400-501`). The settings reference is where a
+  user looks a key up, and it still describes the old behaviour. The README covers it at
+  `README.md:499-506` and `Docs/features/project-trust.md` covers it in full, so only the
+  reference is out of step.
+- fix: add a "needs project trust" column or footnote to the table for those nine keys, linking
+  to `Docs/features/project-trust.md`.
+- status: open
+
+### [BUG] the LSP trust gate fails open when the client sends no root URI
+
+- where: `crates/al-lsp/src/server/lsp.rs:987-991`:
+  `let root = root_uri?.to_file_path().ok()?;`, called from `initialize` (`:1068`) and
+  `did_change_configuration` (`:1579`).
+- severity: low
+- scenario: `?` on `None` returns from the function, so with no `rootUri` and no
+  `workspaceFolders` (or a non-`file:` root) the merged editor settings, which already contain
+  whatever `.zed/settings.json` contributed, are applied whole. The unreadable-settings branch
+  at `:1001-1002` calls `deny_privileged`, so the code already knows what to do when it cannot
+  decide, and the no-root case does the opposite.
+  The containment layer fails closed in the same situation
+  (`containment::project_boundary` returns "No project is loaded, so no file path can be
+  authorised"), so the two halves disagree.
+- [UNVERIFIED] whether Zed ever omits `rootUri`. The asymmetry stands regardless.
+- fix: call `deny_privileged(config)` when the root cannot be determined, and say so in the
+  advisory.
+- status: open
+
+### [SLOP] `plugin/scripts/*.sh` is shellchecked by neither CI nor `make shellcheck`
+
+- where: `.github/workflows/ci.yml:46-50` and the `shellcheck` target in `Makefile` both list
+  `scripts/*.sh`, `crates/al-test-harness/editor-e2e/*.sh`,
+  `crates/al-test-harness/editor-e2e/container/*.sh` and `tree-sitter-al/tests/*.sh`.
+  `plugin/scripts/al-bin.sh`, `al-session-context.sh` and `al-session-end.sh` are in neither.
+- severity: low
+- scenario: these are the scripts `plugin/.mcp.json` and `plugin/hooks/hooks.json` run on a
+  user's machine, so they are the shipped shell surface with the widest reach and the only one
+  with no lint. The infinite loop reported above is in one of them.
+- fix: add `plugin/scripts/*.sh` to both lists.
+- status: open
+
+### [SLOP] two `#[test]` functions that assert nothing and run nothing
+
+- where: `crates/al-lsp/tests/test_engine_skeleton.rs:9` (`test_types_only_at_canonical_path`)
+  and `:17` (`test_status_variants_exist`). The bodies are `std::mem::size_of::<T>()` and
+  `let _pass = TestStatus::Pass;`, discarded.
+- severity: low
+- scenario: both pass by compiling. As `#[test]` functions they report as passing tests and
+  measure nothing at runtime, which inflates the count and reads as coverage that is not there.
+- fix: make them `const _: () = { ... };` items, or delete them: the types are used by the tests
+  in the same file that do assert.
+- status: open
+
+### [SIMPLIFY] the two functions that carry the credential decision are 629 and 468 lines
+
+- where: `crates/al-lsp/src/server/daemon/debug_dispatch.rs:288-917` (`dispatch_debug`, 629
+  lines, a twelve-arm `match cmd` with every arm's body inline) and
+  `crates/al-lsp/src/server/daemon/build_dispatch/tests_dispatch.rs:1632-2100`
+  (`dispatch_tests_snapshot_capture`, 468 lines). `dispatch_tests_run_batch`
+  (`tests_dispatch.rs:452`) is 644 lines.
+- severity: low
+- scenario: the trust gate for a cached Business Central token lives as twenty lines inside the
+  `"start"` arm of `dispatch_debug` (`:346-372`) rather than in the function that acquires the
+  token. `dispatch_tests_snapshot_capture` repeats the whole acquire sequence
+  (`resolve_debug_config` -> `debug_uses_oauth` -> `access_token_from_env` ->
+  `acquire_token`) and omits the gate. That is the shape the SECURITY finding above reports,
+  and it is a direct consequence of the duplication.
+- fix: one `acquire_bc_token(workspace, &config, supplied, source)` helper that performs the
+  authorisation and then the acquisition, so a caller cannot get the token without the check.
+  Split the twelve `dispatch_debug` arms into functions while doing it.
+- status: open
+
+### [SIMPLIFY] six public items in `al-project::trust` have no caller
+
+- where: `crates/al-project/src/trust.rs:828` (`digest_of`), `:882` (`load_store`), `:858`
+  (`TrustStore`), `:852` (`TrustRecord`), `:906` (`state_for`), `:355`
+  (`is_builtin_analyzer_token`). A workspace-wide grep outside `trust.rs` finds zero uses of
+  each. `trust_project` and `deny_privileged` have one caller each.
+- severity: low
+- scenario: `al-project` is a publishable library, so each of these is a published API surface
+  nothing needs. `digest_of` in particular is the hash function the trust record depends on:
+  exposing it invites a caller to compute a digest and write a record without going through
+  `grant`, which is the one path that prints the values first.
+- fix: make them `pub(crate)`, keeping `TrustStore`/`TrustRecord` public only if the CLI's
+  `--show` output is meant to be a stable shape.
+- status: open
+
 ## Verified fixes
+
+Each checked against the current code, and against a test that would fail without the change.
+
+- **r1-lsp `[SECURITY]` daemon path containment (0949a7ae)** — `file_uri_from_params`
+  (`daemon/mod.rs:1568-1602`) routes through `containment::resolve_within_project`. Covered by
+  `file_uri_rejects_a_path_outside_the_project`,
+  `file_uri_rejects_a_symlink_that_escapes_the_project` and
+  `file_uri_rejects_every_path_when_no_project_is_loaded` (`daemon/mod.rs:2245-2305`). One
+  dispatcher escaped it: see the `rename` finding above.
+- **r1-lsp `[BUG]` empty JSON-RPC results (00667357)** — `lsp_dispatch.rs:227` returns
+  `Response::null(id)` for `rename`, and `ok_response_opt` does the same. Covered by
+  `ok_response_opt_none_yields_an_explicit_null_result_no_error` (`lsp_dispatch.rs:1599`).
+- **r1-lsp `[PERF]` four insight dispatchers inline (00667357)** — `insightStats`,
+  `tableImpact`, `traceChain` and `eventMap` all go through `offload`
+  (`daemon/mod.rs:908`, `:930`, `:944`, `:951`).
+- **r1-lsp `[GAP]` sequential per-connection dispatch (f4fe24a4)** — covered by the pipelined
+  test at `daemon/mod.rs:2011` ("a pipelined ping must not wait for the request ahead of it").
+- **r1-lsp `[SECURITY]` `al_debug start` inline config (6d765b94, then f344ab52)** — the inline
+  and named paths both go through `authorize_debug_target` (`debug_dispatch.rs:355`), and
+  `acceptInvalidCerts` is refused unless the authorisation allows it (`:358-366`).
+- **r2-security `[SECURITY]` dangling symlink in a contained output path (ae4b7192)** — the tail
+  walk at `containment.rs:140-149` refuses any symlink component, and `write_no_follow`
+  (`:178-210`) adds `O_NOFOLLOW`. Covered by `rejects_a_dangling_symlink_inside_the_root`,
+  `rejects_a_file_below_a_symlinked_parent_directory` and
+  `a_symlink_planted_after_the_check_does_not_capture_the_write`.
+- **r2-security `[SECURITY]` analyzer and `compilationOptions` from a cloned repo (bbf25313)** —
+  `trust::gate` / `trust::evaluate` is applied at every config-load point:
+  `al-lsp.rs:414`, `lsp.rs:993` and `:1579`, `daemon/mod.rs:261`, `mcp.rs:1589`,
+  `al-explorer/src/cli/commands/build.rs:207`, and `AlConfig::load_for_project`
+  (`al-project/src/config.rs:400`). Covered by
+  `an_untrusted_project_cannot_add_an_analyzer_dll` and
+  `an_untrusted_project_cannot_add_compilation_options`.
+- **r2-security `[SECURITY]` project-chosen NuGet feed (388b9a0a)** —
+  `nuget::is_acceptable_feed_url` (`nuget.rs:204-240`) allows https or loopback http only, and
+  `effective_nuget_feeds` (`workspace.rs:1069-1090`) drops the rest with a log line. Covered by
+  `a_feed_url_must_be_https_or_loopback_http` (`nuget.rs:841`).
+- **r2-security `[SECURITY]` shared temp socket directory (388b9a0a)** —
+  `check_directory_owner` (`daemon/mod.rs:121-160`) walks every existing ancestor and refuses a
+  symlink, a directory owned by another user, and a root-owned non-sticky world-writable one.
+  Covered by `ensure_private_dir_creates_owner_only` and
+  `ensure_private_dir_tightens_preexisting_lax_dir`.
+- **r2-security `[SECURITY]` release checksum described honestly (7e473f90)** —
+  `actions/attest-build-provenance` is present and SHA-pinned, `Docs/current-limitations.md`
+  carries "gh attestation verify" and "It does not show who produced it."
+  Covered by `release_provenance_is_published_and_described_honestly`. The gap between the
+  attested file and the verified file is a separate finding above.
+- **r1-ext `[BUG]` cached binary never replaced (4c377a73)** — `choose_release`
+  (`src/lib.rs:164-205`) runs the release lookup first and prunes the other directories only
+  when the lookup named the cached version. The offline path still starts from disk.
+- **r1-ext `[SECURITY]` archive integrity (4c377a73, extended by 7e473f90)** —
+  `verify_extracted_binaries` (`src/lib.rs:304-349`) runs before `make_file_executable`, pinned
+  by `binaries_are_verified_before_they_are_made_executable`, and the asset name is pinned to
+  `release.yml` by `binary_checksum_asset_is_produced_by_the_release_workflow`.
+- **r1-ext `[SECURITY]` action SHA pinning (af051aa3)** — every `uses:` across the three
+  workflows is a 40-hex SHA, including `dtolnay/rust-toolchain@6bed0761…`, and
+  `check_actions_sha_pinned` (`scripts/check-release-hygiene.sh:262-275`) enforces it.
+- **r1-ext `[GAP]` `cargo install cross --locked` (af051aa3)** — `release.yml:106`.
+- **r1-ext `[GAP]` `make release-dryrun` gates (96e4945c)** — the target now runs ShellCheck
+  (6/16), `cargo deny` (11/16) and the semantic-feature clippy and tests (14/16), and
+  `Docs/testing-guide.md:304-321` is renumbered to match.
+- **r1-ext `[SECURITY]` RUSTSEC advisories (f1aa7659)** — `Cargo.lock` holds `h2 0.4.19` and
+  `rustls 0.23.45`, both above the patched versions, with `deny.toml`'s `ignore` list still
+  empty.
+- **r2-merge `--no-fail-fast` (CI)** — `.github/workflows/ci.yml:80`, `:253`, `:260`, `:264`.
+- **r2-merge `text` and `-32002`** — `error_codes::PATH_NOT_AUTHORIZED` is `-32002`
+  (`al-protocol/src/jsonrpc.rs:236`); `file_uri_from_params` refuses `text` outright
+  (`daemon/mod.rs:1575-1579`); `read_document_from_params` refuses it for a path inside the
+  project (`:1656-1666`) and drops the document on `Drop` (`:1613-1617`). The CLI's
+  `READ_ONLY_FILE_METHODS` (`al-explorer/src/cli/commands/mod.rs:540-554`) lists exactly the 14
+  dispatchers that call `read_document_from_params`, and exactly the 14 the daemon reference
+  names at `Docs/reference/daemon-methods.md:138-141`.
+- **r2-merge Windows containment display (`display_path`)** — `simplify_verbatim`
+  (`containment.rs:35-53`) plus `a_verbatim_prefix_is_stripped_for_display` and
+  `a_path_with_no_plainer_spelling_is_left_alone`, both plain-text so they run on Linux.
+- **daemon build identity (45341c12)** — `handshake` is dispatched once
+  (`daemon/mod.rs:1024`), the daemon captures its identity before it serves
+  (`daemon/mod.rs:223`), and `connect_checked` (`client.rs:444-503`) replaces a mismatched
+  daemon at most once and then continues with a warning rather than looping.
+- **dispatch table integrity** — the 93 method literals in `dispatch_method`
+  (`daemon/mod.rs:847-1116`) contain no duplicate, every one appears in
+  `Docs/reference/daemon-methods.md`, every `method:` on an MCP tool is a dispatched method, and
+  every `al_*` tool name in `mcp.rs` appears in `Docs/reference/mcp-tools.md` and the reverse.
+- **projection and scope targets** — each of the 22 root-array methods in
+  `projection::list_target` returns a `Vec` (checked through to the query function: for example
+  `dead_code -> Vec<UnusedSymbol>`, `native_semantic_checks -> Vec<NativeFinding>`,
+  `discover_tests -> Vec<TestCodeunit>`, `arch_lint -> Vec<ArchViolation>`), and each of the 8
+  field targets names a real `Vec` field on the result struct (`EventDiscoveryResult::events`,
+  `PermissionAuditReport::coverage`). `scope::scoped_list`'s four methods are the four the docs
+  and the module comment claim.
+- **`--company` on `snapshot`/`profile` (r1-emit finding)** — `required = true` on all five
+  subcommands (`al-explorer/src/cli/subcommands.rs:115`, `:136`, `:153`, `:175`, `:196`), and no
+  shipped task, script or skill invokes them without it.
+- **relative `file` against the project root** — the CLI never sends a relative path: every
+  single-file command builds an absolute canonical `file://` URI through `file_to_uri`
+  (`al-explorer/src/cli/commands/mod.rs:170-189`), so the change reaches only MCP callers, which
+  is what the reference documents.
+
+## Gaps in the repo's own consistency tests
+
+These are the checks the merge relied on, and what each one does not see.
+
+- `daemon_reference_names_every_dispatched_method` (`daemon/mod.rs:2054`) checks
+  dispatcher -> docs only. It would not notice a documented method that no longer dispatches, a
+  method routed to the wrong dispatcher, or a dispatcher that skips containment (which is how
+  `rename` survived).
+- Nothing compares `projection::list_target` or `scope::scoped_list` against the shapes the
+  dispatchers actually return, so a wrong field name is a silent no-op rather than a failure.
+- Nothing compares the CLI's `READ_ONLY_FILE_METHODS` with the set of dispatchers that call
+  `read_document_from_params`; the two agree today by hand.
+- The containment tests all call the helper directly. No test drives a dispatcher with an
+  out-of-project path.
+- `src/settings_test.rs:231` covers `is_worktree_resident_program` with six literal paths and no
+  normalisation case.
+
+
+## Review complete
+
+Nineteen findings: four high, four medium, eleven low. All four high ones are security.
+The worst is that two dispatchers skip a gate the rest of the code passes through: `rename`
+never calls `file_uri_from_params`, so it reads any file the daemon's user can and seeds the
+document store for later reads, and `tests.snapshot_capture` acquires the cached Business
+Central token without `authorize_cached_credential`, so an untrusted repository's launch file
+can still receive it.
+Containment holds for `..` and for symlinks a caller names, and it is undone from the other
+side: `.alpackages` is a containment root, nothing checks what it is, and a symlink there
+canonicalises the boundary onto whatever it points at.
+The Zed extension's worktree-binary refusal compares strings without normalising, so an
+absolute path spelled with `..` through the worktree root is accepted and run unverified.
+The daemon dispatch table survived the three hand merges intact: 93 arms, no duplicate, every
+one documented, every MCP tool method dispatched, and every projection and scope target
+matching the shape its dispatcher returns.
+What the repo's own tests cannot see is the pattern behind the first two findings: they check
+the helpers, not that each dispatcher uses them, and nothing walks the dispatch table.
