@@ -91,16 +91,16 @@ covers source and substituted destination, symlinks rejected), no reachable pani
   `var AOAIOperationResponse: Codeunit "AOAI Operation Response"` and returns the completion as
   `Text`. The template now emits a `Copilot Capability` enumextension and a codeunit that calls
   the documented overload and checks `IsSuccess`.
-  - status: fixed 7c38a0cc
+  - status: fixed 187b1741
 - An empty `repeater(Group) { }` when every non-system field is a FlowField: reachable, and
   `collect_normal_fields` now falls back to the FlowFields when excluding them would leave the
   page with no controls at all.
-  - status: fixed 7c38a0cc
+  - status: fixed 187b1741
 - `UsageCategory = Lists` on Card and Document pages: wrong on both counts. "Page types and
   layouts" says an entity-oriented page must not contain a repeater, so `Card` and `Document`
   now open a `group(General)`. The `UsageCategory` property page has no card value and a card is
   opened from its list through `CardPageId`, so the property is left off a `Card` and set to
   `Documents` on a `Document`.
-  - status: fixed 7c38a0cc
+  - status: fixed 187b1741
 
 ## Review complete
