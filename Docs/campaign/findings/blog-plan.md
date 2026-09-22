@@ -51,7 +51,7 @@ CLI front end:
   enum value ordinal inside the `idRanges` declared in `app.json`. It counts every object in the
   workspace, including the second and later objects in a multi-object file, and the dependency
   package objects in the same range. An exhausted range is an error that names the range rather
-  than a silent wrap. `--include_used` is off by default "so the answer stays a few hundred bytes"
+  than a silent wrap. `--include-used` is off by default "so the answer stays a few hundred bytes"
   (`args.rs:685`), which is the token-cost design rule from §1.8 showing up in a CLI flag.
 
 ## 1.2 Workspace layout
@@ -1012,7 +1012,7 @@ and why is it not more speed?
    discovery rather than an allow-list. Result-specific output schemas, and structured diagnostics
    when an answer is incomplete because symbols or live BC were unavailable.
    `al_freeids` is the worked example of the design rule: "what is the next free codeunit ID" comes
-   back in a few hundred bytes, and `--include_used` is off by default so the used-number list is
+   back in a few hundred bytes, and `--include-used` is off by default so the used-number list is
    something you ask for rather than something you are sent.
 4. The plugin: 8 skills, 2 subagents, 1 hook that fires only inside an AL project.
    `bc-symbol-scout` runs lookups on a cheap model and returns the answer instead of the payload.
