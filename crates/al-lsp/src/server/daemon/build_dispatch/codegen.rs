@@ -615,7 +615,10 @@ mod tests {
         );
         // The empty workspace has no Customer table, so generation still
         // fails; it must fail on that and not on the ID.
-        let message = response.error.map(|error| error.message).unwrap_or_default();
+        let message = response
+            .error
+            .map(|error| error.message)
+            .unwrap_or_default();
         assert!(
             !message.contains("reserved range"),
             "50000 is the first customization ID: {message}"
