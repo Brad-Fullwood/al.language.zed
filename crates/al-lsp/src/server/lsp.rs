@@ -1780,6 +1780,7 @@ impl LanguageServer for AlServer {
                     &uri,
                     position.into(),
                 )
+                .unwrap_or_default()
                 .into_iter()
                 .map(Into::into)
                 .collect::<Vec<Location>>()
@@ -1928,8 +1929,10 @@ impl LanguageServer for AlServer {
         let uri_for_log = uri.clone();
         let result = self
             .offload_after_ready("semantic-tokens", move || {
+                // A document the server has not loaded and a document with no
+                // tokens are both "no result" to the editor.
                 let tokens =
-                    al_analysis::queries::semantic_tokens::semantic_tokens_full(&workspace, &uri);
+                    al_analysis::queries::semantic_tokens::semantic_tokens_full(&workspace, &uri)?;
                 if tokens.is_empty() {
                     return None;
                 }

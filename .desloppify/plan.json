@@ -1,105 +1,57 @@
 {
   "version": 8,
   "created": "2026-09-21T00:40:45+00:00",
-  "updated": "2026-09-22T01:41:32+00:00",
+  "updated": "2026-09-22T01:47:24+00:00",
   "queue_order": [
-    "review::.::holistic::abstraction_fitness::default_arg_wrappers_no_prod_caller",
-    "review::.::holistic::abstraction_fitness::lsp_handler_seam_half_applied",
     "review::.::holistic::abstraction_fitness::mockrecord_default_view_api",
-    "review::.::holistic::abstraction_fitness::response_contract_validator",
-    "review::.::holistic::abstraction_fitness::runoptions_over_threaded",
-    "review::.::holistic::abstraction_fitness::untyped_daemon_payloads",
     "review::.::holistic::abstraction_fitness::workspace_context_bag",
     "review::.::holistic::ai_generated_debt::test_fixture_builders_copied",
     "review::.::holistic::ai_generated_debt::test_only_public_overloads",
-    "review::.::holistic::ai_generated_debt::triplicated_private_helpers",
-    "review::.::holistic::api_surface_coherence::daemon_method_naming_schemes",
     "review::.::holistic::api_surface_coherence::lsp_query_failure_shapes",
-    "review::.::holistic::api_surface_coherence::mcp_tool_name_outlier",
     "review::.::holistic::api_surface_coherence::sibling_parameter_order_drift",
     "review::.::holistic::api_surface_coherence::source_lookup_error_not_std_error",
     "review::.::holistic::api_surface_coherence::string_errors_beside_typed_siblings",
     "review::.::holistic::api_surface_coherence::sync_async_query_twins",
-    "review::.::holistic::api_surface_coherence::uri_vs_file_param_split",
-    "review::.::holistic::authorization_consistency::daemon_path_guard_inconsistent",
-    "review::.::holistic::authorization_consistency::dap_server_url_skips_scheme_allowlist",
-    "review::.::holistic::authorization_consistency::identity_authmethod_conversion_shims",
     "review::.::holistic::authorization_consistency::snapshot_profiling_basic_only_auth_model",
     "review::.::holistic::authorization_consistency::tenant_scoping_header_vs_query",
-    "review::.::holistic::authorization_consistency::token_resolution_duplicated_per_dispatch",
     "review::.::holistic::authorization_consistency::windows_auth_divergence",
     "review::.::holistic::contract_coherence::error_erasing_passthrough",
-    "review::.::holistic::contract_coherence::same_name_two_return_types",
     "review::.::holistic::contract_coherence::two_error_conventions_in_one_module",
     "review::.::holistic::convention_outlier::bulk_fix_dual_write_protocol",
-    "review::.::holistic::convention_outlier::daemon_param_helper_triplicated",
     "review::.::holistic::convention_outlier::explorer_edition_style_island",
     "review::.::holistic::convention_outlier::explorer_missing_module_docs",
-    "review::.::holistic::convention_outlier::explorer_run_command_bypassed",
-    "review::.::holistic::convention_outlier::lib_rs_two_roles",
-    "review::.::holistic::convention_outlier::serialized_response_param_order_swapped",
     "review::.::holistic::convention_outlier::source_lookup_error_manual_display",
     "review::.::holistic::convention_outlier::test_module_filename_shapes",
     "review::.::holistic::cross_module_architecture::al_analysis_bundles_unrelated_capabilities",
-    "review::.::holistic::cross_module_architecture::explorer_reimplements_native_build",
     "review::.::holistic::cross_module_architecture::generation_lock_lsp_only",
     "review::.::holistic::cross_module_architecture::workspace_hub_public_mutable_fields",
-    "review::.::holistic::dependency_health::al_lsp_dead_prod_deps",
-    "review::.::holistic::dependency_health::futures_and_futures_util_both_used",
     "review::.::holistic::dependency_health::getrandom_pinned_to_oldest_of_three_copies",
-    "review::.::holistic::dependency_health::no_unused_dependency_gate",
     "review::.::holistic::dependency_health::shared_deps_bypass_workspace_table",
-    "review::.::holistic::design_coherence::dispatch_boilerplate_not_data_driven",
     "review::.::holistic::design_coherence::high_arity_helpers",
     "review::.::holistic::design_coherence::workspace_god_struct",
     "review::.::holistic::error_consistency::al_analysis_dual_error_convention",
     "review::.::holistic::error_consistency::collect_al_files_erases_scanerror",
     "review::.::holistic::error_consistency::duplicate_dap_error_enum",
     "review::.::holistic::error_consistency::typed_error_flattened_in_entrypoints",
-    "review::.::holistic::high_level_elegance::coverage_aggregation_in_transport_dispatcher",
     "review::.::holistic::high_level_elegance::debug_session_parked_on_workspace_hub",
-    "review::.::holistic::high_level_elegance::explorer_bypasses_its_own_thin_client_contract",
-    "review::.::holistic::incomplete_migration::unused_deps_from_crate_split",
-    "review::.::holistic::initialization_coupling::daemon_oncelock_unset_case",
     "review::.::holistic::logic_clarity::empty_result_means_two_things",
-    "review::.::holistic::logic_clarity::internal_error_collapse",
-    "review::.::holistic::low_level_elegance::config_publish_sequence_reordered",
     "review::.::holistic::low_level_elegance::dap_response_boilerplate_inline",
-    "review::.::holistic::low_level_elegance::dispatch_debug_monolith",
     "review::.::holistic::low_level_elegance::lint_source_block_repeated_four_times",
-    "review::.::holistic::low_level_elegance::response_error_helper_bypassed",
-    "review::.::holistic::low_level_elegance::spawn_blocking_ladder_repeated",
-    "review::.::holistic::low_level_elegance::triplicated_optional_non_empty_string",
     "review::.::holistic::low_level_elegance::tui_details_render_monolith",
     "review::.::holistic::low_level_elegance::unjustified_arg_threading_symbol_reference",
-    "review::.::holistic::mid_level_elegance::daemon_params_decoded_by_hand",
-    "review::.::holistic::mid_level_elegance::daemon_wire_contract_restated_three_times",
-    "review::.::holistic::mid_level_elegance::duplicate_response_serialization_helpers",
     "review::.::holistic::mid_level_elegance::post_split_facade_globs_hide_ownership",
-    "review::.::holistic::mid_level_elegance::run_batch_dispatcher_is_the_pipeline",
-    "review::.::holistic::mid_level_elegance::typed_query_errors_flattened_at_boundary",
-    "review::.::holistic::mid_level_elegance::workspace_bootstrap_duplicated_across_crates",
     "review::.::holistic::mid_level_elegance::workspace_hub_exposes_raw_locks",
     "review::.::holistic::naming_quality::explorer_cli_two_letter_json_locals",
-    "review::.::holistic::naming_quality::mcp_obj_schema_abbreviation",
-    "review::.::holistic::naming_quality::runtime_error_helper_name_collision",
-    "review::.::holistic::naming_quality::should_report_semantic_failure_is_test_and_set",
     "review::.::holistic::naming_quality::symbol_lookup_cardinality_in_the_verb",
     "review::.::holistic::naming_quality::test_prefix_style_split",
-    "review::.::holistic::naming_quality::three_way_formatting_settings_vocabulary",
     "review::.::holistic::package_organization::al_analysis_crate_size",
-    "review::.::holistic::package_organization::lib_rs_means_two_things",
     "review::.::holistic::package_organization::queries_flat_drawer",
     "review::.::holistic::test_strategy::alc_differential_absent_from_ci",
-    "review::.::holistic::test_strategy::daemon_reset_helper_barely_used",
     "review::.::holistic::test_strategy::explorer_presentation_untested",
     "review::.::holistic::test_strategy::fixed_sleeps_stand_in_for_conditions",
-    "review::.::holistic::test_strategy::tui_smoke_tolerates_shared_daemon_state",
-    "review::.::holistic::test_strategy::unguarded_global_env_mutation",
     "review::.::holistic::test_strategy::wallclock_budget_in_always_on_suite",
     "review::.::holistic::type_safety::closed_vocabulary_as_string",
     "review::.::holistic::type_safety::string_errors_erase_variants",
-    "review::.::holistic::type_safety::untyped_rpc_boundary",
     "subjective::abstraction_fitness",
     "subjective::ai_generated_debt",
     "subjective::api_surface_coherence",
@@ -118,7 +70,458 @@
     "subjective::type_safety"
   ],
   "deferred": [],
-  "skipped": {},
+  "skipped": {
+    "review::.::holistic::low_level_elegance::dispatch_debug_monolith": {
+      "issue_id": "review::.::holistic::low_level_elegance::dispatch_debug_monolith",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/daemon/debug_dispatch.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another branch is rewriting that file this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:46:31+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::low_level_elegance::response_error_helper_bypassed": {
+      "issue_id": "review::.::holistic::low_level_elegance::response_error_helper_bypassed",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (daemon/debug_dispatch.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:07+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::convention_outlier::daemon_param_helper_triplicated": {
+      "issue_id": "review::.::holistic::convention_outlier::daemon_param_helper_triplicated",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (daemon/debug_dispatch.rs, build_dispatch/tests_dispatch.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:08+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::low_level_elegance::triplicated_optional_non_empty_string": {
+      "issue_id": "review::.::holistic::low_level_elegance::triplicated_optional_non_empty_string",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (daemon/debug_dispatch.rs, build_dispatch/tests_dispatch.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:08+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::ai_generated_debt::triplicated_private_helpers": {
+      "issue_id": "review::.::holistic::ai_generated_debt::triplicated_private_helpers",
+      "kind": "permanent",
+      "reason": null,
+      "note": "half done: the al-runtime simple_error copies are collapsed into interpreter/mod.rs on this branch. The daemon optional_non_empty_string half is deferred: file held by campaign/fix-r2-security this week (debug_dispatch.rs, tests_dispatch.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:08+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::authorization_consistency::token_resolution_duplicated_per_dispatch": {
+      "issue_id": "review::.::holistic::authorization_consistency::token_resolution_duplicated_per_dispatch",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (daemon/debug_dispatch.rs, build_dispatch/tests_dispatch.rs, bin/al-lsp.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:09+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::authorization_consistency::dap_server_url_skips_scheme_allowlist": {
+      "issue_id": "review::.::holistic::authorization_consistency::dap_server_url_skips_scheme_allowlist",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (that branch owns the daemon containment and server-URL allowlist work)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:09+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::authorization_consistency::daemon_path_guard_inconsistent": {
+      "issue_id": "review::.::holistic::authorization_consistency::daemon_path_guard_inconsistent",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/daemon/containment.rs and the build_dispatch guards)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:10+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::authorization_consistency::identity_authmethod_conversion_shims": {
+      "issue_id": "review::.::holistic::authorization_consistency::identity_authmethod_conversion_shims",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (server/workspace.rs, build_dispatch/symbols_auth.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:10+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::naming_quality::mcp_obj_schema_abbreviation": {
+      "issue_id": "review::.::holistic::naming_quality::mcp_obj_schema_abbreviation",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/mcp.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:10+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::api_surface_coherence::mcp_tool_name_outlier": {
+      "issue_id": "review::.::holistic::api_surface_coherence::mcp_tool_name_outlier",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/mcp.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:11+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::abstraction_fitness::lsp_handler_seam_half_applied": {
+      "issue_id": "review::.::holistic::abstraction_fitness::lsp_handler_seam_half_applied",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/lsp.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:11+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::low_level_elegance::spawn_blocking_ladder_repeated": {
+      "issue_id": "review::.::holistic::low_level_elegance::spawn_blocking_ladder_repeated",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/workspace.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:11+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::low_level_elegance::config_publish_sequence_reordered": {
+      "issue_id": "review::.::holistic::low_level_elegance::config_publish_sequence_reordered",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/lsp.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:12+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::mid_level_elegance::workspace_bootstrap_duplicated_across_crates": {
+      "issue_id": "review::.::holistic::mid_level_elegance::workspace_bootstrap_duplicated_across_crates",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/workspace.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:12+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::naming_quality::should_report_semantic_failure_is_test_and_set": {
+      "issue_id": "review::.::holistic::naming_quality::should_report_semantic_failure_is_test_and_set",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/lsp.rs and server/workspace.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:13+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::abstraction_fitness::runoptions_over_threaded": {
+      "issue_id": "review::.::holistic::abstraction_fitness::runoptions_over_threaded",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (build_dispatch/tests_dispatch.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:13+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::mid_level_elegance::run_batch_dispatcher_is_the_pipeline": {
+      "issue_id": "review::.::holistic::mid_level_elegance::run_batch_dispatcher_is_the_pipeline",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (build_dispatch/tests_dispatch.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:13+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::high_level_elegance::coverage_aggregation_in_transport_dispatcher": {
+      "issue_id": "review::.::holistic::high_level_elegance::coverage_aggregation_in_transport_dispatcher",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (build_dispatch/tests_dispatch.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:14+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::cross_module_architecture::explorer_reimplements_native_build": {
+      "issue_id": "review::.::holistic::cross_module_architecture::explorer_reimplements_native_build",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (al-compile and al-explorer cli/commands/build.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:14+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::high_level_elegance::explorer_bypasses_its_own_thin_client_contract": {
+      "issue_id": "review::.::holistic::high_level_elegance::explorer_bypasses_its_own_thin_client_contract",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (al-explorer cli/mod.rs and cli/commands/build.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:15+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::convention_outlier::explorer_run_command_bypassed": {
+      "issue_id": "review::.::holistic::convention_outlier::explorer_run_command_bypassed",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (al-explorer cli/commands/mod.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:15+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::convention_outlier::lib_rs_two_roles": {
+      "issue_id": "review::.::holistic::convention_outlier::lib_rs_two_roles",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (al-compile/src/lib.rs, al-publish/src/lib.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:15+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::package_organization::lib_rs_means_two_things": {
+      "issue_id": "review::.::holistic::package_organization::lib_rs_means_two_things",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (al-compile/src/lib.rs, al-publish/src/lib.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:16+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::naming_quality::three_way_formatting_settings_vocabulary": {
+      "issue_id": "review::.::holistic::naming_quality::three_way_formatting_settings_vocabulary",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week (al-project/src/config.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:16+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::dependency_health::al_lsp_dead_prod_deps": {
+      "issue_id": "review::.::holistic::dependency_health::al_lsp_dead_prod_deps",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week and campaign/fix-daemon-lifecycle (crates/al-lsp/Cargo.toml, both branches add entries)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:16+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::incomplete_migration::unused_deps_from_crate_split": {
+      "issue_id": "review::.::holistic::incomplete_migration::unused_deps_from_crate_split",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week and campaign/fix-daemon-lifecycle (crates/al-lsp/Cargo.toml)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:17+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::dependency_health::no_unused_dependency_gate": {
+      "issue_id": "review::.::holistic::dependency_health::no_unused_dependency_gate",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred with the unused-dependency removal it would gate: adding cargo-machete to CI before crates/al-lsp/Cargo.toml is cleaned turns CI red, and that manifest is held by campaign/fix-r2-security and campaign/fix-daemon-lifecycle this week",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:17+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::dependency_health::futures_and_futures_util_both_used": {
+      "issue_id": "review::.::holistic::dependency_health::futures_and_futures_util_both_used",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-r2-security this week and campaign/fix-daemon-lifecycle (the change removes the futures entry from crates/al-lsp/Cargo.toml)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:18+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::convention_outlier::serialized_response_param_order_swapped": {
+      "issue_id": "review::.::holistic::convention_outlier::serialized_response_param_order_swapped",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-lsp/src/server/daemon/mod.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:18+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::mid_level_elegance::duplicate_response_serialization_helpers": {
+      "issue_id": "review::.::holistic::mid_level_elegance::duplicate_response_serialization_helpers",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-lsp/src/server/daemon/mod.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:18+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::mid_level_elegance::typed_query_errors_flattened_at_boundary": {
+      "issue_id": "review::.::holistic::mid_level_elegance::typed_query_errors_flattened_at_boundary",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-lsp/src/server/daemon/mod.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:19+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::logic_clarity::internal_error_collapse": {
+      "issue_id": "review::.::holistic::logic_clarity::internal_error_collapse",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-lsp/src/server/daemon/mod.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:19+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::api_surface_coherence::daemon_method_naming_schemes": {
+      "issue_id": "review::.::holistic::api_surface_coherence::daemon_method_naming_schemes",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-lsp/src/server/daemon/mod.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:20+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::api_surface_coherence::uri_vs_file_param_split": {
+      "issue_id": "review::.::holistic::api_surface_coherence::uri_vs_file_param_split",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-lsp/src/server/daemon/mod.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:20+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::initialization_coupling::daemon_oncelock_unset_case": {
+      "issue_id": "review::.::holistic::initialization_coupling::daemon_oncelock_unset_case",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-lsp/src/server/daemon/mod.rs holds both OnceLocks)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:20+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::test_strategy::unguarded_global_env_mutation": {
+      "issue_id": "review::.::holistic::test_strategy::unguarded_global_env_mutation",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (the daemon socket-path test in crates/al-lsp/src/server/daemon/mod.rs)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:21+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::test_strategy::tui_smoke_tolerates_shared_daemon_state": {
+      "issue_id": "review::.::holistic::test_strategy::tui_smoke_tolerates_shared_daemon_state",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-test-harness daemon helpers)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:21+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::test_strategy::daemon_reset_helper_barely_used": {
+      "issue_id": "review::.::holistic::test_strategy::daemon_reset_helper_barely_used",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-test-harness/src/lib.rs stop_project_daemon)",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:21+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::abstraction_fitness::untyped_daemon_payloads": {
+      "issue_id": "review::.::holistic::abstraction_fitness::untyped_daemon_payloads",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: the typed-RPC change spans daemon/mod.rs, lsp_dispatch.rs and al-explorer cli/commands, all held by campaign/fix-r2-security and campaign/fix-daemon-lifecycle this week",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:22+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::abstraction_fitness::response_contract_validator": {
+      "issue_id": "review::.::holistic::abstraction_fitness::response_contract_validator",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: same typed-RPC change, daemon/mod.rs and al-explorer cli/commands are held by campaign/fix-r2-security and campaign/fix-daemon-lifecycle this week",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:22+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::mid_level_elegance::daemon_wire_contract_restated_three_times": {
+      "issue_id": "review::.::holistic::mid_level_elegance::daemon_wire_contract_restated_three_times",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: same typed-RPC change, daemon/mod.rs, mcp.rs and al-explorer cli/commands are held by campaign/fix-r2-security and campaign/fix-daemon-lifecycle this week",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:23+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::mid_level_elegance::daemon_params_decoded_by_hand": {
+      "issue_id": "review::.::holistic::mid_level_elegance::daemon_params_decoded_by_hand",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: same typed-RPC change, daemon/mod.rs and tests_dispatch.rs are held by campaign/fix-r2-security and campaign/fix-daemon-lifecycle this week",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:23+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::design_coherence::dispatch_boilerplate_not_data_driven": {
+      "issue_id": "review::.::holistic::design_coherence::dispatch_boilerplate_not_data_driven",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: same typed-RPC change, daemon/mod.rs, debug_dispatch.rs and tests_dispatch.rs are held by campaign/fix-r2-security and campaign/fix-daemon-lifecycle this week",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:23+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    },
+    "review::.::holistic::type_safety::untyped_rpc_boundary": {
+      "issue_id": "review::.::holistic::type_safety::untyped_rpc_boundary",
+      "kind": "permanent",
+      "reason": null,
+      "note": "deferred: same typed-RPC change, daemon/mod.rs, mcp.rs and al-explorer response_contract.rs are held by campaign/fix-r2-security and campaign/fix-daemon-lifecycle this week",
+      "attestation": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+      "created_at": "2026-09-22T01:47:24+00:00",
+      "review_after": null,
+      "skipped_at_scan": 2
+    }
+  },
   "active_cluster": null,
   "overrides": {
     "clippy_warning::crates/al-semantic/build.rs::clippy_warning::1": {
@@ -2755,6 +3158,756 @@
         "status": "fixed",
         "attestation": "I have actually Deleted the al-dap facade. The two remaining wrappers are not reimplementations: al-lsp strip_jsonc_comments_and_parse and al-project strip_jsonc both call al_types::jsonc::strip_json_comments already. The al-project doc comment claiming it also strips trailing commas is wrong and is deferred, that file is held by campaign/fix-r2-security this week. and I am not gaming the score."
       }
+    },
+    {
+      "timestamp": "2026-09-22T01:45:46+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::naming_quality::runtime_error_helper_name_collision"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:45:46+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::naming_quality::runtime_error_helper_name_collision"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "interpreter/mod.rs now holds pub(crate) error_info and eval_error; the four copies in dispatch.rs, eval_expr.rs, eval_stmt.rs and records.rs are deleted and their 313 call sites use one name per return type. The two test extractors are error_of.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:45:46+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::naming_quality::runtime_error_helper_name_collision"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "interpreter/mod.rs now holds pub(crate) error_info and eval_error; the four copies in dispatch.rs, eval_expr.rs, eval_stmt.rs and records.rs are deleted and their 313 call sites use one name per return type. The two test extractors are error_of.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually interpreter/mod.rs now holds pub(crate) error_info and eval_error; the four copies in dispatch.rs, eval_expr.rs, eval_stmt.rs and records.rs are deleted and their 313 call sites use one name per return type. The two test extractors are error_of. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:45:51+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::contract_coherence::same_name_two_return_types"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:45:51+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::contract_coherence::same_name_two_return_types"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "simple_error no longer exists in al-runtime. The ErrorInfo form is error_info and the Eval form is eval_error, both in interpreter/mod.rs, so one name means one return type.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:45:51+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::contract_coherence::same_name_two_return_types"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "simple_error no longer exists in al-runtime. The ErrorInfo form is error_info and the Eval form is eval_error, both in interpreter/mod.rs, so one name means one return type.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually simple_error no longer exists in al-runtime. The ErrorInfo form is error_info and the Eval form is eval_error, both in interpreter/mod.rs, so one name means one return type. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:45:56+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::abstraction_fitness::default_arg_wrappers_no_prod_caller"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:45:57+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::abstraction_fitness::default_arg_wrappers_no_prod_caller"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Deleted al-insight's trace_event and find_entry_points wrappers and gave the plain names to the functions taking Option<&CallGraph>, so there is one spelling and every caller states its choice. al-symbols resolve_dependencies already takes country explicitly on this branch base.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:45:57+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::abstraction_fitness::default_arg_wrappers_no_prod_caller"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Deleted al-insight's trace_event and find_entry_points wrappers and gave the plain names to the functions taking Option<&CallGraph>, so there is one spelling and every caller states its choice. al-symbols resolve_dependencies already takes country explicitly on this branch base.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Deleted al-insight's trace_event and find_entry_points wrappers and gave the plain names to the functions taking Option<&CallGraph>, so there is one spelling and every caller states its choice. al-symbols resolve_dependencies already takes country explicitly on this branch base. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:46:31+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::low_level_elegance::dispatch_debug_monolith"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/daemon/debug_dispatch.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:07+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::low_level_elegance::response_error_helper_bypassed"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (daemon/debug_dispatch.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:08+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::convention_outlier::daemon_param_helper_triplicated"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (daemon/debug_dispatch.rs, build_dispatch/tests_dispatch.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:08+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::low_level_elegance::triplicated_optional_non_empty_string"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (daemon/debug_dispatch.rs, build_dispatch/tests_dispatch.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:08+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::ai_generated_debt::triplicated_private_helpers"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "half done: the al-runtime simple_error copies are collapsed into interpreter/mod.rs on this branch. The daemon optional_non_empty_string half is deferred: file held by campaign/fix-r2-security this week (debug_dispatch.rs, tests_dispatch.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:09+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::authorization_consistency::token_resolution_duplicated_per_dispatch"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (daemon/debug_dispatch.rs, build_dispatch/tests_dispatch.rs, bin/al-lsp.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:09+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::authorization_consistency::dap_server_url_skips_scheme_allowlist"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (that branch owns the daemon containment and server-URL allowlist work)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:10+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::authorization_consistency::daemon_path_guard_inconsistent"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/daemon/containment.rs and the build_dispatch guards)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:10+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::authorization_consistency::identity_authmethod_conversion_shims"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (server/workspace.rs, build_dispatch/symbols_auth.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:10+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::naming_quality::mcp_obj_schema_abbreviation"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/mcp.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:11+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::api_surface_coherence::mcp_tool_name_outlier"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/mcp.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:11+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::abstraction_fitness::lsp_handler_seam_half_applied"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/lsp.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:11+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::low_level_elegance::spawn_blocking_ladder_repeated"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/workspace.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:12+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::low_level_elegance::config_publish_sequence_reordered"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/lsp.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:12+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::mid_level_elegance::workspace_bootstrap_duplicated_across_crates"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/workspace.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:13+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::naming_quality::should_report_semantic_failure_is_test_and_set"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/lsp.rs and server/workspace.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:13+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::abstraction_fitness::runoptions_over_threaded"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (build_dispatch/tests_dispatch.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:13+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::mid_level_elegance::run_batch_dispatcher_is_the_pipeline"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (build_dispatch/tests_dispatch.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:14+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::high_level_elegance::coverage_aggregation_in_transport_dispatcher"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (build_dispatch/tests_dispatch.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:14+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::cross_module_architecture::explorer_reimplements_native_build"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (al-compile and al-explorer cli/commands/build.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:15+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::high_level_elegance::explorer_bypasses_its_own_thin_client_contract"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (al-explorer cli/mod.rs and cli/commands/build.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:15+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::convention_outlier::explorer_run_command_bypassed"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (al-explorer cli/commands/mod.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:15+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::convention_outlier::lib_rs_two_roles"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (al-compile/src/lib.rs, al-publish/src/lib.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:16+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::package_organization::lib_rs_means_two_things"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (al-compile/src/lib.rs, al-publish/src/lib.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:16+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::naming_quality::three_way_formatting_settings_vocabulary"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week (al-project/src/config.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:16+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::dependency_health::al_lsp_dead_prod_deps"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week and campaign/fix-daemon-lifecycle (crates/al-lsp/Cargo.toml, both branches add entries)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:17+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::incomplete_migration::unused_deps_from_crate_split"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week and campaign/fix-daemon-lifecycle (crates/al-lsp/Cargo.toml)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:17+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::dependency_health::no_unused_dependency_gate"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred with the unused-dependency removal it would gate: adding cargo-machete to CI before crates/al-lsp/Cargo.toml is cleaned turns CI red, and that manifest is held by campaign/fix-r2-security and campaign/fix-daemon-lifecycle this week",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:18+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::dependency_health::futures_and_futures_util_both_used"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-r2-security this week and campaign/fix-daemon-lifecycle (the change removes the futures entry from crates/al-lsp/Cargo.toml)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:18+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::convention_outlier::serialized_response_param_order_swapped"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-lsp/src/server/daemon/mod.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:18+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::mid_level_elegance::duplicate_response_serialization_helpers"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-lsp/src/server/daemon/mod.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:19+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::mid_level_elegance::typed_query_errors_flattened_at_boundary"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-lsp/src/server/daemon/mod.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:19+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::logic_clarity::internal_error_collapse"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-lsp/src/server/daemon/mod.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:20+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::api_surface_coherence::daemon_method_naming_schemes"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-lsp/src/server/daemon/mod.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:20+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::api_surface_coherence::uri_vs_file_param_split"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-lsp/src/server/daemon/mod.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:20+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::initialization_coupling::daemon_oncelock_unset_case"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-lsp/src/server/daemon/mod.rs holds both OnceLocks)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:21+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::test_strategy::unguarded_global_env_mutation"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (the daemon socket-path test in crates/al-lsp/src/server/daemon/mod.rs)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:21+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::test_strategy::tui_smoke_tolerates_shared_daemon_state"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-test-harness daemon helpers)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:21+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::test_strategy::daemon_reset_helper_barely_used"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-test-harness/src/lib.rs stop_project_daemon)",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:22+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::abstraction_fitness::untyped_daemon_payloads"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: the typed-RPC change spans daemon/mod.rs, lsp_dispatch.rs and al-explorer cli/commands, all held by campaign/fix-r2-security and campaign/fix-daemon-lifecycle this week",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:22+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::abstraction_fitness::response_contract_validator"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: same typed-RPC change, daemon/mod.rs and al-explorer cli/commands are held by campaign/fix-r2-security and campaign/fix-daemon-lifecycle this week",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:23+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::mid_level_elegance::daemon_wire_contract_restated_three_times"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: same typed-RPC change, daemon/mod.rs, mcp.rs and al-explorer cli/commands are held by campaign/fix-r2-security and campaign/fix-daemon-lifecycle this week",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:23+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::mid_level_elegance::daemon_params_decoded_by_hand"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: same typed-RPC change, daemon/mod.rs and tests_dispatch.rs are held by campaign/fix-r2-security and campaign/fix-daemon-lifecycle this week",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:23+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::design_coherence::dispatch_boilerplate_not_data_driven"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: same typed-RPC change, daemon/mod.rs, debug_dispatch.rs and tests_dispatch.rs are held by campaign/fix-r2-security and campaign/fix-daemon-lifecycle this week",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:47:24+00:00",
+      "action": "skip",
+      "issue_ids": [
+        "review::.::holistic::type_safety::untyped_rpc_boundary"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "deferred: same typed-RPC change, daemon/mod.rs, mcp.rs and al-explorer response_contract.rs are held by campaign/fix-r2-security and campaign/fix-daemon-lifecycle this week",
+      "detail": {
+        "kind": "permanent",
+        "reason": null
+      }
     }
   ],
   "epic_triage_meta": {},
@@ -2774,7 +3927,10 @@
     "review::.::holistic::cross_module_architecture::pre_split_crate_names_in_docs",
     "review::.::holistic::high_level_elegance::two_tier_numbering_schemes",
     "review::.::holistic::incomplete_migration::single_caller_compat_shim",
-    "review::.::holistic::abstraction_fitness::jsonc_helper_bypassed_via_facade"
+    "review::.::holistic::abstraction_fitness::jsonc_helper_bypassed_via_facade",
+    "review::.::holistic::naming_quality::runtime_error_helper_name_collision",
+    "review::.::holistic::contract_coherence::same_name_two_return_types",
+    "review::.::holistic::abstraction_fitness::default_arg_wrappers_no_prod_caller"
   ],
   "commit_tracking_branch": null,
   "scan_count_at_plan_start": 1

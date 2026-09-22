@@ -145,16 +145,6 @@ pub fn plan_data_classification(project_dir: &Path, value: &str) -> Result<BulkF
     })
 }
 
-/// Collect project AL files without following symlinks out of the project.
-///
-/// Project-wide mutations must not quietly skip unreadable directories or
-/// disagree with the workspace index about which paths belong to the project.
-/// Discovery is therefore delegated to the source index's authoritative
-/// walker rather than maintaining a second set of path and exclusion rules.
-pub fn collect_al_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    al_source::file_index::collect_al_files(dir).map_err(|error| error.to_string())
-}
-
 fn is_page_kind(kind: &str) -> bool {
     matches!(
         kind.to_ascii_lowercase().as_str(),
@@ -197,7 +187,10 @@ fn build_plan<F>(project_dir: &Path, transform: F) -> Result<BulkFixPlan, String
 where
     F: Fn(&str, &tree_sitter::Tree, &str) -> Result<(String, usize), String>,
 {
-    let files = collect_al_files(project_dir)?;
+    // Discovery goes through the source index's walker so a bulk fix cannot
+    // disagree with the workspace about which paths belong to the project.
+    let files =
+        al_source::file_index::collect_al_files(project_dir).map_err(|error| error.to_string())?;
     let mut changes = Vec::new();
     for path in files {
         let source = al_source::file_index::read_source_file(&path)
@@ -1194,7 +1187,7 @@ mod tests {
         .unwrap();
         std::os::unix::fs::symlink(external.path(), project.path().join("linked")).unwrap();
 
-        let files = collect_al_files(project.path()).unwrap();
+        let files = al_source::file_index::collect_al_files(project.path()).unwrap();
         let expected = project.path().join("Inside.al");
         let outside = external.path().join("Outside.al");
         assert_eq!(files, vec![expected]);

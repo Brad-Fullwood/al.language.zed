@@ -59,7 +59,7 @@ pub fn eval_stmt(
     // inside the interpreter thread's stack when accounting for each frame's
     // locals + Node payload.
     if ctx.ast_depth >= MAX_AST_DEPTH {
-        return Eval::Error(error_info(&format!(
+        return Eval::Error(error_info(format!(
             "AST nesting depth exceeded (max {} levels) — likely a pathological or generated test source",
             MAX_AST_DEPTH
         )));
@@ -174,7 +174,7 @@ fn eval_if(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Disp
     };
 
     if !matches!(cond, Value::Boolean(_)) {
-        return Eval::Error(error_info(&format!(
+        return Eval::Error(error_info(format!(
             "if condition must be Boolean, got {}",
             cond.type_name()
         )));
@@ -302,7 +302,7 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
     let start_i = match start_val.as_int() {
         Some(n) => n,
         None => {
-            return Eval::Error(error_info(&format!(
+            return Eval::Error(error_info(format!(
                 "for_statement: start must be Integer, got {}",
                 start_val.type_name()
             )))
@@ -311,7 +311,7 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
     let end_i = match end_val.as_int() {
         Some(n) => n,
         None => {
-            return Eval::Error(error_info(&format!(
+            return Eval::Error(error_info(format!(
                 "for_statement: end must be Integer, got {}",
                 end_val.type_name()
             )))
@@ -411,7 +411,7 @@ fn eval_foreach(
     let items = match list_val {
         Value::List(v) | Value::Array(v) => v,
         other => {
-            return Eval::Error(error_info(&format!(
+            return Eval::Error(error_info(format!(
                 "foreach: expected List or Array, got {}",
                 other.type_name()
             )))
@@ -651,7 +651,7 @@ fn eval_assignment(
         // AL has no implicit declaration: assigning to an unknown name is a
         // compile error in BC, so a typo'd LHS must fail loudly instead of
         // silently creating a fresh variable.
-        return Eval::Error(error_info(&format!(
+        return Eval::Error(error_info(format!(
             "assignment to unbound identifier '{lhs_name}' — variables must be declared"
         )));
     }
@@ -824,7 +824,7 @@ pub(crate) fn eval_call(
         match stack.lookup(recv) {
             Some(Value::Record(_)) if records::supports_record_method(&proc_name) => {
                 let Some((table, handle)) = records::record_binding(recv, stack, ctx) else {
-                    return Eval::Error(error_info(&format!(
+                    return Eval::Error(error_info(format!(
                         "record variable '{recv}' is not bound"
                     )));
                 };

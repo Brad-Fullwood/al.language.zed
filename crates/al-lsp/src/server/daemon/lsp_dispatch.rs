@@ -145,8 +145,11 @@ pub(super) fn dispatch_implementations(
         Ok(document) => document,
         Err(response) => return response,
     };
+    // `None` (document not loaded) and an empty list are both an empty array
+    // on the wire: the daemon already rejected an unknown document above.
     let locations =
-        al_analysis::queries::implementation::find_implementations(workspace, &uri, position);
+        al_analysis::queries::implementation::find_implementations(workspace, &uri, position)
+            .unwrap_or_default();
     ok_response(id, &locations, "textDocument/implementation")
 }
 
@@ -268,7 +271,8 @@ pub(super) fn dispatch_semantic_tokens(
         Ok(document) => document,
         Err(response) => return response,
     };
-    let tokens = al_analysis::queries::semantic_tokens::semantic_tokens_full(workspace, &uri);
+    let tokens = al_analysis::queries::semantic_tokens::semantic_tokens_full(workspace, &uri)
+        .unwrap_or_default();
     ok_response(id, &tokens, "textDocument/semanticTokens/full")
 }
 

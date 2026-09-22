@@ -24,6 +24,22 @@ use al_workspace::Workspace;
 pub(super) const ERR_INITIALIZING: &str = "Workspace is initializing, try again";
 pub(super) const ERR_NO_PROJECT: &str = "No project loaded";
 
+/// Response for a workspace scan that failed.
+///
+/// The three limit variants are something the caller can act on by narrowing
+/// the workspace or raising the limit, so they get `INVALID_PARAMS`. The rest
+/// are disk faults the caller cannot do anything about.
+pub(crate) fn scan_error_response(id: u64, error: &al_source::file_index::ScanError) -> Response {
+    use al_source::file_index::ScanError;
+    let code = match error {
+        ScanError::FileLimit { .. }
+        | ScanError::FileTooLarge { .. }
+        | ScanError::WorkspaceTooLarge { .. } => error_codes::INVALID_PARAMS,
+        _ => error_codes::INTERNAL_ERROR,
+    };
+    rpc_error(id, code, &error.to_string())
+}
+
 fn serialized_response<T: serde::Serialize>(id: u64, label: &str, value: &T) -> Response {
     match serde_json::to_value(value) {
         Ok(value) => Response {
@@ -196,7 +212,8 @@ fn current_workspace_symbols(
     workspace: &Workspace,
     project: &al_project::project::AlProject,
 ) -> Result<Vec<al_symbols::SymbolEntry>, String> {
-    let paths = al_analysis::queries::bulk_fix::collect_al_files(&project.root)?;
+    let paths = al_source::file_index::collect_al_files(&project.root)
+        .map_err(|error| error.to_string())?;
     let mut objects = Vec::new();
     for path in paths {
         let uri = url::Url::from_file_path(&path)
@@ -390,6 +407,45 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::empty_ws;
     use super::*;
+
+    /// Before this mapping existed, `bulk_fix::collect_al_files` erased
+    /// `ScanError` to a String and every caller reported `INTERNAL_ERROR`, so a
+    /// workspace the user can narrow looked identical to a disk fault.
+    #[test]
+    fn scan_limits_are_invalid_params_and_disk_faults_are_internal() {
+        use al_source::file_index::ScanError;
+
+        let limit = scan_error_response(1, &ScanError::FileLimit { limit: 10 });
+        assert_eq!(
+            limit.error.as_ref().map(|e| e.code),
+            Some(error_codes::INVALID_PARAMS)
+        );
+
+        let too_large = scan_error_response(
+            2,
+            &ScanError::FileTooLarge {
+                path: std::path::PathBuf::from("/project/Big.al"),
+                size: 2,
+                limit: 1,
+            },
+        );
+        assert_eq!(
+            too_large.error.as_ref().map(|e| e.code),
+            Some(error_codes::INVALID_PARAMS)
+        );
+
+        let disk_fault = scan_error_response(
+            3,
+            &ScanError::ReadDirectory {
+                path: std::path::PathBuf::from("/project"),
+                source: std::io::Error::other("disk gone"),
+            },
+        );
+        assert_eq!(
+            disk_fault.error.as_ref().map(|e| e.code),
+            Some(error_codes::INTERNAL_ERROR)
+        );
+    }
 
     /// A file without a usable AL object declaration is skipped per file
     /// (`al_analysis::workspace_sources`); it no longer takes the whole audit

@@ -12,28 +12,28 @@
     "auto_resolved": 0,
     "deferred": 0,
     "false_positive": 0,
-    "fixed": 35,
-    "open": 1230,
+    "fixed": 38,
+    "open": 1182,
     "triaged_out": 0,
-    "wontfix": 0,
+    "wontfix": 45,
     "by_tier": {
       "1": {
         "auto_resolved": 0,
         "deferred": 0,
         "false_positive": 0,
-        "fixed": 14,
-        "open": 51,
+        "fixed": 16,
+        "open": 21,
         "triaged_out": 0,
-        "wontfix": 0
+        "wontfix": 28
       },
       "2": {
         "auto_resolved": 0,
         "deferred": 0,
         "false_positive": 0,
-        "fixed": 1,
-        "open": 268,
+        "fixed": 2,
+        "open": 250,
         "triaged_out": 0,
-        "wontfix": 0
+        "wontfix": 17
       },
       "3": {
         "auto_resolved": 0,
@@ -35861,11 +35861,11 @@
         "reasoning": "",
         "summary_hash": "1b2dde13"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (al-compile and al-explorer cli/commands/build.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:14+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -35873,7 +35873,38 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:14+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:14+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "cross_module_architecture",
+          "related_files": [
+            "crates/al-explorer/src/cli/commands/build.rs",
+            "crates/al-compile/src/lib.rs",
+            "crates/al-lsp/src/server/daemon/build_dispatch/build/compile.rs"
+          ],
+          "evidence": [
+            "crates/al-explorer/src/cli/commands/build.rs:126-225 and crates/al-compile/src/lib.rs:576-645 perform the same sequence: al_emit::now_timestamp, build_verified_app_from_project_with_packages, the `let Some(built) = verified.app else` failure branch, then NamedTempFile::new_in + write_all + sync_all + persist with the same timings.output_write_ns/total_ns bookkeeping.",
+            "al-explorer already depends on al-compile (crates/al-explorer/Cargo.toml), so it is duplicating a crate it links.",
+            "The two paths disagree on the emitted contract: build.rs:171 and :234 report \"verificationLevel\": \"native-syntax-project-binding\", while the daemon's build_result_json at crates/al-lsp/src/server/daemon/build_dispatch/build/compile.rs:43 reports \"native-syntax-project-binding-symbol-graph\".",
+            "The explorer path also skips the workspace_diagnostics_json gate that crates/al-lsp/src/server/daemon/build_dispatch/build/compile.rs:52-88 applies before native emission, so `al-explorer pack-native` and the daemon `package` method can accept different source."
+          ],
+          "suggestion": "Give al_compile::native_compile_with_packages the two parameters al-explorer needs \u2014 an output path override and the compiler-version string \u2014 and have cmd_pack_native call it, keeping only the CLI-specific `--validate` alc step and the result printing. That deletes roughly 100 lines from build.rs and leaves one definition of what a native build does and what verification level it claims.",
+          "reasoning": "",
+          "summary_hash": "1b2dde13"
+        }
+      }
     },
     "review::.::holistic::cross_module_architecture::generation_lock_lsp_only": {
       "id": "review::.::holistic::cross_module_architecture::generation_lock_lsp_only",
@@ -36264,11 +36295,11 @@
         "reasoning": "",
         "summary_hash": "fcc99090"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (al-explorer cli/mod.rs and cli/commands/build.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:15+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -36276,7 +36307,39 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:15+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:15+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "high_level_elegance",
+          "related_files": [
+            "crates/al-explorer/src/cli/mod.rs",
+            "crates/al-explorer/src/cli/commands/build.rs",
+            "crates/al-explorer/Cargo.toml",
+            "crates/al-lsp/src/server/daemon/build_dispatch/build/compile.rs"
+          ],
+          "evidence": [
+            "crates/al-explorer/src/cli/mod.rs:3-5 states 'All business logic lives in the daemon. This module parses CLI arguments, connects to the daemon, sends JSON-RPC requests, and formats responses.'",
+            "In the same crate, cmd_compile and cmd_package (build.rs:76-96) do route to the daemon, but cmd_pack_native (build.rs:105+) calls al_emit::now_timestamp, al_project::config::AlConfig::load_effective and al_emit::build_verified_app_from_project_with_packages directly, and validate_with_alc (build.rs:291+) spins its own tokio runtime to call al_compile::build.",
+            "crates/al-explorer/Cargo.toml therefore depends on al-emit, al-project, al-compile and al-symbols alongside al-protocol, so the 'thin client' links four engine crates.",
+            "The daemon owns an equivalent path in crates/al-lsp/src/server/daemon/build_dispatch/build/compile.rs, giving two implementations of project build that can diverge in diagnostics, package-cache handling and exit codes."
+          ],
+          "suggestion": "Either move pack-native and alc validation behind daemon methods (the daemon already dispatches compile and package, so this is two new methods plus deletion of the in-process paths and the al-emit/al-compile dependencies), or - if running without a daemon is the point - rewrite cli/mod.rs's opening paragraph to say which commands are in-process and why, and name that split in Docs/architecture.md's product-crate diagram.",
+          "reasoning": "",
+          "summary_hash": "fcc99090"
+        }
+      }
     },
     "review::.::holistic::high_level_elegance::debug_session_parked_on_workspace_hub": {
       "id": "review::.::holistic::high_level_elegance::debug_session_parked_on_workspace_hub",
@@ -36344,11 +36407,11 @@
         "reasoning": "",
         "summary_hash": "bb601407"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (build_dispatch/tests_dispatch.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:14+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -36356,7 +36419,39 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:14+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:14+00:00",
+        "scan_count": 2,
+        "tier": 2,
+        "confidence": "medium",
+        "detail": {
+          "holistic": true,
+          "dimension": "high_level_elegance",
+          "related_files": [
+            "crates/al-lsp/src/server/daemon/build_dispatch/tests_dispatch.rs",
+            "crates/al-test/src/lib.rs",
+            "crates/al-runtime/src/interpreter/coverage.rs"
+          ],
+          "evidence": [
+            "crates/al-lsp/src/server/mod.rs:1-8 positions the module as the 'LSP / daemon transport layer' whose job is converting al_analysis results at the wire boundary.",
+            "tests_dispatch.rs:1181-1250 defines merge_dynamic_coverage_reports, about 100 lines tallying branch hits, path hits and MCDC condition observations across al_runtime::interpreter::coverage::DynamicCoverageReport values - a domain fold with no wire concern.",
+            "tests_dispatch.rs:248-317 defines resolve_output_path_within_project, symlink-resolving project containment for report writes, whose own comment documents a past silent-write bug; that policy is reusable by any caller that writes a report.",
+            "al-test already owns the neighbouring concern: write_cobertura_dynamic_to_path at tests_dispatch.rs:1307 just wraps al_test::output::cobertura::write_cobertura_dynamic.",
+            "The file is the largest in the crate at 4216 lines (production through line 2604, tests after)."
+          ],
+          "suggestion": "Move merge_dynamic_coverage_reports next to the type it folds, as an inherent method or free function in al-runtime's coverage module, and move resolve_output_path_within_project into al-test beside the report writers. Both are pure functions with no transport dependency, so each is a cut-and-paste plus a use statement, and the dispatcher shrinks to parameter parsing and response shaping. Leave dynamic_coverage_to_json where it is - its comment correctly explains that the wire shape belongs at the boundary.",
+          "reasoning": "",
+          "summary_hash": "bb601407"
+        }
+      }
     },
     "review::.::holistic::convention_outlier::explorer_edition_style_island": {
       "id": "review::.::holistic::convention_outlier::explorer_edition_style_island",
@@ -36425,11 +36520,11 @@
         "reasoning": "",
         "summary_hash": "843a4ae0"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (daemon/debug_dispatch.rs, build_dispatch/tests_dispatch.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:08+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -36437,7 +36532,39 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:08+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:08+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "convention_outlier",
+          "related_files": [
+            "crates/al-lsp/src/server/daemon/build_dispatch/tests_dispatch.rs",
+            "crates/al-lsp/src/server/daemon/debug_dispatch.rs",
+            "crates/al-lsp/src/server/daemon/build_dispatch/build/source_lookup.rs",
+            "crates/al-lsp/src/server/daemon/mod.rs"
+          ],
+          "evidence": [
+            "daemon/mod.rs:877 and :890 define `optional_bool_param` and `optional_bounded_usize_param` as pub(crate) and dispatchers import them from there, establishing the convention that JSON-RPC parameter extraction lives in daemon/mod.rs.",
+            "`optional_non_empty_string` breaks that convention three times: build_dispatch/tests_dispatch.rs:19, debug_dispatch.rs:77 and build_dispatch/build/source_lookup.rs:9, each a private copy.",
+            "The copies are not equivalent. For a non-string value tests_dispatch.rs and debug_dispatch.rs return \"'{key}' must be a string when supplied\"; source_lookup.rs returns \"'{key}' must be a non-empty string\". For a present-but-empty string the first two return \"'{key}' must not be empty\" and the third returns \"'{key}' must be a non-empty string\".",
+            "All three back methods on the same JSON-RPC surface, so a client sending the same malformed parameter gets a different error message depending on which dispatcher it hit."
+          ],
+          "suggestion": "Move one implementation into crates/al-lsp/src/server/daemon/mod.rs as `pub(crate) fn optional_non_empty_string`, next to optional_bool_param and optional_bounded_usize_param, pick one wording for each of the two failure modes, and delete the three private copies. Update any test that asserts on the old source_lookup wording.",
+          "reasoning": "",
+          "summary_hash": "843a4ae0"
+        }
+      }
     },
     "review::.::holistic::convention_outlier::serialized_response_param_order_swapped": {
       "id": "review::.::holistic::convention_outlier::serialized_response_param_order_swapped",
@@ -36462,11 +36589,11 @@
         "reasoning": "",
         "summary_hash": "4ef4d2bf"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-lsp/src/server/daemon/mod.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:18+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -36474,7 +36601,36 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:18+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:18+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "convention_outlier",
+          "related_files": [
+            "crates/al-lsp/src/server/daemon/mod.rs",
+            "crates/al-lsp/src/server/daemon/build_dispatch/mod.rs"
+          ],
+          "evidence": [
+            "daemon/mod.rs:950 declares `pub(crate) fn serialized_response<T: Serialize>(id: u64, value: &T, method: &str) -> Response` and formats \"Failed to serialize {method} response: {error}\".",
+            "build_dispatch/mod.rs:25 declares a private `fn serialized_response<T: Serialize>(id: u64, label: &str, value: &T) -> Response` and formats \"serialize {label} failed: {error}\".",
+            "Every dispatcher under build_dispatch/ calls the local one (for example `serialized_response(id, \"obsolescence timeline\", &entries)` at build_dispatch/mod.rs:42), so moving a dispatcher between build_dispatch/ and the depth-1 *_dispatch.rs files silently changes both the argument order it must use and the error text a client sees."
+          ],
+          "suggestion": "Delete the private copy in build_dispatch/mod.rs and have those dispatchers use the pub(crate) helper from daemon/mod.rs, adjusting the ~20 call sites to the (id, value, method) order. If the build_dispatch label wording is preferred, change daemon/mod.rs to that wording once rather than keeping two.",
+          "reasoning": "",
+          "summary_hash": "4ef4d2bf"
+        }
+      }
     },
     "review::.::holistic::convention_outlier::explorer_run_command_bypassed": {
       "id": "review::.::holistic::convention_outlier::explorer_run_command_bypassed",
@@ -36503,11 +36659,11 @@
         "reasoning": "",
         "summary_hash": "2503fb47"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (al-explorer cli/commands/mod.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:15+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -36515,7 +36671,40 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:15+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:15+00:00",
+        "scan_count": 2,
+        "tier": 2,
+        "confidence": "medium",
+        "detail": {
+          "holistic": true,
+          "dimension": "convention_outlier",
+          "related_files": [
+            "crates/al-explorer/src/cli/commands/mod.rs",
+            "crates/al-explorer/src/cli/commands/lsp/language.rs",
+            "crates/al-explorer/src/cli/commands/lsp/env.rs",
+            "crates/al-explorer/src/cli/commands/lsp/reports.rs"
+          ],
+          "evidence": [
+            "commands/mod.rs:376 defines run_command and :395 run_command_with_exit, documented as the standard path, with the exception spelled out: \"Commands with conditional exit codes, multi-step logic, early returns inside the format branch, or non-standard timeouts should stay manual\".",
+            "Across cli/commands/*.rs and cli/commands/lsp/*.rs there are about 63 hand-rolled `match connect(...)` blocks against about 25 run_command call sites.",
+            "Two whole modules never use it: lsp/env.rs (6 cmd_ functions) and lsp/language.rs (8 cmd_ functions).",
+            "The exception does not explain all of them. cmd_position_query (lsp/language.rs:316) and cmd_generate (lsp/reports.rs:7) each do exactly connect -> request_checked -> if json print_json else format -> ExitCode::SUCCESS, which is run_command's shape verbatim.",
+            "Each hand-rolled copy repeats the `match connect(None) { Ok(c) => c, Err(e) => return report_error(&e, json) }` prologue, so the error-reporting behaviour of a command depends on which copy its author started from."
+          ],
+          "suggestion": "Convert the commands whose bodies match the helper's shape \u2014 starting with cmd_position_query, cmd_symbols/cmd_folding/cmd_tokens, cmd_generate and the rest of lsp/reports.rs \u2014 to run_command or run_command_with_exit. Leave the genuinely non-standard ones (cmd_daemon_shutdown, cmd_setup, cmd_doctor, cmd_format's stdin/check paths) manual, and add a one-line comment on each naming which exception applies.",
+          "reasoning": "",
+          "summary_hash": "2503fb47"
+        }
+      }
     },
     "review::.::holistic::convention_outlier::bulk_fix_dual_write_protocol": {
       "id": "review::.::holistic::convention_outlier::bulk_fix_dual_write_protocol",
@@ -36626,11 +36815,11 @@
         "reasoning": "",
         "summary_hash": "e5028408"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (al-compile/src/lib.rs, al-publish/src/lib.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:15+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -36638,7 +36827,40 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:15+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:15+00:00",
+        "scan_count": 2,
+        "tier": 2,
+        "confidence": "medium",
+        "detail": {
+          "holistic": true,
+          "dimension": "convention_outlier",
+          "related_files": [
+            "crates/al-workspace/src/lib.rs",
+            "crates/al-compile/src/lib.rs",
+            "crates/al-test-harness/src/lib.rs",
+            "crates/al-publish/src/lib.rs",
+            "crates/al-symbols/src/lib.rs"
+          ],
+          "evidence": [
+            "Fifteen crates keep lib.rs to 8-40 lines of `pub mod` plus a curated `pub use` list: al-symbols 40, al-test 16, al-types 19, al-protocol 14, al-project 8, al-runtime 20, al-snapshot 9.",
+            "Four put the implementation there instead: al-workspace 1865 lines (with `mod workspace_lifecycle_tests` at :1011), al-compile 1695 (AlcRunError and run_alc_with_timeout defined at :33 and :47, no submodules), al-test-harness 1182, al-publish 869 (tests at :366).",
+            "al-test-harness is also the only crate that re-exports by glob \u2014 `pub use protocol::*;` at lib.rs:49 \u2014 where every other crate names each item, so its public surface cannot be read off lib.rs.",
+            "The result is that 'open lib.rs to see the crate's shape' works for most crates and not for these four."
+          ],
+          "suggestion": "For al-compile and al-publish, move the implementation into a named module (crates/al-compile/src/alc.rs, crates/al-publish/src/publish.rs) and reduce lib.rs to the module declarations plus the existing public names, matching the other 15 crates. Replace al-test-harness's `pub use protocol::*;` with the explicit item list. Leave al-workspace for a separate pass given its size.",
+          "reasoning": "",
+          "summary_hash": "e5028408"
+        }
+      }
     },
     "review::.::holistic::convention_outlier::explorer_missing_module_docs": {
       "id": "review::.::holistic::convention_outlier::explorer_missing_module_docs",
@@ -36908,11 +37130,11 @@
         "reasoning": "",
         "summary_hash": "4cd26c6c"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "interpreter/mod.rs now holds pub(crate) error_info and eval_error; the four copies in dispatch.rs, eval_expr.rs, eval_stmt.rs and records.rs are deleted and their 313 call sites use one name per return type. The two test extractors are error_of.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:45:46+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -36920,7 +37142,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually interpreter/mod.rs now holds pub(crate) error_info and eval_error; the four copies in dispatch.rs, eval_expr.rs, eval_stmt.rs and records.rs are deleted and their 313 call sites use one name per return type. The two test extractors are error_of. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:45:46+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::naming_quality::should_report_semantic_failure_is_test_and_set": {
       "id": "review::.::holistic::naming_quality::should_report_semantic_failure_is_test_and_set",
@@ -36945,11 +37173,11 @@
         "reasoning": "",
         "summary_hash": "a077897e"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/lsp.rs and server/workspace.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:13+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -36957,7 +37185,36 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:13+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:13+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "naming_quality",
+          "related_files": [
+            "crates/al-lsp/src/server/lsp.rs",
+            "crates/al-lsp/src/server/workspace.rs"
+          ],
+          "evidence": [
+            "lsp.rs:476 body is `!self.semantic_failure_reported.swap(true, SeqCst)` \u2014 calling it changes server state, and a second call returns false.",
+            "The `&self` receiver gives a caller no signal that the call is consuming; its own doc comment has to spell out 'check whether we've already shown ... and if not, set the flag'.",
+            "workspace.rs:1327 and :1342 handle the identical once-per-session problem with a separated `settings_prompt_shown()` query and `mark_settings_prompt_shown()` mutator, so the honest pattern already exists in this crate."
+          ],
+          "suggestion": "Rename to `claim_semantic_failure_report(&self) -> bool` (or `take_semantic_failure_slot`), matching the existing `mark_*`/`claim_*` vocabulary. Single-symbol rename plus its call sites in lsp.rs and diagnostics.rs; no structural change.",
+          "reasoning": "",
+          "summary_hash": "a077897e"
+        }
+      }
     },
     "review::.::holistic::naming_quality::serde_defaults_named_after_their_literal": {
       "id": "review::.::holistic::naming_quality::serde_defaults_named_after_their_literal",
@@ -37027,11 +37284,11 @@
         "reasoning": "",
         "summary_hash": "f0693927"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (al-project/src/config.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:16+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -37039,7 +37296,39 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:16+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:16+00:00",
+        "scan_count": 2,
+        "tier": 2,
+        "confidence": "medium",
+        "detail": {
+          "holistic": true,
+          "dimension": "naming_quality",
+          "related_files": [
+            "crates/al-analysis/src/queries/format.rs",
+            "crates/al-project/src/config.rs",
+            "crates/al-syntax/src/formatting.rs",
+            "crates/al-lsp/src/server/formatting.rs"
+          ],
+          "evidence": [
+            "format.rs:31 AlFormatConfig holds Option<usize> tab_size, Option<bool> insert_spaces, Option<String> keyword_casing \u2014 the permissive JSON/request shape.",
+            "config.rs:157 FormattingConfig holds resolved blank_lines_between_procedures, max_line_length, brace_style, sort_properties \u2014 the on-disk project settings.",
+            "formatting.rs:56 FormatOptions holds resolved tab_size, insert_spaces, keyword_casing, blank_lines_between_procedures \u2014 the engine input.",
+            "The three overlap on keyword_casing and blank_lines_between_procedures, and crates/al-lsp/src/server/formatting.rs takes `config: &al_project::config::FormattingConfig` on three functions while daemon/build_dispatch/fixes.rs:152 calls `AlFormatConfig::load_options_strict`, so both spellings appear in the same crate."
+          ],
+          "suggestion": "Rename by layer rather than by Config/Options: AlFormatConfig -> FormatSettingsJson (or FormatRequestSettings), FormattingConfig -> ProjectFormatSettings, FormatOptions -> ResolvedFormatOptions. Three type renames plus their imports; no new types or indirection.",
+          "reasoning": "",
+          "summary_hash": "f0693927"
+        }
+      }
     },
     "review::.::holistic::naming_quality::symbol_lookup_cardinality_in_the_verb": {
       "id": "review::.::holistic::naming_quality::symbol_lookup_cardinality_in_the_verb",
@@ -37141,11 +37430,11 @@
         "reasoning": "",
         "summary_hash": "51baa42c"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/mcp.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:10+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -37153,7 +37442,35 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:10+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:10+00:00",
+        "scan_count": 2,
+        "tier": 2,
+        "confidence": "medium",
+        "detail": {
+          "holistic": true,
+          "dimension": "naming_quality",
+          "related_files": [
+            "crates/al-lsp/src/server/mcp.rs"
+          ],
+          "evidence": [
+            "mcp.rs:45 `fn obj_schema(props, required)` is used at 19 call sites, all of them the `schema:` field of a ToolDef, which is the tool's argument schema.",
+            "Its neighbours mcp.rs:55 object_result_schema, mcp.rs:64 array_result_schema, mcp.rs:71 result_schema and mcp.rs:247 output_schema all spell 'object' in full and all name the role the schema plays.",
+            "obj_schema and object_result_schema sit ten lines apart with `obj` and `object` meaning the same thing."
+          ],
+          "suggestion": "Rename `obj_schema` to `input_schema` (it already sets $schema and additionalProperties:false, which the result builders do not) and update its 19 call sites. Single-symbol rename inside one file.",
+          "reasoning": "",
+          "summary_hash": "51baa42c"
+        }
+      }
     },
     "review::.::holistic::naming_quality::explorer_cli_two_letter_json_locals": {
       "id": "review::.::holistic::naming_quality::explorer_cli_two_letter_json_locals",
@@ -37257,11 +37574,11 @@
         "reasoning": "",
         "summary_hash": "5cd44f31"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: the typed-RPC change spans daemon/mod.rs, lsp_dispatch.rs and al-explorer cli/commands, all held by campaign/fix-r2-security and campaign/fix-daemon-lifecycle this week",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:22+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -37269,7 +37586,39 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:22+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:22+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "abstraction_fitness",
+          "related_files": [
+            "crates/al-lsp/src/server/daemon/mod.rs",
+            "crates/al-lsp/src/server/daemon/lsp_dispatch.rs",
+            "crates/al-explorer/src/cli/commands/mod.rs",
+            "crates/al-explorer/src/cli/commands/lsp/query.rs",
+            "crates/al-protocol/src/lib.rs"
+          ],
+          "evidence": [
+            "Inbound: daemon/mod.rs:852-905 defines `extract_uri`, `extract_position`, `extract_i32`, `optional_bool_param`, `optional_bounded_usize_param`, each pulling one field out of `&serde_json::Value`. These are used at 131 call sites across crates/al-lsp/src/server/daemon/, against 5 uses of `serde_json::from_value` in the same directory.",
+            "Outbound: lsp_dispatch.rs:18 `fn ok_response<T: Serialize>` proves the daemon already holds typed results, but al-explorer/src/cli/commands/mod.rs:425 `request_checked` returns `serde_json::Value`, and the CLI re-derives every shape by hand \u2014 534 `.get(\"...\")` sites across al-explorer, e.g. lsp/query.rs:31-40 reads kind/id/name/package/source_availability out of a map with `.unwrap_or(\"?\")` fallbacks.",
+            "al-protocol carries only the JSON-RPC envelope and socket transport (lib.rs exports DaemonClient, jsonrpc, socket) and al-types already exists as the shared tier-0 crate, so a home for the payload types is present and unused."
+          ],
+          "suggestion": "Move the request/response payload structs for the highest-traffic daemon methods into al-protocol (or al-types) as plain `#[derive(Serialize, Deserialize)]` types, have the dispatchers take `serde_json::from_value::<HoverParams>(params)` instead of `extract_uri`+`extract_position`, and have al-explorer deserialize into the same structs instead of `.get(\"...\")`. Start with the ~20 lsp_dispatch methods, which share the uri+position shape. This is a net deletion: the extractor helpers, most of the `.get` chains, and most of response_contract.rs go away.",
+          "reasoning": "",
+          "summary_hash": "5cd44f31"
+        }
+      }
     },
     "review::.::holistic::abstraction_fitness::response_contract_validator": {
       "id": "review::.::holistic::abstraction_fitness::response_contract_validator",
@@ -37296,11 +37645,11 @@
         "reasoning": "",
         "summary_hash": "58274e6c"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: same typed-RPC change, daemon/mod.rs and al-explorer cli/commands are held by campaign/fix-r2-security and campaign/fix-daemon-lifecycle this week",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:22+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -37308,7 +37657,38 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:22+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:22+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "abstraction_fitness",
+          "related_files": [
+            "crates/al-explorer/src/cli/commands/response_contract.rs",
+            "crates/al-explorer/src/cli/commands/mod.rs",
+            "crates/al-lsp/src/server/daemon/mod.rs"
+          ],
+          "evidence": [
+            "response_contract.rs is 1451 lines whose module doc states the motive: \"The daemon is a separate process and JSON-RPC is an untyped boundary. Human formatters must not turn a missing field into `0`, `false`, `?`, or an empty list and then exit successfully.\"",
+            "It re-implements a type system: a private `enum Kind { String, Integer, Unsigned, Number, Boolean, Array, Object }` with `matches(&Value)` and a `label()` for error text (lines 10-44).",
+            "`handles(method)` (line 46) enumerates ~60 method names; daemon/mod.rs dispatches 84. The uncovered remainder falls through to a second ad-hoc validator, `validate_run_command_result` (al-explorer/src/cli/commands/mod.rs:440), so the guarantee is partial and the split is invisible at the call site.",
+            "Every field named in this validator is a field that a `#[derive(Deserialize)]` struct would check at the parse boundary for free."
+          ],
+          "suggestion": "Fold this into the typed-payload fix above: once al-explorer deserializes daemon results into shared structs, serde's missing-field and type errors replace the Kind/label machinery, and `request_checked` becomes `client.request::<T>(method, params)`. Retire response_contract.rs and validate_run_command_result together rather than extending either \u2014 the current pair has to be updated by hand every time a daemon response gains a field.",
+          "reasoning": "",
+          "summary_hash": "58274e6c"
+        }
+      }
     },
     "review::.::holistic::abstraction_fitness::jsonc_helper_bypassed_via_facade": {
       "id": "review::.::holistic::abstraction_fitness::jsonc_helper_bypassed_via_facade",
@@ -37422,11 +37802,11 @@
         "reasoning": "",
         "summary_hash": "11a09b37"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/lsp.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:11+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -37434,7 +37814,39 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:11+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:11+00:00",
+        "scan_count": 2,
+        "tier": 2,
+        "confidence": "medium",
+        "detail": {
+          "holistic": true,
+          "dimension": "abstraction_fitness",
+          "related_files": [
+            "crates/al-lsp/src/server/lsp.rs",
+            "crates/al-lsp/src/server/definition.rs",
+            "crates/al-lsp/src/server/hover.rs",
+            "crates/al-lsp/src/server/completions.rs"
+          ],
+          "evidence": [
+            "Features routed through a handler module: hover (lsp.rs:1614 -> server/hover.rs), completion (1633 -> server/completions.rs), goto_definition (1659 -> server/definition.rs), rename and prepare_rename (-> definition.rs:71,87), formatting (-> server/formatting.rs).",
+            "Features calling al_analysis inline from lsp.rs instead: goto_implementation (1679), references (1715), document_symbol (1755), semantic_tokens_full (1834), code_lens (2052).",
+            "The handler modules are not empty adapters \u2014 definition.rs:25 branches on the client's `definition_link_support` capability to choose `Location[]` vs `LocationLink[]`, and hover.rs builds the MarkupContent \u2014 so client-capability policy lives there for half the features and nowhere for the other half.",
+            "definition.rs:68 records the drift explicitly: \"handle_references was inlined into the LanguageServer::references impl and wrapped in spawn_blocking so it can be cancel-friendly. Removed.\" The stated reason (spawn_blocking) is orthogonal to where the conversion lives."
+          ],
+          "suggestion": "Pick one shape and apply it to all ten. The cheaper direction is to finish inlining: move the four handler-module bodies into their `LanguageServer` methods in lsp.rs, keeping `origin_selection_range` and `core_workspace_edit_to_lsp` as free functions in server/handlers.rs, and delete hover.rs, definition.rs and completions.rs. That removes three files and a hop without adding anything. Also delete the stale 'Removed' comment at definition.rs:68.",
+          "reasoning": "",
+          "summary_hash": "11a09b37"
+        }
+      }
     },
     "review::.::holistic::abstraction_fitness::default_arg_wrappers_no_prod_caller": {
       "id": "review::.::holistic::abstraction_fitness::default_arg_wrappers_no_prod_caller",
@@ -37462,11 +37874,11 @@
         "reasoning": "",
         "summary_hash": "b5e76436"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Deleted al-insight's trace_event and find_entry_points wrappers and gave the plain names to the functions taking Option<&CallGraph>, so there is one spelling and every caller states its choice. al-symbols resolve_dependencies already takes country explicitly on this branch base.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:45:57+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -37474,7 +37886,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Deleted al-insight's trace_event and find_entry_points wrappers and gave the plain names to the functions taking Option<&CallGraph>, so there is one spelling and every caller states its choice. al-symbols resolve_dependencies already takes country explicitly on this branch base. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:45:57+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::abstraction_fitness::runoptions_over_threaded": {
       "id": "review::.::holistic::abstraction_fitness::runoptions_over_threaded",
@@ -37502,11 +37920,11 @@
         "reasoning": "",
         "summary_hash": "3f83cf29"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (build_dispatch/tests_dispatch.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:13+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -37514,7 +37932,39 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:13+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:13+00:00",
+        "scan_count": 2,
+        "tier": 2,
+        "confidence": "medium",
+        "detail": {
+          "holistic": true,
+          "dimension": "abstraction_fitness",
+          "related_files": [
+            "crates/al-test/src/session.rs",
+            "crates/al-test/src/backends/interp.rs",
+            "crates/al-test/src/backends/live_bc.rs",
+            "crates/al-lsp/src/server/daemon/build_dispatch/tests_dispatch.rs"
+          ],
+          "evidence": [
+            "session.rs:29 `RunOptions` declares timeout_ms, parallel, junit_out, cobertura_out, filter, coverage (7 fields with the serde default), and session.rs:128 `TestSession::run(&self, tests, opts: RunOptions, tx)` takes it whole.",
+            "Both implementors read only three fields: interp.rs:156,173,210 and live_bc.rs:226,231,287 use timeout_ms, filter and parallel.",
+            "junit_out, cobertura_out and coverage are never read inside al-test; the only reads are in the module that constructs the struct \u2014 tests_dispatch.rs:885,901 (`if opts.coverage`) and :1085,1094 (report paths).",
+            "The effect is that the run interface advertises report-writing and coverage as part of the backend contract when they are the dispatcher's own concerns."
+          ],
+          "suggestion": "Move junit_out, cobertura_out and coverage out of RunOptions. Coverage already selects a constructor rather than a runtime branch (`InterpMode::with_coverage`), so tests_dispatch.rs can keep that decision locally, and the two report paths belong beside the code that writes the reports. RunOptions then shrinks to the three fields the trait actually contracts for.",
+          "reasoning": "",
+          "summary_hash": "3f83cf29"
+        }
+      }
     },
     "review::.::holistic::dependency_health::al_lsp_dead_prod_deps": {
       "id": "review::.::holistic::dependency_health::al_lsp_dead_prod_deps",
@@ -37540,11 +37990,11 @@
         "reasoning": "",
         "summary_hash": "ab066013"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week and campaign/fix-daemon-lifecycle (crates/al-lsp/Cargo.toml, both branches add entries)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:16+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -37552,7 +38002,37 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:16+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:16+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "dependency_health",
+          "related_files": [
+            "crates/al-lsp/Cargo.toml"
+          ],
+          "evidence": [
+            "grep for `use <name>` and `<name>::` across crates/al-lsp (src, tests, benches, examples) returns zero hits for al-publish, dashmap, ropey, tree-sitter-al, urlencoding, petgraph, tokio-tungstenite, futures-util, quick-xml, memmap2, rayon, getrandom, zeroize and keyring.",
+            "The manifest sections carrying most of them are labelled `# Folded in from al-symbols (stage 5):` (line 56) and `# Folded in from al-lsp (stage 7):` (line 79), so they were copied wholesale from the pre-split manifests.",
+            "keyring is declared with the same five-feature block as crates/al-symbols/Cargo.toml (apple-native, windows-native, async-secret-service, crypto-rust, tokio) plus its comment, yet `keyring` appears in al-lsp only inside prose comments and an MCP tool description string (server/mcp.rs:462, build_dispatch/symbols_auth.rs:96).",
+            "tokio-tungstenite is declared with al-dap's exact default-features=false + rustls-tls-native-roots feature set and its comment, but the websocket client lives in al-dap/src/dap/bc_debug/session.rs, not in al-lsp.",
+            "al-publish is reached only by crates/al-test-harness/tests/live_bc_contract.rs:420; al-lsp never names it."
+          ],
+          "suggestion": "Delete those 14 entries from crates/al-lsp/Cargo.toml. Each is already in the build graph through the crate that actually uses it (dashmap/ropey via al-source, petgraph via al-insight, quick-xml/memmap2/rayon/keyring/zeroize via al-symbols, tokio-tungstenite/futures-util via al-dap, tree-sitter-al via al-syntax), so nothing is lost and the duplicated keyring and tokio-tungstenite feature blocks stop being a second place to keep in sync. While there, delete `rayon` from al-analysis, `url` from al-bc, and `al-project` + `al-types` from al-publish, which are unused by the same check.",
+          "reasoning": "",
+          "summary_hash": "ab066013"
+        }
+      }
     },
     "review::.::holistic::dependency_health::shared_deps_bypass_workspace_table": {
       "id": "review::.::holistic::dependency_health::shared_deps_bypass_workspace_table",
@@ -37623,11 +38103,11 @@
         "reasoning": "",
         "summary_hash": "75415b98"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week and campaign/fix-daemon-lifecycle (the change removes the futures entry from crates/al-lsp/Cargo.toml)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:18+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -37635,7 +38115,39 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:18+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:18+00:00",
+        "scan_count": 2,
+        "tier": 2,
+        "confidence": "medium",
+        "detail": {
+          "holistic": true,
+          "dimension": "dependency_health",
+          "related_files": [
+            "crates/al-symbols/Cargo.toml",
+            "crates/al-dap/Cargo.toml",
+            "crates/al-symbols/src/bc_server.rs",
+            "crates/al-dap/src/dap/bc_debug/session.rs"
+          ],
+          "evidence": [
+            "crates/al-symbols/src/bc_server.rs:340 and crates/al-symbols/src/nuget.rs:317 call futures::future::join_all, backed by the workspace `futures = \"0.3\"` entry.",
+            "crates/al-dap/src/dap/bc_debug/session.rs:8 imports futures_util::{SinkExt, StreamExt}, backed by a separate `futures-util = \"0.3\"` pin in al-dap and a duplicate one in al-lsp.",
+            "`futures` re-exports futures-util, so both crates end up in the graph and a reader cannot tell from a manifest which facade a new async call site is supposed to use.",
+            "Total first-party usage is four call sites: one join_all pair and one SinkExt/StreamExt import."
+          ],
+          "suggestion": "Pick futures-util and use it everywhere: it is the crate both actually need, and dropping `futures` removes futures-executor and futures-channel from the graph. Change al-symbols' two call sites to futures_util::future::join_all, delete the `futures` entry from [workspace.dependencies] and from al-symbols and al-lsp, and add futures-util to [workspace.dependencies] so al-dap and any future consumer share one pin.",
+          "reasoning": "",
+          "summary_hash": "75415b98"
+        }
+      }
     },
     "review::.::holistic::dependency_health::getrandom_pinned_to_oldest_of_three_copies": {
       "id": "review::.::holistic::dependency_health::getrandom_pinned_to_oldest_of_three_copies",
@@ -37701,11 +38213,11 @@
         "reasoning": "",
         "summary_hash": "36c12e21"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred with the unused-dependency removal it would gate: adding cargo-machete to CI before crates/al-lsp/Cargo.toml is cleaned turns CI red, and that manifest is held by campaign/fix-r2-security and campaign/fix-daemon-lifecycle this week",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:17+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -37713,7 +38225,37 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:17+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:17+00:00",
+        "scan_count": 2,
+        "tier": 2,
+        "confidence": "medium",
+        "detail": {
+          "holistic": true,
+          "dimension": "dependency_health",
+          "related_files": [
+            ".github/workflows/ci.yml",
+            "deny.toml",
+            "crates/al-lsp/Cargo.toml"
+          ],
+          "evidence": [
+            ".github/workflows/ci.yml:145-161 runs cargo-deny --workspace, and deny.toml covers [licenses], [advisories] and [bans]. None of those categories reports a declared-but-unreferenced dependency.",
+            "The Makefile's only manifest-related check (line 333, 'local package-manifest audit for publishable crates') validates publish metadata, not dependency use.",
+            "The gap is measurable: 17 unused production entries survive across crates/al-lsp (14), al-analysis (1), al-bc (1) and al-publish (2), with al-lsp's dating back to the manifests copied during the crate split."
+          ],
+          "suggestion": "Add a cargo-machete step to the existing cargo-deny job in .github/workflows/ci.yml. It needs no config file, runs in seconds, and would have caught all 17 entries. cargo-udeps is the alternative but needs nightly, so machete is the cheaper fit for this workspace.",
+          "reasoning": "",
+          "summary_hash": "36c12e21"
+        }
+      }
     },
     "review::.::holistic::low_level_elegance::triplicated_optional_non_empty_string": {
       "id": "review::.::holistic::low_level_elegance::triplicated_optional_non_empty_string",
@@ -37740,11 +38282,11 @@
         "reasoning": "",
         "summary_hash": "b982a7a3"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (daemon/debug_dispatch.rs, build_dispatch/tests_dispatch.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:08+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -37752,7 +38294,38 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:08+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:08+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "low_level_elegance",
+          "related_files": [
+            "crates/al-lsp/src/server/daemon/debug_dispatch.rs",
+            "crates/al-lsp/src/server/daemon/build_dispatch/tests_dispatch.rs",
+            "crates/al-lsp/src/server/daemon/build_dispatch/build/source_lookup.rs"
+          ],
+          "evidence": [
+            "debug_dispatch.rs:77-95 and build_dispatch/tests_dispatch.rs:19-37 are byte-identical match-based implementations of `fn optional_non_empty_string<'a>(params: &serde_json::Value, key: &str) -> Result<Option<&'a str>, String>`.",
+            "build_dispatch/build/source_lookup.rs:9-24 is a let-else rewrite of the same helper that returns \"'{key}' must be a non-empty string\" where the other two return \"'{key}' must be a string when supplied\" for a non-string value.",
+            "The 37 call sites across al-lsp therefore produce two different error messages for the same client mistake depending on which dispatch module handled the request.",
+            "The daemon already has a home for shared request helpers: crates/al-lsp/src/server/daemon/mod.rs:981 and :1037 define pub(crate) require_project_root and require_document_text."
+          ],
+          "suggestion": "Delete all three definitions and put one `pub(crate) fn optional_non_empty_string` next to require_project_root in crates/al-lsp/src/server/daemon/mod.rs, keeping the let-else body from source_lookup.rs and the \"must be a string when supplied\" / \"must not be empty\" message pair from debug_dispatch.rs so the distinction between wrong-type and empty is preserved. Update the three modules to `use super::optional_non_empty_string`.",
+          "reasoning": "",
+          "summary_hash": "b982a7a3"
+        }
+      }
     },
     "review::.::holistic::low_level_elegance::response_error_helper_bypassed": {
       "id": "review::.::holistic::low_level_elegance::response_error_helper_bypassed",
@@ -37777,11 +38350,11 @@
         "reasoning": "",
         "summary_hash": "d207a81e"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (daemon/debug_dispatch.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:07+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -37789,7 +38362,36 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:07+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:07+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "low_level_elegance",
+          "related_files": [
+            "crates/al-lsp/src/server/daemon/debug_dispatch.rs",
+            "crates/al-lsp/src/server/daemon/insight_dispatch.rs"
+          ],
+          "evidence": [
+            "`Response::error(` appears 28 times under crates/al-lsp/src; `error: Some(RpcError {` (the hand-written `Response { id, result: None, error: Some(RpcError { code, message }), ..Default::default() }` form) appears 76 times.",
+            "dispatch_debug uses both within one arm: the helper at debug_dispatch.rs:295 and :306, the 8-line literal at :284 and :406 -- same id, same error_codes constant, same string.",
+            "insight_dispatch.rs uses the literal exclusively (lines 22, 87, 110, 162, 196, 213, 241, 258), so a reader moving between sibling dispatch modules sees two spellings of one operation."
+          ],
+          "suggestion": "Replace every `Response { id, result: None, error: Some(RpcError { code, message }), ..Default::default() }` literal with `Response::error(id, code, message)`; the helper already takes `impl Into<String>` at the call sites shown. Where a literal exists only because the message is a `String` rather than `&str`, that is already covered. This removes roughly 500 lines from the daemon dispatch modules with no new abstraction.",
+          "reasoning": "",
+          "summary_hash": "d207a81e"
+        }
+      }
     },
     "review::.::holistic::low_level_elegance::dispatch_debug_monolith": {
       "id": "review::.::holistic::low_level_elegance::dispatch_debug_monolith",
@@ -37814,11 +38416,11 @@
         "reasoning": "",
         "summary_hash": "c6e99bcd"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/daemon/debug_dispatch.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:46:31+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -37826,7 +38428,36 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another branch is rewriting that file this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:46:31+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:46:31+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "low_level_elegance",
+          "related_files": [
+            "crates/al-lsp/src/server/daemon/debug_dispatch.rs"
+          ],
+          "evidence": [
+            "crates/al-lsp/src/server/daemon/debug_dispatch.rs:242-841 is one function; the \"start\" arm alone runs from line 256 to roughly line 410.",
+            "Inside that arm: an accessToken type check, a config-name check, config resolution, `config.validate_native()`, an OAuth acquire/refresh ladder with three nested match levels, a reqwest client build, a web-endpoint fetch, a session start, and a browser-URL build -- each with its own early-return error construction.",
+            "The file carries 122 lines at indent level 7 or deeper, the third highest in the workspace, almost all inside this function.",
+            "Sibling dispatchers in the same tree (build_dispatch/build/compile.rs, build_dispatch/fixes.rs) keep one command per function, so the shape is inconsistent within the daemon."
+          ],
+          "suggestion": "Split each match arm into its own `async fn dispatch_debug_start(workspace, id, params) -> Response`, `dispatch_debug_breakpoint(..)` and so on, leaving dispatch_debug as the ~20-line `match cmd` that routes to them -- the same shape the build_dispatch submodules already use. Within dispatch_debug_start, lift the OAuth acquire/refresh ladder into `async fn debug_access_token(config, supplied) -> Result<String, Response>`.",
+          "reasoning": "",
+          "summary_hash": "c6e99bcd"
+        }
+      }
     },
     "review::.::holistic::low_level_elegance::lint_source_block_repeated_four_times": {
       "id": "review::.::holistic::low_level_elegance::lint_source_block_repeated_four_times",
@@ -37889,11 +38520,11 @@
         "reasoning": "",
         "summary_hash": "f68a3b4f"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/workspace.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:11+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -37901,7 +38532,37 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:11+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:11+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "low_level_elegance",
+          "related_files": [
+            "crates/al-lsp/src/server/workspace.rs",
+            "crates/al-lsp/src/server/lsp.rs"
+          ],
+          "evidence": [
+            "crates/al-lsp/src/server/workspace.rs initialize_workspace spans lines 66-477 (412 lines).",
+            "`Ok(Ok(..))` appears at workspace.rs:161, 204, 329, 415 and 579; each is the head of a `match tokio::task::spawn_blocking(..).await { Ok(Ok(x)) => x, Ok(Err(error)) => { tracing::error!; client.show_message(ERROR, ..); return Err(WorkspaceInitError(..)) }, Err(error) => { .. } }` ladder of 15-20 lines.",
+            "The Ok(Err) and Err arms differ only in the message text (\"AL workspace source scan failed\" vs \"AL workspace source-index worker failed\"), so roughly 80 lines of the function are one shape repeated.",
+            "The same ladder recurs at lsp.rs:1348, 1534 and diagnostics.rs:525, so this is the module's de facto idiom rather than a one-off."
+          ],
+          "suggestion": "Add `async fn staged<T, E: Display>(client: &Client, label: &str, task: impl FnOnce() -> Result<T, E> + Send + 'static) -> Result<T, WorkspaceInitError>` in workspace.rs that spawns, flattens both failure arms into one logged-and-reported WorkspaceInitError carrying `label`, and returns T. Each call site then becomes `let (staged_files, count) = staged(&client, \"source scan\", move || ..).await?;`.",
+          "reasoning": "",
+          "summary_hash": "f68a3b4f"
+        }
+      }
     },
     "review::.::holistic::low_level_elegance::config_publish_sequence_reordered": {
       "id": "review::.::holistic::low_level_elegance::config_publish_sequence_reordered",
@@ -37927,11 +38588,11 @@
         "reasoning": "",
         "summary_hash": "77a0ae29"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/lsp.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:12+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -37939,7 +38600,37 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:12+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:12+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "low_level_elegance",
+          "related_files": [
+            "crates/al-lsp/src/server/lsp.rs"
+          ],
+          "evidence": [
+            "crates/al-lsp/src/server/lsp.rs did_change_configuration publishes config at lines 1472-1477, 1502-1509 and 1587-1601.",
+            "At 1466-1477 the order is: acquire write lock, write config, set_max_doc_bytes, clear semantic_diagnostic_cache, mark_generation_changed, drop(publication), refresh_diagnostics_after_configuration.",
+            "At 1500-1509 the order is: write config, mark_generation_changed, clear cache, drop(publication), then set_max_doc_bytes -- the document-size cap is now applied outside the generation lock rather than inside it.",
+            "The third copy at 1587-1601 follows the second ordering. Nothing in the function's comments says whether set_max_doc_bytes belongs inside the lock, so a reader cannot tell which ordering is the intended one.",
+            "This is the same function's own state mutation, so the inconsistency is local rather than a cross-module seam."
+          ],
+          "suggestion": "Extract `async fn publish_config(&self, staged: AlConfig)` that takes the generation write lock, writes the config, applies set_max_doc_bytes, clears semantic_diagnostic_cache, marks the generation changed, drops the guard and then calls refresh_diagnostics_after_configuration. Call it from all three sites so one ordering is defined once.",
+          "reasoning": "",
+          "summary_hash": "77a0ae29"
+        }
+      }
     },
     "review::.::holistic::low_level_elegance::dap_response_boilerplate_inline": {
       "id": "review::.::holistic::low_level_elegance::dap_response_boilerplate_inline",
@@ -38080,11 +38771,11 @@
         "reasoning": "",
         "summary_hash": "91b163fb"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: same typed-RPC change, daemon/mod.rs, mcp.rs and al-explorer cli/commands are held by campaign/fix-r2-security and campaign/fix-daemon-lifecycle this week",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:23+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -38092,7 +38783,39 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:23+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:23+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "mid_level_elegance",
+          "related_files": [
+            "crates/al-explorer/src/cli/commands/response_contract.rs",
+            "crates/al-lsp/src/server/mcp.rs",
+            "crates/al-analysis/src/queries/dead_code.rs",
+            "crates/al-explorer/src/types.rs"
+          ],
+          "evidence": [
+            "al_analysis::queries::dead_code::UnusedSymbol (dead_code.rs:51-63) fixes the wire keys k/n/obj/f/l with serde renames.",
+            "response_contract.rs restates the same field/kind table for deadCode and ~60 other methods across 1451 lines, e.g. the `impact` arm at line 147 restates {symbol: String, impacted: Array} field by field.",
+            "mcp.rs:143 restates that same {symbol, impacted} pair a third time as a JSON Schema via object_result_schema.",
+            "Nothing links the three: drift between a producer rename and either consumer is caught only by integration tests."
+          ],
+          "suggestion": "Make deserialization the validator. al-explorer already owns mirror types in src/types.rs and already uses serde_json::from_value in app/details.rs; extend that pattern to the CLI: add a mirror struct per method result and replace each response_contract.rs arm with `serde_json::from_value::<T>(result)`, whose error message is at least as specific as the hand-written one. That deletes most of the 1451-line file rather than adding a layer. For the MCP schemas, generate them from the same mirror types or drop the per-tool result schemas to `object_array()` / `{type: object}` where they only restate what the dispatcher already guarantees.",
+          "reasoning": "",
+          "summary_hash": "91b163fb"
+        }
+      }
     },
     "review::.::holistic::mid_level_elegance::daemon_params_decoded_by_hand": {
       "id": "review::.::holistic::mid_level_elegance::daemon_params_decoded_by_hand",
@@ -38119,11 +38842,11 @@
         "reasoning": "",
         "summary_hash": "576c1401"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: same typed-RPC change, daemon/mod.rs and tests_dispatch.rs are held by campaign/fix-r2-security and campaign/fix-daemon-lifecycle this week",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:23+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -38131,7 +38854,38 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:23+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:23+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "mid_level_elegance",
+          "related_files": [
+            "crates/al-lsp/src/server/daemon/build_dispatch/tests_dispatch.rs",
+            "crates/al-lsp/src/server/daemon/mod.rs",
+            "crates/al-lsp/src/server/daemon/lsp_dispatch.rs"
+          ],
+          "evidence": [
+            "There are zero `Deserialize` derives anywhere under crates/al-lsp/src/server/daemon, against ~118 helper extraction calls (optional_non_empty_string x34, extract_uri x17, optional_bool_param x16, extract_position x15, extract_i32 x13) plus 61 raw params.get() reads.",
+            "The pattern `Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message)` appears 35 times in tests_dispatch.rs and 12 times in fixes.rs.",
+            "dispatch_tests_run_batch (tests_dispatch.rs:536) spends its first ~70 lines decoding nine parameters in nine near-identical match blocks, then hand-checks that codeunitNames and methodNames have the same length as codeunitIds.",
+            "The LSP half of the same crate gets typed params for free from tower-lsp, so the two transports decode the same concepts with very different amounts of code."
+          ],
+          "suggestion": "Give each daemon method a `#[derive(Deserialize)] #[serde(rename_all = \"camelCase\", deny_unknown_fields)]` params struct and decode once at the top of the dispatcher: `let p: RunBatchParams = match serde_json::from_value(params.clone()) { Ok(p) => p, Err(e) => return rpc_error(id, error_codes::INVALID_PARAMS, &e.to_string()) };`. Keep the existing bounded helpers only for the checks serde cannot express (upper bounds, path-escape, cross-field length equality). This is a net deletion at every call site.",
+          "reasoning": "",
+          "summary_hash": "576c1401"
+        }
+      }
     },
     "review::.::holistic::mid_level_elegance::workspace_bootstrap_duplicated_across_crates": {
       "id": "review::.::holistic::mid_level_elegance::workspace_bootstrap_duplicated_across_crates",
@@ -38159,11 +38913,11 @@
         "reasoning": "",
         "summary_hash": "7f5973ee"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/workspace.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:12+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -38171,7 +38925,39 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:12+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:12+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "mid_level_elegance",
+          "related_files": [
+            "crates/al-workspace/src/lib.rs",
+            "crates/al-lsp/src/server/workspace.rs",
+            "crates/al-lsp/src/server/daemon/mod.rs"
+          ],
+          "evidence": [
+            "al_workspace::initialize_core_workspace (lib.rs:789) runs find_project -> apply_symbol_settings -> load_packages_cached_lenient -> load_runtime_enums -> replace_package_info -> file_index.scan -> find_toolchain; it is called by the daemon (daemon/mod.rs:1200) and the test harness.",
+            "al-lsp's initialize_workspace (server/workspace.rs:66, ~415 lines) runs the same sequence again inline, with its own set_package_info helper at line 752.",
+            "The two bridge sync filesystem work differently: the core version uses tokio::task::block_in_place (with a comment explaining the &Workspace borrow), the LSP version uses spawn_blocking.",
+            "Only the LSP version stages into a fresh FileIndex/SymbolIndex and publishes a generation (publish_complete_generation, line 517); the daemon path scans in place, so the two entry points give different atomicity guarantees for the same operation.",
+            "The LSP version also interleaves client.show_message calls with every staging step, so the transport concern and the state-staging concern cannot be reused independently."
+          ],
+          "suggestion": "Make initialize_core_workspace the single staged implementation: have it return the staged FileIndex/SymbolIndex plus a CoreInitResult and take a `&dyn Fn(Severity, String)` progress sink instead of speaking to a client. al-lsp's initialize_workspace then becomes the LSP-specific wrapper that supplies a sink calling client.show_message, adds the cancellation checks and the download prompt, and calls publish_complete_generation. The daemon keeps its current call unchanged and gains the staged semantics.",
+          "reasoning": "",
+          "summary_hash": "7f5973ee"
+        }
+      }
     },
     "review::.::holistic::mid_level_elegance::workspace_hub_exposes_raw_locks": {
       "id": "review::.::holistic::mid_level_elegance::workspace_hub_exposes_raw_locks",
@@ -38235,11 +39021,11 @@
         "reasoning": "",
         "summary_hash": "775f37c7"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-lsp/src/server/daemon/mod.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:18+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -38247,7 +39033,36 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:18+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:18+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "mid_level_elegance",
+          "related_files": [
+            "crates/al-lsp/src/server/daemon/mod.rs",
+            "crates/al-lsp/src/server/daemon/lsp_dispatch.rs"
+          ],
+          "evidence": [
+            "serialized_response (daemon/mod.rs:950) and ok_response (lsp_dispatch.rs:18) have identical bodies - serde_json::to_value, wrap in Response on success, rpc_error(INTERNAL_ERROR) on failure - differing only in message wording ('Failed to serialize X response' vs 'serialization failed for X').",
+            "serialized_response has 28 uses across insight_dispatch.rs, build_dispatch/{mod,xliff,codegen,fixes}.rs; ok_response/ok_response_opt have 24 uses confined to lsp_dispatch.rs.",
+            "lsp_dispatch.rs also spells the empty-result Response literal (`Response { id, result: None, error: None, ..Default::default() }`) inline 12 times alongside the ok_response_opt helper that exists to produce exactly that value."
+          ],
+          "suggestion": "Delete ok_response and ok_response_opt, keep serialized_response in daemon/mod.rs, and add `serialized_response_opt` there for the Option case. Replace the 12 inline empty-result literals in lsp_dispatch.rs with that helper so every dispatcher in the module produces its response the same way.",
+          "reasoning": "",
+          "summary_hash": "775f37c7"
+        }
+      }
     },
     "review::.::holistic::mid_level_elegance::run_batch_dispatcher_is_the_pipeline": {
       "id": "review::.::holistic::mid_level_elegance::run_batch_dispatcher_is_the_pipeline",
@@ -38272,11 +39087,11 @@
         "reasoning": "",
         "summary_hash": "62edcb82"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (build_dispatch/tests_dispatch.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:13+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -38284,7 +39099,36 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:13+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:13+00:00",
+        "scan_count": 2,
+        "tier": 2,
+        "confidence": "medium",
+        "detail": {
+          "holistic": true,
+          "dimension": "mid_level_elegance",
+          "related_files": [
+            "crates/al-lsp/src/server/daemon/build_dispatch/tests_dispatch.rs"
+          ],
+          "evidence": [
+            "dispatch_tests_run_batch spans lines 536-1176 of tests_dispatch.rs.",
+            "Within one function it decodes nine parameters, validates array-length agreement between codeunitIds/codeunitNames/methodNames, rejects duplicate (codeunit, method) requests, resolves junitOut/coberturaOut against the project root to block path escape, calls discover_tests, applies the name filter, builds RunOptions, drives the TestSession event channel, merges dynamic coverage, writes JUnit and Cobertura files, and assembles the JSON result.",
+            "Sibling dispatchers in the same module (dispatch_tests_discover at line 321, dispatch_tests_coverage at 352) are 30 lines and read as composition, so the seam has a working shape that this method does not follow.",
+            "The file's own imports are function-local (`use al_test::session::{RunOptions, TestEvent, TestId, TestSession};` inside the function body), a sign the function has grown its own private world."
+          ],
+          "suggestion": "Split along the seam it already crosses: keep the dispatcher as decode -> validate -> delegate -> encode, and move the run pipeline into al-test as `al_test::session::run_batch(workspace, RunBatchRequest) -> Result<RunBatchReport, RunBatchError>`, with the JUnit/Cobertura writing already living in al_test::output. The path-escape check stays in the dispatcher (it is a transport-trust concern), the routing, event pump and coverage merge move down.",
+          "reasoning": "",
+          "summary_hash": "62edcb82"
+        }
+      }
     },
     "review::.::holistic::mid_level_elegance::typed_query_errors_flattened_at_boundary": {
       "id": "review::.::holistic::mid_level_elegance::typed_query_errors_flattened_at_boundary",
@@ -38312,11 +39156,11 @@
         "reasoning": "",
         "summary_hash": "ec9ec58a"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-lsp/src/server/daemon/mod.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:19+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -38324,7 +39168,39 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:19+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:19+00:00",
+        "scan_count": 2,
+        "tier": 2,
+        "confidence": "medium",
+        "detail": {
+          "holistic": true,
+          "dimension": "mid_level_elegance",
+          "related_files": [
+            "crates/al-lsp/src/server/daemon/lsp_dispatch.rs",
+            "crates/al-lsp/src/server/daemon/mod.rs",
+            "crates/al-analysis/src/queries/mod.rs",
+            "crates/al-analysis/src/workspace_sources.rs"
+          ],
+          "evidence": [
+            "al-analysis query signatures carry ~14 distinct error enums (WorkspaceQueryError, TestQueryError, AuditError, SourceLookupError, ImpactError, ProfilerHintError, ...) alongside 50 Result<_, String>.",
+            "Across the daemon dispatch layer error_codes::INTERNAL_ERROR is used 194 times against 12 CODE_ANALYSIS_ERROR and 3 FILE_NOT_FOUND, almost always as `&format!(\"{method} query failed: {error}\")`.",
+            "WorkspaceQueryError::IncompleteSourceSnapshot is a retryable precondition failure - workspace_sources.rs even spells the retry advice into the GenerationChanged message - yet it reaches the client as the same INTERNAL_ERROR as a genuine bug, so no caller can distinguish retry from report.",
+            "The protocol already defines CODE_ANALYSIS_ERROR (-32000) and FILE_NOT_FOUND (-32001) for exactly this distinction (al-protocol/src/jsonrpc.rs:222-228)."
+          ],
+          "suggestion": "Add one mapping function in daemon/mod.rs, `fn analysis_error_response(id: u64, method: &str, error: &dyn std::error::Error) -> Response`, and give the handful of query error enums that have a client-actionable case (WorkspaceQueryError, SourceLookupError, TestQueryError) a `fn rpc_code(&self) -> i32` returning CODE_ANALYSIS_ERROR or FILE_NOT_FOUND. Dispatchers then call the one mapper instead of hand-writing rpc_error(INTERNAL_ERROR, format!(...)), which removes text rather than adding a layer.",
+          "reasoning": "",
+          "summary_hash": "ec9ec58a"
+        }
+      }
     },
     "review::.::holistic::mid_level_elegance::post_split_facade_globs_hide_ownership": {
       "id": "review::.::holistic::mid_level_elegance::post_split_facade_globs_hide_ownership",
@@ -38430,11 +39306,11 @@
         "reasoning": "",
         "summary_hash": "42bf7309"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-test-harness daemon helpers)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:21+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -38442,7 +39318,37 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:21+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:21+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "test_strategy",
+          "related_files": [
+            "crates/al-test-harness/tests/tui_smoke.rs",
+            "crates/al-test-harness/src/lib.rs"
+          ],
+          "evidence": [
+            "tui_smoke.rs:75 states the dependency outright: 'A fresh daemon labels the local package `(workspace)`, while a daemon reused by the full suite can expose it as `workspace`. Runtime sorts first in the latter case, so inspect the actual selection before moving.' The test then accepts either label and conditionally sends two arrow keys when '>> Runtime' is on screen.",
+            "The test does not call stop_project_daemon before spawning, so which branch runs depends on test execution order within the harness suite.",
+            "Its polling uses thread::sleep(Duration::from_secs(2)) in a 15-iteration loop plus a 6-iteration loop, so a slow cold start costs up to ~42s of wall time and a slower one fails on a screen-content assertion that reports 'TUI may not have started'.",
+            "This single test is the whole TUI's coverage: it asserts three substrings ('Objects', a workspace package label, 'Source: workspace source')."
+          ],
+          "suggestion": "Call al_test_harness::stop_project_daemon(&test_project_dir()) at the top of the test so it always measures a fresh daemon, then drop the dual-label branch and assert the single '(workspace)' label. Replace the 2s poll granularity with ~200ms against the same overall deadline so a fast daemon does not pay a 2s floor per check.",
+          "reasoning": "",
+          "summary_hash": "42bf7309"
+        }
+      }
     },
     "review::.::holistic::test_strategy::daemon_reset_helper_barely_used": {
       "id": "review::.::holistic::test_strategy::daemon_reset_helper_barely_used",
@@ -38470,11 +39376,11 @@
         "reasoning": "",
         "summary_hash": "a015de38"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-test-harness/src/lib.rs stop_project_daemon)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:21+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -38482,7 +39388,39 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:21+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:21+00:00",
+        "scan_count": 2,
+        "tier": 2,
+        "confidence": "medium",
+        "detail": {
+          "holistic": true,
+          "dimension": "test_strategy",
+          "related_files": [
+            "crates/al-test-harness/src/lib.rs",
+            "crates/al-test-harness/tests/semantic_bridge.rs",
+            "crates/al-test-harness/tests/cli_smoke.rs",
+            "crates/al-test-harness/tests/mcp_stdio.rs"
+          ],
+          "evidence": [
+            "crates/al-test-harness/src/lib.rs:112-124 describes the hazard generally: 'The daemon is a per-project singleton that outlives the test that started it. Without this, a test whose result depends on how al-lsp was *built* ... silently measures whichever binary an earlier run happened to leave resident, so the same command passes or fails depending on working-tree history.'",
+            "Grep across crates/ finds exactly one call site: crates/al-test-harness/tests/semantic_bridge.rs:60.",
+            "cli_smoke.rs, tui_smoke.rs and mcp_stdio.rs all run al-explorer against the same bundled fixture at data/test_al_project and therefore share that singleton; cli_smoke.rs:442 already has to order `daemon-shutdown` last for the same reason.",
+            "cli_smoke.rs isolates XDG_CACHE_HOME/CONFIG_HOME/DATA_HOME per run and copies the project, showing the isolation pattern exists \u2014 it just is not applied to the daemon itself."
+          ],
+          "suggestion": "Call stop_project_daemon(&test_project_dir()) once at the start of each harness test file that spawns al-explorer against the shared fixture (cli_smoke, tui_smoke, mcp_stdio, extension_smoke), or have the auto-start path key the daemon on the isolated project copy these tests already create so no two files share one.",
+          "reasoning": "",
+          "summary_hash": "a015de38"
+        }
+      }
     },
     "review::.::holistic::test_strategy::unguarded_global_env_mutation": {
       "id": "review::.::holistic::test_strategy::unguarded_global_env_mutation",
@@ -38508,11 +39446,11 @@
         "reasoning": "",
         "summary_hash": "c7add3b5"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (the daemon socket-path test in crates/al-lsp/src/server/daemon/mod.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:21+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -38520,7 +39458,37 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:21+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:21+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "test_strategy",
+          "related_files": [
+            "crates/al-lsp/src/server/daemon/mod.rs",
+            "crates/al-lsp/src/server/workspace.rs"
+          ],
+          "evidence": [
+            "crates/al-lsp/src/server/daemon/mod.rs:1378 runs `std::env::set_var(\"XDG_RUNTIME_DIR\", \"/tmp\")` and never restores it, so the value leaks to every later test in that binary.",
+            "The same crate already has the convention: crates/al-lsp/src/server/workspace.rs:2051/2061/2077 annotate their env-mutating tests with #[serial_test::serial], and al-lsp/Cargo.toml:98 carries serial_test as a dev-dependency.",
+            "daemon/mod.rs:95 calls socket_path(&project_root) in production, so any other test in the al-lsp lib binary that resolves a socket path now gets one derived from a forced /tmp runtime dir depending on thread scheduling.",
+            "Of 38 env-mutating tests in the workspace this and crates/al-protocol/src/socket.rs:191 are the only two unguarded, and the al-protocol one at least restores the previous value before asserting."
+          ],
+          "suggestion": "Add #[serial_test::serial] to socket_path_is_deterministic and restore the previous XDG_RUNTIME_DIR after the call, matching workspace.rs:2051. Better, call al_protocol::socket_path_with_runtime_dir(p, \"/tmp\") the way crates/al-protocol/src/socket.rs:210 does and mutate no environment at all.",
+          "reasoning": "",
+          "summary_hash": "c7add3b5"
+        }
+      }
     },
     "review::.::holistic::test_strategy::fixed_sleeps_stand_in_for_conditions": {
       "id": "review::.::holistic::test_strategy::fixed_sleeps_stand_in_for_conditions",
@@ -38746,11 +39714,11 @@
         "reasoning": "",
         "summary_hash": "2cce3669"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-lsp/src/server/daemon/mod.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:20+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -38758,7 +39726,36 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:20+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:20+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "api_surface_coherence",
+          "related_files": [
+            "crates/al-lsp/src/server/daemon/mod.rs",
+            "crates/al-explorer/src/cli/commands/response_contract.rs"
+          ],
+          "evidence": [
+            "The dispatch table at mod.rs:590-730 contains flat camelCase methods (documentSymbols, foldingRanges, semanticTokens, deadCode, tableImpact, traceChain, eventMap, insightStats, nativeCheck, downloadSymbols, newProject, errorCodes, builtinTypes, sortMembers, organizeFiles, eventSource, graphExport, sqlPatterns, clearCache), dotted namespaces with camelCase members (fix.applicationArea, fix.dataClassification, fix.tooltips, audit.dataClassification, deps.graph, arch.lint, profiler.hints, permissions.audit, xlf.generate, xlf.refresh, xlf.suggest, xlf.untranslated), and dotted namespaces with snake_case members (tests.run_batch, tests.run_auto, tests.last_results, tests.snapshot_validate, tests.snapshot_capture, tests.snapshot_replay, tests.snapshot_diff).",
+            "Flat and namespaced forms of the same noun both exist as separate methods: deps and deps.graph, permissions and permissions.audit, fix and fix.applicationArea, snapshot and tests.snapshot_capture.",
+            "This is the toolchain's external API \u2014 the CLI (al-explorer), the MCP server and the Zed extension all address it by method-name string, and al_call's description tells an agent to supply 'the daemon method name' with no way to derive it."
+          ],
+          "suggestion": "Settle on dotted namespace + camelCase member and rename the snake_case members (tests.runBatch, tests.runAuto, tests.lastResults, tests.snapshotCapture/Replay/Diff/Validate). Keep the existing spellings as aliases in the match arms for one release so the Zed extension and any pinned CLI keep working, and add the alias list to the daemon method reference so the rule is visible.",
+          "reasoning": "",
+          "summary_hash": "2cce3669"
+        }
+      }
     },
     "review::.::holistic::api_surface_coherence::uri_vs_file_param_split": {
       "id": "review::.::holistic::api_surface_coherence::uri_vs_file_param_split",
@@ -38786,11 +39783,11 @@
         "reasoning": "",
         "summary_hash": "32e06702"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-lsp/src/server/daemon/mod.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:20+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -38798,7 +39795,39 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:20+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:20+00:00",
+        "scan_count": 2,
+        "tier": 2,
+        "confidence": "medium",
+        "detail": {
+          "holistic": true,
+          "dimension": "api_surface_coherence",
+          "related_files": [
+            "crates/al-lsp/src/server/daemon/mod.rs",
+            "crates/al-lsp/src/server/daemon/lsp_dispatch.rs",
+            "crates/al-lsp/src/server/daemon/build_dispatch/fixes.rs",
+            "crates/al-lsp/src/server/daemon/build_dispatch/build/metrics.rs"
+          ],
+          "evidence": [
+            "extract_uri (mod.rs:852) reads only params['uri'] and is used by every lsp_dispatch handler (hover, definition, references, implementations, completions, signatureHelp, rename, documentSymbols, foldingRanges, semanticTokens, inlayHints, codeActions).",
+            "file_uri_from_params (mod.rs:1123) accepts 'uri' OR 'file', rejects both-present, resolves a relative 'file' against the process cwd and canonicalises it. It is used by fixes.rs (4 call sites), build/metrics.rs and build/organize.rs.",
+            "A client calling `metrics` with 'uri' and `hover` with 'file' gets opposite outcomes, and the method names give no hint which convention applies.",
+            "The two paths also differ in strictness: file_uri_from_params requires the file to exist and be a regular file; extract_uri accepts any parseable URL."
+          ],
+          "suggestion": "Route every document-taking dispatcher through file_uri_from_params so 'uri' and 'file' are interchangeable everywhere, keeping extract_uri only as the internal parse step inside it. If the strict existence check is wrong for the LSP handlers, split file_uri_from_params into a resolve step and an existence check rather than keeping two entry-point conventions.",
+          "reasoning": "",
+          "summary_hash": "32e06702"
+        }
+      }
     },
     "review::.::holistic::api_surface_coherence::sync_async_query_twins": {
       "id": "review::.::holistic::api_surface_coherence::sync_async_query_twins",
@@ -38975,11 +40004,11 @@
         "reasoning": "",
         "summary_hash": "cf0b719c"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/mcp.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:11+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -38987,7 +40016,34 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:11+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:11+00:00",
+        "scan_count": 2,
+        "tier": 2,
+        "confidence": "medium",
+        "detail": {
+          "holistic": true,
+          "dimension": "api_surface_coherence",
+          "related_files": [
+            "crates/al-lsp/src/server/mcp.rs"
+          ],
+          "evidence": [
+            "The tool table at mcp.rs:414-870 names tools al_symbolsearch, al_getdiagnostics, al_runtests, al_deadcode, al_sqlscan, al_entrypoints, al_suggestevent, al_testclassify, al_testcoverage, al_testsnapshot, al_testsnapshotreplay, al_downloadsymbols, al_depgraph, al_build, al_debug, al_call \u2014 all with the words run together after the al_ prefix.",
+            "mcp.rs:684 declares `name: \"al_trace_event\"` with an interior underscore, the sole exception."
+          ],
+          "suggestion": "Rename to al_traceevent to match the other fifteen, or adopt underscores consistently and rename the rest. The first is a one-line change; agents rediscover tool names from the tools/list response, so no compatibility shim is needed.",
+          "reasoning": "",
+          "summary_hash": "cf0b719c"
+        }
+      }
     },
     "review::.::holistic::authorization_consistency::windows_auth_divergence": {
       "id": "review::.::holistic::authorization_consistency::windows_auth_divergence",
@@ -39092,11 +40148,11 @@
         "reasoning": "",
         "summary_hash": "e20bbae2"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (daemon/debug_dispatch.rs, build_dispatch/tests_dispatch.rs, bin/al-lsp.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:09+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39104,7 +40160,38 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:09+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:09+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "authorization_consistency",
+          "related_files": [
+            "crates/al-lsp/src/server/daemon/debug_dispatch.rs",
+            "crates/al-lsp/src/server/daemon/build_dispatch/tests_dispatch.rs",
+            "crates/al-lsp/src/bin/al-lsp.rs",
+            "crates/al-symbols/src/bc_server.rs"
+          ],
+          "evidence": [
+            "debug_dispatch.rs:306-334, tests_dispatch.rs:2074-2103 and al-lsp.rs:339-350 each spell out the same sequence by hand: access_token_from_env() -> Some means use it, None means build a fresh reqwest::Client and call oauth::acquire_token, with per-site error mapping.",
+            "bc_server.rs:361-410 implements a fifth, different variant: it also checks env_token_active(), caches the token in an RwLock so concurrent downloads serialise on one sign-in, and bc_server.rs:218-241 flips stale_env_token and calls oauth::invalidate_cached_token on a 401/403.",
+            "The three dispatch copies have neither the in-process cache nor the staleness recovery, so a revoked-but-unexpired token makes `debug start` and the snapshot test path fail repeatedly while symbol download self-heals, and each copy can independently trigger its own interactive sign-in."
+          ],
+          "suggestion": "Add one async resolver next to access_token_from_env in crates/al-bc/src/http_auth.rs (or a small al-symbols::oauth::resolve_token(tenant) wrapper) that owns the env -> cached -> interactive precedence and the 401 invalidation hook, then have debug_dispatch.rs, tests_dispatch.rs, al-lsp.rs and bc_server.rs::add_auth all call it instead of restating the sequence.",
+          "reasoning": "",
+          "summary_hash": "e20bbae2"
+        }
+      }
     },
     "review::.::holistic::authorization_consistency::dap_server_url_skips_scheme_allowlist": {
       "id": "review::.::holistic::authorization_consistency::dap_server_url_skips_scheme_allowlist",
@@ -39130,11 +40217,11 @@
         "reasoning": "",
         "summary_hash": "4ed41f38"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (that branch owns the daemon containment and server-URL allowlist work)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:09+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39142,7 +40229,37 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:09+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:09+00:00",
+        "scan_count": 2,
+        "tier": 2,
+        "confidence": "medium",
+        "detail": {
+          "holistic": true,
+          "dimension": "authorization_consistency",
+          "related_files": [
+            "crates/al-dap/src/dap/bc_debug/session_config.rs",
+            "crates/al-lsp/src/server/daemon/build_dispatch/build/bc_server_params.rs",
+            "crates/al-bc/src/launch.rs"
+          ],
+          "evidence": [
+            "session_config.rs:219 reads `server` from DAP/JSON-RPC args as a free string; validate_native() (line 353) checks authentication, environmentType, startupObjectType and breakOnNext but never the server URL; onprem_base() (line 425) interpolates it straight into base_url()/debug_hub_url().",
+            "The same user-supplied field is allowlisted everywhere else: snapshot_profiling.rs:33,189 call reject_unsafe_server_url -> al_bc::launch::is_safe_http_server, launch.rs:78 applies it when parsing launch.json, and bc_client.rs:515 falls back to a safe default when it fails.",
+            "launch.rs:242-249 states the intent explicitly ('A misconfigured or untrusted config could use file:///etc/passwd or gopher://... and that URL would be handed unchanged to the BC HTTP client'), so the DAP path contradicts the codebase's own stated rule for this field."
+          ],
+          "suggestion": "In BcDebugConfig::validate_native, reject a `server` that fails al_bc::launch::is_safe_http_server with the same message reject_unsafe_server_url produces, so the debug-start path enforces the allowlist the snapshot/profile and launch.json paths already do.",
+          "reasoning": "",
+          "summary_hash": "4ed41f38"
+        }
+      }
     },
     "review::.::holistic::authorization_consistency::daemon_path_guard_inconsistent": {
       "id": "review::.::holistic::authorization_consistency::daemon_path_guard_inconsistent",
@@ -39169,11 +40286,11 @@
         "reasoning": "",
         "summary_hash": "a690d75f"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (crates/al-lsp/src/server/daemon/containment.rs and the build_dispatch guards)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:10+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39181,7 +40298,38 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:10+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:10+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "authorization_consistency",
+          "related_files": [
+            "crates/al-lsp/src/server/daemon/build_dispatch/codegen.rs",
+            "crates/al-lsp/src/server/daemon/build_dispatch/xliff.rs",
+            "crates/al-lsp/src/server/daemon/build_dispatch/build/snapshot_profiling.rs",
+            "crates/al-lsp/src/server/daemon/build_dispatch/tests_dispatch.rs"
+          ],
+          "evidence": [
+            "tests_dispatch.rs:236-270 (resolve_output_path_within_project) normalises the requested path, resolves symlinks and rejects anything outside project_root, motivated in its own doc comment by 'a malicious or misconfigured client could otherwise ask the daemon to write XML to arbitrary filesystem locations as the daemon's user'; tests_dispatch.rs:1670 enforces the result.",
+            "codegen.rs:122 ('Require an absolute path to prevent path traversal via relative paths'), xliff.rs:13-14 ('only accept an explicit \"project\" override if it is an absolute path (prevents path traversal)') and snapshot_profiling.rs:283 ('Require absolute path to prevent path traversal') all reject only relative paths \u2014 `/etc/whatever` satisfies them, so under the threat model tests_dispatch.rs states, these comments describe protection the check does not give.",
+            "Same daemon, same caller (MCP tool arguments and the socket client), three parameters that name filesystem destinations, two incompatible rules."
+          ],
+          "suggestion": "Decide the rule per method and make the code say it: for destinations the daemon writes (codegen `dir`, xliff `project` output), call the tests_dispatch containment helper \u2014 promote resolve_output_path_within_project into the shared daemon module; for snapshot_profiling's `analyze` path, which legitimately reads a user-named file anywhere, change the comment to state that absoluteness is about unambiguous resolution, not traversal defence.",
+          "reasoning": "",
+          "summary_hash": "a690d75f"
+        }
+      }
     },
     "review::.::holistic::authorization_consistency::identity_authmethod_conversion_shims": {
       "id": "review::.::holistic::authorization_consistency::identity_authmethod_conversion_shims",
@@ -39207,11 +40355,11 @@
         "reasoning": "",
         "summary_hash": "fb1def90"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (server/workspace.rs, build_dispatch/symbols_auth.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:10+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39219,7 +40367,37 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:10+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:10+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "authorization_consistency",
+          "related_files": [
+            "crates/al-lsp/src/server/workspace.rs",
+            "crates/al-lsp/src/server/daemon/build_dispatch/symbols_auth.rs",
+            "crates/al-types/src/bc.rs"
+          ],
+          "evidence": [
+            "workspace.rs:934-938 and symbols_auth.rs:266-272 both map al_bc::launch::AuthMethod::{Windows,UserPassword,AAD} to al_symbols::bc_server::AuthMethod::{Windows,UserPassword,AAD}.",
+            "al-bc/src/launch.rs:17 and al-symbols/src/bc_server.rs:21 are both `pub use al_types::AuthMethod;` \u2014 one enum defined at al-types/src/bc.rs:13 \u2014 so each match arm returns the value it received.",
+            "The shims read as if two auth models exist and must be reconciled, which is the opposite of the invariant al-types establishes, and a future fourth variant would need edits in two dead conversions."
+          ],
+          "suggestion": "Delete both match blocks and pass `config.authentication.clone()` / `cfg.authentication.clone()` straight into BcServerClient::new.",
+          "reasoning": "",
+          "summary_hash": "fb1def90"
+        }
+      }
     },
     "review::.::holistic::authorization_consistency::snapshot_profiling_basic_only_auth_model": {
       "id": "review::.::holistic::authorization_consistency::snapshot_profiling_basic_only_auth_model",
@@ -39283,11 +40461,11 @@
         "reasoning": "",
         "summary_hash": "1ebaf4bb"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "half done: the al-runtime simple_error copies are collapsed into interpreter/mod.rs on this branch. The daemon optional_non_empty_string half is deferred: file held by campaign/fix-r2-security this week (debug_dispatch.rs, tests_dispatch.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:08+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39295,7 +40473,37 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:08+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:08+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "ai_generated_debt",
+          "related_files": [
+            "crates/al-runtime/src/interpreter/dispatch.rs",
+            "crates/al-runtime/src/interpreter/eval_expr.rs",
+            "crates/al-runtime/src/interpreter/eval_stmt.rs",
+            "crates/al-lsp/src/server/daemon/mod.rs"
+          ],
+          "evidence": [
+            "simple_error is defined at dispatch.rs:1146, eval_expr.rs:154 and eval_stmt.rs:1185, all three building the same ErrorInfo { message, error_type: None } shape",
+            "optional_non_empty_string is defined three times across crates/al-lsp/src/server/daemon with divergent client-visible error strings, while sibling parameter helpers are shared pub(crate) from daemon/mod.rs"
+          ],
+          "suggestion": "Promote one copy of each to pub(crate) in the crate's module root (interpreter/mod.rs and daemon/mod.rs, which already host shared helpers) and delete the other two. Reconcile dispatch.rs's Eval-returning variant by keeping it under a distinct name such as eval_error.",
+          "reasoning": "",
+          "summary_hash": "1ebaf4bb"
+        }
+      }
     },
     "review::.::holistic::ai_generated_debt::test_fixture_builders_copied": {
       "id": "review::.::holistic::ai_generated_debt::test_fixture_builders_copied",
@@ -39440,11 +40648,11 @@
         "reasoning": "",
         "summary_hash": "b5fedd09"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week and campaign/fix-daemon-lifecycle (crates/al-lsp/Cargo.toml)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:17+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39452,7 +40660,38 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:17+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:17+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "incomplete_migration",
+          "related_files": [
+            "crates/al-lsp/Cargo.toml",
+            "crates/al-analysis/Cargo.toml",
+            "crates/al-bc/Cargo.toml",
+            "crates/al-publish/Cargo.toml"
+          ],
+          "evidence": [
+            "crates/al-lsp/Cargo.toml declares 14 production dependencies with no reference anywhere in the crate, including verbatim copies of al-symbols' keyring block and al-dap's tokio-tungstenite block",
+            "The section headers still read 'Folded in from al-symbols (stage 5)'",
+            "Three further unused entries sit in al-analysis, al-bc and al-publish"
+          ],
+          "suggestion": "Remove the unreferenced entries and add a cargo-machete step to the existing CI job that already runs cargo-deny, so the next split does not leave the same residue.",
+          "reasoning": "",
+          "summary_hash": "b5fedd09"
+        }
+      }
     },
     "review::.::holistic::incomplete_migration::single_caller_compat_shim": {
       "id": "review::.::holistic::incomplete_migration::single_caller_compat_shim",
@@ -39607,11 +40846,11 @@
         "reasoning": "",
         "summary_hash": "93e60073"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-r2-security this week (al-compile/src/lib.rs, al-publish/src/lib.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:16+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39619,7 +40858,37 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:16+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:16+00:00",
+        "scan_count": 2,
+        "tier": 2,
+        "confidence": "medium",
+        "detail": {
+          "holistic": true,
+          "dimension": "package_organization",
+          "related_files": [
+            "crates/al-compile/src/lib.rs",
+            "crates/al-publish/src/lib.rs",
+            "crates/al-workspace/src/lib.rs"
+          ],
+          "evidence": [
+            "crates/al-compile/src/lib.rs is 1695 LOC and the crate's only source file; crates/al-publish/src/lib.rs is 869 LOC and likewise",
+            "crates/al-workspace/src/lib.rs is 1865 LOC of implementation while the crate has three other files",
+            "In the other 15 crates lib.rs is a short module list with a //! header"
+          ],
+          "suggestion": "Split the four outliers so lib.rs is a module manifest everywhere: al-compile into its build phases, al-publish into upload and install, al-workspace's state accessors out of lib.rs. The convention already exists in 15 crates, so this makes the layout predictable rather than adding a new rule.",
+          "reasoning": "",
+          "summary_hash": "93e60073"
+        }
+      }
     },
     "review::.::holistic::package_organization::al_analysis_crate_size": {
       "id": "review::.::holistic::package_organization::al_analysis_crate_size",
@@ -39723,11 +40992,11 @@
         "reasoning": "",
         "summary_hash": "6b4aa583"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-lsp/src/server/daemon/mod.rs holds both OnceLocks)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:20+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39735,7 +41004,34 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:20+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:20+00:00",
+        "scan_count": 2,
+        "tier": 2,
+        "confidence": "medium",
+        "detail": {
+          "holistic": true,
+          "dimension": "initialization_coupling",
+          "related_files": [
+            "crates/al-lsp/src/server/daemon/mod.rs"
+          ],
+          "evidence": [
+            "DAEMON_EPOCH (line 43) and SOCKET_PATH (line 52) are process-wide OnceLocks initialised during daemon startup",
+            "Readers across the daemon assume initialisation has already happened, which holds for the real boot path but is an undocumented ordering assumption for tests and for the in-process MCP path"
+          ],
+          "suggestion": "Document on each static which startup step sets it, and have the readers state the fallback they take when it is unset rather than leaving it implicit.",
+          "reasoning": "",
+          "summary_hash": "6b4aa583"
+        }
+      }
     },
     "review::.::holistic::design_coherence::dispatch_boilerplate_not_data_driven": {
       "id": "review::.::holistic::design_coherence::dispatch_boilerplate_not_data_driven",
@@ -39761,11 +41057,11 @@
         "reasoning": "",
         "summary_hash": "9ef4ec9b"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: same typed-RPC change, daemon/mod.rs, debug_dispatch.rs and tests_dispatch.rs are held by campaign/fix-r2-security and campaign/fix-daemon-lifecycle this week",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:23+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39773,7 +41069,37 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:23+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:23+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "design_coherence",
+          "related_files": [
+            "crates/al-lsp/src/server/daemon/build_dispatch/tests_dispatch.rs",
+            "crates/al-lsp/src/server/daemon/debug_dispatch.rs",
+            "crates/al-lsp/src/server/daemon/mod.rs"
+          ],
+          "evidence": [
+            "dispatch_tests_run_batch is 636 lines and dispatch_debug 599 (lines 242-841), both dominated by sequential parameter extraction and response construction",
+            "131 hand-rolled extract_* calls across the daemon against 5 serde_json::from_value uses; zero Deserialize derives across the ~90 methods",
+            "A separate 1451-line response_contract.rs restates the response shapes for 60 of the 84 methods"
+          ],
+          "suggestion": "Give each method a #[derive(Deserialize)] params struct and let serde do the extraction. That deletes the extract_* calls, shrinks the dispatchers to their actual logic, and makes response_contract.rs largely redundant, so it removes code rather than adding a layer.",
+          "reasoning": "",
+          "summary_hash": "9ef4ec9b"
+        }
+      }
     },
     "review::.::holistic::design_coherence::high_arity_helpers": {
       "id": "review::.::holistic::design_coherence::high_arity_helpers",
@@ -39875,11 +41201,11 @@
         "reasoning": "",
         "summary_hash": "76f8a468"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "simple_error no longer exists in al-runtime. The ErrorInfo form is error_info and the Eval form is eval_error, both in interpreter/mod.rs, so one name means one return type.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:45:51+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39887,7 +41213,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually simple_error no longer exists in al-runtime. The ErrorInfo form is error_info and the Eval form is eval_error, both in interpreter/mod.rs, so one name means one return type. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:45:51+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::contract_coherence::module_doc_contradicts_manifest": {
       "id": "review::.::holistic::contract_coherence::module_doc_contradicts_manifest",
@@ -40030,11 +41362,11 @@
         "reasoning": "",
         "summary_hash": "a1d9a073"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: file held by campaign/fix-daemon-lifecycle this week (crates/al-lsp/src/server/daemon/mod.rs)",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:19+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -40042,7 +41374,36 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:19+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:19+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "logic_clarity",
+          "related_files": [
+            "crates/al-lsp/src/server/daemon/mod.rs",
+            "crates/al-analysis/src/queries/bulk_fix.rs"
+          ],
+          "evidence": [
+            "About 194 sites map a query error to INTERNAL_ERROR, discarding which failure occurred",
+            "crates/al-lsp/src/server/daemon/build/metrics.rs:131 demonstrates the variant-to-code mapping working, so the pattern exists and is simply not applied at the other sites",
+            "A reader at the call site cannot tell whether the operation hit a file limit, a parse failure or a disk fault"
+          ],
+          "suggestion": "Extend the existing variant-to-code mapping from build/metrics.rs to the other boundary sites, starting with the cases where the typed error is still in scope and is simply stringified.",
+          "reasoning": "",
+          "summary_hash": "a1d9a073"
+        }
+      }
     },
     "review::.::holistic::logic_clarity::empty_result_means_two_things": {
       "id": "review::.::holistic::logic_clarity::empty_result_means_two_things",
@@ -40104,11 +41465,11 @@
         "reasoning": "",
         "summary_hash": "dd0790ed"
       },
-      "status": "open",
-      "note": null,
+      "status": "wontfix",
+      "note": "deferred: same typed-RPC change, daemon/mod.rs, mcp.rs and al-explorer response_contract.rs are held by campaign/fix-r2-security and campaign/fix-daemon-lifecycle this week",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:47:24+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -40116,7 +41477,38 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have reviewed this finding against the code, it is real, and I am not gaming the score by suppressing it: another campaign branch is editing those files this week and the item is recorded for requeue in Docs/campaign/findings/slop-review-queue.md.",
+        "attested_at": "2026-09-22T01:47:24+00:00",
+        "scan_verified": false
+      },
+      "wontfix_scan_count": 2,
+      "wontfix_snapshot": {
+        "captured_at": "2026-09-22T01:47:24+00:00",
+        "scan_count": 2,
+        "tier": 1,
+        "confidence": "high",
+        "detail": {
+          "holistic": true,
+          "dimension": "type_safety",
+          "related_files": [
+            "crates/al-lsp/src/server/daemon/mod.rs",
+            "crates/al-explorer/src/cli/commands/response_contract.rs",
+            "crates/al-lsp/src/server/mcp.rs"
+          ],
+          "evidence": [
+            "Zero Deserialize derives across roughly 90 daemon methods; 131 hand-rolled extract_* calls against 5 serde_json::from_value",
+            "The client side reads responses with about 504 raw .get(\"field\") calls against 2 from_value sites",
+            "response_contract.rs is 1451 hand-maintained lines validating 60 of 84 methods at runtime",
+            "The same payload contract is therefore stated in the daemon's extractors, the contract validator and the MCP JSON schemas, with nothing keeping the three in step"
+          ],
+          "suggestion": "Define a #[derive(Serialize, Deserialize)] struct per method in the shared al-protocol crate and use it on both sides. The compiler then enforces what response_contract.rs checks at runtime, so that file mostly goes away: this removes roughly 1500 lines rather than adding a layer.",
+          "reasoning": "",
+          "summary_hash": "dd0790ed"
+        }
+      }
     },
     "review::.::holistic::type_safety::closed_vocabulary_as_string": {
       "id": "review::.::holistic::type_safety::closed_vocabulary_as_string",
@@ -40255,26 +41647,32 @@
         "Type Discipline": 70.0
       },
       "needs_review_refresh": true,
-      "refresh_reason": "review_issue_fixed",
-      "stale_since": "2026-09-22T01:41:32+00:00"
+      "refresh_reason": "review_issue_wontfix",
+      "stale_since": "2026-09-22T01:47:22+00:00"
     },
     "ai_generated_debt": {
       "score": 83.0,
       "source": "holistic",
-      "assessed_at": "2026-09-21T10:09:03+00:00"
+      "assessed_at": "2026-09-21T10:09:03+00:00",
+      "needs_review_refresh": true,
+      "refresh_reason": "review_issue_wontfix",
+      "stale_since": "2026-09-22T01:47:08+00:00"
     },
     "api_surface_coherence": {
       "score": 81.5,
       "source": "holistic",
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
-      "refresh_reason": "review_issue_fixed",
-      "stale_since": "2026-09-22T01:34:25+00:00"
+      "refresh_reason": "review_issue_wontfix",
+      "stale_since": "2026-09-22T01:47:20+00:00"
     },
     "authorization_consistency": {
       "score": 78.5,
       "source": "holistic",
-      "assessed_at": "2026-09-21T10:09:03+00:00"
+      "assessed_at": "2026-09-21T10:09:03+00:00",
+      "needs_review_refresh": true,
+      "refresh_reason": "review_issue_wontfix",
+      "stale_since": "2026-09-22T01:47:10+00:00"
     },
     "contract_coherence": {
       "score": 75.0,
@@ -40282,30 +41680,39 @@
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
       "refresh_reason": "review_issue_fixed",
-      "stale_since": "2026-09-22T01:34:15+00:00"
+      "stale_since": "2026-09-22T01:45:51+00:00"
     },
     "convention_outlier": {
       "score": 80.0,
       "source": "holistic",
-      "assessed_at": "2026-09-21T10:09:03+00:00"
+      "assessed_at": "2026-09-21T10:09:03+00:00",
+      "needs_review_refresh": true,
+      "refresh_reason": "review_issue_wontfix",
+      "stale_since": "2026-09-22T01:47:18+00:00"
     },
     "cross_module_architecture": {
       "score": 79.5,
       "source": "holistic",
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
-      "refresh_reason": "review_issue_fixed",
-      "stale_since": "2026-09-22T01:41:12+00:00"
+      "refresh_reason": "review_issue_wontfix",
+      "stale_since": "2026-09-22T01:47:14+00:00"
     },
     "dependency_health": {
       "score": 78.5,
       "source": "holistic",
-      "assessed_at": "2026-09-21T10:09:03+00:00"
+      "assessed_at": "2026-09-21T10:09:03+00:00",
+      "needs_review_refresh": true,
+      "refresh_reason": "review_issue_wontfix",
+      "stale_since": "2026-09-22T01:47:18+00:00"
     },
     "design_coherence": {
       "score": 76.0,
       "source": "holistic",
-      "assessed_at": "2026-09-21T10:09:03+00:00"
+      "assessed_at": "2026-09-21T10:09:03+00:00",
+      "needs_review_refresh": true,
+      "refresh_reason": "review_issue_wontfix",
+      "stale_since": "2026-09-22T01:47:23+00:00"
     },
     "error_consistency": {
       "score": 81.5,
@@ -40317,62 +41724,80 @@
       "source": "holistic",
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
-      "refresh_reason": "review_issue_fixed",
-      "stale_since": "2026-09-22T01:41:19+00:00"
+      "refresh_reason": "review_issue_wontfix",
+      "stale_since": "2026-09-22T01:47:15+00:00"
     },
     "incomplete_migration": {
       "score": 74.0,
       "source": "holistic",
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
-      "refresh_reason": "review_issue_fixed",
-      "stale_since": "2026-09-22T01:41:25+00:00"
+      "refresh_reason": "review_issue_wontfix",
+      "stale_since": "2026-09-22T01:47:17+00:00"
     },
     "initialization_coupling": {
       "score": 88.0,
       "source": "holistic",
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
-      "refresh_reason": "review_issue_fixed",
-      "stale_since": "2026-09-22T01:34:10+00:00"
+      "refresh_reason": "review_issue_wontfix",
+      "stale_since": "2026-09-22T01:47:20+00:00"
     },
     "logic_clarity": {
       "score": 86.0,
       "source": "holistic",
-      "assessed_at": "2026-09-21T10:09:03+00:00"
+      "assessed_at": "2026-09-21T10:09:03+00:00",
+      "needs_review_refresh": true,
+      "refresh_reason": "review_issue_wontfix",
+      "stale_since": "2026-09-22T01:47:19+00:00"
     },
     "low_level_elegance": {
       "score": 78.0,
       "source": "holistic",
-      "assessed_at": "2026-09-21T10:09:03+00:00"
+      "assessed_at": "2026-09-21T10:09:03+00:00",
+      "needs_review_refresh": true,
+      "refresh_reason": "review_issue_wontfix",
+      "stale_since": "2026-09-22T01:47:12+00:00"
     },
     "mid_level_elegance": {
       "score": 76.5,
       "source": "holistic",
-      "assessed_at": "2026-09-21T10:09:03+00:00"
+      "assessed_at": "2026-09-21T10:09:03+00:00",
+      "needs_review_refresh": true,
+      "refresh_reason": "review_issue_wontfix",
+      "stale_since": "2026-09-22T01:47:23+00:00"
     },
     "naming_quality": {
       "score": 87.0,
       "source": "holistic",
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
-      "refresh_reason": "review_issue_fixed",
-      "stale_since": "2026-09-22T01:34:20+00:00"
+      "refresh_reason": "review_issue_wontfix",
+      "stale_since": "2026-09-22T01:47:16+00:00"
     },
     "package_organization": {
       "score": 77.0,
       "source": "holistic",
-      "assessed_at": "2026-09-21T10:09:03+00:00"
+      "assessed_at": "2026-09-21T10:09:03+00:00",
+      "needs_review_refresh": true,
+      "refresh_reason": "review_issue_wontfix",
+      "stale_since": "2026-09-22T01:47:16+00:00"
     },
     "test_strategy": {
       "score": 86.0,
       "source": "holistic",
-      "assessed_at": "2026-09-21T10:09:03+00:00"
+      "assessed_at": "2026-09-21T10:09:03+00:00",
+      "needs_review_refresh": true,
+      "refresh_reason": "review_issue_wontfix",
+      "stale_since": "2026-09-22T01:47:21+00:00"
     },
     "type_safety": {
       "score": 72.0,
       "source": "holistic",
-      "assessed_at": "2026-09-21T10:09:03+00:00"
+      "assessed_at": "2026-09-21T10:09:03+00:00",
+      "needs_review_refresh": true,
+      "refresh_reason": "review_issue_wontfix",
+      "stale_since": "2026-09-22T01:47:24+00:00"
     }
   },
   "scan_history": [
@@ -79804,13 +81229,13 @@
       "strict": 79.0,
       "verified_strict_score": 79.0,
       "checks": 10,
-      "failing": 7,
+      "failing": 2,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.79,
-          "failing": 7,
+          "failing": 2,
           "weighted_failures": 2.1,
           "assessment_score": 79.0,
           "placeholder": false,
@@ -79840,13 +81265,13 @@
       "strict": 83.0,
       "verified_strict_score": 83.0,
       "checks": 10,
-      "failing": 3,
+      "failing": 2,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.83,
-          "failing": 3,
+          "failing": 2,
           "weighted_failures": 1.7,
           "assessment_score": 83.0,
           "placeholder": false,
@@ -79861,13 +81286,13 @@
       "strict": 81.5,
       "verified_strict_score": 81.5,
       "checks": 10,
-      "failing": 8,
+      "failing": 5,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.815,
-          "failing": 8,
+          "failing": 5,
           "weighted_failures": 1.85,
           "assessment_score": 81.5,
           "placeholder": false,
@@ -79882,13 +81307,13 @@
       "strict": 78.5,
       "verified_strict_score": 78.5,
       "checks": 10,
-      "failing": 7,
+      "failing": 3,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.785,
-          "failing": 7,
+          "failing": 3,
           "weighted_failures": 2.15,
           "assessment_score": 78.5,
           "placeholder": false,
@@ -79903,13 +81328,13 @@
       "strict": 75.0,
       "verified_strict_score": 75.0,
       "checks": 10,
-      "failing": 3,
+      "failing": 2,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.75,
-          "failing": 3,
+          "failing": 2,
           "weighted_failures": 2.5,
           "assessment_score": 75.0,
           "placeholder": false,
@@ -79924,13 +81349,13 @@
       "strict": 80.0,
       "verified_strict_score": 80.0,
       "checks": 10,
-      "failing": 9,
+      "failing": 5,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.8,
-          "failing": 9,
+          "failing": 5,
           "weighted_failures": 2.0,
           "assessment_score": 80.0,
           "placeholder": false,
@@ -79945,13 +81370,13 @@
       "strict": 79.5,
       "verified_strict_score": 79.5,
       "checks": 10,
-      "failing": 4,
+      "failing": 3,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.795,
-          "failing": 4,
+          "failing": 3,
           "weighted_failures": 2.05,
           "assessment_score": 79.5,
           "placeholder": false,
@@ -79966,13 +81391,13 @@
       "strict": 78.5,
       "verified_strict_score": 78.5,
       "checks": 10,
-      "failing": 5,
+      "failing": 2,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.785,
-          "failing": 5,
+          "failing": 2,
           "weighted_failures": 2.15,
           "assessment_score": 78.5,
           "placeholder": false,
@@ -79987,13 +81412,13 @@
       "strict": 76.0,
       "verified_strict_score": 76.0,
       "checks": 10,
-      "failing": 3,
+      "failing": 2,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.76,
-          "failing": 3,
+          "failing": 2,
           "weighted_failures": 2.4,
           "assessment_score": 76.0,
           "placeholder": false,
@@ -80029,13 +81454,13 @@
       "strict": 84.5,
       "verified_strict_score": 84.5,
       "checks": 10,
-      "failing": 3,
+      "failing": 1,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.845,
-          "failing": 3,
+          "failing": 1,
           "weighted_failures": 1.55,
           "assessment_score": 84.5,
           "placeholder": false,
@@ -80050,13 +81475,13 @@
       "strict": 74.0,
       "verified_strict_score": 74.0,
       "checks": 10,
-      "failing": 1,
+      "failing": 0,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.74,
-          "failing": 1,
+          "failing": 0,
           "weighted_failures": 2.6,
           "assessment_score": 74.0,
           "placeholder": false,
@@ -80071,13 +81496,13 @@
       "strict": 88.0,
       "verified_strict_score": 88.0,
       "checks": 10,
-      "failing": 1,
+      "failing": 0,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.88,
-          "failing": 1,
+          "failing": 0,
           "weighted_failures": 1.2,
           "assessment_score": 88.0,
           "placeholder": false,
@@ -80092,13 +81517,13 @@
       "strict": 86.0,
       "verified_strict_score": 86.0,
       "checks": 10,
-      "failing": 2,
+      "failing": 1,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.86,
-          "failing": 2,
+          "failing": 1,
           "weighted_failures": 1.4,
           "assessment_score": 86.0,
           "placeholder": false,
@@ -80113,13 +81538,13 @@
       "strict": 78.0,
       "verified_strict_score": 78.0,
       "checks": 10,
-      "failing": 9,
+      "failing": 4,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.78,
-          "failing": 9,
+          "failing": 4,
           "weighted_failures": 2.2,
           "assessment_score": 78.0,
           "placeholder": false,
@@ -80134,13 +81559,13 @@
       "strict": 76.5,
       "verified_strict_score": 76.5,
       "checks": 10,
-      "failing": 8,
+      "failing": 2,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.765,
-          "failing": 8,
+          "failing": 2,
           "weighted_failures": 2.35,
           "assessment_score": 76.5,
           "placeholder": false,
@@ -80155,13 +81580,13 @@
       "strict": 87.0,
       "verified_strict_score": 87.0,
       "checks": 10,
-      "failing": 7,
+      "failing": 3,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.87,
-          "failing": 7,
+          "failing": 3,
           "weighted_failures": 1.3,
           "assessment_score": 87.0,
           "placeholder": false,
@@ -80176,13 +81601,13 @@
       "strict": 77.0,
       "verified_strict_score": 77.0,
       "checks": 10,
-      "failing": 3,
+      "failing": 2,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.77,
-          "failing": 3,
+          "failing": 2,
           "weighted_failures": 2.3,
           "assessment_score": 77.0,
           "placeholder": false,
@@ -80197,13 +81622,13 @@
       "strict": 86.0,
       "verified_strict_score": 86.0,
       "checks": 10,
-      "failing": 7,
+      "failing": 4,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.86,
-          "failing": 7,
+          "failing": 4,
           "weighted_failures": 1.4,
           "assessment_score": 86.0,
           "placeholder": false,
@@ -80218,13 +81643,13 @@
       "strict": 72.0,
       "verified_strict_score": 72.0,
       "checks": 10,
-      "failing": 3,
+      "failing": 2,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.72,
-          "failing": 3,
+          "failing": 2,
           "weighted_failures": 2.8,
           "assessment_score": 72.0,
           "placeholder": false,

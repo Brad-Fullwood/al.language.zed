@@ -9,21 +9,22 @@ use al_workspace::Workspace;
 
 /// Find all codeunits that implement the interface whose name is at `position`.
 ///
+/// `None` means the document is not loaded or `position` is not on a name;
+/// an empty `Vec` means nothing implements it. Matches the `Option` that
+/// `document_symbols` and `folding_ranges` use for the same distinction.
+///
 /// Sources searched:
 /// 1. Symbol index (from .app packages) — codeunits with `implements` populated.
 /// 2. Workspace source files — scanned via cached parse trees for `implements_clause` nodes.
 #[must_use]
-pub fn find_implementations(workspace: &Workspace, uri: &Url, position: Position) -> Vec<Location> {
-    let Some((text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, uri) else {
-        return Vec::new();
-    };
-
-    let Some(node) = al_syntax::find_node_at_position(&tree, &text, position.into()) else {
-        return Vec::new();
-    };
-    let Some(interface_name) = super::node_clean_name(node, text.as_bytes()) else {
-        return Vec::new();
-    };
+pub fn find_implementations(
+    workspace: &Workspace,
+    uri: &Url,
+    position: Position,
+) -> Option<Vec<Location>> {
+    let (text, tree) = al_source::parsing::get_or_parse(&workspace.documents, uri)?;
+    let node = al_syntax::find_node_at_position(&tree, &text, position.into())?;
+    let interface_name = super::node_clean_name(node, text.as_bytes())?;
 
     let interface_lower = interface_name.to_lowercase();
     let mut locations: Vec<Location> = Vec::new();
@@ -95,7 +96,7 @@ pub fn find_implementations(workspace: &Workspace, uri: &Url, position: Position
                 right.range.start.character,
             ))
     });
-    locations
+    Some(locations)
 }
 
 /// Every object declaration in the tree whose `implements_clause` names the
@@ -284,8 +285,10 @@ mod tests {
         }
     }
 
+    /// An unopened document is `None`, distinct from an open document that
+    /// nothing implements, which is `Some(vec![])`.
     #[test]
-    fn find_implementations_returns_empty_for_unopened_document() {
+    fn find_implementations_returns_none_for_unopened_document() {
         let ws = Workspace::new();
         let uri = Url::parse("file:///nonexistent/Closed.al").unwrap();
         let result = find_implementations(
@@ -297,8 +300,8 @@ mod tests {
             },
         );
         assert!(
-            result.is_empty(),
-            "an unopened document must yield no implementations"
+            result.is_none(),
+            "an unopened document must be None, not an empty list"
         );
     }
 
@@ -314,7 +317,7 @@ mod tests {
             .add_file(impl_path.clone(), impl_source("FooImpl", "IFoo"));
 
         let pos = iface_position("Caller");
-        let result = find_implementations(&ws, &cur_uri, pos);
+        let result = find_implementations(&ws, &cur_uri, pos).expect("document is open");
 
         assert_eq!(
             result.len(),
@@ -343,7 +346,8 @@ mod tests {
         ws.file_index
             .add_file(impl_path.clone(), impl_source("FooImpl", "ifoo"));
 
-        let result = find_implementations(&ws, &cur_uri, iface_position("Caller"));
+        let result = find_implementations(&ws, &cur_uri, iface_position("Caller"))
+            .expect("document is open");
         assert_eq!(
             result.len(),
             1,
@@ -363,7 +367,8 @@ mod tests {
             .unwrap();
         ws.file_index.add_file(cur_path, caller_src);
 
-        let result = find_implementations(&ws, &cur_uri, iface_position("Caller"));
+        let result = find_implementations(&ws, &cur_uri, iface_position("Caller"))
+            .expect("document is open");
         assert!(
             result.is_empty(),
             "the file under the caret must be skipped, got {result:?}"
@@ -385,7 +390,8 @@ mod tests {
             impl_source("FooImpl", "IFoo"),
         );
 
-        let result = find_implementations(&ws, &cur_uri, iface_position("Caller"));
+        let result = find_implementations(&ws, &cur_uri, iface_position("Caller"))
+            .expect("document is open");
         assert!(
             result.is_empty(),
             "no source implements IUnknown, expected no locations"

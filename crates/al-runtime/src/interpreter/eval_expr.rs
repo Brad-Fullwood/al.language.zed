@@ -22,7 +22,7 @@ pub fn eval_expr(
     // Expression evaluation recurses per AST nesting level. About 400 nested
     // parentheses overflow a 2 MiB worker stack, so mirror eval_stmt's guard.
     if !stack.enter_expr() {
-        return Eval::Error(error_info(&format!(
+        return Eval::Error(error_info(format!(
             "expression nesting depth exceeded (max {} levels) — likely a pathological or generated test source",
             crate::interpreter::scope::MAX_EXPR_DEPTH
         )));
@@ -81,7 +81,7 @@ fn eval_expr_inner(
         "integer_literal" | "integer" => match utf8_text(node, source) {
             Some(t) => match int_literal_value(t) {
                 Some(v) => Eval::Normal(v),
-                None => Eval::Error(error_info(&format!("malformed integer literal: {t}"))),
+                None => Eval::Error(error_info(format!("malformed integer literal: {t}"))),
             },
             None => Eval::Error(error_info("invalid integer literal text")),
         },
@@ -137,7 +137,7 @@ fn eval_expr_inner(
                     // not shadowed by a bound variable of the same name.
                     None => match niladic_clock_builtin(name, ctx) {
                         Some(v) => Eval::Normal(v),
-                        None => Eval::Error(error_info(&format!("unbound identifier: {name}"))),
+                        None => Eval::Error(error_info(format!("unbound identifier: {name}"))),
                     },
                 }
             }
@@ -146,7 +146,7 @@ fn eval_expr_inner(
         "unary_expression" => eval_unary(node, source, stack, ctx),
         // Anything else: signal a clear error rather than silently
         // returning a default — failing loud is better than failing wrong.
-        other => Eval::Error(error_info(&format!("unsupported expression kind: {other}"))),
+        other => Eval::Error(error_info(format!("unsupported expression kind: {other}"))),
     }
 }
 
@@ -194,18 +194,18 @@ fn eval_literal(node: Node<'_>, source: &[u8]) -> Eval {
     match node.kind() {
         "integer_literal" => match int_literal_value(text) {
             Some(v) => Eval::Normal(v),
-            None => Eval::Error(error_info(&format!("malformed integer literal: {text}"))),
+            None => Eval::Error(error_info(format!("malformed integer literal: {text}"))),
         },
         "decimal_literal" => match text.parse::<Decimal>() {
             Ok(n) => Eval::Normal(Value::Decimal(n)),
-            Err(_) => Eval::Error(error_info(&format!("malformed decimal literal: {text}"))),
+            Err(_) => Eval::Error(error_info(format!("malformed decimal literal: {text}"))),
         },
         "boolean_literal" => match text.eq_ignore_ascii_case("true") {
             true => Eval::Normal(Value::Boolean(true)),
             false => Eval::Normal(Value::Boolean(false)),
         },
         "string_literal" => Eval::Normal(Value::Text(unescape_al_string(text))),
-        other => Eval::Error(error_info(&format!("unknown literal kind: {other}"))),
+        other => Eval::Error(error_info(format!("unknown literal kind: {other}"))),
     }
 }
 
@@ -250,7 +250,7 @@ fn eval_unary(
         ("-", Value::Decimal(n)) => Eval::Normal(Value::Decimal(-n)),
         ("-", Value::Option { ordinal, .. }) => checked_int(ordinal.checked_neg(), false),
         ("not", Value::Boolean(b)) => Eval::Normal(Value::Boolean(!b)),
-        (op, v) => Eval::Error(error_info(&format!(
+        (op, v) => Eval::Error(error_info(format!(
             "unary operator `{op}` not supported on {}",
             v.type_name()
         ))),
@@ -431,7 +431,7 @@ fn eval_expression_fragment(
             );
             let parsed = al_syntax::AlParser::parse_quick(&wrapper);
             if !parsed.errors.is_empty() {
-                return Eval::Error(error_info(&format!(
+                return Eval::Error(error_info(format!(
                     "set literal member is not a valid expression: `{expression}`"
                 )));
             }
@@ -575,7 +575,7 @@ fn eval_scope_access(
     };
 
     let Some(ordinal) = resolve_workspace_enum_ordinal(ctx, &type_name, &member) else {
-        return Eval::Error(error_info(&format!(
+        return Eval::Error(error_info(format!(
             "enum member '{type_name}::{member}' has no workspace declaration; live BC execution is required"
         )));
     };
@@ -622,11 +622,11 @@ fn eval_date_literal(node: Node<'_>, source: &[u8]) -> Eval {
         return Eval::Normal(Value::Date(0));
     }
     if digits.len() != 8 || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return Eval::Error(error_info(&format!("malformed date literal: {text}")));
+        return Eval::Error(error_info(format!("malformed date literal: {text}")));
     }
     let parse_component = |digits: &str, component: &str| {
         digits.parse::<i64>().map_err(|error| {
-            error_info(&format!(
+            error_info(format!(
                 "malformed {component} in date literal {text}: {error}"
             ))
         })
@@ -651,7 +651,7 @@ fn eval_date_literal(node: Node<'_>, source: &[u8]) -> Eval {
         _ => 0,
     };
     if !(1..=9999).contains(&year) || day < 1 || day > max_day {
-        return Eval::Error(error_info(&format!("date literal out of range: {text}")));
+        return Eval::Error(error_info(format!("date literal out of range: {text}")));
     }
     Eval::Normal(Value::Date(value::al_days_from_ymd(year, month, day)))
 }
@@ -668,11 +668,11 @@ fn eval_time_literal(node: Node<'_>, source: &[u8]) -> Eval {
         return Eval::Normal(Value::Time(0));
     }
     if !(6..=9).contains(&digits.len()) || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return Eval::Error(error_info(&format!("malformed time literal: {text}")));
+        return Eval::Error(error_info(format!("malformed time literal: {text}")));
     }
     let parse_component = |digits: &str, component: &str| {
         digits.parse::<i64>().map_err(|error| {
-            error_info(&format!(
+            error_info(format!(
                 "malformed {component} in time literal {text}: {error}"
             ))
         })
@@ -701,7 +701,7 @@ fn eval_time_literal(node: Node<'_>, source: &[u8]) -> Eval {
         0
     };
     if hours > 23 || minutes > 59 || seconds > 59 {
-        return Eval::Error(error_info(&format!("time literal out of range: {text}")));
+        return Eval::Error(error_info(format!("time literal out of range: {text}")));
     }
     let ms = ((hours * 60 + minutes) * 60 + seconds) * 1000 + millis;
     Eval::Normal(Value::Time(ms))
@@ -796,7 +796,7 @@ fn eval_expression_node(
                     AssignKind::Compound(base_op) => {
                         let Some((table, handle)) = records::record_binding(&recv, stack, ctx)
                         else {
-                            return Eval::Error(error_info(&format!(
+                            return Eval::Error(error_info(format!(
                                 "record variable '{recv}' is not bound"
                             )));
                         };
@@ -812,7 +812,7 @@ fn eval_expression_node(
                 };
                 return records::try_field_assign(lhs_node, source, &new_val, stack, ctx)
                     .unwrap_or_else(|| {
-                        Eval::Error(error_info(&format!(
+                        Eval::Error(error_info(format!(
                             "record field assignment failed for '{recv}.{field}'"
                         )))
                     });
@@ -841,7 +841,7 @@ fn eval_expression_node(
             AssignKind::Plain => rhs_val,
             AssignKind::Compound(base_op) => {
                 let Some(current) = stack.lookup(&lhs_name).cloned() else {
-                    return Eval::Error(error_info(&format!(
+                    return Eval::Error(error_info(format!(
                         "compound assignment to unbound identifier: {lhs_name}"
                     )));
                 };
@@ -863,7 +863,7 @@ fn eval_expression_node(
         } else {
             // AL has no implicit declaration: a typo'd LHS must fail loudly
             // instead of silently creating a fresh variable.
-            return Eval::Error(error_info(&format!(
+            return Eval::Error(error_info(format!(
                 "assignment to unbound identifier '{lhs_name}' — variables must be declared"
             )));
         }
@@ -997,7 +997,7 @@ fn eval_computation_chain(
     ) {
         Eval::Normal(Value::Boolean(value)) => value,
         Eval::Normal(other) => {
-            return Eval::Error(error_info(&format!(
+            return Eval::Error(error_info(format!(
                 "conditional expression requires Boolean condition, got {}",
                 other.type_name()
             )));
@@ -1057,7 +1057,7 @@ fn eval_expr_chain(
             .trim()
             .to_ascii_lowercase();
         let Some(precedence) = binary_precedence(&operator) else {
-            return Eval::Error(error_info(&format!(
+            return Eval::Error(error_info(format!(
                 "unsupported binary operator in expression: `{operator}`"
             )));
         };
@@ -1224,7 +1224,7 @@ fn whole_offset(value: &Value) -> Result<i64, ErrorInfo> {
         Some(Num::Dec(_)) => Err(error_info(
             "Date/Time arithmetic requires a whole-number offset",
         )),
-        None => Err(error_info(&format!(
+        None => Err(error_info(format!(
             "Date/Time arithmetic does not support {}",
             value.type_name()
         ))),
@@ -1466,7 +1466,7 @@ fn apply_numeric(op: &str, l: Num, r: Num) -> Eval {
                 "+" => checked_decimal(a.checked_add(b)),
                 "-" => checked_decimal(a.checked_sub(b)),
                 "*" => checked_decimal(a.checked_mul(b)),
-                "div" | "mod" => Eval::Error(error_info(&format!(
+                "div" | "mod" => Eval::Error(error_info(format!(
                     "binary operator `{op}` is integer-only (not supported on Decimal)"
                 ))),
                 _ => unreachable!("op pre-filtered by apply_binary"),
@@ -1532,7 +1532,7 @@ pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
             Eval::Normal(Value::Boolean(false))
         }
 
-        (op, a, b) => Eval::Error(error_info(&format!(
+        (op, a, b) => Eval::Error(error_info(format!(
             "binary operator `{op}` not supported on ({}, {})",
             a.type_name(),
             b.type_name()
@@ -1583,7 +1583,7 @@ fn value_ordering(a: &Value, b: &Value) -> Result<std::cmp::Ordering, ErrorInfo>
         }
         (Date(x), Date(y)) | (Time(x), Time(y)) | (DateTime(x), DateTime(y)) => x.cmp(y),
         (l, r) => {
-            return Err(error_info(&format!(
+            return Err(error_info(format!(
                 "cannot compare {} and {}",
                 l.type_name(),
                 r.type_name()
