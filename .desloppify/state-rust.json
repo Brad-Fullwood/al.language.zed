@@ -12,8 +12,8 @@
     "auto_resolved": 0,
     "deferred": 0,
     "false_positive": 0,
-    "fixed": 64,
-    "open": 1156,
+    "fixed": 65,
+    "open": 1155,
     "triaged_out": 0,
     "wontfix": 45,
     "by_tier": {
@@ -30,8 +30,8 @@
         "auto_resolved": 0,
         "deferred": 0,
         "false_positive": 0,
-        "fixed": 15,
-        "open": 237,
+        "fixed": 16,
+        "open": 236,
         "triaged_out": 0,
         "wontfix": 17
       },
@@ -39606,11 +39606,11 @@
         "reasoning": "",
         "summary_hash": "ab27ee11"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "regression.rs, completeness.rs, zed_simulation.rs and real_world.rs poll drain_diagnostics every 50ms against a 5s deadline and act on the first publish for the file, using the loop shape already at integration_full.rs:961. regression.rs's 1200ms wait, which had to exceed the server's debounce constant, is gone with that coupling. All four suites pass.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T06:12:34+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39618,7 +39618,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually regression.rs, completeness.rs, zed_simulation.rs and real_world.rs poll drain_diagnostics every 50ms against a 5s deadline and act on the first publish for the file, using the loop shape already at integration_full.rs:961. regression.rs's 1200ms wait, which had to exceed the server's debounce constant, is gone with that coupling. All four suites pass. and I am not gaming the score.",
+        "attested_at": "2026-09-22T06:12:34+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::test_strategy::alc_differential_absent_from_ci": {
       "id": "review::.::holistic::test_strategy::alc_differential_absent_from_ci",
@@ -41948,7 +41954,7 @@
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
       "refresh_reason": "review_issue_fixed",
-      "stale_since": "2026-09-22T06:09:19+00:00"
+      "stale_since": "2026-09-22T06:12:34+00:00"
     },
     "type_safety": {
       "score": 72.0,
@@ -81781,13 +81787,13 @@
       "strict": 86.0,
       "verified_strict_score": 86.0,
       "checks": 10,
-      "failing": 2,
+      "failing": 1,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.86,
-          "failing": 2,
+          "failing": 1,
           "weighted_failures": 1.4,
           "assessment_score": 86.0,
           "placeholder": false,
