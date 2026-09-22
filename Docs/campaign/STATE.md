@@ -11,7 +11,6 @@ Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two 
 | Item | Kind | Output |
 |------|------|--------|
 | desloppify review queue: work all 112 subjective items to empty (resolve, skip with reason, or defer items in files other branches hold), then rescan and record scores | worktree refactor | branch `campaign/slop-review-queue`, `findings/slop-review-queue.md` |
-| Daemon lifecycle: build identity in the handshake, idle exit, PATH fallback version check, `daemon-shutdown` waits for the socket, harness stops leaking daemons | worktree fix | branch `campaign/fix-daemon-lifecycle` |
 | R2 review A: analysis, insight, syntax, source, symbols, runtime, test, emit | review | `findings/r2-review-a.md` |
 | R2 review B: lsp, protocol, explorer, project, compile, bc, dap, extension, plugin, CI, docs, plus trust bypass attempts | review | `findings/r2-review-b.md` |
 | Fix queued items: `test-run <id>`, MCP schema parity, nine multi-object queries, bare field rename, doc drift, scaffold unverified items, emit leftovers | worktree fix | branch `campaign/fix-queued-2` |
@@ -82,6 +81,7 @@ round on the areas with the most findings.
 
 ## Done
 
+- Merged `campaign/fix-daemon-lifecycle`: build identity handshake replaces a daemon built from other code, idle exit (30 minutes, `AL_DAEMON_IDLE_SECS`), exit when the project root is gone, PATH daemon refused on version mismatch, `daemon-shutdown` waits, plugin SessionEnd hook, harness stops its daemons. Open: a wedged request can hold a daemon past its idle window (warns every 60 s). Full gates: 92 suites, 4839 passed, 0 failed.
 - Merged `campaign/fix-r2-security`: 8 of 8 fixed. Project trust (`Docs/features/project-trust.md`, `al-explorer trust`), symlink-safe containment, one credential authorisation function, https required for credentials to non-loopback servers (`AL_ALLOW_INSECURE_BC_HTTP=1` overrides), NuGet feeds https only, daemon socket directory ownership check, checksum docs corrected. Full gates including zed-al: 92 suites, 4884 passed, 0 failed.
 - Merged `campaign/slop-syntax-symbols`: `formatting.rs`, `symbols.rs`, `index.rs` and `oauth.rs` split into module directories (largest file now 796 lines), the duplicate data loader in al-symbols removed, `LineIndex` and `SourceLines` merged, one HTTP retry policy, one temp path helper, typed `ObjectKind` error. Gates: 2825 tests across al-syntax, al-symbols, al-analysis, al-lsp and the harness. desloppify refuses to rescan until its 112 item review queue is empty.
 - Merged `campaign/fix-r1c-analysis`: 28 of 29 fixed plus the three items left by the second pass (type-position completion, the `attribute_list` dead branch, `EdgeKind::TriggerInvocation` removed). A node-kind guard test now fails if code names a syntax node the grammar lacks. Open: nine whole-workspace queries still attribute findings in a multi-object file to its first object. Full gates: 91 suites, 4770 passed, 0 failed.

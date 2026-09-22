@@ -127,3 +127,7 @@ Append-only. Newest entry last.
 ## 2026-09-22 04:10 BST: security round 2 merged
 
 - Merged `campaign/fix-r2-security`. Full gates with zed-al: 92 suites, 4884 passed, 0 failed.
+
+## 2026-09-22 05:00 BST: daemon lifecycle merged
+
+- Merged `campaign/fix-daemon-lifecycle`. Full gates: 92 suites, 4839 passed, 0 failed. The gate run left no daemon processes behind, where earlier runs left up to nine.
