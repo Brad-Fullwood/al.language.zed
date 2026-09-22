@@ -154,7 +154,7 @@ Multi-object open item:
   (crates/al-explorer/src/cli/commands/response_contract.rs:154) only checks the type, so nothing
   catches the split.
 - fix: pick one spelling, project-relative for both, and say so in the doc.
-- status: fixed PLACEHOLDER4 — both exits call `project_relative_path`, which strips the app root
+- status: fixed 30fbd3f0 — both exits call `project_relative_path`, which strips the app root
   that holds the file and joins the rest with forward slashes. The field's doc says so, the two
   plugin skills that read `range.f` say it is relative to the app root, and
   `source_reports_one_project_relative_path_from_both_exits` asserts the two exits agree.
