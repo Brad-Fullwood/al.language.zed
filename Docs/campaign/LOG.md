@@ -151,3 +151,7 @@ Append-only. Newest entry last.
 ## 2026-09-22 09:00 BST: review queue merged
 
 - Merged `campaign/slop-review-queue`. The new architecture diagram guard failed on the merge because the daemon lifecycle branch had added a harness dependency on al-protocol. Drew the edge. Gates: 93 suites, 4873 passed, the formatter seed still red.
+
+## 2026-09-22 10:00 BST: review B merged, a ghost diagnostic
+
+- Merged `campaign/fix-r2-review-b`. Two conflicts with the review queue branch (which had made two queries return `Option`) resolved keeping both. Gate run: a harness test failed 1 in 3. Its own bug (iterating diagnostics as arrays) turned a real ghost publish after didClose into a panic. Fix agent dispatched with that analysis.
