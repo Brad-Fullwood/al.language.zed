@@ -244,7 +244,7 @@ Multi-object open item:
   next re-reads code that needs nothing.
 - fix: delete the duplicated block in r1-analysis-insight.md and mark the r1-emit xliff item fixed
   in 95e80294, then reconcile STATE.md's open list against both.
-- status: fixed PLACEHOLDER5 — the duplicated block is gone from r1-analysis-insight.md, which now
+- status: fixed cea53580 — the duplicated block is gone from r1-analysis-insight.md, which now
   carries no `status: open` at all, and the r1-emit xliff item reads `fixed 95e80294`. Each of the
   seven was re-checked against the tree first.
 
