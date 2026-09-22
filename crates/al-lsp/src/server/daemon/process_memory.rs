@@ -48,6 +48,11 @@ fn current_resident_bytes() -> Option<u64> {
     None
 }
 
+/// The peak this process has reached, as the kernel last recorded it.
+///
+/// The kernel updates `ru_maxrss` at its own points rather than on every page
+/// fault, so a reading can sit just below the current size from
+/// `/proc/self/status`. Treat the two as independent samples, not as a bound.
 #[cfg(unix)]
 fn peak_resident_bytes() -> Option<u64> {
     // SAFETY: `getrusage` writes into a caller-owned struct, and `zeroed` is a
@@ -109,10 +114,10 @@ mod tests {
                 "a running test process holds more than a megabyte, got {bytes}"
             );
         }
-        if let (Some(current), Some(peak)) = (memory.current_bytes, memory.peak_bytes) {
+        if let Some(bytes) = memory.peak_bytes {
             assert!(
-                peak >= current,
-                "peak {peak} cannot be below current {current}"
+                bytes > 1024 * 1024,
+                "the peak cannot be under a megabyte either, got {bytes}"
             );
         }
     }

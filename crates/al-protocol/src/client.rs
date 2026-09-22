@@ -462,20 +462,18 @@ impl DaemonClient {
             Err(error) => format!("no identity ({error})"),
         };
         if identity::mismatch_allowed() {
-            tracing::warn!(
-                expected = %expected,
-                running = %reported,
-                "daemon was built from other code; using it anyway because {} is set",
+            notify(&format!(
+                "the running daemon was built from other code ({reported}, this client expects \
+                 {expected}); using it anyway because {} is set",
                 identity::ALLOW_MISMATCH_ENV
-            );
+            ));
             return Ok(client);
         }
 
-        tracing::warn!(
-            expected = %expected,
-            running = %reported,
-            "daemon was built from other code; stopping it and starting a matching one"
-        );
+        notify(&format!(
+            "the running daemon was built from other code ({reported}, this client expects \
+             {expected}); stopping it and starting a matching one"
+        ));
         client.request_daemon_shutdown();
         drop(client);
         if !wait_for_endpoint_closed(endpoint, ENDPOINT_CLOSE_WAIT) {
@@ -497,11 +495,10 @@ impl DaemonClient {
         // and restarting again would not change that.
         match client.daemon_identity() {
             Ok(actual) if actual == expected => {}
-            other => tracing::warn!(
-                expected = %expected,
-                running = ?other,
-                "the replacement daemon still reports a different build; continuing with it"
-            ),
+            other => notify(&format!(
+                "the replacement daemon still reports a different build ({other:?}, this client \
+                 expects {expected}); continuing with it"
+            )),
         }
         Ok(client)
     }
@@ -933,6 +930,19 @@ impl DaemonClient {
     }
 }
 
+/// Tell the person running the command something about the daemon it is about
+/// to use.
+///
+/// These notices explain a command that restarted a daemon or reached for a
+/// binary the caller did not expect, so they have to be seen. al-explorer is
+/// the only client of this module and installs no tracing subscriber, so the
+/// `tracing` event alone would reach nobody; it stays for anything that does
+/// install one. Stdout belongs to the command's own output.
+fn notify(message: &str) {
+    tracing::warn!("{message}");
+    eprintln!("al-lsp: {message}");
+}
+
 /// The identity this client expects a daemon to report.
 ///
 /// `None` when the build is identified by the `al-lsp` executable and that
@@ -1011,21 +1021,20 @@ pub fn find_al_lsp_binary() -> Result<PathBuf, String> {
     let version = binary_version(&candidate);
     let reported = version.as_deref().unwrap_or("an unknown version");
     if version.as_deref() == Some(identity::DAEMON_VERSION) {
-        tracing::warn!(
-            path = %candidate.display(),
-            version = %reported,
-            "no al-lsp beside this executable; starting the one on PATH"
-        );
+        notify(&format!(
+            "no al-lsp beside this executable; starting {} ({reported}) from PATH",
+            candidate.display()
+        ));
         return Ok(candidate);
     }
     if identity::mismatch_allowed() {
-        tracing::warn!(
-            path = %candidate.display(),
-            version = %reported,
-            expected = identity::DAEMON_VERSION,
-            "starting an al-lsp from PATH whose version differs, because {} is set",
+        notify(&format!(
+            "starting {} ({reported}) from PATH although this client is version {}, because {} \
+             is set",
+            candidate.display(),
+            identity::DAEMON_VERSION,
             identity::ALLOW_MISMATCH_ENV
-        );
+        ));
         return Ok(candidate);
     }
     Err(format!(
