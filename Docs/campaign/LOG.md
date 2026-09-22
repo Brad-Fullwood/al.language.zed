@@ -155,3 +155,7 @@ Append-only. Newest entry last.
 ## 2026-09-22 10:00 BST: review B merged, a ghost diagnostic
 
 - Merged `campaign/fix-r2-review-b`. Two conflicts with the review queue branch (which had made two queries return `Option`) resolved keeping both. Gate run: a harness test failed 1 in 3. Its own bug (iterating diagnostics as arrays) turned a real ghost publish after didClose into a panic. Fix agent dispatched with that analysis.
+
+## 2026-09-22 12:10 BST: seventh usage limit
+
+- Limit hit about 10:30, reset 12:00. Three agents resumed. The round 3 security merge failed clippy: the review queue branch had bumped `getrandom` to 0.4 (`fill`) and the security branch used 0.2 (`getrandom`). One-line fix, gates rerunning.
