@@ -11,9 +11,8 @@ Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two 
 | Item | Kind | Output |
 |------|------|--------|
 | desloppify review queue: work all 112 subjective items to empty (resolve, skip with reason, or defer items in files other branches hold), then rescan and record scores | worktree refactor | branch `campaign/slop-review-queue`, `findings/slop-review-queue.md` |
-| R2 review A: analysis, insight, syntax, source, symbols, runtime, test, emit | review | `findings/r2-review-a.md` |
-| R2 review B: lsp, protocol, explorer, project, compile, bc, dap, extension, plugin, CI, docs, plus trust bypass attempts | review | `findings/r2-review-b.md` |
-| Fix queued items: `test-run <id>`, MCP schema parity, nine multi-object queries, bare field rename, doc drift, scaffold unverified items, emit leftovers | worktree fix | branch `campaign/fix-queued-2` |
+| Fix R2 review B (19: rename and snapshot capture skip the gates, `.alpackages` symlink moves the boundary, extension path check unnormalised, plus a structural test that every dispatcher passes its gate) | worktree fix | branch `campaign/fix-r2-review-b` |
+| Fix queued items plus R2 review A (14: tooltip byte slice panic on localized packages, dead `skipped` and `parseIssues` reports, ID 50000 boundary, merge leftovers) | worktree fix | branch `campaign/fix-queued-2` |
 
 Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, CI runs on every push).
 

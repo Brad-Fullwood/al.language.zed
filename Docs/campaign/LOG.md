@@ -131,3 +131,7 @@ Append-only. Newest entry last.
 ## 2026-09-22 05:00 BST: daemon lifecycle merged
 
 - Merged `campaign/fix-daemon-lifecycle`. Full gates: 92 suites, 4839 passed, 0 failed. The gate run left no daemon processes behind, where earlier runs left up to nine.
+
+## 2026-09-22 05:40 BST: round 2 reviews done
+
+- Review A: 43 fixes verified end to end, none faked. 14 new findings. Review B: 19 findings, 4 high security: `rename` skips containment, `tests.snapshot_capture` skips credential authorisation, a repository can ship `.alpackages` as a symlink and move the containment boundary, the extension compares binary paths without normalising. The dispatch table survived three hand merges intact (93 arms). Fix agents dispatched for both.
