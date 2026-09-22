@@ -153,6 +153,15 @@ fn main() {
 }
 
 async fn run() {
+    // Before the log file, the tracing registry and everything else: a client
+    // runs this to decide whether an `al-lsp` it found on PATH matches it, and
+    // that check must be cheap and must not touch the user's log directory.
+    if env::args().any(|arg| arg == "--version" || arg == "-V") {
+        let identity = al_protocol::identity::current_identity();
+        println!("al-lsp {} ({})", identity.version, identity.build);
+        return;
+    }
+
     let log_dir = log_dir();
 
     let log_path = log_dir.join("al-lsp.log");
