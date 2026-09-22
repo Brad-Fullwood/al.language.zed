@@ -198,21 +198,82 @@ pub fn resolve_dotnet_path(user_settings: Option<&serde_json::Value>) -> Option<
 /// Zed does not give us.
 ///
 /// See `Docs/current-limitations.md#zed-worktree-settings-and-executable-paths`.
+/// Both spellings are compared as component lists rather than as text, because
+/// `/home/me/src/../src/SomeApp/tools/al-lsp` and
+/// `/home/me/src/SomeApp/tools/al-lsp` name one file and diverge at the fourth
+/// character. Nothing here touches the filesystem: the extension runs as a
+/// WASM module with no path API, so a path reached through a *symlinked*
+/// ancestor is still outside what this can see.
 pub fn is_worktree_resident_program(path: &str, worktree_root: &str) -> bool {
     let path = path.trim();
     if path.is_empty() {
         return false;
     }
-    let absolute = path.starts_with('/') || (path.len() > 2 && &path[1..3] == ":\\");
-    if !absolute {
+    if !is_absolute_path(path) {
+        // A relative path resolves against the worktree, wherever it points.
         return true;
     }
-    let root = worktree_root.trim_end_matches(['/', '\\']);
-    if root.is_empty() {
+    let Some(program) = normalised_components(path) else {
+        // `..` above the filesystem root names nothing. Refuse rather than
+        // guess what the author meant.
+        return true;
+    };
+    let Some(root) = normalised_components(worktree_root.trim()) else {
+        return true;
+    };
+    if root.is_empty() || program.len() < root.len() {
         return false;
     }
-    path.strip_prefix(root)
-        .is_some_and(|rest| rest.starts_with('/') || rest.starts_with('\\'))
+    // A Windows path is matched without regard to case, because the filesystem
+    // is: `c:\users\me` and `C:\Users\Me` are the same directory.
+    let ignore_case = looks_like_windows(path) || looks_like_windows(worktree_root);
+    root.iter().zip(&program).all(|(root, program)| {
+        if ignore_case {
+            root.eq_ignore_ascii_case(program)
+        } else {
+            root == program
+        }
+    })
+}
+
+/// Whether `path` starts at a filesystem root: `/…`, `\…`, or a drive such as
+/// `C:\…` or `C:/…`.
+fn is_absolute_path(path: &str) -> bool {
+    if path.starts_with('/') || path.starts_with('\\') {
+        return true;
+    }
+    let bytes = path.as_bytes();
+    bytes.len() > 2
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+}
+
+/// Whether the path is written the way Windows writes one, which is how the
+/// extension knows to compare it without regard to case. The extension is a
+/// WASM module and cannot ask the host what it runs on.
+fn looks_like_windows(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    path.contains('\\') || (bytes.len() > 1 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+}
+
+/// The components of `path`, with `.` dropped, repeated separators collapsed
+/// and `..` folded into the component before it.
+///
+/// `None` when a `..` climbs above the first component, which is a path no
+/// comparison can make sense of.
+fn normalised_components(path: &str) -> Option<Vec<&str>> {
+    let mut components: Vec<&str> = Vec::new();
+    for part in path.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                components.pop()?;
+            }
+            name => components.push(name),
+        }
+    }
+    Some(components)
 }
 
 /// Select and normalize the AL settings needed by the separate DAP process
