@@ -16,12 +16,22 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     // track of the source convention so a no-op format check stays a no-op on
     // Windows checkouts instead of rewriting every line ending to LF.
     let uses_crlf = text.contains("\r\n");
-    // The brace merge runs *before* the indentation pass. Merging a stand-alone
-    // `{` onto the line above changes what the indentation state machine sees on
-    // that line, so a merge applied afterwards would leave the file indented for
-    // the pre-merge layout and the next format run would move it again.
-    let merged = apply_brace_style(text, options);
-    let text: &str = &merged;
+    // The brace merge and the property sort both run *before* the indentation
+    // pass, because both change which line sits at which position.
+    //
+    // Merging a stand-alone `{` onto the line above changes what the
+    // indentation state machine sees on that line, so a merge applied
+    // afterwards would leave the file indented for the pre-merge layout.
+    //
+    // The sort moves whole property statements. Run afterwards it would carry
+    // each line's leading whitespace to its new position, and on malformed
+    // input a run's members do not all share one indentation level (a `{` after
+    // `if … then` drains the pending single-statement indent partway through the
+    // run). The next format run then derives the indentation from the new order,
+    // and the lines keep trading indents. Sorting first lets the indentation
+    // pass compute the indentation for the final line order.
+    let reordered = sort_object_properties(apply_brace_style(text, options), options);
+    let text: &str = &reordered;
     let indent_str = if options.insert_spaces {
         " ".repeat(options.tab_size)
     } else {
@@ -351,10 +361,9 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         result.push('\n');
     }
 
-    // The pass order is significant for idempotence: sort properties, normalize
-    // procedure gaps, then wrap long properties. The brace merge already ran
-    // ahead of the indentation pass.
-    let result = sort_object_properties(result, options);
+    // The pass order is significant for idempotence: normalize procedure gaps,
+    // then wrap long properties. The brace merge and the property sort already
+    // ran ahead of the indentation pass.
     let result = normalize_blank_lines_between_procedures(result, options);
     let result = wrap_long_property_lines(result, options);
 

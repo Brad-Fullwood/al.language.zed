@@ -75,10 +75,13 @@ fn property_sort_key(first_line: &str) -> String {
     }
 }
 
-/// PASS 1 — `sort_properties`. Within each object body, sort every contiguous
+/// PRE-PASS — `sort_properties`. Within each object body, sort every contiguous
 /// run of object-level (brace depth 1) property statements case-insensitively
-/// by property name. Multi-line property values move as a single unit; nothing
+/// by property name. Multi-line property values move as a single unit. Nothing
 /// below depth 1 (fields/keys/layout/actions/triggers/procedures) is touched.
+///
+/// Runs before the indentation pass, so the indentation is computed for the
+/// final line order. See the call site in `format_al`.
 pub(super) fn sort_object_properties(text: String, options: &FormatOptions) -> String {
     if !options.sort_properties {
         return text;
