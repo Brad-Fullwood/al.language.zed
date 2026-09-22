@@ -169,7 +169,7 @@ Part B, agent-facing threat model:
   check, before the first request. Treat `nugetFeeds` and `useOnlyCustomFeeds` from a project
   file as needing the same trust decision as the analyzer settings, and say in the symbol-search
   result which feed a symbol came from so the agent can weight it.
-- status: fixed (feeds gated by project trust in bbf25313; https-only check in this commit)
+- status: fixed 388b9a0a
 
 ### [SECURITY] the daemon socket directory can fall into a shared temp directory on a multi-user Linux host
 
