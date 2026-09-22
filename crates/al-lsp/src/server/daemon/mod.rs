@@ -2457,6 +2457,20 @@ mod tests {
             ]),
             "a method that spends a Business Central credential was added or removed"
         );
+
+        // The trust documentation is where a user reads which methods those
+        // are, so it names each one.
+        let trust_doc = include_str!("../../../../../Docs/features/project-trust.md");
+        let credentials = trust_doc
+            .split_once("## Credentials")
+            .expect("the trust doc has a Credentials section")
+            .1;
+        for method in &declared {
+            assert!(
+                credentials.contains(&format!("`{method}`")),
+                "Docs/features/project-trust.md does not name `{method}` under Credentials"
+            );
+        }
     }
 
     #[cfg(unix)]

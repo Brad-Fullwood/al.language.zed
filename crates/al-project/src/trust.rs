@@ -552,8 +552,14 @@ pub enum TargetSource {
 /// Which credential is about to be spent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialKind {
+    /// A bearer token from the keyring-backed OAuth cache.
     Bearer,
+    /// A stored basic credential.
     Basic,
+    /// Whatever the user's environment carries. `al-explorer publish` reads
+    /// `BC_ACCESS_TOKEN` or `BC_USERNAME`/`BC_PASSWORD` and never the cache, so
+    /// a refusal on that path must not claim a cached token was involved.
+    Environment,
 }
 
 impl CredentialKind {
@@ -561,6 +567,7 @@ impl CredentialKind {
         match self {
             CredentialKind::Bearer => "a cached Business Central token",
             CredentialKind::Basic => "Business Central basic credentials",
+            CredentialKind::Environment => "Business Central credentials",
         }
     }
 }

@@ -80,6 +80,11 @@ that by reading the repository's own settings files and removing exactly the val
 contribute. A privileged value written only in user settings survives; one the repository also
 asks for is gated until the project is trusted.
 
+A credential you supply yourself is the same: `BC_USERNAME`, `BC_PASSWORD` and
+`BC_ACCESS_TOKEN` apply without trust. What still needs trust is the *server* those
+credentials are sent to when the repository's launch file chose it. See
+[Credentials](#credentials).
+
 ## How agents are treated
 
 The MCP server and the daemon cannot grant trust, and no request through them can supply a
@@ -100,9 +105,11 @@ writing a sentence.
 
 ## Credentials
 
-Every path that spends a cached Business Central token goes through one authorisation
-function: debug start, publish, a test run against live BC, snapshot capture, and symbol
-download from a BC server.
+Five daemon methods reach a credential the daemon holds, or send the user's own to a server
+the repository's launch file names, and all five go through one authorisation function:
+`debug` (the `start` command), `publish`, `downloadSymbols` from a BC server,
+`tests.snapshot_capture` and `tests.snapshot_replay`. The daemon's dispatch table declares
+which methods those are, and a test holds this list and that declaration together.
 
 - Microsoft's Business Central online endpoints are always allowed. The endpoint is fixed, so
   a repository cannot redirect the token.
@@ -111,8 +118,31 @@ download from a BC server.
 - `http://` is refused for bearer and basic credentials unless the host is loopback. Set
   `AL_ALLOW_INSECURE_BC_HTTP=1` to allow a cleartext server elsewhere on a network you trust.
   An environment variable is a user-level decision, so it needs no project trust.
-- `acceptInvalidCerts` is honoured only where the project's own configuration sets it for the
-  same target, and only when the project is trusted.
+- `acceptInvalidCerts` from the project's own debug configuration is honoured only for the
+  same target and only when the project is trusted.
+
+`publish` is in that list although it never reads the OAuth cache: it sends
+`BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`, from the environment. The environment
+is the user's own decision, but which server receives it is the repository's, so the target
+is authorised and the refusal says "Business Central credentials" rather than naming a cached
+token.
+
+### Where the caller brings its own credential
+
+These methods take the credential and the server from the request, so there is no cached
+credential to protect and no trust decision to make. They are as trusted as the caller that
+calls them:
+
+- `snapshot` and `profiling` take `serverUrl`, `username`, `password` and their own
+  `acceptInvalidCerts`, which is honoured because the caller chose both the server and the
+  setting.
+- `tests.run`, `tests.run_batch` and `tests.run_auto` against live BC authenticate from
+  `BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`, against the launch configuration the
+  request names.
+- `debug start` with an explicit `accessToken` spends that token rather than the cached one.
+  `acceptInvalidCerts` is still refused unless the project's own configuration asks for it
+  and the project is trusted: turning off TLS verification is about the target, not the
+  token.
 
 ## Limits
 
