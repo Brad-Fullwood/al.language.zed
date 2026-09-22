@@ -388,6 +388,47 @@ fn extract_member_name_procedure(line: &str) -> String {
 }
 
 #[cfg(test)]
+mod malformed_tests {
+    use super::sort_members;
+
+    /// Found by `property_sort_members::mutated_fixture_sort_is_idempotent`.
+    /// A swapped pair of lines puts a field's `}` before the `fields` block's
+    /// `{`. The object body still spans brace line to brace line, so the member
+    /// split ran over text whose brace nesting it had already lost, treating a
+    /// field-level `trigger` as an object member and scattering the block.
+    /// Refuse the whole file instead.
+    #[test]
+    fn declines_a_file_that_does_not_parse() {
+        let input = "\
+table 50130 \"Work Order Staging\"
+{
+    DataClassification = CustomerContent;
+
+    fields
+        }
+        field(1; \"No.\"; Code[20])
+        {
+            trigger OnValidate()
+            begin
+            end;
+        }
+    {
+    }
+
+    procedure GetJournalData(): Text
+    begin
+    end;
+}
+";
+        assert_eq!(
+            sort_members(input),
+            None,
+            "a file with syntax errors must be left alone"
+        );
+    }
+}
+
+#[cfg(test)]
 mod multi_object_tests {
     use super::sort_members;
 
