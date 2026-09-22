@@ -147,3 +147,7 @@ Append-only. Newest entry last.
 ## 2026-09-22 08:30 BST: queued fixes merged, a formatter seed
 
 - Merged `campaign/fix-queued-2` (28 commits). The property test for formatter idempotence found a new failing seed in the gate run. Seed persisted and committed, fix agent dispatched. Pushed with that one test red, since the seed file is the reproduction and the branch is a draft PR.
+
+## 2026-09-22 09:00 BST: review queue merged
+
+- Merged `campaign/slop-review-queue`. The new architecture diagram guard failed on the merge because the daemon lifecycle branch had added a harness dependency on al-protocol. Drew the edge. Gates: 93 suites, 4873 passed, the formatter seed still red.
