@@ -282,9 +282,64 @@ pub(crate) fn project_boundary(workspace: &Workspace) -> Result<Vec<PathBuf>, St
             roots
         })
     })?;
-    roots.ok_or_else(|| {
+    let roots = roots.ok_or_else(|| {
         "No project is loaded, so no file path can be authorised; open a project first".to_string()
-    })
+    })?;
+    Ok(roots_the_project_vouches_for(roots))
+}
+
+/// Drop every boundary root that resolves outside the project root, unless the
+/// project is trusted.
+///
+/// The roots after the first are derived from repository content: `.alpackages`
+/// is a path the clone controls, and a clone that ships it as a symlink to
+/// `$HOME` used to make `$HOME` a containment root, after which
+/// `{"method":"format","params":{"file":"~/.bashrc"}}` was a contained write.
+/// A root that points outside is legitimate only where the project's own
+/// settings may name one, which is exactly where trust already decides.
+///
+/// The trust store is read only when a root does resolve outside, so the
+/// ordinary project pays nothing for the check.
+fn roots_the_project_vouches_for(roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    let Some(project_root) = roots.first() else {
+        return roots;
+    };
+    let canonical_project = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.clone());
+    let mut trusted: Option<bool> = None;
+    roots
+        .iter()
+        .enumerate()
+        .filter(|(index, root)| {
+            if *index == 0 {
+                return true;
+            }
+            // A root that does not resolve names nothing yet;
+            // `resolve_path_within_roots` drops it when it compares.
+            let Ok(canonical) = root.canonicalize() else {
+                return true;
+            };
+            if canonical.starts_with(&canonical_project) {
+                return true;
+            }
+            let is_trusted = *trusted.get_or_insert_with(|| {
+                al_project::trust::decide(&canonical_project)
+                    .map(|decision| decision.is_trusted())
+                    .unwrap_or(false)
+            });
+            if !is_trusted {
+                tracing::warn!(
+                    root = %display_path(root),
+                    resolved = %display_path(&canonical),
+                    "daemon: a project path resolves outside the project root; it is not a \
+                     containment root while the project is untrusted"
+                );
+            }
+            is_trusted
+        })
+        .map(|(_, root)| root.clone())
+        .collect()
 }
 
 /// Resolve `requested` inside the loaded project's boundary.
@@ -534,5 +589,87 @@ mod tests {
         let workspace = Workspace::new();
         let error = resolve_within_project(&workspace, Path::new("/etc/hosts")).unwrap_err();
         assert!(error.contains("No project is loaded"), "{error}");
+    }
+
+    /// `XDG_CONFIG_HOME` points at a scratch directory, so a test decides trust
+    /// without reading or writing the user's own trust store. The variable is
+    /// process-wide, so these tests run under one mutex.
+    struct ScratchConfig {
+        _dir: tempfile::TempDir,
+        previous: Option<std::ffi::OsString>,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    static CONFIG_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    impl ScratchConfig {
+        fn new() -> Self {
+            let guard = CONFIG_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let dir = tempfile::tempdir().unwrap();
+            let previous = std::env::var_os("XDG_CONFIG_HOME");
+            std::env::set_var("XDG_CONFIG_HOME", dir.path());
+            Self {
+                _dir: dir,
+                previous,
+                _guard: guard,
+            }
+        }
+    }
+
+    impl Drop for ScratchConfig {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+    }
+
+    /// A project whose `.alpackages` is a symlink to `outside`, which is what a
+    /// clone can ship: git stores the link verbatim and project discovery never
+    /// looks at what it is.
+    #[cfg(unix)]
+    fn project_with_symlinked_packages(dir: &Path) -> (Workspace, PathBuf) {
+        let root = dir.join("project");
+        let outside = dir.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret"), b"PRIVATE KEY").unwrap();
+        std::fs::write(root.join("app.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(".alpackages")).unwrap();
+        let workspace = Workspace::new();
+        super::super::set_test_project_root(&workspace, &root);
+        (workspace, outside.canonicalize().unwrap())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_packages_directory_does_not_widen_the_boundary() {
+        let _config = ScratchConfig::new();
+        let dir = tempfile::tempdir().unwrap();
+        let (workspace, outside) = project_with_symlinked_packages(dir.path());
+
+        let error = resolve_within_project(&workspace, &outside.join("secret"))
+            .expect_err("an untrusted repository must not move the boundary onto its symlink");
+        assert!(error.contains("outside the project"), "{error}");
+    }
+
+    /// Trusting the project is how a user says its own paths may point where
+    /// they point, and it is the same decision that lets `al.packageCachePath`
+    /// name a directory outside the project.
+    #[cfg(unix)]
+    #[test]
+    fn a_trusted_project_keeps_its_package_directory() {
+        let _config = ScratchConfig::new();
+        let dir = tempfile::tempdir().unwrap();
+        let (workspace, outside) = project_with_symlinked_packages(dir.path());
+        let root = dir.path().join("project");
+        al_project::trust::grant(&root).expect("grant trust the way the CLI does");
+
+        let resolved = resolve_within_project(&workspace, &outside.join("secret"))
+            .expect("a trusted project's package directory stays a containment root");
+        assert_eq!(resolved, outside.join("secret"));
     }
 }

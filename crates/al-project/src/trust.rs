@@ -362,6 +362,11 @@ pub fn is_builtin_analyzer_token(entry: &str) -> bool {
 }
 
 /// Whether `path`, resolved against `project_root`, stays inside it.
+///
+/// `..` is folded textually first, because the target need not exist, and then
+/// the deepest existing ancestor is resolved: a repository that ships
+/// `cache -> /home/you` and writes `"al.packageCachePath": "./cache"` is naming
+/// a directory outside the project, and only the second step can tell.
 fn stays_inside_project(path: &Path, project_root: &Path) -> bool {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -371,7 +376,6 @@ fn stays_inside_project(path: &Path, project_root: &Path) -> bool {
     let root = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
-    // The target need not exist, so compare the textually normalised path.
     let mut normalised = PathBuf::new();
     for component in absolute.components() {
         use std::path::Component;
@@ -385,7 +389,36 @@ fn stays_inside_project(path: &Path, project_root: &Path) -> bool {
             other => normalised.push(other.as_os_str()),
         }
     }
-    normalised.starts_with(&root) || normalised.starts_with(project_root)
+    let resolved = resolve_deepest_existing(&normalised);
+    resolved.starts_with(&root) || resolved.starts_with(project_root)
+}
+
+/// `path` with its deepest existing ancestor canonicalised and the rest
+/// re-appended, so a symlink anywhere along the path is followed even when the
+/// path itself does not exist yet.
+fn resolve_deepest_existing(path: &Path) -> PathBuf {
+    let mut existing = path;
+    let mut tail = PathBuf::new();
+    loop {
+        if let Ok(canonical) = existing.canonicalize() {
+            return if tail.as_os_str().is_empty() {
+                canonical
+            } else {
+                canonical.join(&tail)
+            };
+        }
+        let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else {
+            return path.to_path_buf();
+        };
+        tail = if tail.as_os_str().is_empty() {
+            PathBuf::from(name)
+        } else {
+            let mut deeper = PathBuf::from(name);
+            deeper.push(&tail);
+            deeper
+        };
+        existing = parent;
+    }
 }
 
 fn render_paths(paths: &[PathBuf]) -> String {
@@ -1087,6 +1120,50 @@ mod tests {
             .privileged
             .iter()
             .any(|setting| setting.key == "al.compilationOptions"));
+    }
+
+    /// A path that looks like a project-relative directory and resolves to one
+    /// outside the project is the interesting case: the package cache becomes a
+    /// containment root, so classing it as inside would apply it untrusted.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_package_cache_is_privileged() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings(r#"{"al.packageCachePath": "./cache"}"#);
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), project.path().join("cache")).unwrap();
+
+        let evaluated = evaluate(project.path()).unwrap();
+
+        assert!(
+            evaluated.config.package_cache_path.is_none(),
+            "a cache directory outside the project needs trust"
+        );
+        assert!(
+            evaluated
+                .decision
+                .privileged
+                .iter()
+                .any(|setting| setting.key == "al.packageCachePath"),
+            "{:?}",
+            evaluated.decision.privileged
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_real_directory_inside_the_project_stays_unprivileged() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings(r#"{"al.packageCachePath": "./cache"}"#);
+        std::fs::create_dir(project.path().join("cache")).unwrap();
+
+        let evaluated = evaluate(project.path()).unwrap();
+
+        assert_eq!(
+            evaluated.config.package_cache_path.as_deref(),
+            Some(Path::new("./cache")),
+            "the project's own directory needs no trust"
+        );
     }
 
     #[test]
