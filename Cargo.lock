@@ -427,6 +427,7 @@ dependencies = [
  "al-compile",
  "al-emit",
  "al-project",
+ "al-protocol",
  "al-publish",
  "al-test",
  "al-workspace",

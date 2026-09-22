@@ -495,8 +495,20 @@ async fn run() {
                 std::process::exit(1);
             }
         };
+        let idle_timeout = match args.iter().position(|a| a == "--idle-timeout-secs") {
+            None => None,
+            Some(flag) => match args.get(flag + 1).and_then(|raw| raw.parse::<u64>().ok()) {
+                Some(secs) => Some(std::time::Duration::from_secs(secs)),
+                None => {
+                    tracing::error!(
+                        "--idle-timeout-secs needs a number of seconds (0 to never exit)"
+                    );
+                    std::process::exit(2);
+                }
+            },
+        };
         tracing::info!(project = %project_root.display(), "Starting daemon mode");
-        if let Err(e) = al_lsp::server::daemon::run_daemon(project_root).await {
+        if let Err(e) = al_lsp::server::daemon::run_daemon(project_root, idle_timeout).await {
             tracing::error!(error = %e, "Daemon failed");
             std::process::exit(1);
         }

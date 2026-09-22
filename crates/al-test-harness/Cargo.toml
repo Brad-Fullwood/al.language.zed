@@ -7,6 +7,9 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+# Endpoint paths and the daemon client, so the harness can find the daemons a
+# test started and stop them when the test binary ends.
+al-protocol = { path = "../al-protocol", version = "0.2.2" }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
