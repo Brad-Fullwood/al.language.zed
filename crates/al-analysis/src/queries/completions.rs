@@ -373,7 +373,7 @@ fn add_default_completions(
     }
 
     // Use the precomputed cache instead of scanning all indexed symbols.
-    let index_results = workspace.symbols.get_default_completions();
+    let index_results = workspace.symbols.default_completions_snapshot();
     for entry in &index_results {
         let kind = match entry.kind {
             al_symbols::ObjectKind::Table | al_symbols::ObjectKind::TableExtension => {

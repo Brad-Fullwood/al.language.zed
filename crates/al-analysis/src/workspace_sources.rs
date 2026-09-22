@@ -238,7 +238,7 @@ fn validate_declaration(
     let kind = info.kind.parse::<ObjectKind>().map_err(|reason| {
         WorkspaceSourceError::InvalidObjectKind {
             path: path.to_path_buf(),
-            reason,
+            reason: reason.to_string(),
         }
     })?;
     let normalized_id = kind.normalize_declaration_id(info.id).map_err(|error| {

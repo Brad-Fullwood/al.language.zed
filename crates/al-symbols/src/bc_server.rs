@@ -4,7 +4,7 @@
 //! The BC server exposes a `/dev/packages` endpoint that returns `.app` files
 //! when authenticated with appropriate credentials.
 //!
-//! The caller (al-core) is responsible for constructing per-package download URLs
+//! The caller (al-lsp) is responsible for constructing per-package download URLs
 //! using its own `BcServerConfig`. This client handles only HTTP transport and
 //! authentication.
 
@@ -50,8 +50,8 @@ pub type MessageSink = Arc<dyn Fn(&str) + Send + Sync>;
 /// Client for downloading symbol packages from a BC instance's Dev API.
 ///
 /// The caller is responsible for constructing the per-dependency download URL
-/// (e.g., using `BcServerConfig::dev_packages_url` in al-core) and passing it
-/// to [`download_one`].
+/// (e.g. using `al_bc::launch::BcServerConfig::dev_packages_url`) and passing it
+/// to [`BcServerClient::download_one`].
 pub struct BcServerClient {
     client: reqwest::Client,
     auth: AuthMethod,
@@ -141,7 +141,7 @@ impl BcServerClient {
     /// Download a single dependency from the BC Dev API.
     ///
     /// `url` is the fully-constructed `/dev/packages` URL for this dependency.
-    /// The caller (al-core) constructs this URL using `BcServerConfig::dev_packages_url`.
+    /// The caller constructs this URL using `al_bc::launch::BcServerConfig::dev_packages_url`.
     ///
     /// Returns the path to the saved `.app` file.
     pub async fn download_one(
@@ -269,18 +269,9 @@ impl BcServerClient {
             match request.send().await {
                 Ok(response) => {
                     let status = response.status().as_u16();
-                    let transient = matches!(status, 429 | 502 | 503 | 504);
-                    if transient && attempt + 1 < MAX_ATTEMPTS {
-                        let retry_after = response
-                            .headers()
-                            .get(reqwest::header::RETRY_AFTER)
-                            .and_then(|value| value.to_str().ok())
-                            .and_then(|value| value.parse::<u64>().ok())
-                            .map(std::time::Duration::from_secs)
-                            .unwrap_or_else(|| {
-                                std::time::Duration::from_millis(200 * (1u64 << attempt))
-                            })
-                            .min(std::time::Duration::from_secs(30));
+                    if crate::retry::is_retryable_status(status) && attempt + 1 < MAX_ATTEMPTS {
+                        let retry_after =
+                            crate::retry::retry_delay(response.headers(), attempt as u32);
                         warn!(
                             package = %dep.name,
                             status,
@@ -313,7 +304,7 @@ impl BcServerClient {
 
     /// Download all dependencies concurrently, given pre-computed URLs for each.
     ///
-    /// `url_deps` is a slice of `(url, dep)` pairs. The caller (al-core) is
+    /// `url_deps` is a slice of `(url, dep)` pairs. The caller is
     /// responsible for pairing each dependency with its corresponding download URL.
     /// Downloads run concurrently behind a bounded semaphore.
     /// Returns one result per entry in the same order as the input slice.

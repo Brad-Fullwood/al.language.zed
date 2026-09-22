@@ -45,7 +45,7 @@ fn resolve_object_kind(
             kind.parse::<ObjectKind>()
                 .map_err(|reason| SuggestEventError::InvalidObjectKind {
                     kind: kind.to_string(),
-                    reason,
+                    reason: reason.to_string(),
                 })
         })
         .transpose()?;
@@ -60,7 +60,7 @@ fn resolve_object_kind(
             let kind = info.kind.parse::<ObjectKind>().map_err(|reason| {
                 SuggestEventError::InvalidObjectKind {
                     kind: info.kind.clone(),
-                    reason,
+                    reason: reason.to_string(),
                 }
             })?;
             kinds.push(kind);

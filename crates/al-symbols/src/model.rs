@@ -40,6 +40,27 @@ pub enum ObjectKind {
     DotNet,
 }
 
+/// A string that names no AL object kind.
+///
+/// The message lists the base keywords from `object_types.json` rather than a
+/// second hand-kept list, so a kind added to the data file appears here without
+/// an edit.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "Unknown object kind: '{name}'. Valid kinds: {}(and their extension variants)",
+    base_object_keywords()
+)]
+pub struct UnknownObjectKind {
+    pub name: String,
+}
+
+fn base_object_keywords() -> String {
+    al_syntax::language_data::object_types()
+        .iter()
+        .map(|kind| format!("{}, ", kind.keyword))
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum DeclarationIdError {
     #[error("{kind} declarations require a numeric object ID")]
@@ -79,17 +100,21 @@ impl fmt::Display for ObjectKind {
 }
 
 impl FromStr for ObjectKind {
-    type Err = String;
+    type Err = UnknownObjectKind;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "table" => Ok(ObjectKind::Table),
-            "tableextension" | "table_extension" | "table-extension" => Ok(ObjectKind::TableExtension),
+            "tableextension" | "table_extension" | "table-extension" => {
+                Ok(ObjectKind::TableExtension)
+            }
             "page" => Ok(ObjectKind::Page),
             "pageextension" | "page_extension" | "page-extension" => Ok(ObjectKind::PageExtension),
             "codeunit" => Ok(ObjectKind::Codeunit),
             "report" => Ok(ObjectKind::Report),
-            "reportextension" | "report_extension" | "report-extension" => Ok(ObjectKind::ReportExtension),
+            "reportextension" | "report_extension" | "report-extension" => {
+                Ok(ObjectKind::ReportExtension)
+            }
             "xmlport" => Ok(ObjectKind::XmlPort),
             "query" => Ok(ObjectKind::Query),
             "enum" => Ok(ObjectKind::Enum),
@@ -103,15 +128,15 @@ impl FromStr for ObjectKind {
             "pagecustomization" | "page_customization" | "page-customization" => {
                 Ok(ObjectKind::PageCustomization)
             }
-            "controladdin" | "control_addin" | "control-addin" => {
-                Ok(ObjectKind::ControlAddIn)
-            }
+            "controladdin" | "control_addin" | "control-addin" => Ok(ObjectKind::ControlAddIn),
             "entitlement" => Ok(ObjectKind::Entitlement),
             "profileextension" | "profile_extension" | "profile-extension" => {
                 Ok(ObjectKind::ProfileExtension)
             }
             "dotnet" => Ok(ObjectKind::DotNet),
-            _ => Err(format!("Unknown object kind: '{}'. Valid kinds: table, page, codeunit, report, xmlport, query, enum, interface, permissionset, profile, controladdin, entitlement (and their extension variants)", s)),
+            _ => Err(UnknownObjectKind {
+                name: s.to_string(),
+            }),
         }
     }
 }
@@ -119,7 +144,7 @@ impl FromStr for ObjectKind {
 impl ObjectKind {
     /// The primary (first-listed) extension kind for this base kind.
     pub fn extension_kind(&self) -> Option<ObjectKind> {
-        crate::language_data::object_type_by_keyword(self.al_keyword())?
+        al_syntax::language_data::object_type_by_keyword(self.al_keyword())?
             .extensions
             .first()
             .and_then(|kw| kw.parse::<ObjectKind>().ok())
@@ -127,7 +152,7 @@ impl ObjectKind {
 
     pub fn base_kind(&self) -> Option<ObjectKind> {
         let kw = self.al_keyword();
-        crate::language_data::object_types()
+        al_syntax::language_data::object_types()
             .iter()
             .find(|ot| ot.extensions.iter().any(|e| e.eq_ignore_ascii_case(kw)))
             .and_then(|ot| ot.keyword.parse::<ObjectKind>().ok())
@@ -1193,6 +1218,21 @@ impl EnumValueJson {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unknown_kind_string_comes_back_typed_and_named() {
+        let error = "notanobjectkind"
+            .parse::<ObjectKind>()
+            .expect_err("unknown kind must not parse");
+        assert_eq!(error.name, "notanobjectkind");
+        let message = error.to_string();
+        assert!(message.contains("notanobjectkind"), "{message}");
+        // The valid-kind list comes from object_types.json, not a second list
+        // kept by hand here.
+        for keyword in ["table", "codeunit", "permissionset"] {
+            assert!(message.contains(keyword), "{message}");
+        }
+    }
 
     /// `ObjectKind` must cover every object type the grammar's
     /// LanguageData JSON declares — Microsoft adds object types per BC

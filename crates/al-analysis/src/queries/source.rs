@@ -266,7 +266,7 @@ fn source_candidates(
                 let kind = info.kind.parse::<ObjectKind>().map_err(|reason| {
                     SourceLookupError::InvalidWorkspaceDeclaration {
                         path: path.clone(),
-                        reason,
+                        reason: reason.to_string(),
                     }
                 })?;
                 matched = true;
@@ -367,7 +367,7 @@ fn try_workspace_source(
     let declared_kind = obj_info.kind.parse::<ObjectKind>().map_err(|reason| {
         SourceLookupError::InvalidWorkspaceDeclaration {
             path: file_path.to_path_buf(),
-            reason,
+            reason: reason.to_string(),
         }
     })?;
     if declared_kind != kind {

@@ -87,20 +87,14 @@ const SYSTEM_APP_ID: &str = "8874ed3a-0643-4247-9ced-7a7002f7135d";
 /// BC NuGet package IDs follow the pattern:
 /// - Core Microsoft packages have fixed names (no GUID or special casing)
 /// - Other packages: `{Publisher}.{AppName}.symbols.{AppId}` (spaces removed, lowercase)
-pub fn resolve_dependencies(deps: &[AppDependency]) -> Vec<PackageRef> {
-    resolve_dependencies_for_country(deps, None)
-}
-
-/// Country/region-aware variant (`al.symbolsCountryRegion` parity, BC 2026 W1).
+///
+/// `country` follows `al.symbolsCountryRegion` (BC 2026 W1).
 ///
 /// Localized apps (Application, Base Application) ship country-specific
 /// packages on the MSSymbols feed — e.g. `Microsoft.Application.DE.symbols`.
 /// `"w1"` (worldwide) and `None` resolve to the unsuffixed W1 packages.
 /// Platform/System packages are country-invariant.
-pub fn resolve_dependencies_for_country(
-    deps: &[AppDependency],
-    country: Option<&str>,
-) -> Vec<PackageRef> {
+pub fn resolve_dependencies(deps: &[AppDependency], country: Option<&str>) -> Vec<PackageRef> {
     let cc = country
         .map(str::trim)
         .filter(|c| !c.is_empty() && !c.eq_ignore_ascii_case("w1"))
@@ -302,7 +296,7 @@ impl NuGetClient {
         dest: &Path,
     ) -> Vec<Result<PathBuf, NuGetError>> {
         const MAX_CONCURRENT_DOWNLOADS: usize = 4;
-        let refs = resolve_dependencies_for_country(deps, self.country.as_deref());
+        let refs = resolve_dependencies(deps, self.country.as_deref());
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DOWNLOADS));
         let futures = refs.iter().map(|pkg_ref| {
             let sem = std::sync::Arc::clone(&semaphore);
@@ -548,9 +542,10 @@ async fn get_with_retry(
     for attempt in 1..=MAX_DOWNLOAD_ATTEMPTS {
         match client.get(url).send().await {
             Ok(response)
-                if is_retryable_status(response.status()) && attempt < MAX_DOWNLOAD_ATTEMPTS =>
+                if crate::retry::is_retryable_status(response.status().as_u16())
+                    && attempt < MAX_DOWNLOAD_ATTEMPTS =>
             {
-                let delay = retry_delay(&response, attempt);
+                let delay = crate::retry::retry_delay(response.headers(), attempt as u32 - 1);
                 warn!(url, status = %response.status(), attempt, ?delay, "Transient NuGet response; retrying");
                 tokio::time::sleep(delay).await;
             }
@@ -566,20 +561,6 @@ async fn get_with_retry(
     unreachable!("retry loop always returns on its final attempt")
 }
 
-fn is_retryable_status(status: reqwest::StatusCode) -> bool {
-    matches!(status.as_u16(), 429 | 502 | 503 | 504)
-}
-
-fn retry_delay(response: &reqwest::Response, attempt: usize) -> std::time::Duration {
-    response
-        .headers()
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(|seconds| std::time::Duration::from_secs(seconds.min(30)))
-        .unwrap_or_else(|| std::time::Duration::from_millis(200 * (1 << (attempt - 1))))
-}
-
 fn body_too_large_error(name: &str, actual: u64, limit: u64) -> NuGetError {
     NuGetError::Io(std::io::Error::new(
         std::io::ErrorKind::InvalidData,
@@ -588,8 +569,6 @@ fn body_too_large_error(name: &str, actual: u64, limit: u64) -> NuGetError {
 }
 
 fn download_temp_path(dest: &Path, package_id: &str) -> PathBuf {
-    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let safe_id: String = package_id
         .chars()
         .map(|character| {
@@ -601,9 +580,8 @@ fn download_temp_path(dest: &Path, package_id: &str) -> PathBuf {
         })
         .collect();
     dest.join(format!(
-        ".{safe_id}.{}.{}.nupkg.tmp",
-        std::process::id(),
-        sequence
+        ".{safe_id}.{}.nupkg.tmp",
+        crate::temp_path::unique_token()
     ))
 }
 
@@ -848,7 +826,7 @@ mod tests {
             version: "24.0.12345.0".to_string(),
         }];
 
-        let refs = resolve_dependencies(&deps);
+        let refs = resolve_dependencies(&deps, None);
         assert_eq!(refs.len(), 1);
         assert_eq!(
             refs[0].id,
@@ -882,7 +860,7 @@ mod tests {
                 version: "26.0.0.0".to_string(),
             },
         ];
-        let refs = resolve_dependencies_for_country(&deps, Some("de"));
+        let refs = resolve_dependencies(&deps, Some("de"));
         assert_eq!(refs[0].id, "Microsoft.Application.DE.symbols");
         assert_eq!(
             refs[1].id,
@@ -892,9 +870,9 @@ mod tests {
         assert_eq!(refs[2].id, "Microsoft.Platform.symbols");
 
         // "w1" (and case variants) means worldwide — identical to None.
-        let w1 = resolve_dependencies_for_country(&deps, Some("W1"));
+        let w1 = resolve_dependencies(&deps, Some("W1"));
         assert_eq!(w1[0].id, "Microsoft.Application.symbols");
-        let none = resolve_dependencies_for_country(&deps, None);
+        let none = resolve_dependencies(&deps, None);
         assert_eq!(none[0].id, "Microsoft.Application.symbols");
     }
 
@@ -907,7 +885,7 @@ mod tests {
             version: "26.5.0.0".to_string(),
         }];
 
-        let refs = resolve_dependencies(&deps);
+        let refs = resolve_dependencies(&deps, None);
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].id, "Microsoft.Application.symbols");
     }
@@ -921,7 +899,7 @@ mod tests {
             version: "1.0.0.0".to_string(),
         }];
 
-        let refs = resolve_dependencies(&deps);
+        let refs = resolve_dependencies(&deps, None);
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].id, "Microsoft.Platform.symbols");
     }
@@ -935,7 +913,7 @@ mod tests {
             version: "26.0.0.0".to_string(),
         }];
 
-        let refs = resolve_dependencies(&deps);
+        let refs = resolve_dependencies(&deps, None);
         assert_eq!(refs.len(), 1);
         assert_eq!(
             refs[0].id,
@@ -952,7 +930,7 @@ mod tests {
             version: "26.0.0.0".to_string(),
         }];
 
-        let refs = resolve_dependencies(&deps);
+        let refs = resolve_dependencies(&deps, None);
         assert_eq!(refs.len(), 1);
         assert_eq!(
             refs[0].id,
@@ -971,7 +949,7 @@ mod tests {
             version: "26.5.0.0".to_string(),
         }];
 
-        let refs = resolve_dependencies(&deps);
+        let refs = resolve_dependencies(&deps, None);
         assert_eq!(refs[0].id, "Microsoft.Application.symbols");
     }
 
@@ -984,7 +962,7 @@ mod tests {
             version: "1.0.0.0".to_string(),
         }];
 
-        let refs = resolve_dependencies(&deps);
+        let refs = resolve_dependencies(&deps, None);
         assert_eq!(
             refs[0].id,
             "AcmeCorp.CoolTool.symbols.ab12cd34-0000-0000-0000-000000000000"
@@ -1008,7 +986,7 @@ mod tests {
                 version: "2.0.0.0".to_string(),
             },
         ];
-        let refs = resolve_dependencies(&deps);
+        let refs = resolve_dependencies(&deps, None);
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0].display_name, "A");
         assert_eq!(refs[1].display_name, "B");
@@ -1097,7 +1075,7 @@ mod tests {
             version: "1.0.0.0".to_string(),
         }];
 
-        let refs = resolve_dependencies(&deps);
+        let refs = resolve_dependencies(&deps, None);
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].id, "ContosoLtd.MyApp.symbols.id-2");
     }
