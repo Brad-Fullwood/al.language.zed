@@ -209,7 +209,16 @@ Tests
 - fix: route both through `authorize_cached_credential` with `TargetSource::Inline`, so an
   inline `serverUrl` must match a launch configuration of a trusted project, and take
   `acceptInvalidCerts` from that authorisation rather than from the params.
-- status: open
+- status: fixed. `bc_server_params::authorize_bc_server` calls
+  `authorize_cached_credential` with `BcTarget::on_prem_url(serverUrl)`,
+  `CredentialKind::Basic` and `TargetSource::Inline`, and both dispatchers call it after the
+  scheme guard. `acceptInvalidCerts` is refused unless that authorisation grants it. Params
+  with no `serverUrl` get the daemon's own loopback default, which no caller chose, so there
+  is nothing to authorise and `acceptInvalidCerts` is dropped. Tests:
+  `an_inline_server_is_refused_without_a_trusted_launch_configuration` uses the finding's own
+  params, and `the_default_loopback_server_needs_no_trust_and_drops_accept_invalid_certs`
+  covers the default. `Docs/features/project-trust.md`'s claim that snapshot capture goes
+  through the one authorisation function is now true.
 
 ### [SECURITY] a repository's `.zed/settings.json` chooses the program Zed runs and its arguments, and only a worktree-resident path is refused
 

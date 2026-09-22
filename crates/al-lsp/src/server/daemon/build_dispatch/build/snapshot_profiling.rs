@@ -3,7 +3,9 @@
 
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
 
-use super::bc_server_params::{parse_bc_server_params, reject_unsafe_server_url};
+use super::bc_server_params::{
+    authorize_bc_server, parse_bc_server_params, reject_unsafe_server_url,
+};
 use crate::server::daemon::{optional_bounded_usize_param, rpc_error};
 
 pub(in crate::server::daemon) async fn dispatch_snapshot(
@@ -27,12 +29,15 @@ pub(in crate::server::daemon) async fn dispatch_snapshot(
         }
     };
 
-    let bc = match parse_bc_server_params(workspace, params, "snapshots") {
+    let mut bc = match parse_bc_server_params(workspace, params, "snapshots") {
         Ok(config) => config,
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
     if let Some(err) = reject_unsafe_server_url(id, &bc.server_url) {
         return err;
+    }
+    if let Err(message) = authorize_bc_server(workspace, params, &mut bc) {
+        return rpc_error(id, error_codes::INVALID_PARAMS, &message);
     }
     let config = al_bc::snapshot::SnapshotConfig {
         server_url: bc.server_url,
@@ -184,12 +189,15 @@ pub(in crate::server::daemon) async fn dispatch_profiling(
         }
     };
 
-    let bc = match parse_bc_server_params(workspace, params, "profiles") {
+    let mut bc = match parse_bc_server_params(workspace, params, "profiles") {
         Ok(config) => config,
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
     if let Some(err) = reject_unsafe_server_url(id, &bc.server_url) {
         return err;
+    }
+    if let Err(message) = authorize_bc_server(workspace, params, &mut bc) {
+        return rpc_error(id, error_codes::INVALID_PARAMS, &message);
     }
     let config = al_bc::profiling::ProfilingConfig {
         server_url: bc.server_url,

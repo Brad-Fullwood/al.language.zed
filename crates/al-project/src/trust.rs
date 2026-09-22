@@ -654,6 +654,20 @@ impl BcTarget {
         }
     }
 
+    /// An on-premises server named by a bare URL, with the port read from the
+    /// URL rather than supplied beside it.
+    ///
+    /// For a caller that passes one `serverUrl` string and nothing else, such
+    /// as the daemon's `snapshot` and `profiling` methods.
+    #[must_use]
+    pub fn on_prem_url(server_url: &str) -> Self {
+        Self {
+            on_prem: true,
+            server: Some(server_url.to_string()),
+            port: None,
+        }
+    }
+
     /// The target of a debug configuration, from the two fields
     /// `BcDebugConfig::base_url` branches on.
     #[must_use]
