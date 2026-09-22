@@ -2371,6 +2371,45 @@ le monde</target>
         units
     }
 
+    /// `field(1; "No."; Code[20]) { Caption = 'No.'; }` on one line is legal
+    /// AL and the compact style the differential corpus uses. The property has
+    /// to be read past the member header and anchored to the member that the
+    /// same line's `{` opened, not to the enclosing object.
+    #[test]
+    fn a_property_on_a_one_line_member_block_belongs_to_that_member() {
+        let units = extract(
+            r#"table 50100 "Shipment"
+{
+    Caption = 'Shipment';
+
+    fields
+    {
+        field(1; "No."; Code[20]) { Caption = 'Number'; }
+        field(2; "Posting Date"; Date) { Caption = 'Posted On'; ToolTip = 'When it posted.'; }
+    }
+}
+"#,
+        );
+        let source_of = |needle: &str| {
+            units
+                .iter()
+                .find(|unit| unit.source == needle)
+                .unwrap_or_else(|| panic!("no unit for {needle:?}: {units:?}"))
+        };
+        let number = source_of("Number");
+        let posted_on = source_of("Posted On");
+        source_of("When it posted.");
+        assert_ne!(
+            number.id, posted_on.id,
+            "each field's caption keys onto its own field: {units:?}"
+        );
+        let object_caption = source_of("Shipment");
+        assert_ne!(
+            object_caption.id, number.id,
+            "a member caption must not collide with the object's own: {units:?}"
+        );
+    }
+
     /// Every page control used to get the identical id
     /// (`Page 50100 X - Caption`) because page-layout `field(Name; Rec.Name)`
     /// never set the numeric `field_id`.
