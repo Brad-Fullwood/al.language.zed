@@ -331,6 +331,12 @@ fn run_codeunit_interp(
 
     let cu = codeunits.iter().find(|c| c.id == codeunit_id);
 
+    // `tests/run` substitutes the ID as a string when the caller named only an
+    // ID, and the interpreter uses this name as the current object of the call
+    // frame, so an unqualified call to a sibling procedure would look up an
+    // object called "50144". The discovered codeunit carries the real name.
+    let codeunit_name = cu.map_or(codeunit_name, |c| c.name.as_str());
+
     let proc_list: Vec<String> = if methods.iter().any(|m| m.is_some()) {
         methods.iter().filter_map(|m| m.clone()).collect()
     } else if let Some(cu) = cu {
@@ -1027,6 +1033,71 @@ mod tests {
         assert!(
             session.coverage_report().unwrap().is_empty(),
             "static mode must not produce dynamic coverage"
+        );
+    }
+
+    /// `al-explorer test-run <id>` sends no `codeunitName`, so the daemon fills
+    /// the field with the ID as a string. The interpreter used that string as
+    /// the current object of the call frame, and an unqualified call to a
+    /// sibling procedure then failed with `object '50144' not found in
+    /// workspace`. The discovered codeunit carries the real name.
+    #[tokio::test]
+    async fn numeric_codeunit_name_still_resolves_sibling_calls() {
+        let source = r#"codeunit 50144 "Sibling Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestCallsSibling()
+    var
+        Total: Integer;
+    begin
+        Total := AddOne(1);
+        if Total <> 2 then
+            Error('sibling call returned %1', Total);
+    end;
+
+    local procedure AddOne(Input: Integer): Integer
+    begin
+        exit(Input + 1);
+    end;
+}
+"#;
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/SiblingTests.Codeunit.al"),
+            source.to_string(),
+        );
+        let events = collect_events(
+            &InterpMode::new(Arc::new(workspace)),
+            vec![TestId {
+                codeunit_id: 50144,
+                // What `tests/run` substitutes when the caller gave only an ID.
+                codeunit_name: "50144".to_string(),
+                method_name: Some("TestCallsSibling".to_string()),
+            }],
+            RunOptions::default(),
+        )
+        .await;
+        let result = events
+            .iter()
+            .find_map(|event| match event {
+                TestEvent::CaseResult { result, .. } => Some(result),
+                _ => None,
+            })
+            .expect("a case result");
+        assert_eq!(
+            result.status,
+            TestStatus::Pass,
+            "sibling call must resolve through the indexed object name: {:?}",
+            result.error
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                TestEvent::SuiteComplete { summary, .. } if summary.name == "Sibling Tests"
+            )),
+            "the summary must report the indexed name, not the ID: {events:?}"
         );
     }
 

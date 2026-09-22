@@ -367,6 +367,53 @@ fn isolated_test_project() -> tempfile::TempDir {
     project
 }
 
+/// `test-run <id>` without `--name` left the daemon filling `codeunitName`
+/// with the ID as a string, and the interpreter then used "50145" as the
+/// current object, so an unqualified call to a sibling procedure failed with
+/// `object '50145' not found in workspace`.
+#[test]
+fn test_run_by_id_alone_resolves_a_sibling_call() {
+    let project = isolated_test_project();
+    std::fs::write(
+        project.path().join("src").join("SiblingTest.Codeunit.al"),
+        r#"codeunit 50145 "Sibling Call Test"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestCallsSibling()
+    var
+        Total: Integer;
+    begin
+        Total := AddOne(1);
+        if Total <> 2 then
+            Error('sibling call returned %1', Total);
+    end;
+
+    local procedure AddOne(Input: Integer): Integer
+    begin
+        exit(Input + 1);
+    end;
+}
+"#,
+    )
+    .expect("write the sibling-call fixture");
+
+    let output = run_al_in(project.path(), &["test-run", "50145"]);
+    let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
+    combined.push_str(&String::from_utf8_lossy(&output.stderr));
+    let _ = run_al_in(project.path(), &["daemon-shutdown"]);
+
+    assert!(
+        !combined.contains("not found in workspace"),
+        "the ID must not be used as an object name:\n{combined}"
+    );
+    assert!(
+        output.status.success(),
+        "`test-run 50145` failed:\n{combined}"
+    );
+}
+
 fn help_commands() -> BTreeSet<String> {
     let output = Command::new(al_explorer_binary())
         .arg("--help")
