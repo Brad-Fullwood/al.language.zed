@@ -1,7 +1,7 @@
 {
   "version": 8,
   "created": "2026-09-21T00:40:45+00:00",
-  "updated": "2026-09-21T10:09:04+00:00",
+  "updated": "2026-09-22T01:34:25+00:00",
   "queue_order": [
     "review::.::holistic::abstraction_fitness::default_arg_wrappers_no_prod_caller",
     "review::.::holistic::abstraction_fitness::jsonc_helper_bypassed_via_facade",
@@ -15,7 +15,6 @@
     "review::.::holistic::ai_generated_debt::test_only_public_overloads",
     "review::.::holistic::ai_generated_debt::triplicated_private_helpers",
     "review::.::holistic::api_surface_coherence::daemon_method_naming_schemes",
-    "review::.::holistic::api_surface_coherence::find_call_references_returns_count",
     "review::.::holistic::api_surface_coherence::lsp_query_failure_shapes",
     "review::.::holistic::api_surface_coherence::mcp_tool_name_outlier",
     "review::.::holistic::api_surface_coherence::sibling_parameter_order_drift",
@@ -31,7 +30,6 @@
     "review::.::holistic::authorization_consistency::token_resolution_duplicated_per_dispatch",
     "review::.::holistic::authorization_consistency::windows_auth_divergence",
     "review::.::holistic::contract_coherence::error_erasing_passthrough",
-    "review::.::holistic::contract_coherence::module_doc_contradicts_manifest",
     "review::.::holistic::contract_coherence::same_name_two_return_types",
     "review::.::holistic::contract_coherence::two_error_conventions_in_one_module",
     "review::.::holistic::convention_outlier::bulk_fix_dual_write_protocol",
@@ -48,7 +46,6 @@
     "review::.::holistic::cross_module_architecture::explorer_reimplements_native_build",
     "review::.::holistic::cross_module_architecture::generation_lock_lsp_only",
     "review::.::holistic::cross_module_architecture::pre_split_crate_names_in_docs",
-    "review::.::holistic::cross_module_architecture::symbols_duplicates_syntax_language_data",
     "review::.::holistic::cross_module_architecture::workspace_hub_public_mutable_fields",
     "review::.::holistic::dependency_health::al_lsp_dead_prod_deps",
     "review::.::holistic::dependency_health::futures_and_futures_util_both_used",
@@ -66,15 +63,12 @@
     "review::.::holistic::high_level_elegance::architecture_doc_edges_wrong",
     "review::.::holistic::high_level_elegance::coverage_aggregation_in_transport_dispatcher",
     "review::.::holistic::high_level_elegance::debug_session_parked_on_workspace_hub",
-    "review::.::holistic::high_level_elegance::duplicate_language_data_loader_in_al_symbols",
     "review::.::holistic::high_level_elegance::explorer_bypasses_its_own_thin_client_contract",
     "review::.::holistic::high_level_elegance::two_tier_numbering_schemes",
     "review::.::holistic::incomplete_migration::al_core_names_in_live_docs",
     "review::.::holistic::incomplete_migration::single_caller_compat_shim",
-    "review::.::holistic::incomplete_migration::stale_dependency_rule_keeps_duplicate_loader",
     "review::.::holistic::incomplete_migration::unused_deps_from_crate_split",
     "review::.::holistic::initialization_coupling::daemon_oncelock_unset_case",
-    "review::.::holistic::initialization_coupling::two_snapshots_of_one_data_file",
     "review::.::holistic::logic_clarity::empty_result_means_two_things",
     "review::.::holistic::logic_clarity::internal_error_collapse",
     "review::.::holistic::low_level_elegance::config_publish_sequence_reordered",
@@ -97,7 +91,6 @@
     "review::.::holistic::naming_quality::explorer_cli_two_letter_json_locals",
     "review::.::holistic::naming_quality::mcp_obj_schema_abbreviation",
     "review::.::holistic::naming_quality::runtime_error_helper_name_collision",
-    "review::.::holistic::naming_quality::serde_defaults_named_after_their_literal",
     "review::.::holistic::naming_quality::should_report_semantic_failure_is_test_and_set",
     "review::.::holistic::naming_quality::symbol_lookup_cardinality_in_the_verb",
     "review::.::holistic::naming_quality::test_prefix_style_split",
@@ -2082,11 +2075,387 @@
         "sync_status": "synced",
         "sync_message": null
       }
+    },
+    {
+      "timestamp": "2026-09-22T01:33:06+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::cross_module_architecture::symbols_duplicates_syntax_language_data"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "al-symbols language_data module is deleted on this branch base; al-symbols calls al_syntax::language_data now, one ObjectType struct and one LazyLock snapshot remain.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:33:11+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::high_level_elegance::duplicate_language_data_loader_in_al_symbols"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "al-symbols language_data module is deleted on this branch base; callers use al_syntax::language_data.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:33:14+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::incomplete_migration::stale_dependency_rule_keeps_duplicate_loader"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "al-symbols language_data module deleted on this branch base.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:33:18+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::initialization_coupling::two_snapshots_of_one_data_file"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "One LazyLock snapshot of object_types.json remains, in al-syntax; the al-symbols copy is deleted on this branch base.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:33:23+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::contract_coherence::module_doc_contradicts_manifest"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "The module whose doc contradicted al-symbols/Cargo.toml is deleted on this branch base.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:33:23+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::naming_quality::serde_defaults_named_after_their_literal"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Renamed to default_device_code_lifetime_secs and default_device_code_poll_secs in al-symbols/src/oauth/flows.rs on this branch base.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:33:28+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::api_surface_coherence::find_call_references_returns_count"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Renamed to count_call_references in al-syntax/src/navigation.rs with the obsolescence.rs call site and the lib.rs re-export updated, on this branch base.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:33:42+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::api_surface_coherence::find_call_references_returns_count"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Renamed to count_call_references in al-syntax/src/navigation.rs with the obsolescence.rs call site and the lib.rs re-export updated, on this branch base.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:33:48+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::cross_module_architecture::symbols_duplicates_syntax_language_data"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:33:52+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::cross_module_architecture::symbols_duplicates_syntax_language_data"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "al-symbols/src/language_data.rs is deleted on this branch base; al-symbols calls al_syntax::language_data, so one ObjectType struct and one LazyLock snapshot of object_types.json remain.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:33:52+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::cross_module_architecture::symbols_duplicates_syntax_language_data"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "al-symbols/src/language_data.rs is deleted on this branch base; al-symbols calls al_syntax::language_data, so one ObjectType struct and one LazyLock snapshot of object_types.json remain.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually al-symbols/src/language_data.rs is deleted on this branch base; al-symbols calls al_syntax::language_data, so one ObjectType struct and one LazyLock snapshot of object_types.json remain. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:34:00+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::high_level_elegance::duplicate_language_data_loader_in_al_symbols"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:34:00+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::high_level_elegance::duplicate_language_data_loader_in_al_symbols"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Same deletion as the cross-module finding: the second ObjectType loader in al-symbols is gone on this branch base and its callers use al_syntax::language_data.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:34:00+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::high_level_elegance::duplicate_language_data_loader_in_al_symbols"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Same deletion as the cross-module finding: the second ObjectType loader in al-symbols is gone on this branch base and its callers use al_syntax::language_data.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Same deletion as the cross-module finding: the second ObjectType loader in al-symbols is gone on this branch base and its callers use al_syntax::language_data. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:34:05+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::incomplete_migration::stale_dependency_rule_keeps_duplicate_loader"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:34:05+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::incomplete_migration::stale_dependency_rule_keeps_duplicate_loader"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "The duplicate loader and the stale dependency-rule comment justifying it are deleted on this branch base; al-symbols uses al_syntax::language_data.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:34:05+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::incomplete_migration::stale_dependency_rule_keeps_duplicate_loader"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "The duplicate loader and the stale dependency-rule comment justifying it are deleted on this branch base; al-symbols uses al_syntax::language_data.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually The duplicate loader and the stale dependency-rule comment justifying it are deleted on this branch base; al-symbols uses al_syntax::language_data. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:34:10+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::initialization_coupling::two_snapshots_of_one_data_file"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:34:10+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::initialization_coupling::two_snapshots_of_one_data_file"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Only al-syntax holds a LazyLock snapshot of object_types.json now; the al-symbols copy with the narrower struct is deleted on this branch base.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:34:11+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::initialization_coupling::two_snapshots_of_one_data_file"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Only al-syntax holds a LazyLock snapshot of object_types.json now; the al-symbols copy with the narrower struct is deleted on this branch base.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Only al-syntax holds a LazyLock snapshot of object_types.json now; the al-symbols copy with the narrower struct is deleted on this branch base. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:34:15+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::contract_coherence::module_doc_contradicts_manifest"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:34:15+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::contract_coherence::module_doc_contradicts_manifest"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "The module whose doc comment contradicted al-symbols/Cargo.toml no longer exists on this branch base, so the manifest and the code agree.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:34:15+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::contract_coherence::module_doc_contradicts_manifest"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "The module whose doc comment contradicted al-symbols/Cargo.toml no longer exists on this branch base, so the manifest and the code agree.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually The module whose doc comment contradicted al-symbols/Cargo.toml no longer exists on this branch base, so the manifest and the code agree. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:34:20+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::naming_quality::serde_defaults_named_after_their_literal"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:34:20+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::naming_quality::serde_defaults_named_after_their_literal"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "default_900 and default_5 are default_device_code_lifetime_secs and default_device_code_poll_secs in al-symbols/src/oauth/flows.rs on this branch base.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:34:20+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::naming_quality::serde_defaults_named_after_their_literal"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "default_900 and default_5 are default_device_code_lifetime_secs and default_device_code_poll_secs in al-symbols/src/oauth/flows.rs on this branch base.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually default_900 and default_5 are default_device_code_lifetime_secs and default_device_code_poll_secs in al-symbols/src/oauth/flows.rs on this branch base. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:34:24+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::api_surface_coherence::find_call_references_returns_count"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:34:25+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::api_surface_coherence::find_call_references_returns_count"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Renamed to count_call_references in al-syntax/src/navigation.rs, with the obsolescence.rs call site and the al-syntax lib.rs re-export updated, on this branch base.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:34:25+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::api_surface_coherence::find_call_references_returns_count"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Renamed to count_call_references in al-syntax/src/navigation.rs, with the obsolescence.rs call site and the al-syntax lib.rs re-export updated, on this branch base.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Renamed to count_call_references in al-syntax/src/navigation.rs, with the obsolescence.rs call site and the al-syntax lib.rs re-export updated, on this branch base. and I am not gaming the score."
+      }
     }
   ],
   "epic_triage_meta": {},
   "commit_log": [],
-  "uncommitted_issues": [],
+  "uncommitted_issues": [
+    "review::.::holistic::cross_module_architecture::symbols_duplicates_syntax_language_data",
+    "review::.::holistic::high_level_elegance::duplicate_language_data_loader_in_al_symbols",
+    "review::.::holistic::incomplete_migration::stale_dependency_rule_keeps_duplicate_loader",
+    "review::.::holistic::initialization_coupling::two_snapshots_of_one_data_file",
+    "review::.::holistic::contract_coherence::module_doc_contradicts_manifest",
+    "review::.::holistic::naming_quality::serde_defaults_named_after_their_literal",
+    "review::.::holistic::api_surface_coherence::find_call_references_returns_count"
+  ],
   "commit_tracking_branch": null,
   "scan_count_at_plan_start": 1
 }

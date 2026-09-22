@@ -21,7 +21,7 @@ fn run_al_in_with_runtime(
 ) -> std::process::Output {
     let capture_id = CAPTURE_ID.fetch_add(1, Ordering::Relaxed);
     let capture_root = std::env::temp_dir().join(format!(
-        "al-cli-smoke-{}-{capture_id}-{}",
+        "al-explorer-smoke-{}-{capture_id}-{}",
         std::process::id(),
         args.first().copied().unwrap_or("command")
     ));

@@ -5,12 +5,12 @@
 //! the standalone `al-semantic` crate and are re-exported here so existing
 //! `crate::semantic::…` paths keep resolving. The lifecycle functions that
 //! operate on the `Workspace` hub live in `glue` (they cannot sink into a
-//! tier-0 crate).
+//! T0 crate).
 
 pub use al_semantic::*;
 
 // The lifecycle glue (set_builtins / get_or_init_bridge / restart_bridge /
-// shutdown_bridge) operates on the tier-4 `Workspace` hub, so it lives in the
+// shutdown_bridge) operates on the T3 `Workspace` hub, so it lives in the
 // al-workspace crate; re-export it here so `crate::semantic::…` paths resolve.
 pub use al_workspace::{
     ensure_builtins_loaded, ensure_error_codes_loaded, get_or_init_bridge, restart_bridge,

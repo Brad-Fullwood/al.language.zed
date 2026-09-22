@@ -134,7 +134,7 @@ fn signature_help_inner(
     // cursor at the wrong call context if AL identifiers contain
     // multi-codepoint sequences (e.g. emoji, surrogate pairs in a quoted
     // identifier). Surface the clamp via a debug-level trace so the edge
-    // case is observable in `RUST_LOG=al_core=debug` mode.
+    // case is observable in `RUST_LOG=al_analysis=debug` mode.
     let (col_byte, clamped_remaining) = {
         let mut utf16_remaining = col_utf16;
         let mut byte_off = line.len(); // default: end of line

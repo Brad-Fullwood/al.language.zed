@@ -681,7 +681,7 @@ fn dedup_objects_by_identity(objects: &mut Vec<serde_json::Value>) -> Result<(),
 /// `info.kind` is the tree-sitter node kind (lowercase, e.g. "table"). The wire
 /// schema for SymbolEntry uses the al_symbols ObjectKind enum, whose serde
 /// representation is PascalCase. Normalize via `ObjectKind::from_str` so the
-/// payload deserializes cleanly on al-cli / al-explorer.
+/// payload deserializes cleanly on al-explorer.
 fn workspace_object_identity(
     info: &al_source::file_index::CachedObjectInfo,
 ) -> Result<(al_symbols::ObjectKind, i32), String> {

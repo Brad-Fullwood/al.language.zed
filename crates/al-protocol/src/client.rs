@@ -67,7 +67,7 @@ const MAX_RESPONSE_LINE: usize = 64 * 1024 * 1024;
 /// Read a single newline-delimited line, enforcing a byte cap *during*
 /// reading. Returns `Ok(None)` on EOF with empty buffer, `Err` if the
 /// line would exceed `max_bytes`. Sync mirror of the daemon-side
-/// `read_bounded_line` in `al_core::server::daemon`.
+/// `read_bounded_line` in `al_lsp::server::daemon`.
 ///
 /// `deadline`: socket-level read timeouts (`WouldBlock`/`TimedOut`) are
 /// retried until this instant, preserving any partially-read line bytes.

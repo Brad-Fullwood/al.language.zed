@@ -34,7 +34,7 @@ use al_source::file_index::FileIndex;
 /// Callback for surfacing bridge/toolchain notifications to the user.
 ///
 /// In the LSP path this calls `client.show_message`; in the daemon path it logs.
-/// Takes only `&str` -- no tower-lsp types in al-core.
+/// Takes only `&str` -- no tower-lsp types in al-workspace.
 pub type NotifySink = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Summary metadata for a loaded symbol package.
@@ -1661,7 +1661,7 @@ mod workspace_lifecycle_tests {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "al-core-workspace-test-{}-{}-{}",
+            "al-workspace-test-{}-{}-{}",
             tag,
             std::process::id(),
             id

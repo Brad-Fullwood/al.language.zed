@@ -207,7 +207,7 @@ async fn run() {
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
     // File log level: INFO by default; override with AL_LOG_FILE_LEVEL (e.g.
-    // `debug`, or `al_core=trace`) to capture detail for a hard-to-reproduce
+    // `debug`, or `al_lsp=trace`) to capture detail for a hard-to-reproduce
     // issue without recompiling. Empty/unset falls back to INFO.
     let file_filter = std::env::var("AL_LOG_FILE_LEVEL")
         .ok()

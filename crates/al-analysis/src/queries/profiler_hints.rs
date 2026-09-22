@@ -47,7 +47,7 @@ pub enum ProfilerHintError {
     IncompleteWorkspace(#[from] super::WorkspaceQueryError),
 }
 
-// The profiler data model lives in the tier-0 `al-types` crate; the parsing
+// The profiler data model lives in the T0 `al-types` crate; the parsing
 // and hint-rendering logic below stays here.
 pub use al_types::{ProfilerHint, ProfilerSession};
 

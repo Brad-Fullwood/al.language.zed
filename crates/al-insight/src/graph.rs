@@ -124,8 +124,8 @@ pub enum NodeKey {
 
 /// The insight graph: a directed graph of AL objects, procedures, events, and subscribers.
 ///
-/// Internal fields are `pub(crate)` so the rest of `al-core` (queries, search,
-/// index helpers) can read the underlying `petgraph` directly, but external
+/// Internal fields are `pub(crate)` so the rest of `al-insight` (queries,
+/// search, index helpers) can read the underlying `petgraph` directly, but external
 /// crates must go through the read-only accessors below. This stops downstream
 /// crates from building on a transient internal layout.
 pub struct InsightGraph {
@@ -420,7 +420,7 @@ impl InsightGraph {
     /// Cold builds for a full BC workspace (~600 tables, thousands of fields)
     /// can take 50–200 ms. The work is wrapped in a `tracing::info_span` and
     /// emits a one-shot log line with elapsed time and final node/edge
-    /// counts so latency is observable from `RUST_LOG=al_core::insight=info`.
+    /// counts so latency is observable from `RUST_LOG=al_insight=info`.
     pub fn build_from_index(&mut self, symbols: &al_symbols::SymbolIndex) {
         let span = tracing::info_span!("insight_graph.build", entries = symbols.len());
         let _enter = span.enter();

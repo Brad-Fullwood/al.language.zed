@@ -791,7 +791,7 @@ async fn zed_fidelity_diagnostic_range_is_utf16() {
     let mut client = LspClient::spawn(&dir).await.unwrap();
 
     // Use AL code with a missing closing paren — a well-known tree-sitter
-    // parse-error trigger (see al-core syntax_diagnostics tests). The
+    // parse-error trigger (see al-syntax's syntax_diagnostics tests). The
     // previous "missing semicolon" fixture parses cleanly via error recovery
     // and emits no diagnostics, defeating the UTF-16 range check below.
     let bad_al = "codeunit 50100 Test\n{\n    procedure Broken(\n    begin\n    end;\n}\n";

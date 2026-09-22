@@ -1079,7 +1079,7 @@ mod tests {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "al-core-project-test-{}-{}",
+            "al-project-test-{}-{}",
             std::process::id(),
             id
         ));

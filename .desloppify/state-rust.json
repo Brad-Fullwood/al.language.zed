@@ -12,8 +12,8 @@
     "auto_resolved": 0,
     "deferred": 0,
     "false_positive": 0,
-    "fixed": 20,
-    "open": 1245,
+    "fixed": 27,
+    "open": 1238,
     "triaged_out": 0,
     "wontfix": 0,
     "by_tier": {
@@ -21,8 +21,8 @@
         "auto_resolved": 0,
         "deferred": 0,
         "false_positive": 0,
-        "fixed": 0,
-        "open": 65,
+        "fixed": 7,
+        "open": 58,
         "triaged_out": 0,
         "wontfix": 0
       },
@@ -35769,11 +35769,11 @@
         "reasoning": "",
         "summary_hash": "7ad82720"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "al-symbols/src/language_data.rs is deleted on this branch base; al-symbols calls al_syntax::language_data, so one ObjectType struct and one LazyLock snapshot of object_types.json remain.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:33:52+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -35781,7 +35781,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually al-symbols/src/language_data.rs is deleted on this branch base; al-symbols calls al_syntax::language_data, so one ObjectType struct and one LazyLock snapshot of object_types.json remain. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:33:52+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::cross_module_architecture::architecture_doc_edges_drifted": {
       "id": "review::.::holistic::cross_module_architecture::architecture_doc_edges_drifted",
@@ -36182,11 +36188,11 @@
         "reasoning": "",
         "summary_hash": "cfd06221"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Same deletion as the cross-module finding: the second ObjectType loader in al-symbols is gone on this branch base and its callers use al_syntax::language_data.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:34:00+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -36194,7 +36200,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Same deletion as the cross-module finding: the second ObjectType loader in al-symbols is gone on this branch base and its callers use al_syntax::language_data. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:34:00+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::high_level_elegance::explorer_bypasses_its_own_thin_client_contract": {
       "id": "review::.::holistic::high_level_elegance::explorer_bypasses_its_own_thin_client_contract",
@@ -36939,11 +36951,11 @@
         "reasoning": "",
         "summary_hash": "421bfe86"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "default_900 and default_5 are default_device_code_lifetime_secs and default_device_code_poll_secs in al-symbols/src/oauth/flows.rs on this branch base.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:34:20+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -36951,7 +36963,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually default_900 and default_5 are default_device_code_lifetime_secs and default_device_code_poll_secs in al-symbols/src/oauth/flows.rs on this branch base. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:34:20+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::naming_quality::three_way_formatting_settings_vocabulary": {
       "id": "review::.::holistic::naming_quality::three_way_formatting_settings_vocabulary",
@@ -38807,11 +38825,11 @@
         "reasoning": "",
         "summary_hash": "2a3050ad"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Renamed to count_call_references in al-syntax/src/navigation.rs, with the obsolescence.rs call site and the al-syntax lib.rs re-export updated, on this branch base.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:34:25+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -38819,7 +38837,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Renamed to count_call_references in al-syntax/src/navigation.rs, with the obsolescence.rs call site and the al-syntax lib.rs re-export updated, on this branch base. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:34:25+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::api_surface_coherence::sibling_parameter_order_drift": {
       "id": "review::.::holistic::api_surface_coherence::sibling_parameter_order_drift",
@@ -39335,11 +39359,11 @@
         "reasoning": "",
         "summary_hash": "38552feb"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "The duplicate loader and the stale dependency-rule comment justifying it are deleted on this branch base; al-symbols uses al_syntax::language_data.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:34:05+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39347,7 +39371,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually The duplicate loader and the stale dependency-rule comment justifying it are deleted on this branch base; al-symbols uses al_syntax::language_data. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:34:05+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::incomplete_migration::unused_deps_from_crate_split": {
       "id": "review::.::holistic::incomplete_migration::unused_deps_from_crate_split",
@@ -39604,11 +39634,11 @@
         "reasoning": "",
         "summary_hash": "7b837944"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Only al-syntax holds a LazyLock snapshot of object_types.json now; the al-symbols copy with the narrower struct is deleted on this branch base.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:34:10+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39616,7 +39646,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Only al-syntax holds a LazyLock snapshot of object_types.json now; the al-symbols copy with the narrower struct is deleted on this branch base. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:34:10+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::initialization_coupling::daemon_oncelock_unset_case": {
       "id": "review::.::holistic::initialization_coupling::daemon_oncelock_unset_case",
@@ -39828,11 +39864,11 @@
         "reasoning": "",
         "summary_hash": "4eb7e873"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "The module whose doc comment contradicted al-symbols/Cargo.toml no longer exists on this branch base, so the manifest and the code agree.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:34:15+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39840,7 +39876,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually The module whose doc comment contradicted al-symbols/Cargo.toml no longer exists on this branch base, so the manifest and the code agree. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:34:15+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::contract_coherence::error_erasing_passthrough": {
       "id": "review::.::holistic::contract_coherence::error_erasing_passthrough",
@@ -40173,7 +40215,10 @@
     "api_surface_coherence": {
       "score": 81.5,
       "source": "holistic",
-      "assessed_at": "2026-09-21T10:09:03+00:00"
+      "assessed_at": "2026-09-21T10:09:03+00:00",
+      "needs_review_refresh": true,
+      "refresh_reason": "review_issue_fixed",
+      "stale_since": "2026-09-22T01:34:25+00:00"
     },
     "authorization_consistency": {
       "score": 78.5,
@@ -40183,7 +40228,10 @@
     "contract_coherence": {
       "score": 75.0,
       "source": "holistic",
-      "assessed_at": "2026-09-21T10:09:03+00:00"
+      "assessed_at": "2026-09-21T10:09:03+00:00",
+      "needs_review_refresh": true,
+      "refresh_reason": "review_issue_fixed",
+      "stale_since": "2026-09-22T01:34:15+00:00"
     },
     "convention_outlier": {
       "score": 80.0,
@@ -40193,7 +40241,10 @@
     "cross_module_architecture": {
       "score": 79.5,
       "source": "holistic",
-      "assessed_at": "2026-09-21T10:09:03+00:00"
+      "assessed_at": "2026-09-21T10:09:03+00:00",
+      "needs_review_refresh": true,
+      "refresh_reason": "review_issue_fixed",
+      "stale_since": "2026-09-22T01:33:52+00:00"
     },
     "dependency_health": {
       "score": 78.5,
@@ -40213,17 +40264,26 @@
     "high_level_elegance": {
       "score": 84.5,
       "source": "holistic",
-      "assessed_at": "2026-09-21T10:09:03+00:00"
+      "assessed_at": "2026-09-21T10:09:03+00:00",
+      "needs_review_refresh": true,
+      "refresh_reason": "review_issue_fixed",
+      "stale_since": "2026-09-22T01:34:00+00:00"
     },
     "incomplete_migration": {
       "score": 74.0,
       "source": "holistic",
-      "assessed_at": "2026-09-21T10:09:03+00:00"
+      "assessed_at": "2026-09-21T10:09:03+00:00",
+      "needs_review_refresh": true,
+      "refresh_reason": "review_issue_fixed",
+      "stale_since": "2026-09-22T01:34:05+00:00"
     },
     "initialization_coupling": {
       "score": 88.0,
       "source": "holistic",
-      "assessed_at": "2026-09-21T10:09:03+00:00"
+      "assessed_at": "2026-09-21T10:09:03+00:00",
+      "needs_review_refresh": true,
+      "refresh_reason": "review_issue_fixed",
+      "stale_since": "2026-09-22T01:34:10+00:00"
     },
     "logic_clarity": {
       "score": 86.0,
@@ -40243,7 +40303,10 @@
     "naming_quality": {
       "score": 87.0,
       "source": "holistic",
-      "assessed_at": "2026-09-21T10:09:03+00:00"
+      "assessed_at": "2026-09-21T10:09:03+00:00",
+      "needs_review_refresh": true,
+      "refresh_reason": "review_issue_fixed",
+      "stale_since": "2026-09-22T01:34:20+00:00"
     },
     "package_organization": {
       "score": 77.0,
@@ -79747,13 +79810,13 @@
       "strict": 81.5,
       "verified_strict_score": 81.5,
       "checks": 10,
-      "failing": 9,
+      "failing": 8,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.815,
-          "failing": 9,
+          "failing": 8,
           "weighted_failures": 1.85,
           "assessment_score": 81.5,
           "placeholder": false,
@@ -79789,13 +79852,13 @@
       "strict": 75.0,
       "verified_strict_score": 75.0,
       "checks": 10,
-      "failing": 4,
+      "failing": 3,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.75,
-          "failing": 4,
+          "failing": 3,
           "weighted_failures": 2.5,
           "assessment_score": 75.0,
           "placeholder": false,
@@ -79831,13 +79894,13 @@
       "strict": 79.5,
       "verified_strict_score": 79.5,
       "checks": 10,
-      "failing": 7,
+      "failing": 6,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.795,
-          "failing": 7,
+          "failing": 6,
           "weighted_failures": 2.05,
           "assessment_score": 79.5,
           "placeholder": false,
@@ -79915,13 +79978,13 @@
       "strict": 84.5,
       "verified_strict_score": 84.5,
       "checks": 10,
-      "failing": 7,
+      "failing": 6,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.845,
-          "failing": 7,
+          "failing": 6,
           "weighted_failures": 1.55,
           "assessment_score": 84.5,
           "placeholder": false,
@@ -79936,13 +79999,13 @@
       "strict": 74.0,
       "verified_strict_score": 74.0,
       "checks": 10,
-      "failing": 4,
+      "failing": 3,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.74,
-          "failing": 4,
+          "failing": 3,
           "weighted_failures": 2.6,
           "assessment_score": 74.0,
           "placeholder": false,
@@ -79957,13 +80020,13 @@
       "strict": 88.0,
       "verified_strict_score": 88.0,
       "checks": 10,
-      "failing": 2,
+      "failing": 1,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.88,
-          "failing": 2,
+          "failing": 1,
           "weighted_failures": 1.2,
           "assessment_score": 88.0,
           "placeholder": false,
@@ -80041,13 +80104,13 @@
       "strict": 87.0,
       "verified_strict_score": 87.0,
       "checks": 10,
-      "failing": 8,
+      "failing": 7,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.87,
-          "failing": 8,
+          "failing": 7,
           "weighted_failures": 1.3,
           "assessment_score": 87.0,
           "placeholder": false,

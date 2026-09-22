@@ -537,7 +537,7 @@ impl FileIndex {
 
     /// Add a file to the index using a pre-parsed tree, skipping the internal parse.
     ///
-    /// Used by `on_document_change` in `al-core::workspace` to avoid a double-parse:
+    /// Used by `on_document_change` in `al_workspace` to avoid a double-parse:
     /// the caller parses once to warm the document cache, then passes the same tree here.
     ///
     /// The caller is responsible for removing old object-name mappings via
@@ -2238,7 +2238,7 @@ codeunit 50101 "Second Codeunit"
 
 /// Production `ProcedureSource` for the AL interpreter (al-runtime).
 ///
-/// The interpreter (tier 1) reaches procedures through this seam rather than
+/// The interpreter (T1) reaches procedures through this seam rather than
 /// naming the workspace hub. `al-runtime` defines the trait in `al-types`;
 /// this is its real implementation over the file index.
 impl al_types::ProcedureSource for FileIndex {
