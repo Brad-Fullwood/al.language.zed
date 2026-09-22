@@ -378,6 +378,8 @@ Each of these is a fix I tried to break and could not, with what was tried.
   `\\attacker.example\share\x` would make that call attempt an SMB connection, which is the
   classic NTLM-hash leak. The path is then rejected for being outside the roots, so the only
   effect is the lookup itself. [UNVERIFIED]: Linux-only review host, not reproduced.
+  Guarded anyway: `is_unc` refuses `\\server\share` and `\\?\UNC\…` as text, on every
+  platform, before any filesystem call, with a regression test that runs on Linux.
 - Windows drive-relative input such as `C:foo` reaches `base.join(...)`, where `PathBuf::push`
   replaces the whole path because the argument carries a prefix. The result resolves against the
   daemon's working directory rather than the project, and then fails the `starts_with` check
@@ -386,6 +388,7 @@ Each of these is a fix I tried to break and could not, with what was tried.
 - `crates/al-dap/src/dap/native_dap.rs:1812` spawns `cmd /c start <url>` without the empty title
   argument that `oauth.rs:729` passes, so a quoted URL is consumed as the window title. That reads
   as a functional bug rather than a security one, and was not reproduced. [UNVERIFIED]
+  Fixed anyway: the two call sites now pass the same argument list.
 
 ## Review complete
 

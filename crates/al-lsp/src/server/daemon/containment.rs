@@ -33,6 +33,15 @@ pub(crate) fn resolve_path_within_roots(
     base: &Path,
     roots: &[PathBuf],
 ) -> Option<PathBuf> {
+    if is_unc(requested) {
+        // A UNC path such as `\\attacker.example\share\x` fails the root check
+        // below, but only after `canonicalize` has already made Windows open an
+        // SMB connection to that host, which is the usual way an NTLM hash
+        // leaves a machine. Refuse it before any filesystem call. On Unix the
+        // same string is an ordinary (if odd) file name, and no AL project
+        // uses one.
+        return None;
+    }
     let absolute = if requested.is_absolute() {
         requested.to_path_buf()
     } else {
@@ -109,6 +118,18 @@ pub(crate) fn resolve_path_within_roots(
         .iter()
         .any(|root| resolved.starts_with(root))
         .then_some(resolved)
+}
+
+/// Whether `path` is written in UNC form (`\\server\share\…`), including the
+/// verbatim spelling `\\?\UNC\…`.
+///
+/// Checked as text rather than through `Component::Prefix` so the answer is the
+/// same on every platform: a path parameter crosses the daemon boundary from
+/// any client, and a Linux daemon must not hand a Windows client a value it
+/// would then resolve differently.
+fn is_unc(path: &Path) -> bool {
+    path.to_str()
+        .is_some_and(|text| text.starts_with(r"\\") || text.starts_with(r"//?/UNC"))
 }
 
 /// Write `contents` to `path` without following a symlink at `path` itself.
@@ -386,6 +407,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "<testsuites/>");
+    }
+
+    /// A UNC path is rejected before any filesystem call, so Windows never
+    /// opens the SMB connection that leaks an NTLM hash.
+    #[test]
+    fn rejects_a_unc_path_without_touching_the_filesystem() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        for requested in [
+            r"\\attacker.example\share\x",
+            r"\\attacker.example\share",
+            r"\\?\UNC\attacker.example\share\x",
+        ] {
+            assert!(
+                resolve_path_within_roots(Path::new(requested), &root, &project(&root)).is_none(),
+                "{requested} must be refused"
+            );
+        }
     }
 
     #[test]
