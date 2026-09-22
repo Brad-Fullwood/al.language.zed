@@ -775,7 +775,7 @@ fn release_provenance_is_published_and_described_honestly() {
         "Docs/current-limitations.md must tell a reader how to verify provenance"
     );
     assert!(
-        limitations.contains("integrity, not authenticity"),
+        limitations.contains("It does not show who produced it."),
         "Docs/current-limitations.md must say what the checksum does not cover"
     );
     assert!(

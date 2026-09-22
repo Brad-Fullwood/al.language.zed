@@ -137,9 +137,10 @@ live in [ROADMAP.md](../ROADMAP.md).
   `binary-checksums.txt` instead, before either is made executable.
   `checksums.txt` still covers the archives for a manual `sha256sum -c` of a
   hand-downloaded asset.
-- **That check is integrity, not authenticity.** The digests are fetched over
-  the same TLS connection to the same GitHub release as the archive, and the
-  extension holds no key. It catches a truncated or corrupted download, an
+- That check shows a download arrived intact. It does not show who produced it.
+  The digests are fetched over the same TLS connection to the same GitHub
+  release as the archive, and the extension holds no key. It catches a
+  truncated or corrupted download, an
   archive replaced without its digest being updated, and a mismatch between what
   CI built and what the release carries. It does not catch anyone who can
   publish to the release: a stolen `GITHUB_TOKEN`, a compromised workflow or

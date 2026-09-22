@@ -61,8 +61,8 @@ al-explorer trust                 # print the values, then record them
 al-explorer trust --revoke        # remove the record
 ```
 
-`trust` prints every privileged value before it writes the record. Read them first: that
-reading is the whole security property.
+`trust` prints every privileged value before it writes the record. Read them first. The
+record covers exactly what was printed.
 
 The record lives in `~/.config/al-lsp/trusted-projects.json` (or `$XDG_CONFIG_HOME/al-lsp/`),
 outside every repository, mode 0600, written through a temp file and a rename. Each entry
@@ -82,7 +82,7 @@ asks for is gated until the project is trusted.
 
 ## How agents are treated
 
-The MCP server and the daemon can never grant trust, and no request through them can supply a
+The MCP server and the daemon cannot grant trust, and no request through them can supply a
 privileged value inline:
 
 - `al_call` reaches the whole daemon method table, and no method writes
@@ -93,10 +93,10 @@ privileged value inline:
   which is its credential to spend.
 - Trust is granted by `al-explorer trust`, which runs in the user's terminal.
 
-This matters because an agent reads the repository. An AL comment, a symbol name in a
-dependency `.app` or a BC response can tell an agent what to call next. If asking an agent to
-"build this to confirm it compiles" were enough to load a repository's analyzer assembly, the
-repository would be able to run code by writing a sentence.
+An agent reads the repository. An AL comment, a symbol name in a dependency `.app` or a BC
+response can tell an agent what to call next. If asking an agent to "build this to confirm it
+compiles" were enough to load a repository's analyzer assembly, a repository could run code by
+writing a sentence.
 
 ## Credentials
 
@@ -108,7 +108,9 @@ download from a BC server.
   a repository cannot redirect the token.
 - An on-premises target is compared on scheme, host and port together. A launch configuration
   naming `https://erp.example.com` does not authorise `http://erp.example.com`.
-- `http://` is refused for bearer and basic credentials unless the host is loopback.
+- `http://` is refused for bearer and basic credentials unless the host is loopback. Set
+  `AL_ALLOW_INSECURE_BC_HTTP=1` to allow a cleartext server elsewhere on a network you trust.
+  An environment variable is a user-level decision, so it needs no project trust.
 - `acceptInvalidCerts` is honoured only where the project's own configuration sets it for the
   same target, and only when the project is trusted.
 
