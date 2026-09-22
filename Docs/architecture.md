@@ -137,8 +137,8 @@ is the single binary that re-exports the whole engine (LSP server + daemon + MCP
 + native DAP), so it depends on every library crate directly. `zed-al` (the WASM
 extension) has **no** Cargo dependency on the engine and drives the compiled
 binaries at runtime (dashed). `al-test-harness` drives the binaries the same
-way and has no production dependency on the engine either, but it
-dev-depends on eight engine crates (`al-analysis`, `al-bc`, `al-compile`,
+way. Its one production dependency is `al-protocol`, the client it uses to
+identify and stop the daemons it starts. It also dev-depends on eight engine crates (`al-analysis`, `al-bc`, `al-compile`,
 `al-emit`, `al-project`, `al-publish`, `al-test`, `al-workspace`) for
 in-process assertions, so those edges are dev-only and are not drawn.
 
@@ -200,6 +200,7 @@ graph TD
   al_explorer --> al_symbols
 
   zed_al -.->|spawns al-lsp at runtime| al_lsp
+  al_test_harness --> al_protocol
   al_test_harness -.->|drives binaries in tests| al_lsp
   al_test_harness -.->|drives binaries in tests| al_explorer
 ```
