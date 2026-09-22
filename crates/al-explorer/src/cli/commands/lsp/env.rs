@@ -105,6 +105,13 @@ pub fn cmd_clear_cache(json: bool) -> ExitCode {
     }
 }
 
+/// How long `daemon-shutdown` waits for the endpoint to stop accepting.
+///
+/// The daemon drains in-flight connections for up to 10 s before its listener
+/// closes, so a caller that must know it is gone waits past that. A
+/// `SessionEnd` hook is one such caller.
+const SHUTDOWN_ENDPOINT_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
 pub fn cmd_daemon_shutdown(json: bool) -> ExitCode {
     let root = match project_root(None) {
         Ok(root) => root,
@@ -130,17 +137,22 @@ pub fn cmd_daemon_shutdown(json: bool) -> ExitCode {
     }
     drop(client);
 
-    #[cfg(not(windows))]
+    // The daemon acknowledges `shutdown` before it stops listening, so a
+    // caller that returns here races the dying daemon: the next command can
+    // still connect to it, and it can still be holding gigabytes. Wait until
+    // nothing answers on the endpoint. A leftover socket file is not the
+    // signal — on Unix it outlives a killed daemon and is removed a moment
+    // after an orderly stop — so this waits on the connect instead.
     if let Some(endpoint) = al_protocol::socket_path(&root) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while endpoint.exists() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
-        if endpoint.exists() {
+        if !al_protocol::wait_for_endpoint_closed(&endpoint, SHUTDOWN_ENDPOINT_WAIT) {
             return report_error(
                 &format!(
-                    "daemon accepted shutdown but endpoint still exists: {}",
-                    endpoint.display()
+                    "the daemon for {} accepted shutdown but was still answering on {} after \
+                     {}s. Something is holding it: check `al-explorer --json status` for work in \
+                     flight, or stop the `al-lsp daemon` process for this project.",
+                    root.display(),
+                    endpoint.display(),
+                    SHUTDOWN_ENDPOINT_WAIT.as_secs()
                 ),
                 json,
             );

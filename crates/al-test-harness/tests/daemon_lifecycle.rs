@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use al_test_harness::al_lsp_binary;
+use al_test_harness::{al_explorer_binary, al_lsp_binary};
 
 /// A private `XDG_RUNTIME_DIR` per test, so these daemons cannot collide with
 /// the developer's own and cannot be found by anything else.
@@ -114,6 +114,43 @@ fn an_idle_daemon_exits_on_its_own() {
     assert!(
         waited.is_some(),
         "a daemon with a 3s idle timeout must exit once nothing is using it"
+    );
+}
+
+/// `daemon-shutdown` used to return while the daemon was still listening, so
+/// the next command could connect to a dying daemon. The plugin's `SessionEnd`
+/// hook was held back on exactly this.
+#[test]
+fn daemon_shutdown_returns_only_once_the_endpoint_is_closed() {
+    let project = tempfile::tempdir().expect("create a project directory");
+    let runtime_dir = private_runtime_dir("shutdown");
+    let mut daemon = DaemonProcess::start(project.path(), runtime_dir.clone(), "0");
+    daemon.wait_until_listening();
+
+    let output = Command::new(al_explorer_binary())
+        .arg("daemon-shutdown")
+        .current_dir(project.path())
+        .env("XDG_RUNTIME_DIR", &runtime_dir)
+        .env("XDG_DATA_HOME", runtime_dir.join("data"))
+        .env("XDG_CACHE_HOME", runtime_dir.join("cache"))
+        .env("XDG_CONFIG_HOME", runtime_dir.join("config"))
+        .output()
+        .expect("run al-explorer daemon-shutdown");
+    assert!(
+        output.status.success(),
+        "daemon-shutdown failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The moment the command returns, nothing may answer on the endpoint.
+    assert!(
+        al_protocol::client::wait_for_endpoint_closed(&daemon.endpoint, Duration::ZERO),
+        "daemon-shutdown returned while {} was still accepting",
+        daemon.endpoint.display()
+    );
+    assert!(
+        daemon.wait_for_exit(Duration::from_secs(10)).is_some(),
+        "the daemon must exit after it stops listening"
     );
 }
 
