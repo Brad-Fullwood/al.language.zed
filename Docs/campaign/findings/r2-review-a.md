@@ -124,7 +124,7 @@ Multi-object open item:
   same-app-then-dependency preference the a8ead4ab finding asked for) now has to be made twice.
 - fix: make `object_path_near` and `object_path_of_kind_near` call `object_path_where` and delete
   `best_owner`.
-- status: fixed PLACEHOLDER3 — `object_path_near` calls `object_path_where` and `best_owner` is
+- status: fixed f05ffe20 — `object_path_near` calls `object_path_where` and `best_owner` is
   gone, so the ranking rule lives in one place.
 
 ### [SLOP] `FileIndex::object_path_of_kind_near` has no caller but its own test
@@ -136,7 +136,7 @@ Multi-object open item:
   the kind-plus-app variant is public surface added by the merge that nothing asked for.
 - fix: delete it, or use it at the call sites that pass a kind list and a referring file
   (resolution.rs:1316 `object_path_of_kind(enum_name, ...)` is one).
-- status: fixed PLACEHOLDER3 — deleted. Its one assertion now goes through `object_path_where`,
+- status: fixed f05ffe20 — deleted. Its one assertion now goes through `object_path_where`,
   which answers the same question and is the surface the production callers use.
 
 ### [MERGE] `SourceRange.f` is a bare file name from one exit and an absolute path from the other
