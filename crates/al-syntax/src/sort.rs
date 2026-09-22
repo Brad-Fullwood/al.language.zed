@@ -67,11 +67,21 @@ struct BodySpan {
 ///
 /// The syntax tree gives the exact extent of each `object_body`, which is what
 /// keeps a two-object file from being read as one body running from the first
-/// `{` to the last `}`. Returns `None` when the file holds no object, when a
-/// brace shares its line with other code (the member split works on whole
-/// lines), or when the bodies are not disjoint and in source order.
+/// `{` to the last `}`. Returns `None` when the file does not parse, when it
+/// holds no object, when a brace shares its line with other code (the member
+/// split works on whole lines), or when the bodies are not disjoint and in
+/// source order.
 fn object_body_spans(text: &str, lines: &[&str]) -> Option<Vec<BodySpan>> {
     let parsed = crate::parser::AlParser::parse_quick(text);
+    // Splitting a body into members is line-based and assumes the braces inside
+    // it nest. A file with syntax errors can put a closing brace before its
+    // opener, and the split then reads a field-level `trigger` as an object
+    // member and moves whole blocks around it. That stays a pure reordering, so
+    // the guard in `sort_members` does not catch it, and running the command
+    // twice reorders twice. Decline the file instead.
+    if !parsed.errors.is_empty() {
+        return None;
+    }
     let root = parsed.tree.root_node();
 
     let mut spans: Vec<BodySpan> = Vec::new();
