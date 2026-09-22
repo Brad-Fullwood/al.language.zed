@@ -4,7 +4,7 @@ Updated: 2026-09-21 01:30 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
-Round 1 reviews are complete: 224 verified findings in 11 files. Six of seven first-pass fix branches are merged. Follow-up fix branches for the second and third review passes are running.
+Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two adversarial reviewers read the whole campaign diff (`git diff dev..campaign/2026-09-21`, 277 files) looking for fixes that do not fix, merge damage and regressions. A fix agent works the queued items.
 
 ## In flight
 
@@ -12,25 +12,22 @@ Round 1 reviews are complete: 224 verified findings in 11 files. Six of seven fi
 |------|------|--------|
 | desloppify review queue: work all 112 subjective items to empty (resolve, skip with reason, or defer items in files other branches hold), then rescan and record scores | worktree refactor | branch `campaign/slop-review-queue`, `findings/slop-review-queue.md` |
 | Daemon lifecycle: build identity in the handshake, idle exit, PATH fallback version check, `daemon-shutdown` waits for the socket, harness stops leaking daemons | worktree fix | branch `campaign/fix-daemon-lifecycle` |
+| R2 review A: analysis, insight, syntax, source, symbols, runtime, test, emit | review | `findings/r2-review-a.md` |
+| R2 review B: lsp, protocol, explorer, project, compile, bc, dap, extension, plugin, CI, docs, plus trust bypass attempts | review | `findings/r2-review-b.md` |
+| Fix queued items: `test-run <id>`, MCP schema parity, nine multi-object queries, bare field rename, doc drift, scaffold unverified items, emit leftovers | worktree fix | branch `campaign/fix-queued-2` |
 
 Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, CI runs on every push).
 
 Queued:
 
-- `al-explorer test-run <id>` passes the numeric ID where an object name is expected: a test calling a sibling procedure fails with `object '50144' not found in workspace`, while `test-run-all --filter` passes. Reproduced on a minimal codeunit. Found writing the tests article.
-- The named MCP tool `al_getdiagnostics` rejects `text` at its schema while `al_call` method `lint` accepts it.
-- Doc drift found by the blog writer: README.md:199-205 still describes removed plugin workarounds. `Docs/features/native-test-runtime.md:51-52` still says Round uses banker's rounding. `blog-plan.md` has `--include_used` (flag is `--include-used`).
 
-- Nine whole-workspace queries (dead_code, duplicates, sql_patterns, complexity, arch_lint, impact, native_check, obsolescence, obsolete_usage) walk each file from the root, so a multi-object file attributes every finding to the first object. `WorkspaceSource::objects` and `object_at_byte` exist for the fix.
 
 - 124 `trim_matches('"')` identifier cleanups in al-analysis (102) and al-insight (22), replace with `al_syntax::node_text_clean`. Start after both analysis fix branches merge.
-- New findings from the emit fix agent (in `findings/r1-emit-bc-explorer.md`): `SymbolReference.json` has no `Variables` array for global variables, `xlf generate` drops properties declared on a one-line member block, al-dap and al-publish post to different BC dev endpoints (needs a live server to settle), the duplicated response validation framework (about 300 lines to move).
-- `[UNVERIFIED]` scaffold items: copilot template API calls, empty repeater, `UsageCategory = Lists` on Card pages. Check against Microsoft Learn.
+- al-dap and al-publish post to different BC dev endpoints (needs a live server to settle). The duplicated response validation framework in al-explorer (about 300 lines to move).
 - desloppify fix batches (`findings/desloppify.md` section 4), file splits after the owning fix branch merges.
 - Workstream E (tests): coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis. Start when a build slot frees.
 - Workstream D (security): dedicated review after round 1 fixes are in, covering what changed.
 - `al-explorer packages` prints per-package source counts keyed by folded display name (`al-symbols` `index.rs:259`), so two `System` packages with one app id and different versions both show `0/502/1` against 529 manifest objects. Key by app id and version. Details in `findings/blog-progress.md`.
-- `Docs/gaps-and-future-work.md:33` says 23 and 9 fixtures, the directories hold 25 and 10.
 - Blog: article 1 repeats a wrong diagnosis of the `trace` timeout (it is the cold call-graph build, 86 s with Base Application). Rewrite that paragraph. Articles 2, 4, 5, 8 after the daemon work and fix branches merge, then article 9, then the fact pass list in `findings/blog-progress.md`.
 - README.md line 339 omits `publish` from the CLI list. Rebuild `target/release` before measuring for articles (it predates `publish` and `free-ids`).
 - AI tooling build items 9 and 10: dependency package version diff, persisted symbol index (2.9 GB RSS and 54 s cold index today).
