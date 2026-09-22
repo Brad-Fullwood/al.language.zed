@@ -39,6 +39,21 @@ path does **not** use the daemon — it uses LSP handlers directly. See
   size and mtime when the tree is dirty or is not a git checkout — a rebuild of uncommitted work
   does not change the commit, and that is the case this catches. `connect_existing` does no
   handshake, so lifecycle tooling can reach a daemon without replacing it.
+
+  The identity answers which build, not who. It is not an access control and nothing may be
+  built on it as one: what decides whether a daemon may be talked to is the endpoint check in
+  `endpoint.rs`, which walks the socket directory's owners, refuses an endpoint that is a
+  symlink or not a socket, and compares the peer's uid (`SO_PEERCRED`, `getpeereid`) with this
+  user's before a byte is sent.
+
+  Within that, the answer is still bound to a process that can read this user's runtime
+  directory. The client sends a nonce; the daemon answers with an HMAC-SHA256 over the nonce
+  and the identity, keyed by `handshake.key` in that directory (32 random bytes, mode 0600,
+  created with `create_new` by whichever side looks first); the client verifies it. Without
+  that, every input to the identity is world-readable — the commit is in the binary and the
+  file tag hashes a length and an mtime anyone can `stat` — and a one-line answer passed as
+  a matching build. A daemon that answers without a proof is treated as a mismatch and
+  replaced, which is what a daemon predating this needs anyway.
 - **Binary resolution (`find_al_lsp_binary`):** the `al-lsp` beside the running executable wins. A
   fallback to PATH is logged at warn level with the path and version, and refused when that version
   differs from the client's, with an error naming both and how to install a matching pair.

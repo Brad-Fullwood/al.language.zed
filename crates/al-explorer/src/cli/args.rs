@@ -167,9 +167,16 @@ Examples:
     /// Show base + all extensions merged
     Composed {
         /// Object kind (table, page, …) or — with one argument — the name
-        #[arg(value_name = "TYPE_OR_NAME")]
-        kind: String,
+        #[arg(value_name = "TYPE_OR_NAME", required_unless_present = "name")]
+        kind: Option<String>,
         /// Object name (omit to resolve the kind by name automatically)
+        #[arg(value_name = "NAME", conflicts_with = "name")]
+        name_positional: Option<String>,
+        /// Object name, spelled out. One positional means the name and two mean
+        /// kind then name, so a name that could pass for a kind is ambiguous.
+        /// This flag settles it: `composed --name 'Item'`, or with a kind,
+        /// `composed table --name 'Item'`
+        #[arg(long = "name", value_name = "VALUE")]
         name: Option<String>,
     },
     /// List loaded packages with stats
@@ -782,10 +789,15 @@ Settings in .vscode/settings.json, .zed/settings.json and .vscode/launch.json sh
 inside the repository. Analyzer assemblies, raw alc switches, probing paths, package
 feeds and Business Central servers are ignored until the project is trusted.
 
+Run this yourself, in a terminal. It asks before it writes, and it reads the answer
+from the terminal rather than from stdin, so a task, a hook, a skill or an agent's
+shell cannot answer for you.
+
 Examples:
   al-explorer trust --show
   al-explorer trust
   al-explorer trust --revoke ~/src/SomeApp
+  al-explorer trust --yes --root ~/src/SomeApp   # scripted install, no terminal
 
 See Docs/features/project-trust.md.")]
     Trust {
@@ -797,6 +809,12 @@ See Docs/features/project-trust.md.")]
         /// Remove this project from the trusted list
         #[arg(long)]
         revoke: bool,
+        /// Answer the confirmation. Needs --root naming the same project
+        #[arg(long, requires = "root", conflicts_with_all = ["show", "revoke"])]
+        yes: bool,
+        /// The project --yes applies to, spelled out
+        #[arg(long, value_name = "PATH")]
+        root: Option<String>,
     },
 }
 
@@ -813,6 +831,45 @@ mod clap_wiring_tests {
         let mut full = vec!["al-explorer"];
         full.extend_from_slice(args);
         Cli::try_parse_from(full)
+    }
+
+    /// Object names come from a dependency `.app`, so an agent puts arbitrary
+    /// text here. `--` keeps a name that starts with `-` a name.
+    #[test]
+    fn a_name_after_the_separator_is_a_name() {
+        let cli = parse(&["search", "--", "-x"]).expect("-- must end option parsing");
+        assert!(matches!(cli.command, Commands::Search { query } if query == "-x"));
+
+        let cli = parse(&["source", "--list-procedures", "--", "--weird"])
+            .expect("flags before --, name after");
+        assert!(
+            matches!(cli.command, Commands::Source { name, list_procedures, .. }
+            if name == "--weird" && list_procedures)
+        );
+    }
+
+    /// `composed` takes one argument as a name and two as kind then name, so a
+    /// name that could pass for a kind is ambiguous. `--name` settles it.
+    #[test]
+    fn composed_takes_a_name_through_a_flag() {
+        let cli = parse(&["composed", "--name", "table"]).expect("--name alone is a name");
+        assert!(matches!(
+            cli.command,
+            Commands::Composed { kind: None, name: Some(name), .. } if name == "table"
+        ));
+
+        let cli = parse(&["composed", "table", "--name", "Item"]).expect("kind plus --name");
+        assert!(matches!(
+            cli.command,
+            Commands::Composed { kind: Some(kind), name: Some(name), .. }
+                if kind == "table" && name == "Item"
+        ));
+
+        assert!(
+            parse(&["composed", "table", "Item", "--name", "Item"]).is_err(),
+            "the positional name and --name must not both be given"
+        );
+        assert!(parse(&["composed"]).is_err(), "a name is required");
     }
 
     #[test]

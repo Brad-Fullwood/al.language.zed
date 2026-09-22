@@ -26,6 +26,14 @@ else applies as it always has.
 | `al.nugetFeeds` | Every symbol package, including Base Application, comes from these URLs |
 | `al.useOnlyCustomFeeds` | Removes Microsoft's feeds, leaving only the configured ones |
 | `launch.json` / `debug.json` on-premises `server` | Receives the cached Business Central token and, with `acceptInvalidCerts`, decides whether TLS is verified |
+| `al.dotnetPath` | Names the `dotnet` host the toolchain spawns |
+| `lsp.al-lsp.binary.path`, `.arguments`, `.env` | Name a program, its command line and its environment |
+| `lsp.al-lsp.initialization_options` | Reaches the language server as configuration |
+
+The four Zed `lsp.al-lsp` keys are in the digest but are not applied from here: the extension
+ignores `binary.path` and `binary.arguments` outright (see Limits). They are in the digest so
+a record made while `binary.path` said `/bin/sh` goes stale when the arguments change, and so
+a future extension API that exposes `binary.env` does not widen an existing record silently.
 
 `${CodeCop}`, `${AppSourceCop}`, `${UICop}`, `${PerTenantExtensionCop}` and their bare
 spellings are built-in tokens: the toolchain resolves them to Microsoft's own assemblies, so
@@ -39,30 +47,62 @@ project.
 ## What untrusted looks like
 
 The privileged values are dropped and everything else is applied. You get one message naming
-each dropped setting and the command that turns them on:
+the keys that were dropped:
 
 ```
 This project is not trusted, so these settings from its own files were ignored:
-  al.codeAnalyzers = ./tools/Payload.dll (from .vscode/settings.json)
-  al.compilationOptions = /analyzer:/tmp/x.dll (from .vscode/settings.json)
-They can load code, run programs or receive credentials. Read them, then run:
-al-explorer trust /home/you/src/SomeApp
+  al.codeAnalyzers
+  al.compilationOptions
+They can load code, run programs or receive credentials. Their values are not repeated
+here. To read them and decide, the user runs this in a terminal:
+al-explorer trust --show /home/you/src/SomeApp
 ```
 
 In Zed it arrives as a warning notification, in `al-explorer` on stderr, in the daemon and
 the MCP server in the log, and the MCP server also puts it in the `instructions` it hands
 the agent so the agent can pass it on.
 
+The message carries key names and nothing else. A settings value is text the repository
+wrote, and a JSON string holds newlines, so a value spelled as an instruction paragraph
+would arrive in the MCP `instructions` field, which a client presents as the server's own
+guidance. Key names come from a fixed list in `al_project::trust::ADVISORY_KEYS`; a key the
+list does not hold is a launch configuration, whose name the repository also chose, and it
+prints as `launch configuration server`. The values are read with `al-explorer trust
+--show`, in a terminal.
+
+The same rule covers every other message that quotes repository text. A refusal that names
+a Business Central server, a dotnet host or a settings parse error puts it through
+`al_project::trust::one_line`, which escapes control characters and caps the length, so no
+repository byte can start a line of its own.
+
 ## Trusting a project
 
 ```bash
 al-explorer trust --show          # what needs trust, and the current state
-al-explorer trust                 # print the values, then record them
+al-explorer trust                 # print the values, ask, then record them
 al-explorer trust --revoke        # remove the record
 ```
 
-`trust` prints every privileged value before it writes the record. Read them first. The
-record covers exactly what was printed.
+`trust` prints every privileged value, then asks. Type `yes` to record them. The record
+covers exactly what was printed.
+
+The question is asked on the terminal device (`/dev/tty`, `CONIN$` on Windows), not on
+stdin, and a call whose stdin is not a terminal is refused outright. stdin can be a pipe
+while the process still has a controlling terminal, and a pipe is what a task, a hook, a
+`build.rs` or an agent's Bash tool hands over. Being a command rather than a daemon method
+was not enough on its own: the command used to write the record with stdin closed and no
+terminal, so anything running as the user granted trust in one call.
+
+A scripted install whose settings you have read passes `--yes` together with
+`--root <project>`. `--yes` alone is refused, and `--root` naming a different path is
+refused, so the caller spells out which project's values it means. Nothing in `plugin/` or
+`scripts/` runs this command, and nothing should.
+
+A revoke takes effect on the next request. The daemon fingerprints the trust store, the
+user settings file, both repository settings files and the launch file before each request,
+five `stat` calls, and re-evaluates when any of them moved. It used to decide once at
+startup and keep that configuration until it exited, which is up to `AL_DAEMON_IDLE_SECS`
+after the last request and never while an editor keeps it busy.
 
 The record lives in `~/.config/al-lsp/trusted-projects.json` (or `$XDG_CONFIG_HOME/al-lsp/`),
 outside every repository, mode 0600, written through a temp file and a rename. Each entry
@@ -96,7 +136,10 @@ privileged value inline:
   a cached token goes only to a server the project's launch file names, and only when the
   project is trusted. A caller that wants an unlisted server supplies its own `accessToken`,
   which is its credential to spend.
-- Trust is granted by `al-explorer trust`, which runs in the user's terminal.
+- Trust is granted by `al-explorer trust`, which asks the terminal device and refuses a call
+  whose stdin is not a terminal. An agent must not run it, and the messages that mention it
+  say so: they name `al-explorer trust --show` as something the user runs, rather than
+  ending with a command to paste.
 
 An agent reads the repository. An AL comment, a symbol name in a dependency `.app` or a BC
 response can tell an agent what to call next. If asking an agent to "build this to confirm it
@@ -146,8 +189,20 @@ calls them:
 
 ## Limits
 
-The Zed extension resolves `binary.path` (which `al-lsp` binary runs) and `dotnetPath` (which
-`dotnet` the toolchain spawns) from `LspSettings::for_worktree`, and the 0.7 extension API
-gives it one merged value with no provenance. See
-[current limitations](../current-limitations.md#zed-worktree-settings-and-executable-paths)
-for what that means and what al-lsp does about it.
+The Zed extension reads `binary.path`, `binary.arguments` and `dotnetPath` from
+`LspSettings::for_worktree`, and the 0.7 extension API gives it one merged value with no
+provenance. The extension also cannot read this trust store: it runs in Zed's WASM sandbox,
+with no filesystem and no process.
+
+`binary.path` and `binary.arguments` name a program and its command line, and `binary.path`
+decides whether al-lsp runs at all, so al-lsp cannot refuse them on the extension's behalf.
+The extension ignores both, and the debug adapter path with them. Which `al-lsp` runs is the
+extension's own decision: the session cache, then `al-lsp` on `PATH`, then the cached or
+downloaded release. Put a specific build on `PATH` to use it.
+
+`binary.arguments`, `binary.env` and `lsp.al-lsp.initialization_options` are in the digest
+even so. A project trusted while `binary.path` said `/bin/sh` went stale only when the path
+changed, never when the arguments did, and the arguments are the setting.
+
+See [current limitations](../current-limitations.md#zed-worktree-settings-and-executable-paths)
+for `dotnetPath`, which al-lsp does gate on its own side.

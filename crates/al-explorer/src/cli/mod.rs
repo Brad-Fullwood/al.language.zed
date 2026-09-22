@@ -104,7 +104,23 @@ pub fn run(cli: Cli) -> ExitCode {
         Commands::Events { name } => lsp::cmd_events(&name, cli.json),
         Commands::Subscribers { event } => lsp::cmd_subscribers(&event, cli.json),
         Commands::EventSource { file, line } => lsp::cmd_event_source(&file, line, cli.json),
-        Commands::Composed { kind, name } => lsp::cmd_composed(&kind, name.as_deref(), cli.json),
+        // `composed <NAME>`, `composed <KIND> <NAME>` and `composed [KIND]
+        // --name <NAME>` all reach the same two arguments. With `--name` and no
+        // kind, the name takes the single-argument slot the resolver already
+        // treats as a name.
+        Commands::Composed {
+            kind,
+            name_positional,
+            name,
+        } => {
+            let (kind, name) = match (kind, name) {
+                (Some(kind), None) => (kind, name_positional),
+                (Some(kind), Some(name)) => (kind, Some(name)),
+                (None, Some(name)) => (name, None),
+                (None, None) => unreachable!("clap requires a kind or --name"),
+            };
+            lsp::cmd_composed(&kind, name.as_deref(), cli.json)
+        }
         Commands::Packages => lsp::cmd_packages(cli.json),
         Commands::Deps => lsp::cmd_deps(cli.json),
         Commands::Compile { project } => build::cmd_compile(project.as_deref(), cli.json),
@@ -341,6 +357,15 @@ pub fn run(cli: Cli) -> ExitCode {
             project,
             show,
             revoke,
-        } => commands::trust::cmd_trust(project.as_deref(), show, revoke, cli.json),
+            yes,
+            root,
+        } => commands::trust::cmd_trust(
+            project.as_deref(),
+            show,
+            revoke,
+            yes,
+            root.as_deref(),
+            cli.json,
+        ),
     }
 }

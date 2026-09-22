@@ -106,87 +106,12 @@ const MAX_IN_FLIGHT_PER_CONNECTION: usize = 8;
 const ACCEPT_BACKOFF_START: Duration = Duration::from_millis(10);
 const ACCEPT_BACKOFF_CAP: Duration = Duration::from_secs(5);
 
-/// Refuse a directory anyone but this user, or root, could replace.
-///
-/// With `XDG_RUNTIME_DIR` unset the socket path falls back to
-/// `{temp_dir}/{USER}/al-lsp/<hash>.sock`. `DirBuilder::recursive` applies its
-/// mode only to the directories it creates, so on a shared host an attacker who
-/// creates `/tmp/<victim>` first owns the parent, can rename the `al-lsp` entry
-/// whatever its own mode says, and can bind their own socket where al-explorer
-/// and the MCP server connect.
-///
-/// A component passes when this user owns it, or root owns it and it is either
-/// not writable by group or other, or sticky (which is what `/tmp` is).
+// The daemon runtime directory check lives beside the client's endpoint
+// check, so the two cannot drift: the daemon runs it before it creates the
+// socket and the client runs it before it connects. See
+// `al_protocol::endpoint`.
 #[cfg(unix)]
-fn check_directory_owner(dir: &std::path::Path) -> std::io::Result<()> {
-    use std::os::unix::fs::MetadataExt;
-
-    let refuse = |message: String| {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            message,
-        ))
-    };
-    // Safety: `geteuid` reads the calling process's own effective uid and
-    // cannot fail.
-    let me = unsafe { libc::geteuid() };
-    let metadata = std::fs::symlink_metadata(dir)?;
-    if metadata.file_type().is_symlink() {
-        return refuse(format!(
-            "the daemon runtime directory '{}' is a symbolic link",
-            dir.display()
-        ));
-    }
-    let owner = metadata.uid();
-    if owner == me {
-        return Ok(());
-    }
-    if owner != 0 {
-        return refuse(format!(
-            "the daemon runtime directory '{}' is owned by uid {owner}, not by you (uid {me})",
-            dir.display()
-        ));
-    }
-    let mode = metadata.mode();
-    let sticky = mode & 0o1000 != 0;
-    if mode & 0o022 != 0 && !sticky {
-        return refuse(format!(
-            "the daemon runtime directory '{}' is writable by other users (mode {:o})",
-            dir.display(),
-            mode & 0o7777
-        ));
-    }
-    Ok(())
-}
-
-/// Create `dir` (and parents) restricted to the owner (0o700), refusing any
-/// existing component someone else could replace.
-///
-/// `DirBuilder::mode` applies the mode only to directories this call creates, so
-/// a dir left at a laxer mode by an earlier run (created before this hardening,
-/// or under a different umask) would keep its old permissions. We therefore
-/// re-assert 0o700 after creation, making the result independent of prior state.
-#[cfg(unix)]
-fn ensure_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-
-    // Every existing ancestor, root first, so the refusal names the outermost
-    // directory that fails rather than the leaf inside it.
-    let mut walked = std::path::PathBuf::new();
-    for component in dir.components() {
-        walked.push(component.as_os_str());
-        if walked.exists() {
-            check_directory_owner(&walked)?;
-        }
-    }
-
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)?;
-    check_directory_owner(dir)?;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-}
+use al_protocol::endpoint::ensure_private_dir;
 
 /// How long this daemon stays alive with nothing to do.
 ///
@@ -258,6 +183,13 @@ pub async fn run_daemon(
     // CLI/TUI daemon clients do not send LSP initializationOptions. Merge the
     // persisted config with project-local VS Code/Zed settings so compiler
     // backend and symbol-package paths match the editor.
+    // Recorded before the read, so a store or settings file written while this
+    // evaluation runs is seen as a change by the next request rather than
+    // missed.
+    TRUST_INPUTS.store(
+        al_project::trust::inputs_fingerprint(&project_root),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     let evaluated = al_project::trust::evaluate(&project_root)?;
     *workspace.config.write().await = evaluated.config;
     if let Some(advisory) = evaluated.decision.advisory() {
@@ -819,11 +751,60 @@ where
     }
 }
 
+/// The fingerprint of the trust inputs the daemon last evaluated.
+///
+/// Process-wide rather than per workspace: a daemon serves one project.
+static TRUST_INPUTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Re-evaluate trust when anything it reads has changed.
+///
+/// The daemon evaluated once at startup and kept that configuration until it
+/// exited, which is up to `AL_DAEMON_IDLE_SECS` after the last request, or
+/// never while an editor keeps it busy. So `al-explorer trust --revoke` left
+/// the privileged settings in effect in the process that was applying them.
+///
+/// Four `stat` calls per request decide whether to read the files again, so
+/// the common case costs nothing and a revoke takes effect on the next
+/// request.
+async fn refresh_trust(workspace: &Workspace) {
+    use std::sync::atomic::Ordering;
+
+    let Some(project_root) = workspace
+        .project
+        .try_read()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|project| project.root.clone()))
+    else {
+        return;
+    };
+
+    let fingerprint = al_project::trust::inputs_fingerprint(&project_root);
+    if TRUST_INPUTS.swap(fingerprint, Ordering::Relaxed) == fingerprint {
+        return;
+    }
+
+    match al_project::trust::evaluate(&project_root) {
+        Ok(evaluated) => {
+            if let Some(advisory) = evaluated.decision.advisory() {
+                tracing::warn!("daemon: {advisory}");
+            }
+            *workspace.config.write().await = evaluated.config;
+        }
+        // A settings file that stopped parsing is not a reason to keep serving
+        // the configuration it used to hold.
+        Err(error) => {
+            tracing::warn!(%error, "daemon: trust re-evaluation failed, denying privileged settings");
+            al_project::trust::deny_privileged(&mut *workspace.config.write().await);
+        }
+    }
+}
+
 pub(crate) async fn dispatch_request(
     workspace: &std::sync::Arc<Workspace>,
     req: Request,
     shutdown: &Notify,
 ) -> Response {
+    refresh_trust(workspace).await;
     let method = req.method.clone();
     let params = req.params.clone().unwrap_or(serde_json::Value::Null);
     let declared = DISPATCHERS
@@ -1200,13 +1181,29 @@ dispatch_table! {
         // answers with a different one. See `al_protocol::identity`.
         "handshake" [] => {
             let identity = al_protocol::identity::current_identity();
+            let mut result = serde_json::json!({
+                "version": identity.version,
+                "build": identity.build,
+                "pid": std::process::id(),
+            });
+            // Everything the identity is made of is world-readable, so a
+            // process answering on this endpoint could say the same words. The
+            // proof is an HMAC over the client's nonce and the identity, keyed
+            // by a file only this user can read, so the answer is something a
+            // planted daemon cannot produce.
+            let nonce = params
+                .get("nonce")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if !nonce.is_empty() {
+                if let Some(secret) = al_protocol::client::handshake_secret() {
+                    result["proof"] =
+                        serde_json::json!(al_protocol::identity::proof(&secret, nonce, &identity));
+                }
+            }
             Response {
                 id,
-                result: Some(serde_json::json!({
-                    "version": identity.version,
-                    "build": identity.build,
-                    "pid": std::process::id(),
-                })),
+                result: Some(result),
                 error: None,
                 ..Default::default()
             }
@@ -2066,7 +2063,7 @@ mod runtime_dir_tests {
         use std::os::unix::fs::MetadataExt;
         assert_eq!(metadata.uid(), 0, "/tmp is expected to be root-owned");
         assert_ne!(metadata.mode() & 0o1000, 0, "/tmp is expected to be sticky");
-        super::check_directory_owner(shared).unwrap();
+        al_protocol::endpoint::check_directory_owner(shared).unwrap();
     }
 }
 

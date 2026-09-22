@@ -3,7 +3,9 @@
 
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
 
-use super::bc_server_params::{parse_bc_server_params, reject_unsafe_server_url};
+use super::bc_server_params::{
+    authorize_bc_server, parse_bc_server_params, reject_unsafe_server_url,
+};
 use crate::server::daemon::{optional_bounded_usize_param, rpc_error};
 
 pub(in crate::server::daemon) async fn dispatch_snapshot(
@@ -27,12 +29,15 @@ pub(in crate::server::daemon) async fn dispatch_snapshot(
         }
     };
 
-    let bc = match parse_bc_server_params(workspace, params, "snapshots") {
+    let mut bc = match parse_bc_server_params(workspace, params, "snapshots") {
         Ok(config) => config,
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
     if let Some(err) = reject_unsafe_server_url(id, &bc.server_url) {
         return err;
+    }
+    if let Err(message) = authorize_bc_server(workspace, params, &mut bc) {
+        return rpc_error(id, error_codes::INVALID_PARAMS, &message);
     }
     let config = al_bc::snapshot::SnapshotConfig {
         server_url: bc.server_url,
@@ -184,12 +189,15 @@ pub(in crate::server::daemon) async fn dispatch_profiling(
         }
     };
 
-    let bc = match parse_bc_server_params(workspace, params, "profiles") {
+    let mut bc = match parse_bc_server_params(workspace, params, "profiles") {
         Ok(config) => config,
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
     if let Some(err) = reject_unsafe_server_url(id, &bc.server_url) {
         return err;
+    }
+    if let Err(message) = authorize_bc_server(workspace, params, &mut bc) {
+        return rpc_error(id, error_codes::INVALID_PARAMS, &message);
     }
     let config = al_bc::profiling::ProfilingConfig {
         server_url: bc.server_url,
@@ -371,6 +379,75 @@ mod tests {
         (dir, workspace)
     }
 
+    /// A project that names `server_uri` in its launch file and is recorded as
+    /// trusted, which is what an inline `serverUrl` now needs.
+    ///
+    /// Returned as a guard because it points `XDG_CONFIG_HOME` at a scratch
+    /// directory for the life of the test. Every test that uses it is
+    /// `#[serial_test::serial]`, because that variable is process-wide.
+    struct TrustingProject {
+        project: tempfile::TempDir,
+        _config: tempfile::TempDir,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for TrustingProject {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+    }
+
+    fn trusting_project_ws(server_uri: &str) -> (TrustingProject, al_workspace::Workspace) {
+        let config = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", config.path());
+
+        let project = tempfile::tempdir().unwrap();
+        let url = url::Url::parse(server_uri).expect("mock server uri");
+        std::fs::create_dir_all(project.path().join(".vscode")).unwrap();
+        std::fs::write(
+            project.path().join(".vscode/launch.json"),
+            serde_json::to_string(&serde_json::json!({
+                "version": "0.2.0",
+                "configurations": [{
+                    "type": "al",
+                    "request": "launch",
+                    "name": "mock",
+                    "environmentType": "OnPrem",
+                    "server": format!("{}://{}", url.scheme(), url.host_str().unwrap()),
+                    "port": url.port().unwrap_or(80),
+                    "serverInstance": "BC",
+                }],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(project.path().join("app.json"), "{}").unwrap();
+
+        let decision = al_project::trust::decide(project.path()).expect("decide");
+        al_project::trust::trust_project(&decision.root, &decision.digest).expect("trust");
+
+        let workspace = al_workspace::Workspace::new();
+        crate::server::daemon::set_test_project_root(&workspace, project.path());
+        (
+            TrustingProject {
+                project,
+                _config: config,
+                previous,
+            },
+            workspace,
+        )
+    }
+
+    impl TrustingProject {
+        fn path(&self) -> &std::path::Path {
+            self.project.path()
+        }
+    }
+
     #[tokio::test]
     async fn dispatch_snapshot_rejects_non_http_serverurl() {
         let (_project, ws) = project_ws();
@@ -511,10 +588,11 @@ mod tests {
     use wiremock::matchers::{body_json, method as wm_method, path as wm_path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn snapshot_start_posts_and_parses_id() {
-        let (_project, ws) = project_ws();
         let server = MockServer::start().await;
+        let (_project, ws) = trusting_project_ws(&server.uri());
         Mock::given(wm_method("POST"))
             .and(wm_path("/dev/snapshot"))
             .and(query_param("company", "CRONUS"))
@@ -544,12 +622,13 @@ mod tests {
         assert_eq!(r["status"], "started");
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn snapshot_start_server_error_maps_to_internal_error() {
-        let (_project, ws) = project_ws();
+        let server = MockServer::start().await;
         // Negative: a 500 from BC must become an INTERNAL_ERROR whose message
         // names the failed operation — not a silent success.
-        let server = MockServer::start().await;
+        let (_project, ws) = trusting_project_ws(&server.uri());
         Mock::given(wm_method("POST"))
             .and(wm_path("/dev/snapshot"))
             .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
@@ -575,12 +654,13 @@ mod tests {
         );
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn snapshot_list_parses_value_envelope() {
-        let (_project, ws) = project_ws();
+        let server = MockServer::start().await;
         // The OData `{ "value": [...] }` envelope must be parsed into the
         // dispatcher's `snapshots` array with id/description carried through.
-        let server = MockServer::start().await;
+        let (_project, ws) = trusting_project_ws(&server.uri());
         Mock::given(wm_method("GET"))
             .and(wm_path("/dev/snapshots"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -611,10 +691,11 @@ mod tests {
         assert_eq!(snaps[0]["description"], "first");
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn snapshot_download_writes_file_and_returns_path() {
-        let (project, ws) = project_ws();
         let server = MockServer::start().await;
+        let (project, ws) = trusting_project_ws(&server.uri());
         Mock::given(wm_method("GET"))
             .and(wm_path("/dev/snapshots/snap-9"))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(b"BINARY".to_vec()))
@@ -644,10 +725,11 @@ mod tests {
         );
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn profiling_start_posts_and_parses_session_id() {
-        let (_project, ws) = project_ws();
         let server = MockServer::start().await;
+        let (_project, ws) = trusting_project_ws(&server.uri());
         Mock::given(wm_method("POST"))
             .and(wm_path("/dev/profiler/start"))
             .and(query_param("company", "CRONUS"))
@@ -676,10 +758,11 @@ mod tests {
         assert_eq!(r["status"], "profiling");
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn profiling_start_server_error_maps_to_internal_error() {
-        let (_project, ws) = project_ws();
         let server = MockServer::start().await;
+        let (_project, ws) = trusting_project_ws(&server.uri());
         Mock::given(wm_method("POST"))
             .and(wm_path("/dev/profiler/start"))
             .respond_with(ResponseTemplate::new(503).set_body_string("unavailable"))
@@ -705,10 +788,11 @@ mod tests {
         );
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn profiling_stop_posts_session_and_writes_profile() {
-        let (project, ws) = project_ws();
         let server = MockServer::start().await;
+        let (project, ws) = trusting_project_ws(&server.uri());
         Mock::given(wm_method("POST"))
             .and(wm_path("/dev/profiler/stop"))
             .and(body_json(serde_json::json!({ "sessionId": "sess-42" })))

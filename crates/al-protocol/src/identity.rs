@@ -27,6 +27,134 @@ use serde::{Deserialize, Serialize};
 
 use crate::socket::fnv1a64;
 
+/// The file holding the per-user handshake secret, inside the runtime
+/// directory the endpoint lives in.
+pub const SECRET_FILE: &str = "handshake.key";
+
+const SECRET_BYTES: usize = 32;
+
+/// Read the per-user handshake secret, creating it if this is the first side
+/// to look.
+///
+/// The identity a daemon reports says which build it came from. Every input is
+/// world-readable: the commit is in the binary and `file_tag` hashes a length
+/// and an mtime anyone can `stat`. So a process answering on the endpoint can
+/// say whatever the client expects, and one did, in one line.
+///
+/// The secret makes the answer something only a process that can read this
+/// file can produce. It lives beside the endpoint, mode 0600, created with
+/// `create_new` so two processes racing to make it cannot both win. Whichever
+/// side starts first creates it and both read it.
+///
+/// This is not a second access control. The peer check in `crate::endpoint` is
+/// what decides who may answer; this is what stops a daemon that is allowed to
+/// answer from claiming a build it is not.
+pub fn shared_secret(runtime_dir: &Path) -> std::io::Result<Vec<u8>> {
+    let path = runtime_dir.join(SECRET_FILE);
+    match std::fs::read(&path) {
+        Ok(secret) if secret.len() == SECRET_BYTES => return Ok(secret),
+        Ok(_) => {
+            // A truncated or oversized file is not a secret this code wrote.
+            // Refusing beats silently keying on whatever is there.
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{} is not a {SECRET_BYTES}-byte secret", path.display()),
+            ));
+        }
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+        Err(_) => {}
+    }
+
+    let mut secret = vec![0u8; SECRET_BYTES];
+    getrandom::getrandom(&mut secret)
+        .map_err(|error| std::io::Error::other(format!("no randomness available: {error}")))?;
+    match create_secret_file(&path, &secret) {
+        Ok(()) => Ok(secret),
+        // Lost the race to another process. Its secret is the one to use.
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => std::fs::read(&path),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(unix)]
+fn create_secret_file(path: &Path, secret: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(secret)
+}
+
+#[cfg(not(unix))]
+fn create_secret_file(path: &Path, secret: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(secret)
+}
+
+/// HMAC-SHA256 over `nonce ‖ version ‖ build`, keyed by the shared secret.
+///
+/// Written out rather than pulled in as a dependency: it is nine lines, and
+/// `sha2` is already here for the trust digest.
+#[must_use]
+pub fn proof(secret: &[u8], nonce: &str, identity: &BuildIdentity) -> String {
+    use sha2::{Digest, Sha256};
+
+    const BLOCK: usize = 64;
+    let mut key = [0u8; BLOCK];
+    if secret.len() > BLOCK {
+        let digest = Sha256::digest(secret);
+        key[..digest.len()].copy_from_slice(&digest);
+    } else {
+        key[..secret.len()].copy_from_slice(secret);
+    }
+
+    let message = format!("{nonce}\u{1}{}\u{1}{}", identity.version, identity.build);
+    let mut inner = Sha256::new();
+    inner.update(key.map(|byte| byte ^ 0x36));
+    inner.update(message.as_bytes());
+    let inner = inner.finalize();
+
+    let mut outer = Sha256::new();
+    outer.update(key.map(|byte| byte ^ 0x5c));
+    outer.update(inner);
+    format!("{:x}", outer.finalize())
+}
+
+/// A fresh nonce for one handshake.
+#[must_use]
+pub fn nonce() -> String {
+    let mut bytes = [0u8; 16];
+    if getrandom::getrandom(&mut bytes).is_err() {
+        // Without randomness there is no challenge to make, and a fixed nonce
+        // would be worse than none: the client treats a missing proof as a
+        // daemon it cannot verify.
+        return String::new();
+    }
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Constant-time comparison, so a wrong proof does not leak how wrong.
+#[must_use]
+pub fn proofs_match(expected: &str, actual: &str) -> bool {
+    if expected.len() != actual.len() {
+        return false;
+    }
+    expected
+        .bytes()
+        .zip(actual.bytes())
+        .fold(0u8, |difference, (a, b)| difference | (a ^ b))
+        == 0
+}
+
 /// The `al-lsp` package version this build belongs to.
 pub const DAEMON_VERSION: &str = env!("AL_DAEMON_VERSION");
 
