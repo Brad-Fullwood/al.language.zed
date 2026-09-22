@@ -64,7 +64,7 @@ Part B, agent-facing threat model:
   Windows equivalent. Checking `path.symlink_metadata()` for `is_symlink()` on the resolved path,
   and on every component of the re-appended tail that already exists, closes the case that
   `canonicalize` cannot see.
-- status: open
+- status: fixed ae4b7192
 
 ### [SECURITY] a cloned AL project executes code through `.vscode/settings.json` analyzer and compiler options
 

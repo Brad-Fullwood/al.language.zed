@@ -941,6 +941,22 @@ async fn download_symbols_from_server(
             };
         }
     };
+    // The launch configuration ships in the repository, and this download
+    // presents the user's Business Central credential to the server it names.
+    if let Err(error) = al_project::trust::authorize_cached_credential(
+        &project.root,
+        &al_project::trust::BcTarget::from_launch(config),
+        match config.authentication {
+            al_bc::launch::AuthMethod::AAD => al_project::trust::CredentialKind::Bearer,
+            _ => al_project::trust::CredentialKind::Basic,
+        },
+        al_project::trust::TargetSource::Repository,
+    ) {
+        return DownloadBatch {
+            paths: Vec::new(),
+            failures: vec![error],
+        };
+    }
     info!(
         config = %config.name,
         server = %config.display_name(),

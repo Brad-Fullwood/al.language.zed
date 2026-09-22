@@ -496,6 +496,209 @@ fn privileged_changes(
     ask
 }
 
+// ---------------------------------------------------------------------------
+// Cached Business Central credentials
+// ---------------------------------------------------------------------------
+
+/// How a Business Central target was chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetSource {
+    /// A launch configuration that ships in the repository.
+    Repository,
+    /// A user-level setting, an environment variable or a CLI flag.
+    User,
+    /// Supplied inline in a daemon or MCP request.
+    Inline,
+}
+
+/// Which credential is about to be spent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialKind {
+    Bearer,
+    Basic,
+}
+
+impl CredentialKind {
+    fn describe(self) -> &'static str {
+        match self {
+            CredentialKind::Bearer => "a cached Business Central token",
+            CredentialKind::Basic => "Business Central basic credentials",
+        }
+    }
+}
+
+/// A Business Central endpoint a request is about to authenticate against.
+#[derive(Debug, Clone)]
+pub struct BcTarget {
+    /// `false` means Business Central online, whose endpoint is fixed by
+    /// Microsoft and cannot be redirected by a repository.
+    pub on_prem: bool,
+    pub server: Option<String>,
+    pub port: Option<u16>,
+}
+
+impl BcTarget {
+    #[must_use]
+    pub fn from_launch(config: &al_bc::launch::BcServerConfig) -> Self {
+        Self {
+            on_prem: matches!(
+                config.environment_type,
+                al_bc::launch::EnvironmentType::OnPrem
+            ),
+            server: config.server.clone(),
+            port: config.port,
+        }
+    }
+
+    /// The target of a debug configuration, from the two fields
+    /// `BcDebugConfig::base_url` branches on.
+    #[must_use]
+    pub fn from_debug(environment_type: &str, server: Option<&str>, port: u16) -> Self {
+        Self {
+            on_prem: environment_type.eq_ignore_ascii_case("OnPrem"),
+            server: server.map(str::to_string),
+            port: Some(port),
+        }
+    }
+
+    /// Scheme, host and port together. Comparing on host alone let
+    /// `http://erp.example.com` pass a check made against
+    /// `https://erp.example.com` and put the token on the wire in cleartext.
+    fn endpoint(&self) -> Option<(String, String, u16)> {
+        let server = self.server.as_deref()?.trim();
+        if server.is_empty() {
+            return None;
+        }
+        let parsed = url::Url::parse(server)
+            .or_else(|_| url::Url::parse(&format!("https://{server}")))
+            .ok()?;
+        let scheme = parsed.scheme().to_ascii_lowercase();
+        let host = parsed.host_str()?.to_ascii_lowercase();
+        // The BC dev endpoint port comes from the configuration, not the URL,
+        // and defaults to 7049 in `BcDebugConfig`.
+        let port = self.port.or_else(|| parsed.port()).unwrap_or(7049);
+        Some((scheme, host, port))
+    }
+}
+
+fn is_loopback(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") || host == "::1" || host == "[::1]" {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|address| address.is_loopback())
+}
+
+/// What a caller may do against a target once the credential is authorised.
+#[derive(Debug, Clone, Copy)]
+pub struct CredentialAuthorization {
+    /// Whether TLS certificate verification may be disabled for this target.
+    pub may_accept_invalid_certs: bool,
+}
+
+/// Set to `1` to allow a cleartext on-premises Business Central endpoint that
+/// is not loopback. An environment variable is a user-level decision, so it
+/// needs no project trust.
+pub const ALLOW_INSECURE_HTTP_ENV: &str = "AL_ALLOW_INSECURE_BC_HTTP";
+
+/// The one decision that lets a cached Business Central credential reach a
+/// server.
+///
+/// Every path that spends a cached token goes through it: debug start,
+/// snapshot capture, a test run against live BC, publish, and symbol download
+/// from a BC server.
+///
+/// - Business Central online is always allowed. Its endpoint is fixed, so a
+///   repository cannot redirect the token.
+/// - An on-premises target is compared on scheme, host and port together.
+/// - `http` is refused for bearer and basic credentials unless the host is
+///   loopback or the user set `AL_ALLOW_INSECURE_BC_HTTP=1`.
+/// - A target named by the repository's own launch file is allowed only when
+///   the project root is trusted, because that file ships in the clone.
+/// - An inline target must additionally match one the launch file names, so a
+///   daemon or MCP request cannot introduce a server of its own.
+pub fn authorize_cached_credential(
+    project_root: &Path,
+    target: &BcTarget,
+    kind: CredentialKind,
+    source: TargetSource,
+) -> Result<CredentialAuthorization, String> {
+    if !target.on_prem {
+        // Microsoft's fixed endpoints. TLS verification is never negotiable
+        // against them.
+        return Ok(CredentialAuthorization {
+            may_accept_invalid_certs: false,
+        });
+    }
+
+    let Some((scheme, host, port)) = target.endpoint() else {
+        return Err(
+            "Refusing to send Business Central credentials: the configuration names no \
+                    usable on-premises server."
+                .to_string(),
+        );
+    };
+
+    if scheme != "https"
+        && !is_loopback(&host)
+        && std::env::var(ALLOW_INSECURE_HTTP_ENV).as_deref() != Ok("1")
+    {
+        return Err(format!(
+            "Refusing to send {} to {scheme}://{host}:{port} in cleartext. Use an https:// \
+             server, or set {ALLOW_INSECURE_HTTP_ENV}=1 if this network is one you trust.",
+            kind.describe()
+        ));
+    }
+
+    if source == TargetSource::User {
+        return Ok(CredentialAuthorization {
+            may_accept_invalid_certs: true,
+        });
+    }
+
+    let launch_targets: Vec<al_bc::launch::BcServerConfig> =
+        al_bc::launch::find_launch_config(project_root)
+            .ok()
+            .flatten()
+            .map(|file| file.configs)
+            .unwrap_or_default();
+    let matching: Vec<&al_bc::launch::BcServerConfig> = launch_targets
+        .iter()
+        .filter(|candidate| {
+            BcTarget::from_launch(candidate).endpoint()
+                == Some((scheme.clone(), host.clone(), port))
+        })
+        .collect();
+
+    if source == TargetSource::Inline && matching.is_empty() {
+        return Err(format!(
+            "Refusing to send {} to {scheme}://{host}:{port}: no debug configuration in this \
+             project names that server. Add it to .vscode/launch.json (or .zed/debug.json) and \
+             pass 'config', or supply an explicit 'accessToken'.",
+            kind.describe()
+        ));
+    }
+
+    let decision = decide(project_root).map_err(|error| {
+        format!("Refusing to send Business Central credentials: this project's settings could not be read ({error}).")
+    })?;
+    if !decision.is_trusted() {
+        return Err(format!(
+            "Refusing to send {} to {scheme}://{host}:{port}: that server is named by a file \
+             this repository carries, and this project is not trusted. Read the configuration, \
+             then run: {TRUST_COMMAND} {}",
+            kind.describe(),
+            decision.root.display()
+        ));
+    }
+
+    Ok(CredentialAuthorization {
+        may_accept_invalid_certs: matching
+            .iter()
+            .any(|candidate| candidate.accept_invalid_certs),
+    })
+}
+
 /// The Business Central servers the repository's own launch file names.
 ///
 /// Each one is a place a cached token could be sent, so each is privileged and
@@ -1016,6 +1219,172 @@ mod tests {
             "{:?}",
             decision.privileged
         );
+    }
+
+    fn project_with_launch(configurations: &str) -> tempfile::TempDir {
+        let dir = project_with_settings("{}");
+        std::fs::write(
+            dir.path().join(".vscode/launch.json"),
+            format!(r#"{{"configurations": {configurations}}}"#),
+        )
+        .unwrap();
+        dir
+    }
+
+    fn onprem(server: &str) -> BcTarget {
+        BcTarget::from_debug("OnPrem", Some(server), 7049)
+    }
+
+    #[test]
+    fn a_repository_launch_server_gets_no_cached_token_until_the_project_is_trusted() {
+        let _config = ScratchConfig::new();
+        let project = project_with_launch(
+            r#"[{"name":"Attach","type":"al","request":"launch","environmentType":"OnPrem",
+                 "server":"https://collector.attacker.example","serverInstance":"BC",
+                 "authentication":"AAD"}]"#,
+        );
+
+        let refusal = authorize_cached_credential(
+            project.path(),
+            &onprem("https://collector.attacker.example"),
+            CredentialKind::Bearer,
+            TargetSource::Repository,
+        )
+        .unwrap_err();
+
+        assert!(refusal.contains("not trusted"), "{refusal}");
+        assert!(refusal.contains(TRUST_COMMAND), "{refusal}");
+
+        grant(project.path()).unwrap();
+        assert!(authorize_cached_credential(
+            project.path(),
+            &onprem("https://collector.attacker.example"),
+            CredentialKind::Bearer,
+            TargetSource::Repository,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn http_does_not_walk_past_an_https_launch_configuration() {
+        let _config = ScratchConfig::new();
+        let project = project_with_launch(
+            r#"[{"name":"Dev","type":"al","request":"launch","environmentType":"OnPrem",
+                 "server":"https://erp.example.com","serverInstance":"BC","authentication":"AAD"}]"#,
+        );
+        grant(project.path()).unwrap();
+
+        let refusal = authorize_cached_credential(
+            project.path(),
+            &onprem("http://erp.example.com"),
+            CredentialKind::Bearer,
+            TargetSource::Inline,
+        )
+        .unwrap_err();
+
+        assert!(refusal.contains("cleartext"), "{refusal}");
+    }
+
+    #[test]
+    fn a_different_port_on_the_same_host_is_a_different_target() {
+        let _config = ScratchConfig::new();
+        let project = project_with_launch(
+            r#"[{"name":"Dev","type":"al","request":"launch","environmentType":"OnPrem",
+                 "server":"https://erp.example.com","port":7049,"serverInstance":"BC",
+                 "authentication":"AAD"}]"#,
+        );
+        grant(project.path()).unwrap();
+
+        let refusal = authorize_cached_credential(
+            project.path(),
+            &BcTarget::from_debug("OnPrem", Some("https://erp.example.com"), 9999),
+            CredentialKind::Bearer,
+            TargetSource::Inline,
+        )
+        .unwrap_err();
+
+        assert!(refusal.contains("no debug configuration"), "{refusal}");
+    }
+
+    #[test]
+    fn loopback_http_is_allowed() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings("{}");
+
+        assert!(authorize_cached_credential(
+            project.path(),
+            &onprem("http://localhost"),
+            CredentialKind::Basic,
+            TargetSource::User,
+        )
+        .is_ok());
+        assert!(authorize_cached_credential(
+            project.path(),
+            &onprem("http://127.0.0.1"),
+            CredentialKind::Bearer,
+            TargetSource::User,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn business_central_online_is_always_allowed() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings("{}");
+
+        let authorization = authorize_cached_credential(
+            project.path(),
+            &BcTarget::from_debug("Sandbox", None, 7049),
+            CredentialKind::Bearer,
+            TargetSource::Inline,
+        )
+        .unwrap();
+
+        assert!(!authorization.may_accept_invalid_certs);
+    }
+
+    #[test]
+    fn accept_invalid_certs_needs_both_the_project_configuration_and_trust() {
+        let _config = ScratchConfig::new();
+        let project = project_with_launch(
+            r#"[{"name":"Lab","type":"al","request":"launch","environmentType":"OnPrem",
+                 "server":"https://lab.example.com","serverInstance":"BC","authentication":"AAD",
+                 "acceptInvalidCerts":true}]"#,
+        );
+
+        assert!(authorize_cached_credential(
+            project.path(),
+            &onprem("https://lab.example.com"),
+            CredentialKind::Bearer,
+            TargetSource::Repository,
+        )
+        .is_err());
+
+        grant(project.path()).unwrap();
+        assert!(
+            authorize_cached_credential(
+                project.path(),
+                &onprem("https://lab.example.com"),
+                CredentialKind::Bearer,
+                TargetSource::Repository,
+            )
+            .unwrap()
+            .may_accept_invalid_certs
+        );
+    }
+
+    #[test]
+    fn a_user_supplied_target_needs_no_trust() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings("{}");
+
+        assert!(authorize_cached_credential(
+            project.path(),
+            &onprem("https://erp.example.com"),
+            CredentialKind::Bearer,
+            TargetSource::User,
+        )
+        .is_ok());
     }
 
     #[test]
