@@ -1989,38 +1989,19 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_capture(
         return rpc_error(id, error_codes::INVALID_PARAMS, &message);
     }
 
-    let access_token = if supplied_token.is_empty()
-        && crate::server::daemon::debug_dispatch::debug_uses_oauth(&debug)
+    // The launch configuration this token is about to be sent to ships in the
+    // repository, so the authorisation inside `acquire_bc_token` is what stops
+    // a cloned project from collecting the user's cached credential.
+    let access_token = match crate::server::daemon::debug_dispatch::acquire_bc_token(
+        workspace,
+        &debug,
+        supplied_token,
+        al_project::trust::TargetSource::Repository,
+    )
+    .await
     {
-        match al_bc::http_auth::access_token_from_env() {
-            Ok(Some(token)) => token,
-            Ok(None) => {
-                let client = reqwest::Client::new();
-                match al_symbols::oauth::acquire_token(&client, &debug.tenant, |message| {
-                    tracing::info!("snapshot authentication: {message}");
-                })
-                .await
-                {
-                    Ok(token) => token,
-                    Err(error) => {
-                        return rpc_error(
-                            id,
-                            error_codes::INTERNAL_ERROR,
-                            &format!("snapshot authentication failed: {error}"),
-                        );
-                    }
-                }
-            }
-            Err(error) => {
-                return rpc_error(
-                    id,
-                    error_codes::INVALID_PARAMS,
-                    &format!("Invalid bearer-token environment: {error}"),
-                );
-            }
-        }
-    } else {
-        supplied_token.to_string()
+        Ok(token) => token,
+        Err((code, message)) => return rpc_error(id, code, &message),
     };
 
     let timeout = std::time::Duration::from_millis(timeout_ms);

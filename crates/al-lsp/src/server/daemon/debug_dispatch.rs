@@ -285,6 +285,72 @@ pub(in crate::server) fn authorize_launch_target(
     )
 }
 
+/// The bearer token a debug configuration authenticates with, and the
+/// authorisation that decides whether it may be spent on that target.
+///
+/// Both halves live here so a caller cannot have one without the other.
+/// `tests.snapshot_capture` repeated the acquire sequence
+/// (`debug_uses_oauth` -> `access_token_from_env` -> `acquire_token`) and left
+/// the authorisation out, which handed the user's cached token to whatever
+/// server a cloned repository's launch file named.
+///
+/// A caller that brings its own token in `supplied` spends its own credential,
+/// so only the cached paths are authorised. `accept_invalid_certs` is checked
+/// either way, because turning off TLS verification is the target's decision
+/// rather than the token's.
+///
+/// `Err` carries the JSON-RPC code the dispatcher should answer with.
+pub(super) async fn acquire_bc_token(
+    workspace: &Workspace,
+    config: &al_dap::dap::bc_debug::BcDebugConfig,
+    supplied: &str,
+    source: al_project::trust::TargetSource,
+) -> Result<String, (i32, String)> {
+    use al_protocol::jsonrpc::error_codes;
+
+    let spends_cached_credential = supplied.is_empty() && debug_uses_oauth(config);
+    if spends_cached_credential || config.accept_invalid_certs {
+        let authorization = authorize_debug_target(workspace, config, source)
+            .map_err(|message| (error_codes::INVALID_PARAMS, message))?;
+        if config.accept_invalid_certs && !authorization.may_accept_invalid_certs {
+            return Err((
+                error_codes::INVALID_PARAMS,
+                "Refusing to disable TLS verification for this target: set acceptInvalidCerts in \
+                 the project's own debug configuration, trust the project, and pass 'config'."
+                    .to_string(),
+            ));
+        }
+    }
+    if !spends_cached_credential {
+        return Ok(supplied.to_string());
+    }
+
+    // MCP/CLI callers normally authenticate through the shared OAuth cache
+    // (`authenticate login`). Requiring them to extract that bearer token and
+    // pass it back defeats the purpose of the cache and made the first real MCP
+    // call negotiate with an empty bearer token.
+    match al_bc::http_auth::access_token_from_env() {
+        Ok(Some(token)) => Ok(token),
+        Ok(None) => {
+            let client = reqwest::Client::new();
+            al_symbols::oauth::acquire_token(&client, &config.tenant, |message| {
+                tracing::info!("Business Central authentication: {message}");
+            })
+            .await
+            .map_err(|error| {
+                (
+                    error_codes::INTERNAL_ERROR,
+                    format!("Business Central authentication failed: {error}"),
+                )
+            })
+        }
+        Err(error) => Err((
+            error_codes::INVALID_PARAMS,
+            format!("Invalid bearer-token environment: {error}"),
+        )),
+    }
+}
+
 pub(super) async fn dispatch_debug(
     workspace: &Workspace,
     id: u64,
@@ -343,72 +409,16 @@ pub(super) async fn dispatch_debug(
                 return Response::error(id, error_codes::INVALID_PARAMS, message);
             }
 
-            // A caller that brings its own `accessToken` spends its own
-            // credential, so only the cached-credential paths are gated.
-            let spends_cached_credential =
-                supplied_access_token.is_empty() && debug_uses_oauth(&config);
             let source = if inline {
                 al_project::trust::TargetSource::Inline
             } else {
                 al_project::trust::TargetSource::Repository
             };
-            if spends_cached_credential || config.accept_invalid_certs {
-                match authorize_debug_target(workspace, &config, source) {
-                    Ok(authorization) => {
-                        if config.accept_invalid_certs && !authorization.may_accept_invalid_certs {
-                            return Response::error(
-                                id,
-                                error_codes::INVALID_PARAMS,
-                                "Refusing to disable TLS verification for this target: set \
-                                 acceptInvalidCerts in the project's own debug configuration, \
-                                 trust the project, and pass 'config'.",
-                            );
-                        }
-                    }
-                    Err(message) => {
-                        return Response::error(id, error_codes::INVALID_PARAMS, message);
-                    }
-                }
-            }
-
-            // MCP/CLI callers normally authenticate through the shared OAuth
-            // cache (`authenticate login`). Requiring them to extract that
-            // bearer token and pass it back into `debug start` defeats the
-            // purpose of the cache and made the first real MCP call negotiate
-            // with an empty bearer token. Preserve an explicitly supplied
-            // token for automation, otherwise acquire/refresh through the same
-            // keyring-backed flow used by symbol download and authentication.
-            let access_token = if supplied_access_token.is_empty() && debug_uses_oauth(&config) {
-                match al_bc::http_auth::access_token_from_env() {
-                    Ok(Some(token)) => token,
-                    Ok(None) => {
-                        let client = reqwest::Client::new();
-                        match al_symbols::oauth::acquire_token(&client, &config.tenant, |message| {
-                            tracing::info!("debug authentication: {message}");
-                        })
-                        .await
-                        {
-                            Ok(token) => token,
-                            Err(e) => {
-                                return Response::error(
-                                    id,
-                                    error_codes::INTERNAL_ERROR,
-                                    format!("Debug authentication failed: {e}"),
-                                );
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        return Response::error(
-                            id,
-                            error_codes::INVALID_PARAMS,
-                            format!("Invalid bearer-token environment: {error}"),
-                        );
-                    }
-                }
-            } else {
-                supplied_access_token
-            };
+            let access_token =
+                match acquire_bc_token(workspace, &config, &supplied_access_token, source).await {
+                    Ok(token) => token,
+                    Err((code, message)) => return Response::error(id, code, message),
+                };
 
             let onprem_web_base = if config.launch_browser
                 && config.environment_type.eq_ignore_ascii_case("OnPrem")
@@ -1077,6 +1087,123 @@ mod pick_named_config_tests {
             "cmd": "start",
             "breakOnNext": "WebClient"
         })));
+    }
+}
+
+/// The gate that decides whether a cached Business Central token may be spent.
+///
+/// Every case here refuses before any network call, which is what makes the
+/// tests safe to run offline: a passing assertion is also the evidence that no
+/// token was acquired.
+#[cfg(test)]
+mod acquire_bc_token_tests {
+    use super::acquire_bc_token;
+    use al_dap::dap::bc_debug::BcDebugConfig;
+    use al_workspace::Workspace;
+
+    /// A project whose own launch file names an on-premises server, and which
+    /// nobody has trusted.
+    fn untrusted_project() -> (tempfile::TempDir, Workspace) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::create_dir_all(root.join(".vscode")).unwrap();
+        std::fs::write(
+            root.join(".vscode/launch.json"),
+            serde_json::json!({
+                "configurations": [{
+                    "name": "Local",
+                    "type": "al",
+                    "request": "launch",
+                    "environmentType": "OnPrem",
+                    "server": "https://collector.example.test",
+                    "serverInstance": "BC",
+                    "authentication": "AAD",
+                    "tenant": "tenant-id",
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let workspace = Workspace::new();
+        crate::server::daemon::set_test_project_root(&workspace, &root);
+        (dir, workspace)
+    }
+
+    fn repository_config() -> BcDebugConfig {
+        BcDebugConfig {
+            server: Some("https://collector.example.test".to_string()),
+            server_instance: Some("BC".to_string()),
+            environment_type: "OnPrem".to_string(),
+            authentication: "AAD".to_string(),
+            tenant: "tenant-id".to_string(),
+            ..BcDebugConfig::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn an_untrusted_repository_target_gets_no_cached_token() {
+        let (_dir, workspace) = untrusted_project();
+        let (_code, message) = acquire_bc_token(
+            &workspace,
+            &repository_config(),
+            "",
+            al_project::trust::TargetSource::Repository,
+        )
+        .await
+        .expect_err("an untrusted repository target must not receive the cached token");
+        assert!(message.contains("not trusted"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn a_caller_supplied_token_is_returned_unchanged() {
+        let (_dir, workspace) = untrusted_project();
+        let token = acquire_bc_token(
+            &workspace,
+            &repository_config(),
+            "caller-token",
+            al_project::trust::TargetSource::Repository,
+        )
+        .await
+        .expect("a caller spending its own credential needs no project trust");
+        assert_eq!(token, "caller-token");
+    }
+
+    #[tokio::test]
+    async fn accept_invalid_certs_is_refused_even_for_a_caller_supplied_token() {
+        let (_dir, workspace) = untrusted_project();
+        let mut config = repository_config();
+        config.accept_invalid_certs = true;
+        let (_code, message) = acquire_bc_token(
+            &workspace,
+            &config,
+            "caller-token",
+            al_project::trust::TargetSource::Repository,
+        )
+        .await
+        .expect_err("TLS verification is the target's decision, not the token's");
+        assert!(message.contains("not trusted"), "{message}");
+    }
+
+    /// Business Central online has a fixed endpoint, so a repository cannot
+    /// redirect the token and trust is not required. The acquisition itself is
+    /// not reached here: `AL_BC_ACCESS_TOKEN` short-circuits it.
+    #[tokio::test]
+    async fn a_business_central_online_target_needs_no_trust() {
+        let (_dir, workspace) = untrusted_project();
+        let config = BcDebugConfig {
+            environment_type: "Sandbox".to_string(),
+            environment_name: Some("SANDBOX".to_string()),
+            ..BcDebugConfig::default()
+        };
+        let token = acquire_bc_token(
+            &workspace,
+            &config,
+            "caller-token",
+            al_project::trust::TargetSource::Repository,
+        )
+        .await
+        .expect("a fixed Microsoft endpoint is always authorised");
+        assert_eq!(token, "caller-token");
     }
 }
 
