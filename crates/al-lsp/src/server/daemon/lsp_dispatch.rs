@@ -6,46 +6,20 @@ use serde::Serialize;
 
 use super::{
     extract_position, invalid_params, optional_bool_param, optional_bounded_usize_param,
-    read_document_from_params, rpc_error,
+    read_document_from_params, rpc_error, serialized_response,
 };
 
 /// Sentinel package name for workspace-local objects (not from .app packages).
 const WORKSPACE_PACKAGE: &str = "(workspace)";
 
-/// Build a `Response` whose `result` is `value` serialised to JSON. On
-/// serialisation failure log the error and return an `RpcError` so the
-/// client surfaces the problem instead of silently receiving `null`.
-fn ok_response<T: Serialize>(id: u64, value: &T, method: &str) -> Response {
-    match serde_json::to_value(value) {
-        Ok(v) => Response {
-            id,
-            result: Some(v),
-            error: None,
-            ..Default::default()
-        },
-        Err(e) => {
-            tracing::error!(method, error = %e, "serialization failed for LSP result");
-            Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INTERNAL_ERROR,
-                    message: format!("serialization failed for {method}: {e}"),
-                }),
-                ..Default::default()
-            }
-        }
-    }
-}
-
-/// `ok_response` variant for `Option<T>` results. `None` is encoded as an
+/// [`serialized_response`] for `Option<T>` results. `None` is encoded as an
 /// explicit `result: null`, not as an absent `result`: both `result` and
 /// `error` carry `skip_serializing_if`, so `Response { result: None, error:
 /// None }` serialises to `{"jsonrpc":"2.0","id":7}`, which JSON-RPC 2.0 §5
-/// forbids. `Some(v)` defers to `ok_response`.
+/// forbids.
 fn ok_response_opt<T: Serialize>(id: u64, value: Option<T>, method: &str) -> Response {
     match value {
-        Some(v) => ok_response(id, &v, method),
+        Some(v) => serialized_response(id, &v, method),
         None => Response::null(id),
     }
 }
@@ -89,7 +63,7 @@ pub(super) fn dispatch_definition(
     };
     let result = al_analysis::queries::definition::definition(workspace, &uri, position);
     match result {
-        Ok(Some(locations)) => ok_response(id, &locations, "textDocument/definition"),
+        Ok(Some(locations)) => serialized_response(id, &locations, "textDocument/definition"),
         Ok(None) => Response::null(id),
         Err(error) => rpc_error(
             id,
@@ -130,7 +104,7 @@ pub(super) fn dispatch_references(
             );
         }
     };
-    ok_response(id, &locations, "textDocument/references")
+    serialized_response(id, &locations, "textDocument/references")
 }
 
 pub(super) fn dispatch_implementations(
@@ -147,7 +121,7 @@ pub(super) fn dispatch_implementations(
     };
     let locations =
         al_analysis::queries::implementation::find_implementations(workspace, &uri, position);
-    ok_response(id, &locations, "textDocument/implementation")
+    serialized_response(id, &locations, "textDocument/implementation")
 }
 
 pub(super) async fn dispatch_completions(
@@ -176,7 +150,7 @@ pub(super) async fn dispatch_completions(
             );
         }
     };
-    ok_response(id, &entries, "textDocument/completion")
+    serialized_response(id, &entries, "textDocument/completion")
 }
 
 pub(super) fn dispatch_signature_help(
@@ -219,7 +193,7 @@ pub(super) fn dispatch_rename(
     };
     let result = al_analysis::queries::rename::rename(workspace, &uri, position, new_name);
     match result {
-        Ok(Some(we)) => ok_response(id, &we, "textDocument/rename"),
+        Ok(Some(we)) => serialized_response(id, &we, "textDocument/rename"),
         Ok(None) => Response::null(id),
         Err(error) => rpc_error(
             id,
@@ -267,7 +241,7 @@ pub(super) fn dispatch_semantic_tokens(
         Err(response) => return response,
     };
     let tokens = al_analysis::queries::semantic_tokens::semantic_tokens_full(workspace, &uri);
-    ok_response(id, &tokens, "textDocument/semanticTokens/full")
+    serialized_response(id, &tokens, "textDocument/semanticTokens/full")
 }
 
 pub(super) fn dispatch_inlay_hints(
@@ -318,26 +292,7 @@ pub(super) fn dispatch_inlay_hints(
             );
         }
     };
-    match serde_json::to_value(&hints) {
-        Ok(v) => Response {
-            id,
-            result: Some(v),
-            error: None,
-            ..Default::default()
-        },
-        Err(e) => {
-            tracing::error!(method = "textDocument/inlayHint", error = %e, "serialization failed");
-            Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INTERNAL_ERROR,
-                    message: format!("serialization failed for textDocument/inlayHint: {e}"),
-                }),
-                ..Default::default()
-            }
-        }
-    }
+    serialized_response(id, &hints, "textDocument/inlayHint")
 }
 
 pub(super) fn dispatch_code_actions(
@@ -357,7 +312,7 @@ pub(super) fn dispatch_code_actions(
         end: position,
     };
     let actions = al_analysis::queries::code_actions::source_actions(workspace, &uri, range);
-    ok_response(id, &actions, "textDocument/codeAction")
+    serialized_response(id, &actions, "textDocument/codeAction")
 }
 
 pub(super) fn dispatch_search(
@@ -1256,8 +1211,8 @@ mod tests {
     }
 
     #[test]
-    fn ok_response_serializes_value() {
-        let resp = ok_response(7, &vec!["a", "b"], "test/method");
+    fn serialized_response_serializes_value() {
+        let resp = serialized_response(7, &vec!["a", "b"], "test/method");
         assert_eq!(resp.id, 7);
         assert!(resp.error.is_none());
         assert_eq!(
@@ -1279,8 +1234,8 @@ mod tests {
     }
 
     #[test]
-    fn ok_response_returns_rpc_error_on_serialization_failure() {
-        let resp = ok_response(11, &AlwaysFails, "test/method");
+    fn serialized_response_returns_rpc_error_on_serialization_failure() {
+        let resp = serialized_response(11, &AlwaysFails, "test/method");
         assert_eq!(resp.id, 11);
         assert!(
             resp.result.is_none(),

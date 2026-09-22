@@ -266,7 +266,7 @@ pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
     }
 
     let _ = workspace;
-    serialized_response(id, "XLIFF refresh result", &refresh_result)
+    serialized_response(id, &refresh_result, "XLIFF refresh result")
 }
 pub(in crate::server::daemon) fn dispatch_xlf_untranslated(
     id: u64,
@@ -404,11 +404,11 @@ pub(in crate::server::daemon) async fn dispatch_xlf_suggest(
 
     serialized_response(
         id,
-        "XLIFF suggestions",
         &SuggestionResponse {
             suggestions: &suggestions,
             count: suggestions.len(),
         },
+        "XLIFF suggestions",
     )
 }
 

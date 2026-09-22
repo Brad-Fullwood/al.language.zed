@@ -4,33 +4,7 @@ use al_protocol::jsonrpc::{Response, RpcError};
 use al_workspace::Workspace;
 use serde::Serialize;
 
-/// Serialize `state` into a `Response`'s `result`. On serialization failure
-/// return an `INTERNAL_ERROR` rather than producing a JSON-RPC response with
-/// both `result` and `error` absent (which violates JSON-RPC 2.0 §5.1, since
-/// both fields are `skip_serializing_if = "Option::is_none"`). Mirrors the
-/// `ok_response` helper in `lsp_dispatch.rs`.
-fn state_response<T: Serialize>(id: u64, state: &T, cmd: &str) -> Response {
-    match serde_json::to_value(state) {
-        Ok(v) => Response {
-            id,
-            result: Some(v),
-            error: None,
-            ..Default::default()
-        },
-        Err(e) => {
-            tracing::error!(cmd, error = %e, "serialization failed for debug result");
-            Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: al_protocol::jsonrpc::error_codes::INTERNAL_ERROR,
-                    message: format!("serialization failed for {cmd}: {e}"),
-                }),
-                ..Default::default()
-            }
-        }
-    }
-}
+use super::serialized_response;
 
 /// Serialize each item of `items` into a JSON array, returning an
 /// `INTERNAL_ERROR` `Response` (as `Err`) if any element fails. This surfaces
@@ -625,7 +599,7 @@ pub(super) async fn dispatch_debug(
             match guard.as_mut() {
                 None => no_session(id),
                 Some(session) => match session.state().await {
-                    Ok(state) => state_response(id, &state, "state"),
+                    Ok(state) => serialized_response(id, &state, "state"),
                     Err(e) => Response {
                         id,
                         result: None,
@@ -797,7 +771,7 @@ pub(super) async fn dispatch_debug(
             match guard.as_mut() {
                 None => no_session(id),
                 Some(session) => match session.continue_exec().await {
-                    Ok(state) => state_response(id, &state, "continue"),
+                    Ok(state) => serialized_response(id, &state, "continue"),
                     Err(e) => Response {
                         id,
                         result: None,
@@ -832,7 +806,7 @@ pub(super) async fn dispatch_debug(
             match guard.as_mut() {
                 None => no_session(id),
                 Some(session) => match session.step(step_type).await {
-                    Ok(state) => state_response(id, &state, "step"),
+                    Ok(state) => serialized_response(id, &state, "step"),
                     Err(e) => Response {
                         id,
                         result: None,
@@ -1604,7 +1578,7 @@ mod dispatch_debug_tests {
 
 #[cfg(test)]
 mod serialization_helper_tests {
-    use super::{serialize_each, state_response};
+    use super::{serialize_each, serialized_response};
     use serde::Serialize;
 
     #[derive(Serialize)]
@@ -1626,19 +1600,19 @@ mod serialization_helper_tests {
     }
 
     #[test]
-    fn state_response_ok_has_result_no_error() {
-        let r = state_response(7, &Ok { a: 1 }, "state");
+    fn serialized_response_ok_has_result_no_error() {
+        let r = serialized_response(7, &Ok { a: 1 }, "state");
         assert_eq!(r.id, 7);
         assert!(r.result.is_some());
         assert!(r.error.is_none());
     }
 
     #[test]
-    fn state_response_failure_returns_error_not_null_result() {
+    fn serialized_response_failure_returns_error_not_null_result() {
         // JSON-RPC §5.1: exactly one of result/error must be present. A
         // serialization failure must produce an error, never a response with
         // both fields None.
-        let r = state_response(9, &bad(), "state");
+        let r = serialized_response(9, &bad(), "state");
         assert_eq!(r.id, 9);
         assert!(r.result.is_none());
         let err = r.error.expect("must surface error, not null result");

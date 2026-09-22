@@ -1465,11 +1465,14 @@ pub(crate) fn serialized_response<T: serde::Serialize>(
             error: None,
             ..Default::default()
         },
-        Err(error) => rpc_error(
-            id,
-            error_codes::INTERNAL_ERROR,
-            &format!("Failed to serialize {method} response: {error}"),
-        ),
+        Err(error) => {
+            tracing::error!(method, %error, "daemon: serializing a result failed");
+            rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("serialization failed for {method}: {error}"),
+            )
+        }
     }
 }
 

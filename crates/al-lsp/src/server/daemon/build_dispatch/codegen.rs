@@ -216,7 +216,7 @@ pub(in crate::server::daemon) fn dispatch_new_project(
     };
 
     match al_analysis::scaffold::create_project(&dir, &config) {
-        Ok(result) => serialized_response(id, "new-project result", &result),
+        Ok(result) => serialized_response(id, &result, "new-project result"),
         Err(e) => Response {
             id,
             result: None,
@@ -299,7 +299,7 @@ pub(in crate::server::daemon) async fn dispatch_builtin_types(
 }
 pub(in crate::server::daemon) fn dispatch_setup(workspace: &Workspace, id: u64) -> Response {
     let report = crate::toolchain::doctor(workspace);
-    serialized_response(id, "setup report", &report)
+    serialized_response(id, &report, "setup report")
 }
 /// Last object ID in Microsoft's own range. Partner and per-tenant objects
 /// start above it, so an ID at or below this cannot belong to generated code.
