@@ -10,6 +10,7 @@ use std::time::Duration;
 use interprocess::local_socket::{prelude::*, GenericFilePath, Stream};
 use interprocess::TryClone;
 
+use crate::identity::{self, BuildIdentity};
 use crate::jsonrpc::{Request, Response};
 use crate::socket::{socket_path, spawn_lock_path};
 
@@ -26,6 +27,20 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Ceiling on progress-aware waiting. A request that waits past this gives up
 /// even while the dependency source index is still advancing.
 const MAX_INDEX_WAIT: Duration = Duration::from_secs(600);
+/// Deadline for the `handshake` call that checks which build a daemon is.
+/// It reads two constants, so anything slower than this is a wedged daemon,
+/// and treating that as a mismatch replaces it.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Deadline for the `shutdown` that precedes a replacement.
+const SHUTDOWN_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long to wait for a stopping daemon's endpoint to stop accepting.
+/// The daemon drains in-flight connections for up to 10 s before it closes.
+const ENDPOINT_CLOSE_WAIT: Duration = Duration::from_secs(20);
+/// How often to retry the connect that proves the endpoint is closed.
+const ENDPOINT_POLL_INTERVAL: Duration = Duration::from_millis(25);
+/// How long `<al-lsp> --version` gets to answer. It prints two constants, so
+/// anything slower is not the binary this client is looking for.
+const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// What the daemon's dependency source index is doing, as seen by a client
 /// whose own request has reached its deadline.
@@ -397,38 +412,147 @@ impl DaemonClient {
     /// concurrent first-time callers are serialised via a per-socket
     /// `.lock` file so only one process spawns `al-lsp daemon`. Losers wait
     /// for the winner's socket to appear, then connect normally.
+    ///
+    /// A daemon that was already running is asked which build it came from. A
+    /// daemon from another build is stopped and replaced, because it answers
+    /// with the response shapes of whatever code it was started from.
     pub fn connect(project_root: &Path) -> Result<Self, String> {
         let endpoint = socket_path(project_root)
             .ok_or_else(|| "Cannot determine a local daemon endpoint: no per-user runtime directory is available".to_string())?;
         let lock_path = spawn_lock_path(project_root)
             .ok_or_else(|| "Cannot determine a daemon startup lock path".to_string())?;
 
-        if let Ok(stream) = connect_stream(&endpoint) {
+        Self::connect_checked(
+            project_root,
+            &endpoint,
+            &lock_path,
+            expected_identity().as_ref(),
+            &mut |project_root, endpoint| {
+                Self::start_daemon(project_root)
+                    .and_then(|mut child| Self::wait_for_daemon(endpoint, Some(&mut child)))
+            },
+        )
+    }
+
+    /// Connect, then replace the daemon if it came from a different build.
+    ///
+    /// `expected` is the identity a daemon must report to be used, or `None`
+    /// when this client cannot identify its own build. `spawn` starts a daemon
+    /// from the binary beside this executable and returns a connection to it.
+    /// Both are parameters so the replace path can be tested against a fake
+    /// daemon rather than two builds of al-lsp.
+    fn connect_checked(
+        project_root: &Path,
+        endpoint: &Path,
+        lock_path: &Path,
+        expected: Option<&BuildIdentity>,
+        spawn: &mut dyn FnMut(&Path, &Path) -> Result<Stream, String>,
+    ) -> Result<Self, String> {
+        let mut client = Self::connect_or_spawn(project_root, endpoint, lock_path, spawn)?;
+
+        let Some(expected) = expected.cloned() else {
+            return Ok(client);
+        };
+        let actual = client.daemon_identity();
+        if actual.as_ref().is_ok_and(|actual| *actual == expected) {
+            return Ok(client);
+        }
+        let reported = match &actual {
+            Ok(actual) => actual.to_string(),
+            Err(error) => format!("no identity ({error})"),
+        };
+        if identity::mismatch_allowed() {
+            notify(&format!(
+                "the running daemon was built from other code ({reported}, this client expects \
+                 {expected}); using it anyway because {} is set",
+                identity::ALLOW_MISMATCH_ENV
+            ));
+            return Ok(client);
+        }
+
+        notify(&format!(
+            "the running daemon was built from other code ({reported}, this client expects \
+             {expected}); stopping it and starting a matching one"
+        ));
+        client.request_daemon_shutdown();
+        drop(client);
+        if !wait_for_endpoint_closed(endpoint, ENDPOINT_CLOSE_WAIT) {
+            return Err(format!(
+                "The daemon for {} was built from other code ({reported}, this client expects \
+                 {expected}) and did not stop within {}s. Stop it by hand (`al-explorer \
+                 daemon-shutdown`, or kill the `al-lsp daemon` process for this project), or set \
+                 {} to use it as it is.",
+                project_root.display(),
+                ENDPOINT_CLOSE_WAIT.as_secs(),
+                identity::ALLOW_MISMATCH_ENV
+            ));
+        }
+
+        let stream = spawn(project_root, endpoint)?;
+        let mut client = Self::from_stream(stream)?.with_project_root(project_root);
+        // One replacement, never a loop. A second mismatch means the binary
+        // beside this executable is not the one answering on this endpoint,
+        // and restarting again would not change that.
+        match client.daemon_identity() {
+            Ok(actual) if actual == expected => {}
+            other => notify(&format!(
+                "the replacement daemon still reports a different build ({other:?}, this client \
+                 expects {expected}); continuing with it"
+            )),
+        }
+        Ok(client)
+    }
+
+    /// Connect to a running daemon, or serialise with other callers and start
+    /// one. No identity check: [`Self::connect_checked`] adds that.
+    fn connect_or_spawn(
+        project_root: &Path,
+        endpoint: &Path,
+        lock_path: &Path,
+        spawn: &mut dyn FnMut(&Path, &Path) -> Result<Stream, String>,
+    ) -> Result<Self, String> {
+        if let Ok(stream) = connect_stream(endpoint) {
             return Self::from_stream(stream).map(|client| client.with_project_root(project_root));
         }
 
-        let result = match try_acquire_spawn_lock(&lock_path)
+        let result = match try_acquire_spawn_lock(lock_path)
             .map_err(|e| format!("Cannot acquire daemon spawn lock: {}", e))?
         {
             SpawnLockResult::Acquired(lock_path) => {
                 // Re-check inside the lock — a concurrent winner may have
                 // just finished spawning while we were acquiring.
-                let result = if let Ok(stream) = connect_stream(&endpoint) {
+                let result = if let Ok(stream) = connect_stream(endpoint) {
                     Self::from_stream(stream)
                 } else {
-                    Self::start_daemon(project_root)
-                        .and_then(|mut child| Self::wait_for_daemon(&endpoint, Some(&mut child)))
-                        .and_then(Self::from_stream)
+                    spawn(project_root, endpoint).and_then(Self::from_stream)
                 };
                 let _ = std::fs::remove_file(&lock_path);
                 result
             }
             SpawnLockResult::Contended => {
-                let stream = Self::wait_for_daemon(&endpoint, None)?;
+                let stream = Self::wait_for_daemon(endpoint, None)?;
                 Self::from_stream(stream)
             }
         };
         result.map(|client| client.with_project_root(project_root))
+    }
+
+    /// Ask the daemon which build it came from.
+    ///
+    /// A daemon too old to know `handshake` answers "Unknown method", which is
+    /// itself the answer the caller needs: it predates this check.
+    fn daemon_identity(&mut self) -> Result<BuildIdentity, String> {
+        let value = self.request_with_timeout("handshake", None, HANDSHAKE_TIMEOUT)?;
+        serde_json::from_value(value)
+            .map_err(|error| format!("handshake did not carry a build identity: {error}"))
+    }
+
+    /// Best-effort stop, used before replacing a daemon. The wait for the
+    /// endpoint to close is what decides whether it worked.
+    fn request_daemon_shutdown(&mut self) {
+        if let Err(error) = self.request_with_timeout("shutdown", None, SHUTDOWN_REQUEST_TIMEOUT) {
+            tracing::debug!(%error, "daemon did not acknowledge the shutdown request");
+        }
     }
 
     /// Create a client from an already-connected stream (for testing).
@@ -806,6 +930,64 @@ impl DaemonClient {
     }
 }
 
+/// Tell the person running the command something about the daemon it is about
+/// to use.
+///
+/// These notices explain a command that restarted a daemon or reached for a
+/// binary the caller did not expect, so they have to be seen. al-explorer is
+/// the only client of this module and installs no tracing subscriber, so the
+/// `tracing` event alone would reach nobody; it stays for anything that does
+/// install one. Stdout belongs to the command's own output.
+fn notify(message: &str) {
+    tracing::warn!("{message}");
+    eprintln!("al-lsp: {message}");
+}
+
+/// The identity this client expects a daemon to report.
+///
+/// `None` when the build is identified by the `al-lsp` executable and that
+/// executable cannot be found: there is then nothing to compare against, and
+/// refusing to talk to a running daemon over that would be worse than using it.
+fn expected_identity() -> Option<BuildIdentity> {
+    if !identity::needs_binary() {
+        return Some(identity::identity_for(Path::new("")));
+    }
+    match find_al_lsp_binary() {
+        Ok(binary) => Some(identity::identity_for(&binary)),
+        Err(error) => {
+            tracing::debug!(%error, "cannot identify this build; skipping the daemon check");
+            None
+        }
+    }
+}
+
+/// Wait until nothing answers on `endpoint`, or `timeout` elapses.
+///
+/// Returns whether the endpoint closed. A successful connect is the only
+/// reliable proof that a daemon is still serving: on Unix the socket file
+/// outlives a killed daemon, and it is removed a moment after the listener
+/// stops in an orderly one. Callers that must know the old daemon is gone
+/// before they start a new one use this rather than sleeping.
+pub fn wait_for_endpoint_closed(endpoint: &Path, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if connect_stream(endpoint).is_err() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(ENDPOINT_POLL_INTERVAL);
+    }
+}
+
+/// Locate the `al-lsp` this client should start.
+///
+/// The binary beside this executable wins: a release archive and a `target/`
+/// directory both hold the pair, and taking the sibling keeps the client and
+/// the daemon on one build. Falling back to PATH is what let a client start a
+/// daemon weeks older than itself, silently, so a PATH binary is reported at
+/// warn level and refused when its version differs from this build's.
 pub fn find_al_lsp_binary() -> Result<PathBuf, String> {
     let binary_name = format!("al-lsp{}", std::env::consts::EXE_SUFFIX);
     if let Ok(exe) = std::env::current_exe() {
@@ -816,18 +998,99 @@ pub fn find_al_lsp_binary() -> Result<PathBuf, String> {
             }
         }
     }
+
     // Search PATH directories directly — avoids spawning a subprocess and
     // works on every supported system regardless of whether `which`/`where`
     // is installed.
-    if let Some(path_var) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&path_var) {
-            let candidate = dir.join(&binary_name);
-            if candidate.is_file() {
-                return Ok(candidate);
+    let on_path = std::env::var_os("PATH").and_then(|path_var| {
+        std::env::split_paths(&path_var)
+            .map(|dir| dir.join(&binary_name))
+            .find(|candidate| candidate.is_file())
+    });
+    let Some(candidate) = on_path else {
+        return Err(format!(
+            "Cannot find al-lsp. It is normally installed beside al-explorer; this executable \
+             has no al-lsp next to it and there is none on PATH. Install the pair with \
+             `cargo install --path crates/al-explorer` and `cargo install --path crates/al-lsp \
+             --bin al-lsp --features semantic`, or unpack a release archive and put its \
+             directory on PATH. This client is version {}.",
+            identity::DAEMON_VERSION
+        ));
+    };
+
+    let version = binary_version(&candidate);
+    let reported = version.as_deref().unwrap_or("an unknown version");
+    if version.as_deref() == Some(identity::DAEMON_VERSION) {
+        notify(&format!(
+            "no al-lsp beside this executable; starting {} ({reported}) from PATH",
+            candidate.display()
+        ));
+        return Ok(candidate);
+    }
+    if identity::mismatch_allowed() {
+        notify(&format!(
+            "starting {} ({reported}) from PATH although this client is version {}, because {} \
+             is set",
+            candidate.display(),
+            identity::DAEMON_VERSION,
+            identity::ALLOW_MISMATCH_ENV
+        ));
+        return Ok(candidate);
+    }
+    Err(format!(
+        "The only al-lsp available is {} ({reported}), and this client is version {}. It is on \
+         PATH rather than beside this executable, so the two were installed separately and a \
+         daemon started from it would answer with that version's behaviour. Install a matching \
+         one with `cargo install --path crates/al-lsp --bin al-lsp --features semantic`, or \
+         unpack the release archive for {} so al-lsp and al-explorer sit in one directory. Set \
+         {} to use it as it is.",
+        candidate.display(),
+        identity::DAEMON_VERSION,
+        identity::DAEMON_VERSION,
+        identity::ALLOW_MISMATCH_ENV
+    ))
+}
+
+/// The version `<binary> --version` reports, from output shaped
+/// `al-lsp <version> (<build>)`.
+///
+/// `None` when the binary cannot be run, does not answer within
+/// [`VERSION_PROBE_TIMEOUT`], or answers in some other shape — all of which
+/// mean the same thing here: it is not a binary from this build.
+fn binary_version(binary: &Path) -> Option<String> {
+    let mut child = std::process::Command::new(binary)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+
+    // An unknown binary gets a deadline rather than a blocking read: whatever
+    // is named `al-lsp` on PATH need not be this program at all.
+    let deadline = std::time::Instant::now() + VERSION_PROBE_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
             }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Err(_) => return None,
         }
     }
-    Err("Cannot find al-lsp binary. Install it or add it to PATH.".to_string())
+
+    let output = child.wait_with_output().ok()?;
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let mut fields = stdout.split_whitespace();
+    if fields.next()? != "al-lsp" {
+        return None;
+    }
+    fields.next().map(str::to_string)
 }
 
 fn connect_stream(endpoint: &Path) -> std::io::Result<Stream> {
@@ -854,7 +1117,8 @@ fn connect_stream(endpoint: &Path) -> std::io::Result<Stream> {
 mod tests {
     use super::*;
     use std::os::unix::net::{UnixListener, UnixStream};
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::Arc;
 
     fn test_stream(stream: UnixStream) -> Stream {
         interprocess::os::unix::uds_local_socket::Stream::from(stream).into()
@@ -1252,6 +1516,275 @@ mod tests {
         );
     }
 
+    /// A fake daemon that answers `handshake` with the identity it was given,
+    /// `shutdown` by closing its listener, and `ping` with "pong".
+    ///
+    /// It records whether it was asked to shut down, which is how the tests
+    /// tell "replaced" from "reused" apart.
+    struct FakeDaemon {
+        shutdown_requested: Arc<AtomicBool>,
+        stop: Arc<AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl FakeDaemon {
+        fn start(sock: &Path, identity: BuildIdentity) -> Self {
+            Self::start_with(sock, Some(identity))
+        }
+
+        /// `None` models a daemon built before `handshake` existed: it answers
+        /// the method it does not know with `METHOD_NOT_FOUND`.
+        fn start_with(sock: &Path, identity: Option<BuildIdentity>) -> Self {
+            let listener = UnixListener::bind(sock).expect("bind fake daemon");
+            listener
+                .set_nonblocking(true)
+                .expect("poll the fake daemon's listener");
+            let shutdown_requested = Arc::new(AtomicBool::new(false));
+            let stop = Arc::new(AtomicBool::new(false));
+            let sock = sock.to_path_buf();
+
+            let requested = Arc::clone(&shutdown_requested);
+            let stopping = Arc::clone(&stop);
+            let handle = std::thread::spawn(move || {
+                while !stopping.load(Ordering::SeqCst) {
+                    let stream = match listener.accept() {
+                        Ok((stream, _)) => stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(5));
+                            continue;
+                        }
+                        Err(_) => break,
+                    };
+                    stream.set_nonblocking(false).expect("blocking connection");
+                    let reader = std::io::BufReader::new(&stream);
+                    let mut writer = &stream;
+                    for line in reader.lines() {
+                        let Ok(line) = line else { break };
+                        let Ok(request) = serde_json::from_str::<Request>(&line) else {
+                            break;
+                        };
+                        let response = match (request.method.as_str(), &identity) {
+                            ("handshake", Some(identity)) => Response::ok(
+                                request.dispatch_id(),
+                                serde_json::to_value(identity).expect("serialize identity"),
+                            ),
+                            ("handshake", None) => Response::error(
+                                request.dispatch_id(),
+                                -32601,
+                                "Unknown method: handshake",
+                            ),
+                            ("shutdown", _) => {
+                                requested.store(true, Ordering::SeqCst);
+                                Response::ok(
+                                    request.dispatch_id(),
+                                    serde_json::json!({"shutdownRequested": true}),
+                                )
+                            }
+                            _ => Response::ok(request.dispatch_id(), serde_json::json!("pong")),
+                        };
+                        let stopping_now = request.method == "shutdown";
+                        let mut json =
+                            serde_json::to_string(&response).expect("serialize response");
+                        json.push('\n');
+                        let _ = writer.write_all(json.as_bytes());
+                        let _ = writer.flush();
+                        if stopping_now {
+                            stopping.store(true, Ordering::SeqCst);
+                            break;
+                        }
+                    }
+                    if stopping.load(Ordering::SeqCst) {
+                        break;
+                    }
+                }
+                // A real daemon unlinks its endpoint as it stops. Do the same,
+                // so the test exercises the wait the client actually performs.
+                drop(listener);
+                let _ = std::fs::remove_file(&sock);
+            });
+
+            Self {
+                shutdown_requested,
+                stop,
+                handle: Some(handle),
+            }
+        }
+
+        fn was_asked_to_shut_down(&self) -> bool {
+            self.shutdown_requested.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for FakeDaemon {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn test_identity(build: &str) -> BuildIdentity {
+        BuildIdentity {
+            version: identity::DAEMON_VERSION.to_string(),
+            build: build.to_string(),
+        }
+    }
+
+    /// The identity `connect_checked` compares against, so a fake daemon can
+    /// claim to be this build or a different one. Fixed rather than read from
+    /// the machine, so these tests do not depend on what is installed on it.
+    fn expected_for_test() -> BuildIdentity {
+        test_identity("git:1111feedface")
+    }
+
+    /// The defect this whole path exists for: a daemon left over from an
+    /// earlier build keeps answering, with that build's response shapes.
+    #[test]
+    fn a_daemon_from_another_build_is_replaced() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let sock = unique_sock();
+        let lock = sock.with_extension("lock");
+        let stale = FakeDaemon::start(&sock, test_identity("git:0000deadbeef"));
+
+        let replacement: std::sync::Mutex<Option<FakeDaemon>> = std::sync::Mutex::new(None);
+        let spawned = AtomicU32::new(0);
+        let mut spawn = |_root: &Path, endpoint: &Path| {
+            spawned.fetch_add(1, Ordering::SeqCst);
+            *replacement.lock().expect("test") =
+                Some(FakeDaemon::start(endpoint, expected_for_test()));
+            let stream = UnixStream::connect(endpoint).map_err(|e| e.to_string())?;
+            Ok(test_stream(stream))
+        };
+
+        let project = std::env::temp_dir();
+        let mut client = DaemonClient::connect_checked(
+            &project,
+            &sock,
+            &lock,
+            Some(&expected_for_test()),
+            &mut spawn,
+        )
+        .expect("connect");
+
+        assert!(
+            stale.was_asked_to_shut_down(),
+            "a daemon from another build must be asked to stop"
+        );
+        assert_eq!(
+            spawned.load(Ordering::SeqCst),
+            1,
+            "exactly one replacement daemon, never a loop"
+        );
+        assert_eq!(
+            client
+                .request("ping", None)
+                .expect("the replacement answers"),
+            serde_json::json!("pong")
+        );
+
+        drop(client);
+        drop(replacement);
+        let _ = std::fs::remove_file(&sock);
+    }
+
+    /// The other half: a daemon from this build is worth keeping, and
+    /// restarting it would throw away a warm index on every command.
+    #[test]
+    fn a_daemon_from_this_build_is_reused() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let sock = unique_sock();
+        let lock = sock.with_extension("lock");
+        let running = FakeDaemon::start(&sock, expected_for_test());
+
+        let spawned = AtomicU32::new(0);
+        let mut spawn = |_root: &Path, _endpoint: &Path| {
+            spawned.fetch_add(1, Ordering::SeqCst);
+            Err("connect must not start a second daemon".to_string())
+        };
+
+        let project = std::env::temp_dir();
+        let mut client = DaemonClient::connect_checked(
+            &project,
+            &sock,
+            &lock,
+            Some(&expected_for_test()),
+            &mut spawn,
+        )
+        .expect("connect");
+
+        assert!(
+            !running.was_asked_to_shut_down(),
+            "a matching daemon must be left running"
+        );
+        assert_eq!(spawned.load(Ordering::SeqCst), 0, "nothing to spawn");
+        assert_eq!(
+            client.request("ping", None).expect("the daemon answers"),
+            serde_json::json!("pong")
+        );
+
+        drop(client);
+        drop(running);
+        let _ = std::fs::remove_file(&sock);
+    }
+
+    /// A daemon built before this check existed answers "Unknown method", and
+    /// that is exactly the daemon the check is for.
+    #[test]
+    fn a_daemon_without_a_handshake_is_replaced() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let sock = unique_sock();
+        let lock = sock.with_extension("lock");
+        let stale = FakeDaemon::start_with(&sock, None);
+
+        let replacement: std::sync::Mutex<Option<FakeDaemon>> = std::sync::Mutex::new(None);
+        let mut spawn = |_root: &Path, endpoint: &Path| {
+            *replacement.lock().expect("test") =
+                Some(FakeDaemon::start(endpoint, expected_for_test()));
+            let stream = UnixStream::connect(endpoint).map_err(|e| e.to_string())?;
+            Ok(test_stream(stream))
+        };
+
+        let project = std::env::temp_dir();
+        let client = DaemonClient::connect_checked(
+            &project,
+            &sock,
+            &lock,
+            Some(&expected_for_test()),
+            &mut spawn,
+        )
+        .expect("connect must succeed against the replacement");
+        let replaced = replacement.lock().expect("test").is_some();
+
+        drop(client);
+        drop(replacement);
+        let _ = std::fs::remove_file(&sock);
+        assert!(
+            stale.was_asked_to_shut_down(),
+            "a daemon that cannot state its build must be asked to stop"
+        );
+        assert!(
+            replaced,
+            "a daemon that cannot state its build must be replaced"
+        );
+    }
+
+    #[test]
+    fn waiting_on_a_live_endpoint_times_out_and_a_closed_one_returns_at_once() {
+        let sock = unique_sock();
+        let daemon = FakeDaemon::start(&sock, expected_for_test());
+        assert!(
+            !wait_for_endpoint_closed(&sock, Duration::from_millis(200)),
+            "an endpoint that still accepts is not closed"
+        );
+        drop(daemon);
+        assert!(
+            wait_for_endpoint_closed(&sock, Duration::from_secs(5)),
+            "a stopped daemon's endpoint must be seen as closed"
+        );
+        let _ = std::fs::remove_file(&sock);
+    }
+
     #[test]
     fn spawn_lock_first_acquirer_succeeds() {
         let sock = unique_sock();
@@ -1302,7 +1835,11 @@ mod tests {
         );
     }
 
-    // Serializes tests that mutate the process-wide PATH.
+    // Serializes tests that mutate, or depend on, the process-wide PATH and
+    // AL_ALLOW_MISMATCHED_DAEMON. Environment variables are per process, so a
+    // test that sets one is visible to every other test thread until it clears
+    // it: without this, setting the allow variable made the replacement tests
+    // reuse a daemon they were meant to replace.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn unique_dir(tag: &str) -> PathBuf {
@@ -1317,34 +1854,132 @@ mod tests {
         dir
     }
 
-    #[test]
-    fn find_al_lsp_binary_locates_in_path() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    /// Write an executable stand-in for al-lsp that answers `--version` the
+    /// way the real one does.
+    fn fake_al_lsp(dir: &Path, version: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = dir.join("al-lsp");
+        std::fs::write(
+            &bin,
+            format!("#!/bin/sh\necho \"al-lsp {version} (git:testbuild)\"\n"),
+        )
+        .expect("write fake binary");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+            .expect("make the fake binary executable");
+        bin
+    }
 
-        if let Ok(exe) = std::env::current_exe() {
-            if exe.parent().map(|d| d.join("al-lsp").exists()) == Some(true) {
-                return;
-            }
+    /// Run `find_al_lsp_binary` with `PATH` set to `dir` and nothing else.
+    fn find_with_path(dir: &Path) -> Result<PathBuf, String> {
+        let saved = std::env::var_os("PATH");
+        std::env::set_var("PATH", dir);
+        let result = find_al_lsp_binary();
+        match saved {
+            Some(path) => std::env::set_var("PATH", path),
+            None => std::env::remove_var("PATH"),
+        }
+        result
+    }
+
+    /// True when this test process has an `al-lsp` beside it, which wins over
+    /// PATH and makes the PATH tests meaningless.
+    fn has_sibling_al_lsp() -> bool {
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("al-lsp").exists()))
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn find_al_lsp_binary_locates_a_matching_version_in_path() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        if has_sibling_al_lsp() {
+            return;
         }
 
         let bin_dir = unique_dir("haspath");
-        let bin = bin_dir.join("al-lsp");
-        std::fs::write(&bin, b"#!/bin/sh\n").expect("write fake binary");
-
-        let saved = std::env::var_os("PATH");
-        std::env::set_var("PATH", &bin_dir);
-        let result = find_al_lsp_binary();
-        match saved {
-            Some(p) => std::env::set_var("PATH", p),
-            None => std::env::remove_var("PATH"),
-        }
+        fake_al_lsp(&bin_dir, identity::DAEMON_VERSION);
+        let result = find_with_path(&bin_dir);
         let _ = std::fs::remove_dir_all(&bin_dir);
 
-        let found = result.expect("al-lsp on PATH must be found");
+        let found = result.expect("an al-lsp on PATH of this version must be used");
         assert_eq!(
-            found.file_name().and_then(|n| n.to_str()),
+            found.file_name().and_then(|name| name.to_str()),
             Some("al-lsp"),
             "found path must end in al-lsp: {found:?}"
+        );
+    }
+
+    /// The client used to fall back to whatever `al-lsp` was on PATH and start
+    /// a daemon from it with no warning. One machine's was weeks older than
+    /// the client that started it.
+    #[test]
+    fn a_path_al_lsp_of_another_version_is_refused() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        if has_sibling_al_lsp() {
+            return;
+        }
+
+        let bin_dir = unique_dir("oldpath");
+        fake_al_lsp(&bin_dir, "0.0.1-ancient");
+        let result = find_with_path(&bin_dir);
+        let _ = std::fs::remove_dir_all(&bin_dir);
+
+        let error = result.expect_err("a PATH al-lsp of another version must be refused");
+        assert!(
+            error.contains("0.0.1-ancient") && error.contains(identity::DAEMON_VERSION),
+            "the refusal must name both versions: {error}"
+        );
+        assert!(
+            error.contains("cargo install") && error.contains("release archive"),
+            "the refusal must say how to install a matching one: {error}"
+        );
+        assert!(
+            error.contains(identity::ALLOW_MISMATCH_ENV),
+            "the refusal must name the way past it: {error}"
+        );
+    }
+
+    #[test]
+    fn a_path_al_lsp_of_another_version_is_allowed_by_the_env_var() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        if has_sibling_al_lsp() {
+            return;
+        }
+
+        let bin_dir = unique_dir("allowedpath");
+        fake_al_lsp(&bin_dir, "0.0.1-ancient");
+        std::env::set_var(identity::ALLOW_MISMATCH_ENV, "1");
+        let result = find_with_path(&bin_dir);
+        std::env::remove_var(identity::ALLOW_MISMATCH_ENV);
+        let _ = std::fs::remove_dir_all(&bin_dir);
+
+        assert!(
+            result.is_ok(),
+            "{} must allow an older PATH al-lsp: {result:?}",
+            identity::ALLOW_MISMATCH_ENV
+        );
+    }
+
+    /// Whatever is named `al-lsp` on PATH need not be this program, so the
+    /// probe cannot wait on it forever.
+    #[test]
+    fn a_binary_that_never_answers_is_not_a_version() {
+        let dir = unique_dir("hangs");
+        let bin = dir.join("al-lsp");
+        std::fs::write(&bin, "#!/bin/sh\nsleep 120\n").expect("write");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        let started = std::time::Instant::now();
+        let version = binary_version(&bin);
+        let waited = started.elapsed();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(version, None, "a binary that hangs reports no version");
+        assert!(
+            waited < VERSION_PROBE_TIMEOUT + Duration::from_secs(5),
+            "the probe must give up near its deadline, waited {waited:?}"
         );
     }
 
@@ -1359,19 +1994,17 @@ mod tests {
         }
 
         let empty = unique_dir("nopath");
-        let saved = std::env::var_os("PATH");
-        std::env::set_var("PATH", &empty);
-        let result = find_al_lsp_binary();
-        match saved {
-            Some(p) => std::env::set_var("PATH", p),
-            None => std::env::remove_var("PATH"),
-        }
+        let result = find_with_path(&empty);
         let _ = std::fs::remove_dir_all(&empty);
 
         let err = result.expect_err("missing al-lsp must error");
         assert!(
-            err.contains("Cannot find al-lsp binary"),
+            err.contains("Cannot find al-lsp"),
             "error must name the missing binary: {err}"
+        );
+        assert!(
+            err.contains("cargo install"),
+            "error must say how to install it: {err}"
         );
     }
 
@@ -1388,17 +2021,11 @@ mod tests {
         let dir = unique_dir("dirnamed");
         std::fs::create_dir_all(dir.join("al-lsp")).expect("mkdir al-lsp");
 
-        let saved = std::env::var_os("PATH");
-        std::env::set_var("PATH", &dir);
-        let result = find_al_lsp_binary();
-        match saved {
-            Some(p) => std::env::set_var("PATH", p),
-            None => std::env::remove_var("PATH"),
-        }
+        let result = find_with_path(&dir);
         let _ = std::fs::remove_dir_all(&dir);
 
         let err = result.expect_err("a directory named al-lsp must not be accepted as the binary");
-        assert!(err.contains("Cannot find al-lsp binary"), "got: {err}");
+        assert!(err.contains("Cannot find al-lsp"), "got: {err}");
     }
 
     #[test]

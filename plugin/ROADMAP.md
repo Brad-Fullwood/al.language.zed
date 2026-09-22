@@ -7,6 +7,10 @@
 - [x] Eight skills under `skills/`
 - [x] Two subagents under `agents/`
 - [x] `hooks/hooks.json` plus `scripts/al-session-context.sh`, firing only in an AL project
+- [x] A `SessionEnd` hook running `al-explorer daemon-shutdown`, in
+      `scripts/al-session-end.sh`. `daemon-shutdown` now returns only once the
+      endpoint has stopped accepting, so the next session cannot connect to a
+      dying daemon.
 - [x] `claude plugin validate ./plugin` and `claude plugin validate .` pass
 - [x] `make plugin-validate`
 - [x] README section
@@ -29,10 +33,6 @@ Left for the next agent:
       is measured rather than sampled.
 - [ ] A `Setup` hook that offers to download a release archive into
       `$CLAUDE_PLUGIN_DATA/bin` when `al-bin.sh` finds nothing.
-- [ ] A `SessionEnd` hook running `al-explorer daemon-shutdown`. The daemon
-      reaches 2.9 GB resident once the dependency source index is built and
-      nothing releases it. `daemon-shutdown` still returns before the socket
-      closes, so the next call races a dying daemon; fix that race first.
 
 ## Workarounds removed
 
@@ -149,6 +149,10 @@ the eval cases listed in the checklist above.
 ### Memory
 
 The daemon reaches 2.9 GB resident once the dependency source index is built,
-and nothing releases it. `skills/bc-workspace-health/SKILL.md` documents
-`al-explorer daemon-shutdown`. The `SessionEnd` hook is in the checklist above,
-behind the `daemon-shutdown` socket race.
+and nothing releases it. What has changed is that the number is now visible
+(`status` reports `memory.residentBytes`, `diag` reports
+`process.residentBytes`) and that the memory is reclaimed at the end of a
+session by the `SessionEnd` hook, after 30 idle minutes, or when the project
+directory is deleted. The growth itself is untouched:
+`skills/bc-workspace-health/SKILL.md` still documents
+`al-explorer daemon-shutdown` for a session that needs the memory back sooner.

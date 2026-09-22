@@ -270,6 +270,7 @@ dependencies = [
  "interprocess",
  "serde",
  "serde_json",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 
@@ -430,9 +431,11 @@ dependencies = [
  "al-compile",
  "al-emit",
  "al-project",
+ "al-protocol",
  "al-publish",
  "al-test",
  "al-workspace",
+ "libc",
  "portable-pty",
  "serde_json",
  "tempfile",
