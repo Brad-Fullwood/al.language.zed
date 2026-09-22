@@ -135,3 +135,7 @@ Append-only. Newest entry last.
 ## 2026-09-22 05:40 BST: round 2 reviews done
 
 - Review A: 43 fixes verified end to end, none faked. 14 new findings. Review B: 19 findings, 4 high security: `rename` skips containment, `tests.snapshot_capture` skips credential authorisation, a repository can ship `.alpackages` as a symlink and move the containment boundary, the extension compares binary paths without normalising. The dispatch table survived three hand merges intact (93 arms). Fix agents dispatched for both.
+
+## 2026-09-22 07:10 BST: sixth usage limit
+
+- Limit hit about 05:50, reset 07:00. Three fix agents resumed. Started blog articles 4 and 8, and the round 3 security review focused on trust bypasses.

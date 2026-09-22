@@ -13,6 +13,8 @@ Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two 
 | desloppify review queue: work all 112 subjective items to empty (resolve, skip with reason, or defer items in files other branches hold), then rescan and record scores | worktree refactor | branch `campaign/slop-review-queue`, `findings/slop-review-queue.md` |
 | Fix R2 review B (19: rename and snapshot capture skip the gates, `.alpackages` symlink moves the boundary, extension path check unnormalised, plus a structural test that every dispatcher passes its gate) | worktree fix | branch `campaign/fix-r2-review-b` |
 | Fix queued items plus R2 review A (14: tooltip byte slice panic on localized packages, dead `skipped` and `parseIssues` reports, ID 50000 boundary, merge leftovers) | worktree fix | branch `campaign/fix-queued-2` |
+| Blog: articles 4 (`native-app-emitter`) and 8 (`zed-extension-and-release-integrity`) | blog repo branch `campaign/2026-09-rewrite` | `findings/blog-progress.md` |
+| R3 security review: break project trust and the daemon lifecycle as a hostile repository or a local process, MCP prompt injection vectors | review | `findings/r3-security.md` |
 
 Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, CI runs on every push).
 
