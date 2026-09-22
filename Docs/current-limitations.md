@@ -94,6 +94,34 @@ live in [ROADMAP.md](../ROADMAP.md).
   every parsed file has correct semantics. Focused fixtures remain required for
   grammar changes.
 
+## Zed worktree settings and executable paths
+
+- `lsp."al-lsp".binary.path` chooses which `al-lsp` runs, and `al.dotnetPath`
+  becomes the `AL_DOTNET_PATH` entry that decides which `dotnet` the toolchain
+  spawns. Both can be written in a project's `.zed/settings.json`, which ships
+  inside a clone.
+- Zed itself gates this from v0.218.2-pre: an untrusted worktree starts in
+  Restricted Mode, where `.zed/settings.json` is not parsed and no language
+  server is spawned. See
+  [Worktree Trust](https://zed.dev/docs/worktree-trust) and advisory
+  [GHSA-29cp-2hmh-hcxj](https://github.com/zed-industries/zed/security/advisories/GHSA-29cp-2hmh-hcxj),
+  which covers every version up to and including stable v0.217.2.
+- The extension cannot tell a user-level value from a worktree one.
+  `LspSettings::for_worktree` returns them already merged, and
+  `zed_extension_api` 0.7 keeps the location-taking `wit::get_settings` private,
+  so no public API asks for the user-level value alone. The extension therefore
+  refuses by location rather than by provenance: a relative path, or an absolute
+  path under the worktree root, is not used for `binary.path`, the debug adapter
+  path or `dotnetPath`. A program elsewhere on the machine still works.
+- al-lsp applies the same refusal on its own side, where it can read the
+  repository's files: an `AL_DOTNET_PATH` that this project's settings supplied,
+  or that resolves inside the project, is dropped unless the project is trusted,
+  and the toolchain falls back to `dotnet` from `PATH`. See
+  [project trust](features/project-trust.md).
+- The consequence for a legitimate setup: a `dotnet` or `al-lsp` you keep inside
+  a project directory needs `al-explorer trust` on that project, or a path
+  outside it.
+
 ## Releases
 
 - `tree-sitter-al` is a separate owned repository whose Rust package is

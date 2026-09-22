@@ -124,7 +124,7 @@ Part B, agent-facing threat model:
 - fix: apply a trust decision to the launch file itself, the same one the settings finding needs.
   A host that appears only in a project file, and not in user-level configuration, should require
   an explicit confirmation before a cached credential is spent on it.
-- status: open
+- status: fixed f344ab52
 
 ### [SECURITY] the inline debug host check compares host only, so `http://` downgrades past the TLS gate
 
@@ -142,7 +142,7 @@ Part B, agent-facing threat model:
   without tripping it.
 - fix: compare the scheme as well as the host, and refuse a cached credential for an `http://`
   on-premises target unless the project's own configuration uses `http://` for that host.
-- status: open
+- status: fixed f344ab52
 
 ### [SECURITY] a project can redirect symbol download to any URL, with no scheme check and no Microsoft fallback
 

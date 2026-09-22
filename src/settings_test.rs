@@ -228,6 +228,35 @@ fn resolve_dotnet_path_honors_all_settings_shapes() {
     );
 }
 
+#[test]
+fn a_program_path_inside_the_worktree_is_refused() {
+    use crate::settings::is_worktree_resident_program;
+
+    let root = "/home/me/src/SomeApp";
+    // The attack in the finding: a cloned repository ships the binary and
+    // names it from its own `.zed/settings.json`.
+    assert!(is_worktree_resident_program("./tools/al-lsp", root));
+    assert!(is_worktree_resident_program("tools/dotnet", root));
+    assert!(is_worktree_resident_program(
+        "/home/me/src/SomeApp/tools/al-lsp",
+        root
+    ));
+    assert!(is_worktree_resident_program(
+        "/home/me/src/SomeApp/tools/dotnet",
+        root
+    ));
+
+    assert!(!is_worktree_resident_program("/usr/bin/dotnet", root));
+    assert!(!is_worktree_resident_program("/opt/al-lsp/al-lsp", root));
+    // A sibling directory whose name starts with the root must not be caught
+    // by a bare string prefix.
+    assert!(!is_worktree_resident_program(
+        "/home/me/src/SomeApp-tools/dotnet",
+        root
+    ));
+    assert!(!is_worktree_resident_program("   ", root));
+}
+
 /// `set_nested_value_inner` used to bail out silently when an intermediate
 /// path element already held a non-object scalar, dropping the deeper
 /// setting with no error or fallback (e.g. `"al.formatting": "x"` alongside

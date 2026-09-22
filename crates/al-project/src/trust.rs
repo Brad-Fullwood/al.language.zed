@@ -134,6 +134,9 @@ pub struct RepositoryAsk {
     app_local_folder_paths: Vec<PathBuf>,
     nuget_feed_urls: Vec<String>,
     use_only_custom_feeds: bool,
+    /// `dotnetPath` and the language-server `binary.path`, which name programs
+    /// to run rather than values in `AlConfig`.
+    executable_paths: Vec<String>,
     settings: Vec<PrivilegedSetting>,
 }
 
@@ -189,6 +192,7 @@ impl RepositoryAsk {
             .extend(other.app_local_folder_paths);
         self.nuget_feed_urls.extend(other.nuget_feed_urls);
         self.use_only_custom_feeds |= other.use_only_custom_feeds;
+        self.executable_paths.extend(other.executable_paths);
         self.settings.extend(other.settings);
     }
 }
@@ -234,6 +238,7 @@ pub fn inspect(project_root: &Path) -> Result<(RepositoryAsk, TrustDecision), Co
             project_root,
             relative,
         ));
+        ask.absorb(executable_path_privileges(&value, relative));
     }
     ask.settings.extend(launch_privileges(project_root));
 
@@ -697,6 +702,78 @@ pub fn authorize_cached_credential(
             .iter()
             .any(|candidate| candidate.accept_invalid_certs),
     })
+}
+
+/// `dotnetPath` and the language-server `binary.path` as a repository settings
+/// file writes them.
+///
+/// Neither reaches `AlConfig`: `dotnetPath` is filtered out of the merge
+/// because it becomes the `AL_DOTNET_PATH` environment entry, and `binary.path`
+/// is Zed's own key. Both name a program to run, so both are read straight from
+/// the file.
+fn executable_path_privileges(value: &serde_json::Value, source: &str) -> RepositoryAsk {
+    let mut ask = RepositoryAsk::default();
+    let settings = value
+        .pointer("/lsp/al-lsp/settings")
+        .or_else(|| value.get("settings"))
+        .unwrap_or(value);
+    let dotnet = settings
+        .get("dotnetPath")
+        .or_else(|| settings.get("al.dotnetPath"))
+        .or_else(|| settings.get("al").and_then(|al| al.get("dotnetPath")));
+    let binary = value.pointer("/lsp/al-lsp/binary/path");
+
+    for (key, candidate) in [
+        ("al.dotnetPath", dotnet),
+        ("lsp.al-lsp.binary.path", binary),
+    ] {
+        let Some(path) = candidate.and_then(serde_json::Value::as_str).map(str::trim) else {
+            continue;
+        };
+        if path.is_empty() {
+            continue;
+        }
+        ask.executable_paths.push(path.to_string());
+        ask.settings.push(PrivilegedSetting {
+            key: key.to_string(),
+            value: path.to_string(),
+            source: source.to_string(),
+        });
+    }
+    ask
+}
+
+/// Drop `AL_DOTNET_PATH` when this repository chose it and the project is not
+/// trusted, returning the message for the user.
+///
+/// The Zed extension turns `dotnetPath` from the merged editor settings into
+/// this environment entry, and `zed_extension_api` 0.7 gives it no way to tell
+/// a user-level value from a worktree one. al-lsp can tell, because it can read
+/// the repository's files, so the refusal lands here. Removing the variable
+/// makes the whole process fall back to `dotnet` from `PATH`.
+pub fn enforce_dotnet_path(project_root: &Path) -> Option<String> {
+    let configured = std::env::var(crate::toolchain::DOTNET_PATH_ENV).ok()?;
+    let configured = configured.trim().to_string();
+    if configured.is_empty() {
+        return None;
+    }
+
+    let (ask, decision) = inspect(project_root).ok()?;
+    if decision.state.is_trusted() {
+        return None;
+    }
+    let from_repository = ask.executable_paths.iter().any(|path| path == &configured)
+        || stays_inside_project(Path::new(&configured), project_root);
+    if !from_repository {
+        return None;
+    }
+
+    std::env::remove_var(crate::toolchain::DOTNET_PATH_ENV);
+    Some(format!(
+        "Ignoring the dotnet host '{configured}': it comes from this repository and the project \
+         is not trusted. Falling back to 'dotnet' from PATH. To use it, run: {TRUST_COMMAND} {}",
+        decision.root.display()
+    ))
 }
 
 /// The Business Central servers the repository's own launch file names.
@@ -1385,6 +1462,52 @@ mod tests {
             TargetSource::User,
         )
         .is_ok());
+    }
+
+    #[test]
+    fn a_repository_dotnet_host_is_dropped_until_the_project_is_trusted() {
+        let _config = ScratchConfig::new();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".zed")).unwrap();
+        std::fs::write(dir.path().join("app.json"), "{}").unwrap();
+        std::fs::write(
+            dir.path().join(".zed/settings.json"),
+            r#"{"lsp":{"al-lsp":{"binary":{"path":"./tools/al-lsp"},
+                "settings":{"dotnetPath":"./tools/dotnet"}}}}"#,
+        )
+        .unwrap();
+        std::env::set_var(crate::toolchain::DOTNET_PATH_ENV, "./tools/dotnet");
+
+        let advisory = enforce_dotnet_path(dir.path()).unwrap();
+
+        assert!(advisory.contains("not trusted"), "{advisory}");
+        assert!(std::env::var_os(crate::toolchain::DOTNET_PATH_ENV).is_none());
+
+        // Both executable paths are privileged, so trusting the project has to
+        // be a decision the user makes about them by name.
+        let decision = decide(dir.path()).unwrap();
+        assert!(decision
+            .privileged
+            .iter()
+            .any(|setting| setting.key == "al.dotnetPath"));
+        assert!(decision
+            .privileged
+            .iter()
+            .any(|setting| setting.key == "lsp.al-lsp.binary.path"));
+    }
+
+    #[test]
+    fn a_dotnet_host_outside_the_project_is_left_alone() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings("{}");
+        std::env::set_var(crate::toolchain::DOTNET_PATH_ENV, "/usr/bin/dotnet");
+
+        assert!(enforce_dotnet_path(project.path()).is_none());
+        assert_eq!(
+            std::env::var(crate::toolchain::DOTNET_PATH_ENV).as_deref(),
+            Ok("/usr/bin/dotnet")
+        );
+        std::env::remove_var(crate::toolchain::DOTNET_PATH_ENV);
     }
 
     #[test]

@@ -182,6 +182,39 @@ pub fn resolve_dotnet_path(user_settings: Option<&serde_json::Value>) -> Option<
         .map(ToOwned::to_owned)
 }
 
+/// Whether `path` names a program the worktree itself carries.
+///
+/// `LspSettings::for_worktree` returns the user's settings and the worktree's
+/// `.zed/settings.json` already merged, and `zed_extension_api` 0.7 exposes no
+/// way to ask for the user-level value alone (`wit::get_settings`, which takes
+/// the location, is private to the crate). So the extension cannot tell who
+/// wrote `binary.path` or `dotnetPath`. It can tell where the program lives,
+/// which is the part that matters: a relative path resolves against the
+/// worktree, and an absolute path under the worktree root is a file the clone
+/// brought with it.
+///
+/// Zed itself blocks project settings until a worktree is trusted, from
+/// v0.218.2-pre (advisory GHSA-29cp-2hmh-hcxj). This check is what an older
+/// Zed does not give us.
+///
+/// See `Docs/current-limitations.md#zed-worktree-settings-and-executable-paths`.
+pub fn is_worktree_resident_program(path: &str, worktree_root: &str) -> bool {
+    let path = path.trim();
+    if path.is_empty() {
+        return false;
+    }
+    let absolute = path.starts_with('/') || (path.len() > 2 && &path[1..3] == ":\\");
+    if !absolute {
+        return true;
+    }
+    let root = worktree_root.trim_end_matches(['/', '\\']);
+    if root.is_empty() {
+        return false;
+    }
+    path.strip_prefix(root)
+        .is_some_and(|rest| rest.starts_with('/') || rest.starts_with('\\'))
+}
+
 /// Select and normalize the AL settings needed by the separate DAP process
 /// when it performs a launch build.
 ///

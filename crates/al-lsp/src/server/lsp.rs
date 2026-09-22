@@ -988,8 +988,12 @@ async fn gate_repository_settings(
     config: &mut al_project::config::AlConfig,
 ) -> Option<String> {
     let root = root_uri?.to_file_path().ok()?;
+    let dotnet_advisory = al_project::trust::enforce_dotnet_path(&root);
     match al_project::trust::gate(&root, config) {
-        Ok(decision) => decision.advisory(),
+        Ok(decision) => match (decision.advisory(), dotnet_advisory) {
+            (Some(settings), Some(dotnet)) => Some(format!("{settings}\n{dotnet}")),
+            (settings, dotnet) => settings.or(dotnet),
+        },
         Err(error) => {
             tracing::warn!(%error, "cannot read this project's settings files for the trust check");
             // Unreadable repository settings cannot be subtracted one value at

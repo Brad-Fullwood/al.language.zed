@@ -407,6 +407,9 @@ async fn run() {
                 if let Some(advisory) = decision.advisory() {
                     tracing::warn!("{advisory}");
                 }
+                if let Some(advisory) = al_project::trust::enforce_dotnet_path(&project_root) {
+                    tracing::warn!("{advisory}");
+                }
                 let mut project = al_project::project::find_project(&project_root)
                     .map_err(|error| error.to_string())?;
                 project

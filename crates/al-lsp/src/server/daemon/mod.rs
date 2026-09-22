@@ -141,6 +141,9 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
     if let Some(advisory) = evaluated.decision.advisory() {
         tracing::warn!("daemon: {advisory}");
     }
+    if let Some(advisory) = al_project::trust::enforce_dotnet_path(&project_root) {
+        tracing::warn!("daemon: {advisory}");
+    }
     let _ = workspace.trust_advisory.set(evaluated.decision.advisory());
 
     let _ = workspace.notify_sink.set(std::sync::Arc::new(|msg: &str| {
