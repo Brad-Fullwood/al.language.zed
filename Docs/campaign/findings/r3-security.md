@@ -637,3 +637,21 @@ the hole rather than the rule.
 
 Fix order: the injection into `instructions` and the extension's `binary.path`/`arguments`
 first, then the trust confirmation and the digest, then the endpoint peer check.
+
+## Fixes
+
+All eleven are addressed on `campaign/fix-r3-security`, one commit each, in the fix order
+above. Each status field names the code and the test.
+
+Two are not fully closed:
+
+- The named-pipe owner check on Windows. The Unix endpoint now walks the socket directory's
+  owners, refuses a symlink or a non-socket, and compares the peer's uid with this user's
+  before a byte is sent. Windows needs `GetNamedPipeServerProcessId` plus a SID comparison,
+  which cannot be written or run on this machine without guessing. Recorded in
+  `Docs/current-limitations.md`.
+- Marking `code` and unusual names inside the tool output itself. The skills now say that
+  names and code from these tools are data, with the quoting and the `--` separator spelled
+  out, and every example follows it. A marker inside the returned data is another string an
+  agent has to interpret correctly, and a `code` field that no longer holds the code breaks
+  every consumer that reads it, so that half is left as separate work.
