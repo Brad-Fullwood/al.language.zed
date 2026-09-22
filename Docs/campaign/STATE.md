@@ -10,7 +10,7 @@ Round 1 reviews are complete: 224 verified findings in 11 files. Six of seven fi
 
 | Item | Kind | Output |
 |------|------|--------|
-| desloppify batch (done, 10 commits: four file splits, one data loader, one line table): waiting for the analysis third pass to merge, then merges the campaign branch into its own and re-applies campaign changes to the split files | worktree refactor | branch `campaign/slop-syntax-symbols`, `findings/slop-syntax-symbols.md` |
+| desloppify review queue: work all 112 subjective items to empty (resolve, skip with reason, or defer items in files other branches hold), then rescan and record scores | worktree refactor | branch `campaign/slop-review-queue`, `findings/slop-review-queue.md` |
 | Daemon lifecycle: build identity in the handshake, idle exit, PATH fallback version check, `daemon-shutdown` waits for the socket, harness stops leaking daemons | worktree fix | branch `campaign/fix-daemon-lifecycle` |
 | Fix round 2 security findings (8: 1 critical, 3 high). Project trust: repository settings that name code, programs, feeds or credential targets apply only after `al-explorer trust`. Dangling symlink containment bypass. Scheme check on token targets | worktree fix | branch `campaign/fix-r2-security` |
 
@@ -23,7 +23,6 @@ Queued:
 - Doc drift found by the blog writer: README.md:199-205 still describes removed plugin workarounds. `Docs/features/native-test-runtime.md:51-52` still says Round uses banker's rounding. `blog-plan.md` has `--include_used` (flag is `--include-used`).
 
 - Nine whole-workspace queries (dead_code, duplicates, sql_patterns, complexity, arch_lint, impact, native_check, obsolescence, obsolete_usage) walk each file from the root, so a multi-object file attributes every finding to the first object. `WorkspaceSource::objects` and `object_at_byte` exist for the fix.
-- After the desloppify branch merges: run `desloppify --lang rust scan --path .` from the main checkout and record the scores (the agent did not rescan, a forced rescan would reset the plan in the shared state file).
 
 - 124 `trim_matches('"')` identifier cleanups in al-analysis (102) and al-insight (22), replace with `al_syntax::node_text_clean`. Start after both analysis fix branches merge.
 - New findings from the emit fix agent (in `findings/r1-emit-bc-explorer.md`): `SymbolReference.json` has no `Variables` array for global variables, `xlf generate` drops properties declared on a one-line member block, al-dap and al-publish post to different BC dev endpoints (needs a live server to settle), the duplicated response validation framework (about 300 lines to move).
@@ -87,6 +86,7 @@ round on the areas with the most findings.
 
 ## Done
 
+- Merged `campaign/slop-syntax-symbols`: `formatting.rs`, `symbols.rs`, `index.rs` and `oauth.rs` split into module directories (largest file now 796 lines), the duplicate data loader in al-symbols removed, `LineIndex` and `SourceLines` merged, one HTTP retry policy, one temp path helper, typed `ObjectKind` error. Gates: 2825 tests across al-syntax, al-symbols, al-analysis, al-lsp and the harness. desloppify refuses to rescan until its 112 item review queue is empty.
 - Merged `campaign/fix-r1c-analysis`: 28 of 29 fixed plus the three items left by the second pass (type-position completion, the `attribute_list` dead branch, `EdgeKind::TriggerInvocation` removed). A node-kind guard test now fails if code names a syntax node the grammar lacks. Open: nine whole-workspace queries still attribute findings in a multi-object file to its first object. Full gates: 91 suites, 4770 passed, 0 failed.
 - Merged `campaign/fix-ci-platforms`: all seven CI jobs pass on PR #31 (closed after merge). Root causes: analyzer versions compared as strings per directory order (macOS), Record platform methods only offered when a toolchain was installed (ubuntu), verbatim path prefix in the containment message (Windows). CI now runs the whole suite before failing a job.
 - Merged `campaign/ai-daemon-projection`: `subscribers` and `impact --table` answer correctly, `limit`, `offset`, `fields`, `scope` on list methods, `source --list-procedures`, `al-explorer location`, `--compact`, single-flight background call-graph build with progress, `--timeout-ms`. Haiku context bytes fell on six of seven plugin questions. Full gates: 90 suites, 4726 passed, 0 failed after stale daemons were killed.

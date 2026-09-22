@@ -119,3 +119,7 @@ Append-only. Newest entry last.
 ## 2026-09-22 03:00 BST: all review fix branches merged
 
 - Merged `campaign/fix-r1c-analysis`. Every round 1 review finding now has a fix merged, a rejection with evidence, or an entry in the open list in STATE.md. Full gates: 91 suites, 4770 passed, 0 failed.
+
+## 2026-09-22 03:40 BST: file splits merged
+
+- Merged `campaign/slop-syntax-symbols`. The agent re-applied campaign changes to the split files by hand and proved nothing was lost with a normalised line diff. Started the desloppify review queue agent, since the tool blocks a rescan until the 112 subjective items are resolved or skipped.
