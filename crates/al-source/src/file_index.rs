@@ -799,21 +799,7 @@ impl FileIndex {
     ///
     /// [`object_path`]: Self::object_path
     pub fn object_path_near(&self, name: &str, from: &Path) -> Option<PathBuf> {
-        self.best_owner(name, None, from)
-    }
-
-    /// Like [`object_path_of_kind`], with the same app preference as
-    /// [`object_path_near`].
-    ///
-    /// [`object_path_of_kind`]: Self::object_path_of_kind
-    /// [`object_path_near`]: Self::object_path_near
-    pub fn object_path_of_kind_near(
-        &self,
-        name: &str,
-        kinds: &[&str],
-        from: &Path,
-    ) -> Option<PathBuf> {
-        self.best_owner(name, Some(kinds), from)
+        self.object_path_where(name, Some(from), |_| true)
     }
 
     /// The owner of `name` whose kind satisfies `kind_matches`, with the app
@@ -831,18 +817,6 @@ impl FileIndex {
         owners
             .iter()
             .filter(|e| kind_matches(&e.kind))
-            .min_by_key(|e| self.owner_rank(e, from_app.as_ref()))
-            .map(|e| e.path.clone())
-    }
-
-    fn best_owner(&self, name: &str, kinds: Option<&[&str]>, from: &Path) -> Option<PathBuf> {
-        let from_app = self.app_root_for(from);
-        let owners = self.objects.get(&name.to_lowercase())?;
-        owners
-            .iter()
-            .filter(|e| {
-                kinds.is_none_or(|kinds| kinds.iter().any(|k| e.kind.eq_ignore_ascii_case(k)))
-            })
             .min_by_key(|e| self.owner_rank(e, from_app.as_ref()))
             .map(|e| e.path.clone())
     }
@@ -1712,7 +1686,8 @@ codeunit 50101 "Second Codeunit"
             );
             assert_eq!(
                 index
-                    .object_path_of_kind_near("install", &["codeunit"], &from_test)
+                    .object_path_where("install", Some(&from_test), |kind| kind
+                        .eq_ignore_ascii_case("codeunit"))
                     .as_deref(),
                 Some(test_file.as_path())
             );
