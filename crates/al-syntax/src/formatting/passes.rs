@@ -430,6 +430,30 @@ table 50100 Test
     }
 
     #[test]
+    fn sort_properties_is_idempotent_when_the_run_is_indented_unevenly() {
+        // Found by `property_formatting::fixtures::mutated_fixture_every_option_is_idempotent`
+        // (seed 747ab1ed). A mutated fixture puts `{` after an `if … then`, so the
+        // pending single-statement indent drains on the first property and the two
+        // properties of the run end up at different indentation. Sorting moved each
+        // line together with its leading whitespace, so the next run re-derived the
+        // indentation from the new order and the two lines traded indents forever.
+        let input = "\
+if Cond then
+{
+    Zulu = 1;
+    Alpha = 2;
+}
+";
+        let opts = FormatOptions {
+            sort_properties: true,
+            ..Default::default()
+        };
+        let pass1 = format_al(input, &opts);
+        let pass2 = format_al(&pass1, &opts);
+        assert_eq!(pass1, pass2, "sorting an unevenly indented run must settle");
+    }
+
+    #[test]
     fn sort_properties_keeps_multiline_value_intact() {
         // A multi-line property must move as one unit, keeping its
         // continuation line attached.
