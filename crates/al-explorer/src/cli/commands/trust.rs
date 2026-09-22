@@ -63,10 +63,7 @@ fn show_trust(root: &Path, json: bool) -> ExitCode {
     };
     println!("\nSettings from the repository that need trust ({effect}):");
     for setting in &decision.privileged {
-        println!(
-            "  {} = {}  (from {})",
-            setting.key, setting.value, setting.source
-        );
+        println!("  {}", setting.display_line());
     }
     ExitCode::SUCCESS
 }
@@ -120,10 +117,7 @@ fn grant_trust(root: &Path, json: bool) -> ExitCode {
             decision.root.display()
         );
         for setting in &decision.privileged {
-            println!(
-                "  {} = {}  (from {})",
-                setting.key, setting.value, setting.source
-            );
+            println!("  {}", setting.display_line());
         }
     }
 

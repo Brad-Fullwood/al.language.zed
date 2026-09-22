@@ -79,7 +79,11 @@ pub(super) fn reject_unsafe_server_url(id: u64, server_url: &str) -> Option<Resp
         result: None,
         error: Some(RpcError {
             code: error_codes::INVALID_PARAMS,
-            message: format!("serverUrl '{server_url}' is not an http(s) URL; refusing to connect"),
+            // The URL is caller text on its way back into an agent's context.
+            message: format!(
+                "serverUrl '{}' is not an http(s) URL; refusing to connect",
+                al_project::trust::one_line(server_url)
+            ),
         }),
         ..Default::default()
     })

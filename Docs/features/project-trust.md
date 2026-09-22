@@ -39,19 +39,33 @@ project.
 ## What untrusted looks like
 
 The privileged values are dropped and everything else is applied. You get one message naming
-each dropped setting and the command that turns them on:
+the keys that were dropped:
 
 ```
 This project is not trusted, so these settings from its own files were ignored:
-  al.codeAnalyzers = ./tools/Payload.dll (from .vscode/settings.json)
-  al.compilationOptions = /analyzer:/tmp/x.dll (from .vscode/settings.json)
-They can load code, run programs or receive credentials. Read them, then run:
-al-explorer trust /home/you/src/SomeApp
+  al.codeAnalyzers
+  al.compilationOptions
+They can load code, run programs or receive credentials. Their values are not repeated
+here. To read them and decide, the user runs this in a terminal:
+al-explorer trust --show /home/you/src/SomeApp
 ```
 
 In Zed it arrives as a warning notification, in `al-explorer` on stderr, in the daemon and
 the MCP server in the log, and the MCP server also puts it in the `instructions` it hands
 the agent so the agent can pass it on.
+
+The message carries key names and nothing else. A settings value is text the repository
+wrote, and a JSON string holds newlines, so a value spelled as an instruction paragraph
+would arrive in the MCP `instructions` field, which a client presents as the server's own
+guidance. Key names come from a fixed list in `al_project::trust::ADVISORY_KEYS`; a key the
+list does not hold is a launch configuration, whose name the repository also chose, and it
+prints as `launch configuration server`. The values are read with `al-explorer trust
+--show`, in a terminal.
+
+The same rule covers every other message that quotes repository text. A refusal that names
+a Business Central server, a dotnet host or a settings parse error puts it through
+`al_project::trust::one_line`, which escapes control characters and caps the length, so no
+repository byte can start a line of its own.
 
 ## Trusting a project
 

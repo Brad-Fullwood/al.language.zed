@@ -84,7 +84,18 @@ Tests
   characters escaped and truncated to a single line (`value.escape_debug()`, capped at, say,
   120 characters), and keep the count rather than the text when a value is longer. Separately,
   put the advisory in a tool result or a `notifications/message`, not in `instructions`.
-- status: open
+- status: fixed. The advisory now prints key names only, from the fixed `ADVISORY_KEYS` list,
+  one per line, with no value and no repository byte. A key the list does not hold is a launch
+  configuration, whose name the repository chose, so it prints as `launch configuration
+  server`. Values stay raw in `PrivilegedSetting` because the digest is taken over them;
+  `PrivilegedSetting::display_line` and `trust::one_line` escape control characters and cap
+  the length at every place that prints one. `one_line` also covers the credential refusals
+  that name a server, `enforce_dotnet_path`, the settings parse error and the `serverUrl`
+  refusal in `bc_server_params`. Test:
+  `trust::tests::the_advisory_names_keys_and_repeats_no_repository_text` plants a newline and
+  an instruction sentence in `al.codeAnalyzers` and asserts the advisory is three lines with
+  none of that text. The advisory stays in `instructions` now that it carries nothing the
+  repository wrote.
 
 ### [SECURITY] the daemon client connects to whatever is at the endpoint path, with no peer or directory check
 
