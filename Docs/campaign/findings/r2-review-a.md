@@ -108,7 +108,7 @@ Multi-object open item:
   `value.strip_prefix(...)` on a case-folded first word, or
   `let mut c = value.chars(); PREFIX.chars().all(|p| c.next().is_some_and(|v| v.eq_ignore_ascii_case(&p))) && c.next().is_some_and(char::is_whitespace)`.
   Add a case with `Spécifié`.
-- status: fixed PLACEHOLDER1 — the check counts characters: it takes the byte index of the tenth
+- status: fixed 81ec0db4 — the check counts characters: it takes the byte index of the tenth
   character, which is a boundary, and compares the text before it. `inject_tooltips_handles_a_non_ascii_tooltip`
   drives `Spécifié le numéro` through `inject_tooltips`.
 
