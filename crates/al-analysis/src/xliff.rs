@@ -1901,23 +1901,36 @@ table 50101 "Shipment Line"
     }
 
     /// A one-line member declares the block its property belongs to, so the
-    /// property has to anchor to the member, not to the enclosing section.
+    /// property has to anchor to the member, not to the enclosing section:
+    /// anchoring it to the object collides with the object's own caption, and
+    /// the duplicate-id filter then drops one of the two.
     #[test]
     fn a_one_line_member_anchors_its_own_property() {
         let units = extract(
             r#"table 50100 "T"
 {
+    Caption = 'T';
+
     fields
     {
         field(1; "No."; Code[20]) { Caption = 'No.'; }
-        field(2; "Name"; Text[100]) { Caption = 'Name'; }
+        field(2; "Name"; Text[100]) { Caption = 'Name'; ToolTip = 'The name.'; }
     }
 }"#,
         );
-        assert_eq!(units.len(), 2, "{units:#?}");
-        assert_ne!(units[0].id, units[1].id);
-        assert!(units[0].note.as_ref().unwrap().contains("Field No."));
-        assert!(units[1].note.as_ref().unwrap().contains("Field Name"));
+        let unit = |source: &str| {
+            units
+                .iter()
+                .find(|unit| unit.source == source)
+                .unwrap_or_else(|| panic!("no unit for {source:?}: {units:#?}"))
+        };
+        let number = unit("No.");
+        let name = unit("Name");
+        unit("The name.");
+        assert_ne!(number.id, name.id);
+        assert_ne!(unit("T").id, number.id, "{units:#?}");
+        assert!(number.note.as_ref().unwrap().contains("Field No."));
+        assert!(name.note.as_ref().unwrap().contains("Field Name"));
     }
 
     /// alc accepts any spacing around `=`; requiring exactly one space left
@@ -2369,45 +2382,6 @@ le monde</target>
         let mut units = Vec::new();
         extract_from_file(Path::new("test.al"), al, &mut units);
         units
-    }
-
-    /// `field(1; "No."; Code[20]) { Caption = 'No.'; }` on one line is legal
-    /// AL and the compact style the differential corpus uses. The property has
-    /// to be read past the member header and anchored to the member that the
-    /// same line's `{` opened, not to the enclosing object.
-    #[test]
-    fn a_property_on_a_one_line_member_block_belongs_to_that_member() {
-        let units = extract(
-            r#"table 50100 "Shipment"
-{
-    Caption = 'Shipment';
-
-    fields
-    {
-        field(1; "No."; Code[20]) { Caption = 'Number'; }
-        field(2; "Posting Date"; Date) { Caption = 'Posted On'; ToolTip = 'When it posted.'; }
-    }
-}
-"#,
-        );
-        let source_of = |needle: &str| {
-            units
-                .iter()
-                .find(|unit| unit.source == needle)
-                .unwrap_or_else(|| panic!("no unit for {needle:?}: {units:?}"))
-        };
-        let number = source_of("Number");
-        let posted_on = source_of("Posted On");
-        source_of("When it posted.");
-        assert_ne!(
-            number.id, posted_on.id,
-            "each field's caption keys onto its own field: {units:?}"
-        );
-        let object_caption = source_of("Shipment");
-        assert_ne!(
-            object_caption.id, number.id,
-            "a member caption must not collide with the object's own: {units:?}"
-        );
     }
 
     /// Every page control used to get the identical id
