@@ -22,7 +22,10 @@ pub struct SnapshotConfig {
     pub company: String,
     /// Output directory for downloaded .alvsc files. Must be an absolute path.
     pub output_dir: PathBuf,
-    /// Optional username for Basic auth (Windows auth used when absent).
+    /// Optional username for Basic auth. With no username and password the
+    /// request falls back to the `BC_ACCESS_TOKEN` bearer override, and with
+    /// neither it carries no `Authorization` header — there is no
+    /// Windows-integrated fallback.
     pub username: Option<String>,
     /// Optional password for Basic auth. Never serialized to prevent credential leaks.
     #[serde(default, skip_serializing)]
@@ -109,7 +112,7 @@ pub async fn start_snapshot(
 
     debug!(url = %url, "snapshot: starting snapshot session");
 
-    let req = crate::http_auth::apply_basic_auth(
+    let req = crate::http_auth::apply_snapshot_auth(
         client.post(&url).json(&body),
         &config.username,
         &config.password,
@@ -155,7 +158,7 @@ pub async fn list_snapshots(config: &SnapshotConfig) -> Result<Vec<SnapshotInfo>
     debug!(url = %url, "snapshot: listing snapshots");
 
     let req =
-        crate::http_auth::apply_basic_auth(client.get(&url), &config.username, &config.password);
+        crate::http_auth::apply_snapshot_auth(client.get(&url), &config.username, &config.password);
     let resp = req.send().await?;
     let status = resp.status();
 
@@ -237,7 +240,7 @@ pub async fn download_snapshot(
     debug!(url = %url, id = snapshot_id, "snapshot: downloading");
 
     let req =
-        crate::http_auth::apply_basic_auth(client.get(&url), &config.username, &config.password);
+        crate::http_auth::apply_snapshot_auth(client.get(&url), &config.username, &config.password);
     let resp = req.send().await?;
     let status = resp.status();
 

@@ -12,8 +12,8 @@
     "auto_resolved": 0,
     "deferred": 0,
     "false_positive": 0,
-    "fixed": 50,
-    "open": 1170,
+    "fixed": 54,
+    "open": 1166,
     "triaged_out": 0,
     "wontfix": 45,
     "by_tier": {
@@ -21,8 +21,8 @@
         "auto_resolved": 0,
         "deferred": 0,
         "false_positive": 0,
-        "fixed": 20,
-        "open": 17,
+        "fixed": 22,
+        "open": 15,
         "triaged_out": 0,
         "wontfix": 28
       },
@@ -30,8 +30,8 @@
         "auto_resolved": 0,
         "deferred": 0,
         "false_positive": 0,
-        "fixed": 9,
-        "open": 243,
+        "fixed": 11,
+        "open": 241,
         "triaged_out": 0,
         "wontfix": 17
       },
@@ -37119,11 +37119,11 @@
         "reasoning": "",
         "summary_hash": "ad8c67a1"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Deleted the DapError enum in al-lsp/src/server/dap_mode/mod.rs and re-exported al_dap::dap::DapError, which al-lsp already depends on and which names the same four variants. The SpawnFailed message is now al-dap's wording; every call site supplies its own detail string, so no client-visible message lost information.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T02:08:35+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -37131,7 +37131,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Deleted the DapError enum in al-lsp/src/server/dap_mode/mod.rs and re-exported al_dap::dap::DapError, which al-lsp already depends on and which names the same four variants. The SpawnFailed message is now al-dap's wording; every call site supplies its own detail string, so no client-visible message lost information. and I am not gaming the score.",
+        "attested_at": "2026-09-22T02:08:35+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::naming_quality::runtime_error_helper_name_collision": {
       "id": "review::.::holistic::naming_quality::runtime_error_helper_name_collision",
@@ -38518,11 +38524,11 @@
         "reasoning": "",
         "summary_hash": "c55f09a9"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "native_workspace_diagnostics_at_root wrote the AL-NL000 anchor diagnostic out in full seven times; one analysis_failed(message) helper replaces them. The two inline severity ladders are now impl From<NativeSeverity> and impl From<WorkspaceLintSeverity> for SyntaxDiagnosticSeverity. The file loses 75 lines and gains 52.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T02:08:36+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -38530,7 +38536,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually native_workspace_diagnostics_at_root wrote the AL-NL000 anchor diagnostic out in full seven times; one analysis_failed(message) helper replaces them. The two inline severity ladders are now impl From<NativeSeverity> and impl From<WorkspaceLintSeverity> for SyntaxDiagnosticSeverity. The file loses 75 lines and gains 52. and I am not gaming the score.",
+        "attested_at": "2026-09-22T02:08:36+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::low_level_elegance::spawn_blocking_ladder_repeated": {
       "id": "review::.::holistic::low_level_elegance::spawn_blocking_ladder_repeated",
@@ -38767,11 +38779,11 @@
         "reasoning": "",
         "summary_hash": "39719782"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Introduced SymbolRefCtx (resolver, meta, field_types, page_source_tables, report_dataitem_tables) and ControlCtx (object_id, source_table, field_types, resolver, locals, inject_editable_false) in al-emit/src/symbol_reference.rs, which removes five clippy::too_many_arguments suppressions. The four suppressions left in the workspace each state why grouping would not reduce anything, matching the convention in al-insight/src/calls.rs.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T02:08:37+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -38779,7 +38791,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Introduced SymbolRefCtx (resolver, meta, field_types, page_source_tables, report_dataitem_tables) and ControlCtx (object_id, source_table, field_types, resolver, locals, inject_editable_false) in al-emit/src/symbol_reference.rs, which removes five clippy::too_many_arguments suppressions. The four suppressions left in the workspace each state why grouping would not reduce anything, matching the convention in al-insight/src/calls.rs. and I am not gaming the score.",
+        "attested_at": "2026-09-22T02:08:37+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::mid_level_elegance::daemon_wire_contract_restated_three_times": {
       "id": "review::.::holistic::mid_level_elegance::daemon_wire_contract_restated_three_times",
@@ -41186,11 +41204,11 @@
         "reasoning": "",
         "summary_hash": "f244e086"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Grouped the parameters that are genuinely one thing: the two context structs in al-emit/src/symbol_reference.rs. The tree-walk helpers in suggest_event.rs, inlay_hints.rs, test_coverage.rs, signature.rs, dead_code.rs, transaction_lint.rs and backends/interp.rs keep their separate node, position and option arguments, and each now carries a comment naming what varies per call, so the arity is a stated choice rather than an accident.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T02:08:38+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -41198,7 +41216,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Grouped the parameters that are genuinely one thing: the two context structs in al-emit/src/symbol_reference.rs. The tree-walk helpers in suggest_event.rs, inlay_hints.rs, test_coverage.rs, signature.rs, dead_code.rs, transaction_lint.rs and backends/interp.rs keep their separate node, position and option arguments, and each now carries a comment naming what varies per call, so the arity is a stated choice rather than an accident. and I am not gaming the score.",
+        "attested_at": "2026-09-22T02:08:38+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::design_coherence::workspace_god_struct": {
       "id": "review::.::holistic::design_coherence::workspace_god_struct",
@@ -41783,8 +41807,8 @@
       "source": "holistic",
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
-      "refresh_reason": "review_issue_wontfix",
-      "stale_since": "2026-09-22T01:47:23+00:00"
+      "refresh_reason": "review_issue_fixed",
+      "stale_since": "2026-09-22T02:08:38+00:00"
     },
     "error_consistency": {
       "score": 81.5,
@@ -41792,7 +41816,7 @@
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
       "refresh_reason": "review_issue_fixed",
-      "stale_since": "2026-09-22T01:56:07+00:00"
+      "stale_since": "2026-09-22T02:08:35+00:00"
     },
     "high_level_elegance": {
       "score": 84.5,
@@ -41831,8 +41855,8 @@
       "source": "holistic",
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
-      "refresh_reason": "review_issue_wontfix",
-      "stale_since": "2026-09-22T01:47:12+00:00"
+      "refresh_reason": "review_issue_fixed",
+      "stale_since": "2026-09-22T02:08:37+00:00"
     },
     "mid_level_elegance": {
       "score": 76.5,
@@ -81487,13 +81511,13 @@
       "strict": 76.0,
       "verified_strict_score": 76.0,
       "checks": 10,
-      "failing": 2,
+      "failing": 1,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.76,
-          "failing": 2,
+          "failing": 1,
           "weighted_failures": 2.4,
           "assessment_score": 76.0,
           "placeholder": false,
@@ -81508,13 +81532,13 @@
       "strict": 81.5,
       "verified_strict_score": 81.5,
       "checks": 10,
-      "failing": 3,
+      "failing": 2,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.815,
-          "failing": 3,
+          "failing": 2,
           "weighted_failures": 1.85,
           "assessment_score": 81.5,
           "placeholder": false,
@@ -81613,13 +81637,13 @@
       "strict": 78.0,
       "verified_strict_score": 78.0,
       "checks": 10,
-      "failing": 4,
+      "failing": 2,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.78,
-          "failing": 4,
+          "failing": 2,
           "weighted_failures": 2.2,
           "assessment_score": 78.0,
           "placeholder": false,

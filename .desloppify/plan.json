@@ -1,7 +1,7 @@
 {
   "version": 8,
   "created": "2026-09-21T00:40:45+00:00",
-  "updated": "2026-09-22T02:02:36+00:00",
+  "updated": "2026-09-22T02:08:38+00:00",
   "queue_order": [
     "review::.::holistic::abstraction_fitness::mockrecord_default_view_api",
     "review::.::holistic::abstraction_fitness::workspace_context_bag",
@@ -19,16 +19,12 @@
     "review::.::holistic::cross_module_architecture::workspace_hub_public_mutable_fields",
     "review::.::holistic::dependency_health::getrandom_pinned_to_oldest_of_three_copies",
     "review::.::holistic::dependency_health::shared_deps_bypass_workspace_table",
-    "review::.::holistic::design_coherence::high_arity_helpers",
     "review::.::holistic::design_coherence::workspace_god_struct",
     "review::.::holistic::error_consistency::al_analysis_dual_error_convention",
-    "review::.::holistic::error_consistency::duplicate_dap_error_enum",
     "review::.::holistic::error_consistency::typed_error_flattened_in_entrypoints",
     "review::.::holistic::high_level_elegance::debug_session_parked_on_workspace_hub",
     "review::.::holistic::low_level_elegance::dap_response_boilerplate_inline",
-    "review::.::holistic::low_level_elegance::lint_source_block_repeated_four_times",
     "review::.::holistic::low_level_elegance::tui_details_render_monolith",
-    "review::.::holistic::low_level_elegance::unjustified_arg_threading_symbol_reference",
     "review::.::holistic::mid_level_elegance::post_split_facade_globs_hide_ownership",
     "review::.::holistic::mid_level_elegance::workspace_hub_exposes_raw_locks",
     "review::.::holistic::naming_quality::symbol_lookup_cardinality_in_the_verb",
@@ -4376,6 +4372,166 @@
         "status": "fixed",
         "attestation": "I have actually performance.rs asserts a 5 s median now, which is the hang-detection threshold its own header describes, and AL_PERF_MAX_MEDIAN_MS sets a tighter budget on a controlled host. The eprintln timing report and the per-operation success assertions inside each measure! block are unchanged. and I am not gaming the score."
       }
+    },
+    {
+      "timestamp": "2026-09-22T02:08:35+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::error_consistency::duplicate_dap_error_enum"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:08:35+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::error_consistency::duplicate_dap_error_enum"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Deleted the DapError enum in al-lsp/src/server/dap_mode/mod.rs and re-exported al_dap::dap::DapError, which al-lsp already depends on and which names the same four variants. The SpawnFailed message is now al-dap's wording; every call site supplies its own detail string, so no client-visible message lost information.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T02:08:35+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::error_consistency::duplicate_dap_error_enum"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Deleted the DapError enum in al-lsp/src/server/dap_mode/mod.rs and re-exported al_dap::dap::DapError, which al-lsp already depends on and which names the same four variants. The SpawnFailed message is now al-dap's wording; every call site supplies its own detail string, so no client-visible message lost information.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Deleted the DapError enum in al-lsp/src/server/dap_mode/mod.rs and re-exported al_dap::dap::DapError, which al-lsp already depends on and which names the same four variants. The SpawnFailed message is now al-dap's wording; every call site supplies its own detail string, so no client-visible message lost information. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:08:36+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::low_level_elegance::lint_source_block_repeated_four_times"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:08:36+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::low_level_elegance::lint_source_block_repeated_four_times"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "native_workspace_diagnostics_at_root wrote the AL-NL000 anchor diagnostic out in full seven times; one analysis_failed(message) helper replaces them. The two inline severity ladders are now impl From<NativeSeverity> and impl From<WorkspaceLintSeverity> for SyntaxDiagnosticSeverity. The file loses 75 lines and gains 52.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T02:08:36+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::low_level_elegance::lint_source_block_repeated_four_times"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "native_workspace_diagnostics_at_root wrote the AL-NL000 anchor diagnostic out in full seven times; one analysis_failed(message) helper replaces them. The two inline severity ladders are now impl From<NativeSeverity> and impl From<WorkspaceLintSeverity> for SyntaxDiagnosticSeverity. The file loses 75 lines and gains 52.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually native_workspace_diagnostics_at_root wrote the AL-NL000 anchor diagnostic out in full seven times; one analysis_failed(message) helper replaces them. The two inline severity ladders are now impl From<NativeSeverity> and impl From<WorkspaceLintSeverity> for SyntaxDiagnosticSeverity. The file loses 75 lines and gains 52. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:08:37+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::low_level_elegance::unjustified_arg_threading_symbol_reference"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:08:37+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::low_level_elegance::unjustified_arg_threading_symbol_reference"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Introduced SymbolRefCtx (resolver, meta, field_types, page_source_tables, report_dataitem_tables) and ControlCtx (object_id, source_table, field_types, resolver, locals, inject_editable_false) in al-emit/src/symbol_reference.rs, which removes five clippy::too_many_arguments suppressions. The four suppressions left in the workspace each state why grouping would not reduce anything, matching the convention in al-insight/src/calls.rs.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T02:08:37+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::low_level_elegance::unjustified_arg_threading_symbol_reference"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Introduced SymbolRefCtx (resolver, meta, field_types, page_source_tables, report_dataitem_tables) and ControlCtx (object_id, source_table, field_types, resolver, locals, inject_editable_false) in al-emit/src/symbol_reference.rs, which removes five clippy::too_many_arguments suppressions. The four suppressions left in the workspace each state why grouping would not reduce anything, matching the convention in al-insight/src/calls.rs.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Introduced SymbolRefCtx (resolver, meta, field_types, page_source_tables, report_dataitem_tables) and ControlCtx (object_id, source_table, field_types, resolver, locals, inject_editable_false) in al-emit/src/symbol_reference.rs, which removes five clippy::too_many_arguments suppressions. The four suppressions left in the workspace each state why grouping would not reduce anything, matching the convention in al-insight/src/calls.rs. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:08:38+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::design_coherence::high_arity_helpers"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:08:38+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::design_coherence::high_arity_helpers"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Grouped the parameters that are genuinely one thing: the two context structs in al-emit/src/symbol_reference.rs. The tree-walk helpers in suggest_event.rs, inlay_hints.rs, test_coverage.rs, signature.rs, dead_code.rs, transaction_lint.rs and backends/interp.rs keep their separate node, position and option arguments, and each now carries a comment naming what varies per call, so the arity is a stated choice rather than an accident.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T02:08:38+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::design_coherence::high_arity_helpers"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Grouped the parameters that are genuinely one thing: the two context structs in al-emit/src/symbol_reference.rs. The tree-walk helpers in suggest_event.rs, inlay_hints.rs, test_coverage.rs, signature.rs, dead_code.rs, transaction_lint.rs and backends/interp.rs keep their separate node, position and option arguments, and each now carries a comment naming what varies per call, so the arity is a stated choice rather than an accident.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Grouped the parameters that are genuinely one thing: the two context structs in al-emit/src/symbol_reference.rs. The tree-walk helpers in suggest_event.rs, inlay_hints.rs, test_coverage.rs, signature.rs, dead_code.rs, transaction_lint.rs and backends/interp.rs keep their separate node, position and option arguments, and each now carries a comment naming what varies per call, so the arity is a stated choice rather than an accident. and I am not gaming the score."
+      }
     }
   ],
   "epic_triage_meta": {},
@@ -4410,7 +4566,11 @@
     "review::.::holistic::convention_outlier::explorer_edition_style_island",
     "review::.::holistic::convention_outlier::test_module_filename_shapes",
     "review::.::holistic::api_surface_coherence::sibling_parameter_order_drift",
-    "review::.::holistic::test_strategy::wallclock_budget_in_always_on_suite"
+    "review::.::holistic::test_strategy::wallclock_budget_in_always_on_suite",
+    "review::.::holistic::error_consistency::duplicate_dap_error_enum",
+    "review::.::holistic::low_level_elegance::lint_source_block_repeated_four_times",
+    "review::.::holistic::low_level_elegance::unjustified_arg_threading_symbol_reference",
+    "review::.::holistic::design_coherence::high_arity_helpers"
   ],
   "commit_tracking_branch": null,
   "scan_count_at_plan_start": 1

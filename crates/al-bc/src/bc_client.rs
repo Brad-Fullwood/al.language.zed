@@ -409,10 +409,8 @@ impl BcClient {
     ) -> Result<reqwest::RequestBuilder, BcClientError> {
         match &self.auth {
             AuthMethod::UserPassword | AuthMethod::Windows => {
-                let username = std::env::var("BC_USERNAME").ok();
-                let password = std::env::var("BC_PASSWORD").ok();
-                match (username, password) {
-                    (Some(u), Some(p)) => {
+                match crate::http_auth::basic_auth_from_env() {
+                    Some((u, p)) => {
                         // NOTE: this is the ONLY authentication mechanism this
                         // client implements for `AuthMethod::Windows` — plain
                         // HTTP Basic, identical to `UserPassword`. It is not a
@@ -422,7 +420,7 @@ impl BcClient {
                         // Basic-auth fallback.
                         req = req.basic_auth(u, Some(p));
                     }
-                    _ => {
+                    None => {
                         if matches!(&self.auth, AuthMethod::UserPassword) {
                             return Err(BcClientError::MissingCredentials);
                         }

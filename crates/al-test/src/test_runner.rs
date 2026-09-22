@@ -272,9 +272,15 @@ impl TestRunnerClient {
         Ok(req)
     }
 
+    /// Scope the request to a tenant through the `?tenant=` query parameter.
+    ///
+    /// BC's on-prem dev endpoints read the query parameter; the `X-Tenant`
+    /// header this used to send is not recognised, so a multitenant run
+    /// silently went to the default tenant. Matches
+    /// `al_bc::bc_client::BcClient::apply_tenant_query`.
     fn apply_tenant(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match &self.tenant {
-            Some(t) if !t.is_empty() && t != "default" => req.header("X-Tenant", t),
+            Some(t) if !t.is_empty() && t != "default" => req.query(&[("tenant", t.as_str())]),
             _ => req,
         }
     }
@@ -604,5 +610,50 @@ mod url_tests {
             "Scheme must not be doubled: {url}"
         );
         assert!(url.starts_with("http://"), "Must retain scheme: {url}");
+    }
+}
+
+#[cfg(test)]
+mod tenant_tests {
+    use super::*;
+    use al_bc::launch::{AuthMethod, BcServerConfig, EnvironmentType};
+
+    /// BC's on-prem dev endpoints read `?tenant=`; the `X-Tenant` header this
+    /// client used to send is not recognised, so a multitenant run reached the
+    /// default tenant instead. The mock matches only on the query parameter, so
+    /// a regression to the header form leaves the request unmatched and the
+    /// call fails.
+    #[tokio::test]
+    async fn list_methods_scopes_the_tenant_with_a_query_parameter() {
+        let server = wiremock::MockServer::start().await;
+        let body = r#"{"value":[{"name":"TestOne"}]}"#;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/BC/dev/tests/50100"))
+            .and(wiremock::matchers::query_param("tenant", "contoso"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Content-Length", body.len().to_string().as_str())
+                    .set_body_string(body),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let config = BcServerConfig {
+            name: "mock".to_string(),
+            environment_type: EnvironmentType::OnPrem,
+            server: Some(server.uri()),
+            server_instance: Some("BC".to_string()),
+            port: None,
+            environment_name: None,
+            tenant: Some("contoso".to_string()),
+            authentication: AuthMethod::Windows,
+            accept_invalid_certs: false,
+            debug_args: serde_json::json!({}),
+        };
+
+        let client = TestRunnerClient::new(&config).expect("client builds");
+        let methods = client.list_methods(50100).await.expect("mock responds");
+        assert_eq!(methods, vec!["TestOne".to_string()]);
     }
 }

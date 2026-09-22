@@ -22,6 +22,10 @@ pub struct ProfilingConfig {
     pub company: String,
     /// Output directory for downloaded `.alcpuprofile` files. Must be an absolute path.
     pub output_dir: PathBuf,
+    /// Optional username for Basic auth. With no username and password the
+    /// request falls back to the `BC_ACCESS_TOKEN` bearer override, and with
+    /// neither it carries no `Authorization` header — there is no
+    /// Windows-integrated fallback.
     pub username: Option<String>,
     /// Optional password for Basic auth. Never serialized to prevent credential leaks.
     #[serde(default, skip_serializing)]
@@ -89,7 +93,7 @@ pub async fn start_profiling(config: &ProfilingConfig) -> Result<String, Profili
 
     debug!(url = %url, "profiling: starting CPU profiler");
 
-    let req = crate::http_auth::apply_basic_auth(
+    let req = crate::http_auth::apply_snapshot_auth(
         client.post(&url).json(&serde_json::json!({})),
         &config.username,
         &config.password,
@@ -151,7 +155,7 @@ pub async fn stop_profiling(
     debug!(url = %url, session_id = session_id, "profiling: stopping profiler");
 
     let body = serde_json::json!({ "sessionId": session_id });
-    let req = crate::http_auth::apply_basic_auth(
+    let req = crate::http_auth::apply_snapshot_auth(
         client.post(&url).json(&body),
         &config.username,
         &config.password,
