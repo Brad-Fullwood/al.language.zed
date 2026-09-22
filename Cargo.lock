@@ -432,6 +432,7 @@ dependencies = [
  "al-publish",
  "al-test",
  "al-workspace",
+ "libc",
  "portable-pty",
  "serde_json",
  "tempfile",

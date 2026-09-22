@@ -1,14 +1,16 @@
-//! The daemon stops on its own: after an idle window, and when the project it
-//! serves is deleted.
+//! Every way an `al-lsp daemon` stops: an idle window, a deleted project root,
+//! `daemon-shutdown`, and the harness reaping what a test binary started.
 //!
-//! Both are driven against a real `al-lsp daemon` process with a short idle
-//! timeout, because the thing under test is the process exiting.
+//! All four run against a real daemon process, because the thing under test is
+//! the process exiting.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use al_test_harness::{al_explorer_binary, al_lsp_binary};
+use al_test_harness::{
+    al_explorer_binary, al_lsp_binary, reap_tracked_daemons, track_project_daemon,
+};
 
 /// A private `XDG_RUNTIME_DIR` per test, so these daemons cannot collide with
 /// the developer's own and cannot be found by anything else.
@@ -24,7 +26,7 @@ fn private_runtime_dir(tag: &str) -> PathBuf {
 struct DaemonProcess {
     child: Child,
     endpoint: PathBuf,
-    runtime_dir: PathBuf,
+    runtime_dir: Option<PathBuf>,
 }
 
 impl DaemonProcess {
@@ -34,16 +36,48 @@ impl DaemonProcess {
             runtime_dir.to_string_lossy().as_ref(),
         )
         .expect("compute the daemon endpoint");
-        let child = Command::new(al_lsp_binary())
+        let mut command = Command::new(al_lsp_binary());
+        command
+            .env("XDG_RUNTIME_DIR", &runtime_dir)
+            .env("XDG_DATA_HOME", runtime_dir.join("data"))
+            .env("XDG_CACHE_HOME", runtime_dir.join("cache"))
+            .env("XDG_CONFIG_HOME", runtime_dir.join("config"));
+        Self::spawn(
+            command,
+            project,
+            idle_timeout_secs,
+            endpoint,
+            Some(runtime_dir),
+        )
+    }
+
+    /// A daemon on this process's own runtime directory, so the harness helper
+    /// under test can find it the way it finds the daemons a test started.
+    /// The project directory is unique, so its endpoint is too.
+    fn start_on_shared_runtime(project: &Path, idle_timeout_secs: &str) -> Self {
+        let endpoint = al_protocol::socket_path(project).expect("compute the daemon endpoint");
+        Self::spawn(
+            Command::new(al_lsp_binary()),
+            project,
+            idle_timeout_secs,
+            endpoint,
+            None,
+        )
+    }
+
+    fn spawn(
+        mut command: Command,
+        project: &Path,
+        idle_timeout_secs: &str,
+        endpoint: PathBuf,
+        runtime_dir: Option<PathBuf>,
+    ) -> Self {
+        let child = command
             .arg("daemon")
             .arg("--project")
             .arg(project)
             .arg("--idle-timeout-secs")
             .arg(idle_timeout_secs)
-            .env("XDG_RUNTIME_DIR", &runtime_dir)
-            .env("XDG_DATA_HOME", runtime_dir.join("data"))
-            .env("XDG_CACHE_HOME", runtime_dir.join("cache"))
-            .env("XDG_CONFIG_HOME", runtime_dir.join("config"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -92,7 +126,9 @@ impl Drop for DaemonProcess {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.runtime_dir);
+        if let Some(runtime_dir) = &self.runtime_dir {
+            let _ = std::fs::remove_dir_all(runtime_dir);
+        }
     }
 }
 
@@ -151,6 +187,29 @@ fn daemon_shutdown_returns_only_once_the_endpoint_is_closed() {
     assert!(
         daemon.wait_for_exit(Duration::from_secs(10)).is_some(),
         "the daemon must exit after it stops listening"
+    );
+}
+
+/// What the harness does at the end of every test binary, driven directly.
+/// Without it a run left a daemon behind for every project it touched.
+#[test]
+fn the_harness_stops_the_daemons_it_tracked() {
+    let project = tempfile::tempdir().expect("create a project directory");
+    // The idle exit is off, so nothing but the reaper can stop this one.
+    let mut daemon = DaemonProcess::start_on_shared_runtime(project.path(), "0");
+    daemon.wait_until_listening();
+
+    track_project_daemon(project.path());
+    reap_tracked_daemons();
+
+    assert!(
+        al_protocol::client::wait_for_endpoint_closed(&daemon.endpoint, Duration::ZERO),
+        "the reaper must leave nothing answering on {}",
+        daemon.endpoint.display()
+    );
+    assert!(
+        daemon.wait_for_exit(Duration::from_secs(10)).is_some(),
+        "the tracked daemon must have exited"
     );
 }
 

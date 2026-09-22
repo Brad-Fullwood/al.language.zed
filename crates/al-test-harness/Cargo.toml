@@ -17,6 +17,10 @@ tracing = { workspace = true }
 # extensions/index.json on the host (replaces the container's gen_index.py).
 toml = "0.8"
 
+# `atexit` and `kill`, for stopping the daemons a test binary started.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [dev-dependencies]
 al-analysis = { path = "../al-analysis", version = "0.1.0" }
 al-bc = { path = "../al-bc", version = "0.1.0" }

@@ -34,7 +34,10 @@
 //! }
 //! ```
 
+mod daemon_reaper;
 mod protocol;
+
+pub use daemon_reaper::{reap_tracked_daemons, track_project_daemon};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -47,10 +50,16 @@ use std::path::{Path, PathBuf};
 /// separators: `join("data/test_al_project")` kept the forward slash on
 /// Windows, and a test comparing this path against one the daemon reported
 /// (all backslashes, because the daemon canonicalises its root) never matched.
+///
+/// Asking for the fixture registers its daemon for cleanup: a test that uses
+/// the fixture is the reason a daemon for it exists, and that daemon used to
+/// outlive the whole run.
 pub fn test_project_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("data")
-        .join("test_al_project")
+        .join("test_al_project");
+    track_project_daemon(&project);
+    project
 }
 
 use std::process::Stdio;
@@ -223,7 +232,11 @@ pub fn al_explorer_binary() -> PathBuf {
 /// earlier run happened to leave resident, so the same command passes or fails
 /// depending on working-tree history. Returns whether the shutdown command
 /// succeeded; "no daemon was running" is a success.
+///
+/// The project is also registered for cleanup, so the daemon this call clears
+/// the way for is stopped when the test binary ends.
 pub fn stop_project_daemon(project_dir: &Path) -> bool {
+    track_project_daemon(project_dir);
     std::process::Command::new(al_explorer_binary())
         .arg("daemon-shutdown")
         .current_dir(project_dir)
