@@ -966,6 +966,58 @@ mod tests {
         }
     }
 
+    /// A table's own procedure reaches its fields through the implicit `Rec`,
+    /// so `"Posting Date" := Today()` and `Rec."Posting Date" := Today()` name
+    /// the same field. The bare form bound to nothing, so rename left it
+    /// behind and the table stopped compiling.
+    #[test]
+    fn rename_field_rewrites_bare_and_qualified_uses_in_the_tables_own_procedure() {
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/src/OwnProcedure.al").unwrap();
+        let source = r#"table 50100 "Shipment"
+{
+    procedure Stamp()
+    begin
+        Rec."Posting Date" := Today();
+        "Posting Date" := Today();
+    end;
+
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; "Posting Date"; Date) { }
+    }
+}
+"#;
+        open_and_index(&ws, &uri, source);
+
+        // Cursor on the `"Posting Date"` field declaration.
+        let pos = Position {
+            line: 11,
+            character: 20,
+        };
+        let renamed = client_rename(&ws, &[(uri.clone(), source)], &uri, pos, |_| {
+            "Posted On".to_string()
+        });
+        let after = text_for(&renamed, &uri);
+        assert!(
+            after.contains(r#"field(2; "Posted On"; Date)"#),
+            "the declaration must be renamed:\n{after}"
+        );
+        assert!(
+            after.contains(r#""Posted On" := Today();"#),
+            "the bare field use must be renamed:\n{after}"
+        );
+        assert!(
+            after.contains(r#"Rec."Posted On" := Today();"#),
+            "the qualified use must be renamed:\n{after}"
+        );
+        assert!(
+            !after.contains("Posting Date"),
+            "no spelling of the old name may survive:\n{after}"
+        );
+    }
+
     #[test]
     fn rename_returns_none_when_no_refs() {
         let ws = Workspace::new();
