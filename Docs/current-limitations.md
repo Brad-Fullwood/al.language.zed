@@ -134,9 +134,31 @@ live in [ROADMAP.md](../ROADMAP.md).
   because `zed_extension_api` 0.7's `download_file` extracts a `.tar.gz`/`.zip`
   and does not keep the archive, and the API has no way to unpack a local file.
   It checks the extracted `al-lsp` and `al-explorer` against the release's
-  `binary-checksums.txt` instead, before either is made executable, so the bytes
-  that run are verified. `checksums.txt` still covers the archives for a manual
-  `sha256sum -c` of a hand-downloaded asset.
+  `binary-checksums.txt` instead, before either is made executable.
+  `checksums.txt` still covers the archives for a manual `sha256sum -c` of a
+  hand-downloaded asset.
+- **That check is integrity, not authenticity.** The digests are fetched over
+  the same TLS connection to the same GitHub release as the archive, and the
+  extension holds no key. It catches a truncated or corrupted download, an
+  archive replaced without its digest being updated, and a mismatch between what
+  CI built and what the release carries. It does not catch anyone who can
+  publish to the release: a stolen `GITHUB_TOKEN`, a compromised workflow or
+  account takeover rewrites the archive and `binary-checksums.txt` together.
+  The release tag carries no signature either, so `latest_github_release` trusts
+  whatever the repository's latest non-prerelease says. The extension verifies
+  no signature.
+- Authenticity is available outside the extension. `release.yml` attests every
+  asset in `checksums.txt` with `actions/attest-build-provenance`, which signs a
+  build-provenance statement through Sigstore against the workflow's own
+  identity. Verify a downloaded asset with:
+
+  ```bash
+  gh attestation verify al-linux-x86_64.tar.gz --repo Brad-Fullwood/al.language.zed
+  ```
+
+  That says the bytes came out of this repository's release workflow, which a
+  digest published beside them does not. The check is manual: the extension
+  cannot run it, and releases made before the attestation step have none.
 - Releases published before `binary-checksums.txt` existed carry no per-binary
   digests, and the extension starts from them unverified. Their absence comes
   from the GitHub API asset listing rather than the asset download, so a

@@ -605,6 +605,18 @@ Before tagging:
 10. Push the superproject commit only after the referenced grammar commit is available remotely.
 11. Tag from the exact commit you want users to install.
 
+Every asset listed in `checksums.txt` also gets a Sigstore build-provenance attestation, signed
+against the release workflow's own identity. Check a downloaded asset with:
+
+```bash
+gh attestation verify al-linux-x86_64.tar.gz --repo Brad-Fullwood/al.language.zed
+```
+
+The checksums that ship beside the archives show a download arrived intact. They are not a
+signature, and the extension holds no key, so it does not verify one. See
+[current limitations](Docs/current-limitations.md#releases) for what each check does and does not
+cover.
+
 ## License
 
 MIT.
