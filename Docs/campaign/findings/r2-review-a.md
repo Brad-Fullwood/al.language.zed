@@ -228,7 +228,9 @@ Multi-object open item:
   reader checking `Round(-1234.56789, 0.001, '<')` against the doc gets `-1234.568` where the code
   answers `-1234.567`.
 - fix: rewrite the doc to match the three strategies and cite the System.Round page once.
-- status: open
+- status: fixed 01734b8d — the doc says `'='` takes a midpoint away from zero and `'<'`/`'>'` move
+  the magnitude, with `Round(-1234.56789, 0.001, '<')` as the worked case, and cites the
+  System.Round page. `native-test-runtime.md` carried the same wrong claim and is corrected too.
 
 ### [BUG] The campaign findings record lists fixed items as open
 - where: Docs/campaign/findings/r1-analysis-insight.md:201-248 (seven findings repeated from
