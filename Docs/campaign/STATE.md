@@ -13,12 +13,13 @@ Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two 
 | desloppify review queue: work all 112 subjective items to empty (resolve, skip with reason, or defer items in files other branches hold), then rescan and record scores | worktree refactor | branch `campaign/slop-review-queue`, `findings/slop-review-queue.md` |
 | Fix R2 review B (19: rename and snapshot capture skip the gates, `.alpackages` symlink moves the boundary, extension path check unnormalised, plus a structural test that every dispatcher passes its gate) | worktree fix | branch `campaign/fix-r2-review-b` |
 | Fix queued items plus R2 review A (14: tooltip byte slice panic on localized packages, dead `skipped` and `parseIssues` reports, ID 50000 boundary, merge leftovers) | worktree fix | branch `campaign/fix-queued-2` |
-| Blog: articles 4 (`native-app-emitter`) and 8 (`zed-extension-and-release-integrity`) | blog repo branch `campaign/2026-09-rewrite` | `findings/blog-progress.md` |
 | Fix R3 security (10, 2 critical: repository text reaches the MCP `instructions` field, `binary.arguments` runs on open in Zed; plus trust confirmation on a TTY, endpoint peer check and unforgeable handshake, snapshot and profiling credential params, revoke takes effect, skills quote interpolated names) | worktree fix | branch `campaign/fix-r3-security` |
 
 Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, CI runs on every push).
 
 Queued:
+
+- `pack-native --validate` passes `analyzers: None`, which `resolve_analyzer_paths` reads as every installed analyzer. 29 cop errors on a project plain `alc` compiles, and the project's `al.codeAnalyzers` never reaches the call. Add a flag and honour the project setting through the trust gate.
 
 
 
@@ -55,7 +56,7 @@ whichever ones pay off most. Record progress per workstream below so gaps are vi
 | F | Grammar: corpus tests, query drift between `languages/al` and `tree-sitter-al/queries` | R1 review running | From R1 findings |
 | G | AI tooling: make this project speed up and sharpen AI work on Business Central (see below) | Inventory, measurements and design done (`findings/ai-tooling-ideas.md`): latency is 4 to 150 ms warm, but 14 of 20 measured answers are too large for an agent (up to 9.4 MB). Plugin build running | Daemon projection work after the LSP fix branch merges |
 | H | Docs: `Docs/`, `README.md`, `ROADMAP.md` match the code, then unsloppify | R1 docs review running | From R1 findings |
-| I | Blog: replace the six articles with a new series on the current project, unsloppify each | On blog branch `campaign/2026-09-rewrite`: six posts deleted, site cleaned, `pnpm validate` passes (it failed on `main`), fact sheet and nine-article plan in `findings/blog-plan.md`, articles 1, 2, 3, 5, 6, 7 drafted (6 of 9), article 1 `trace` paragraph corrected | Articles 2, 4, 5, 8 after the fix branches settle, article 9 last, final fact pass, merge to `main` |
+| I | Blog: replace the six articles with a new series on the current project, unsloppify each | On blog branch `campaign/2026-09-rewrite`: six posts deleted, site cleaned, `pnpm validate` passes (it failed on `main`), fact sheet and nine-article plan in `findings/blog-plan.md`, articles 1 to 8 drafted (8 of 9), article 9 (the campaign retrospective) is written last, article 1 `trace` paragraph corrected | Articles 2, 4, 5, 8 after the fix branches settle, article 9 last, final fact pass, merge to `main` |
 
 ### G: AI tooling detail
 
