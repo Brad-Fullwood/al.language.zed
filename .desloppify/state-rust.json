@@ -12,8 +12,8 @@
     "auto_resolved": 0,
     "deferred": 0,
     "false_positive": 0,
-    "fixed": 62,
-    "open": 1158,
+    "fixed": 64,
+    "open": 1156,
     "triaged_out": 0,
     "wontfix": 45,
     "by_tier": {
@@ -21,8 +21,8 @@
         "auto_resolved": 0,
         "deferred": 0,
         "false_positive": 0,
-        "fixed": 26,
-        "open": 11,
+        "fixed": 28,
+        "open": 9,
         "triaged_out": 0,
         "wontfix": 28
       },
@@ -38765,11 +38765,11 @@
         "reasoning": "",
         "summary_hash": "0eccd1cd"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "update_details_items is 120 lines instead of 256. label_line, indented_pair and procedure_line build the row shapes, push_section emits the blank-plus-bold-heading pair and push_line/push_member say whether a row is a jump target. The rendered output is unchanged and four new tests pin it.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T06:09:18+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -38777,7 +38777,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually update_details_items is 120 lines instead of 256. label_line, indented_pair and procedure_line build the row shapes, push_section emits the blank-plus-bold-heading pair and push_line/push_member say whether a row is a jump target. The rendered output is unchanged and four new tests pin it. and I am not gaming the score.",
+        "attested_at": "2026-09-22T06:09:18+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::low_level_elegance::unjustified_arg_threading_symbol_reference": {
       "id": "review::.::holistic::low_level_elegance::unjustified_arg_threading_symbol_reference",
@@ -39346,11 +39352,11 @@
         "reasoning": "",
         "summary_hash": "d97ff0db"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Added eight tests that need no terminal and no daemon. app/details.rs: the header and member-section order for a hydrated entry, that only keys, fields and procedures carry a DetailTarget, that an empty member list omits its heading, and the no-selection placeholder. views/call_graph.rs: the MAX_INPUT_LEN cap, Esc clearing query and rows together, focus staying in the query box while the list is empty, and j/k walking the rows.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T06:09:19+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39358,7 +39364,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Added eight tests that need no terminal and no daemon. app/details.rs: the header and member-section order for a hydrated entry, that only keys, fields and procedures carry a DetailTarget, that an empty member list omits its heading, and the no-selection placeholder. views/call_graph.rs: the MAX_INPUT_LEN cap, Esc clearing query and rows together, focus staying in the query box while the list is empty, and j/k walking the rows. and I am not gaming the score.",
+        "attested_at": "2026-09-22T06:09:19+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::test_strategy::tui_smoke_tolerates_shared_daemon_state": {
       "id": "review::.::holistic::test_strategy::tui_smoke_tolerates_shared_daemon_state",
@@ -41904,7 +41916,7 @@
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
       "refresh_reason": "review_issue_fixed",
-      "stale_since": "2026-09-22T02:08:37+00:00"
+      "stale_since": "2026-09-22T06:09:18+00:00"
     },
     "mid_level_elegance": {
       "score": 76.5,
@@ -41936,7 +41948,7 @@
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
       "refresh_reason": "review_issue_fixed",
-      "stale_since": "2026-09-22T02:02:36+00:00"
+      "stale_since": "2026-09-22T06:09:19+00:00"
     },
     "type_safety": {
       "score": 72.0,
@@ -81685,13 +81697,13 @@
       "strict": 78.0,
       "verified_strict_score": 78.0,
       "checks": 10,
-      "failing": 2,
+      "failing": 1,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.78,
-          "failing": 2,
+          "failing": 1,
           "weighted_failures": 2.2,
           "assessment_score": 78.0,
           "placeholder": false,
@@ -81769,13 +81781,13 @@
       "strict": 86.0,
       "verified_strict_score": 86.0,
       "checks": 10,
-      "failing": 3,
+      "failing": 2,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.86,
-          "failing": 3,
+          "failing": 2,
           "weighted_failures": 1.4,
           "assessment_score": 86.0,
           "placeholder": false,

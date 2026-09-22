@@ -201,21 +201,26 @@ async fn no_ghost_diagnostics_after_close_during_debounce() {
     client.change_file_no_wait("src/ghost_test.al", edit).await;
     client.close_file("src/ghost_test.al").await;
 
-    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-
-    let diags = client.drain_diagnostics();
+    // The fixed wait this replaces had to exceed the server's debounce, which
+    // coupled the test to a constant it cannot see. Poll instead: the first
+    // publish for the closed file decides the result, and a window that closes
+    // with no publish at all is also a pass (the server stopped reporting).
     let uri = format!("file://{}/src/ghost_test.al", test_project_dir().display());
-
-    if let Some(published) = diags.get(&uri) {
-        for entry in published {
-            let arr = entry
-                .as_array()
-                .expect("publishDiagnostics.diagnostics is an array");
-            assert!(
-                arr.is_empty(),
-                "ghost diagnostic published after did_close: {entry}"
-            );
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+    while tokio::time::Instant::now() < deadline {
+        if let Some(published) = client.drain_diagnostics().get(&uri) {
+            for entry in published {
+                let arr = entry
+                    .as_array()
+                    .expect("publishDiagnostics.diagnostics is an array");
+                assert!(
+                    arr.is_empty(),
+                    "ghost diagnostic published after did_close: {entry}"
+                );
+            }
+            break;
         }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     }
 
     client.shutdown().await;

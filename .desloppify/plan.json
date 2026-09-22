@@ -1,7 +1,7 @@
 {
   "version": 8,
   "created": "2026-09-21T00:40:45+00:00",
-  "updated": "2026-09-22T06:03:46+00:00",
+  "updated": "2026-09-22T06:09:19+00:00",
   "queue_order": [
     "review::.::holistic::abstraction_fitness::mockrecord_default_view_api",
     "review::.::holistic::abstraction_fitness::workspace_context_bag",
@@ -16,7 +16,6 @@
     "review::.::holistic::error_consistency::al_analysis_dual_error_convention",
     "review::.::holistic::high_level_elegance::debug_session_parked_on_workspace_hub",
     "review::.::holistic::low_level_elegance::dap_response_boilerplate_inline",
-    "review::.::holistic::low_level_elegance::tui_details_render_monolith",
     "review::.::holistic::mid_level_elegance::post_split_facade_globs_hide_ownership",
     "review::.::holistic::mid_level_elegance::workspace_hub_exposes_raw_locks",
     "review::.::holistic::naming_quality::symbol_lookup_cardinality_in_the_verb",
@@ -24,7 +23,6 @@
     "review::.::holistic::package_organization::al_analysis_crate_size",
     "review::.::holistic::package_organization::queries_flat_drawer",
     "review::.::holistic::test_strategy::alc_differential_absent_from_ci",
-    "review::.::holistic::test_strategy::explorer_presentation_untested",
     "review::.::holistic::test_strategy::fixed_sleeps_stand_in_for_conditions",
     "review::.::holistic::type_safety::closed_vocabulary_as_string",
     "review::.::holistic::type_safety::string_errors_erase_variants",
@@ -4844,6 +4842,86 @@
         "status": "fixed",
         "attestation": "I have actually Renamed the sync variants hover_native and completions_native and gave each a doc comment saying it skips the .NET CodeAnalysis bridge, so the difference is in the name rather than in a _full suffix. Both now share an error taxonomy with their async twin: the async one adds a Bridge variant to the state error the sync one returns. They stay public because al-lsp's benches and lsp_integration.rs drive them. and I am not gaming the score."
       }
+    },
+    {
+      "timestamp": "2026-09-22T06:09:18+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::low_level_elegance::tui_details_render_monolith"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T06:09:18+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::low_level_elegance::tui_details_render_monolith"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "update_details_items is 120 lines instead of 256. label_line, indented_pair and procedure_line build the row shapes, push_section emits the blank-plus-bold-heading pair and push_line/push_member say whether a row is a jump target. The rendered output is unchanged and four new tests pin it.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T06:09:18+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::low_level_elegance::tui_details_render_monolith"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "update_details_items is 120 lines instead of 256. label_line, indented_pair and procedure_line build the row shapes, push_section emits the blank-plus-bold-heading pair and push_line/push_member say whether a row is a jump target. The rendered output is unchanged and four new tests pin it.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually update_details_items is 120 lines instead of 256. label_line, indented_pair and procedure_line build the row shapes, push_section emits the blank-plus-bold-heading pair and push_line/push_member say whether a row is a jump target. The rendered output is unchanged and four new tests pin it. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T06:09:19+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::test_strategy::explorer_presentation_untested"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T06:09:19+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::test_strategy::explorer_presentation_untested"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Added eight tests that need no terminal and no daemon. app/details.rs: the header and member-section order for a hydrated entry, that only keys, fields and procedures carry a DetailTarget, that an empty member list omits its heading, and the no-selection placeholder. views/call_graph.rs: the MAX_INPUT_LEN cap, Esc clearing query and rows together, focus staying in the query box while the list is empty, and j/k walking the rows.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T06:09:19+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::test_strategy::explorer_presentation_untested"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Added eight tests that need no terminal and no daemon. app/details.rs: the header and member-section order for a hydrated entry, that only keys, fields and procedures carry a DetailTarget, that an empty member list omits its heading, and the no-selection placeholder. views/call_graph.rs: the MAX_INPUT_LEN cap, Esc clearing query and rows together, focus staying in the query box while the list is empty, and j/k walking the rows.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Added eight tests that need no terminal and no daemon. app/details.rs: the header and member-section order for a hydrated entry, that only keys, fields and procedures carry a DetailTarget, that an empty member list omits its heading, and the no-selection placeholder. views/call_graph.rs: the MAX_INPUT_LEN cap, Esc clearing query and rows together, focus staying in the query box while the list is empty, and j/k walking the rows. and I am not gaming the score."
+      }
     }
   ],
   "epic_triage_meta": {},
@@ -4890,7 +4968,9 @@
     "review::.::holistic::dependency_health::getrandom_pinned_to_oldest_of_three_copies",
     "review::.::holistic::convention_outlier::bulk_fix_dual_write_protocol",
     "review::.::holistic::error_consistency::typed_error_flattened_in_entrypoints",
-    "review::.::holistic::api_surface_coherence::sync_async_query_twins"
+    "review::.::holistic::api_surface_coherence::sync_async_query_twins",
+    "review::.::holistic::low_level_elegance::tui_details_render_monolith",
+    "review::.::holistic::test_strategy::explorer_presentation_untested"
   ],
   "commit_tracking_branch": null,
   "scan_count_at_plan_start": 1
