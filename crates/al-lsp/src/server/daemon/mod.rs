@@ -84,7 +84,61 @@ const MAX_IN_FLIGHT_PER_CONNECTION: usize = 8;
 const ACCEPT_BACKOFF_START: Duration = Duration::from_millis(10);
 const ACCEPT_BACKOFF_CAP: Duration = Duration::from_secs(5);
 
-/// Create `dir` (and parents) restricted to the owner (0o700).
+/// Refuse a directory anyone but this user, or root, could replace.
+///
+/// With `XDG_RUNTIME_DIR` unset the socket path falls back to
+/// `{temp_dir}/{USER}/al-lsp/<hash>.sock`. `DirBuilder::recursive` applies its
+/// mode only to the directories it creates, so on a shared host an attacker who
+/// creates `/tmp/<victim>` first owns the parent, can rename the `al-lsp` entry
+/// whatever its own mode says, and can bind their own socket where al-explorer
+/// and the MCP server connect.
+///
+/// A component passes when this user owns it, or root owns it and it is either
+/// not writable by group or other, or sticky (which is what `/tmp` is).
+#[cfg(unix)]
+fn check_directory_owner(dir: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let refuse = |message: String| {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            message,
+        ))
+    };
+    // Safety: `geteuid` reads the calling process's own effective uid and
+    // cannot fail.
+    let me = unsafe { libc::geteuid() };
+    let metadata = std::fs::symlink_metadata(dir)?;
+    if metadata.file_type().is_symlink() {
+        return refuse(format!(
+            "the daemon runtime directory '{}' is a symbolic link",
+            dir.display()
+        ));
+    }
+    let owner = metadata.uid();
+    if owner == me {
+        return Ok(());
+    }
+    if owner != 0 {
+        return refuse(format!(
+            "the daemon runtime directory '{}' is owned by uid {owner}, not by you (uid {me})",
+            dir.display()
+        ));
+    }
+    let mode = metadata.mode();
+    let sticky = mode & 0o1000 != 0;
+    if mode & 0o022 != 0 && !sticky {
+        return refuse(format!(
+            "the daemon runtime directory '{}' is writable by other users (mode {:o})",
+            dir.display(),
+            mode & 0o7777
+        ));
+    }
+    Ok(())
+}
+
+/// Create `dir` (and parents) restricted to the owner (0o700), refusing any
+/// existing component someone else could replace.
 ///
 /// `DirBuilder::mode` applies the mode only to directories this call creates, so
 /// a dir left at a laxer mode by an earlier run (created before this hardening,
@@ -93,10 +147,22 @@ const ACCEPT_BACKOFF_CAP: Duration = Duration::from_secs(5);
 #[cfg(unix)]
 fn ensure_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+    // Every existing ancestor, root first, so the refusal names the outermost
+    // directory that fails rather than the leaf inside it.
+    let mut walked = std::path::PathBuf::new();
+    for component in dir.components() {
+        walked.push(component.as_os_str());
+        if walked.exists() {
+            check_directory_owner(&walked)?;
+        }
+    }
+
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(dir)?;
+    check_directory_owner(dir)?;
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
 }
 
@@ -1568,6 +1634,62 @@ pub(crate) async fn initialize_daemon_workspace(
         }
     }
     Ok(())
+}
+
+#[cfg(unix)]
+#[cfg(test)]
+mod runtime_dir_tests {
+    use super::ensure_private_dir;
+
+    #[test]
+    fn accepts_a_directory_this_user_owns() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("al-lsp");
+        ensure_private_dir(&dir).unwrap();
+        assert!(dir.is_dir());
+    }
+
+    #[test]
+    fn re_asserts_owner_only_on_a_directory_left_world_readable() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("al-lsp");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        ensure_private_dir(&dir).unwrap();
+
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "{mode:o}");
+    }
+
+    #[test]
+    fn refuses_a_runtime_directory_that_is_a_symbolic_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let link = tmp.path().join("runtime");
+        std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+
+        let error = ensure_private_dir(&link.join("al-lsp")).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("symbolic link"), "{error}");
+    }
+
+    /// The finding's case: on a shared host with `XDG_RUNTIME_DIR` unset the
+    /// runtime path is `/tmp/<victim>/al-lsp`, and a local attacker who owns
+    /// `/tmp/<victim>` can replace the `al-lsp` entry whatever its own mode is.
+    /// Ownership of `/tmp` itself is fine, because it is root-owned and sticky.
+    #[test]
+    fn a_root_owned_world_writable_parent_is_only_accepted_when_sticky() {
+        let shared = std::path::Path::new("/tmp");
+        let metadata = std::fs::metadata(shared).unwrap();
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(metadata.uid(), 0, "/tmp is expected to be root-owned");
+        assert_ne!(metadata.mode() & 0o1000, 0, "/tmp is expected to be sticky");
+        super::check_directory_owner(shared).unwrap();
+    }
 }
 
 #[cfg(test)]
