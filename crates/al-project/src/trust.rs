@@ -314,72 +314,32 @@ pub struct TrustEvaluation {
 /// settings file that fails to parse is an error, because silently skipping it
 /// would be a way to make a repository's settings disappear.
 pub fn inspect(project_root: &Path) -> Result<(RepositoryAsk, TrustDecision), ConfigLoadError> {
-    let base = match AlConfig::default_settings_path() {
+    let (_, ask) = read_repository(project_root)?;
+    let decision = decision_for(project_root, &ask);
+    Ok((ask, decision))
+}
+
+/// One read of the repository's settings files: the merged configuration and
+/// the privileged values that merge contributed.
+///
+/// Reading once is what makes the removal sound. When the configuration came
+/// from one read and the set to remove from another, a process that rewrote
+/// `.vscode/settings.json` to `{}` between them left the first read's
+/// privileged values in the effective configuration with the project still
+/// untrusted, because the second read found nothing to remove.
+fn read_repository(project_root: &Path) -> Result<(AlConfig, RepositoryAsk), ConfigLoadError> {
+    let mut config = match AlConfig::default_settings_path() {
         Some(path) => AlConfig::load(&path)?.unwrap_or_default(),
         None => AlConfig::default(),
     };
 
-    let mut candidate = base.clone();
     let mut ask = RepositoryAsk::default();
     for relative in [".vscode/settings.json", ".zed/settings.json"] {
         let path = project_root.join(relative);
         let Some(value) = crate::config::read_editor_settings_file(&path)? else {
             continue;
         };
-        let before = candidate.clone();
-        let issues = candidate.merge_editor_settings(&value);
-        if !issues.is_empty() {
-            return Err(ConfigLoadError::InvalidSettings {
-                path,
-                message: one_line(&issues.join(", ")),
-            });
-        }
-        ask.absorb(privileged_changes(
-            &before,
-            &candidate,
-            project_root,
-            relative,
-        ));
-        ask.absorb(executable_path_privileges(&value, relative));
-    }
-    ask.settings.extend(launch_privileges(project_root));
-
-    // A root that does not resolve cannot match a stored record either, so the
-    // decision stays "untrusted" and nothing privileged applies.
-    let root = project_root
-        .canonicalize()
-        .unwrap_or_else(|_| project_root.to_path_buf());
-    let digest = digest_of(&ask.settings);
-    let state = state_for(&root, &digest);
-
-    Ok((
-        ask,
-        TrustDecision {
-            root,
-            state,
-            privileged: Vec::new(),
-            digest,
-        },
-    ))
-}
-
-/// Load a project's effective configuration and decide what its own files may
-/// contribute.
-///
-/// User-level settings are merged first and are never gated. Repository
-/// settings are merged next; the privileged ones among them are then removed
-/// again unless the root is trusted.
-pub fn evaluate(project_root: &Path) -> Result<TrustEvaluation, ConfigLoadError> {
-    let base = match AlConfig::default_settings_path() {
-        Some(path) => AlConfig::load(&path)?.unwrap_or_default(),
-        None => AlConfig::default(),
-    };
-    let mut config = base;
-    for relative in [".vscode/settings.json", ".zed/settings.json"] {
-        let path = project_root.join(relative);
-        let Some(value) = crate::config::read_editor_settings_file(&path)? else {
-            continue;
-        };
+        let before = config.clone();
         let issues = config.merge_editor_settings(&value);
         if !issues.is_empty() {
             return Err(ConfigLoadError::InvalidSettings {
@@ -387,8 +347,44 @@ pub fn evaluate(project_root: &Path) -> Result<TrustEvaluation, ConfigLoadError>
                 message: one_line(&issues.join(", ")),
             });
         }
+        ask.absorb(privileged_changes(&before, &config, project_root, relative));
+        ask.absorb(executable_path_privileges(&value, relative));
     }
-    let decision = gate(project_root, &mut config)?;
+    ask.settings.extend(launch_privileges(project_root));
+    Ok((config, ask))
+}
+
+/// The trust state of `project_root` for the values `ask` holds.
+fn decision_for(project_root: &Path, ask: &RepositoryAsk) -> TrustDecision {
+    // A root that does not resolve cannot match a stored record either, so the
+    // decision stays "untrusted" and nothing privileged applies.
+    let root = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf());
+    let digest = digest_of(&ask.settings);
+    let state = state_for(&root, &digest);
+    TrustDecision {
+        root,
+        state,
+        privileged: Vec::new(),
+        digest,
+    }
+}
+
+/// Load a project's effective configuration and decide what its own files may
+/// contribute.
+///
+/// User-level settings are merged first and are never gated. Repository
+/// settings are merged next; the privileged ones among them are then removed
+/// again unless the root is trusted. Both halves come from one read of the
+/// files, so what is removed is exactly what was merged.
+pub fn evaluate(project_root: &Path) -> Result<TrustEvaluation, ConfigLoadError> {
+    let (mut config, ask) = read_repository(project_root)?;
+    let mut decision = decision_for(project_root, &ask);
+    if !decision.state.is_trusted() {
+        ask.remove_from(&mut config);
+    }
+    decision.privileged = ask.settings;
     Ok(TrustEvaluation { config, decision })
 }
 
@@ -1336,6 +1332,65 @@ mod tests {
             keys.contains(&"lsp.al-lsp.initialization_options"),
             "{keys:?}"
         );
+    }
+
+    /// `evaluate` used to merge the settings files, then call `gate`, which
+    /// read them again and removed what the second read found. A process that
+    /// rewrote `.vscode/settings.json` to `{}` between the two left the first
+    /// read's analyzer in the effective configuration with the project still
+    /// untrusted, because there was then nothing to remove.
+    ///
+    /// The invariant is unconditional: an untrusted project's configuration
+    /// holds no analyzer its own settings supplied. A writer flipping the file
+    /// underneath is what used to break it.
+    #[test]
+    fn a_settings_file_rewritten_underneath_cannot_leave_an_analyzer_behind() {
+        let _config = ScratchConfig::new();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".vscode")).unwrap();
+        std::fs::write(project.path().join("app.json"), "{}").unwrap();
+        let settings = project.path().join(".vscode/settings.json");
+        std::fs::write(&settings, "{}").unwrap();
+
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Renamed into place rather than rewritten, so a reader never catches
+        // a half-written file and the only thing varying is which of the two
+        // complete contents is there.
+        let writer_stop = std::sync::Arc::clone(&stop);
+        let writer_path = settings.clone();
+        let writer = std::thread::spawn(move || {
+            let staging = writer_path.with_file_name("staging.json");
+            let mut flip = 0u64;
+            while !writer_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                flip += 1;
+                let body = if flip.is_multiple_of(2) {
+                    r#"{"al.codeAnalyzers": ["./tools/Payload.dll"]}"#
+                } else {
+                    "{}"
+                };
+                let _ = std::fs::write(&staging, body);
+                let _ = std::fs::rename(&staging, &writer_path);
+            }
+        });
+
+        let mut checked = 0;
+        for _ in 0..400 {
+            let evaluated = evaluate(project.path()).unwrap();
+            assert!(!evaluated.decision.is_trusted());
+            assert!(
+                !evaluated
+                    .config
+                    .code_analyzers
+                    .iter()
+                    .any(|entry| entry.contains("Payload.dll")),
+                "an untrusted project kept an analyzer its own settings supplied"
+            );
+            checked += 1;
+        }
+
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().unwrap();
+        assert_eq!(checked, 400);
     }
 
     #[test]

@@ -422,7 +422,16 @@ Tests
 - fix: read the files once. `evaluate` already has the merged `candidate` and the per-file
   `before`, so it can build the `RepositoryAsk` from that merge and pass it to the gate
   instead of calling `inspect` again. That also removes the third read on the DAP path.
-- status: open
+- status: fixed. `read_repository` does the one read and returns the merged `AlConfig` with
+  the `RepositoryAsk` that merge produced; `decision_for` turns the ask into a
+  `TrustDecision`. `evaluate` uses both and no longer calls `gate`, so what is removed is
+  exactly what was merged. `inspect` uses the same read, which removes the third read on the
+  DAP path. Test:
+  `a_settings_file_rewritten_underneath_cannot_leave_an_analyzer_behind` runs 400
+  evaluations against a thread renaming the settings file between a payload and `{}`, and
+  asserts an untrusted project never keeps an analyzer its own settings supplied. Confirmed
+  failing on the first iteration with the double read restored, so the race the reviewer
+  could not win is reachable from a thread.
 
 ### [SECURITY] the daemon decides trust once at startup and never again
 
