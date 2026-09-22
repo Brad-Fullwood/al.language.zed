@@ -19,6 +19,7 @@ mod containment;
 mod debug_dispatch;
 mod insight_dispatch;
 mod lsp_dispatch;
+mod process_memory;
 mod projection;
 mod scope;
 
@@ -1018,6 +1019,9 @@ async fn dispatch_method(
                 // `impact` and `entrypoints` all wait for this. A client that
                 // sees `building` should keep waiting rather than retry.
                 "sourceIndex": workspace.dependency_source_progress(),
+                // What the process costs the machine, which the per-structure
+                // totals in `diag` do not show.
+                "memory": process_memory::ResidentMemory::read().to_json(),
             });
             Response {
                 id,
@@ -1067,6 +1071,10 @@ fn dispatch_diag(workspace: &Workspace, id: u64, params: &serde_json::Value) -> 
             match serde_json::to_value(&stats) {
                 Ok(mut value) => {
                     if let Some(object) = value.as_object_mut() {
+                        object.insert(
+                            "process".into(),
+                            process_memory::ResidentMemory::read().to_json(),
+                        );
                         match serde_json::to_value(workspace.dependency_source_progress()) {
                             Ok(progress) => {
                                 object.insert("sourceIndex".into(), progress);
@@ -2404,6 +2412,36 @@ mod tests {
         assert!(
             result.get("sourceIndex").is_some(),
             "diag/summary must carry sourceIndex: {result}"
+        );
+    }
+
+    /// The daemon that reached 2.9 GB resident reported small totals for every
+    /// structure it owns, because the allocator was holding the rest. Both
+    /// answers now carry what the operating system sees.
+    #[tokio::test]
+    async fn status_and_diag_report_resident_memory() {
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+        let shutdown = Notify::new();
+
+        let status = dispatch_request(&ws, Request::new(7, "status", None), &shutdown)
+            .await
+            .result
+            .expect("status must return a result");
+        let memory = status.get("memory").expect("status must carry memory");
+        assert!(
+            memory.get("residentBytes").is_some() && memory.get("peakResidentBytes").is_some(),
+            "both resident figures must be present, null where unavailable: {memory}"
+        );
+
+        let diag = dispatch_request(&ws, Request::new(8, "diag", None), &shutdown)
+            .await
+            .result
+            .expect("diag must return a result");
+        assert!(
+            diag.get("process")
+                .and_then(|process| process.get("residentBytes"))
+                .is_some(),
+            "diag/summary must carry the process footprint: {diag}"
         );
     }
 

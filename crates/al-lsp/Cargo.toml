@@ -82,6 +82,10 @@ keyring = { version = "3", default-features = false, features = [
 # in-tree test crates) don't pay for the layered registry / EnvFilter pull-in.
 tracing-subscriber = { workspace = true, optional = true }
 
+# `getrusage`, for the peak resident size `status` and `diag` report.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [features]
 default = ["nuget", "bin"]
 nuget = ["al-symbols/nuget"]
