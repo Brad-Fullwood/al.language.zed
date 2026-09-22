@@ -7,6 +7,7 @@
 //! Used by al-cli, al-explorer, and al-lsp.
 
 pub mod client;
+pub mod endpoint;
 pub mod identity;
 pub mod jsonrpc;
 pub mod socket;

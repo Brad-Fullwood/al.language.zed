@@ -7,7 +7,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use interprocess::local_socket::{prelude::*, GenericFilePath, Stream};
+#[cfg(windows)]
+use interprocess::local_socket::GenericFilePath;
+use interprocess::local_socket::{prelude::*, Stream};
 use interprocess::TryClone;
 
 use crate::identity::{self, BuildIdentity};
@@ -1093,24 +1095,45 @@ fn binary_version(binary: &Path) -> Option<String> {
     fields.next().map(str::to_string)
 }
 
+/// Connect to the daemon endpoint, refusing anything that is not this user's.
+///
+/// The endpoint path is derived from the project path, so it is guessable, and
+/// on Unix it can sit under a world-writable `/tmp`. Whoever binds it first
+/// receives every request, and those requests carry Business Central
+/// credentials. So the directory is checked the same way the daemon checks it
+/// before creating the socket, the endpoint itself must be a socket and not a
+/// symlink, and the peer's uid is read from the kernel before anything is sent.
+///
+/// See `crate::endpoint`.
+#[cfg(unix)]
+fn connect_stream(endpoint: &Path) -> std::io::Result<Stream> {
+    crate::endpoint::check_before_connect(endpoint)?;
+    let stream = std::os::unix::net::UnixStream::connect(endpoint)?;
+    crate::endpoint::check_peer(&stream)?;
+    Ok(interprocess::os::unix::uds_local_socket::Stream::from(stream).into())
+}
+
+/// Windows: the endpoint is a named pipe, and pipe names are a global
+/// namespace where the first creator owns the name.
+///
+/// [UNVERIFIED] The server's own identity is not checked here. The equivalent
+/// of the Unix peer check is `GetNamedPipeServerProcessId` plus a comparison of
+/// that process's user SID, or creating the pipe with
+/// `FILE_FLAG_FIRST_PIPE_INSTANCE` and a DACL and treating a pre-existing name
+/// as hostile. Neither is written, and neither would be run on this machine.
+/// See `Docs/current-limitations.md`.
+#[cfg(windows)]
 fn connect_stream(endpoint: &Path) -> std::io::Result<Stream> {
     let name = endpoint.to_fs_name::<GenericFilePath>()?;
-    #[cfg(windows)]
-    {
-        // `Stream::connect` uses an unbounded named-pipe wait on Windows.
-        // Under concurrent CLI load every server instance can briefly be
-        // occupied, which previously wedged callers before the request-level
-        // deadlines could apply. Try once without waiting; daemon startup has
-        // its own bounded retry loop in `wait_for_daemon`.
-        interprocess::local_socket::ConnectOptions::new()
-            .name(name)
-            .wait_mode(interprocess::ConnectWaitMode::Timeout(Duration::ZERO))
-            .connect_sync()
-    }
-    #[cfg(not(windows))]
-    {
-        Stream::connect(name)
-    }
+    // `Stream::connect` uses an unbounded named-pipe wait on Windows. Under
+    // concurrent CLI load every server instance can briefly be occupied, which
+    // previously wedged callers before the request-level deadlines could apply.
+    // Try once without waiting; daemon startup has its own bounded retry loop
+    // in `wait_for_daemon`.
+    interprocess::local_socket::ConnectOptions::new()
+        .name(name)
+        .wait_mode(interprocess::ConnectWaitMode::Timeout(Duration::ZERO))
+        .connect_sync()
 }
 
 #[cfg(all(test, unix))]
@@ -1189,6 +1212,53 @@ mod tests {
         let result = client.request("test/ping", None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("initializing"));
+    }
+
+    /// The finding's scenario, as far as one uid can reach it: something else
+    /// is sitting at the endpoint path when the client arrives. The client used
+    /// to connect to whatever was there and send its request, credentials and
+    /// all, so the check has to happen before the connect.
+    #[test]
+    fn a_planted_endpoint_is_refused_before_anything_is_sent() {
+        let endpoint = unique_sock();
+        std::fs::write(&endpoint, b"planted").expect("test");
+
+        let error =
+            connect_stream(&endpoint).expect_err("a planted regular file must not be connected to");
+
+        let _ = std::fs::remove_file(&endpoint);
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("not a socket"), "{error}");
+    }
+
+    /// A symlink at the endpoint points the connection somewhere the path does
+    /// not name, which is how a planted endpoint survives a check that reads
+    /// the target rather than the entry.
+    #[test]
+    fn a_symlinked_endpoint_is_refused_before_anything_is_sent() {
+        let real = unique_sock();
+        let _listener = UnixListener::bind(&real).expect("test");
+        let link = unique_sock();
+        std::os::unix::fs::symlink(&real, &link).expect("test");
+
+        let error = connect_stream(&link).expect_err("a symlinked endpoint must be refused");
+
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_file(&real);
+        assert!(error.to_string().contains("symbolic link"), "{error}");
+    }
+
+    /// The daemon's own socket still connects, so the checks are not a blanket
+    /// refusal.
+    #[test]
+    fn this_users_own_endpoint_still_connects() {
+        let endpoint = unique_sock();
+        let _listener = UnixListener::bind(&endpoint).expect("test");
+
+        let result = connect_stream(&endpoint);
+
+        let _ = std::fs::remove_file(&endpoint);
+        assert!(result.is_ok(), "{:?}", result.err());
     }
 
     #[test]

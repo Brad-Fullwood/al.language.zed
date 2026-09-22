@@ -138,6 +138,26 @@ live in [ROADMAP.md](../ROADMAP.md).
 - The consequence for a legitimate setup: a `dotnet` you keep inside a project
   directory needs `al-explorer trust` on that project, or a path outside it.
 
+## Daemon endpoint
+
+- The endpoint path is derived from the project path, so it is guessable, and
+  whoever binds it first receives every request. Those requests carry Business
+  Central credentials, so a socket planted there reads them in cleartext.
+- On Unix the client checks before it sends: every existing ancestor of the
+  endpoint's directory must be owned by this user, or by root and not writable
+  by anyone else without the sticky bit; the endpoint must be a socket and not
+  a symlink; and the peer's uid, read from the kernel with `SO_PEERCRED` (or
+  `getpeereid`), must be this user's. The daemon runs the same directory check
+  before it creates the socket. `al_protocol::endpoint` holds both.
+- On Windows the endpoint is a named pipe, pipe names are a global namespace,
+  and the client does not check who owns the name. The equivalent check is
+  `GetNamedPipeServerProcessId` plus a comparison of that process's user SID,
+  or creating the pipe with `FILE_FLAG_FIRST_PIPE_INSTANCE` and a DACL and
+  treating a pre-existing name as hostile. Neither is written. Any local user
+  who can guess the two FNV-1a hashes in the pipe name can own the endpoint.
+- The build-identity handshake does not answer who is on the other end and was
+  never meant to. See [daemon protocol](features/daemon-protocol.md).
+
 ## Releases
 
 - `tree-sitter-al` is a separate owned repository whose Rust package is

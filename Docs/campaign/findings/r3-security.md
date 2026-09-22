@@ -153,7 +153,24 @@ Tests
   not a socket. On Windows use `GetNamedPipeServerProcessId` and compare the server process's
   user SID, or create the pipe with `FILE_FLAG_FIRST_PIPE_INSTANCE` and a DACL and treat a
   pre-existing name as hostile.
-- status: open
+- status: fixed on Unix, open on Windows. `check_directory_owner` and `ensure_private_dir`
+  moved to `crates/al-protocol/src/endpoint.rs`, so the daemon's create-time check and the
+  client's connect-time check are the same code. `connect_stream` now runs
+  `endpoint::check_before_connect` (every existing ancestor of the parent, then a refusal of
+  an endpoint that is a symlink or not a socket), connects with `UnixStream`, and runs
+  `endpoint::check_peer` before anything is written: `SO_PEERCRED` on Linux, `getpeereid`
+  elsewhere, compared against `geteuid`. The kernel fills those in, so the process on the
+  other end cannot choose them. Tests:
+  `client::tests::a_planted_endpoint_is_refused_before_anything_is_sent`,
+  `a_symlinked_endpoint_is_refused_before_anything_is_sent`,
+  `this_users_own_endpoint_still_connects`, and the four in `endpoint::tests`, including
+  `a_peer_of_another_user_is_refused` over the uid comparison itself. A cross-uid planted
+  socket is not testable with one uid.
+
+  Windows is untouched and marked `[UNVERIFIED]` in `connect_stream`'s doc comment: the
+  named-pipe owner check needs `GetNamedPipeServerProcessId` plus a SID comparison, which
+  cannot be written or run on this machine without guessing. Recorded in
+  `Docs/current-limitations.md`.
 
 ### [SECURITY] the build-identity handshake is not authentication and a planted daemon forges it in one line
 

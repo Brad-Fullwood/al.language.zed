@@ -268,6 +268,7 @@ name = "al-protocol"
 version = "0.2.2"
 dependencies = [
  "interprocess",
+ "libc",
  "serde",
  "serde_json",
  "tracing",
