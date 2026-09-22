@@ -43,14 +43,18 @@ impl Scope {
 /// The `&str` is the result field holding the list, or `""` when the result is
 /// the list. Mirrors `projection::ListTarget` deliberately: a method that
 /// gains a scope has to say where its rows are either way.
+pub(crate) const SCOPED_LISTS: &[(&str, &str)] = &[
+    ("entrypoints", ""),
+    ("impact", "impacted"),
+    ("tableImpact", "objects"),
+    ("eventMap", "events"),
+];
+
 pub(crate) fn scoped_list(method: &str) -> Option<&'static str> {
-    match method {
-        "entrypoints" => Some(""),
-        "impact" => Some("impacted"),
-        "tableImpact" => Some("objects"),
-        "eventMap" => Some("events"),
-        _ => None,
-    }
+    SCOPED_LISTS
+        .iter()
+        .find(|(name, _)| *name == method)
+        .map(|(_, field)| *field)
 }
 
 pub(crate) fn accepts_scope(method: &str) -> bool {

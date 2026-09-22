@@ -7,8 +7,11 @@
 //!
 //! Fourteen of the twenty answers the AI-tooling survey measured were too
 //! large for an agent to read, up to 9.4 MB, and the question behind each had
-//! a one-line answer. `by-id table 18` was 194,951 bytes for a field list;
-//! `fields=["fields"]` with `limit=20` is a few kilobytes of the same answer.
+//! a one-line answer. `by-id table 18` was 194,951 bytes, nearly all of it the
+//! `fields` array of that one object; `fields=["kind","id","name","package"]`
+//! is the same row without it. `limit` and `offset` shorten a list of many
+//! rows, such as `search` or `deadCode`, and do nothing to a single-object
+//! answer like this one.
 
 use al_protocol::jsonrpc::Response;
 
@@ -21,49 +24,54 @@ pub(crate) enum ListTarget {
     Field(&'static str),
 }
 
+/// Every method whose result holds a list, and where that list is.
+///
+/// Adding a list-returning method means adding one line here. `lint` and
+/// `metrics` are absent because they return an array under `--all` and an
+/// object for one file, so there is no single place to project; `deps`,
+/// `deps.graph` and `diag` are small enough to read whole.
+pub(crate) const LIST_TARGETS: &[(&str, ListTarget)] = &[
+    // Methods whose result is the array itself.
+    ("search", ListTarget::Root),
+    ("object", ListTarget::Root),
+    ("byId", ListTarget::Root),
+    ("events", ListTarget::Root),
+    ("subscribers", ListTarget::Root),
+    ("entrypoints", ListTarget::Root),
+    ("deadCode", ListTarget::Root),
+    ("nativeCheck", ListTarget::Root),
+    ("trace", ListTarget::Root),
+    ("packages", ListTarget::Root),
+    ("sqlPatterns", ListTarget::Root),
+    ("obsolete", ListTarget::Root),
+    ("rules", ListTarget::Root),
+    ("errorCodes", ListTarget::Root),
+    ("builtinTypes", ListTarget::Root),
+    ("duplicates", ListTarget::Root),
+    ("arch.lint", ListTarget::Root),
+    ("audit.dataClassification", ListTarget::Root),
+    ("tests.discover", ListTarget::Root),
+    ("profiler.hints", ListTarget::Root),
+    ("breaking", ListTarget::Root),
+    ("upgrade", ListTarget::Root),
+    // Methods whose result keeps other fields around one array.
+    ("impact", ListTarget::Field("impacted")),
+    ("tableImpact", ListTarget::Field("objects")),
+    ("eventMap", ListTarget::Field("events")),
+    ("suggestEvent", ListTarget::Field("integrationPoints")),
+    ("traceChain", ListTarget::Field("chains")),
+    ("composed", ListTarget::Field("extensions")),
+    ("tests.affected", ListTarget::Field("affected")),
+    ("permissions.audit", ListTarget::Field("coverage")),
+];
+
 /// The list inside a method's result, or `None` when the method returns no
 /// list and projection does not apply to it.
-///
-/// Adding a list-returning method means adding one line here.
 pub(crate) fn list_target(method: &str) -> Option<ListTarget> {
-    Some(match method {
-        // Methods whose result is the array itself.
-        "search"
-        | "object"
-        | "byId"
-        | "events"
-        | "subscribers"
-        | "entrypoints"
-        | "deadCode"
-        | "nativeCheck"
-        | "trace"
-        | "packages"
-        | "sqlPatterns"
-        | "obsolete"
-        | "rules"
-        | "errorCodes"
-        | "builtinTypes"
-        | "duplicates"
-        | "arch.lint"
-        | "audit.dataClassification"
-        | "tests.discover"
-        | "profiler.hints"
-        | "breaking"
-        | "upgrade" => ListTarget::Root,
-        // Methods whose result keeps other fields around one array.
-        "impact" => ListTarget::Field("impacted"),
-        "tableImpact" => ListTarget::Field("objects"),
-        "eventMap" => ListTarget::Field("events"),
-        "suggestEvent" => ListTarget::Field("integrationPoints"),
-        "traceChain" => ListTarget::Field("chains"),
-        "composed" => ListTarget::Field("extensions"),
-        "tests.affected" => ListTarget::Field("affected"),
-        "permissions.audit" => ListTarget::Field("coverage"),
-        // `lint` and `metrics` return an array under `--all` and an object for
-        // one file, so there is no single place to project. `deps`,
-        // `deps.graph` and `diag` are already small enough to read whole.
-        _ => return None,
-    })
+    LIST_TARGETS
+        .iter()
+        .find(|(name, _)| *name == method)
+        .map(|(_, target)| *target)
 }
 
 /// What the caller asked to be given back.
@@ -411,5 +419,88 @@ mod tests {
             projected["truncated"], false,
             "nothing follows this page, so there is nothing to ask for"
         );
+    }
+
+    /// Enough parameters to make each list method answer on an empty project.
+    /// A method that needs none is absent.
+    fn probe_params(method: &str) -> serde_json::Value {
+        match method {
+            "search" => serde_json::json!({ "query": "x" }),
+            "object" => serde_json::json!({ "name": "Absent", "kind": "codeunit" }),
+            "byId" => serde_json::json!({ "id": 50_100, "kind": "codeunit" }),
+            "events" | "subscribers" | "composed" | "trace" | "impact" | "suggestEvent"
+            | "traceChain" => {
+                serde_json::json!({ "name": "Absent", "object": "Absent", "target": "Absent" })
+            }
+            "tableImpact" => serde_json::json!({ "table": "Absent" }),
+            "tests.affected" => serde_json::json!({ "changedFiles": [] }),
+            "breaking" | "upgrade" => serde_json::json!({ "baselineSymbols": [] }),
+            "duplicates" => serde_json::json!({ "minTokens": 50 }),
+            _ => serde_json::json!({}),
+        }
+    }
+
+    /// The declarations are a promise about the shape a dispatcher returns, and
+    /// a wrong field name is a silent no-op: projection finds nothing to narrow
+    /// and returns the whole answer. So drive every declared method and look at
+    /// what comes back.
+    ///
+    /// The workspace is empty, which is the point: every list is empty, and the
+    /// shape around it is what is being checked.
+    #[tokio::test]
+    async fn every_declared_list_is_where_the_declaration_says() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.json"), "{}").unwrap();
+        let workspace = al_workspace::Workspace::new();
+        super::super::set_test_project_root(&workspace, dir.path());
+        let workspace = std::sync::Arc::new(workspace);
+        let shutdown = tokio::sync::Notify::new();
+
+        let mut answered = 0;
+        for (method, target) in LIST_TARGETS {
+            let request =
+                al_protocol::jsonrpc::Request::new(1, *method, Some(probe_params(method)));
+            let response = super::super::dispatch_request(&workspace, request, &shutdown).await;
+            let Some(result) = response.result else {
+                // A method that needs a toolchain, a BC server or indexed
+                // sources cannot answer here. It is still declared, and the
+                // methods that do answer are the ones this test speaks for.
+                continue;
+            };
+            answered += 1;
+            match target {
+                ListTarget::Root => assert!(
+                    result.is_array(),
+                    "{method} is declared as a root array and returned {result}"
+                ),
+                ListTarget::Field(field) => assert!(
+                    result.get(field).is_some_and(serde_json::Value::is_array),
+                    "{method} is declared to hold its list in '{field}' and returned {result}"
+                ),
+            }
+        }
+        assert!(
+            answered >= 15,
+            "only {answered} of {} list methods answered, so this test proves little",
+            LIST_TARGETS.len()
+        );
+    }
+
+    /// `scope` narrows a list in place, so the field it names has to be the
+    /// same one projection narrows.
+    #[test]
+    fn scope_and_projection_agree_on_where_each_list_is() {
+        for (method, field) in super::super::scope::SCOPED_LISTS {
+            let target = list_target(method)
+                .unwrap_or_else(|| panic!("{method} takes a scope but declares no list"));
+            let expected = match target {
+                ListTarget::Root => "",
+                ListTarget::Field(field) => field,
+            };
+            assert_eq!(
+                *field, expected,
+                "{method}: scope narrows '{field}' and projection narrows '{expected}'"
+            );
+        }
     }
 }
