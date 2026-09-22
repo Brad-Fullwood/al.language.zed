@@ -1183,7 +1183,7 @@ fn json_schema_hover_result_has_contents_and_range() {
         line: 0,
         character: 0,
     };
-    let result = al_analysis::queries::hover::hover(&ws, &uri, pos).unwrap();
+    let result = al_analysis::queries::hover::hover_native(&ws, &uri, pos).unwrap();
 
     if let Some(r) = result {
         let json = hover_result_to_json(&r);

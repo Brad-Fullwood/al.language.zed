@@ -8,8 +8,9 @@ pub(crate) async fn handle_hover(
     position: Position,
 ) -> Result<Option<Hover>, String> {
     let core_pos = position.into();
-    let Some(result) =
-        al_analysis::queries::hover::hover_full(&server.workspace, uri, core_pos).await?
+    let Some(result) = al_analysis::queries::hover::hover_full(&server.workspace, uri, core_pos)
+        .await
+        .map_err(|error| error.to_string())?
     else {
         return Ok(None);
     };

@@ -1,7 +1,7 @@
 {
   "version": 8,
   "created": "2026-09-21T00:40:45+00:00",
-  "updated": "2026-09-22T02:19:08+00:00",
+  "updated": "2026-09-22T02:23:30+00:00",
   "queue_order": [
     "review::.::holistic::abstraction_fitness::mockrecord_default_view_api",
     "review::.::holistic::abstraction_fitness::workspace_context_bag",
@@ -10,7 +10,6 @@
     "review::.::holistic::api_surface_coherence::string_errors_beside_typed_siblings",
     "review::.::holistic::api_surface_coherence::sync_async_query_twins",
     "review::.::holistic::contract_coherence::two_error_conventions_in_one_module",
-    "review::.::holistic::convention_outlier::bulk_fix_dual_write_protocol",
     "review::.::holistic::cross_module_architecture::al_analysis_bundles_unrelated_capabilities",
     "review::.::holistic::cross_module_architecture::generation_lock_lsp_only",
     "review::.::holistic::cross_module_architecture::workspace_hub_public_mutable_fields",
@@ -4727,6 +4726,46 @@
         "status": "fixed",
         "attestation": "I have actually Bumped the workspace pin to getrandom 0.4 and renamed the four calls in al-emit/src/package.rs, al-symbols/src/oauth/pkce.rs and al-runtime/src/stubs/any.rs to getrandom::fill. The lock's remaining 0.2.17 copy is pulled only by keyring's secret-service through rand 0.8, not by first-party code. and I am not gaming the score."
       }
+    },
+    {
+      "timestamp": "2026-09-22T02:23:29+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::convention_outlier::bulk_fix_dual_write_protocol"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:23:30+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::convention_outlier::bulk_fix_dual_write_protocol"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Deleted add_application_area, add_tooltips, add_data_classification and apply_plan_to_disk (with its atomic_replace helper) from bulk_fix.rs, leaving the plan_* functions. The daemon's fix.* methods were already the only real callers and they apply a plan through ensure_document and the generation bump. queries_adversarial.rs and the three bulk_fix tests now exercise plan_application_area.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T02:23:30+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::convention_outlier::bulk_fix_dual_write_protocol"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Deleted add_application_area, add_tooltips, add_data_classification and apply_plan_to_disk (with its atomic_replace helper) from bulk_fix.rs, leaving the plan_* functions. The daemon's fix.* methods were already the only real callers and they apply a plan through ensure_document and the generation bump. queries_adversarial.rs and the three bulk_fix tests now exercise plan_application_area.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Deleted add_application_area, add_tooltips, add_data_classification and apply_plan_to_disk (with its atomic_replace helper) from bulk_fix.rs, leaving the plan_* functions. The daemon's fix.* methods were already the only real callers and they apply a plan through ensure_document and the generation bump. queries_adversarial.rs and the three bulk_fix tests now exercise plan_application_area. and I am not gaming the score."
+      }
     }
   ],
   "epic_triage_meta": {},
@@ -4770,7 +4809,8 @@
     "review::.::holistic::authorization_consistency::tenant_scoping_header_vs_query",
     "review::.::holistic::authorization_consistency::snapshot_profiling_basic_only_auth_model",
     "review::.::holistic::dependency_health::shared_deps_bypass_workspace_table",
-    "review::.::holistic::dependency_health::getrandom_pinned_to_oldest_of_three_copies"
+    "review::.::holistic::dependency_health::getrandom_pinned_to_oldest_of_three_copies",
+    "review::.::holistic::convention_outlier::bulk_fix_dual_write_protocol"
   ],
   "commit_tracking_branch": null,
   "scan_count_at_plan_start": 1

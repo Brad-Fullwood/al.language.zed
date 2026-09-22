@@ -12,8 +12,8 @@
     "auto_resolved": 0,
     "deferred": 0,
     "false_positive": 0,
-    "fixed": 59,
-    "open": 1161,
+    "fixed": 60,
+    "open": 1160,
     "triaged_out": 0,
     "wontfix": 45,
     "by_tier": {
@@ -30,8 +30,8 @@
         "auto_resolved": 0,
         "deferred": 0,
         "false_positive": 0,
-        "fixed": 12,
-        "open": 240,
+        "fixed": 13,
+        "open": 239,
         "triaged_out": 0,
         "wontfix": 17
       },
@@ -36738,11 +36738,11 @@
         "reasoning": "",
         "summary_hash": "0a35d52b"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Deleted add_application_area, add_tooltips, add_data_classification and apply_plan_to_disk (with its atomic_replace helper) from bulk_fix.rs, leaving the plan_* functions. The daemon's fix.* methods were already the only real callers and they apply a plan through ensure_document and the generation bump. queries_adversarial.rs and the three bulk_fix tests now exercise plan_application_area.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T02:23:30+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -36750,7 +36750,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Deleted add_application_area, add_tooltips, add_data_classification and apply_plan_to_disk (with its atomic_replace helper) from bulk_fix.rs, leaving the plan_* functions. The daemon's fix.* methods were already the only real callers and they apply a plan through ensure_document and the generation bump. queries_adversarial.rs and the three bulk_fix tests now exercise plan_application_area. and I am not gaming the score.",
+        "attested_at": "2026-09-22T02:23:30+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::convention_outlier::test_module_filename_shapes": {
       "id": "review::.::holistic::convention_outlier::test_module_filename_shapes",
@@ -41814,7 +41820,7 @@
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
       "refresh_reason": "review_issue_fixed",
-      "stale_since": "2026-09-22T02:02:34+00:00"
+      "stale_since": "2026-09-22T02:23:30+00:00"
     },
     "cross_module_architecture": {
       "score": 79.5,
@@ -81478,13 +81484,13 @@
       "strict": 80.0,
       "verified_strict_score": 80.0,
       "checks": 10,
-      "failing": 1,
+      "failing": 0,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.8,
-          "failing": 1,
+          "failing": 0,
           "weighted_failures": 2.0,
           "assessment_score": 80.0,
           "placeholder": false,

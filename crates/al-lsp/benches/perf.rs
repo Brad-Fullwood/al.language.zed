@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
-use al_analysis::queries::{completions::completions, Position};
+use al_analysis::queries::{completions::completions_native, Position};
 use al_insight::analysis::table_impact;
 use al_insight::graph::InsightGraph;
 use al_insight::index::CallGraph;
@@ -463,10 +463,22 @@ fn bench_completion(c: &mut Criterion) {
     };
 
     c.bench_function("completion/type_position", |b| {
-        b.iter(|| black_box(completions(black_box(&ws), black_box(&uri), type_pos)));
+        b.iter(|| {
+            black_box(completions_native(
+                black_box(&ws),
+                black_box(&uri),
+                type_pos,
+            ))
+        });
     });
     c.bench_function("completion/default", |b| {
-        b.iter(|| black_box(completions(black_box(&ws), black_box(&uri), default_pos)));
+        b.iter(|| {
+            black_box(completions_native(
+                black_box(&ws),
+                black_box(&uri),
+                default_pos,
+            ))
+        });
     });
 }
 

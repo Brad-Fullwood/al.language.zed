@@ -45,6 +45,18 @@ pub enum ProfilerHintError {
     InvalidHotspot { reason: String },
     #[error(transparent)]
     IncompleteWorkspace(#[from] super::WorkspaceQueryError),
+    #[error("cannot read profile file '{path}': {source}")]
+    ReadProfile {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("profile file is not valid UTF-8: {0}")]
+    ProfileNotUtf8(#[from] std::string::FromUtf8Error),
+    #[error("profile JSON parse error: {0}")]
+    ProfileJson(#[from] serde_json::Error),
+    #[error("no 'nodes' array in profile")]
+    ProfileWithoutNodes,
 }
 
 // The profiler data model lives in the T0 `al-types` crate; the parsing
@@ -170,14 +182,13 @@ fn aggregate_total_time_ms(
 /// back to a 1 ms-per-hit estimate. Nodes with no self time and no hits are
 /// skipped, as are internal nodes (`(root)`, `(idle)`, `(garbage collector)`,
 /// `(program)`).
-pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, String> {
-    let json: serde_json::Value =
-        serde_json::from_str(profile_json).map_err(|e| format!("JSON parse error: {e}"))?;
+pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, ProfilerHintError> {
+    let json: serde_json::Value = serde_json::from_str(profile_json)?;
 
     let nodes = json
         .get("nodes")
         .and_then(|v| v.as_array())
-        .ok_or_else(|| "No 'nodes' array in profile".to_string())?;
+        .ok_or(ProfilerHintError::ProfileWithoutNodes)?;
 
     // Accurate per-node self time (µs) from samples + timeDeltas. Empty when the
     // profile omits those arrays, in which case we keep the hit-count estimate.
@@ -352,9 +363,9 @@ pub fn profiler_hints(
 pub fn profile_hints_with_locations(
     workspace: &Workspace,
     profile_json: &str,
-) -> Result<Vec<ProfilerHint>, String> {
+) -> Result<Vec<ProfilerHint>, ProfilerHintError> {
     let mut hints = parse_profile(profile_json)?;
-    resolve_source_locations(workspace, &mut hints).map_err(|error| error.to_string())?;
+    resolve_source_locations(workspace, &mut hints)?;
     Ok(hints)
 }
 
@@ -588,14 +599,18 @@ fn profiler_lens_title(hint: &ProfilerHint) -> String {
 /// on the workspace's profiler session.
 ///
 /// Returns the number of hints mapped to source locations.
-pub fn load_profile_file(workspace: &Workspace, profile_path: &str) -> Result<usize, String> {
-    let data = std::fs::read(profile_path)
-        .map_err(|e| format!("Cannot read profile file '{profile_path}': {e}"))?;
-    let json =
-        String::from_utf8(data).map_err(|e| format!("Profile file is not valid UTF-8: {e}"))?;
+pub fn load_profile_file(
+    workspace: &Workspace,
+    profile_path: &str,
+) -> Result<usize, ProfilerHintError> {
+    let data = std::fs::read(profile_path).map_err(|source| ProfilerHintError::ReadProfile {
+        path: profile_path.to_string(),
+        source,
+    })?;
+    let json = String::from_utf8(data)?;
 
     let mut hints = parse_profile(&json)?;
-    resolve_source_locations(workspace, &mut hints).map_err(|error| error.to_string())?;
+    resolve_source_locations(workspace, &mut hints)?;
     let mapped = hints.iter().filter(|h| h.file.is_some()).count();
 
     let session = ProfilerSession::new(profile_path.to_string(), hints);
