@@ -278,7 +278,9 @@ Multi-object open item:
   No campaign fix assumed otherwise: the four passes 74acc262 claims to have converted really do
   iterate (`audit.rs:83/312/367`, `test_coverage.rs:140/367`, `profiler_hints.rs:398`).
 - fix: correct the list to the six, and lead with `native_check`.
-- status: open
+- status: fixed ae5f69c3 — r1c-analysis-insight.md names the six, records why the other three do
+  not have it, and leads the scenario with `native_check`. STATE.md's line says the same. All six
+  are fixed on `campaign/fix-queued-2`.
 
 ### [SLOP] `PermissionAuditReport`'s doc comment lost its subject in a merge
 - where: crates/al-analysis/src/queries/audit.rs:247-249

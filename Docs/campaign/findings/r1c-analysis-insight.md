@@ -297,12 +297,13 @@ Listed by neither checklist:
 
 ## Opened while fixing
 
-### [GAP] Nine whole-workspace queries still analyse a multi-object file as one object
-- where: crates/al-analysis/src/workspace_sources.rs:28-60 (`WorkspaceSource`) against its readers in crates/al-analysis/src/queries/{dead_code.rs:83, duplicates.rs:71, sql_patterns.rs:39, complexity.rs:45, arch_lint.rs:269, impact.rs:376, native_check.rs:229, obsolescence.rs:50, obsolete_usage.rs:40}
+### [GAP] Six whole-workspace queries still analyse a multi-object file as one object
+- where: crates/al-analysis/src/workspace_sources.rs:28-60 (`WorkspaceSource`) against its readers in crates/al-analysis/src/queries/{dead_code.rs:83, duplicates.rs:71, sql_patterns.rs:39, arch_lint.rs:269, impact.rs:376, native_check.rs:229}
 - severity: medium
-- scenario: `WorkspaceSource` now carries every declaration in `objects` (74acc262), and the permission, classification, coverage and profiler passes use it. The nine readers above still take `source.object` for the object name and walk `source.tree` from the root, so in a file declaring two objects every finding is attributed to the first one. A dead-code report on the second object of a file names the first object, and `impact` counts references under the wrong owner.
+- scenario: `WorkspaceSource` now carries every declaration in `objects` (74acc262), and the permission, classification, coverage and profiler passes use it. The six readers above still take `source.object` for the object name and walk `source.tree` from the root, so in a file declaring two objects every finding is attributed to the first one. A dead-code report on the second object of a file names the first object, and `impact` counts references under the wrong owner. `native_check` is worse than a label: it builds one `ObjectRecord` per file, so the second object's fields and enum values are recorded under the first object's kind, ID and name.
 - fix: give each of them the declaration whose range contains the node they found (`WorkspaceSource::object_at_byte`) and scope the walk to that object's node. Several call `al_syntax` helpers that take a `&Tree`; those need node-taking companions, as `al_insight::calls` gained in 5996424f.
-- status: open
+- correction: this said nine. `complexity`, `obsolescence` and `obsolete_usage` do not have the problem: `workspace_complexity` emits a per-file record and names no object, `ObsoleteUsageFinding` carries only file, range and message, and `obsolescence` re-reads the name from each `object_declaration` as it descends (15d7b1c0).
+- status: fixed ae5f69c3 — `WorkspaceSource::object_nodes` pairs each validated declaration with its syntax node, and all six iterate that instead of the root. al-syntax gained `find_variable_references_under`, `collect_primary_expression_names_under`, `extract_document_symbols_under` and `complexity::compute_complexity_under`. Each query has a two-object test where the finding belongs to the second object.
 
 ### [SLOP] `obsolescence.rs` tests for the node kind `attribute_list`, which the grammar does not define
 - where: crates/al-analysis/src/queries/obsolescence.rs:186 and 200
