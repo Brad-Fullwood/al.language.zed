@@ -215,7 +215,7 @@ Part B, agent-facing threat model:
 - fix: sign the release with minisign or cosign and bake the public key into the extension, so
   the trust root is a key the maintainer holds rather than the publishing account. Until then,
   describe the check as integrity against a broken download, not authenticity.
-- status: fixed (this commit) — release.yml now publishes Sigstore build provenance for every asset in checksums.txt, README and Docs/current-limitations.md describe the checksum as integrity rather than authenticity, and no code claims a signature check
+- status: fixed 7e473f90
 
 ### [SECURITY] Zed LSP settings choose the `dotnet` program and the language server binary, and Zed merges project-local settings
 
