@@ -166,9 +166,16 @@ Examples:
     /// Show base + all extensions merged
     Composed {
         /// Object kind (table, page, …) or — with one argument — the name
-        #[arg(value_name = "TYPE_OR_NAME")]
-        kind: String,
+        #[arg(value_name = "TYPE_OR_NAME", required_unless_present = "name")]
+        kind: Option<String>,
         /// Object name (omit to resolve the kind by name automatically)
+        #[arg(value_name = "NAME", conflicts_with = "name")]
+        name_positional: Option<String>,
+        /// Object name, spelled out. One positional means the name and two mean
+        /// kind then name, so a name that could pass for a kind is ambiguous.
+        /// This flag settles it: `composed --name 'Item'`, or with a kind,
+        /// `composed table --name 'Item'`
+        #[arg(long = "name", value_name = "VALUE")]
         name: Option<String>,
     },
     /// List loaded packages with stats
@@ -823,6 +830,45 @@ mod clap_wiring_tests {
         let mut full = vec!["al-explorer"];
         full.extend_from_slice(args);
         Cli::try_parse_from(full)
+    }
+
+    /// Object names come from a dependency `.app`, so an agent puts arbitrary
+    /// text here. `--` keeps a name that starts with `-` a name.
+    #[test]
+    fn a_name_after_the_separator_is_a_name() {
+        let cli = parse(&["search", "--", "-x"]).expect("-- must end option parsing");
+        assert!(matches!(cli.command, Commands::Search { query } if query == "-x"));
+
+        let cli = parse(&["source", "--list-procedures", "--", "--weird"])
+            .expect("flags before --, name after");
+        assert!(
+            matches!(cli.command, Commands::Source { name, list_procedures, .. }
+            if name == "--weird" && list_procedures)
+        );
+    }
+
+    /// `composed` takes one argument as a name and two as kind then name, so a
+    /// name that could pass for a kind is ambiguous. `--name` settles it.
+    #[test]
+    fn composed_takes_a_name_through_a_flag() {
+        let cli = parse(&["composed", "--name", "table"]).expect("--name alone is a name");
+        assert!(matches!(
+            cli.command,
+            Commands::Composed { kind: None, name: Some(name), .. } if name == "table"
+        ));
+
+        let cli = parse(&["composed", "table", "--name", "Item"]).expect("kind plus --name");
+        assert!(matches!(
+            cli.command,
+            Commands::Composed { kind: Some(kind), name: Some(name), .. }
+                if kind == "table" && name == "Item"
+        ));
+
+        assert!(
+            parse(&["composed", "table", "Item", "--name", "Item"]).is_err(),
+            "the positional name and --name must not both be given"
+        );
+        assert!(parse(&["composed"]).is_err(), "a name is required");
     }
 
     #[test]
