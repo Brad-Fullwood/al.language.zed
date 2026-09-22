@@ -377,10 +377,13 @@ fn search_workspace_files(
     results: &mut Vec<ImpactEntry>,
 ) {
     for source in workspace_sources {
-        let refs = al_syntax::find_variable_references(&source.tree, &source.text, search_name);
-
-        if !refs.is_empty() {
-            let object = &source.object;
+        // Per object declaration, not per file: a file may hold several
+        // objects, and a hit anywhere in it was reported as the first one.
+        for (object, node) in source.object_nodes() {
+            let refs = al_syntax::find_variable_references_under(node, &source.text, search_name);
+            if refs.is_empty() {
+                continue;
+            }
             results.push(ImpactEntry {
                 kind: object.kind,
                 id: object.normalized_id,
@@ -413,67 +416,72 @@ fn search_workspace_files_for_member(
 ) {
     let object_lower = object_name.to_lowercase();
     for source in workspace_sources {
-        let refs = al_syntax::find_variable_references(&source.tree, &source.text, member);
-        if refs.is_empty() {
-            continue;
-        }
+        // Per object declaration, not per file: a file may hold several
+        // objects, and the receiver bindings, the `extends` target and the
+        // `SourceTable` of the first one decided the verdict for all of them.
+        for (object, node) in source.object_nodes() {
+            let refs = al_syntax::find_variable_references_under(node, &source.text, member);
+            if refs.is_empty() {
+                continue;
+            }
 
-        let receivers = receiver_bindings(&source.tree, &source.text, &object_lower);
-        let declares_target = source.object.info.name.to_lowercase() == object_lower
-            || extends_target(&source.text, &object_lower);
-        // A page/report/query bound to the table through `SourceTable` is the
-        // ordinary consumer of a field, and `Rec` inside it is that table. The
-        // survey saw every such page reported as `confidence: low`.
-        let source_table_target =
-            source_table_of(&source.text).is_some_and(|table| table.to_lowercase() == object_lower);
+            let object_text = object.text(&source.text);
+            let receivers = receiver_bindings(node, &source.text, &object_lower);
+            let declares_target = object.info.name.to_lowercase() == object_lower
+                || extends_target(object_text, &object_lower);
+            // A page/report/query bound to the table through `SourceTable` is the
+            // ordinary consumer of a field, and `Rec` inside it is that table. The
+            // survey saw every such page reported as `confidence: low`.
+            let source_table_target = source_table_of(object_text)
+                .is_some_and(|table| table.to_lowercase() == object_lower);
 
-        let bound = refs.iter().any(|reference| {
-            match receiver_before(&source.text, reference.start_byte) {
-                Some(receiver) => {
-                    let lower = receiver.to_lowercase();
-                    lower == object_lower
+            let bound = refs.iter().any(|reference| {
+                match receiver_before(&source.text, reference.start_byte) {
+                    Some(receiver) => {
+                        let lower = receiver.to_lowercase();
+                        lower == object_lower
                         || receivers.contains(&lower)
                         // `Rec`/`xRec` inside the target object (or an
                         // extension of it, or a page bound to it) refer to
                         // the target itself.
                         || ((declares_target || source_table_target)
                             && matches!(lower.as_str(), "rec" | "xrec"))
+                    }
+                    // Unqualified use binds to the enclosing object, or to the
+                    // page's source table when the file has one.
+                    None => declares_target || source_table_target,
                 }
-                // Unqualified use binds to the enclosing object, or to the
-                // page's source table when the file has one.
-                None => declares_target || source_table_target,
-            }
-        });
+            });
 
-        let object = &source.object;
-        let impact_type = if declares_target {
-            ImpactType::Declares
-        } else if source_table_target {
-            ImpactType::Display
-        } else {
-            ImpactType::Read
-        };
-        results.push(ImpactEntry {
-            kind: object.kind,
-            id: object.normalized_id,
-            name: object.info.name.clone(),
-            proc: None,
-            field: None,
-            impact_type,
-            package: None,
-            confidence: if bound {
-                ImpactConfidence::High
+            let impact_type = if declares_target {
+                ImpactType::Declares
+            } else if source_table_target {
+                ImpactType::Display
             } else {
-                ImpactConfidence::Low
-            },
-            note: if bound {
-                None
-            } else {
-                Some(format!(
-                    "name match only — no receiver in this file resolves to '{object_name}'"
-                ))
-            },
-        });
+                ImpactType::Read
+            };
+            results.push(ImpactEntry {
+                kind: object.kind,
+                id: object.normalized_id,
+                name: object.info.name.clone(),
+                proc: None,
+                field: None,
+                impact_type,
+                package: None,
+                confidence: if bound {
+                    ImpactConfidence::High
+                } else {
+                    ImpactConfidence::Low
+                },
+                note: if bound {
+                    None
+                } else {
+                    Some(format!(
+                        "name match only — no receiver in this object resolves to '{object_name}'"
+                    ))
+                },
+            });
+        }
     }
 }
 
@@ -523,13 +531,13 @@ fn extends_target(text: &str, object_lower: &str) -> bool {
 /// Lower-cased names of variables/parameters in `text` whose declared type
 /// targets `object_lower` (e.g. `Cust: Record Customer` for `customer`).
 fn receiver_bindings(
-    tree: &tree_sitter::Tree,
+    root: tree_sitter::Node<'_>,
     text: &str,
     object_lower: &str,
 ) -> std::collections::HashSet<String> {
     let source = text.as_bytes();
     let mut names = std::collections::HashSet::new();
-    let mut stack = vec![tree.root_node()];
+    let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         if matches!(node.kind(), "regular_variable_declaration" | "parameter") {
             let targets = node
@@ -674,6 +682,49 @@ mod tests {
             permissions: Vec::new(),
             variables: Vec::new(),
         }
+    }
+
+    /// A file may declare several objects. A consumer reported by the
+    /// workspace scan is the object the reference is in, not the file's first
+    /// object, and the reference must not also be attributed to an object
+    /// that does not contain it.
+    #[test]
+    fn a_workspace_consumer_in_the_second_object_of_a_file_names_that_object() {
+        let ws = workspace_with_files(vec![(
+            "/src/Pair.al",
+            r#"codeunit 50100 "Ship Helper"
+{
+    procedure DoNothing()
+    begin
+    end;
+}
+
+codeunit 50101 "Ship Consumer"
+{
+    procedure Read()
+    var
+        Cust: Record Customer;
+    begin
+        Cust.Init();
+    end;
+}"#,
+        )]);
+        ws.symbols.add_entries(&[make_table(18, "Customer")]);
+
+        let results = impact(&ws, "Customer").unwrap();
+        let consumers: Vec<&str> = results
+            .iter()
+            .filter(|entry| entry.impact_type == ImpactType::Read)
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert!(
+            consumers.contains(&"Ship Consumer"),
+            "the object holding the reference must be reported: {results:?}"
+        );
+        assert!(
+            !consumers.contains(&"Ship Helper"),
+            "an object with no reference must not be reported: {results:?}"
+        );
     }
 
     #[test]

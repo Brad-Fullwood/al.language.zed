@@ -33,28 +33,22 @@ pub fn detect_sql_patterns(
     let mut violations = Vec::new();
 
     for source in sources {
-        scan_file_for_sql_patterns(
-            &source.path.to_string_lossy(),
-            &source.text,
-            &source.tree,
-            &source.object.info.name,
-            &mut violations,
-        );
+        let file_path = source.path.to_string_lossy();
+        // Per object declaration, not per file: a file may hold several
+        // objects, and walking from the root put every one of their findings
+        // under the first object's name.
+        for (object, node) in source.object_nodes() {
+            scan_procedures(
+                node,
+                source.text.as_bytes(),
+                &file_path,
+                &object.info.name,
+                &mut violations,
+            );
+        }
     }
 
     Ok(violations)
-}
-
-fn scan_file_for_sql_patterns(
-    file_path: &str,
-    text: &str,
-    tree: &tree_sitter::Tree,
-    object_name: &str,
-    violations: &mut Vec<SqlPatternViolation>,
-) {
-    let root = tree.root_node();
-    let source = text.as_bytes();
-    scan_procedures(root, source, file_path, object_name, violations);
 }
 
 fn scan_procedures(
@@ -387,6 +381,42 @@ mod tests {
                 .add_file(PathBuf::from(name), content.to_string());
         }
         ws
+    }
+
+    /// A file may declare several objects. A finding belongs to the object
+    /// whose procedure raised it, not to the file's first object.
+    #[test]
+    fn a_finding_in_the_second_object_of_a_file_names_that_object() {
+        let ws = workspace_with(vec![(
+            "/src/Pair.al",
+            r#"codeunit 50100 "First CU"
+{
+    procedure Clean()
+    begin
+    end;
+}
+
+codeunit 50101 "Second CU"
+{
+    procedure ProcessItems()
+    var
+        Item: Record Item;
+        Line: Record "Sales Line";
+    begin
+        repeat
+            if Item.FindFirst() then
+                Message(Item."No.");
+        until Line.Next() = 0;
+    end;
+}"#,
+        )]);
+
+        let violations = detect_sql_patterns(&ws).unwrap();
+        let finding = violations
+            .iter()
+            .find(|v| v.kind == SqlAntiPattern::FindInLoop)
+            .unwrap_or_else(|| panic!("expected a FindInLoop finding: {violations:?}"));
+        assert_eq!(finding.object, "Second CU", "{violations:?}");
     }
 
     #[test]
