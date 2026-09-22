@@ -2440,6 +2440,42 @@ mod tests {
         assert!(error.message.contains("rewrites the file"), "{error}");
     }
 
+    /// `rename` used to read its `uri` through `ensure_document`, which has no
+    /// containment check. The file was answered on and stayed in the document
+    /// store, so every later read method on the same `uri` was served from it.
+    #[tokio::test]
+    async fn rename_refuses_a_path_outside_the_project_and_leaves_no_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let (workspace, _) = project_with_doc(&root);
+        let workspace = std::sync::Arc::new(workspace);
+        let outside = dir.path().join("id_rsa");
+        std::fs::write(&outside, b"PRIVATE KEY").unwrap();
+        let uri = url::Url::from_file_path(&outside).unwrap();
+        let shutdown = Notify::new();
+
+        let request = Request::new(
+            1,
+            "rename",
+            Some(serde_json::json!({
+                "uri": uri,
+                "line": 0,
+                "character": 0,
+                "newName": "x",
+            })),
+        );
+        let error = dispatch_request(&workspace, request, &shutdown)
+            .await
+            .error
+            .expect("a path outside the project must be refused");
+        assert_eq!(error.code, error_codes::PATH_NOT_AUTHORIZED, "{error}");
+        assert!(
+            !workspace.documents.contains(&uri),
+            "the refused file must not be left in the document store"
+        );
+    }
+
     #[tokio::test]
     async fn dispatch_ping_returns_pong() {
         let ws = std::sync::Arc::new(al_workspace::Workspace::new());

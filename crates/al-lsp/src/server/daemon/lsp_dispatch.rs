@@ -5,8 +5,8 @@ use al_workspace::Workspace;
 use serde::Serialize;
 
 use super::{
-    ensure_document, extract_position, extract_uri, invalid_params, optional_bool_param,
-    optional_bounded_usize_param, read_document_from_params, rpc_error,
+    extract_position, invalid_params, optional_bool_param, optional_bounded_usize_param,
+    read_document_from_params, rpc_error,
 };
 
 /// Sentinel package name for workspace-local objects (not from .app packages).
@@ -207,18 +207,16 @@ pub(super) fn dispatch_rename(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
     let Some(new_name) = params.get("newName").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let result = al_analysis::queries::rename::rename(workspace, &uri, position, new_name);
     match result {
         Ok(Some(we)) => ok_response(id, &we, "textDocument/rename"),
