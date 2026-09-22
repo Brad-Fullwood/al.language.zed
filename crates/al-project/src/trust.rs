@@ -1173,6 +1173,33 @@ mod tests {
         );
     }
 
+    /// The settings reference is where a user looks a key up, so it has to say
+    /// which keys stop applying when the repository is the one asking.
+    #[test]
+    fn the_settings_reference_marks_every_gated_key() {
+        let reference = include_str!("../../../Docs/reference/settings.md");
+        for key in [
+            "al.codeAnalyzers",
+            "al.compilationOptions",
+            "al.ruleSetPath",
+            "al.assemblyProbingPaths",
+            "al.packageCachePath",
+            "al.appLocalFolderPaths",
+            "al.nugetFeeds",
+            "al.useOnlyCustomFeeds",
+            "al.dotnetPath",
+        ] {
+            let row = reference
+                .lines()
+                .find(|line| line.starts_with(&format!("| `{key}` ")))
+                .unwrap_or_else(|| panic!("Docs/reference/settings.md has no row for {key}"));
+            assert!(
+                row.contains('\u{1f512}'),
+                "Docs/reference/settings.md does not mark {key} as needing project trust: {row}"
+            );
+        }
+    }
+
     #[test]
     fn an_untrusted_project_cannot_redirect_the_package_feeds() {
         let _config = ScratchConfig::new();
