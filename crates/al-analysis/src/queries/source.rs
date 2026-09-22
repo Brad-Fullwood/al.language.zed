@@ -1464,7 +1464,10 @@ mod tests {
                       }\n";
 
         assert_eq!(signature(source, "OnInsert"), "trigger OnInsert()");
-        assert_eq!(signature(source, "GetValue"), "procedure GetValue(): Decimal");
+        assert_eq!(
+            signature(source, "GetValue"),
+            "procedure GetValue(): Decimal"
+        );
         assert_eq!(signature(source, "Foo"), "procedure Foo(a: Integer)");
         assert_eq!(
             signature(source, "HandlePost"),

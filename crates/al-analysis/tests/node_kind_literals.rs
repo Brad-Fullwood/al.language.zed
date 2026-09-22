@@ -17,12 +17,10 @@ use regex::Regex;
 
 /// A `(file, kind)` pair this test tolerates, with the reason.
 ///
-/// `queries/obsolescence.rs` is owned by another in-flight fix branch; its
-/// `"attribute" || "attribute_list"` pair is recorded as an open finding in
-/// `Docs/campaign/findings/r1c-analysis-insight.md`. Remove the entry with the
-/// fix.
-const ALLOWED_ABSENT: &[(&str, &str)] =
-    &[("al-analysis/src/queries/obsolescence.rs", "attribute_list")];
+/// Empty: every kind literal in both crates names a node the grammar defines.
+/// An entry here is a debt, not a licence — write the reason and the finding
+/// that tracks it.
+const ALLOWED_ABSENT: &[(&str, &str)] = &[];
 
 fn grammar_kinds() -> BTreeSet<String> {
     let language = al_syntax::parser::language();

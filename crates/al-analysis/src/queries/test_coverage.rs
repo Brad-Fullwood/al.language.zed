@@ -332,10 +332,7 @@ fn augment_coverage_with_call_graph(
 fn is_executable_forward_edge(kind: &EdgeKind) -> bool {
     matches!(
         kind,
-        EdgeKind::DirectCall
-            | EdgeKind::IndirectCall
-            | EdgeKind::TriggerInvocation
-            | EdgeKind::RecordTrigger
+        EdgeKind::DirectCall | EdgeKind::IndirectCall | EdgeKind::RecordTrigger
     )
 }
 
