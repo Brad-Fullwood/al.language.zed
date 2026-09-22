@@ -29,12 +29,13 @@ use std::sync::Arc;
 
 use tree_sitter::Node;
 
+use super::eval_error;
 use crate::interpreter::dispatch::DispatchCtx;
 use crate::interpreter::dispatch::DispatchMode;
 use crate::interpreter::eval_expr::eval_expr;
 use crate::interpreter::eval_stmt::arg_expr_nodes;
 use crate::interpreter::scope::{Eval, ScopeStack};
-use crate::interpreter::value::{ErrorInfo, RecordValue, Value};
+use crate::interpreter::value::{RecordValue, Value};
 use crate::mock::calcformula_parser::{self, CalcFormula, FormulaType, WhereValue};
 use crate::mock::filter;
 use crate::mock::record::{FieldNo, FlowAgg, FlowFilter, MockRecord, RecordView};
@@ -114,20 +115,12 @@ struct TableMeta {
     pk_fields: Vec<FieldNo>,
 }
 
-fn err(msg: impl Into<String>) -> Eval {
-    Eval::Error(ErrorInfo {
-        message: msg.into(),
-        error_type: None,
-        source: None,
-    })
-}
-
 fn records_enabled(ctx: &DispatchCtx) -> bool {
     matches!(ctx.mode, DispatchMode::WithRecords)
 }
 
 fn records_disabled_error() -> Eval {
-    err("record access is unavailable in pure-logic interpreter mode")
+    eval_error("record access is unavailable in pure-logic interpreter mode")
 }
 
 /// Lowercased table-name store key.
@@ -833,22 +826,22 @@ pub(crate) fn dispatch_record_method(
     // expression loop so later field arguments are not evaluated as variables.
     if lower == "setcurrentkey" {
         if nodes.is_empty() {
-            return err("SetCurrentKey: requires at least one field");
+            return eval_error("SetCurrentKey: requires at least one field");
         }
         let key = match ensure_store(ctx, table) {
             Ok(key) => key,
-            Err(error) => return err(error),
+            Err(error) => return eval_error(error),
         };
         let store = ctx.records.get_mut(&key).expect("store just ensured");
         let mut field_nos = Vec::with_capacity(nodes.len());
         for node in &nodes {
             let name = node_text(*node, source);
             if name.is_empty() {
-                return err("SetCurrentKey: field name is empty");
+                return eval_error("SetCurrentKey: field name is empty");
             }
             match store.resolve_field(&name) {
                 Ok(field_no) => field_nos.push(field_no),
-                Err(error) => return err(format!("SetCurrentKey: {error}")),
+                Err(error) => return eval_error(format!("SetCurrentKey: {error}")),
             }
         }
         let mut view = store.take_view(handle);
@@ -876,7 +869,7 @@ pub(crate) fn dispatch_record_method(
 
     let key = match ensure_store(ctx, table) {
         Ok(k) => k,
-        Err(e) => return err(e),
+        Err(e) => return eval_error(e),
     };
 
     // Resolve the field-name argument for field-reference methods.
@@ -886,12 +879,12 @@ pub(crate) fn dispatch_record_method(
             .map(|n| node_text(*n, source))
             .unwrap_or_default();
         if fname.is_empty() {
-            return err(format!("{method}: missing field name argument"));
+            return eval_error(format!("{method}: missing field name argument"));
         }
         let store = ctx.records.get_mut(&key).expect("store just ensured");
         match store.resolve_field(&fname) {
             Ok(field_no) => Some(field_no),
-            Err(error) => return err(format!("{method}: {error}")),
+            Err(error) => return eval_error(format!("{method}: {error}")),
         }
     } else {
         None
@@ -932,55 +925,55 @@ fn run_record_method(
     let mutation_result = |method: &str, result: Result<(), RecordError>| match result {
         Ok(()) => Eval::Normal(Value::Boolean(true)),
         Err(error @ RecordError::TriggerExecutionUnsupported(_)) => {
-            err(format!("{method}: {error}"))
+            eval_error(format!("{method}: {error}"))
         }
-        Err(error) if stmt_position => err(format!("{method}: {error}")),
+        Err(error) if stmt_position => eval_error(format!("{method}: {error}")),
         Err(_) => Eval::Normal(Value::Boolean(false)),
     };
     // A find-class miss errors in statement position and yields false in
     // expression position.
     let find_result = |method: &str, table: &str, found: Result<bool, RecordError>| match found {
         Ok(true) => Eval::Normal(Value::Boolean(true)),
-        Ok(false) if stmt_position => err(format!(
+        Ok(false) if stmt_position => eval_error(format!(
             "{method}: no '{table}' record matches the current filters"
         )),
         Ok(false) => Eval::Normal(Value::Boolean(false)),
-        Err(error) => err(format!("{method}: {error}")),
+        Err(error) => eval_error(format!("{method}: {error}")),
     };
 
     match lower {
         "init" => {
             if let Err(error) = require_no_args("Init", &values) {
-                return err(error);
+                return eval_error(error);
             }
             store.record.init_in(view);
             Eval::Normal(Value::Empty)
         }
         "reset" => {
             if let Err(error) = require_no_args("Reset", &values) {
-                return err(error);
+                return eval_error(error);
             }
             store.record.reset_in(view);
             Eval::Normal(Value::Empty)
         }
         "insert" => match optional_boolean("Insert", &values) {
             Ok(run_trigger) => mutation_result("Insert", store.record.insert_in(view, run_trigger)),
-            Err(error) => err(error),
+            Err(error) => eval_error(error),
         },
         "modify" => match optional_boolean("Modify", &values) {
             Ok(run_trigger) => mutation_result("Modify", store.record.modify_in(view, run_trigger)),
-            Err(error) => err(error),
+            Err(error) => eval_error(error),
         },
         "delete" => match optional_boolean("Delete", &values) {
             Ok(run_trigger) => mutation_result("Delete", store.record.delete_in(view, run_trigger)),
-            Err(error) => err(error),
+            Err(error) => eval_error(error),
         },
         "get" => {
             if values.is_empty() {
-                return err("Get: requires at least one primary-key value");
+                return eval_error("Get: requires at least one primary-key value");
             }
             if values.len() != store.record.primary_key_len() {
-                return err(format!(
+                return eval_error(format!(
                     "Get: local record runtime requires all {} primary-key values (got {}); \
                      partial composite-key lookup requires live Business Central",
                     store.record.primary_key_len(),
@@ -994,12 +987,12 @@ fn run_record_method(
             for (field, value) in pk_fields.into_iter().zip(values) {
                 match store.coerce_to_field(field, value) {
                     Ok(coerced) => key_values.push(coerced),
-                    Err(error) => return err(format!("Get: {error}")),
+                    Err(error) => return eval_error(format!("Get: {error}")),
                 }
             }
             match store.record.get_in(view, key_values) {
                 Ok(()) => Eval::Normal(Value::Boolean(true)),
-                Err(_) if stmt_position => err(format!(
+                Err(_) if stmt_position => eval_error(format!(
                     "Get: the record does not exist in table '{}'",
                     store.record.table_name
                 )),
@@ -1025,7 +1018,7 @@ fn run_record_method(
                         .set_range_in(view, f, values[0].clone(), values[1].clone());
                     Eval::Normal(Value::Empty)
                 }
-                count => err(format!(
+                count => eval_error(format!(
                     "SetRange: expected at most two values after the field, got {count}"
                 )),
             }
@@ -1035,12 +1028,12 @@ fn run_record_method(
             let raw = match values.first() {
                 Some(Value::Text(s)) | Some(Value::Code(s)) => s.clone(),
                 Some(value) => {
-                    return err(format!(
+                    return eval_error(format!(
                         "SetFilter: filter expression must be Text or Code, got {}",
                         value.type_name()
                     ))
                 }
-                None => return err("SetFilter: missing filter expression"),
+                None => return eval_error("SetFilter: missing filter expression"),
             };
             // Single left-to-right pass (shared with StrSubstNo): substituted
             // text is never re-scanned, so a value containing `%1` stays
@@ -1051,11 +1044,11 @@ fn run_record_method(
                 |n| render_filter_value(&values[n]),
             ) {
                 Ok(expr) => expr,
-                Err(error) => return err(format!("SetFilter: {error}")),
+                Err(error) => return eval_error(format!("SetFilter: {error}")),
             };
             match store.record.set_filter_in(view, f, &expr) {
                 Ok(()) => Eval::Normal(Value::Empty),
-                Err(e) => err(format!("SetFilter: {e}")),
+                Err(e) => eval_error(format!("SetFilter: {e}")),
             }
         }
         "findset" => {
@@ -1064,21 +1057,21 @@ fn run_record_method(
                     .iter()
                     .any(|value| !matches!(value, Value::Boolean(_)))
             {
-                return err("FindSet: expects up to two optional Boolean arguments");
+                return eval_error("FindSet: expects up to two optional Boolean arguments");
             }
             let table = store.record.table_name.clone();
             find_result("FindSet", &table, store.record.find_first_in(view))
         }
         "findfirst" => {
             if let Err(error) = require_no_args("FindFirst", &values) {
-                return err(error);
+                return eval_error(error);
             }
             let table = store.record.table_name.clone();
             find_result("FindFirst", &table, store.record.find_first_in(view))
         }
         "findlast" => {
             if let Err(error) = require_no_args("FindLast", &values) {
-                return err(error);
+                return eval_error(error);
             }
             let table = store.record.table_name.clone();
             find_result("FindLast", &table, store.record.find_last_in(view))
@@ -1086,14 +1079,16 @@ fn run_record_method(
         "find" => {
             let direction = match values.as_slice() {
                 [Value::Text(direction)] | [Value::Code(direction)] => direction,
-                _ => return err("Find: expects exactly one Text or Code direction argument"),
+                _ => {
+                    return eval_error("Find: expects exactly one Text or Code direction argument")
+                }
             };
             let mut chars = direction.chars();
             let Some(direction) = chars.next() else {
-                return err("Find: direction cannot be empty");
+                return eval_error("Find: direction cannot be empty");
             };
             if chars.next().is_some() {
-                return err(
+                return eval_error(
                     "Find: local record runtime supports only the single-character '-' and '+' directions",
                 );
             }
@@ -1106,41 +1101,43 @@ fn run_record_method(
                 [Value::Integer(steps)] => match i32::try_from(*steps) {
                     Ok(steps) => steps,
                     Err(_) => {
-                        return err(format!("Next: step count {steps} is outside Integer range"))
+                        return eval_error(format!(
+                            "Next: step count {steps} is outside Integer range"
+                        ))
                     }
                 },
-                _ => return err("Next: expects one optional Integer step count"),
+                _ => return eval_error("Next: expects one optional Integer step count"),
             };
             match store.record.next_in(view, steps) {
                 Ok(moved) => Eval::Normal(Value::Integer(moved as i64)),
-                Err(e) => err(format!("Next: {e}")),
+                Err(e) => eval_error(format!("Next: {e}")),
             }
         }
         "count" | "countapprox" => {
             if let Err(error) = require_no_args(method, &values) {
-                return err(error);
+                return eval_error(error);
             }
             Eval::Normal(Value::Integer(store.record.count_in(view) as i64))
         }
         "isempty" => {
             if let Err(error) = require_no_args("IsEmpty", &values) {
-                return err(error);
+                return eval_error(error);
             }
             Eval::Normal(Value::Boolean(store.record.is_empty_in(view)))
         }
         "deleteall" => {
             let run_trigger = match optional_boolean("DeleteAll", &values) {
                 Ok(run_trigger) => run_trigger,
-                Err(error) => return err(error),
+                Err(error) => return eval_error(error),
             };
             // One pass over the table (collect matching keys, remove them)
             // instead of the O(n² log n) find-first-then-delete loop.
             match store.record.delete_all_in(view, run_trigger) {
                 Ok(_) => Eval::Normal(Value::Empty),
-                Err(error) => err(format!("DeleteAll: {error}")),
+                Err(error) => eval_error(format!("DeleteAll: {error}")),
             }
         }
-        other => err(format!("unsupported record method: {other}")),
+        other => eval_error(format!("unsupported record method: {other}")),
     }
 }
 
@@ -1172,13 +1169,13 @@ pub(crate) fn field_get(
     }
     let key = match ensure_store(ctx, table) {
         Ok(k) => k,
-        Err(e) => return err(e),
+        Err(e) => return eval_error(e),
     };
     let (f, formula) = {
         let store = ctx.records.get_mut(&key).expect("store just ensured");
         let f = match store.resolve_field(field_name) {
             Ok(field_no) => field_no,
-            Err(error) => return err(error),
+            Err(error) => return eval_error(error),
         };
         (f, store.flowfields.get(&f).cloned())
     };
@@ -1200,11 +1197,11 @@ fn dispatch_calcfields(
     ctx: &mut DispatchCtx,
 ) -> Eval {
     if nodes.is_empty() {
-        return err("CalcFields: requires at least one FlowField");
+        return eval_error("CalcFields: requires at least one FlowField");
     }
     let key = match ensure_store(ctx, table) {
         Ok(k) => k,
-        Err(e) => return err(e),
+        Err(e) => return eval_error(e),
     };
     // Resolve each field name to its number + formula up front (one borrow).
     let targets: Vec<(FieldNo, Option<CalcFormula>)> = {
@@ -1214,7 +1211,7 @@ fn dispatch_calcfields(
             let name = node_text(*node, source);
             let field_no = match store.resolve_field(&name) {
                 Ok(field_no) => field_no,
-                Err(error) => return err(format!("CalcFields: {error}")),
+                Err(error) => return eval_error(format!("CalcFields: {error}")),
             };
             targets.push((field_no, store.flowfields.get(&field_no).cloned()));
         }
@@ -1222,7 +1219,7 @@ fn dispatch_calcfields(
     };
     for (field_no, formula) in targets {
         let Some(formula) = formula else {
-            return err(format!(
+            return eval_error(format!(
                 "CalcFields: field number {field_no} is not a supported FlowField"
             ));
         };
@@ -1262,7 +1259,7 @@ fn eval_flowfield(
                 WhereValue::Field(name) => {
                     let f = match store.resolve_field(name) {
                         Ok(field_no) => field_no,
-                        Err(error) => return err(format!("FlowField: {error}")),
+                        Err(error) => return eval_error(format!("FlowField: {error}")),
                     };
                     Some(read_buffer_field(store, handle, f))
                 }
@@ -1278,7 +1275,7 @@ fn eval_flowfield(
     //    the calculating record is temporary.
     let ref_key = match ensure_store(ctx, &TableRef::persistent(&formula.table_name)) {
         Ok(k) => k,
-        Err(e) => return err(e),
+        Err(e) => return eval_error(e),
     };
 
     let agg = match formula.formula_type {
@@ -1290,7 +1287,7 @@ fn eval_flowfield(
         FormulaType::Exist => FlowAgg::Exist,
         FormulaType::Lookup => FlowAgg::Lookup,
         FormulaType::Linked => {
-            return err(
+            return eval_error(
                 "FlowField CalcFormula 'Linked' is a record relationship, not an aggregation, \
                  and is not modelled by the BC-free interpreter",
             );
@@ -1303,7 +1300,7 @@ fn eval_flowfield(
     let target = match formula.field_name.as_deref() {
         Some(name) => match store.resolve_field(name) {
             Ok(field_no) => Some(field_no),
-            Err(error) => return err(format!("FlowField target: {error}")),
+            Err(error) => return eval_error(format!("FlowField target: {error}")),
         },
         None => None,
     };
@@ -1312,14 +1309,14 @@ fn eval_flowfield(
     for (i, cond) in formula.where_clause.iter().enumerate() {
         let field_no = match store.resolve_field(&cond.field) {
             Ok(field_no) => field_no,
-            Err(error) => return err(format!("FlowField condition: {error}")),
+            Err(error) => return eval_error(format!("FlowField condition: {error}")),
         };
         let filt = match &cond.value {
             WhereValue::Const(s) => FlowFilter::Eq(parse_scalar(s)),
             WhereValue::Field(_) => FlowFilter::Eq(field_values[i].clone().unwrap_or(Value::Empty)),
             WhereValue::Filter(expr) => match filter::parse(expr) {
                 Ok(parsed) => FlowFilter::Expr(parsed),
-                Err(e) => return err(format!("FlowField filter '{expr}': {e}")),
+                Err(e) => return eval_error(format!("FlowField filter '{expr}': {e}")),
             },
         };
         conditions.push((field_no, filt));
@@ -1327,7 +1324,7 @@ fn eval_flowfield(
 
     match store.record.calc_flow(&conditions, target, agg) {
         Ok(value) => Eval::Normal(value),
-        Err(error) => err(format!("FlowField calculation failed: {error}")),
+        Err(error) => eval_error(format!("FlowField calculation failed: {error}")),
     }
 }
 
@@ -1371,16 +1368,16 @@ pub(crate) fn try_field_assign(
     }
     let key = match ensure_store(ctx, &table) {
         Ok(k) => k,
-        Err(e) => return Some(err(e)),
+        Err(e) => return Some(eval_error(e)),
     };
     let store = ctx.records.get_mut(&key).expect("store just ensured");
     let f = match store.resolve_field(&field_name) {
         Ok(field_no) => field_no,
-        Err(error) => return Some(err(error)),
+        Err(error) => return Some(eval_error(error)),
     };
     let coerced = match store.coerce_to_field(f, rhs_val.clone()) {
         Ok(value) => value,
-        Err(error) => return Some(err(error)),
+        Err(error) => return Some(eval_error(error)),
     };
     let mut view = store.take_view(handle);
     store.record.field_set_in(&mut view, f, coerced);
@@ -1456,29 +1453,29 @@ pub(crate) fn dispatch_list_method(
 ) -> Eval {
     let lower = method.to_ascii_lowercase();
     let Some(slot) = stack.lookup_mut(recv) else {
-        return err(format!("list variable '{recv}' is not bound"));
+        return eval_error(format!("list variable '{recv}' is not bound"));
     };
     let Value::List(items) = slot else {
-        return err(format!("'{recv}' is not a List"));
+        return eval_error(format!("'{recv}' is not a List"));
     };
     match lower.as_str() {
         "add" if args.len() == 1 => {
             items.push(args[0].clone());
             Eval::Normal(Value::Boolean(true))
         }
-        "add" => err("List.Add expects exactly one value"),
+        "add" => eval_error("List.Add expects exactly one value"),
         "count" if args.is_empty() => match i64::try_from(items.len()) {
             Ok(count) => Eval::Normal(Value::Integer(count)),
-            Err(_) => err("List.Count exceeds the supported Integer range"),
+            Err(_) => eval_error("List.Count exceeds the supported Integer range"),
         },
-        "count" => err("List.Count expects no arguments"),
+        "count" => eval_error("List.Count expects no arguments"),
         "get" => match list_index("List.Get", &args, items.len()) {
             Ok(index) => Eval::Normal(items[index].clone()),
-            Err(error) => err(error),
+            Err(error) => eval_error(error),
         },
         "contains" => match args.as_slice() {
             [needle] => Eval::Normal(Value::Boolean(items.iter().any(|item| item == needle))),
-            _ => err("List.Contains expects exactly one value"),
+            _ => eval_error("List.Contains expects exactly one value"),
         },
         "indexof" => match args.as_slice() {
             [needle] => {
@@ -1486,19 +1483,21 @@ pub(crate) fn dispatch_list_method(
                 match position {
                     Some(position) => match i64::try_from(position + 1) {
                         Ok(position) => Eval::Normal(Value::Integer(position)),
-                        Err(_) => err("List.IndexOf result exceeds the supported Integer range"),
+                        Err(_) => {
+                            eval_error("List.IndexOf result exceeds the supported Integer range")
+                        }
                     },
                     None => Eval::Normal(Value::Integer(0)),
                 }
             }
-            _ => err("List.IndexOf expects exactly one value"),
+            _ => eval_error("List.IndexOf expects exactly one value"),
         },
         "removeat" => match list_index("List.RemoveAt", &args, items.len()) {
             Ok(index) => {
                 items.remove(index);
                 Eval::Normal(Value::Boolean(true))
             }
-            Err(error) => err(error),
+            Err(error) => eval_error(error),
         },
         "remove" => match args.as_slice() {
             [needle] => {
@@ -1509,17 +1508,17 @@ pub(crate) fn dispatch_list_method(
                     Eval::Normal(Value::Boolean(false))
                 }
             }
-            _ => err("List.Remove expects exactly one value"),
+            _ => eval_error("List.Remove expects exactly one value"),
         },
         "set" if args.len() == 2 => match list_index("List.Set", &args[..1], items.len()) {
             Ok(index) => {
                 items[index] = args[1].clone();
                 Eval::Normal(Value::Boolean(true))
             }
-            Err(error) => err(error),
+            Err(error) => eval_error(error),
         },
-        "set" => err("List.Set expects exactly an Integer index and one value"),
-        other => err(format!("unsupported List method: {other}")),
+        "set" => eval_error("List.Set expects exactly an Integer index and one value"),
+        other => eval_error(format!("unsupported List method: {other}")),
     }
 }
 
@@ -1566,7 +1565,7 @@ pub(crate) fn dispatch_text_method(
 ) -> Eval {
     let s = match stack.lookup(recv) {
         Some(Value::Text(s)) | Some(Value::Code(s)) => s.clone(),
-        _ => return err(format!("text variable '{recv}' is not bound")),
+        _ => return eval_error(format!("text variable '{recv}' is not bound")),
     };
     let text_arg = |v: &Value| -> Option<String> {
         match v {
@@ -1587,12 +1586,12 @@ pub(crate) fn dispatch_text_method(
                     };
                     Eval::Normal(Value::Boolean(result))
                 }
-                None => err(format!(
+                None => eval_error(format!(
                     "Text.{method} expects a Text argument, got {}",
                     needle.type_name()
                 )),
             },
-            _ => err(format!("Text.{method} expects exactly one Text argument")),
+            _ => eval_error(format!("Text.{method} expects exactly one Text argument")),
         },
         "indexof" | "lastindexof" => match args.as_slice() {
             [needle] => match text_arg(needle) {
@@ -1608,31 +1607,31 @@ pub(crate) fn dispatch_text_method(
                         .unwrap_or(0);
                     Eval::Normal(Value::Integer(result))
                 }
-                None => err(format!(
+                None => eval_error(format!(
                     "Text.{method} expects a Text argument, got {}",
                     needle.type_name()
                 )),
             },
-            _ => err(format!("Text.{method} expects exactly one Text argument")),
+            _ => eval_error(format!("Text.{method} expects exactly one Text argument")),
         },
         "replace" => match args.as_slice() {
             [old, new] => match (text_arg(old), text_arg(new)) {
                 (Some(old), Some(new)) if !old.is_empty() => {
                     Eval::Normal(Value::Text(s.replace(&old, &new)))
                 }
-                (Some(_), Some(_)) => err("Text.Replace: the old value cannot be empty"),
-                _ => err("Text.Replace expects (Text, Text)"),
+                (Some(_), Some(_)) => eval_error("Text.Replace: the old value cannot be empty"),
+                _ => eval_error("Text.Replace expects (Text, Text)"),
             },
-            _ => err("Text.Replace expects exactly two Text arguments"),
+            _ => eval_error("Text.Replace expects exactly two Text arguments"),
         },
         "split" => {
             let mut separators = Vec::with_capacity(args.len());
             for arg in &args {
                 match text_arg(arg) {
                     Some(sep) if !sep.is_empty() => separators.push(sep),
-                    Some(_) => return err("Text.Split: separators cannot be empty"),
+                    Some(_) => return eval_error("Text.Split: separators cannot be empty"),
                     None => {
-                        return err(format!(
+                        return eval_error(format!(
                             "Text.Split expects Text separators, got {}",
                             arg.type_name()
                         ))
@@ -1657,7 +1656,7 @@ pub(crate) fn dispatch_text_method(
         }
         "trim" | "trimstart" | "trimend" => {
             if !args.is_empty() {
-                return err(format!("Text.{method} expects no arguments"));
+                return eval_error(format!("Text.{method} expects no arguments"));
             }
             let trimmed = match lower.as_str() {
                 "trim" => s.trim(),
@@ -1668,13 +1667,13 @@ pub(crate) fn dispatch_text_method(
         }
         "tolower" => {
             if !args.is_empty() {
-                return err("Text.ToLower expects no arguments");
+                return eval_error("Text.ToLower expects no arguments");
             }
             Eval::Normal(Value::Text(s.to_lowercase()))
         }
         "toupper" => {
             if !args.is_empty() {
-                return err("Text.ToUpper expects no arguments");
+                return eval_error("Text.ToUpper expects no arguments");
             }
             Eval::Normal(Value::Text(s.to_uppercase()))
         }
@@ -1682,11 +1681,11 @@ pub(crate) fn dispatch_text_method(
             let (start, length) = match args.as_slice() {
                 [Value::Integer(start)] => (*start, None),
                 [Value::Integer(start), Value::Integer(length)] => (*start, Some(*length)),
-                _ => return err("Text.Substring expects (Integer[, Integer])"),
+                _ => return eval_error("Text.Substring expects (Integer[, Integer])"),
             };
             let chars: Vec<char> = s.chars().collect();
             if start < 1 || (start as usize) > chars.len() + 1 {
-                return err(format!(
+                return eval_error(format!(
                     "Text.Substring: start position {start} is out of range for a {}-character string",
                     chars.len()
                 ));
@@ -1695,12 +1694,12 @@ pub(crate) fn dispatch_text_method(
             match length {
                 None => Eval::Normal(Value::Text(chars[zero..].iter().collect())),
                 Some(length) if length < 0 => {
-                    err("Text.Substring: length must be >= 0".to_string())
+                    eval_error("Text.Substring: length must be >= 0".to_string())
                 }
                 Some(length) => {
                     let end = zero + length as usize;
                     if end > chars.len() {
-                        return err(format!(
+                        return eval_error(format!(
                             "Text.Substring: start {start} plus length {length} exceeds the string length {}",
                             chars.len()
                         ));
@@ -1709,7 +1708,7 @@ pub(crate) fn dispatch_text_method(
                 }
             }
         }
-        other => err(format!("unsupported Text method: {other}")),
+        other => eval_error(format!("unsupported Text method: {other}")),
     }
 }
 
@@ -1757,26 +1756,26 @@ pub(crate) fn dispatch_dict_method(
 ) -> Eval {
     let lower = method.to_ascii_lowercase();
     let Some(slot) = stack.lookup_mut(recv) else {
-        return err(format!("dictionary variable '{recv}' is not bound"));
+        return eval_error(format!("dictionary variable '{recv}' is not bound"));
     };
     let Value::Dict(entries) = slot else {
-        return err(format!("'{recv}' is not a Dictionary"));
+        return eval_error(format!("'{recv}' is not a Dictionary"));
     };
     match lower.as_str() {
         "add" => match args.as_slice() {
             [key, value] => match dict_key(key) {
                 Ok(key_text) => match entries.entry(key_text) {
                     std::collections::btree_map::Entry::Occupied(_) => {
-                        err("Dictionary.Add: the key already exists")
+                        eval_error("Dictionary.Add: the key already exists")
                     }
                     std::collections::btree_map::Entry::Vacant(slot) => {
                         slot.insert(value.clone());
                         Eval::Normal(Value::Empty)
                     }
                 },
-                Err(error) => err(error),
+                Err(error) => eval_error(error),
             },
-            _ => err("Dictionary.Add expects exactly a key and a value"),
+            _ => eval_error("Dictionary.Add expects exactly a key and a value"),
         },
         "set" => match args.as_slice() {
             [key, value] => match dict_key(key) {
@@ -1784,47 +1783,49 @@ pub(crate) fn dispatch_dict_method(
                     entries.insert(key_text, value.clone());
                     Eval::Normal(Value::Empty)
                 }
-                Err(error) => err(error),
+                Err(error) => eval_error(error),
             },
-            _ => err("Dictionary.Set expects exactly a key and a value"),
+            _ => eval_error("Dictionary.Set expects exactly a key and a value"),
         },
         "get" => match args.as_slice() {
             [key] => match dict_key(key) {
                 Ok(key_text) => match entries.get(&key_text) {
                     Some(value) => Eval::Normal(value.clone()),
-                    None => err("Dictionary.Get: the key does not exist"),
+                    None => eval_error("Dictionary.Get: the key does not exist"),
                 },
-                Err(error) => err(error),
+                Err(error) => eval_error(error),
             },
-            _ => err("Dictionary.Get with a var out-parameter requires live BC; \
-                 only the one-argument returning form runs locally"),
+            _ => eval_error(
+                "Dictionary.Get with a var out-parameter requires live BC; \
+                 only the one-argument returning form runs locally",
+            ),
         },
         "containskey" => match args.as_slice() {
             [key] => match dict_key(key) {
                 Ok(key_text) => Eval::Normal(Value::Boolean(entries.contains_key(&key_text))),
-                Err(error) => err(error),
+                Err(error) => eval_error(error),
             },
-            _ => err("Dictionary.ContainsKey expects exactly one key"),
+            _ => eval_error("Dictionary.ContainsKey expects exactly one key"),
         },
         "remove" => match args.as_slice() {
             [key] => match dict_key(key) {
                 Ok(key_text) => Eval::Normal(Value::Boolean(entries.remove(&key_text).is_some())),
-                Err(error) => err(error),
+                Err(error) => eval_error(error),
             },
-            _ => err("Dictionary.Remove expects exactly one key"),
+            _ => eval_error("Dictionary.Remove expects exactly one key"),
         },
         "count" => {
             if !args.is_empty() {
-                return err("Dictionary.Count expects no arguments");
+                return eval_error("Dictionary.Count expects no arguments");
             }
             match i64::try_from(entries.len()) {
                 Ok(count) => Eval::Normal(Value::Integer(count)),
-                Err(_) => err("Dictionary.Count exceeds the supported Integer range"),
+                Err(_) => eval_error("Dictionary.Count exceeds the supported Integer range"),
             }
         }
         "keys" => {
             if !args.is_empty() {
-                return err("Dictionary.Keys expects no arguments");
+                return eval_error("Dictionary.Keys expects no arguments");
             }
             Eval::Normal(Value::List(
                 entries.keys().cloned().map(Value::Text).collect(),
@@ -1832,11 +1833,11 @@ pub(crate) fn dispatch_dict_method(
         }
         "values" => {
             if !args.is_empty() {
-                return err("Dictionary.Values expects no arguments");
+                return eval_error("Dictionary.Values expects no arguments");
             }
             Eval::Normal(Value::List(entries.values().cloned().collect()))
         }
-        other => err(format!("unsupported Dictionary method: {other}")),
+        other => eval_error(format!("unsupported Dictionary method: {other}")),
     }
 }
 

@@ -419,7 +419,7 @@ fn bench_insight(c: &mut Criterion) {
     // Trace + impact + call-graph run against a pre-built graph/index.
     let graph = build_graph(&symbols);
     c.bench_function("insight/trace_event", |b| {
-        b.iter(|| black_box(trace_event(black_box(&graph), HOT_EVENT, 10)));
+        b.iter(|| black_box(trace_event(black_box(&graph), None, HOT_EVENT, 10)));
     });
     c.bench_function("insight/table_impact", |b| {
         b.iter(|| black_box(table_impact(black_box(&symbols), HOT_TABLE)));

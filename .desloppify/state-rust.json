@@ -12,8 +12,8 @@
     "auto_resolved": 0,
     "deferred": 0,
     "false_positive": 0,
-    "fixed": 27,
-    "open": 1238,
+    "fixed": 35,
+    "open": 1230,
     "triaged_out": 0,
     "wontfix": 0,
     "by_tier": {
@@ -21,8 +21,8 @@
         "auto_resolved": 0,
         "deferred": 0,
         "false_positive": 0,
-        "fixed": 7,
-        "open": 58,
+        "fixed": 14,
+        "open": 51,
         "triaged_out": 0,
         "wontfix": 0
       },
@@ -30,8 +30,8 @@
         "auto_resolved": 0,
         "deferred": 0,
         "false_positive": 0,
-        "fixed": 0,
-        "open": 269,
+        "fixed": 1,
+        "open": 268,
         "triaged_out": 0,
         "wontfix": 0
       },
@@ -35816,11 +35816,11 @@
         "reasoning": "",
         "summary_hash": "43521310"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Corrected the two phantom al-snapshot arrows and added the seven missing production edges in Docs/architecture.md, and added crates/al-test-harness/tests/architecture_doc.rs, which compares the mermaid arrows with the non-optional al-* entries in every crates/*/Cargo.toml.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:40:47+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -35828,7 +35828,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Corrected the two phantom al-snapshot arrows and added the seven missing production edges in Docs/architecture.md, and added crates/al-test-harness/tests/architecture_doc.rs, which compares the mermaid arrows with the non-optional al-* entries in every crates/*/Cargo.toml. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:40:47+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::cross_module_architecture::explorer_reimplements_native_build": {
       "id": "review::.::holistic::cross_module_architecture::explorer_reimplements_native_build",
@@ -35975,11 +35981,11 @@
         "reasoning": "",
         "summary_hash": "c1897854"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Same sweep, plus the al-analysis lib.rs comment on pub mod resolution: no crate imports it, so the comment now states the real reason it is public instead of claiming an al-lsp re-export that does not exist.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:41:12+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -35987,7 +35993,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Same sweep, plus the al-analysis lib.rs comment on pub mod resolution: no crate imports it, so the comment now states the real reason it is public instead of claiming an al-lsp re-export that does not exist. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:41:12+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::cross_module_architecture::al_analysis_bundles_unrelated_capabilities": {
       "id": "review::.::holistic::cross_module_architecture::al_analysis_bundles_unrelated_capabilities",
@@ -36058,11 +36070,11 @@
         "reasoning": "",
         "summary_hash": "33dff81e"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Same edit: the al-snapshot arrows are gone, al-runtime to al-syntax and al-test's four edges are drawn, the dev-only note names al-dap instead of al-runtime, and the al-test-harness sentence states its eight dev-dependencies. A harness test now enforces the diagram against the manifests.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:40:54+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -36070,7 +36082,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Same edit: the al-snapshot arrows are gone, al-runtime to al-syntax and al-test's four edges are drawn, the dev-only note names al-dap instead of al-runtime, and the al-test-harness sentence states its eight dev-dependencies. A harness test now enforces the diagram against the manifests. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:40:54+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::high_level_elegance::al_core_residue_in_ownership_comments": {
       "id": "review::.::holistic::high_level_elegance::al_core_residue_in_ownership_comments",
@@ -36105,11 +36123,11 @@
         "reasoning": "",
         "summary_hash": "19074efd"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Swept al-core and al-cli out of 24 comments across 13 files: RUST_LOG targets now name al_analysis, al_insight and al_lsp, ownership comments name the owning crate, the bench header says cargo bench -p al-test, and three temp-directory prefixes match their crate.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:41:00+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -36117,7 +36135,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Swept al-core and al-cli out of 24 comments across 13 files: RUST_LOG targets now name al_analysis, al_insight and al_lsp, ownership comments name the owning crate, the bench header says cargo bench -p al-test, and three temp-directory prefixes match their crate. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:41:00+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::high_level_elegance::two_tier_numbering_schemes": {
       "id": "review::.::holistic::high_level_elegance::two_tier_numbering_schemes",
@@ -36148,11 +36172,11 @@
         "reasoning": "",
         "summary_hash": "1f13dd45"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Moved the crate doc comments onto architecture.md's T0-T5 vocabulary: al-analysis T4 (was tier 5), al-workspace T3 (was tier 4), al-dap T1 (was tier 3), al-project T1 (was tier-2), and the two correct al-types and interpreter references now spell T0 and T1.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:41:19+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -36160,7 +36184,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Moved the crate doc comments onto architecture.md's T0-T5 vocabulary: al-analysis T4 (was tier 5), al-workspace T3 (was tier 4), al-dap T1 (was tier 3), al-project T1 (was tier-2), and the two correct al-types and interpreter references now spell T0 and T1. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:41:19+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::high_level_elegance::duplicate_language_data_loader_in_al_symbols": {
       "id": "review::.::holistic::high_level_elegance::duplicate_language_data_loader_in_al_symbols",
@@ -37307,11 +37337,11 @@
         "reasoning": "",
         "summary_hash": "c0ca5286"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Deleted the al-dap facade. The two remaining wrappers are not reimplementations: al-lsp strip_jsonc_comments_and_parse and al-project strip_jsonc both call al_types::jsonc::strip_json_comments already. The al-project doc comment claiming it also strips trailing commas is wrong and is deferred, that file is held by campaign/fix-r2-security this week.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:41:32+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -37319,7 +37349,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Deleted the al-dap facade. The two remaining wrappers are not reimplementations: al-lsp strip_jsonc_comments_and_parse and al-project strip_jsonc both call al_types::jsonc::strip_json_comments already. The al-project doc comment claiming it also strips trailing commas is wrong and is deferred, that file is held by campaign/fix-r2-security this week. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:41:32+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::abstraction_fitness::mockrecord_default_view_api": {
       "id": "review::.::holistic::abstraction_fitness::mockrecord_default_view_api",
@@ -39442,11 +39478,11 @@
         "reasoning": "",
         "summary_hash": "340111f2"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Deleted crates/al-dap/src/dap/json_util.rs with its mod declaration and the al-dap lib.rs doc mention. The shim had no remaining caller: both al-lsp and al-project already call al_types::jsonc directly.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:41:25+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39454,7 +39490,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Deleted crates/al-dap/src/dap/json_util.rs with its mod declaration and the al-dap lib.rs doc mention. The shim had no remaining caller: both al-lsp and al-project already call al_types::jsonc directly. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:41:25+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::incomplete_migration::al_core_names_in_live_docs": {
       "id": "review::.::holistic::incomplete_migration::al_core_names_in_live_docs",
@@ -39482,11 +39524,11 @@
         "reasoning": "",
         "summary_hash": "d34e9adb"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Same sweep: no al-core or al-cli name remains under crates/ or src/. grep -rn for either string returns nothing outside Docs/campaign history.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T01:41:06+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39494,7 +39536,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Same sweep: no al-core or al-cli name remains under crates/ or src/. grep -rn for either string returns nothing outside Docs/campaign history. and I am not gaming the score.",
+        "attested_at": "2026-09-22T01:41:06+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::package_organization::queries_flat_drawer": {
       "id": "review::.::holistic::package_organization::queries_flat_drawer",
@@ -40205,7 +40253,10 @@
         "Delegation Density": 84.0,
         "Definition Directness": 85.0,
         "Type Discipline": 70.0
-      }
+      },
+      "needs_review_refresh": true,
+      "refresh_reason": "review_issue_fixed",
+      "stale_since": "2026-09-22T01:41:32+00:00"
     },
     "ai_generated_debt": {
       "score": 83.0,
@@ -40244,7 +40295,7 @@
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
       "refresh_reason": "review_issue_fixed",
-      "stale_since": "2026-09-22T01:33:52+00:00"
+      "stale_since": "2026-09-22T01:41:12+00:00"
     },
     "dependency_health": {
       "score": 78.5,
@@ -40267,7 +40318,7 @@
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
       "refresh_reason": "review_issue_fixed",
-      "stale_since": "2026-09-22T01:34:00+00:00"
+      "stale_since": "2026-09-22T01:41:19+00:00"
     },
     "incomplete_migration": {
       "score": 74.0,
@@ -40275,7 +40326,7 @@
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
       "refresh_reason": "review_issue_fixed",
-      "stale_since": "2026-09-22T01:34:05+00:00"
+      "stale_since": "2026-09-22T01:41:25+00:00"
     },
     "initialization_coupling": {
       "score": 88.0,
@@ -79753,13 +79804,13 @@
       "strict": 79.0,
       "verified_strict_score": 79.0,
       "checks": 10,
-      "failing": 8,
+      "failing": 7,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.79,
-          "failing": 8,
+          "failing": 7,
           "weighted_failures": 2.1,
           "assessment_score": 79.0,
           "placeholder": false,
@@ -79894,13 +79945,13 @@
       "strict": 79.5,
       "verified_strict_score": 79.5,
       "checks": 10,
-      "failing": 6,
+      "failing": 4,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.795,
-          "failing": 6,
+          "failing": 4,
           "weighted_failures": 2.05,
           "assessment_score": 79.5,
           "placeholder": false,
@@ -79978,13 +80029,13 @@
       "strict": 84.5,
       "verified_strict_score": 84.5,
       "checks": 10,
-      "failing": 6,
+      "failing": 3,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.845,
-          "failing": 6,
+          "failing": 3,
           "weighted_failures": 1.55,
           "assessment_score": 84.5,
           "placeholder": false,
@@ -79999,13 +80050,13 @@
       "strict": 74.0,
       "verified_strict_score": 74.0,
       "checks": 10,
-      "failing": 3,
+      "failing": 1,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.74,
-          "failing": 3,
+          "failing": 1,
           "weighted_failures": 2.6,
           "assessment_score": 74.0,
           "placeholder": false,

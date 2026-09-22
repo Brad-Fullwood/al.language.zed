@@ -2716,7 +2716,7 @@ mod tests {
         let mut insight = InsightGraph::new();
         register_workspace_nodes(&file_index, &symbols, &mut insight).unwrap();
 
-        let steps = crate::search::trace_event(&insight, "OnAfterDoThing", 10);
+        let steps = crate::search::trace_event(&insight, None, "OnAfterDoThing", 10);
         assert!(
             steps
                 .iter()
@@ -2763,7 +2763,7 @@ mod tests {
         let mut insight = InsightGraph::new();
         register_workspace_nodes(&file_index, &symbols, &mut insight).unwrap();
 
-        let steps = crate::search::trace_event(&insight, "OnAfterInsertEvent", 10);
+        let steps = crate::search::trace_event(&insight, None, "OnAfterInsertEvent", 10);
         assert!(
             steps
                 .iter()

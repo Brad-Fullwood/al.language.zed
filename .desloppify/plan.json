@@ -1,10 +1,9 @@
 {
   "version": 8,
   "created": "2026-09-21T00:40:45+00:00",
-  "updated": "2026-09-22T01:34:25+00:00",
+  "updated": "2026-09-22T01:41:32+00:00",
   "queue_order": [
     "review::.::holistic::abstraction_fitness::default_arg_wrappers_no_prod_caller",
-    "review::.::holistic::abstraction_fitness::jsonc_helper_bypassed_via_facade",
     "review::.::holistic::abstraction_fitness::lsp_handler_seam_half_applied",
     "review::.::holistic::abstraction_fitness::mockrecord_default_view_api",
     "review::.::holistic::abstraction_fitness::response_contract_validator",
@@ -42,10 +41,8 @@
     "review::.::holistic::convention_outlier::source_lookup_error_manual_display",
     "review::.::holistic::convention_outlier::test_module_filename_shapes",
     "review::.::holistic::cross_module_architecture::al_analysis_bundles_unrelated_capabilities",
-    "review::.::holistic::cross_module_architecture::architecture_doc_edges_drifted",
     "review::.::holistic::cross_module_architecture::explorer_reimplements_native_build",
     "review::.::holistic::cross_module_architecture::generation_lock_lsp_only",
-    "review::.::holistic::cross_module_architecture::pre_split_crate_names_in_docs",
     "review::.::holistic::cross_module_architecture::workspace_hub_public_mutable_fields",
     "review::.::holistic::dependency_health::al_lsp_dead_prod_deps",
     "review::.::holistic::dependency_health::futures_and_futures_util_both_used",
@@ -59,14 +56,9 @@
     "review::.::holistic::error_consistency::collect_al_files_erases_scanerror",
     "review::.::holistic::error_consistency::duplicate_dap_error_enum",
     "review::.::holistic::error_consistency::typed_error_flattened_in_entrypoints",
-    "review::.::holistic::high_level_elegance::al_core_residue_in_ownership_comments",
-    "review::.::holistic::high_level_elegance::architecture_doc_edges_wrong",
     "review::.::holistic::high_level_elegance::coverage_aggregation_in_transport_dispatcher",
     "review::.::holistic::high_level_elegance::debug_session_parked_on_workspace_hub",
     "review::.::holistic::high_level_elegance::explorer_bypasses_its_own_thin_client_contract",
-    "review::.::holistic::high_level_elegance::two_tier_numbering_schemes",
-    "review::.::holistic::incomplete_migration::al_core_names_in_live_docs",
-    "review::.::holistic::incomplete_migration::single_caller_compat_shim",
     "review::.::holistic::incomplete_migration::unused_deps_from_crate_split",
     "review::.::holistic::initialization_coupling::daemon_oncelock_unset_case",
     "review::.::holistic::logic_clarity::empty_result_means_two_things",
@@ -2443,6 +2435,326 @@
         "status": "fixed",
         "attestation": "I have actually Renamed to count_call_references in al-syntax/src/navigation.rs, with the obsolescence.rs call site and the al-syntax lib.rs re-export updated, on this branch base. and I am not gaming the score."
       }
+    },
+    {
+      "timestamp": "2026-09-22T01:40:47+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::cross_module_architecture::architecture_doc_edges_drifted"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:40:47+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::cross_module_architecture::architecture_doc_edges_drifted"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Corrected the two phantom al-snapshot arrows and added the seven missing production edges in Docs/architecture.md, and added crates/al-test-harness/tests/architecture_doc.rs, which compares the mermaid arrows with the non-optional al-* entries in every crates/*/Cargo.toml.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:40:47+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::cross_module_architecture::architecture_doc_edges_drifted"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Corrected the two phantom al-snapshot arrows and added the seven missing production edges in Docs/architecture.md, and added crates/al-test-harness/tests/architecture_doc.rs, which compares the mermaid arrows with the non-optional al-* entries in every crates/*/Cargo.toml.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Corrected the two phantom al-snapshot arrows and added the seven missing production edges in Docs/architecture.md, and added crates/al-test-harness/tests/architecture_doc.rs, which compares the mermaid arrows with the non-optional al-* entries in every crates/*/Cargo.toml. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:40:53+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::high_level_elegance::architecture_doc_edges_wrong"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:40:54+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::high_level_elegance::architecture_doc_edges_wrong"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Same edit: the al-snapshot arrows are gone, al-runtime to al-syntax and al-test's four edges are drawn, the dev-only note names al-dap instead of al-runtime, and the al-test-harness sentence states its eight dev-dependencies. A harness test now enforces the diagram against the manifests.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:40:54+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::high_level_elegance::architecture_doc_edges_wrong"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Same edit: the al-snapshot arrows are gone, al-runtime to al-syntax and al-test's four edges are drawn, the dev-only note names al-dap instead of al-runtime, and the al-test-harness sentence states its eight dev-dependencies. A harness test now enforces the diagram against the manifests.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Same edit: the al-snapshot arrows are gone, al-runtime to al-syntax and al-test's four edges are drawn, the dev-only note names al-dap instead of al-runtime, and the al-test-harness sentence states its eight dev-dependencies. A harness test now enforces the diagram against the manifests. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:40:59+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::high_level_elegance::al_core_residue_in_ownership_comments"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:41:00+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::high_level_elegance::al_core_residue_in_ownership_comments"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Swept al-core and al-cli out of 24 comments across 13 files: RUST_LOG targets now name al_analysis, al_insight and al_lsp, ownership comments name the owning crate, the bench header says cargo bench -p al-test, and three temp-directory prefixes match their crate.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:41:00+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::high_level_elegance::al_core_residue_in_ownership_comments"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Swept al-core and al-cli out of 24 comments across 13 files: RUST_LOG targets now name al_analysis, al_insight and al_lsp, ownership comments name the owning crate, the bench header says cargo bench -p al-test, and three temp-directory prefixes match their crate.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Swept al-core and al-cli out of 24 comments across 13 files: RUST_LOG targets now name al_analysis, al_insight and al_lsp, ownership comments name the owning crate, the bench header says cargo bench -p al-test, and three temp-directory prefixes match their crate. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:41:05+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::incomplete_migration::al_core_names_in_live_docs"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:41:06+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::incomplete_migration::al_core_names_in_live_docs"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Same sweep: no al-core or al-cli name remains under crates/ or src/. grep -rn for either string returns nothing outside Docs/campaign history.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:41:06+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::incomplete_migration::al_core_names_in_live_docs"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Same sweep: no al-core or al-cli name remains under crates/ or src/. grep -rn for either string returns nothing outside Docs/campaign history.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Same sweep: no al-core or al-cli name remains under crates/ or src/. grep -rn for either string returns nothing outside Docs/campaign history. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:41:11+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::cross_module_architecture::pre_split_crate_names_in_docs"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:41:12+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::cross_module_architecture::pre_split_crate_names_in_docs"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Same sweep, plus the al-analysis lib.rs comment on pub mod resolution: no crate imports it, so the comment now states the real reason it is public instead of claiming an al-lsp re-export that does not exist.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:41:12+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::cross_module_architecture::pre_split_crate_names_in_docs"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Same sweep, plus the al-analysis lib.rs comment on pub mod resolution: no crate imports it, so the comment now states the real reason it is public instead of claiming an al-lsp re-export that does not exist.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Same sweep, plus the al-analysis lib.rs comment on pub mod resolution: no crate imports it, so the comment now states the real reason it is public instead of claiming an al-lsp re-export that does not exist. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:41:18+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::high_level_elegance::two_tier_numbering_schemes"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:41:19+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::high_level_elegance::two_tier_numbering_schemes"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Moved the crate doc comments onto architecture.md's T0-T5 vocabulary: al-analysis T4 (was tier 5), al-workspace T3 (was tier 4), al-dap T1 (was tier 3), al-project T1 (was tier-2), and the two correct al-types and interpreter references now spell T0 and T1.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:41:19+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::high_level_elegance::two_tier_numbering_schemes"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Moved the crate doc comments onto architecture.md's T0-T5 vocabulary: al-analysis T4 (was tier 5), al-workspace T3 (was tier 4), al-dap T1 (was tier 3), al-project T1 (was tier-2), and the two correct al-types and interpreter references now spell T0 and T1.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Moved the crate doc comments onto architecture.md's T0-T5 vocabulary: al-analysis T4 (was tier 5), al-workspace T3 (was tier 4), al-dap T1 (was tier 3), al-project T1 (was tier-2), and the two correct al-types and interpreter references now spell T0 and T1. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:41:24+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::incomplete_migration::single_caller_compat_shim"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:41:25+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::incomplete_migration::single_caller_compat_shim"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Deleted crates/al-dap/src/dap/json_util.rs with its mod declaration and the al-dap lib.rs doc mention. The shim had no remaining caller: both al-lsp and al-project already call al_types::jsonc directly.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:41:25+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::incomplete_migration::single_caller_compat_shim"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Deleted crates/al-dap/src/dap/json_util.rs with its mod declaration and the al-dap lib.rs doc mention. The shim had no remaining caller: both al-lsp and al-project already call al_types::jsonc directly.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Deleted crates/al-dap/src/dap/json_util.rs with its mod declaration and the al-dap lib.rs doc mention. The shim had no remaining caller: both al-lsp and al-project already call al_types::jsonc directly. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:41:31+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::abstraction_fitness::jsonc_helper_bypassed_via_facade"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T01:41:32+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::abstraction_fitness::jsonc_helper_bypassed_via_facade"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Deleted the al-dap facade. The two remaining wrappers are not reimplementations: al-lsp strip_jsonc_comments_and_parse and al-project strip_jsonc both call al_types::jsonc::strip_json_comments already. The al-project doc comment claiming it also strips trailing commas is wrong and is deferred, that file is held by campaign/fix-r2-security this week.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T01:41:32+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::abstraction_fitness::jsonc_helper_bypassed_via_facade"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Deleted the al-dap facade. The two remaining wrappers are not reimplementations: al-lsp strip_jsonc_comments_and_parse and al-project strip_jsonc both call al_types::jsonc::strip_json_comments already. The al-project doc comment claiming it also strips trailing commas is wrong and is deferred, that file is held by campaign/fix-r2-security this week.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Deleted the al-dap facade. The two remaining wrappers are not reimplementations: al-lsp strip_jsonc_comments_and_parse and al-project strip_jsonc both call al_types::jsonc::strip_json_comments already. The al-project doc comment claiming it also strips trailing commas is wrong and is deferred, that file is held by campaign/fix-r2-security this week. and I am not gaming the score."
+      }
     }
   ],
   "epic_triage_meta": {},
@@ -2454,7 +2766,15 @@
     "review::.::holistic::initialization_coupling::two_snapshots_of_one_data_file",
     "review::.::holistic::contract_coherence::module_doc_contradicts_manifest",
     "review::.::holistic::naming_quality::serde_defaults_named_after_their_literal",
-    "review::.::holistic::api_surface_coherence::find_call_references_returns_count"
+    "review::.::holistic::api_surface_coherence::find_call_references_returns_count",
+    "review::.::holistic::cross_module_architecture::architecture_doc_edges_drifted",
+    "review::.::holistic::high_level_elegance::architecture_doc_edges_wrong",
+    "review::.::holistic::high_level_elegance::al_core_residue_in_ownership_comments",
+    "review::.::holistic::incomplete_migration::al_core_names_in_live_docs",
+    "review::.::holistic::cross_module_architecture::pre_split_crate_names_in_docs",
+    "review::.::holistic::high_level_elegance::two_tier_numbering_schemes",
+    "review::.::holistic::incomplete_migration::single_caller_compat_shim",
+    "review::.::holistic::abstraction_fitness::jsonc_helper_bypassed_via_facade"
   ],
   "commit_tracking_branch": null,
   "scan_count_at_plan_start": 1
