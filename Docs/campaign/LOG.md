@@ -123,3 +123,7 @@ Append-only. Newest entry last.
 ## 2026-09-22 03:40 BST: file splits merged
 
 - Merged `campaign/slop-syntax-symbols`. The agent re-applied campaign changes to the split files by hand and proved nothing was lost with a normalised line diff. Started the desloppify review queue agent, since the tool blocks a rescan until the 112 subjective items are resolved or skipped.
+
+## 2026-09-22 04:10 BST: security round 2 merged
+
+- Merged `campaign/fix-r2-security`. Full gates with zed-al: 92 suites, 4884 passed, 0 failed.
