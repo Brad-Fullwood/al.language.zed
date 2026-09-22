@@ -414,6 +414,73 @@ fn test_run_by_id_alone_resolves_a_sibling_call() {
     );
 }
 
+/// `collect_permissions` stopped failing on the first unparseable `.al` and
+/// started skipping it, but the CLI read only `content` and `objectCount`, so
+/// a project with one work-in-progress file got a permission set that omits
+/// that object and says nothing about it.
+#[test]
+fn permissions_names_the_files_it_could_not_read() {
+    let project = isolated_test_project();
+    std::fs::write(
+        project.path().join("src").join("Unfinished.Codeunit.al"),
+        "codeunit 50199 Unfinished { procedure Incomplete(\n",
+    )
+    .expect("write the unparsable fixture");
+
+    let output = run_al_in(project.path(), &["permissions", "--name", "Smoke Perms"]);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let json = run_al_in(
+        project.path(),
+        &["--json", "permissions", "--name", "Smoke Perms"],
+    );
+    let json_out = String::from_utf8_lossy(&json.stdout).into_owned();
+    let _ = run_al_in(project.path(), &["daemon-shutdown"]);
+
+    assert!(
+        stderr.contains("Unfinished.Codeunit.al"),
+        "the skipped file must be named:\n{stderr}"
+    );
+    assert!(
+        json_out.contains("\"skipped\""),
+        "the JSON result must carry the skips:\n{json_out}"
+    );
+}
+
+/// The audit stopped failing on a grant clause it could not read and started
+/// recording it in `parseIssues`, but `cmd_permission_audit` read only
+/// coverage and the two over-grant lists, so a permission set whose clause was
+/// dropped was reported as clean.
+#[test]
+fn permission_audit_names_the_clauses_it_could_not_read() {
+    let project = isolated_test_project();
+    std::fs::write(
+        project.path().join("src").join("BadPerms.PermissionSet.al"),
+        r#"permissionset 50198 "Bad Perms"
+{
+    Assignable = true;
+    Permissions = notakind "Whatever" = X;
+}
+"#,
+    )
+    .expect("write the unreadable clause fixture");
+
+    let output = run_al_in(project.path(), &["permission-audit"]);
+    let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
+    combined.push_str(&String::from_utf8_lossy(&output.stderr));
+    let json = run_al_in(project.path(), &["--json", "permission-audit"]);
+    let json_out = String::from_utf8_lossy(&json.stdout).into_owned();
+    let _ = run_al_in(project.path(), &["daemon-shutdown"]);
+
+    assert!(
+        combined.contains("could not read") && combined.contains("Bad Perms"),
+        "the unreadable clause must be named:\n{combined}"
+    );
+    assert!(
+        json_out.contains("\"parseIssues\""),
+        "the JSON result must carry the parse issues:\n{json_out}"
+    );
+}
+
 fn help_commands() -> BTreeSet<String> {
     let output = Command::new(al_explorer_binary())
         .arg("--help")

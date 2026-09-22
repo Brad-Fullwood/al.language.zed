@@ -887,7 +887,10 @@ fn validate_run_command_result(method: &str, result: &serde_json::Value) -> Resu
             )?;
         }
         "permissions.audit" => {
-            for field in ["coverage", "overBroad", "overGrantedRights"] {
+            // `parseIssues` carries the clauses the audit could not read. A
+            // consumer that does not look at it calls a set clean when the
+            // clause took no part in any check.
+            for field in ["coverage", "overBroad", "overGrantedRights", "parseIssues"] {
                 require_object_field(result, field, serde_json::Value::is_array, "array")?;
             }
             validate_named_array_object_fields(
@@ -922,6 +925,17 @@ fn validate_run_command_result(method: &str, result: &serde_json::Value) -> Resu
                     ("grantedRights", JsonFieldKind::String),
                     ("overGranted", JsonFieldKind::String),
                     ("observedRights", JsonFieldKind::String),
+                    ("reason", JsonFieldKind::String),
+                ],
+            )?;
+            validate_named_array_object_fields(
+                result,
+                "parseIssues",
+                &[
+                    ("permissionSet", JsonFieldKind::String),
+                    ("file", JsonFieldKind::String),
+                    ("clause", JsonFieldKind::Integer),
+                    ("text", JsonFieldKind::String),
                     ("reason", JsonFieldKind::String),
                 ],
             )?;

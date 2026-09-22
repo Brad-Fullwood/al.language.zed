@@ -275,15 +275,26 @@ pub(super) fn validate(method: &str, params: Option<&Value>, result: &Value) -> 
             }
         }
         "rename" => validate_workspace_edit_or_null(result),
-        "permissions" => fields(
-            result,
-            "permissions",
-            &[
-                ("format", Kind::String),
-                ("content", Kind::String),
-                ("objectCount", Kind::Unsigned),
-            ],
-        ),
+        "permissions" => {
+            fields(
+                result,
+                "permissions",
+                &[
+                    ("format", Kind::String),
+                    ("content", Kind::String),
+                    ("objectCount", Kind::Unsigned),
+                    // The files the collector could not read. A consumer that
+                    // does not look at these reports a set as complete when it
+                    // omits an object.
+                    ("skipped", Kind::Array),
+                ],
+            )?;
+            named_array_objects(
+                result,
+                "skipped",
+                &[("path", Kind::String), ("reason", Kind::String)],
+            )
+        }
         "parse" => {
             fields(
                 result,
