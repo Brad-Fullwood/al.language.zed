@@ -241,7 +241,7 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - severity: medium
 - scenario: alc records every global variable of an object under `Variables`, with the same `TypeDefinition` shape as a field, including a resolved `Subtype` for `Record`/`Enum`/`Codeunit` types. For `codeunit 50100 Hello { var GreetingLbl: Label 'x'; Counter: Integer; Cust: Record Widget; }` alc 17.0.34.45391 writes three entries; the native emitter writes none. Adding a `Label` to the differential corpus fails `native_emit_matches_alc` on exactly this. Consumers that read global state out of a symbol package (the indexer, go-to-definition into a dependency) see nothing.
 - fix: extract object-level `var` sections in `symbol_extract` and emit `Variables` from `symbol_reference`, reusing the field `TypeDefinition`/`Subtype` resolver. Then add the `Label` codeunit back to the differential corpus.
-- status: fixed PLACEHOLDER — `extract_objects` reads the `var` section for every object kind, and
+- status: fixed 9649b7ca — `extract_objects` reads the `var` section for every object kind, and
   `object_json` writes `Variables` ahead of the kind's own sections, where the golden report and
   report extension already have it. The differential corpus still has no codeunit-level `var`, so
   adding the `Label` codeunit to it needs an alc run and stays open.
