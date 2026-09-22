@@ -1,13 +1,12 @@
 {
   "version": 8,
   "created": "2026-09-21T00:40:45+00:00",
-  "updated": "2026-09-22T01:56:10+00:00",
+  "updated": "2026-09-22T02:02:36+00:00",
   "queue_order": [
     "review::.::holistic::abstraction_fitness::mockrecord_default_view_api",
     "review::.::holistic::abstraction_fitness::workspace_context_bag",
     "review::.::holistic::ai_generated_debt::test_fixture_builders_copied",
     "review::.::holistic::ai_generated_debt::test_only_public_overloads",
-    "review::.::holistic::api_surface_coherence::sibling_parameter_order_drift",
     "review::.::holistic::api_surface_coherence::string_errors_beside_typed_siblings",
     "review::.::holistic::api_surface_coherence::sync_async_query_twins",
     "review::.::holistic::authorization_consistency::snapshot_profiling_basic_only_auth_model",
@@ -15,9 +14,6 @@
     "review::.::holistic::authorization_consistency::windows_auth_divergence",
     "review::.::holistic::contract_coherence::two_error_conventions_in_one_module",
     "review::.::holistic::convention_outlier::bulk_fix_dual_write_protocol",
-    "review::.::holistic::convention_outlier::explorer_edition_style_island",
-    "review::.::holistic::convention_outlier::explorer_missing_module_docs",
-    "review::.::holistic::convention_outlier::test_module_filename_shapes",
     "review::.::holistic::cross_module_architecture::al_analysis_bundles_unrelated_capabilities",
     "review::.::holistic::cross_module_architecture::generation_lock_lsp_only",
     "review::.::holistic::cross_module_architecture::workspace_hub_public_mutable_fields",
@@ -35,7 +31,6 @@
     "review::.::holistic::low_level_elegance::unjustified_arg_threading_symbol_reference",
     "review::.::holistic::mid_level_elegance::post_split_facade_globs_hide_ownership",
     "review::.::holistic::mid_level_elegance::workspace_hub_exposes_raw_locks",
-    "review::.::holistic::naming_quality::explorer_cli_two_letter_json_locals",
     "review::.::holistic::naming_quality::symbol_lookup_cardinality_in_the_verb",
     "review::.::holistic::naming_quality::test_prefix_style_split",
     "review::.::holistic::package_organization::al_analysis_crate_size",
@@ -43,7 +38,6 @@
     "review::.::holistic::test_strategy::alc_differential_absent_from_ci",
     "review::.::holistic::test_strategy::explorer_presentation_untested",
     "review::.::holistic::test_strategy::fixed_sleeps_stand_in_for_conditions",
-    "review::.::holistic::test_strategy::wallclock_budget_in_always_on_suite",
     "review::.::holistic::type_safety::closed_vocabulary_as_string",
     "review::.::holistic::type_safety::string_errors_erase_variants",
     "subjective::abstraction_fitness",
@@ -4142,6 +4136,246 @@
         "status": "fixed",
         "attestation": "I have actually Reduced the document-missing encoding in the query family to one shape. find_implementations and semantic_tokens_full returned a bare Vec and now return Option<Vec<_>>, matching document_symbols and folding_ranges. Option rather than Result because no error value exists at that point, only absence; the String-returning code_lens and inlay_hints belong to the al-analysis error-convention item. and I am not gaming the score."
       }
+    },
+    {
+      "timestamp": "2026-09-22T02:02:32+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::naming_quality::explorer_cli_two_letter_json_locals"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:02:32+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::naming_quality::explorer_cli_two_letter_json_locals"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Renamed the two-letter locals in al-explorer/src/cli/commands/insight.rs to the field each holds: sub_object, sub_method, orphan_object, orphan_method, target_object, target_event and operation, matching how the rest of the file spells extracted fields.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T02:02:32+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::naming_quality::explorer_cli_two_letter_json_locals"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Renamed the two-letter locals in al-explorer/src/cli/commands/insight.rs to the field each holds: sub_object, sub_method, orphan_object, orphan_method, target_object, target_event and operation, matching how the rest of the file spells extracted fields.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Renamed the two-letter locals in al-explorer/src/cli/commands/insight.rs to the field each holds: sub_object, sub_method, orphan_object, orphan_method, target_object, target_event and operation, matching how the rest of the file spells extracted fields. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:02:32+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::convention_outlier::explorer_missing_module_docs"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:02:33+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::convention_outlier::explorer_missing_module_docs"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Added //! headers to al-explorer's lib.rs, views/mod.rs and the five view modules, and to cli/commands/debug.rs and insight.rs. cli/commands/build.rs and cli/commands/mod.rs are held by campaign/fix-r2-security this week and are recorded for requeue.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T02:02:33+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::convention_outlier::explorer_missing_module_docs"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Added //! headers to al-explorer's lib.rs, views/mod.rs and the five view modules, and to cli/commands/debug.rs and insight.rs. cli/commands/build.rs and cli/commands/mod.rs are held by campaign/fix-r2-security this week and are recorded for requeue.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Added //! headers to al-explorer's lib.rs, views/mod.rs and the five view modules, and to cli/commands/debug.rs and insight.rs. cli/commands/build.rs and cli/commands/mod.rs are held by campaign/fix-r2-security this week and are recorded for requeue. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:02:33+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::convention_outlier::explorer_edition_style_island"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:02:34+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::convention_outlier::explorer_edition_style_island"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "The pin is deliberate and now says so: al-explorer's TUI state machines use let chains, which edition 2021 rejects (checked by switching to edition.workspace and reading the compiler errors). The manifest carries that reason. A workspace rustfmt.toml with style_edition was not added because it reformats all 21 crates and every campaign branch shares those files this week.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T02:02:34+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::convention_outlier::explorer_edition_style_island"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "The pin is deliberate and now says so: al-explorer's TUI state machines use let chains, which edition 2021 rejects (checked by switching to edition.workspace and reading the compiler errors). The manifest carries that reason. A workspace rustfmt.toml with style_edition was not added because it reformats all 21 crates and every campaign branch shares those files this week.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually The pin is deliberate and now says so: al-explorer's TUI state machines use let chains, which edition 2021 rejects (checked by switching to edition.workspace and reading the compiler errors). The manifest carries that reason. A workspace rustfmt.toml with style_edition was not added because it reformats all 21 crates and every campaign branch shares those files this week. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:02:34+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::convention_outlier::test_module_filename_shapes"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:02:34+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::convention_outlier::test_module_filename_shapes"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Renamed al-runtime's tests_coverage.rs to coverage_tests.rs and tests_records.rs to records_tests.rs, and al-emit's symbol_reference_test.rs to symbol_reference_tests.rs, updating the three mod declarations. The tests_ prefix now means the AL test domain and <topic>_tests.rs means a test module.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T02:02:34+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::convention_outlier::test_module_filename_shapes"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Renamed al-runtime's tests_coverage.rs to coverage_tests.rs and tests_records.rs to records_tests.rs, and al-emit's symbol_reference_test.rs to symbol_reference_tests.rs, updating the three mod declarations. The tests_ prefix now means the AL test domain and <topic>_tests.rs means a test module.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Renamed al-runtime's tests_coverage.rs to coverage_tests.rs and tests_records.rs to records_tests.rs, and al-emit's symbol_reference_test.rs to symbol_reference_tests.rs, updating the three mod declarations. The tests_ prefix now means the AL test domain and <topic>_tests.rs means a test module. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:02:35+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::api_surface_coherence::sibling_parameter_order_drift"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:02:35+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::api_surface_coherence::sibling_parameter_order_drift"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "suggest_translations_with_memory takes workspace first and carries the plain name; the no-memory wrapper, which had only test callers, is deleted. render_al takes (entries, id, name) like render_xml, with a doc line on each pointing at the other. The al-lsp xliff and codegen call sites are updated.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T02:02:35+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::api_surface_coherence::sibling_parameter_order_drift"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "suggest_translations_with_memory takes workspace first and carries the plain name; the no-memory wrapper, which had only test callers, is deleted. render_al takes (entries, id, name) like render_xml, with a doc line on each pointing at the other. The al-lsp xliff and codegen call sites are updated.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually suggest_translations_with_memory takes workspace first and carries the plain name; the no-memory wrapper, which had only test callers, is deleted. render_al takes (entries, id, name) like render_xml, with a doc line on each pointing at the other. The al-lsp xliff and codegen call sites are updated. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:02:36+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::test_strategy::wallclock_budget_in_always_on_suite"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:02:36+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::test_strategy::wallclock_budget_in_always_on_suite"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "performance.rs asserts a 5 s median now, which is the hang-detection threshold its own header describes, and AL_PERF_MAX_MEDIAN_MS sets a tighter budget on a controlled host. The eprintln timing report and the per-operation success assertions inside each measure! block are unchanged.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T02:02:36+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::test_strategy::wallclock_budget_in_always_on_suite"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "performance.rs asserts a 5 s median now, which is the hang-detection threshold its own header describes, and AL_PERF_MAX_MEDIAN_MS sets a tighter budget on a controlled host. The eprintln timing report and the per-operation success assertions inside each measure! block are unchanged.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually performance.rs asserts a 5 s median now, which is the hang-detection threshold its own header describes, and AL_PERF_MAX_MEDIAN_MS sets a tighter budget on a controlled host. The eprintln timing report and the per-operation success assertions inside each measure! block are unchanged. and I am not gaming the score."
+      }
     }
   ],
   "epic_triage_meta": {},
@@ -4170,7 +4404,13 @@
     "review::.::holistic::error_consistency::collect_al_files_erases_scanerror",
     "review::.::holistic::contract_coherence::error_erasing_passthrough",
     "review::.::holistic::logic_clarity::empty_result_means_two_things",
-    "review::.::holistic::api_surface_coherence::lsp_query_failure_shapes"
+    "review::.::holistic::api_surface_coherence::lsp_query_failure_shapes",
+    "review::.::holistic::naming_quality::explorer_cli_two_letter_json_locals",
+    "review::.::holistic::convention_outlier::explorer_missing_module_docs",
+    "review::.::holistic::convention_outlier::explorer_edition_style_island",
+    "review::.::holistic::convention_outlier::test_module_filename_shapes",
+    "review::.::holistic::api_surface_coherence::sibling_parameter_order_drift",
+    "review::.::holistic::test_strategy::wallclock_budget_in_always_on_suite"
   ],
   "commit_tracking_branch": null,
   "scan_count_at_plan_start": 1

@@ -12,8 +12,8 @@
     "auto_resolved": 0,
     "deferred": 0,
     "false_positive": 0,
-    "fixed": 44,
-    "open": 1176,
+    "fixed": 50,
+    "open": 1170,
     "triaged_out": 0,
     "wontfix": 45,
     "by_tier": {
@@ -21,8 +21,8 @@
         "auto_resolved": 0,
         "deferred": 0,
         "false_positive": 0,
-        "fixed": 19,
-        "open": 18,
+        "fixed": 20,
+        "open": 17,
         "triaged_out": 0,
         "wontfix": 28
       },
@@ -30,8 +30,8 @@
         "auto_resolved": 0,
         "deferred": 0,
         "false_positive": 0,
-        "fixed": 5,
-        "open": 247,
+        "fixed": 9,
+        "open": 243,
         "triaged_out": 0,
         "wontfix": 17
       },
@@ -39,8 +39,8 @@
         "auto_resolved": 0,
         "deferred": 0,
         "false_positive": 0,
-        "fixed": 0,
-        "open": 911,
+        "fixed": 1,
+        "open": 910,
         "triaged_out": 0,
         "wontfix": 0
       },
@@ -36480,11 +36480,11 @@
         "reasoning": "",
         "summary_hash": "0e48ee8f"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "The pin is deliberate and now says so: al-explorer's TUI state machines use let chains, which edition 2021 rejects (checked by switching to edition.workspace and reading the compiler errors). The manifest carries that reason. A workspace rustfmt.toml with style_edition was not added because it reformats all 21 crates and every campaign branch shares those files this week.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T02:02:34+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -36492,7 +36492,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually The pin is deliberate and now says so: al-explorer's TUI state machines use let chains, which edition 2021 rejects (checked by switching to edition.workspace and reading the compiler errors). The manifest carries that reason. A workspace rustfmt.toml with style_edition was not added because it reformats all 21 crates and every campaign branch shares those files this week. and I am not gaming the score.",
+        "attested_at": "2026-09-22T02:02:34+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::convention_outlier::daemon_param_helper_triplicated": {
       "id": "review::.::holistic::convention_outlier::daemon_param_helper_triplicated",
@@ -36774,11 +36780,11 @@
         "reasoning": "",
         "summary_hash": "0c11195a"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Renamed al-runtime's tests_coverage.rs to coverage_tests.rs and tests_records.rs to records_tests.rs, and al-emit's symbol_reference_test.rs to symbol_reference_tests.rs, updating the three mod declarations. The tests_ prefix now means the AL test domain and <topic>_tests.rs means a test module.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T02:02:34+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -36786,7 +36792,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Renamed al-runtime's tests_coverage.rs to coverage_tests.rs and tests_records.rs to records_tests.rs, and al-emit's symbol_reference_test.rs to symbol_reference_tests.rs, updating the three mod declarations. The tests_ prefix now means the AL test domain and <topic>_tests.rs means a test module. and I am not gaming the score.",
+        "attested_at": "2026-09-22T02:02:34+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::convention_outlier::lib_rs_two_roles": {
       "id": "review::.::holistic::convention_outlier::lib_rs_two_roles",
@@ -36890,11 +36902,11 @@
         "reasoning": "",
         "summary_hash": "31ff9835"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Added //! headers to al-explorer's lib.rs, views/mod.rs and the five view modules, and to cli/commands/debug.rs and insight.rs. cli/commands/build.rs and cli/commands/mod.rs are held by campaign/fix-r2-security this week and are recorded for requeue.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T02:02:33+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -36902,7 +36914,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Added //! headers to al-explorer's lib.rs, views/mod.rs and the five view modules, and to cli/commands/debug.rs and insight.rs. cli/commands/build.rs and cli/commands/mod.rs are held by campaign/fix-r2-security this week and are recorded for requeue. and I am not gaming the score.",
+        "attested_at": "2026-09-22T02:02:33+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::convention_outlier::source_lookup_error_manual_display": {
       "id": "review::.::holistic::convention_outlier::source_lookup_error_manual_display",
@@ -37507,11 +37525,11 @@
         "reasoning": "",
         "summary_hash": "af2dcbb9"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Renamed the two-letter locals in al-explorer/src/cli/commands/insight.rs to the field each holds: sub_object, sub_method, orphan_object, orphan_method, target_object, target_event and operation, matching how the rest of the file spells extracted fields.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T02:02:32+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -37519,7 +37537,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Renamed the two-letter locals in al-explorer/src/cli/commands/insight.rs to the field each holds: sub_object, sub_method, orphan_object, orphan_method, target_object, target_event and operation, matching how the rest of the file spells extracted fields. and I am not gaming the score.",
+        "attested_at": "2026-09-22T02:02:32+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::abstraction_fitness::workspace_context_bag": {
       "id": "review::.::holistic::abstraction_fitness::workspace_context_bag",
@@ -39605,11 +39629,11 @@
         "reasoning": "",
         "summary_hash": "da496ef4"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "performance.rs asserts a 5 s median now, which is the hang-detection threshold its own header describes, and AL_PERF_MAX_MEDIAN_MS sets a tighter budget on a controlled host. The eprintln timing report and the per-operation success assertions inside each measure! block are unchanged.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T02:02:36+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39617,7 +39641,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually performance.rs asserts a 5 s median now, which is the hang-detection threshold its own header describes, and AL_PERF_MAX_MEDIAN_MS sets a tighter budget on a controlled host. The eprintln timing report and the per-operation success assertions inside each measure! block are unchanged. and I am not gaming the score.",
+        "attested_at": "2026-09-22T02:02:36+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::api_surface_coherence::lsp_query_failure_shapes": {
       "id": "review::.::holistic::api_surface_coherence::lsp_query_failure_shapes",
@@ -39951,11 +39981,11 @@
         "reasoning": "",
         "summary_hash": "fd432d9e"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "suggest_translations_with_memory takes workspace first and carries the plain name; the no-memory wrapper, which had only test callers, is deleted. render_al takes (entries, id, name) like render_xml, with a doc line on each pointing at the other. The al-lsp xliff and codegen call sites are updated.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T02:02:35+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39963,7 +39993,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually suggest_translations_with_memory takes workspace first and carries the plain name; the no-memory wrapper, which had only test callers, is deleted. render_al takes (entries, id, name) like render_xml, with a doc line on each pointing at the other. The al-lsp xliff and codegen call sites are updated. and I am not gaming the score.",
+        "attested_at": "2026-09-22T02:02:35+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::api_surface_coherence::source_lookup_error_not_std_error": {
       "id": "review::.::holistic::api_surface_coherence::source_lookup_error_not_std_error",
@@ -41700,7 +41736,7 @@
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
       "refresh_reason": "review_issue_fixed",
-      "stale_since": "2026-09-22T01:56:09+00:00"
+      "stale_since": "2026-09-22T02:02:35+00:00"
     },
     "authorization_consistency": {
       "score": 78.5,
@@ -41724,7 +41760,7 @@
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
       "refresh_reason": "review_issue_fixed",
-      "stale_since": "2026-09-22T01:56:05+00:00"
+      "stale_since": "2026-09-22T02:02:34+00:00"
     },
     "cross_module_architecture": {
       "score": 79.5,
@@ -41811,8 +41847,8 @@
       "source": "holistic",
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
-      "refresh_reason": "review_issue_wontfix",
-      "stale_since": "2026-09-22T01:47:16+00:00"
+      "refresh_reason": "review_issue_fixed",
+      "stale_since": "2026-09-22T02:02:32+00:00"
     },
     "package_organization": {
       "score": 77.0,
@@ -41827,8 +41863,8 @@
       "source": "holistic",
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
-      "refresh_reason": "review_issue_wontfix",
-      "stale_since": "2026-09-22T01:47:21+00:00"
+      "refresh_reason": "review_issue_fixed",
+      "stale_since": "2026-09-22T02:02:36+00:00"
     },
     "type_safety": {
       "score": 72.0,
@@ -81325,13 +81361,13 @@
       "strict": 81.5,
       "verified_strict_score": 81.5,
       "checks": 10,
-      "failing": 3,
+      "failing": 2,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.815,
-          "failing": 3,
+          "failing": 2,
           "weighted_failures": 1.85,
           "assessment_score": 81.5,
           "placeholder": false,
@@ -81388,13 +81424,13 @@
       "strict": 80.0,
       "verified_strict_score": 80.0,
       "checks": 10,
-      "failing": 4,
+      "failing": 1,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.8,
-          "failing": 4,
+          "failing": 1,
           "weighted_failures": 2.0,
           "assessment_score": 80.0,
           "placeholder": false,
@@ -81619,13 +81655,13 @@
       "strict": 87.0,
       "verified_strict_score": 87.0,
       "checks": 10,
-      "failing": 3,
+      "failing": 2,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.87,
-          "failing": 3,
+          "failing": 2,
           "weighted_failures": 1.3,
           "assessment_score": 87.0,
           "placeholder": false,
@@ -81661,13 +81697,13 @@
       "strict": 86.0,
       "verified_strict_score": 86.0,
       "checks": 10,
-      "failing": 4,
+      "failing": 3,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.86,
-          "failing": 4,
+          "failing": 3,
           "weighted_failures": 1.4,
           "assessment_score": 86.0,
           "placeholder": false,

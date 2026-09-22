@@ -407,6 +407,10 @@ fn collect_effects(
     Ok(effects)
 }
 
+// The file path, object identity and reportable flag identify the caller,
+// while the node, tree, source and insight graph are the walk inputs. Each
+// varies independently per call, so a bundling struct would be built at the
+// call site and destructured here for no reduction.
 #[allow(clippy::too_many_arguments)]
 fn effects_for_procedure(
     path: &std::path::Path,
