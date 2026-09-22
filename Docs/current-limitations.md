@@ -166,8 +166,11 @@ live in [ROADMAP.md](../ROADMAP.md).
   ```
 
   That says the bytes came out of this repository's release workflow, which a
-  digest published beside them does not. The check is manual: the extension
-  cannot run it, and releases made before the attestation step have none.
+  digest published beside them does not. `checksums.txt` includes
+  `binary-checksums.txt`, so the file the extension verifies against is attested
+  along with the archives and can be checked the same way. The check is manual:
+  the extension cannot run it, and releases made before the attestation step
+  have none.
 - Releases published before `binary-checksums.txt` existed carry no per-binary
   digests, and the extension starts from them unverified. Their absence comes
   from the GitHub API asset listing rather than the asset download, so a
