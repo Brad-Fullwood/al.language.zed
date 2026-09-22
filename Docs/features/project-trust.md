@@ -98,6 +98,12 @@ A scripted install whose settings you have read passes `--yes` together with
 refused, so the caller spells out which project's values it means. Nothing in `plugin/` or
 `scripts/` runs this command, and nothing should.
 
+A revoke takes effect on the next request. The daemon fingerprints the trust store, the
+user settings file, both repository settings files and the launch file before each request,
+five `stat` calls, and re-evaluates when any of them moved. It used to decide once at
+startup and keep that configuration until it exited, which is up to `AL_DAEMON_IDLE_SECS`
+after the last request and never while an editor keeps it busy.
+
 The record lives in `~/.config/al-lsp/trusted-projects.json` (or `$XDG_CONFIG_HOME/al-lsp/`),
 outside every repository, mode 0600, written through a temp file and a rename. Each entry
 holds the canonical project root and a SHA-256 of the privileged values. Change one of those

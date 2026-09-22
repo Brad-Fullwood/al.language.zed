@@ -421,6 +421,57 @@ pub fn deny_privileged(config: &mut AlConfig) {
     config.use_only_custom_feeds = false;
 }
 
+/// A cheap fingerprint of every file a trust decision reads.
+///
+/// A daemon outlives the command that started it, so a decision made once at
+/// startup keeps its privileged configuration through an `al-explorer trust
+/// --revoke` until the daemon exits, which is up to `AL_DAEMON_IDLE_SECS`
+/// after the last request or never while an editor keeps it busy. Revocation
+/// is the user saying stop, so it has to take effect.
+///
+/// This is four `stat` calls, so it can run per request. A change in any of
+/// them means the decision has to be made again.
+#[must_use]
+pub fn inputs_fingerprint(project_root: &Path) -> u64 {
+    let mut hasher = Sha256::new();
+    let mut stamp = |path: Option<PathBuf>| {
+        let Some(path) = path else {
+            hasher.update([0u8]);
+            return;
+        };
+        hasher.update(path.as_os_str().as_encoded_bytes());
+        match std::fs::metadata(&path) {
+            Ok(metadata) => {
+                hasher.update(metadata.len().to_le_bytes());
+                let modified = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|since| since.as_nanos() as u64)
+                    .unwrap_or_default();
+                hasher.update(modified.to_le_bytes());
+            }
+            // Absent is a state of its own: a store that is deleted revokes
+            // every project in it.
+            Err(_) => hasher.update([0xffu8]),
+        }
+    };
+
+    stamp(store_path());
+    stamp(AlConfig::default_settings_path());
+    stamp(Some(project_root.join(".vscode/settings.json")));
+    stamp(Some(project_root.join(".zed/settings.json")));
+    stamp(
+        al_bc::launch::find_launch_config(project_root)
+            .ok()
+            .flatten()
+            .map(|file| file.path),
+    );
+
+    let digest = hasher.finalize();
+    u64::from_le_bytes(digest[..8].try_into().expect("sha256 is 32 bytes"))
+}
+
 /// The trust decision alone, for callers that do not need the configuration.
 pub fn decide(project_root: &Path) -> Result<TrustDecision, ConfigLoadError> {
     let (ask, mut decision) = inspect(project_root)?;
@@ -1391,6 +1442,47 @@ mod tests {
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         writer.join().unwrap();
         assert_eq!(checked, 400);
+    }
+
+    /// A daemon that evaluated once at startup kept serving the privileged
+    /// configuration through a revoke. The fingerprint is what tells it to
+    /// look again, so it has to move when the store does.
+    #[test]
+    fn revoking_trust_moves_the_inputs_fingerprint() {
+        let _config = ScratchConfig::new();
+        let project =
+            project_with_settings(r#"{"al.codeAnalyzers": ["${CodeCop}", "./tools/P.dll"]}"#);
+
+        let untrusted = inputs_fingerprint(project.path());
+        let decision = decide(project.path()).unwrap();
+        trust_project(&decision.root, &decision.digest).unwrap();
+        let trusted = inputs_fingerprint(project.path());
+        assert_ne!(untrusted, trusted, "writing the store must move it");
+
+        assert!(evaluate(project.path()).unwrap().decision.is_trusted());
+        revoke_project(&decision.root).unwrap();
+
+        assert_ne!(
+            trusted,
+            inputs_fingerprint(project.path()),
+            "a revoke must move it, or a running daemon never looks again"
+        );
+        assert!(!evaluate(project.path()).unwrap().decision.is_trusted());
+    }
+
+    #[test]
+    fn editing_a_settings_file_moves_the_inputs_fingerprint() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings(r#"{"al.codeAnalyzers": ["./tools/P.dll"]}"#);
+        let before = inputs_fingerprint(project.path());
+
+        std::fs::write(
+            project.path().join(".vscode/settings.json"),
+            r#"{"al.codeAnalyzers": ["./tools/Q.dll", "./tools/R.dll"]}"#,
+        )
+        .unwrap();
+
+        assert_ne!(before, inputs_fingerprint(project.path()));
     }
 
     #[test]

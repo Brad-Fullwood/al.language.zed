@@ -183,6 +183,13 @@ pub async fn run_daemon(
     // CLI/TUI daemon clients do not send LSP initializationOptions. Merge the
     // persisted config with project-local VS Code/Zed settings so compiler
     // backend and symbol-package paths match the editor.
+    // Recorded before the read, so a store or settings file written while this
+    // evaluation runs is seen as a change by the next request rather than
+    // missed.
+    TRUST_INPUTS.store(
+        al_project::trust::inputs_fingerprint(&project_root),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     let evaluated = al_project::trust::evaluate(&project_root)?;
     *workspace.config.write().await = evaluated.config;
     if let Some(advisory) = evaluated.decision.advisory() {
@@ -744,11 +751,60 @@ where
     }
 }
 
+/// The fingerprint of the trust inputs the daemon last evaluated.
+///
+/// Process-wide rather than per workspace: a daemon serves one project.
+static TRUST_INPUTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Re-evaluate trust when anything it reads has changed.
+///
+/// The daemon evaluated once at startup and kept that configuration until it
+/// exited, which is up to `AL_DAEMON_IDLE_SECS` after the last request, or
+/// never while an editor keeps it busy. So `al-explorer trust --revoke` left
+/// the privileged settings in effect in the process that was applying them.
+///
+/// Four `stat` calls per request decide whether to read the files again, so
+/// the common case costs nothing and a revoke takes effect on the next
+/// request.
+async fn refresh_trust(workspace: &Workspace) {
+    use std::sync::atomic::Ordering;
+
+    let Some(project_root) = workspace
+        .project
+        .try_read()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|project| project.root.clone()))
+    else {
+        return;
+    };
+
+    let fingerprint = al_project::trust::inputs_fingerprint(&project_root);
+    if TRUST_INPUTS.swap(fingerprint, Ordering::Relaxed) == fingerprint {
+        return;
+    }
+
+    match al_project::trust::evaluate(&project_root) {
+        Ok(evaluated) => {
+            if let Some(advisory) = evaluated.decision.advisory() {
+                tracing::warn!("daemon: {advisory}");
+            }
+            *workspace.config.write().await = evaluated.config;
+        }
+        // A settings file that stopped parsing is not a reason to keep serving
+        // the configuration it used to hold.
+        Err(error) => {
+            tracing::warn!(%error, "daemon: trust re-evaluation failed, denying privileged settings");
+            al_project::trust::deny_privileged(&mut *workspace.config.write().await);
+        }
+    }
+}
+
 pub(crate) async fn dispatch_request(
     workspace: &std::sync::Arc<Workspace>,
     req: Request,
     shutdown: &Notify,
 ) -> Response {
+    refresh_trust(workspace).await;
     let method = req.method.clone();
     let params = req.params.clone().unwrap_or(serde_json::Value::Null);
     let response = dispatch_method(workspace, req, shutdown).await;

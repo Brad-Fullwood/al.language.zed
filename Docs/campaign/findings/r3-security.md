@@ -474,7 +474,20 @@ Tests
 - fix: re-evaluate on each compile-shaped request, or at least re-read the store, which is a
   small file. Failing that, have `al-explorer trust --revoke` also call `daemon-shutdown` for
   that root and say so.
-- status: open
+- status: fixed. `trust::inputs_fingerprint` is five `stat` calls over the store, the user
+  settings file, both repository settings files and the launch file.
+  `daemon::refresh_trust` runs it at the top of `dispatch_request` and re-evaluates only when
+  it moved, so the common case costs the stats and a revoke takes effect on the next request.
+  The MCP server goes through the same `dispatch_request`, so it is covered too. A settings
+  file that stopped parsing falls back to `deny_privileged` rather than keeping what it used
+  to hold. The startup fingerprint is recorded before the startup evaluation, so a write
+  during that evaluation costs one extra re-read rather than being missed. Tests:
+  `revoking_trust_moves_the_inputs_fingerprint` and
+  `editing_a_settings_file_moves_the_inputs_fingerprint`.
+
+  `workspace.trust_advisory` is a `OnceLock` and still holds the startup message, so the MCP
+  `instructions` an agent was given at connect time do not change mid-session. The advisory
+  names key names only now, and the configuration is what a revoke has to reach.
 
 ### [TEST] the extension's path test asserts the hole rather than the rule
 
