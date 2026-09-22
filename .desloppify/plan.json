@@ -1,7 +1,7 @@
 {
   "version": 8,
   "created": "2026-09-21T00:40:45+00:00",
-  "updated": "2026-09-22T02:14:24+00:00",
+  "updated": "2026-09-22T02:19:08+00:00",
   "queue_order": [
     "review::.::holistic::abstraction_fitness::mockrecord_default_view_api",
     "review::.::holistic::abstraction_fitness::workspace_context_bag",
@@ -14,8 +14,6 @@
     "review::.::holistic::cross_module_architecture::al_analysis_bundles_unrelated_capabilities",
     "review::.::holistic::cross_module_architecture::generation_lock_lsp_only",
     "review::.::holistic::cross_module_architecture::workspace_hub_public_mutable_fields",
-    "review::.::holistic::dependency_health::getrandom_pinned_to_oldest_of_three_copies",
-    "review::.::holistic::dependency_health::shared_deps_bypass_workspace_table",
     "review::.::holistic::design_coherence::workspace_god_struct",
     "review::.::holistic::error_consistency::al_analysis_dual_error_convention",
     "review::.::holistic::error_consistency::typed_error_flattened_in_entrypoints",
@@ -4649,6 +4647,86 @@
         "status": "fixed",
         "attestation": "I have actually Both doc comments say what actually happens: no credentials means no Authorization header, and there is no Windows-integrated fallback. apply_snapshot_auth prefers configured Basic credentials and otherwise uses the BC_ACCESS_TOKEN bearer override that BcClient and the test runner already read, with three tests covering the precedence. and I am not gaming the score."
       }
+    },
+    {
+      "timestamp": "2026-09-22T02:19:06+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::dependency_health::shared_deps_bypass_workspace_table"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:19:07+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::dependency_health::shared_deps_bypass_workspace_table"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Moved tree-sitter, url, urlencoding, tempfile, dirs, sha2 and rayon into [workspace.dependencies] and replaced 44 per-manifest pins across 19 crates with { workspace = true }. url carries features = [\"serde\"] in the table, which al-analysis needed and the feature union already applied. cargo check and clippy over the workspace are clean and Cargo.lock is unchanged for those crates.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T02:19:07+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::dependency_health::shared_deps_bypass_workspace_table"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Moved tree-sitter, url, urlencoding, tempfile, dirs, sha2 and rayon into [workspace.dependencies] and replaced 44 per-manifest pins across 19 crates with { workspace = true }. url carries features = [\"serde\"] in the table, which al-analysis needed and the feature union already applied. cargo check and clippy over the workspace are clean and Cargo.lock is unchanged for those crates.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Moved tree-sitter, url, urlencoding, tempfile, dirs, sha2 and rayon into [workspace.dependencies] and replaced 44 per-manifest pins across 19 crates with { workspace = true }. url carries features = [\"serde\"] in the table, which al-analysis needed and the feature union already applied. cargo check and clippy over the workspace are clean and Cargo.lock is unchanged for those crates. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:19:07+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::dependency_health::getrandom_pinned_to_oldest_of_three_copies"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:19:07+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::dependency_health::getrandom_pinned_to_oldest_of_three_copies"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Bumped the workspace pin to getrandom 0.4 and renamed the four calls in al-emit/src/package.rs, al-symbols/src/oauth/pkce.rs and al-runtime/src/stubs/any.rs to getrandom::fill. The lock's remaining 0.2.17 copy is pulled only by keyring's secret-service through rand 0.8, not by first-party code.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T02:19:08+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::dependency_health::getrandom_pinned_to_oldest_of_three_copies"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Bumped the workspace pin to getrandom 0.4 and renamed the four calls in al-emit/src/package.rs, al-symbols/src/oauth/pkce.rs and al-runtime/src/stubs/any.rs to getrandom::fill. The lock's remaining 0.2.17 copy is pulled only by keyring's secret-service through rand 0.8, not by first-party code.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Bumped the workspace pin to getrandom 0.4 and renamed the four calls in al-emit/src/package.rs, al-symbols/src/oauth/pkce.rs and al-runtime/src/stubs/any.rs to getrandom::fill. The lock's remaining 0.2.17 copy is pulled only by keyring's secret-service through rand 0.8, not by first-party code. and I am not gaming the score."
+      }
     }
   ],
   "epic_triage_meta": {},
@@ -4690,7 +4768,9 @@
     "review::.::holistic::design_coherence::high_arity_helpers",
     "review::.::holistic::authorization_consistency::windows_auth_divergence",
     "review::.::holistic::authorization_consistency::tenant_scoping_header_vs_query",
-    "review::.::holistic::authorization_consistency::snapshot_profiling_basic_only_auth_model"
+    "review::.::holistic::authorization_consistency::snapshot_profiling_basic_only_auth_model",
+    "review::.::holistic::dependency_health::shared_deps_bypass_workspace_table",
+    "review::.::holistic::dependency_health::getrandom_pinned_to_oldest_of_three_copies"
   ],
   "commit_tracking_branch": null,
   "scan_count_at_plan_start": 1

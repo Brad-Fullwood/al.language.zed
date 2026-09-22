@@ -12,8 +12,8 @@
     "auto_resolved": 0,
     "deferred": 0,
     "false_positive": 0,
-    "fixed": 57,
-    "open": 1163,
+    "fixed": 59,
+    "open": 1161,
     "triaged_out": 0,
     "wontfix": 45,
     "by_tier": {
@@ -21,8 +21,8 @@
         "auto_resolved": 0,
         "deferred": 0,
         "false_positive": 0,
-        "fixed": 24,
-        "open": 13,
+        "fixed": 26,
+        "open": 11,
         "triaged_out": 0,
         "wontfix": 28
       },
@@ -38105,11 +38105,11 @@
         "reasoning": "",
         "summary_hash": "1030b79e"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Moved tree-sitter, url, urlencoding, tempfile, dirs, sha2 and rayon into [workspace.dependencies] and replaced 44 per-manifest pins across 19 crates with { workspace = true }. url carries features = [\"serde\"] in the table, which al-analysis needed and the feature union already applied. cargo check and clippy over the workspace are clean and Cargo.lock is unchanged for those crates.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T02:19:07+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -38117,7 +38117,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Moved tree-sitter, url, urlencoding, tempfile, dirs, sha2 and rayon into [workspace.dependencies] and replaced 44 per-manifest pins across 19 crates with { workspace = true }. url carries features = [\"serde\"] in the table, which al-analysis needed and the feature union already applied. cargo check and clippy over the workspace are clean and Cargo.lock is unchanged for those crates. and I am not gaming the score.",
+        "attested_at": "2026-09-22T02:19:07+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::dependency_health::futures_and_futures_util_both_used": {
       "id": "review::.::holistic::dependency_health::futures_and_futures_util_both_used",
@@ -38217,11 +38223,11 @@
         "reasoning": "",
         "summary_hash": "bbcf8363"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Bumped the workspace pin to getrandom 0.4 and renamed the four calls in al-emit/src/package.rs, al-symbols/src/oauth/pkce.rs and al-runtime/src/stubs/any.rs to getrandom::fill. The lock's remaining 0.2.17 copy is pulled only by keyring's secret-service through rand 0.8, not by first-party code.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T02:19:08+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -38229,7 +38235,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Bumped the workspace pin to getrandom 0.4 and renamed the four calls in al-emit/src/package.rs, al-symbols/src/oauth/pkce.rs and al-runtime/src/stubs/any.rs to getrandom::fill. The lock's remaining 0.2.17 copy is pulled only by keyring's secret-service through rand 0.8, not by first-party code. and I am not gaming the score.",
+        "attested_at": "2026-09-22T02:19:08+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::dependency_health::no_unused_dependency_gate": {
       "id": "review::.::holistic::dependency_health::no_unused_dependency_gate",
@@ -41817,8 +41829,8 @@
       "source": "holistic",
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
-      "refresh_reason": "review_issue_wontfix",
-      "stale_since": "2026-09-22T01:47:18+00:00"
+      "refresh_reason": "review_issue_fixed",
+      "stale_since": "2026-09-22T02:19:08+00:00"
     },
     "design_coherence": {
       "score": 76.0,
@@ -81508,13 +81520,13 @@
       "strict": 78.5,
       "verified_strict_score": 78.5,
       "checks": 10,
-      "failing": 2,
+      "failing": 0,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.785,
-          "failing": 2,
+          "failing": 0,
           "weighted_failures": 2.15,
           "assessment_score": 78.5,
           "placeholder": false,

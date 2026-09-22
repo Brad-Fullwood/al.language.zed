@@ -15,7 +15,7 @@
 //!   - No real filesystem I/O except into `tempfile::TempDir`.
 
 use al_analysis::queries::breaking_changes::analyze_breaking_changes;
-use al_analysis::queries::bulk_fix::add_application_area;
+use al_analysis::queries::bulk_fix::plan_application_area;
 use al_analysis::queries::dead_code::dead_code;
 use al_analysis::queries::deps::build_dependency_graph;
 use al_analysis::queries::impact::impact;
@@ -280,25 +280,28 @@ fn parse_profile_missing_nodes_array_returns_err() {
 }
 
 #[test]
-fn bulk_fix_add_application_area_nonexistent_dir_returns_err_or_empty() {
-    // Negative: pointing the bulk-fix at a non-existent directory must
-    // not panic; it should either return an error or an empty result.
-    let result = add_application_area(
+fn bulk_fix_plan_nonexistent_dir_returns_err_or_empty() {
+    // Negative: pointing the planner at a non-existent directory must not
+    // panic; it should either return an error or an empty plan.
+    let plan = plan_application_area(
         std::path::Path::new("/this/path/definitely/does/not/exist/12345"),
         "All",
-        true, // dry-run — never write to disk
     );
-    if let Ok(r) = result {
-        assert_eq!(r.changes_count, 0, "nonexistent dir must produce 0 changes");
+    if let Ok(plan) = plan {
+        assert!(
+            plan.changes.is_empty(),
+            "nonexistent dir must produce 0 changes"
+        );
     }
 }
 
 #[test]
-fn bulk_fix_add_application_area_empty_dir_dry_run_is_zero_changes() {
-    // Positive: dry-run over an empty temp directory must report zero
-    // changes and zero modified files.
+fn bulk_fix_plan_over_an_empty_dir_is_zero_changes() {
+    // Positive: planning over an empty temp directory reports zero changes
+    // and zero modified files.
     let tmp = tempfile::tempdir().expect("create temp dir");
-    let result = add_application_area(tmp.path(), "All", true).expect("bulk fix should succeed");
+    let plan = plan_application_area(tmp.path(), "All").expect("bulk fix planning should succeed");
+    let result = plan.result(true);
     assert_eq!(result.changes_count, 0);
     assert!(result.modified_files.is_empty());
     assert!(result.dry_run, "dry_run flag must be preserved in result");
