@@ -201,7 +201,10 @@ Multi-object open item:
   RSP app whose assigned range sits below 50000 cannot scaffold at all.
 - fix: `object_id < 50_000`, reword the message as `1-49999`, change the test case to `49_999`,
   and prefer the project's own `idRanges` when `app.json` declares one.
-- status: open
+- status: fixed PLACEHOLDER2 — `MICROSOFT_ID_RANGE_END` is 49_999, the message names that range,
+  and `dispatch_generate_accepts_the_first_customization_object_id` pins 50000. Preferring the
+  project's `idRanges` is still open: `dispatch_generate` is synchronous and the project sits
+  behind an async `RwLock`, so reading it there needs the dispatcher to become async first.
 
 ### [SLOP] `builtin_round`'s doc comment still describes the rounding the fix removed
 - where: crates/al-runtime/src/interpreter/dispatch.rs:1604-1609 against the code at 1649-1654
