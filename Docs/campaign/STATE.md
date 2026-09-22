@@ -13,6 +13,7 @@ Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two 
 | Fix R2 review B (19: rename and snapshot capture skip the gates, `.alpackages` symlink moves the boundary, extension path check unnormalised, plus a structural test that every dispatcher passes its gate) | worktree fix | branch `campaign/fix-r2-review-b` |
 | Formatter idempotence: two persisted proptest seeds (mutated fixtures with a `{` after a statement line, tab indentation) fail `format(format(x)) == format(x)` | worktree fix | branch `campaign/fix-formatter-idempotence` |
 | Fix R3 security (10, 2 critical: repository text reaches the MCP `instructions` field, `binary.arguments` runs on open in Zed; plus trust confirmation on a TTY, endpoint peer check and unforgeable handshake, snapshot and profiling credential params, revoke takes effect, skills quote interpolated names) | worktree fix | branch `campaign/fix-r3-security` |
+| desloppify batch: split `resolution.rs`, `dispatch.rs`, `native_dap.rs`, `session.rs`, `xliff.rs`, `calls.rs`, `router.rs`, plus three open review A items | worktree refactor | branch `campaign/slop-splits-2`, `findings/slop-splits-2.md` |
 
 Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, CI runs on every push).
 
