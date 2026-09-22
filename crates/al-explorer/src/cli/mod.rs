@@ -341,6 +341,15 @@ pub fn run(cli: Cli) -> ExitCode {
             project,
             show,
             revoke,
-        } => commands::trust::cmd_trust(project.as_deref(), show, revoke, cli.json),
+            yes,
+            root,
+        } => commands::trust::cmd_trust(
+            project.as_deref(),
+            show,
+            revoke,
+            yes,
+            root.as_deref(),
+            cli.json,
+        ),
     }
 }

@@ -79,12 +79,24 @@ repository byte can start a line of its own.
 
 ```bash
 al-explorer trust --show          # what needs trust, and the current state
-al-explorer trust                 # print the values, then record them
+al-explorer trust                 # print the values, ask, then record them
 al-explorer trust --revoke        # remove the record
 ```
 
-`trust` prints every privileged value before it writes the record. Read them first. The
-record covers exactly what was printed.
+`trust` prints every privileged value, then asks. Type `yes` to record them. The record
+covers exactly what was printed.
+
+The question is asked on the terminal device (`/dev/tty`, `CONIN$` on Windows), not on
+stdin, and a call whose stdin is not a terminal is refused outright. stdin can be a pipe
+while the process still has a controlling terminal, and a pipe is what a task, a hook, a
+`build.rs` or an agent's Bash tool hands over. Being a command rather than a daemon method
+was not enough on its own: the command used to write the record with stdin closed and no
+terminal, so anything running as the user granted trust in one call.
+
+A scripted install whose settings you have read passes `--yes` together with
+`--root <project>`. `--yes` alone is refused, and `--root` naming a different path is
+refused, so the caller spells out which project's values it means. Nothing in `plugin/` or
+`scripts/` runs this command, and nothing should.
 
 The record lives in `~/.config/al-lsp/trusted-projects.json` (or `$XDG_CONFIG_HOME/al-lsp/`),
 outside every repository, mode 0600, written through a temp file and a rename. Each entry
@@ -113,7 +125,10 @@ privileged value inline:
   a cached token goes only to a server the project's launch file names, and only when the
   project is trusted. A caller that wants an unlisted server supplies its own `accessToken`,
   which is its credential to spend.
-- Trust is granted by `al-explorer trust`, which runs in the user's terminal.
+- Trust is granted by `al-explorer trust`, which asks the terminal device and refuses a call
+  whose stdin is not a terminal. An agent must not run it, and the messages that mention it
+  say so: they name `al-explorer trust --show` as something the user runs, rather than
+  ending with a command to paste.
 
 An agent reads the repository. An AL comment, a symbol name in a dependency `.app` or a BC
 response can tell an agent what to call next. If asking an agent to "build this to confirm it

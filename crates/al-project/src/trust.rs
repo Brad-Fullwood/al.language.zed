@@ -17,8 +17,9 @@
 //! Zed user settings, environment variables, CLI flags) need no trust: the user
 //! wrote them.
 //!
-//! Trust is granted by `al-explorer trust`, an interactive command. No daemon
-//! method and no MCP tool can grant it or supply a privileged value inline.
+//! Trust is granted by `al-explorer trust`, which asks the terminal device and
+//! refuses a call whose stdin is not a terminal. No daemon method and no MCP
+//! tool can grant it or supply a privileged value inline.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

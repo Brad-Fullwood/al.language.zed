@@ -781,10 +781,15 @@ Settings in .vscode/settings.json, .zed/settings.json and .vscode/launch.json sh
 inside the repository. Analyzer assemblies, raw alc switches, probing paths, package
 feeds and Business Central servers are ignored until the project is trusted.
 
+Run this yourself, in a terminal. It asks before it writes, and it reads the answer
+from the terminal rather than from stdin, so a task, a hook, a skill or an agent's
+shell cannot answer for you.
+
 Examples:
   al-explorer trust --show
   al-explorer trust
   al-explorer trust --revoke ~/src/SomeApp
+  al-explorer trust --yes --root ~/src/SomeApp   # scripted install, no terminal
 
 See Docs/features/project-trust.md.")]
     Trust {
@@ -796,6 +801,12 @@ See Docs/features/project-trust.md.")]
         /// Remove this project from the trusted list
         #[arg(long)]
         revoke: bool,
+        /// Answer the confirmation. Needs --root naming the same project
+        #[arg(long, requires = "root", conflicts_with_all = ["show", "revoke"])]
+        yes: bool,
+        /// The project --yes applies to, spelled out
+        #[arg(long, value_name = "PATH")]
+        root: Option<String>,
     },
 }
 

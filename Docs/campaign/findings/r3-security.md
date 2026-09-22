@@ -319,7 +319,19 @@ Tests
   confirmation from `/dev/tty` (not stdin), refuse when there is no terminal unless an
   explicit `--yes` is passed, and drop the bare command from the advisory text in favour of
   "see `al-explorer trust --show`".
-- status: open
+- status: fixed. `grant_trust` prints the values, then calls `confirmation_needed`. A call
+  whose stdin is not a terminal is refused; otherwise the typed `yes` is read from
+  `/dev/tty` (`CONIN$` on Windows), so a pipe cannot answer. `--yes` is accepted only
+  together with `--root <path>` that canonicalises to the same project, and clap requires the
+  pair. Re-run of the finding's own reproduction, against the debug binary with stdin closed:
+  the values printed, the write was refused, and no store file was created. Tests:
+  `a_call_with_no_terminal_is_refused`, `yes_without_root_is_refused`,
+  `yes_with_a_different_root_is_refused`, `yes_with_the_matching_root_answers_for_the_caller`,
+  `a_terminal_is_asked_rather_than_taken_as_consent`. Every message that mentions the command
+  now names `al-explorer trust --show` as something the user runs in a terminal, rather than
+  ending with a command to paste: the advisory, the credential refusals and
+  `enforce_dotnet_path`. `grep -rn 'al-explorer trust' plugin/ scripts/` finds nothing, so
+  no hook, task or skill invokes it.
 
 ### [SECURITY] symbol names reach the agent as shell arguments, and the skills interpolate them unquoted-by-convention
 
