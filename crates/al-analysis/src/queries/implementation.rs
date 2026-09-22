@@ -48,19 +48,30 @@ pub fn find_implementations(workspace: &Workspace, uri: &Url, position: Position
         }
     }
 
-    // Non-file URIs have no filesystem path.
+    // The cursor's own file is scanned too: a file that declares the
+    // interface *and* a codeunit implementing it is ordinary AL, and skipping
+    // the whole file meant that codeunit was never listed. Only the
+    // declaration under the cursor is excluded, by range.
     let current_path = uri.to_file_path().ok();
-    for file_entry in workspace.file_index.files.iter() {
-        let file_path = file_entry.key().clone();
-        if current_path.as_ref() == Some(&file_path) {
-            continue;
-        }
+    let cursor_range = node.range();
+    let mut file_paths: Vec<std::path::PathBuf> = workspace
+        .file_index
+        .files
+        .iter()
+        .map(|entry| entry.key().clone())
+        .collect();
+    file_paths.sort();
+    for file_path in file_paths {
         let Some((file_text, file_tree)) = workspace.file_index.get_cached_parse(&file_path) else {
             continue;
         };
-        if let Some(range) =
-            find_codeunit_implementing_interface(&file_tree, &file_text, &interface_lower)
-        {
+        let skip_range = (current_path.as_ref() == Some(&file_path)).then_some(cursor_range);
+        for range in find_codeunits_implementing_interface(
+            &file_tree,
+            &file_text,
+            &interface_lower,
+            skip_range,
+        ) {
             if let Ok(file_uri) = Url::from_file_path(&file_path) {
                 locations.push(Location {
                     uri: file_uri,
@@ -70,21 +81,43 @@ pub fn find_implementations(workspace: &Workspace, uri: &Url, position: Position
         }
     }
 
+    // DashMap iteration is shard order, so an unsorted result reordered the
+    // picker between identical requests.
+    locations.sort_by(|left, right| {
+        (
+            left.uri.as_str(),
+            left.range.start.line,
+            left.range.start.character,
+        )
+            .cmp(&(
+                right.uri.as_str(),
+                right.range.start.line,
+                right.range.start.character,
+            ))
+    });
     locations
 }
 
-/// Walk the parse tree looking for an `implements_clause` whose interface name matches.
-/// Returns the range of the codeunit object declaration (first child of the root).
-fn find_codeunit_implementing_interface(
+/// Every object declaration in the tree whose `implements_clause` names the
+/// interface, in document order.
+///
+/// A declaration containing `skip_range` is left out: that is the interface
+/// name the cursor sits on. Returning on the first match meant a file with two
+/// implementing codeunits contributed one.
+fn find_codeunits_implementing_interface(
     tree: &tree_sitter::Tree,
     text: &str,
     interface_lower: &str,
-) -> Option<Range> {
+    skip_range: Option<tree_sitter::Range>,
+) -> Vec<Range> {
     let source = text.as_bytes();
     let root = tree.root_node();
+    let mut ranges = Vec::new();
 
     for obj_idx in 0..root.child_count() {
-        let obj_node = root.child(obj_idx)?;
+        let Some(obj_node) = root.child(obj_idx) else {
+            continue;
+        };
 
         let is_codeunit = obj_node.kind() == "object_declaration"
             && obj_node
@@ -95,15 +128,19 @@ fn find_codeunit_implementing_interface(
         if !is_codeunit {
             continue;
         }
+        if skip_range.is_some_and(|skip| {
+            skip.start_byte >= obj_node.start_byte() && skip.end_byte <= obj_node.end_byte()
+        }) {
+            continue;
+        }
 
-        let has_match = find_implements_clause_match(obj_node, source, interface_lower);
-        if has_match {
+        if find_implements_clause_match(obj_node, source, interface_lower) {
             let ts_range = obj_node.range();
-            return Some(al_syntax::ts_range_to_syntax(&ts_range, source).into());
+            ranges.push(al_syntax::ts_range_to_syntax(&ts_range, source).into());
         }
     }
 
-    None
+    ranges
 }
 
 /// Search direct children of an `object_declaration` node for an `implements_clause`
@@ -128,7 +165,7 @@ fn find_implements_clause_match(
                 continue;
             };
             if let Ok(t) = token.utf8_text(source) {
-                if t.trim_matches('"').to_lowercase() == interface_lower {
+                if al_syntax::clean_identifier(t).to_lowercase() == interface_lower {
                     return true;
                 }
             }
@@ -363,12 +400,13 @@ mod tests {
     fn find_codeunit_implementing_interface_matches_codeunit() {
         let src = impl_source("FooImpl", "IFoo");
         let tree = parse(&src);
-        let range = find_codeunit_implementing_interface(&tree, &src, "ifoo");
-        assert!(
-            range.is_some(),
+        let ranges = find_codeunits_implementing_interface(&tree, &src, "ifoo", None);
+        assert_eq!(
+            ranges.len(),
+            1,
             "codeunit declaring `implements IFoo` should match interface `ifoo`"
         );
-        assert_eq!(range.unwrap().start.line, 0);
+        assert_eq!(ranges[0].start.line, 0);
     }
 
     #[test]
@@ -377,9 +415,8 @@ mod tests {
         // it even though the text otherwise mentions the interface name.
         let src = "page 50100 FooPage\n{\n    Caption = 'IFoo';\n}\n";
         let tree = parse(src);
-        let range = find_codeunit_implementing_interface(&tree, src, "ifoo");
         assert!(
-            range.is_none(),
+            find_codeunits_implementing_interface(&tree, src, "ifoo", None).is_empty(),
             "a non-codeunit object must never be reported as an implementation"
         );
     }
@@ -389,7 +426,7 @@ mod tests {
         let src = impl_source("FooImpl", "IFoo");
         let tree = parse(&src);
         assert!(
-            find_codeunit_implementing_interface(&tree, &src, "ibar").is_none(),
+            find_codeunits_implementing_interface(&tree, &src, "ibar", None).is_empty(),
             "codeunit implementing IFoo must not match a search for IBar"
         );
     }
@@ -399,10 +436,43 @@ mod tests {
         // Interface names with spaces are quoted in AL; matching strips the quotes.
         let src = "codeunit 50100 FooImpl implements \"My Foo\"\n{\n}\n";
         let tree = parse(src);
-        let range = find_codeunit_implementing_interface(&tree, src, "my foo");
-        assert!(
-            range.is_some(),
+        assert_eq!(
+            find_codeunits_implementing_interface(&tree, src, "my foo", None).len(),
+            1,
             "quoted interface name `\"My Foo\"` should match `my foo`"
+        );
+    }
+
+    const TWO_IMPLEMENTORS: &str = "codeunit 50100 FooImpl implements IFoo\n{\n}\n\ncodeunit 50101 BarImpl implements IFoo\n{\n}\n";
+
+    /// Returning on the first match meant a file with two implementing
+    /// codeunits contributed one.
+    #[test]
+    fn every_implementor_in_a_file_is_listed() {
+        let tree = parse(TWO_IMPLEMENTORS);
+        let ranges = find_codeunits_implementing_interface(&tree, TWO_IMPLEMENTORS, "ifoo", None);
+        assert_eq!(
+            ranges.iter().map(|r| r.start.line).collect::<Vec<_>>(),
+            vec![0, 4]
+        );
+    }
+
+    /// The scan used to skip the cursor's whole file, so a file declaring the
+    /// interface alongside a codeunit implementing it never listed that
+    /// codeunit. Only the declaration under the cursor is excluded.
+    #[test]
+    fn only_the_declaration_under_the_cursor_is_skipped() {
+        let tree = parse(TWO_IMPLEMENTORS);
+        let first = tree.root_node().child(0).expect("first object");
+        let ranges = find_codeunits_implementing_interface(
+            &tree,
+            TWO_IMPLEMENTORS,
+            "ifoo",
+            Some(first.range()),
+        );
+        assert_eq!(
+            ranges.iter().map(|r| r.start.line).collect::<Vec<_>>(),
+            vec![4]
         );
     }
 }

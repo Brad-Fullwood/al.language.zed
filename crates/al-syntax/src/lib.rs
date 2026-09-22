@@ -25,10 +25,11 @@ pub use formatting::{
 pub use lint::{lint, lint_rules, LintDiagnostic, LintRuleInfo, LintSeverity};
 pub use navigation::{
     collect_call_site_names, collect_call_sites, collect_member_access_names,
-    collect_primary_expression_names, count_call_references, find_event_subscriber_attributes,
-    find_event_subscriber_references, find_node_at_position, find_object_declaration,
-    find_procedure_at, find_variable_references, EventSubscriberAttribute, ObjectInfo,
-    ParameterInfo, ProcedureInfo, SubscriberArgument,
+    collect_primary_expression_names, count_call_references, count_identifier_occurrences,
+    find_event_subscriber_attributes, find_event_subscriber_references, find_node_at_position,
+    find_object_declaration, find_object_declarations, find_procedure_at, find_variable_references,
+    procedure_keyword_row, EventSubscriberAttribute, ObjectInfo, ParameterInfo, ProcedureInfo,
+    SubscriberArgument,
 };
 pub use parser::{AlParser, ParseResult, SyntaxError};
 pub use sort::sort_members;

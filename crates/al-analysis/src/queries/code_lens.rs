@@ -1,6 +1,7 @@
 //! CodeLens query — reference count lenses on procedure/method/event declarations.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -12,7 +13,7 @@ use al_workspace::Workspace;
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum CodeLensKind {
     Reference(usize),
-    /// e.g. `"⏱ 42ms · 3 calls"`
+    /// e.g. `"⏱ 42ms · 3 samples"`
     Profiler(String),
     Test(TestLensStatus),
 }
@@ -77,7 +78,7 @@ pub struct TestTarget {
 ///   is referenced across the workspace (e.g. `"3 references"`).
 /// - **Profiler lenses** — shown only when a `.alcpuprofile` is loaded into the
 ///   workspace; display self-time and hit count for the procedure
-///   (e.g. `"⏱ 42ms · 3 calls"`).
+///   (e.g. `"⏱ 42ms · 3 samples"`).
 pub fn code_lens(workspace: &Workspace, uri: &Url) -> Result<Vec<CodeLensEntry>, String> {
     let Some((text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, uri) else {
         return Ok(vec![]);
@@ -109,7 +110,7 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Result<Vec<CodeLensEntry>,
     // files: O(F + P) instead of O(P * F).
     //
     // Key: canonical declaration binding. Value: distinct call-site count.
-    let ref_counts = build_reference_counts(workspace, uri)?;
+    let ref_counts = reference_counts(workspace, uri)?;
 
     let mut lenses = Vec::new();
     for sym in &symbols {
@@ -350,6 +351,33 @@ fn reference_count_for_declaration(
     Ok(counts.get(&declaration).copied().unwrap_or(0))
 }
 
+/// [`build_reference_counts`], reused while the workspace generation and the
+/// open document both still match.
+fn reference_counts(
+    workspace: &Workspace,
+    current_uri: &Url,
+) -> Result<Arc<HashMap<super::binding::BindKey, usize>>, String> {
+    let generation = workspace.generation_revision();
+    let document = current_uri.to_string();
+    if let Ok(cached) = workspace.code_lens_reference_counts.read() {
+        if let Some(entry) = cached.as_ref() {
+            if entry.generation == generation && entry.document == document {
+                return Ok(Arc::clone(&entry.counts));
+            }
+        }
+    }
+
+    let counts = Arc::new(build_reference_counts(workspace, current_uri)?);
+    if let Ok(mut slot) = workspace.code_lens_reference_counts.write() {
+        *slot = Some(al_workspace::CodeLensReferenceCounts {
+            generation,
+            document,
+            counts: Arc::clone(&counts),
+        });
+    }
+    Ok(counts)
+}
+
 /// Build a map of canonical declaration binding → distinct reference count by
 /// scanning every file in the workspace exactly once.
 ///
@@ -376,45 +404,51 @@ fn build_reference_counts(
         file_uri: &Url,
         text: &str,
         tree: &tree_sitter::Tree,
+        binder: &mut super::binding::DeclLocCache,
         member_bindings: &mut HashMap<MemberKey, super::binding::BindKey>,
     ) -> Result<(), String> {
-        let Some(object) = al_syntax::find_object_declaration(tree, text) else {
+        let objects = al_syntax::find_object_declarations(tree, text);
+        if objects.is_empty() {
             return Ok(());
-        };
+        }
         let source = text.as_bytes();
-        let mut binding_error = None;
+        let mut declarations: Vec<(tree_sitter::Range, String)> = Vec::new();
         al_syntax::walk_tree(tree.root_node(), &mut |node| {
-            if binding_error.is_some() {
-                return;
-            }
             if !matches!(
                 node.kind(),
                 "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration"
             ) {
                 return;
             }
-            let Some(name_node) = node.child_by_field_name("name") else {
-                return;
-            };
-            let Ok(name) = name_node.utf8_text(source) else {
-                return;
-            };
-            let range = al_syntax::ts_range_to_syntax(&name_node.range(), source);
-            match super::binding::decl_loc(workspace, file_uri, range.start.into()) {
-                Ok(declaration) => {
-                    member_bindings.insert(
-                        (
-                            object.kind.to_lowercase(),
-                            object.name.to_lowercase(),
-                            name.trim_matches('"').to_lowercase(),
-                        ),
-                        declaration,
-                    );
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(source) {
+                    declarations.push((name_node.range(), name.to_string()));
                 }
-                Err(error) => binding_error = Some(error.to_string()),
             }
         });
-        binding_error.map_or(Ok(()), Err)
+        for (name_range, name) in declarations {
+            // Attribute the member to the object whose range contains it: a
+            // file declaring a table then its card page has members in both.
+            let start = name_range.start_byte;
+            let Some(object) = objects
+                .iter()
+                .find(|object| start >= object.range.start_byte && start < object.range.end_byte)
+            else {
+                continue;
+            };
+            let declaration = binder
+                .decl_loc_for_reference(workspace, file_uri, text, tree, &name_range)
+                .map_err(|error| error.to_string())?;
+            member_bindings.insert(
+                (
+                    object.kind.to_lowercase(),
+                    object.name.to_lowercase(),
+                    al_syntax::clean_identifier(&name).to_lowercase(),
+                ),
+                declaration,
+            );
+        }
+        Ok(())
     }
 
     /// Walk a single file's parse tree once, recording the *name* of every
@@ -437,18 +471,16 @@ fn build_reference_counts(
     fn record_file(
         workspace: &Workspace,
         file_uri: &Url,
-        uri_str: &str,
         text: &str,
         tree: &tree_sitter::Tree,
+        binder: &mut super::binding::DeclLocCache,
         member_bindings: &HashMap<MemberKey, super::binding::BindKey>,
         seen: &mut HashMap<super::binding::BindKey, std::collections::HashSet<(String, u32, u32)>>,
     ) -> Result<(), String> {
+        let uri_str = &file_uri.to_string();
         let source_bytes = text.as_bytes();
-        let mut binding_error = None;
+        let mut call_sites = Vec::new();
         al_syntax::walk_tree(tree.root_node(), &mut |node| {
-            if binding_error.is_some() {
-                return;
-            }
             if node.kind() == "attribute" {
                 record_event_subscriber_reference(
                     node,
@@ -459,30 +491,23 @@ fn build_reference_counts(
                 );
                 return;
             }
-            if !matches!(node.kind(), "identifier" | "quoted_identifier") {
-                return;
+            if matches!(node.kind(), "identifier" | "quoted_identifier") && is_call_site(node) {
+                call_sites.push(node.range());
             }
-            if !is_call_site(node) {
-                return;
-            }
-            let ts_range = node.range();
+        });
+        for ts_range in call_sites {
             let lsp_range = al_syntax::ts_range_to_syntax(&ts_range, source_bytes);
-            let position: super::Position = lsp_range.start.into();
-            let declaration = match super::binding::decl_loc(workspace, file_uri, position) {
-                Ok(declaration) => declaration,
-                Err(error) => {
-                    binding_error = Some(error.to_string());
-                    return;
-                }
-            };
+            let declaration = binder
+                .decl_loc_for_reference(workspace, file_uri, text, tree, &ts_range)
+                .map_err(|error| error.to_string())?;
             let key = (
                 uri_str.to_string(),
                 lsp_range.start.line,
                 lsp_range.start.character,
             );
             seen.entry(declaration).or_default().insert(key);
-        });
-        binding_error.map_or(Ok(()), Err)
+        }
+        Ok(())
     }
 
     fn record_event_subscriber_reference(
@@ -563,7 +588,12 @@ fn build_reference_counts(
                 let has_call = postfix
                     .children(&mut cursor)
                     .any(|c| c.kind() == "call_suffix");
-                has_call
+                // AL permits a parameterless call with no parentheses
+                // (`MyProc;`), which produces no `call_suffix` at all. Missing
+                // those made a procedure every caller invokes that way read
+                // "0 references", which is what a developer uses to decide it
+                // is dead.
+                has_call || is_bare_statement_expression(postfix)
             }
             "member_call_suffix" | "scope_call_suffix" => {
                 let inner = if name_parent.kind() == "name" {
@@ -573,8 +603,57 @@ fn build_reference_counts(
                 };
                 field_name_of(outer, inner).as_deref() == Some("member")
             }
+            // `CurrPage.Update;` — the parenthesis-less form of a member call.
+            // Only in statement position: inside a larger expression a
+            // `member_suffix` is field access, not a call.
+            "member_suffix" => {
+                let inner = if name_parent.kind() == "name" {
+                    name_parent
+                } else {
+                    node
+                };
+                if field_name_of(outer, inner).as_deref() != Some("member") {
+                    return false;
+                }
+                let Some(postfix) = outer.parent() else {
+                    return false;
+                };
+                if postfix
+                    .child(postfix.child_count().saturating_sub(1))
+                    .map(|last| last.id())
+                    != Some(outer.id())
+                {
+                    return false;
+                }
+                is_bare_statement_expression(postfix)
+            }
             _ => false,
         }
+    }
+
+    /// True when `postfix` is the whole of an expression statement.
+    ///
+    /// `MyProc;` parses as
+    /// `statement > expression_statement > expression > unary_expression >
+    /// postfix_expression`, with the `expression` holding that one child. An
+    /// assignment target (`V := 5;`) sits in the same shape but under an
+    /// `expression` with three children, so the single-child test keeps it out.
+    fn is_bare_statement_expression(postfix: tree_sitter::Node<'_>) -> bool {
+        let Some(unary) = postfix.parent() else {
+            return false;
+        };
+        if unary.kind() != "unary_expression" {
+            return false;
+        }
+        let Some(expression) = unary.parent() else {
+            return false;
+        };
+        if expression.kind() != "expression" || expression.named_child_count() != 1 {
+            return false;
+        }
+        expression
+            .parent()
+            .is_some_and(|parent| parent.kind() == "expression_statement")
     }
 
     fn field_name_of(
@@ -592,9 +671,21 @@ fn build_reference_counts(
         None
     }
 
+    // One binder for the whole request. `references` and `rename` memoize the
+    // same lookups for the same reason: without it every call site in every
+    // workspace file runs a full go-to-definition query.
+    let mut binder = super::binding::DeclLocCache::new();
+
     if let Some((text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, current_uri)
     {
-        record_member_bindings(workspace, current_uri, &text, &tree, &mut member_bindings)?;
+        record_member_bindings(
+            workspace,
+            current_uri,
+            &text,
+            &tree,
+            &mut binder,
+            &mut member_bindings,
+        )?;
     }
 
     let current_path = current_uri.to_file_path().ok();
@@ -617,6 +708,7 @@ fn build_reference_counts(
                 &file_uri,
                 &file_text,
                 &file_tree,
+                &mut binder,
                 &mut member_bindings,
             )?;
         }
@@ -624,13 +716,12 @@ fn build_reference_counts(
 
     if let Some((text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, current_uri)
     {
-        let uri_str = current_uri.to_string();
         record_file(
             workspace,
             current_uri,
-            &uri_str,
             &text,
             &tree,
+            &mut binder,
             &member_bindings,
             &mut seen,
         )?;
@@ -644,13 +735,12 @@ fn build_reference_counts(
             continue;
         };
         if let Ok(file_uri) = Url::from_file_path(&file_path) {
-            let uri_str = file_uri.to_string();
             record_file(
                 workspace,
                 &file_uri,
-                &uri_str,
                 &file_text,
                 &file_tree,
+                &mut binder,
                 &member_bindings,
                 &mut seen,
             )?;
@@ -677,7 +767,7 @@ mod tests {
         // the LSP server asserts it handles, so a drift here is a dead lens.
         let kinds = [
             CodeLensKind::Reference(3),
-            CodeLensKind::Profiler("⏱ 1ms · 1 call".to_string()),
+            CodeLensKind::Profiler("⏱ 1ms · 1 sample".to_string()),
             CodeLensKind::Test(TestLensStatus::NotRun),
         ];
         for kind in &kinds {
@@ -846,6 +936,149 @@ codeunit 50100 MyCodeunit
         assert_eq!(event.kind, CodeLensKind::Reference(1));
     }
 
+    /// `record_member_bindings` used to read only the file's *first* object
+    /// declaration, so a subscriber to an event published by the second object
+    /// in a file bound to nothing and the event's lens read "0 references".
+    #[test]
+    fn reference_lens_counts_a_subscriber_to_a_second_object_in_the_file() {
+        let publisher_uri = Url::parse("file:///project/Publishers.al").unwrap();
+        let publishers = r#"codeunit 50100 "First CU"
+{
+    procedure Unrelated()
+    begin
+    end;
+}
+
+codeunit 50101 "Second CU"
+{
+    [IntegrationEvent(false, false)]
+    procedure OnAfterShip()
+    begin
+    end;
+}"#;
+        let subscriber = r#"codeunit 50102 "Subscriber"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Second CU", 'OnAfterShip', '', false, false)]
+    local procedure HandleAfterShip()
+    begin
+    end;
+}"#;
+        let ws = workspace_with_doc(&publisher_uri, publishers);
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/project/Subscriber.al"),
+            subscriber.to_string(),
+        );
+
+        let lenses = code_lens(&ws, &publisher_uri).unwrap();
+        let titles: Vec<&str> = lenses
+            .iter()
+            .filter(|lens| matches!(lens.kind, CodeLensKind::Reference(_)))
+            .map(|lens| lens.title.as_str())
+            .collect();
+        assert!(
+            lenses
+                .iter()
+                .any(|lens| lens.kind == CodeLensKind::Reference(1)),
+            "the subscriber to the second object's event must be counted, got {titles:?}"
+        );
+    }
+
+    /// AL permits a parameterless call with no parentheses, which the
+    /// grammar spells with no `call_suffix`. Those call sites were never
+    /// recorded, so the lens read "0 references".
+    #[test]
+    fn reference_lens_counts_a_parenthesis_less_call() {
+        let uri = Url::parse("file:///project/Bare.al").unwrap();
+        let ws = workspace_with_doc(
+            &uri,
+            "codeunit 50100 \"Bare\"\n\
+             {\n\
+             \x20   procedure Refresh()\n\
+             \x20   begin\n\
+             \x20   end;\n\
+             \n\
+             \x20   procedure Caller()\n\
+             \x20   var\n\
+             \x20       V: Integer;\n\
+             \x20   begin\n\
+             \x20       Refresh;\n\
+             \x20       V := 5;\n\
+             \x20   end;\n\
+             }\n",
+        );
+
+        let lenses = code_lens(&ws, &uri).unwrap();
+        let refresh = lenses
+            .iter()
+            .find(|lens| {
+                matches!(lens.kind, CodeLensKind::Reference(_)) && lens.range.start.line == 2
+            })
+            .expect("Refresh reference lens");
+        assert_eq!(
+            refresh.kind,
+            CodeLensKind::Reference(1),
+            "{}",
+            refresh.title
+        );
+    }
+
+    /// An assignment target sits in the same syntactic shape as a bare call,
+    /// so it must not be counted.
+    #[test]
+    fn reference_lens_does_not_count_an_assignment_target() {
+        let uri = Url::parse("file:///project/Assign.al").unwrap();
+        let ws = workspace_with_doc(
+            &uri,
+            "codeunit 50100 \"Assign\"\n\
+             {\n\
+             \x20   procedure Value()\n\
+             \x20   begin\n\
+             \x20   end;\n\
+             \n\
+             \x20   procedure Caller()\n\
+             \x20   var\n\
+             \x20       Value: Integer;\n\
+             \x20   begin\n\
+             \x20       Value := 5;\n\
+             \x20   end;\n\
+             }\n",
+        );
+
+        let lenses = code_lens(&ws, &uri).unwrap();
+        let value = lenses
+            .iter()
+            .find(|lens| {
+                matches!(lens.kind, CodeLensKind::Reference(_)) && lens.range.start.line == 2
+            })
+            .expect("Value reference lens");
+        assert_eq!(value.kind, CodeLensKind::Reference(0), "{}", value.title);
+    }
+
+    /// Building the counts walks every workspace file, so a fresh build per
+    /// request made the lens cost proportional to the project.
+    #[test]
+    fn reference_counts_are_reused_until_the_generation_changes() {
+        let uri = Url::parse("file:///project/Cached.al").unwrap();
+        let ws = workspace_with_doc(
+            &uri,
+            "codeunit 50100 \"Cached\"\n{\n    procedure Post()\n    begin\n    end;\n}",
+        );
+
+        let first = reference_counts(&ws, &uri).unwrap();
+        let second = reference_counts(&ws, &uri).unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "an unchanged workspace must reuse the counts"
+        );
+
+        ws.mark_generation_changed();
+        let third = reference_counts(&ws, &uri).unwrap();
+        assert!(
+            !Arc::ptr_eq(&second, &third),
+            "a changed workspace must rebuild the counts"
+        );
+    }
+
     #[test]
     fn test_code_lens_empty_file() {
         let uri = Url::parse("file:///empty.al").unwrap();
@@ -929,7 +1162,7 @@ codeunit 50100 MyCodeunit
             prof_lenses.len(),
             lenses.iter().map(|l| &l.title).collect::<Vec<_>>()
         );
-        assert_eq!(prof_lenses[0].title, "⏱ 42ms · 3 calls");
+        assert_eq!(prof_lenses[0].title, "⏱ 42ms · 3 samples");
     }
 
     #[test]
@@ -949,7 +1182,7 @@ codeunit 50100 MyCodeunit
         let prof_lenses: Vec<&CodeLensEntry> =
             lenses.iter().filter(|l| l.title.contains('⏱')).collect();
         assert_eq!(prof_lenses.len(), 1);
-        assert_eq!(prof_lenses[0].title, "⏱ 7ms · 1 call");
+        assert_eq!(prof_lenses[0].title, "⏱ 7ms · 1 sample");
     }
 
     #[test]

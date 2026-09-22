@@ -179,14 +179,6 @@ pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, String> {
         .and_then(|v| v.as_array())
         .ok_or_else(|| "No 'nodes' array in profile".to_string())?;
 
-    let start_us = json
-        .get("startTime")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let end_us = json.get("endTime").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let duration_ms = (end_us - start_us) / 1000.0;
-    let _ = duration_ms; // total recording duration, kept for context only
-
     // Accurate per-node self time (µs) from samples + timeDeltas. Empty when the
     // profile omits those arrays, in which case we keep the hit-count estimate.
     let self_time_by_node = aggregate_self_time_us(&json);
@@ -384,16 +376,36 @@ fn resolve_source_locations(
     let mut ambiguous = std::collections::HashSet::new();
 
     for source in sources {
-        let object_name = source.object.info.name.to_lowercase();
-        collect_procedure_locations(
-            &source.tree,
-            &source.text,
-            &source.path.to_string_lossy(),
-            &object_name,
-            &mut qualified,
-            &mut fallback,
-            &mut ambiguous,
-        );
+        // Per object declaration: in a multi-object file every procedure used
+        // to be qualified with the first object's name, so a hint for the
+        // second object's procedure never matched.
+        let bytes = source.text.as_bytes();
+        let file_path = source.path.to_string_lossy();
+        let mut declarations = Vec::new();
+        al_syntax::walk_tree(source.tree.root_node(), &mut |node| {
+            if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
+                declarations.push((node.start_byte(), node.range()));
+            }
+        });
+        for (start_byte, range) in declarations {
+            let Some(node) = source
+                .tree
+                .root_node()
+                .descendant_for_byte_range(range.start_byte, range.end_byte)
+            else {
+                continue;
+            };
+            let object_name = source.object_at_byte(start_byte).info.name.to_lowercase();
+            collect_proc_location(
+                node,
+                bytes,
+                &file_path,
+                &object_name,
+                &mut qualified,
+                &mut fallback,
+                &mut ambiguous,
+            );
+        }
     }
 
     for hint in hints.iter_mut() {
@@ -416,29 +428,10 @@ fn resolve_source_locations(
     Ok(())
 }
 
-fn collect_procedure_locations(
-    tree: &tree_sitter::Tree,
-    text: &str,
-    file_path: &str,
-    object_name: &str,
-    qualified: &mut std::collections::HashMap<(String, String), (String, u32)>,
-    fallback: &mut std::collections::HashMap<String, (String, u32)>,
-    ambiguous: &mut std::collections::HashSet<String>,
-) {
-    let source = text.as_bytes();
-    collect_procs(
-        tree.root_node(),
-        source,
-        file_path,
-        object_name,
-        qualified,
-        fallback,
-        ambiguous,
-    );
-}
-
-fn collect_procs(
-    root: tree_sitter::Node,
+/// Record one procedure/trigger declaration's file and line under both the
+/// object-qualified key and the bare name.
+fn collect_proc_location(
+    node: tree_sitter::Node<'_>,
     source: &[u8],
     file_path: &str,
     object_name: &str,
@@ -446,40 +439,35 @@ fn collect_procs(
     fallback: &mut std::collections::HashMap<String, (String, u32)>,
     ambiguous: &mut std::collections::HashSet<String>,
 ) {
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
-        if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                if let Ok(name_text) = name_node.utf8_text(source) {
-                    let name = name_text.trim_matches('"').trim().to_string();
-                    if !name.is_empty() {
-                        let line = node.start_position().row as u32 + 1; // 1-based
-                        let loc = (file_path.to_string(), line);
-                        let name_key = name.to_lowercase();
-                        if !object_name.is_empty() {
-                            qualified
-                                .insert((object_name.to_string(), name_key.clone()), loc.clone());
-                        }
-                        if !ambiguous.contains(&name_key) {
-                            if fallback
-                                .get(&name_key)
-                                .is_some_and(|existing| existing != &loc)
-                            {
-                                fallback.remove(&name_key);
-                                ambiguous.insert(name_key);
-                            } else {
-                                fallback.entry(name_key).or_insert(loc);
-                            }
-                        }
-                    }
-                }
-            }
-            // Don't recurse into procedure body
-            continue;
-        }
-
-        let mut cursor = node.walk();
-        stack.extend(node.children(&mut cursor));
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
+    let Ok(name_text) = name_node.utf8_text(source) else {
+        return;
+    };
+    let name = al_syntax::clean_identifier(name_text);
+    if name.is_empty() {
+        return;
+    }
+    let line = al_syntax::procedure_keyword_row(node).unwrap_or_else(|| node.start_position().row)
+        as u32
+        + 1;
+    let loc = (file_path.to_string(), line);
+    let name_key = name.to_lowercase();
+    if !object_name.is_empty() {
+        qualified.insert((object_name.to_string(), name_key.clone()), loc.clone());
+    }
+    if ambiguous.contains(&name_key) {
+        return;
+    }
+    if fallback
+        .get(&name_key)
+        .is_some_and(|existing| existing != &loc)
+    {
+        fallback.remove(&name_key);
+        ambiguous.insert(name_key);
+    } else {
+        fallback.entry(name_key).or_insert(loc);
     }
 }
 
@@ -487,7 +475,7 @@ fn collect_procs(
 ///
 /// For each procedure declaration in the document, this looks up whether an active
 /// `ProfilerHint` matches (by file path + procedure name). When a match is found a lens
-/// like `"⏱ 42ms · 3 calls"` is attached to the procedure's declaration line.
+/// like `"⏱ 42ms · 3 samples"` is attached to the procedure's declaration line.
 ///
 /// Returns an empty `Vec` when `active_hints` is empty, or when the `uri` cannot be
 /// resolved to a file path.
@@ -583,11 +571,17 @@ fn collect_profiler_lenses(
     }
 }
 
+/// Render a profiler lens title.
+///
+/// `hit_count` is a *sample* count, not a call count: in a Chrome-format CPU
+/// profile it is the number of samples whose top frame was this node. Labelling
+/// it "calls" told the reader a procedure called once that ran for 300 ms was
+/// called 300 times.
 fn profiler_lens_title(hint: &ProfilerHint) -> String {
     let ms = hint.self_time_ms.round() as u64;
-    let calls = hint.hit_count;
-    let call_word = if calls == 1 { "call" } else { "calls" };
-    format!("⏱ {ms}ms · {calls} {call_word}")
+    let samples = hint.hit_count;
+    let sample_word = if samples == 1 { "sample" } else { "samples" };
+    format!("⏱ {ms}ms · {samples} {sample_word}")
 }
 
 /// Load profiler hints from a `.alcpuprofile` file on disk and activate them
@@ -1123,8 +1117,8 @@ mod tests {
             lenses[0].title
         );
         assert!(
-            lenses[0].title.contains("3 calls"),
-            "lens should include call count: {}",
+            lenses[0].title.contains("3 samples"),
+            "lens should include the sample count: {}",
             lenses[0].title
         );
     }
@@ -1171,21 +1165,21 @@ mod tests {
     }
 
     #[test]
-    fn profiler_lens_title_plural() {
+    fn profiler_lens_title_names_samples_not_calls() {
         let hint = make_hint_with_file("P", "/f", 100.0, 5);
-        assert_eq!(profiler_lens_title(&hint), "⏱ 100ms · 5 calls");
+        assert_eq!(profiler_lens_title(&hint), "⏱ 100ms · 5 samples");
     }
 
     #[test]
     fn profiler_lens_title_singular() {
         let hint = make_hint_with_file("P", "/f", 1.0, 1);
-        assert_eq!(profiler_lens_title(&hint), "⏱ 1ms · 1 call");
+        assert_eq!(profiler_lens_title(&hint), "⏱ 1ms · 1 sample");
     }
 
     #[test]
     fn profiler_lens_title_rounds_ms() {
         let hint = make_hint_with_file("P", "/f", 3.7, 2);
-        assert_eq!(profiler_lens_title(&hint), "⏱ 4ms · 2 calls");
+        assert_eq!(profiler_lens_title(&hint), "⏱ 4ms · 2 samples");
     }
 
     #[test]

@@ -444,7 +444,7 @@ pub fn has_test_subtype(root: tree_sitter::Node, source: &[u8]) -> bool {
     loop {
         if !did_visit {
             let node = cursor.node();
-            if node.kind() == "property" || node.kind() == "property_assignment" {
+            if node.kind() == "property_assignment" {
                 if let Ok(text) = node.utf8_text(source) {
                     if let Some((key, value)) = text.split_once('=') {
                         let k = key.trim();
@@ -493,8 +493,8 @@ pub fn collect_procedures_with_attribute(
                     .and_then(|name| name.utf8_text(source).ok())
                 {
                     procedures.push(TestProcedure {
-                        name: name.trim_matches('"').to_string(),
-                        line: node.start_position().row as u32 + 1,
+                        name: al_syntax::clean_identifier(name),
+                        line: procedure_line(node),
                         handler_functions: Vec::new(),
                     });
                 }
@@ -508,6 +508,14 @@ pub fn collect_procedures_with_attribute(
     procedures
 }
 
+/// The 1-based line of a declaration's `procedure` keyword.
+///
+/// Not the node's own start: the grammar nests a procedure's attributes inside
+/// the declaration, and a `[Test]` procedure always has one.
+fn procedure_line(node: tree_sitter::Node<'_>) -> u32 {
+    al_syntax::procedure_keyword_row(node).unwrap_or_else(|| node.start_position().row) as u32 + 1
+}
+
 fn has_exact_attribute(proc_node: tree_sitter::Node, source: &[u8], wanted: &str) -> bool {
     let matches = |node: tree_sitter::Node| {
         node.utf8_text(source).ok().is_some_and(|text| {
@@ -519,15 +527,15 @@ fn has_exact_attribute(proc_node: tree_sitter::Node, source: &[u8], wanted: &str
     let mut cursor = proc_node.walk();
     if proc_node
         .children(&mut cursor)
-        .any(|child| matches!(child.kind(), "attribute" | "attribute_list") && matches(child))
+        .any(|child| child.kind() == "attribute" && matches(child))
     {
         return true;
     }
     let mut sibling = proc_node.prev_sibling();
     while let Some(node) = sibling {
         match node.kind() {
-            "attribute" | "attribute_list" if matches(node) => return true,
-            "attribute" | "attribute_list" | "comment" => {}
+            "attribute" if matches(node) => return true,
+            "attribute" | "comment" => {}
             _ => break,
         }
         sibling = node.prev_sibling();
@@ -554,8 +562,8 @@ fn collect_test_procs_iterative(
                     if let Some(name_node) = node.child_by_field_name("name") {
                         if let Ok(name) = name_node.utf8_text(source) {
                             procs.push(TestProcedure {
-                                name: name.trim_matches('"').to_string(),
-                                line: node.start_position().row as u32 + 1,
+                                name: al_syntax::clean_identifier(name),
+                                line: procedure_line(node),
                                 handler_functions: handler_functions(node, source),
                             });
                         }
@@ -588,12 +596,12 @@ fn handler_functions(proc_node: tree_sitter::Node, source: &[u8]) -> Vec<String>
     attributes.extend(
         proc_node
             .children(&mut cursor)
-            .filter(|node| matches!(node.kind(), "attribute" | "attribute_list")),
+            .filter(|node| node.kind() == "attribute"),
     );
     let mut sibling = proc_node.prev_sibling();
     while let Some(node) = sibling {
         match node.kind() {
-            "attribute" | "attribute_list" => attributes.push(node),
+            "attribute" => attributes.push(node),
             "comment" => {}
             _ => break,
         }
@@ -630,7 +638,7 @@ fn has_test_attribute(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
     // In AL tree-sitter grammar, attributes are children of procedure_declaration
     let mut cursor = proc_node.walk();
     for child in proc_node.children(&mut cursor) {
-        if child.kind() == "attribute" || child.kind() == "attribute_list" {
+        if child.kind() == "attribute" {
             if let Ok(text) = child.utf8_text(source) {
                 if is_test_attribute(text) {
                     return true;
@@ -641,7 +649,7 @@ fn has_test_attribute(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
     let mut sibling = proc_node.prev_sibling();
     while let Some(s) = sibling {
         match s.kind() {
-            "attribute" | "attribute_list" => {
+            "attribute" => {
                 if let Ok(text) = s.utf8_text(source) {
                     if is_test_attribute(text) {
                         return true;
@@ -658,16 +666,89 @@ fn has_test_attribute(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
 
 /// Return true if the attribute text is `[Test]` (case-insensitive, not TestPermissions etc.).
 pub fn is_test_attribute(text: &str) -> bool {
-    let inner = text.trim().trim_start_matches('[').trim_end_matches(']');
-    inner
+    attribute_names(text).any(|name| name.eq_ignore_ascii_case("test"))
+}
+
+/// The AL attributes that make the test framework invoke a procedure without
+/// anything calling it.
+///
+/// The thirteen UI handlers Microsoft documents under "Create handler methods",
+/// plus the per-test lifecycle pair. A handler must be reachable by the
+/// framework, so it is never `local` and nothing calls it by name.
+const FRAMEWORK_INVOKED_ATTRIBUTES: &[&str] = &[
+    "test",
+    "testinitialize",
+    "testcleanup",
+    "messagehandler",
+    "confirmhandler",
+    "strmenuhandler",
+    "pagehandler",
+    "modalpagehandler",
+    "reporthandler",
+    "requestpagehandler",
+    "sendnotificationhandler",
+    "hyperlinkhandler",
+    "recallnotificationhandler",
+    "sessionsettingshandler",
+    "filterpagehandler",
+    "httpclienthandler",
+];
+
+/// True for an attribute that makes the test framework invoke the procedure.
+///
+/// Reporting these as untested production code was a false positive on every
+/// test suite of any size: a `[MessageHandler]` is not `local`, nothing calls
+/// it, and it cannot be covered by construction.
+///
+/// <https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/devenv-creating-handler-methods>
+pub fn is_framework_invoked_attribute(text: &str) -> bool {
+    attribute_names(text).any(|name| {
+        FRAMEWORK_INVOKED_ATTRIBUTES
+            .iter()
+            .any(|known| name.eq_ignore_ascii_case(known))
+    })
+}
+
+/// The attribute names in one `[A; B(x)]` block, without arguments.
+fn attribute_names(text: &str) -> impl Iterator<Item = &str> {
+    text.trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
         .split(';')
-        .any(|part| part.trim().eq_ignore_ascii_case("test"))
+        .map(|part| {
+            let part = part.trim();
+            part.split_once('(').map_or(part, |(name, _)| name).trim()
+        })
 }
 
 #[cfg(test)]
 mod test_discovery {
     use super::*;
     use al_syntax::AlParser;
+
+    /// A `[Test]` procedure always carries an attribute, and the grammar nests
+    /// it inside the declaration, so the node's own row is the attribute's
+    /// line. Every reported test line was one line high.
+    #[test]
+    fn a_test_procedure_reports_its_procedure_keyword_line() {
+        let source = "codeunit 50100 \"My Tests\"\n\
+                      {\n\
+                      \x20   Subtype = Test;\n\
+                      \n\
+                      \x20   [Test]\n\
+                      \x20   procedure TestSomething()\n\
+                      \x20   begin\n\
+                      \x20   end;\n\
+                      }\n";
+        let parsed = AlParser::parse_quick(source);
+        let procs = collect_test_procedures(parsed.tree.root_node(), source.as_bytes());
+        assert_eq!(procs.len(), 1);
+        assert_eq!(procs[0].name, "TestSomething");
+        assert_eq!(
+            procs[0].line, 6,
+            "line 5 is the [Test] attribute, line 6 is the procedure"
+        );
+    }
 
     #[test]
     fn test_attribute_detection() {

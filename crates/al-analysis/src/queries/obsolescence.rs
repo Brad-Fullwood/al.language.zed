@@ -357,7 +357,7 @@ fn parse_obsolete_state(value: &str) -> Option<ObsoleteState> {
 fn obsoletion_from_attribute(node: tree_sitter::Node, source: &[u8]) -> Option<Obsoletion> {
     let mut sibling = node.prev_sibling();
     while let Some(s) = sibling {
-        if s.kind() == "attribute" || s.kind() == "attribute_list" {
+        if s.kind() == "attribute" {
             if let Ok(text) = s.utf8_text(source) {
                 if let Some(result) = parse_obsolete_attr(text) {
                     return Some(result);
@@ -371,7 +371,7 @@ fn obsoletion_from_attribute(node: tree_sitter::Node, source: &[u8]) -> Option<O
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "attribute" || child.kind() == "attribute_list" {
+        if child.kind() == "attribute" {
             if let Ok(text) = child.utf8_text(source) {
                 if let Some(result) = parse_obsolete_attr(text) {
                     return Some(result);

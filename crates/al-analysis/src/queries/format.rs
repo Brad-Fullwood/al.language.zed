@@ -24,10 +24,18 @@ use al_syntax::formatting::{
     BlankLinesBetweenProcedures, BraceStyle, FormatOptions, KeywordCasing,
 };
 
-/// Raw `.alformat.json` configuration.  All fields are optional — absent keys
+/// Largest `tabSize` the formatter accepts. Shared by `validate` and
+/// `to_format_options` so a value one rejects the other cannot apply.
+const MAX_TAB_SIZE: usize = 16;
+
+/// Raw `.alformat.json` configuration. All fields are optional — absent keys
 /// keep the default value.
+///
+/// Unknown keys are rejected. Without that a misspelling (`tabsize`,
+/// `keywordCase`) parsed into an all-default config and the strict loader
+/// returned `Ok`, so the file was silently ignored and the user had no signal.
 #[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct AlFormatConfig {
     /// Spaces per indent level (default: 4).
     pub tab_size: Option<usize>,
@@ -67,10 +75,15 @@ impl AlFormatConfig {
         let mut opts = FormatOptions::default();
 
         if let Some(ts) = self.tab_size {
-            if ts > 0 {
+            // The same bounds `validate` enforces, so the two entry points
+            // cannot disagree about what a usable tab size is.
+            if (1..=MAX_TAB_SIZE).contains(&ts) {
                 opts.tab_size = ts;
             } else {
-                tracing::warn!("ignoring zero tabSize in .alformat.json");
+                tracing::warn!(
+                    value = ts,
+                    "tabSize out of range in .alformat.json; using 4"
+                );
             }
         }
         if let Some(spaces) = self.insert_spaces {
@@ -121,13 +134,6 @@ impl AlFormatConfig {
         opts
     }
 
-    pub fn load_options(workspace_root: &Path) -> FormatOptions {
-        match Self::load(workspace_root) {
-            Some(Ok(cfg)) => cfg.to_format_options(),
-            _ => FormatOptions::default(),
-        }
-    }
-
     /// Load formatter options without hiding an unreadable or invalid
     /// `.alformat.json`.
     pub fn load_options_strict(workspace_root: &Path) -> Result<FormatOptions, String> {
@@ -146,8 +152,8 @@ impl AlFormatConfig {
 
     fn validate(&self) -> Result<(), String> {
         if let Some(tab_size) = self.tab_size {
-            if !(1..=16).contains(&tab_size) {
-                return Err("tabSize must be between 1 and 16".to_string());
+            if !(1..=MAX_TAB_SIZE).contains(&tab_size) {
+                return Err(format!("tabSize must be between 1 and {MAX_TAB_SIZE}"));
             }
         }
         if let Some(keyword_casing) = &self.keyword_casing {
@@ -297,7 +303,9 @@ mod tests {
 
     #[test]
     fn load_options_from_nonexistent_path_returns_defaults() {
-        let opts = AlFormatConfig::load_options(std::path::Path::new("/nonexistent/path/xyz"));
+        let opts =
+            AlFormatConfig::load_options_strict(std::path::Path::new("/nonexistent/path/xyz"))
+                .expect("a missing file is not an error");
         assert_eq!(opts.tab_size, 4);
         assert!(opts.insert_spaces);
     }
@@ -307,9 +315,34 @@ mod tests {
         let dir = tempfile::tempdir().expect("create tempdir");
         let config_path = dir.path().join(".alformat.json");
         std::fs::write(&config_path, r#"{"tabSize": 2, "keywordCasing": "lower"}"#).unwrap();
-        let opts = AlFormatConfig::load_options(dir.path());
+        let opts = AlFormatConfig::load_options_strict(dir.path()).expect("valid config");
         assert_eq!(opts.tab_size, 2);
         assert!(matches!(opts.keyword_casing, KeywordCasing::Lower));
+    }
+
+    /// A misspelled key parsed into an all-default config and the strict
+    /// loader returned `Ok`, so the file was ignored with no signal at all.
+    #[test]
+    fn strict_load_rejects_an_unknown_key() {
+        for config in [r#"{"tabsize": 2}"#, r#"{"keywordCase": "upper"}"#] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join(".alformat.json"), config).unwrap();
+            let error = AlFormatConfig::load_options_strict(dir.path())
+                .expect_err("an unknown key must be reported, not ignored");
+            assert!(error.contains("unknown field"), "{error}");
+        }
+    }
+
+    /// `to_format_options` used to accept a tabSize of 17 that `validate`
+    /// rejects, so the two entry points disagreed about what was valid.
+    #[test]
+    fn an_out_of_range_tab_size_is_rejected_and_never_applied() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".alformat.json"), r#"{"tabSize": 17}"#).unwrap();
+        assert!(AlFormatConfig::load_options_strict(dir.path()).is_err());
+
+        let config = AlFormatConfig::from_json(r#"{"tabSize": 17}"#).unwrap();
+        assert_eq!(config.to_format_options().tab_size, 4);
     }
 
     #[test]

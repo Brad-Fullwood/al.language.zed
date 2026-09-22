@@ -107,7 +107,10 @@ impl std::fmt::Display for InsightEdge {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Ordered so callers that iterate the index can do so in a stable order:
+/// `index` is a `HashMap`, and iterating it directly made results depend on
+/// key hashes.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum NodeKey {
     /// Object node: (kind, name_lowercase)
     Object(ObjectKind, String),

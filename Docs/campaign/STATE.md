@@ -10,7 +10,6 @@ Round 1 reviews are complete: 224 verified findings in 11 files. Six of seven fi
 
 | Item | Kind | Output |
 |------|------|--------|
-| Fix R1c analysis (29 findings, 26 fixed): now merging the campaign branch into its own, resolving three conflicts, and closing the three items it had left for other owners | worktree fix | branch `campaign/fix-r1c-analysis` |
 | desloppify batch (done, 10 commits: four file splits, one data loader, one line table): waiting for the analysis third pass to merge, then merges the campaign branch into its own and re-applies campaign changes to the split files | worktree refactor | branch `campaign/slop-syntax-symbols`, `findings/slop-syntax-symbols.md` |
 | Daemon lifecycle: build identity in the handshake, idle exit, PATH fallback version check, `daemon-shutdown` waits for the socket, harness stops leaking daemons | worktree fix | branch `campaign/fix-daemon-lifecycle` |
 | Blog: articles 5 (`mcp-and-the-claude-code-plugin`) and 2 (`running-bc-tests-locally`), fix the `trace` paragraph in article 1 | blog repo branch `campaign/2026-09-rewrite` | `findings/blog-progress.md` |
@@ -20,6 +19,7 @@ Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, 
 
 Queued:
 
+- Nine whole-workspace queries (dead_code, duplicates, sql_patterns, complexity, arch_lint, impact, native_check, obsolescence, obsolete_usage) walk each file from the root, so a multi-object file attributes every finding to the first object. `WorkspaceSource::objects` and `object_at_byte` exist for the fix.
 - After the desloppify branch merges: run `desloppify --lang rust scan --path .` from the main checkout and record the scores (the agent did not rescan, a forced rescan would reset the plan in the shared state file).
 
 - 124 `trim_matches('"')` identifier cleanups in al-analysis (102) and al-insight (22), replace with `al_syntax::node_text_clean`. Start after both analysis fix branches merge.
@@ -84,10 +84,11 @@ round on the areas with the most findings.
 
 ## Done
 
+- Merged `campaign/fix-r1c-analysis`: 28 of 29 fixed plus the three items left by the second pass (type-position completion, the `attribute_list` dead branch, `EdgeKind::TriggerInvocation` removed). A node-kind guard test now fails if code names a syntax node the grammar lacks. Open: nine whole-workspace queries still attribute findings in a multi-object file to its first object. Full gates: 91 suites, 4770 passed, 0 failed.
 - Merged `campaign/fix-ci-platforms`: all seven CI jobs pass on PR #31 (closed after merge). Root causes: analyzer versions compared as strings per directory order (macOS), Record platform methods only offered when a toolchain was installed (ubuntu), verbatim path prefix in the containment message (Windows). CI now runs the whole suite before failing a job.
 - Merged `campaign/ai-daemon-projection`: `subscribers` and `impact --table` answer correctly, `limit`, `offset`, `fields`, `scope` on list methods, `source --list-procedures`, `al-explorer location`, `--compact`, single-flight background call-graph build with progress, `--timeout-ms`. Haiku context bytes fell on six of seven plugin questions. Full gates: 90 suites, 4726 passed, 0 failed after stale daemons were killed.
 - Merged `campaign/test-depth`: property tests found and fixed 4 bugs (formatter not idempotent with same-line braces, ropey counting U+2028 and four other characters as line breaks where LSP does not, `Code` keys iterating case-sensitively, ASCII-only folding in range filters). Coverage about 89 percent, table in `findings/test-depth.md`. Full gates after the merge: 90 suites, 4688 passed, 0 failed.
-- Merged `campaign/fix-r1b-analysis`: 34 of 35 fixed. Quoted identifiers rename end to end, rename rewrites `[EventSubscriber]` arguments, fields are read from the syntax tree, obsolescence reads `ObsoleteState` properties, breaking changes are classified by what a dependent app must change. Merge conflict in `resolve_object_path` resolved by adding `FileIndex::object_path_where` (type match first, then nearest app). Open: bare field references inside a table's own procedure are not renamed (`definition()` does not resolve implicit `Rec`), `EdgeKind::TriggerInvocation` variant removal needs `test_coverage.rs`.
+- Merged `campaign/fix-r1b-analysis`: 34 of 35 fixed. Quoted identifiers rename end to end, rename rewrites `[EventSubscriber]` arguments, fields are read from the syntax tree, obsolescence reads `ObsoleteState` properties, breaking changes are classified by what a dependent app must change. Merge conflict in `resolve_object_path` resolved by adding `FileIndex::object_path_where` (type match first, then nearest app). Open: bare field references inside a table's own procedure are not renamed (`definition()` does not resolve implicit `Rec`). The `EdgeKind::TriggerInvocation` removal landed on `campaign/fix-r1c-analysis` once `test_coverage.rs` was free.
 - Merged `campaign/fix-lsp-content-modified`: read requests recompute across generation swaps, read-only daemon methods take `text` for files outside the project, the `lsp_dispatch` queries gained the path containment they lacked, error code -32002 for refused paths.
 - Full gates on 2026-09-21 18:00 after nine merges: clippy clean, 80 suites, 4564 passed, 0 failed, 10 ignored (baseline was 4380).
 - Merged `campaign/fix-r1b-runtime-dap`: 26 fixed, 1 rejected, 1 no action. Glob filter no longer drops tests from a green summary. JUnit output stays parseable and names timeouts. SignalR reader no longer blocks on a full channel. Nine harness tests now assert what their names claim. The harness refuses to run against stale binaries (`AL_HARNESS_ALLOW_STALE_BINARY=1` overrides), so build al-lsp and al-explorer before `cargo test -p al-test-harness`.

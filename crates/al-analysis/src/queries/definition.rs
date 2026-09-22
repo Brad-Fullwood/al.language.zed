@@ -270,7 +270,7 @@ fn find_same_file_procedure_decl(
             "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     if let Ok(name_text) = name_node.utf8_text(source) {
-                        if name_text.trim_matches('"').eq_ignore_ascii_case(target) {
+                        if al_syntax::clean_identifier(name_text).eq_ignore_ascii_case(target) {
                             return Some(name_node.range());
                         }
                     }

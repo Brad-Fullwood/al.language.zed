@@ -119,7 +119,7 @@ fn collect_inlay_hints(
             continue;
         }
 
-        if node.kind() == "argument_list" || node.kind() == "call_arguments" {
+        if node.kind() == "argument_list" {
             if let Some(parent) = node.parent() {
                 let call_info = extract_call_info(parent, source);
                 if let Some((func_name, receiver_name)) = call_info {
@@ -873,13 +873,13 @@ mod tests {
         );
     }
 
-    /// Walk `tree` and return the first node whose kind is `argument_list` or
-    /// `call_arguments`, so tests can drive `extract_call_info` /
-    /// `add_parameter_hints` against a real call site.
+    /// Walk `tree` and return the first `argument_list` node, so tests can
+    /// drive `extract_call_info` / `add_parameter_hints` against a real call
+    /// site.
     fn first_arg_list<'t>(root: tree_sitter::Node<'t>) -> Option<tree_sitter::Node<'t>> {
         let mut stack = vec![root];
         while let Some(node) = stack.pop() {
-            if node.kind() == "argument_list" || node.kind() == "call_arguments" {
+            if node.kind() == "argument_list" {
                 return Some(node);
             }
             let mut cursor = node.walk();
@@ -1380,9 +1380,7 @@ mod tests {
             let mut stack = vec![tree.root_node()];
             let mut found = None;
             while let Some(node) = stack.pop() {
-                if matches!(node.kind(), "argument_list" | "call_arguments")
-                    && node.start_position().row == call_row
-                {
+                if node.kind() == "argument_list" && node.start_position().row == call_row {
                     found = Some(node);
                     break;
                 }

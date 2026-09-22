@@ -136,12 +136,7 @@ fn events_raised_by(
     let mut raised: Vec<petgraph::graph::NodeIndex> = call_graph
         .callees_of(NodeId::from(subscriber))
         .iter()
-        .filter(|edge| {
-            matches!(
-                edge.kind,
-                EdgeKind::DirectCall | EdgeKind::IndirectCall | EdgeKind::TriggerInvocation
-            )
-        })
+        .filter(|edge| matches!(edge.kind, EdgeKind::DirectCall | EdgeKind::IndirectCall))
         .map(|edge| petgraph::graph::NodeIndex::new(edge.to.0))
         .filter(|&idx| {
             graph
@@ -427,10 +422,9 @@ fn recurse_subscriber(
     fn kind_rank(k: &EdgeKind) -> u8 {
         match k {
             EdgeKind::DirectCall => 0,
-            EdgeKind::TriggerInvocation => 1,
-            EdgeKind::RecordTrigger => 2,
-            EdgeKind::EventSubscription => 3,
-            EdgeKind::IndirectCall => 4,
+            EdgeKind::RecordTrigger => 1,
+            EdgeKind::EventSubscription => 2,
+            EdgeKind::IndirectCall => 3,
         }
     }
     callees.sort_by(|a, b| {
