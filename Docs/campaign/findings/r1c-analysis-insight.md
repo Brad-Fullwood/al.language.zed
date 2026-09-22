@@ -250,7 +250,7 @@ Listed by neither checklist:
 - scenario: in a type position (`var Cust: Record `), the query pushes `workspace.symbols.get_by_kind(kind).iter().take(50)` for Table, Enum, Codeunit and Interface. `get_by_kind` (crates/al-symbols/src/index.rs:1065-1070) returns the per-kind vector in index insertion order, so the 50 are simply the first 50 tables loaded, not the 50 most relevant, and the Base Application has thousands. `Customer` is almost certainly not among them. There is no filtering by the prefix the user has typed, because the server does not look at it, so the client cannot recover what was never sent.
   The labels compound it: `label: format!("\"{}\"", arc.name)` always adds the quotes, so a user who has typed `Cust` gets no match from a client doing prefix filtering against `"Customer"`. The keyword completions on the same path are unquoted and do match.
 - fix: read the partially-typed prefix at the cursor (`detect_context` already has the line) and filter the symbol index by it before capping, and quote the label only when the name needs quoting. The `insert_text` field, left `None` here, is the place for the quoted form.
-- status: open — `queries/completions.rs` belongs to a concurrent fix branch, so this one was left for it.
+- status: fixed 6d5f4e96 — `typed_type_prefix` reads the partial name at the cursor, `matching_type_symbols` ranks prefix matches over mid-name ones and caps last, and the label is the bare name with the quoted form in `insert_text`.
 
 ### [GAP] Go-to-implementations skips the current file entirely and lists one implementor per file
 - where: crates/al-analysis/src/queries/implementation.rs:52-71 and 78-107
@@ -309,7 +309,7 @@ Listed by neither checklist:
 - severity: low
 - scenario: both lines read `s.kind() == "attribute" || s.kind() == "attribute_list"`. tree-sitter-al's node is `attribute`; there is no `attribute_list`, so the second test is always false. Harmless today because the first test is correct, but it states a grammar shape that does not exist and the same pattern in dead_code.rs, tests.rs and test_coverage.rs sat next to a real bug. `crates/al-analysis/tests/node_kind_literals.rs` carries an `ALLOWED_ABSENT` entry for this pair; delete the entry with the fix.
 - fix: drop the `|| ... == "attribute_list"` on both lines.
-- status: open (the file belongs to a concurrent fix branch)
+- status: fixed 6d5f4e96 — both lines, and the `ALLOWED_ABSENT` entry that let the guard test pass around them.
 
 ## Review complete
 
