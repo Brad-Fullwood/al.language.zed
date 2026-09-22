@@ -41,7 +41,45 @@ pub(crate) struct WorkspaceSource {
     pub objects: Vec<WorkspaceObjectDeclaration>,
 }
 
+impl WorkspaceObjectDeclaration {
+    /// The `object_declaration` node this was read from.
+    ///
+    /// Falls back to the root, which is the whole-file walk every caller did
+    /// before it could scope one, when the range no longer names a node.
+    pub fn node<'t>(&self, tree: &'t tree_sitter::Tree) -> tree_sitter::Node<'t> {
+        let root = tree.root_node();
+        root.descendant_for_byte_range(self.info.range.start_byte, self.info.range.end_byte)
+            .unwrap_or(root)
+    }
+
+    /// This object's own source, for a check that reads text rather than nodes.
+    pub fn text<'a>(&self, file_text: &'a str) -> &'a str {
+        file_text
+            .get(self.info.range.start_byte..self.info.range.end_byte)
+            .unwrap_or(file_text)
+    }
+
+    /// Zero-based line the declaration starts on, to turn a line number
+    /// counted inside [`Self::text`] back into a line in the file.
+    pub fn first_line(&self) -> u32 {
+        self.info.range.start_point.row as u32
+    }
+}
+
 impl WorkspaceSource {
+    /// Every validated object declaration of this file with its syntax node.
+    ///
+    /// A query that names the object a finding belongs to walks this instead
+    /// of the tree root, so the second object in a file is not reported under
+    /// the first one's name.
+    pub fn object_nodes(
+        &self,
+    ) -> impl Iterator<Item = (&WorkspaceObjectDeclaration, tree_sitter::Node<'_>)> {
+        self.objects
+            .iter()
+            .map(|object| (object, object.node(&self.tree)))
+    }
+
     /// The object declaration whose source range covers `byte_offset`, or the
     /// file's first object when the offset sits outside every declaration.
     pub fn object_at_byte(&self, byte_offset: usize) -> &WorkspaceObjectDeclaration {

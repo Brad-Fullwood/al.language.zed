@@ -228,7 +228,19 @@ pub fn find_procedure_at(tree: &Tree, text: &str, pos: Position) -> Option<Proce
 }
 
 pub fn find_variable_references(tree: &Tree, text: &str, name: &str) -> Vec<tree_sitter::Range> {
-    let root = tree.root_node();
+    find_variable_references_under(tree.root_node(), text, name)
+}
+
+/// [`find_variable_references`] under one node.
+///
+/// A whole-workspace query that reports which object a reference belongs to
+/// runs this over each object declaration of the file, because a file may hold
+/// several objects and the whole-tree form cannot say which one a hit is in.
+pub fn find_variable_references_under(
+    root: Node<'_>,
+    text: &str,
+    name: &str,
+) -> Vec<tree_sitter::Range> {
     let source = text.as_bytes();
     let mut refs = Vec::new();
     find_refs_iterative(root, source, name, &mut refs);
@@ -709,8 +721,16 @@ pub fn collect_primary_expression_names(
     tree: &Tree,
     source: &str,
 ) -> std::collections::HashSet<String> {
+    collect_primary_expression_names_under(tree.root_node(), source)
+}
+
+/// [`collect_primary_expression_names`] under one node.
+pub fn collect_primary_expression_names_under(
+    root: Node<'_>,
+    source: &str,
+) -> std::collections::HashSet<String> {
     let mut names = std::collections::HashSet::new();
-    collect_primary_expression_names_into(tree.root_node(), source.as_bytes(), &mut names);
+    collect_primary_expression_names_into(root, source.as_bytes(), &mut names);
     names
 }
 

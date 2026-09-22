@@ -241,14 +241,20 @@ Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 - severity: medium
 - scenario: alc records every global variable of an object under `Variables`, with the same `TypeDefinition` shape as a field, including a resolved `Subtype` for `Record`/`Enum`/`Codeunit` types. For `codeunit 50100 Hello { var GreetingLbl: Label 'x'; Counter: Integer; Cust: Record Widget; }` alc 17.0.34.45391 writes three entries; the native emitter writes none. Adding a `Label` to the differential corpus fails `native_emit_matches_alc` on exactly this. Consumers that read global state out of a symbol package (the indexer, go-to-definition into a dependency) see nothing.
 - fix: extract object-level `var` sections in `symbol_extract` and emit `Variables` from `symbol_reference`, reusing the field `TypeDefinition`/`Subtype` resolver. Then add the `Label` codeunit back to the differential corpus.
-- status: open
+- status: fixed 9649b7ca — `extract_objects` reads the `var` section for every object kind, and
+  `object_json` writes `Variables` ahead of the kind's own sections, where the golden report and
+  report extension already have it. The differential corpus still has no codeunit-level `var`, so
+  adding the `Label` codeunit to it needs an alc run and stays open.
 
 ### [BUG] `xlf generate` drops every property declared on a one-line member block
 - where: crates/al-analysis/src/xliff.rs:158-247 (`extract_from_file`), 582-597 (`parse_property_value`)
 - severity: medium
 - scenario: `parse_property_value` requires the trimmed line to *start* with `Caption =`, and the anchor stack only gains the member after the line's `{` is consumed. So `field(1; "No."; Code[20]) { Caption = 'No.'; }` — legal AL, and the compact style the differential corpus itself uses — produces no unit at all. Worse, if the scan is made to see it without fixing the anchor, the caption keys onto the enclosing object and collides with the object's own `Caption`, where the duplicate-id filter drops one of the two. alc emits `Table 4006738456 - Field 4200184881 - Property 2879900210` for that declaration. Found by `crates/al-test-harness/tests/xliff_id_contract.rs`, whose fixture had to be written multi-line to pass.
 - fix: scan properties across the whole line rather than from its start, and anchor a property that follows an opening `{` on the same line to the member that `{` opened.
-- status: open (in al-analysis, which another agent holds on another branch)
+- status: fixed 95e80294 — that commit rewrote the scan to split statements and anchor each one to
+  the member whose `{` opened on the same line. `a_property_on_a_one_line_member_block_belongs_to_that_member`
+  in `xliff.rs` now pins it: two one-line fields get distinct ids and neither collides with the
+  object's own caption.
 
 ### [SLOP] two BC publish clients target two different dev endpoints
 - where: crates/al-dap/src/dap/bc_debug/rest.rs:14-70 and crates/al-bc/src/bc_client.rs (`publish_extension`)

@@ -1603,10 +1603,11 @@ fn builtin_abs(args: &[Value]) -> Eval {
 
 /// `Round(Number [, Precision [, Direction]])`.
 ///
-/// Defaults follow BC: precision `0.01`, direction `'='` (round to nearest
-/// with banker's rounding — midpoints go to the even multiple). `'<'` rounds
-/// toward negative infinity, `'>'` toward positive infinity. Always returns a
-/// `Decimal`.
+/// Defaults follow BC: precision `0.01`, direction `'='`, which rounds to the
+/// nearest multiple and takes a midpoint away from zero. `'<'` rounds the
+/// magnitude down and `'>'` rounds it up, so `Round(-1234.56789, 0.001, '<')`
+/// is `-1234.567`. The three directions are the example table on the
+/// System.Round reference page. Always returns a `Decimal`.
 fn builtin_round(args: &[Value]) -> Eval {
     use crate::interpreter::value::Decimal;
     if args.is_empty() || args.len() > 3 {

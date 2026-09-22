@@ -64,13 +64,19 @@ pub fn find_duplicates(
     let mut procedures: Vec<ProcedureBody> = Vec::new();
 
     for source in sources {
-        collect_procedure_bodies(
-            &source.path.to_string_lossy(),
-            &source.text,
-            &source.object.info.name,
-            &source.tree,
-            &mut procedures,
-        );
+        let file_path = source.path.to_string_lossy();
+        // Per object declaration, not per file: a file may hold several
+        // objects, and walking from the root put every one of their
+        // procedures under the first object's name.
+        for (object, node) in source.object_nodes() {
+            collect_procs_recursive(
+                node,
+                source.text.as_bytes(),
+                &file_path,
+                &object.info.name,
+                &mut procedures,
+            );
+        }
     }
 
     // Bigram maps are computed once per procedure rather than rebuilt inside
@@ -119,18 +125,6 @@ pub fn find_duplicates(
 struct ProcedureBody {
     location: BlockLocation,
     tokens: Vec<String>,
-}
-
-fn collect_procedure_bodies(
-    file_path: &str,
-    text: &str,
-    object_name: &str,
-    tree: &tree_sitter::Tree,
-    procedures: &mut Vec<ProcedureBody>,
-) {
-    let root = tree.root_node();
-    let source = text.as_bytes();
-    collect_procs_recursive(root, source, file_path, object_name, procedures);
 }
 
 fn collect_procs_recursive(
@@ -297,6 +291,51 @@ mod tests {
                 .add_file(PathBuf::from(name), content.to_string());
         }
         ws
+    }
+
+    /// Two objects in one file are two objects. A duplicate pair reports the
+    /// object each procedure is declared in, not the file's first object
+    /// twice, which also made the same-object guard drop the pair entirely.
+    #[test]
+    fn a_duplicate_in_the_second_object_of_a_file_names_that_object() {
+        let ws = workspace_with(vec![(
+            "/src/Pair.al",
+            r#"codeunit 50100 "First CU"
+{
+    procedure ProcessRecord()
+    var
+        x: Integer;
+    begin
+        x := 1;
+        if x > 0 then
+            Message('positive');
+        x := x + 1;
+    end;
+}
+
+codeunit 50101 "Second CU"
+{
+    procedure ProcessRecordAgain()
+    var
+        y: Integer;
+    begin
+        y := 1;
+        if y > 0 then
+            Message('positive');
+        y := y + 1;
+    end;
+}"#,
+        )]);
+
+        let dups = find_duplicates(&ws, 5, 0.8).unwrap();
+        let pair = dups.first().unwrap_or_else(|| {
+            panic!("the two objects' procedures are duplicates of each other: {dups:?}")
+        });
+        let objects = [pair.first.object.as_str(), pair.second.object.as_str()];
+        assert!(
+            objects.contains(&"First CU") && objects.contains(&"Second CU"),
+            "each side must name its own object: {dups:?}"
+        );
     }
 
     #[test]

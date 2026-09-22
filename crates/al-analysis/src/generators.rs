@@ -73,23 +73,45 @@ pub fn generate_page(config: &GeneratePageConfig) -> String {
         ""
     };
 
+    // A `List` shows a collection, so its content is a repeater. `Card` and
+    // `Document` are entity-oriented and show one record, and Microsoft's page
+    // type guidance says not to put a repeater in one: a `Card` opens a
+    // FastTab group, a `Document` its header group. See
+    // learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/devenv-page-types-and-layouts
+    let (open_group, close_group) = match config.page_type {
+        PageType::List => (
+            "            repeater(Group)\n            {\n",
+            "            }\n",
+        ),
+        PageType::Card | PageType::Document => (
+            "            group(General)\n            {\n",
+            "            }\n",
+        ),
+    };
+
+    // `UsageCategory` is the department column of a searched page. A card is
+    // opened from its list through `CardPageId`, and the property has no card
+    // value, so it is left off and the page stays out of Tell Me. See
+    // learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/properties/devenv-usagecategory-property
+    let usage_category = match config.page_type {
+        PageType::List => "    UsageCategory = Lists;\n",
+        PageType::Document => "    UsageCategory = Documents;\n",
+        PageType::Card => "",
+    };
+
     format!(
         r#"page {id} "{page_name}"
 {{
     PageType = {page_type};
     SourceTable = "{table_name}";
     ApplicationArea = All;
-    UsageCategory = Lists;
-
+{usage_category}
     layout
     {{
         area(Content)
         {{
-            repeater(Group)
-            {{
-{field_lines}
-            }}
-        }}
+{open_group}{field_lines}
+{close_group}        }}
     }}{actions}}}
 "#,
         id = config.object_id,
@@ -165,15 +187,28 @@ pub fn generate_test(config: &GenerateTestConfig) -> String {
 }
 
 fn collect_normal_fields(fields: &[FieldSymbol]) -> Vec<&FieldSymbol> {
-    fields
+    let user_fields: Vec<&FieldSymbol> = fields.iter().filter(|f| !is_system_field(f)).collect();
+    let stored: Vec<&FieldSymbol> = user_fields
         .iter()
-        .filter(|f| {
-            !is_flow_field(f)
-                && !f.name.eq_ignore_ascii_case("SystemId")
-                && !f.name.eq_ignore_ascii_case("SystemCreatedAt")
-                && !f.name.eq_ignore_ascii_case("SystemModifiedAt")
-        })
-        .collect()
+        .copied()
+        .filter(|f| !is_flow_field(f))
+        .collect();
+    // FlowFields are skipped because a generated page is a starting point for
+    // editable data. A table whose every user field is a FlowField would
+    // otherwise produce a page with no controls at all, so there the
+    // FlowFields are the page: they render read-only and are still worth
+    // seeing.
+    if stored.is_empty() {
+        user_fields
+    } else {
+        stored
+    }
+}
+
+fn is_system_field(f: &FieldSymbol) -> bool {
+    f.name.eq_ignore_ascii_case("SystemId")
+        || f.name.eq_ignore_ascii_case("SystemCreatedAt")
+        || f.name.eq_ignore_ascii_case("SystemModifiedAt")
 }
 
 fn is_flow_field(f: &FieldSymbol) -> bool {
@@ -368,6 +403,71 @@ mod tests {
         let page = generate_page(&config);
         assert!(page.contains("PageType = Card"));
         assert!(!page.contains("actions"));
+    }
+
+    /// A `Card` and a `Document` show one record, and Microsoft's page type
+    /// guidance says not to put a repeater in an entity-oriented page. Both
+    /// also had `UsageCategory = Lists`, which files the page under Lists in
+    /// Tell Me. A card is opened from its list instead.
+    #[test]
+    fn entity_oriented_pages_get_a_group_and_the_right_usage_category() {
+        let table = make_table("Item", vec![make_field(1, "No.", "Code[20]")]);
+        let page_for = |page_type| {
+            generate_page(&GeneratePageConfig {
+                object_id: 50101,
+                page_name: "Item Page".to_string(),
+                page_type,
+                source_table: table.clone(),
+            })
+        };
+
+        let card = page_for(PageType::Card);
+        assert!(
+            !card.contains("repeater") && card.contains("group(General)"),
+            "a card shows one record:\n{card}"
+        );
+        assert!(
+            !card.contains("UsageCategory"),
+            "a card is reached from its list, not from Tell Me:\n{card}"
+        );
+
+        let document = page_for(PageType::Document);
+        assert!(
+            !document.contains("repeater") && document.contains("group(General)"),
+            "a document shows one record:\n{document}"
+        );
+        assert!(
+            document.contains("UsageCategory = Documents;"),
+            "a document belongs under Documents:\n{document}"
+        );
+
+        let list = page_for(PageType::List);
+        assert!(
+            list.contains("repeater(Group)") && list.contains("UsageCategory = Lists;"),
+            "a list still shows a collection:\n{list}"
+        );
+    }
+
+    /// Every user field of a table can be a FlowField. Skipping them all left
+    /// an empty repeater, so the generated page showed nothing.
+    #[test]
+    fn a_table_of_only_flow_fields_still_gets_its_fields() {
+        let mut flow = make_field(1, "Balance", "Decimal");
+        flow.properties.push(al_symbols::PropertyValue {
+            name: "FieldClass".to_string(),
+            value: "FlowField".to_string(),
+        });
+        let table = make_table("Customer", vec![flow]);
+        let page = generate_page(&GeneratePageConfig {
+            object_id: 50101,
+            page_name: "Customer List".to_string(),
+            page_type: PageType::List,
+            source_table: table,
+        });
+        assert!(
+            page.contains(r#"; Rec."Balance")"#),
+            "the only field there is must be on the page:\n{page}"
+        );
     }
 
     #[test]

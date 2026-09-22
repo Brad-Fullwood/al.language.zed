@@ -352,3 +352,59 @@ fn native_symbol_reference_matches_alc() {
         "native SymbolReference.json is not byte-identical to alc output"
     );
 }
+
+/// alc records every global variable of an object under `Variables`, with the
+/// same `TypeDefinition` shape a field uses, including a resolved `Subtype`.
+/// The native emitter wrote them only for reports and report extensions, so a
+/// consumer reading global state out of a symbol package (the indexer,
+/// go-to-definition into a dependency) saw nothing for a codeunit, a table or
+/// a page.
+#[test]
+fn object_globals_are_emitted_as_variables() {
+    let mut external = ExternalSymbols::default();
+    external.resolver.insert(
+        "widget".to_string(),
+        ObjectRef {
+            id: 50200,
+            module_id: None,
+        },
+    );
+    let source = r#"codeunit 50100 Hello
+{
+    var
+        Counter: Integer;
+        Cust: Record Widget;
+
+    procedure Run()
+    begin
+    end;
+}
+"#;
+    let objects = extract_objects(source, "src/Hello.al");
+    let document = build_symbol_reference(&objects, &min_app_meta(), &external);
+    let variables = document["Codeunits"][0]["Variables"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no Variables array: {}", document["Codeunits"][0]));
+    let names: Vec<&str> = variables
+        .iter()
+        .filter_map(|variable| variable["Name"].as_str())
+        .collect();
+    assert_eq!(names, vec!["Counter", "Cust"], "{variables:?}");
+    assert_eq!(variables[0]["TypeDefinition"]["Name"], "Integer");
+    assert_eq!(variables[1]["TypeDefinition"]["Name"], "Record");
+    assert_eq!(variables[1]["TypeDefinition"]["Subtype"]["Name"], "Widget");
+    assert_eq!(variables[1]["TypeDefinition"]["Subtype"]["Id"], 50200);
+}
+
+/// An object that declares no globals gets no `Variables` key, which is what
+/// alc writes and what the report path already did.
+#[test]
+fn an_object_without_globals_has_no_variables_key() {
+    let objects = extract_objects("codeunit 50100 Empty { }", "src/Empty.al");
+    let document = build_symbol_reference(&objects, &min_app_meta(), &Default::default());
+    assert!(
+        document["Codeunits"][0].get("Variables").is_none(),
+        "{}",
+        document["Codeunits"][0]
+    );
+}

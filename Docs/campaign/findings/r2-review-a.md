@@ -108,7 +108,9 @@ Multi-object open item:
   `value.strip_prefix(...)` on a case-folded first word, or
   `let mut c = value.chars(); PREFIX.chars().all(|p| c.next().is_some_and(|v| v.eq_ignore_ascii_case(&p))) && c.next().is_some_and(char::is_whitespace)`.
   Add a case with `Spécifié`.
-- status: open
+- status: fixed 81ec0db4 — the check counts characters: it takes the byte index of the tenth
+  character, which is a boundary, and compares the text before it. `inject_tooltips_handles_a_non_ascii_tooltip`
+  drives `Spécifié le numéro` through `inject_tooltips`.
 
 ### [MERGE] `FileIndex::best_owner` and `FileIndex::object_path_where` are the same function
 - where: crates/al-source/src/file_index.rs:823-836 (`object_path_where`) and 838-849 (`best_owner`)
@@ -122,7 +124,8 @@ Multi-object open item:
   same-app-then-dependency preference the a8ead4ab finding asked for) now has to be made twice.
 - fix: make `object_path_near` and `object_path_of_kind_near` call `object_path_where` and delete
   `best_owner`.
-- status: open
+- status: fixed f05ffe20 — `object_path_near` calls `object_path_where` and `best_owner` is
+  gone, so the ranking rule lives in one place.
 
 ### [SLOP] `FileIndex::object_path_of_kind_near` has no caller but its own test
 - where: crates/al-source/src/file_index.rs:810-817, test at file_index.rs:1715
@@ -133,7 +136,8 @@ Multi-object open item:
   the kind-plus-app variant is public surface added by the merge that nothing asked for.
 - fix: delete it, or use it at the call sites that pass a kind list and a referring file
   (resolution.rs:1316 `object_path_of_kind(enum_name, ...)` is one).
-- status: open
+- status: fixed f05ffe20 — deleted. Its one assertion now goes through `object_path_where`,
+  which answers the same question and is the surface the production callers use.
 
 ### [MERGE] `SourceRange.f` is a bare file name from one exit and an absolute path from the other
 - where: crates/al-analysis/src/queries/source.rs:398 (member exit, `file_path.file_name()`) and
@@ -150,7 +154,10 @@ Multi-object open item:
   (crates/al-explorer/src/cli/commands/response_contract.rs:154) only checks the type, so nothing
   catches the split.
 - fix: pick one spelling, project-relative for both, and say so in the doc.
-- status: open
+- status: fixed 30fbd3f0 — both exits call `project_relative_path`, which strips the app root
+  that holds the file and joins the rest with forward slashes. The field's doc says so, the two
+  plugin skills that read `range.f` say it is relative to the app root, and
+  `source_reports_one_project_relative_path_from_both_exits` asserts the two exits agree.
 
 ### [REGRESSION] The permission-set `skipped` list never reaches the user
 - where: crates/al-analysis/src/permissions.rs:34-37 (`PermissionCollection`),
@@ -167,7 +174,10 @@ Multi-object open item:
   look at it.
 - fix: print a line per skipped file to stderr from `cmd_permissions`, and add `skipped` to the
   `permissions` contract.
-- status: open
+- status: fixed 452ccf28 — `cmd_permissions` prints a line per skipped file and a closing count,
+  and the `permissions` contract requires `skipped` with `path` and `reason` on every entry.
+  `permissions_names_the_files_it_could_not_read` runs the CLI over a project holding one
+  unparsable file.
 
 ### [REGRESSION] The permission audit's `parseIssues` never reaches the user either
 - where: crates/al-analysis/src/queries/audit.rs:262 (`parse_issues`),
@@ -183,7 +193,10 @@ Multi-object open item:
   direction the audit's own module doc (audit.rs:16-19) promises not to fail in.
 - fix: print the parse issues and add `parseIssues` to the `permissions.audit` contract in
   commands/mod.rs:889.
-- status: open
+- status: fixed 452ccf28 — `cmd_permission_audit` prints each unreadable clause with its set,
+  file, clause number and reason, and the contract requires `parseIssues` with all five fields.
+  `permission_audit_names_the_clauses_it_could_not_read` runs the CLI over a permission set with
+  an unsupported object type.
 
 ### [REGRESSION] `dispatch_generate` refuses object id 50000, which is the first legal customization id
 - where: crates/al-lsp/src/server/daemon/build_dispatch/codegen.rs:306
@@ -199,7 +212,10 @@ Multi-object open item:
   RSP app whose assigned range sits below 50000 cannot scaffold at all.
 - fix: `object_id < 50_000`, reword the message as `1-49999`, change the test case to `49_999`,
   and prefer the project's own `idRanges` when `app.json` declares one.
-- status: open
+- status: fixed 460f0ff9 — `MICROSOFT_ID_RANGE_END` is 49_999, the message names that range,
+  and `dispatch_generate_accepts_the_first_customization_object_id` pins 50000. Preferring the
+  project's `idRanges` is still open: `dispatch_generate` is synchronous and the project sits
+  behind an async `RwLock`, so reading it there needs the dispatcher to become async first.
 
 ### [SLOP] `builtin_round`'s doc comment still describes the rounding the fix removed
 - where: crates/al-runtime/src/interpreter/dispatch.rs:1604-1609 against the code at 1649-1654
@@ -212,7 +228,9 @@ Multi-object open item:
   reader checking `Round(-1234.56789, 0.001, '<')` against the doc gets `-1234.568` where the code
   answers `-1234.567`.
 - fix: rewrite the doc to match the three strategies and cite the System.Round page once.
-- status: open
+- status: fixed 01734b8d — the doc says `'='` takes a midpoint away from zero and `'<'`/`'>'` move
+  the magnitude, with `Round(-1234.56789, 0.001, '<')` as the worked case, and cites the
+  System.Round page. `native-test-runtime.md` carried the same wrong claim and is corrected too.
 
 ### [BUG] The campaign findings record lists fixed items as open
 - where: Docs/campaign/findings/r1-analysis-insight.md:201-248 (seven findings repeated from
@@ -234,7 +252,9 @@ Multi-object open item:
   next re-reads code that needs nothing.
 - fix: delete the duplicated block in r1-analysis-insight.md and mark the r1-emit xliff item fixed
   in 95e80294, then reconcile STATE.md's open list against both.
-- status: open
+- status: fixed cea53580 — the duplicated block is gone from r1-analysis-insight.md, which now
+  carries no `status: open` at all, and the r1-emit xliff item reads `fixed 95e80294`. Each of the
+  seven was re-checked against the tree first.
 
 ### [SIMPLIFY] `extract_table_relation_table` has no production caller
 - where: crates/al-insight/src/analysis.rs:235-237, tests at analysis.rs:675-730
@@ -266,7 +286,9 @@ Multi-object open item:
   No campaign fix assumed otherwise: the four passes 74acc262 claims to have converted really do
   iterate (`audit.rs:83/312/367`, `test_coverage.rs:140/367`, `profiler_hints.rs:398`).
 - fix: correct the list to the six, and lead with `native_check`.
-- status: open
+- status: fixed ae5f69c3 — r1c-analysis-insight.md names the six, records why the other three do
+  not have it, and leads the scenario with `native_check`. STATE.md's line says the same. All six
+  are fixed on `campaign/fix-queued-2`.
 
 ### [SLOP] `PermissionAuditReport`'s doc comment lost its subject in a merge
 - where: crates/al-analysis/src/queries/audit.rs:247-249

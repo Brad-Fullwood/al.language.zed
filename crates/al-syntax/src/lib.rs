@@ -25,16 +25,17 @@ pub use formatting::{
 pub use lint::{lint, lint_rules, LintDiagnostic, LintRuleInfo, LintSeverity};
 pub use navigation::{
     collect_call_site_names, collect_call_sites, collect_member_access_names,
-    collect_primary_expression_names, count_call_references, count_identifier_occurrences,
-    find_event_subscriber_attributes, find_event_subscriber_references, find_node_at_position,
-    find_object_declaration, find_object_declarations, find_procedure_at, find_variable_references,
-    procedure_keyword_row, EventSubscriberAttribute, ObjectInfo, ParameterInfo, ProcedureInfo,
-    SubscriberArgument,
+    collect_primary_expression_names, collect_primary_expression_names_under,
+    count_call_references, count_identifier_occurrences, find_event_subscriber_attributes,
+    find_event_subscriber_references, find_node_at_position, find_object_declaration,
+    find_object_declarations, find_procedure_at, find_variable_references,
+    find_variable_references_under, procedure_keyword_row, EventSubscriberAttribute, ObjectInfo,
+    ParameterInfo, ProcedureInfo, SubscriberArgument,
 };
 pub use parser::{AlParser, ParseResult, SyntaxError};
 pub use sort::sort_members;
 pub use source_lines::{get_source_line, SourceLines};
-pub use symbols::extract_document_symbols;
+pub use symbols::{extract_document_symbols, extract_document_symbols_under};
 pub use tokens::{extract_semantic_tokens, SemanticToken};
 pub use traversal::{walk_tree, walk_tree_until};
 pub use type_resolver::{object_kind_to_al_type, TypeResolver, VariableDecl, VariableScope};

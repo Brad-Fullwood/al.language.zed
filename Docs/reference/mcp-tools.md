@@ -15,7 +15,7 @@ MCP without a way to invoke it.
 | `al_build` | `compile` | _(none)_ | verified-native (or configured `alc`) success, structured diagnostics, `.app` path |
 | `al_downloadsymbols` | `downloadSymbols` | _(none)_ | downloaded package list |
 | `al_symbolsearch` | `search` | `query: string`, `limit: number = 50` | matching symbols |
-| `al_getdiagnostics` | `lint` | `file: string` (required) | diagnostics for the file |
+| `al_getdiagnostics` | `lint` | `file: string` or `uri: string`, plus `text: string` for a file outside the project | diagnostics for the file |
 | `al_runtests` | `tests.run_auto` | _(none)_ | test results plus per-method classified/actual backend, local/live status, and reasons; unsupported/platform behavior needs live BC |
 | `al_deadcode` | `deadCode` | _(none)_ | unused procedures/fields/orphaned subscribers |
 | `al_sqlscan` | `sqlPatterns` | _(none)_ | SQL anti-pattern findings |

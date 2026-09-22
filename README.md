@@ -197,13 +197,12 @@ directory holds an AL `app.json`, and nothing at all anywhere else.
 
 ### Notes
 
-The skills are written for what the tools return today, which includes some
-awkward shapes: `impact Item` returns 1,594 rows with no limit flag, `by-id
-codeunit 80` is 552 KB, and `subscribers` under-reports where `trace` is
-correct. Every skill names the compact call, pipes the large ones through `jq`,
-and lists the calls to avoid. `plugin/ROADMAP.md` records each of those
-workarounds against the change that removes it, and `plugin/TESTING.md` records
-the agent runs behind the current wording.
+The skills are written for what the tools return today. Each one names the
+compact call: `--limit`, `--offset` and `--fields` on every list, `--scope` on
+the package-wide reports, `source --list-procedures` for signatures without
+bodies, and `--compact` for one-line JSON. `plugin/ROADMAP.md` records the
+workarounds the skills used to carry and the change that removed each one, and
+`plugin/TESTING.md` records the agent runs behind the current wording.
 
 Validate a change with `make plugin-validate`.
 

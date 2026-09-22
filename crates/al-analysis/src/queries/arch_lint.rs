@@ -259,31 +259,28 @@ pub fn arch_lint(
     let sources = crate::workspace_sources::snapshot(workspace)?;
     let mut violations = Vec::new();
 
+    let builtin = ArchConfig::builtin_rules();
     for source in sources {
         let file_path = source.path.to_string_lossy().to_string();
-        let obj_kind_lower = source.object.info.kind.to_lowercase();
-        for rule in &config.rules {
-            apply_rule(
-                &file_path,
-                &source.text,
-                &source.tree,
-                &source.object.info,
-                &obj_kind_lower,
-                rule,
-                &mut violations,
-            );
-        }
-
-        for rule in &ArchConfig::builtin_rules() {
-            apply_rule(
-                &file_path,
-                &source.text,
-                &source.tree,
-                &source.object.info,
-                &obj_kind_lower,
-                rule,
-                &mut violations,
-            );
+        // Per object declaration, not per file: a file may hold several
+        // objects, and reading the kind, name and ID from the first one put
+        // every violation under that object and skipped the rules that only
+        // apply to the later objects' kinds.
+        for (object, node) in source.object_nodes() {
+            let obj_kind_lower = object.info.kind.to_lowercase();
+            for rule in config.rules.iter().chain(builtin.iter()) {
+                apply_rule(
+                    &file_path,
+                    &source.text,
+                    object.text(&source.text),
+                    object.first_line(),
+                    node,
+                    &object.info,
+                    &obj_kind_lower,
+                    rule,
+                    &mut violations,
+                );
+            }
         }
     }
 
@@ -310,10 +307,17 @@ fn legacy_naming_regex(pattern: &str) -> String {
     }
 }
 
+/// `object_text` is this object's own source and `first_line` the zero-based
+/// line it starts on in the file, so a line counted within `object_text` maps
+/// back. Node-based checks still read `file_text`, because the node's byte
+/// offsets are offsets into the whole file.
+#[allow(clippy::too_many_arguments)]
 fn apply_rule(
     file_path: &str,
-    text: &str,
-    tree: &tree_sitter::Tree,
+    file_text: &str,
+    object_text: &str,
+    first_line: u32,
+    object: tree_sitter::Node<'_>,
     obj_info: &al_syntax::ObjectInfo,
     obj_kind_lower: &str,
     rule: &ArchRule,
@@ -342,7 +346,7 @@ fn apply_rule(
                         ),
                         object: obj_info.name.clone(),
                         file: file_path.to_string(),
-                        line: 1,
+                        line: first_line + 1,
                     });
                 }
             }
@@ -358,7 +362,7 @@ fn apply_rule(
                     None => None,
                 };
                 let forbidden_lower = (!rule.regex).then(|| forbidden.to_lowercase());
-                let line_no = text.lines().enumerate().find_map(|(idx, line)| {
+                let line_no = object_text.lines().enumerate().find_map(|(idx, line)| {
                     let matches = regex.as_ref().map_or_else(
                         || {
                             line.to_lowercase()
@@ -366,7 +370,7 @@ fn apply_rule(
                         },
                         |regex| regex.is_match(line),
                     );
-                    matches.then_some((idx + 1) as u32)
+                    matches.then_some(first_line + idx as u32 + 1)
                 });
                 if let Some(line) = line_no {
                     violations.push(ArchViolation {
@@ -401,7 +405,7 @@ fn apply_rule(
                             ),
                             object: obj_info.name.clone(),
                             file: file_path.to_string(),
-                            line: 1,
+                            line: first_line + 1,
                         });
                     }
                 }
@@ -411,7 +415,7 @@ fn apply_rule(
             let Some(Ok(max)) = rule.values.first().map(|value| value.parse::<u32>()) else {
                 return;
             };
-            let metrics = al_syntax::complexity::compute_complexity(tree, text);
+            let metrics = al_syntax::complexity::compute_complexity_under(object, file_text);
             for m in &metrics {
                 if m.cyclomatic > max {
                     violations.push(ArchViolation {
@@ -455,6 +459,56 @@ mod tests {
             .expect_err("a rule with no threshold must not deserialize");
         assert!(error.to_string().contains("threshold"), "got: {}", error);
         assert!(ArchConfig::from_json(json).is_err());
+    }
+
+    /// A file may declare several objects. A rule scoped to a kind has to see
+    /// the kind of each object, and a violation has to name the object it is
+    /// in, at the line it is on. Reading the first declaration for the whole
+    /// file did neither.
+    #[test]
+    fn a_violation_in_the_second_object_of_a_file_names_that_object() {
+        let ws = workspace_with(vec![(
+            "/src/Pair.al",
+            r#"codeunit 50100 "Ship Helper"
+{
+    procedure DoWork()
+    begin
+    end;
+}
+
+page 50101 "Ship Card"
+{
+    PageType = Card;
+
+    trigger OnOpenPage()
+    begin
+        Sleep(1000);
+    end;
+}"#,
+        )]);
+        let config = ArchConfig {
+            rules: vec![ArchRule {
+                id: "no-sleep".to_string(),
+                description: "Pages must not sleep".to_string(),
+                kind: ArchRuleKind::ForbiddenPattern,
+                // Scoped to pages, so the codeunit above must not be linted.
+                pattern: "page".to_string(),
+                values: vec!["Sleep(".to_string()],
+                regex: false,
+            }],
+        };
+
+        let violations: Vec<_> = arch_lint(&ws, &config)
+            .expect("lint must not fail")
+            .into_iter()
+            .filter(|violation| violation.rule_id == "no-sleep")
+            .collect();
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert_eq!(violations[0].object, "Ship Card");
+        assert_eq!(
+            violations[0].line, 14,
+            "the line must be the one in the file: {violations:?}"
+        );
     }
 
     /// The fields are public, so a rule can still be built in code without

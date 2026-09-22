@@ -1622,6 +1622,35 @@ impl Drop for SuppliedDocument<'_> {
     }
 }
 
+/// Whether a method names its subject document through
+/// `read_document_from_params`, and so accepts `uri` or `file`, plus `text`
+/// for a path the daemon may not open itself.
+///
+/// The MCP bridge derives the document arguments of a named tool's schema from
+/// this, the way it derives `limit`/`offset`/`fields` from
+/// `projection::list_target` and `scope` from `scope::accepts_scope`. A schema
+/// written out by hand drifted once already: `al_getdiagnostics` rejected
+/// `text` that `lint` accepts.
+pub(crate) fn reads_document(method: &str) -> bool {
+    matches!(
+        method,
+        "hover"
+            | "definition"
+            | "references"
+            | "implementations"
+            | "completions"
+            | "signatureHelp"
+            | "documentSymbols"
+            | "foldingRanges"
+            | "semanticTokens"
+            | "inlayHints"
+            | "codeActions"
+            | "lint"
+            | "format"
+            | "metrics"
+    )
+}
+
 /// The document a read-only single-file request works on, and the guard that
 /// removes it again when the caller supplied its text.
 ///

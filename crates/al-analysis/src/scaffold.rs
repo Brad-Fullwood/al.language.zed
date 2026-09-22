@@ -261,7 +261,12 @@ fn derived_object_suffixes(template: &ProjectTemplate) -> &'static [&'static str
     match template {
         ProjectTemplate::Library => &[" Library"],
         ProjectTemplate::TestApp => &[" Test"],
-        ProjectTemplate::Copilot => &[" Copilot Participant", " Azure OpenAI Helper"],
+        ProjectTemplate::Copilot => &[
+            " Copilot Participant",
+            " Azure OpenAI Helper",
+            " Copilot Capability",
+            " Capability",
+        ],
         ProjectTemplate::Agent => &[" Agent", " Agent Job Handler"],
         ProjectTemplate::Api => &[" API"],
         // These templates name their objects without the project name.
@@ -379,6 +384,10 @@ fn generate_template_files(config: &ScaffoldConfig) -> Result<Vec<(String, Vec<u
             vec![file("src/Test.Codeunit.al", generate_test_codeunit(config))]
         }
         ProjectTemplate::Copilot => vec![
+            file(
+                "src/CopilotCapability.EnumExt.al",
+                generate_copilot_capability_enum(config),
+            ),
             file(
                 "src/CopilotParticipant.Codeunit.al",
                 generate_copilot_codeunit(config),
@@ -919,18 +928,50 @@ fn generate_test_codeunit(config: &ScaffoldConfig) -> String {
     )
 }
 
+/// The capability the template's own codeunit runs under.
+///
+/// A capability is a value an extension adds to the `Copilot Capability` enum
+/// and registers at install time, not something Microsoft's chat hands out:
+/// chat with Copilot is not extensible.
+/// <https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/ai-build-capability-in-al>
+fn generate_copilot_capability_enum(config: &ScaffoldConfig) -> String {
+    let name = crate::permissions::al_escape_name(&config.name);
+    let caption = al_escape_literal(&config.name);
+    format!(
+        r#"enumextension 50100 "{name} Copilot Capability" extends "Copilot Capability"
+{{
+    // The value must be unique across every installed extension. Register it
+    // from an install codeunit with Codeunit "Copilot Capability".
+    value(50100; "{name} Capability")
+    {{
+        Caption = '{caption}';
+    }}
+}}
+"#
+    )
+}
+
 fn generate_copilot_codeunit(config: &ScaffoldConfig) -> String {
     let name = crate::permissions::al_escape_name(&config.name);
     format!(
         r#"codeunit 50100 "{name} Copilot Participant"
 {{
-    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Copilot Chat", 'OnGenerateCompletion', '', false, false)]
-    local procedure OnGenerateCompletion(var Prompt: Text; var Completion: Text)
+    // Call this from your PromptDialog page. `GenerateTextCompletion` takes
+    // the prompt and an "AOAI Operation Response" that carries the outcome;
+    // the generated text is the return value.
+    // learn.microsoft.com/dynamics365/business-central/application/system-application/codeunit/system.ai.azure-openai
+    procedure Generate(Prompt: SecretText): Text
     var
         AzureOpenAI: Codeunit "Azure OpenAI";
+        AOAIOperationResponse: Codeunit "AOAI Operation Response";
+        Completion: Text;
     begin
-        AzureOpenAI.SetAuthorization(Enum::"AOAI Model Type"::"Chat Completions", GetEndpoint(), GetDeployment(), GetApiKey());
-        AzureOpenAI.GenerateTextCompletion(Prompt, Completion);
+        AzureOpenAI.SetAuthorization(Enum::"AOAI Model Type"::"Text Completions", GetEndpoint(), GetDeployment(), GetApiKey());
+        AzureOpenAI.SetCopilotCapability(Enum::"Copilot Capability"::"{name} Capability");
+        Completion := AzureOpenAI.GenerateTextCompletion(Prompt, AOAIOperationResponse);
+        if not AOAIOperationResponse.IsSuccess() then
+            Error(AOAIOperationResponse.GetError());
+        exit(Completion);
     end;
 
     local procedure GetEndpoint(): Text
@@ -1440,8 +1481,46 @@ mod tests {
             .any(|f| f.contains("AzureOpenAI")));
         let participant =
             std::fs::read_to_string(dir.path().join("src/CopilotParticipant.Codeunit.al")).unwrap();
-        assert!(participant.contains("EventSubscriber"));
-        assert!(participant.contains("OnGenerateCompletion"));
+        // The template used to subscribe to `Codeunit::"Copilot Chat"` with an
+        // `OnGenerateCompletion` event and call a two-argument
+        // `GenerateTextCompletion(Prompt, Completion)`. Neither exists: chat
+        // with Copilot is not extensible, and every `GenerateTextCompletion`
+        // overload takes an "AOAI Operation Response" and returns the text.
+        assert!(
+            !participant.contains("Copilot Chat") && !participant.contains("EventSubscriber"),
+            "the participant must not subscribe to Microsoft's chat:\n{participant}"
+        );
+        assert!(
+            participant.contains(r#"AOAIOperationResponse: Codeunit "AOAI Operation Response""#),
+            "the operation response carries the outcome:\n{participant}"
+        );
+        assert!(
+            participant.contains(
+                "Completion := AzureOpenAI.GenerateTextCompletion(Prompt, AOAIOperationResponse);"
+            ),
+            "the generated text is the return value:\n{participant}"
+        );
+        assert!(
+            participant.contains("AOAIOperationResponse.IsSuccess()"),
+            "a failed operation must be checked:\n{participant}"
+        );
+
+        // The capability the codeunit runs under is this extension's own value
+        // of the `Copilot Capability` enum.
+        let capability =
+            std::fs::read_to_string(dir.path().join("src/CopilotCapability.EnumExt.al")).unwrap();
+        assert!(
+            capability.contains(r#"extends "Copilot Capability""#)
+                && capability.contains(r#"value(50100; "MyCopilot Capability")"#),
+            "{capability}"
+        );
+        assert!(
+            participant
+                .contains(r#"AzureOpenAI.SetCopilotCapability(Enum::"Copilot Capability"::"MyCopilot Capability");"#),
+            "the codeunit must run under the capability it declares:\n{participant}"
+        );
+        assert_al_parses("scaffolded copilot capability", &capability);
+        assert_al_parses("scaffolded copilot participant", &participant);
     }
 
     #[test]

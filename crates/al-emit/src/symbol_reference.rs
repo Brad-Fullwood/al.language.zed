@@ -423,6 +423,14 @@ fn object_json(
         .map(|v| (v.name.to_lowercase(), v.type_name.clone()))
         .collect();
 
+    // alc records an object's globals under `Variables` whatever the object
+    // kind, ahead of the kind's own sections: a report writes
+    // `Variables, RequestPage, …` and a report extension
+    // `Target, Variables, …`. The key is absent when there are none.
+    if !e.variables.is_empty() {
+        m.insert("Variables".into(), variables_json(&e.variables, resolver));
+    }
+
     if matches!(e.kind, ObjectKind::Page | ObjectKind::PageExtension) {
         let source_table = e
             .properties
@@ -502,9 +510,6 @@ fn object_json(
     }
 
     if e.kind == ObjectKind::Report {
-        if !e.variables.is_empty() {
-            m.insert("Variables".into(), variables_json(&e.variables, resolver));
-        }
         // alc always emits a report's request page (an empty one when the report
         // declares no `requestpage`); `Controls` appears only when non-empty.
         let mut request_page = Map::new();
@@ -536,9 +541,6 @@ fn object_json(
     }
 
     if e.kind == ObjectKind::ReportExtension {
-        if !e.variables.is_empty() {
-            m.insert("Variables".into(), variables_json(&e.variables, resolver));
-        }
         // alc always writes a RequestPageExtension marker for a report
         // extension. Layout changes add its controls and source provenance.
         if obj.control_changes.is_empty() {
@@ -1379,7 +1381,7 @@ fn report_layouts_json(layouts: &[ReportLayout]) -> Value {
     )
 }
 
-/// Report / report-extension global variables, in alc's `Variables` shape.
+/// An object's global variables, in alc's `Variables` shape.
 fn variables_json(vars: &[VariableSymbol], resolver: &Resolver) -> Value {
     Value::Array(
         vars.iter()

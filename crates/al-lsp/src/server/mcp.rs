@@ -66,12 +66,44 @@ fn tool_schema(tool: &ToolDef) -> serde_json::Value {
     if tool.name == "al_call" {
         return schema;
     }
+    let reads_document = super::daemon::reads_document(tool.method);
+    if reads_document {
+        // Either spelling of the path names the document on its own, so a
+        // schema that required one of them rejected a call carrying the other.
+        if let Some(required) = schema
+            .get_mut("required")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            required.retain(|field| !matches!(field.as_str(), Some("uri" | "file")));
+        }
+    }
     let Some(properties) = schema
         .get_mut("properties")
         .and_then(serde_json::Value::as_object_mut)
     else {
         return schema;
     };
+    if reads_document {
+        properties.entry("uri").or_insert_with(|| {
+            serde_json::json!({
+                "type": "string",
+                "description": "File URI of the document to work on. Use this or 'file'.",
+            })
+        });
+        properties.entry("file").or_insert_with(|| {
+            serde_json::json!({
+                "type": "string",
+                "description": "Path of the document to work on. Use this or 'uri'.",
+            })
+        });
+        properties.entry("text").or_insert_with(|| {
+            serde_json::json!({
+                "type": "string",
+                "description": "Contents of the document, for a path outside the project that \
+                                the daemon may not open. Needs the 'uri' or 'file' it stands for.",
+            })
+        });
+    }
     if super::daemon::list_target(tool.method).is_some() {
         properties.insert(
             "limit".into(),
@@ -781,7 +813,8 @@ fn tools() -> &'static [ToolDef] {
         ToolDef {
             name: "al_getdiagnostics",
             method: "lint",
-            description: "Run diagnostics on an AL file. Args: file (path).",
+            description: "Run diagnostics on an AL file. Args: file (path) or uri, plus \
+                          text for a file outside the project the daemon may not open.",
             schema: || obj_schema(serde_json::json!({"file": {"type": "string"}}), &["file"]),
         },
         ToolDef {
@@ -2285,6 +2318,53 @@ mod tests {
                     t.name
                 );
             }
+        }
+    }
+
+    /// A named tool must accept exactly what the method behind it accepts.
+    /// `al_getdiagnostics` rejected `text` at its schema while `al_call` with
+    /// method `lint` took it, so an agent holding an unsaved buffer could lint
+    /// it only through the generic entry point. The catalog drives the check,
+    /// so a tool added over a document-reading method is covered on arrival.
+    #[test]
+    fn every_document_tool_accepts_the_document_arguments_its_method_takes() {
+        for tool in tools() {
+            let schema = tool_schema(tool);
+            let properties = schema["properties"]
+                .as_object()
+                .unwrap_or_else(|| panic!("{}: schema must declare `properties`", tool.name));
+            if !crate::server::daemon::reads_document(tool.method) {
+                assert!(
+                    !properties.contains_key("text"),
+                    "{}: `text` is only for a method that reads a document through the \
+                     shared document parameters",
+                    tool.name
+                );
+                continue;
+            }
+            for argument in ["uri", "file", "text"] {
+                assert!(
+                    properties.contains_key(argument),
+                    "{}: `{argument}` reaches method `{}`, so the schema must advertise it",
+                    tool.name,
+                    tool.method
+                );
+            }
+            // `text` stands for a file the daemon may not open, and it needs
+            // the path it stands for, so the pair has to pass validation.
+            validate_tool_arguments(
+                tool,
+                &serde_json::json!({"file": "/outside/Unsaved.al", "text": "codeunit 1 X {}"}),
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{}: supplying unsaved text was rejected: {error}",
+                    tool.name
+                )
+            });
+            // Either spelling of the path identifies the document on its own.
+            validate_tool_arguments(tool, &serde_json::json!({"uri": "file:///tmp/X.al"}))
+                .unwrap_or_else(|error| panic!("{}: `uri` was rejected: {error}", tool.name));
         }
     }
 

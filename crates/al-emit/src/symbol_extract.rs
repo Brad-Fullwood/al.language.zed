@@ -350,6 +350,12 @@ fn extract_object(node: Node, src: &[u8]) -> Option<ExtractedObject> {
                 entry.properties = extract_object_properties(body, src);
             }
         }
+        // alc records an object's `var` section under `Variables` whatever the
+        // object kind. Report and ReportExtension set it above and would
+        // otherwise be overwritten with the same value.
+        if entry.variables.is_empty() {
+            entry.variables = extract_global_variables(body, src);
+        }
     }
     Some(ExtractedObject {
         entry,

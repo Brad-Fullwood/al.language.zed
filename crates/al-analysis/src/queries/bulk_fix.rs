@@ -627,11 +627,18 @@ fn normalize_tooltip_text(value: &str) -> String {
 /// `Specifies Specifies the number of the customer.` across every matching
 /// page field in the project. A value that merely starts with the same letters
 /// ("Specification number") still gets the prefix.
+///
+/// The prefix is counted in characters. A tooltip read from a package is in
+/// the package's language, and slicing the first nine bytes of
+/// `Spécifié le numéro` lands inside an `é`.
 fn with_specifies_prefix(value: &str) -> String {
     const PREFIX: &str = "Specifies";
-    let already_prefixed = value.len() > PREFIX.len()
-        && value[..PREFIX.len()].eq_ignore_ascii_case(PREFIX)
-        && value[PREFIX.len()..].starts_with(char::is_whitespace);
+    let already_prefixed = value
+        .char_indices()
+        .nth(PREFIX.chars().count())
+        .is_some_and(|(byte, following)| {
+            following.is_whitespace() && value[..byte].eq_ignore_ascii_case(PREFIX)
+        });
     if already_prefixed {
         value.to_string()
     } else {
@@ -1046,6 +1053,36 @@ mod tests {
             );
             assert!(!parse(&result).root_node().has_error());
         }
+    }
+
+    /// A tooltip read from a symbol package is in the package's language. The
+    /// prefix check sliced the first nine *bytes*, and byte 9 of
+    /// `Spécifié le numéro` is the second byte of an `é`, so the whole
+    /// add-tooltips run panicked on a French base application.
+    #[test]
+    fn inject_tooltips_handles_a_non_ascii_tooltip() {
+        let source = r#"page 50100 "Test"
+{
+    layout
+    {
+        area(Content)
+        {
+            field(no; Rec."No.")
+            {
+                ApplicationArea = All;
+            }
+        }
+    }
+}
+"#;
+        let tooltips = tooltip_map("No.", "Spécifié le numéro");
+        let (result, changes) = inject_tooltips(source, &parse(source), &tooltips).unwrap();
+        assert_eq!(changes, 1);
+        assert!(
+            result.contains("ToolTip = 'Specifies Spécifié le numéro';"),
+            "{result}"
+        );
+        assert!(!parse(&result).root_node().has_error());
     }
 
     /// "Specification" starts with the same letters but is not the prefix.

@@ -81,8 +81,26 @@ covers source and substituted destination, symlinks rejected), no reachable pani
 - fix: `generate_test_codeunit` calls `default_test_stub()`. Move `assert_al_parses` to a shared `#[cfg(test)]` module.
 - status: fixed adb67d45
 
-### [UNVERIFIED] Items the reviewer could not confirm
-- The copilot template's `Codeunit::"Copilot Chat"` subscription and the two-argument `GenerateTextCompletion(Prompt, Completion)` at scaffold.rs:838-844 look wrong against the documented AOAI Operation Response pattern. Check against Microsoft Learn before changing.
-- An empty `repeater(Group) { }` is reachable when every non-system field is a FlowField (generators.rs:188-190). `UsageCategory = Lists` is emitted for Card and Document pages (generators.rs:82).
+### [UNVERIFIED] Items the reviewer could not confirm — all three checked, all three wrong
+- The copilot template's `Codeunit::"Copilot Chat"` subscription and the two-argument
+  `GenerateTextCompletion(Prompt, Completion)`: both are fabricated. "Build the Copilot capability
+  in AL" says chat with Copilot is not extensible and the AI module cannot influence it, so there
+  is no `OnGenerateCompletion` to subscribe to; a capability is a value an extension adds to the
+  `Copilot Capability` enum and registers at install time. Every `GenerateTextCompletion` overload
+  on codeunit "Azure OpenAI" (7771) takes a `SecretText` prompt and a
+  `var AOAIOperationResponse: Codeunit "AOAI Operation Response"` and returns the completion as
+  `Text`. The template now emits a `Copilot Capability` enumextension and a codeunit that calls
+  the documented overload and checks `IsSuccess`.
+  - status: fixed 187b1741
+- An empty `repeater(Group) { }` when every non-system field is a FlowField: reachable, and
+  `collect_normal_fields` now falls back to the FlowFields when excluding them would leave the
+  page with no controls at all.
+  - status: fixed 187b1741
+- `UsageCategory = Lists` on Card and Document pages: wrong on both counts. "Page types and
+  layouts" says an entity-oriented page must not contain a repeater, so `Card` and `Document`
+  now open a `group(General)`. The `UsageCategory` property page has no card value and a card is
+  opened from its list through `CardPageId`, so the property is left off a `Card` and set to
+  `Documents` on a `Document`.
+  - status: fixed 187b1741
 
 ## Review complete

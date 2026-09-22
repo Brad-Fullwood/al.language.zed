@@ -51,6 +51,25 @@ pub fn cmd_permissions(format: &str, name: &str, id: i64, role_id: &str, json: b
                     .unwrap_or(0);
                 print!("{content}");
                 eprintln!("\n{count} objects included");
+                // A file the collector could not read contributes no
+                // permissions. Saying nothing hands back a set that silently
+                // omits that object.
+                let skipped = result
+                    .get("skipped")
+                    .and_then(|value| value.as_array())
+                    .map(|entries| &entries[..])
+                    .unwrap_or_default();
+                for entry in skipped {
+                    let path = entry.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+                    let reason = entry.get("reason").and_then(|v| v.as_str()).unwrap_or("?");
+                    eprintln!("skipped {path}: {reason}");
+                }
+                if !skipped.is_empty() {
+                    eprintln!(
+                        "{} file(s) contributed no permissions; the set does not cover them",
+                        skipped.len()
+                    );
+                }
             }
             ExitCode::SUCCESS
         }

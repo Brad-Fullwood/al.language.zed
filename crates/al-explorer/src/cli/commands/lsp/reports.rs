@@ -197,6 +197,29 @@ pub fn cmd_permission_audit(json: bool) -> ExitCode {
                 }
                 eprintln!("\n{} over-granted right(s)", over_granted.len());
             }
+
+            // A clause the audit could not read took part in no check, so the
+            // sets above are answers about less code than the user has.
+            let parse_issues = result
+                .get("parseIssues")
+                .and_then(|v| v.as_array())
+                .map(|entries| &entries[..])
+                .unwrap_or_default();
+            if !parse_issues.is_empty() {
+                println!("\nGrant clauses the audit could not read (excluded from every check):");
+                for issue in parse_issues {
+                    let set = issue
+                        .get("permissionSet")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let file = issue.get("file").and_then(|v| v.as_str()).unwrap_or("?");
+                    let clause = issue.get("clause").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let text = issue.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    let reason = issue.get("reason").and_then(|v| v.as_str()).unwrap_or("?");
+                    println!("  {set} ({file}), clause {clause}: {text} — {reason}");
+                }
+                eprintln!("\n{} unreadable grant clause(s)", parse_issues.len());
+            }
         },
         |result| {
             let missing = result

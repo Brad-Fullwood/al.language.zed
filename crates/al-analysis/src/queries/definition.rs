@@ -128,6 +128,25 @@ pub fn definition(
         }
     }
 
+    // A table's own procedures and triggers reach its fields through the
+    // implicit `Rec`, so a bare name matching a field of the enclosing object
+    // is that field. Without this the bare use resolved through the
+    // last-resort same-name scan below, which lands on whichever occurrence
+    // comes first in the file, so `rename` saw the bare use and the
+    // declaration as two different symbols and left the bare use behind.
+    // Locals and parameters shadow a field, which is why this sits below the
+    // type resolver.
+    if let Some(object) = enclosing_record_object(node) {
+        if let Some((_, def_range)) = resolution::find_field_under(&text, object, clean_name) {
+            if def_range.start != position {
+                return Ok(Some(vec![Location {
+                    uri: uri.clone(),
+                    range: def_range,
+                }]));
+            }
+        }
+    }
+
     if let Some(decl_range) = find_same_file_procedure_decl(&tree, source, clean_name) {
         let def_range: Range = al_syntax::ts_range_to_syntax(&decl_range, source).into();
         if def_range.start != position {
@@ -209,6 +228,36 @@ pub fn definition(
     }
 
     Ok(None)
+}
+
+/// The `table` or `tableextension` declaration whose member body holds `node`,
+/// when a bare name there means one of that object's own fields.
+///
+/// Returns `None` outside a member body (a field header names its own field,
+/// and a property value is not an expression), inside a `type_reference` (the
+/// subtype `Customer` in `Record Customer` is an object, not a field), and for
+/// any object kind without an implicit `Rec`.
+fn enclosing_record_object(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    let mut in_member = false;
+    let mut current = Some(node);
+    while let Some(n) = current {
+        match n.kind() {
+            "type_reference" => return None,
+            "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration" => {
+                in_member = true;
+            }
+            "object_declaration" => {
+                if !in_member {
+                    return None;
+                }
+                let kind = n.child_by_field_name("kind")?.kind();
+                return matches!(kind, "kw_table" | "kw_tableextension").then_some(n);
+            }
+            _ => {}
+        }
+        current = n.parent();
+    }
+    None
 }
 
 /// True when `position` falls inside `range` (inclusive of start, exclusive of
@@ -530,6 +579,68 @@ mod tests {
                 "column {col} must resolve to the TABLE, not the page or the cursor's own usage"
             );
         }
+    }
+
+    /// A bare field name inside the table's own procedure is an implicit `Rec`
+    /// access, so it resolves to the field declaration. A local of the same
+    /// name shadows the field, and the subtype of a `Record` type reference is
+    /// still an object.
+    #[test]
+    fn a_bare_field_name_in_a_tables_own_procedure_resolves_to_the_field() {
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///ws/Shipment.Table.al").unwrap();
+        open_doc(
+            &ws,
+            &uri,
+            r#"table 50100 "Shipment"
+{
+    procedure Stamp()
+    var
+        Amount: Decimal;
+    begin
+        "Posting Date" := Today();
+        Amount := 0;
+    end;
+
+    fields
+    {
+        field(1; "Posting Date"; Date) { }
+        field(2; Amount; Decimal) { }
+    }
+}
+"#,
+        );
+
+        // Line 6 is `        "Posting Date" := Today();`.
+        let locs = definition(
+            &ws,
+            &uri,
+            Position {
+                line: 6,
+                character: 14,
+            },
+        )
+        .expect("a bare field use must resolve");
+        assert_eq!(locs[0].uri, uri);
+        assert_eq!(
+            locs[0].range.start.line, 12,
+            "must land on the field declaration, not on another use: {locs:?}"
+        );
+
+        // Line 7 is `        Amount := 0;`, and `Amount` is a local here.
+        let locs = definition(
+            &ws,
+            &uri,
+            Position {
+                line: 7,
+                character: 10,
+            },
+        )
+        .expect("the local must resolve");
+        assert_eq!(
+            locs[0].range.start.line, 4,
+            "a local shadows the field of the same name: {locs:?}"
+        );
     }
 
     #[test]

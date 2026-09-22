@@ -301,9 +301,12 @@ pub(in crate::server::daemon) fn dispatch_setup(workspace: &Workspace, id: u64) 
     let report = crate::toolchain::doctor(workspace);
     serialized_response(id, "setup report", &report)
 }
-/// Last object ID in Microsoft's own range. Partner and per-tenant objects
-/// start above it, so an ID at or below this cannot belong to generated code.
-const MICROSOFT_ID_RANGE_END: i32 = 50_000;
+/// Last object ID of Microsoft's own range. Its object-range page assigns
+/// 0-49,999 to the base application and 50,000-99,999 to customizations, and
+/// PerTenantExtensionCop PTE0001 says the same, so 50000 is the first ID
+/// generated code may take.
+/// <https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/devenv-object-ranges>
+const MICROSOFT_ID_RANGE_END: i32 = 49_999;
 
 pub(in crate::server::daemon) fn dispatch_generate(
     workspace: &Workspace,
@@ -598,6 +601,30 @@ mod tests {
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
     }
 
+    /// 50000 is the first ID a customization may use: Microsoft's object-range
+    /// page assigns 0-49,999 to the base application and 50,000-99,999 to
+    /// customizations, and PerTenantExtensionCop PTE0001 says the same.
+    /// The guard refused it.
+    #[test]
+    fn dispatch_generate_accepts_the_first_customization_object_id() {
+        let ws = empty_ws();
+        let response = dispatch_generate(
+            &ws,
+            1,
+            &serde_json::json!({ "kind": "page", "id": 50_000, "table": "Customer" }),
+        );
+        // The empty workspace has no Customer table, so generation still
+        // fails; it must fail on that and not on the ID.
+        let message = response
+            .error
+            .map(|error| error.message)
+            .unwrap_or_default();
+        assert!(
+            !message.contains("reserved range"),
+            "50000 is the first customization ID: {message}"
+        );
+    }
+
     /// `al generate page --id -5` used to emit `page -5 "NewPage"`, and
     /// `--id 18` an object inside Microsoft's own range.
     #[test]
@@ -606,7 +633,7 @@ mod tests {
             (-5, "positive"),
             (0, "positive"),
             (18, "reserved range"),
-            (50_000, "reserved range"),
+            (49_999, "reserved range"),
         ] {
             let ws = empty_ws();
             let resp = dispatch_generate(

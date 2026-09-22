@@ -1654,8 +1654,17 @@ fn workspace_member(
 /// which only ever saw the first. We stop descending once matched (the paren
 /// child text begins with `(`, not `field(`, so it isn't double-counted).
 fn field_decl_nodes<'a>(tree: &'a tree_sitter::Tree, src: &[u8]) -> Vec<tree_sitter::Node<'a>> {
+    field_decl_nodes_under(tree.root_node(), src)
+}
+
+/// [`field_decl_nodes`] under one node, so a caller holding a single object
+/// declaration in a multi-object file does not see the other objects' fields.
+fn field_decl_nodes_under<'a>(
+    root: tree_sitter::Node<'a>,
+    src: &[u8],
+) -> Vec<tree_sitter::Node<'a>> {
     let mut out = Vec::new();
-    let mut stack = vec![tree.root_node()];
+    let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         let is_field = node
             .utf8_text(src)
@@ -1739,8 +1748,17 @@ fn find_workspace_field(
     tree: &tree_sitter::Tree,
     field_name: &str,
 ) -> Option<(ResolvedType, Range)> {
+    find_field_under(content, tree.root_node(), field_name)
+}
+
+/// [`find_workspace_field`] restricted to one object declaration.
+pub(crate) fn find_field_under(
+    content: &str,
+    root: tree_sitter::Node<'_>,
+    field_name: &str,
+) -> Option<(ResolvedType, Range)> {
     let src = content.as_bytes();
-    for node in field_decl_nodes(tree, src) {
+    for node in field_decl_nodes_under(root, src) {
         let Some((name_part, ty, start, end)) = parse_field_node(node, content) else {
             continue;
         };
