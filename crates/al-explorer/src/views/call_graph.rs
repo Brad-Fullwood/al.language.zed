@@ -307,3 +307,85 @@ pub(crate) fn render_call_graph(f: &mut Frame, area: Rect, view: &mut CallGraphV
         chunks[2],
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent};
+
+    fn press(app: &mut App, code: KeyCode) {
+        handle_call_graph_key(app, KeyEvent::from(code));
+    }
+
+    /// Typing into the query box and clearing it needs no daemon: `Esc` drops
+    /// the query, the rows and the status together, so a stale result cannot
+    /// outlive the query that produced it.
+    #[test]
+    fn escape_clears_the_query_and_its_rows() {
+        let mut app = App::new();
+        app.call_graph.input_focused = true;
+        for c in "Post".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        assert_eq!(app.call_graph.query, "Post");
+
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.call_graph.query, "Pos");
+
+        press(&mut app, KeyCode::Esc);
+        assert!(app.call_graph.query.is_empty());
+        assert!(app.call_graph.rows.is_empty());
+        assert_eq!(app.call_graph.status, "Cleared");
+    }
+
+    /// The query box is capped so a paste or a held key cannot grow it without
+    /// bound.
+    #[test]
+    fn the_query_stops_at_the_input_cap() {
+        let mut app = App::new();
+        app.call_graph.input_focused = true;
+        for _ in 0..(MAX_INPUT_LEN + 25) {
+            press(&mut app, KeyCode::Char('x'));
+        }
+        assert_eq!(app.call_graph.query.len(), MAX_INPUT_LEN);
+    }
+
+    /// With no rows, `Down` and `Tab` keep focus in the query box rather than
+    /// moving into an empty list.
+    #[test]
+    fn focus_stays_in_the_query_box_while_there_are_no_rows() {
+        let mut app = App::new();
+        app.call_graph.input_focused = true;
+        press(&mut app, KeyCode::Down);
+        assert!(app.call_graph.input_focused);
+        press(&mut app, KeyCode::Tab);
+        assert!(app.call_graph.input_focused);
+    }
+
+    /// In the list, `j` and `k` walk the rows and `Esc` hands focus back to the
+    /// query box.
+    #[test]
+    fn the_row_list_walks_and_returns_focus() {
+        let mut app = App::new();
+        app.call_graph.input_focused = false;
+        app.call_graph.rows = vec![
+            CallRow {
+                label: "Callers".to_string(),
+                kind: CallRowKind::Header,
+            },
+            CallRow {
+                label: "Obj.A".to_string(),
+                kind: CallRowKind::Entry,
+            },
+        ];
+        app.call_graph.list_state.select(Some(0));
+
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.call_graph.list_state.selected(), Some(1));
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.call_graph.list_state.selected(), Some(0));
+
+        press(&mut app, KeyCode::Esc);
+        assert!(app.call_graph.input_focused);
+    }
+}

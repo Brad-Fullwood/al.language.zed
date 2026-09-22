@@ -1,21 +1,19 @@
 {
   "version": 8,
   "created": "2026-09-21T00:40:45+00:00",
-  "updated": "2026-09-22T02:23:30+00:00",
+  "updated": "2026-09-22T06:03:46+00:00",
   "queue_order": [
     "review::.::holistic::abstraction_fitness::mockrecord_default_view_api",
     "review::.::holistic::abstraction_fitness::workspace_context_bag",
     "review::.::holistic::ai_generated_debt::test_fixture_builders_copied",
     "review::.::holistic::ai_generated_debt::test_only_public_overloads",
     "review::.::holistic::api_surface_coherence::string_errors_beside_typed_siblings",
-    "review::.::holistic::api_surface_coherence::sync_async_query_twins",
     "review::.::holistic::contract_coherence::two_error_conventions_in_one_module",
     "review::.::holistic::cross_module_architecture::al_analysis_bundles_unrelated_capabilities",
     "review::.::holistic::cross_module_architecture::generation_lock_lsp_only",
     "review::.::holistic::cross_module_architecture::workspace_hub_public_mutable_fields",
     "review::.::holistic::design_coherence::workspace_god_struct",
     "review::.::holistic::error_consistency::al_analysis_dual_error_convention",
-    "review::.::holistic::error_consistency::typed_error_flattened_in_entrypoints",
     "review::.::holistic::high_level_elegance::debug_session_parked_on_workspace_hub",
     "review::.::holistic::low_level_elegance::dap_response_boilerplate_inline",
     "review::.::holistic::low_level_elegance::tui_details_render_monolith",
@@ -4766,6 +4764,86 @@
         "status": "fixed",
         "attestation": "I have actually Deleted add_application_area, add_tooltips, add_data_classification and apply_plan_to_disk (with its atomic_replace helper) from bulk_fix.rs, leaving the plan_* functions. The daemon's fix.* methods were already the only real callers and they apply a plan through ensure_document and the generation bump. queries_adversarial.rs and the three bulk_fix tests now exercise plan_application_area. and I am not gaming the score."
       }
+    },
+    {
+      "timestamp": "2026-09-22T06:03:40+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::error_consistency::typed_error_flattened_in_entrypoints"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T06:03:41+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::error_consistency::typed_error_flattened_in_entrypoints"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "hover_full returns HoverError and completions_full returns CompletionError, each carrying the WorkspaceStateError its sync twin already returned plus an al_semantic::SemanticError variant for the bridge. load_profile_file, parse_profile and profile_hints_with_locations return ProfilerHintError, which gained ReadProfile { path, source }, ProfileNotUtf8, ProfileJson and ProfileWithoutNodes. The Display strings are unchanged and the .to_string() moved to the two al-lsp handlers that build the JSON-RPC message.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T06:03:42+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::error_consistency::typed_error_flattened_in_entrypoints"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "hover_full returns HoverError and completions_full returns CompletionError, each carrying the WorkspaceStateError its sync twin already returned plus an al_semantic::SemanticError variant for the bridge. load_profile_file, parse_profile and profile_hints_with_locations return ProfilerHintError, which gained ReadProfile { path, source }, ProfileNotUtf8, ProfileJson and ProfileWithoutNodes. The Display strings are unchanged and the .to_string() moved to the two al-lsp handlers that build the JSON-RPC message.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually hover_full returns HoverError and completions_full returns CompletionError, each carrying the WorkspaceStateError its sync twin already returned plus an al_semantic::SemanticError variant for the bridge. load_profile_file, parse_profile and profile_hints_with_locations return ProfilerHintError, which gained ReadProfile { path, source }, ProfileNotUtf8, ProfileJson and ProfileWithoutNodes. The Display strings are unchanged and the .to_string() moved to the two al-lsp handlers that build the JSON-RPC message. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T06:03:44+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::api_surface_coherence::sync_async_query_twins"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T06:03:46+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::api_surface_coherence::sync_async_query_twins"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Renamed the sync variants hover_native and completions_native and gave each a doc comment saying it skips the .NET CodeAnalysis bridge, so the difference is in the name rather than in a _full suffix. Both now share an error taxonomy with their async twin: the async one adds a Bridge variant to the state error the sync one returns. They stay public because al-lsp's benches and lsp_integration.rs drive them.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T06:03:46+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::api_surface_coherence::sync_async_query_twins"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Renamed the sync variants hover_native and completions_native and gave each a doc comment saying it skips the .NET CodeAnalysis bridge, so the difference is in the name rather than in a _full suffix. Both now share an error taxonomy with their async twin: the async one adds a Bridge variant to the state error the sync one returns. They stay public because al-lsp's benches and lsp_integration.rs drive them.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Renamed the sync variants hover_native and completions_native and gave each a doc comment saying it skips the .NET CodeAnalysis bridge, so the difference is in the name rather than in a _full suffix. Both now share an error taxonomy with their async twin: the async one adds a Bridge variant to the state error the sync one returns. They stay public because al-lsp's benches and lsp_integration.rs drive them. and I am not gaming the score."
+      }
     }
   ],
   "epic_triage_meta": {},
@@ -4810,7 +4888,9 @@
     "review::.::holistic::authorization_consistency::snapshot_profiling_basic_only_auth_model",
     "review::.::holistic::dependency_health::shared_deps_bypass_workspace_table",
     "review::.::holistic::dependency_health::getrandom_pinned_to_oldest_of_three_copies",
-    "review::.::holistic::convention_outlier::bulk_fix_dual_write_protocol"
+    "review::.::holistic::convention_outlier::bulk_fix_dual_write_protocol",
+    "review::.::holistic::error_consistency::typed_error_flattened_in_entrypoints",
+    "review::.::holistic::api_surface_coherence::sync_async_query_twins"
   ],
   "commit_tracking_branch": null,
   "scan_count_at_plan_start": 1

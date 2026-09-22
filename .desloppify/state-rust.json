@@ -12,8 +12,8 @@
     "auto_resolved": 0,
     "deferred": 0,
     "false_positive": 0,
-    "fixed": 60,
-    "open": 1160,
+    "fixed": 62,
+    "open": 1158,
     "triaged_out": 0,
     "wontfix": 45,
     "by_tier": {
@@ -30,8 +30,8 @@
         "auto_resolved": 0,
         "deferred": 0,
         "false_positive": 0,
-        "fixed": 13,
-        "open": 239,
+        "fixed": 15,
+        "open": 237,
         "triaged_out": 0,
         "wontfix": 17
       },
@@ -37086,11 +37086,11 @@
         "reasoning": "",
         "summary_hash": "7d9df474"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "hover_full returns HoverError and completions_full returns CompletionError, each carrying the WorkspaceStateError its sync twin already returned plus an al_semantic::SemanticError variant for the bridge. load_profile_file, parse_profile and profile_hints_with_locations return ProfilerHintError, which gained ReadProfile { path, source }, ProfileNotUtf8, ProfileJson and ProfileWithoutNodes. The Display strings are unchanged and the .to_string() moved to the two al-lsp handlers that build the JSON-RPC message.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T06:03:42+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -37098,7 +37098,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually hover_full returns HoverError and completions_full returns CompletionError, each carrying the WorkspaceStateError its sync twin already returned plus an al_semantic::SemanticError variant for the bridge. load_profile_file, parse_profile and profile_hints_with_locations return ProfilerHintError, which gained ReadProfile { path, source }, ProfileNotUtf8, ProfileJson and ProfileWithoutNodes. The Display strings are unchanged and the .to_string() moved to the two al-lsp handlers that build the JSON-RPC message. and I am not gaming the score.",
+        "attested_at": "2026-09-22T06:03:42+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::error_consistency::duplicate_dap_error_enum": {
       "id": "review::.::holistic::error_consistency::duplicate_dap_error_enum",
@@ -39937,11 +39943,11 @@
         "reasoning": "",
         "summary_hash": "804ded0c"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Renamed the sync variants hover_native and completions_native and gave each a doc comment saying it skips the .NET CodeAnalysis bridge, so the difference is in the name rather than in a _full suffix. Both now share an error taxonomy with their async twin: the async one adds a Bridge variant to the state error the sync one returns. They stay public because al-lsp's benches and lsp_integration.rs drive them.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T06:03:46+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -39949,7 +39955,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Renamed the sync variants hover_native and completions_native and gave each a doc comment saying it skips the .NET CodeAnalysis bridge, so the difference is in the name rather than in a _full suffix. Both now share an error taxonomy with their async twin: the async one adds a Bridge variant to the state error the sync one returns. They stay public because al-lsp's benches and lsp_integration.rs drive them. and I am not gaming the score.",
+        "attested_at": "2026-09-22T06:03:46+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::api_surface_coherence::find_call_references_returns_count": {
       "id": "review::.::holistic::api_surface_coherence::find_call_references_returns_count",
@@ -41796,7 +41808,7 @@
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
       "refresh_reason": "review_issue_fixed",
-      "stale_since": "2026-09-22T02:02:35+00:00"
+      "stale_since": "2026-09-22T06:03:46+00:00"
     },
     "authorization_consistency": {
       "score": 78.5,
@@ -41852,7 +41864,7 @@
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
       "refresh_reason": "review_issue_fixed",
-      "stale_since": "2026-09-22T02:08:35+00:00"
+      "stale_since": "2026-09-22T06:03:42+00:00"
     },
     "high_level_elegance": {
       "score": 84.5,
@@ -81421,13 +81433,13 @@
       "strict": 81.5,
       "verified_strict_score": 81.5,
       "checks": 10,
-      "failing": 2,
+      "failing": 1,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.815,
-          "failing": 2,
+          "failing": 1,
           "weighted_failures": 1.85,
           "assessment_score": 81.5,
           "placeholder": false,
@@ -81568,13 +81580,13 @@
       "strict": 81.5,
       "verified_strict_score": 81.5,
       "checks": 10,
-      "failing": 2,
+      "failing": 1,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.815,
-          "failing": 2,
+          "failing": 1,
           "weighted_failures": 1.85,
           "assessment_score": 81.5,
           "placeholder": false,
