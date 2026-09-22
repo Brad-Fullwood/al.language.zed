@@ -163,9 +163,18 @@ pub(crate) fn resolve_path_within_roots(
 /// same on every platform: a path parameter crosses the daemon boundary from
 /// any client, and a Linux daemon must not hand a Windows client a value it
 /// would then resolve differently.
+///
+/// Windows takes `/` as a separator everywhere, so `//attacker.example/share`
+/// names the same share as `\\attacker.example\share`. Both separators are
+/// folded together before the check, which leaves any path that begins with two
+/// separators refused. A path a caller could not spell as JSON text is refused
+/// too: every path parameter arrives as a JSON string, so an undecodable one
+/// came from somewhere else.
 fn is_unc(path: &Path) -> bool {
-    path.to_str()
-        .is_some_and(|text| text.starts_with(r"\\") || text.starts_with(r"//?/UNC"))
+    let Some(text) = path.to_str() else {
+        return true;
+    };
+    text.replace('\\', "/").starts_with("//")
 }
 
 /// Write `contents` to `path` without following a symlink at `path` itself.
@@ -510,6 +519,14 @@ mod tests {
             r"\\attacker.example\share\x",
             r"\\attacker.example\share",
             r"\\?\UNC\attacker.example\share\x",
+            // Windows resolves these to the same share: `/` is a separator
+            // there, and the guard has to run before `canonicalize` opens the
+            // SMB connection that leaks an NTLM hash.
+            "//attacker.example/share/x",
+            "//attacker.example/share",
+            "//?/UNC/attacker.example/share/x",
+            r"\\?/UNC\attacker.example\share",
+            r"/\attacker.example\share",
         ] {
             assert!(
                 resolve_path_within_roots(Path::new(requested), &root, &project(&root)).is_none(),
