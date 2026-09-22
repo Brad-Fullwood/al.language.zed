@@ -104,3 +104,14 @@ Append-only. Newest entry last.
 
 - Merged `campaign/test-depth`. Full gates: clippy clean, 90 suites, 4688 passed, 0 failed, 10 ignored.
 - Merged `campaign/ai-daemon-projection` locally, full gates running. Haiku context bytes on the seven plugin questions fell on six of seven (for example 9634 to 2889 for a field impact question).
+
+## 2026-09-21 23:10 BST: daemon projection merged, stale daemon found
+
+- Merged `campaign/ai-daemon-projection`. One smoke test failed in the gate because a daemon started before the merge was still serving the fixture project with old code. Killed stale daemons, the suite passes. Queued a real fix: build identity in the client handshake.
+- `campaign/fix-r1c-analysis` conflicts with the moved campaign branch in three files. Its agent is merging the campaign branch into its own and resolving there.
+- Note: timestamps in this log before this entry were estimates and run up to an hour ahead of the clock.
+
+## 2026-09-22 02:30 BST: fifth usage limit, CI green on all platforms
+
+- Limit hit about 23:10, reset 02:00. Five agents resumed.
+- Merged `campaign/fix-ci-platforms`. Its PR #31 passed all seven jobs. The merge broke one test in al-project that the test-depth branch had written against the old integer version key. Adapted.

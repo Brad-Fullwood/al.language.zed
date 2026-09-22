@@ -42,8 +42,15 @@ use std::path::{Path, PathBuf};
 /// Return the path to the bundled test AL project.
 ///
 /// Used in every e2e test file — centralised here to avoid copy-paste drift.
+///
+/// The two directories are joined separately because `join` does not rewrite
+/// separators: `join("data/test_al_project")` kept the forward slash on
+/// Windows, and a test comparing this path against one the daemon reported
+/// (all backslashes, because the daemon canonicalises its root) never matched.
 pub fn test_project_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/test_al_project")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("data")
+        .join("test_al_project")
 }
 
 use std::process::Stdio;

@@ -10,15 +10,17 @@ Round 1 reviews are complete: 224 verified findings in 11 files. Six of seven fi
 
 | Item | Kind | Output |
 |------|------|--------|
-| Fix R1c analysis: coverage, multi-object files, permission audit, signature help, code lens (29 findings) | worktree fix | branch `campaign/fix-r1c-analysis` |
-| AI tooling daemon work: wrong answers first, then limit, fields, scope, `source --list-procedures`, CLI `location`, index progress, plugin simplification | worktree build | branch `campaign/ai-daemon-projection` |
-| desloppify batch: split `formatting.rs`, `symbols.rs`, `index.rs`, `oauth.rs`, remove the duplicate data loader, merge the two line tables | worktree refactor | branch `campaign/slop-syntax-symbols`, `findings/slop-syntax-symbols.md` |
+| Fix R1c analysis (29 findings, 26 fixed): now merging the campaign branch into its own, resolving three conflicts, and closing the three items it had left for other owners | worktree fix | branch `campaign/fix-r1c-analysis` |
+| desloppify batch (done, 10 commits: four file splits, one data loader, one line table): waiting for the analysis third pass to merge, then merges the campaign branch into its own and re-applies campaign changes to the split files | worktree refactor | branch `campaign/slop-syntax-symbols`, `findings/slop-syntax-symbols.md` |
+| Daemon lifecycle: build identity in the handshake, idle exit, PATH fallback version check, `daemon-shutdown` waits for the socket, harness stops leaking daemons | worktree fix | branch `campaign/fix-daemon-lifecycle` |
+| Blog: articles 5 (`mcp-and-the-claude-code-plugin`) and 2 (`running-bc-tests-locally`), fix the `trace` paragraph in article 1 | blog repo branch `campaign/2026-09-rewrite` | `findings/blog-progress.md` |
 | Fix round 2 security findings (8: 1 critical, 3 high). Project trust: repository settings that name code, programs, feeds or credential targets apply only after `al-explorer trust`. Dangling symlink containment bypass. Scheme check on token targets | worktree fix | branch `campaign/fix-r2-security` |
-| CI fails on PR #30 on three platforms while local Linux is green: `test_completion_after_dot` on ubuntu, numeric version selection depends on directory order on macOS, out-of-project format refusal on Windows | worktree fix with its own draft PR for runner access | branch `campaign/fix-ci-platforms` |
 
 Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, CI runs on every push).
 
 Queued:
+
+- After the desloppify branch merges: run `desloppify --lang rust scan --path .` from the main checkout and record the scores (the agent did not rescan, a forced rescan would reset the plan in the shared state file).
 
 - 124 `trim_matches('"')` identifier cleanups in al-analysis (102) and al-insight (22), replace with `al_syntax::node_text_clean`. Start after both analysis fix branches merge.
 - New findings from the emit fix agent (in `findings/r1-emit-bc-explorer.md`): `SymbolReference.json` has no `Variables` array for global variables, `xlf generate` drops properties declared on a one-line member block, al-dap and al-publish post to different BC dev endpoints (needs a live server to settle), the duplicated response validation framework (about 300 lines to move).
@@ -82,6 +84,8 @@ round on the areas with the most findings.
 
 ## Done
 
+- Merged `campaign/fix-ci-platforms`: all seven CI jobs pass on PR #31 (closed after merge). Root causes: analyzer versions compared as strings per directory order (macOS), Record platform methods only offered when a toolchain was installed (ubuntu), verbatim path prefix in the containment message (Windows). CI now runs the whole suite before failing a job.
+- Merged `campaign/ai-daemon-projection`: `subscribers` and `impact --table` answer correctly, `limit`, `offset`, `fields`, `scope` on list methods, `source --list-procedures`, `al-explorer location`, `--compact`, single-flight background call-graph build with progress, `--timeout-ms`. Haiku context bytes fell on six of seven plugin questions. Full gates: 90 suites, 4726 passed, 0 failed after stale daemons were killed.
 - Merged `campaign/test-depth`: property tests found and fixed 4 bugs (formatter not idempotent with same-line braces, ropey counting U+2028 and four other characters as line breaks where LSP does not, `Code` keys iterating case-sensitively, ASCII-only folding in range filters). Coverage about 89 percent, table in `findings/test-depth.md`. Full gates after the merge: 90 suites, 4688 passed, 0 failed.
 - Merged `campaign/fix-r1b-analysis`: 34 of 35 fixed. Quoted identifiers rename end to end, rename rewrites `[EventSubscriber]` arguments, fields are read from the syntax tree, obsolescence reads `ObsoleteState` properties, breaking changes are classified by what a dependent app must change. Merge conflict in `resolve_object_path` resolved by adding `FileIndex::object_path_where` (type match first, then nearest app). Open: bare field references inside a table's own procedure are not renamed (`definition()` does not resolve implicit `Rec`), `EdgeKind::TriggerInvocation` variant removal needs `test_coverage.rs`.
 - Merged `campaign/fix-lsp-content-modified`: read requests recompute across generation swaps, read-only daemon methods take `text` for files outside the project, the `lsp_dispatch` queries gained the path containment they lacked, error code -32002 for refused paths.

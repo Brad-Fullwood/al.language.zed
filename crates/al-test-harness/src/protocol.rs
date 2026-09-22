@@ -40,7 +40,9 @@ pub fn semantic_token_data(result: &Value) -> Vec<[u32; 5]> {
         0,
         "semantic token data length must be divisible by five"
     );
-    data.chunks_exact(5)
+    data.as_chunks::<5>()
+        .0
+        .iter()
         .map(|chunk| {
             std::array::from_fn(|index| {
                 let value = chunk[index]

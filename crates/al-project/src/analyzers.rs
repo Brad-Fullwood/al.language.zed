@@ -228,25 +228,51 @@ fn find_best_below(
     Ok(candidates.pop())
 }
 
+/// Order two discovered analyzer paths by the version numbers in the first
+/// component where they differ.
+///
+/// Candidates all sit below one search root, so their shared prefix compares
+/// equal and the first difference is the package's own version directory.
+/// Taking the largest number found anywhere in the path instead made the
+/// answer depend on where the project happened to live: under a macOS
+/// temporary directory such as `/var/folders/36/...` both candidates keyed on
+/// `36`, the tie fell through to a string comparison, and `1.9.0` beat
+/// `1.10.0`.
 fn compare_versioned_paths(left: &PathBuf, right: &PathBuf) -> Ordering {
     version_key(left)
         .cmp(&version_key(right))
         .then_with(|| left.cmp(right))
 }
 
-fn version_key(path: &Path) -> Vec<u64> {
+/// A path component, keyed so that dotted numbers compare numerically.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ComponentKey {
+    /// Anything that is not a dotted number. Ordered below every version so a
+    /// numbered release outranks a directory named `current` or `beta`.
+    Name(String),
+    Version(Vec<u64>),
+}
+
+fn version_key(path: &Path) -> Vec<ComponentKey> {
     path.components()
-        .filter_map(|component| {
+        .map(|component| {
             let text = component.as_os_str().to_string_lossy();
-            let numbers: Vec<u64> = text
-                .split(['.', '-', '+'])
-                .map(str::parse)
-                .collect::<Result<_, _>>()
-                .ok()?;
-            (!numbers.is_empty()).then_some(numbers)
+            match parse_version(&text) {
+                Some(numbers) => ComponentKey::Version(numbers),
+                None => ComponentKey::Name(text.into_owned()),
+            }
         })
-        .max()
-        .unwrap_or_default()
+        .collect()
+}
+
+/// The numbers in a component like `1.10.0`, `2-1` or `3+4`, or `None` when
+/// any part of it is not a number.
+fn parse_version(text: &str) -> Option<Vec<u64>> {
+    text.split(['.', '-', '+'])
+        .map(str::parse)
+        .collect::<Result<Vec<u64>, _>>()
+        .ok()
+        .filter(|numbers| !numbers.is_empty())
 }
 
 fn matching_immediate_directories(
@@ -334,6 +360,62 @@ mod tests {
             .unwrap()
             .expect("analyzer");
         assert_eq!(found, expected.canonicalize().unwrap());
+    }
+
+    /// macOS hands tests a temporary directory under `/var/folders/36/...`.
+    /// A numeric directory above the project must not take part in the version
+    /// comparison; this reproduces that shape on any platform.
+    #[test]
+    fn a_numeric_directory_above_the_project_does_not_decide_the_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("36");
+        let package = project.join(".netpackages/businesscentral.lintercop");
+        let old = package.join("1.9.0/lib/net8.0");
+        let new = package.join("1.10.0/lib/net8.0");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(old.join("BusinessCentral.LinterCop.dll"), b"old").unwrap();
+        let expected = new.join("BusinessCentral.LinterCop.dll");
+        std::fs::write(&expected, b"new").unwrap();
+
+        let found = discover_custom_analyzer("BusinessCentral.LinterCop", &project, &[])
+            .unwrap()
+            .expect("analyzer");
+        assert_eq!(found, expected.canonicalize().unwrap());
+    }
+
+    /// `read_dir` returns entries in whatever order the filesystem holds them,
+    /// so the winner must be the same whichever order the candidates arrive in.
+    #[test]
+    fn the_highest_version_wins_in_either_enumeration_order() {
+        let root = Path::new("/packages/businesscentral.lintercop");
+        let older = root.join("1.9.0/lib/net8.0/BusinessCentral.LinterCop.dll");
+        let newer = root.join("1.10.0/lib/net8.0/BusinessCentral.LinterCop.dll");
+
+        for order in [
+            vec![older.clone(), newer.clone()],
+            vec![newer.clone(), older.clone()],
+        ] {
+            let mut candidates = order;
+            candidates.sort_by(compare_versioned_paths);
+            assert_eq!(candidates.pop().unwrap(), newer, "highest version must win");
+        }
+    }
+
+    #[test]
+    fn a_numbered_release_outranks_a_named_directory() {
+        let root = Path::new("/packages/analyzer");
+        let named = root.join("current/BusinessCentral.LinterCop.dll");
+        let numbered = root.join("2.0.0/BusinessCentral.LinterCop.dll");
+
+        for order in [
+            vec![named.clone(), numbered.clone()],
+            vec![numbered.clone(), named.clone()],
+        ] {
+            let mut candidates = order;
+            candidates.sort_by(compare_versioned_paths);
+            assert_eq!(candidates.pop().unwrap(), numbered);
+        }
     }
 
     #[test]
@@ -561,11 +643,20 @@ mod tests {
         assert!(
             version_key(Path::new("pkg/2.0.0/lib")) > version_key(Path::new("pkg/1.99.99/lib"))
         );
-        assert_eq!(version_key(Path::new("pkg/1.2.3/lib")), vec![1, 2, 3]);
-        assert_eq!(version_key(Path::new("pkg/1.2.3-4/lib")), vec![1, 2, 3, 4]);
+        let versions = |path: &str| -> Vec<Vec<u64>> {
+            version_key(Path::new(path))
+                .into_iter()
+                .filter_map(|key| match key {
+                    ComponentKey::Version(numbers) => Some(numbers),
+                    ComponentKey::Name(_) => None,
+                })
+                .collect()
+        };
+        assert_eq!(versions("pkg/1.2.3/lib"), vec![vec![1, 2, 3]]);
+        assert_eq!(versions("pkg/1.2.3-4/lib"), vec![vec![1, 2, 3, 4]]);
         // `net8.0` is not a version: `net8` is not a number.
-        assert_eq!(version_key(Path::new("pkg/lib/net8.0")), Vec::<u64>::new());
-        assert_eq!(version_key(Path::new("pkg/lib")), Vec::<u64>::new());
+        assert!(versions("pkg/lib/net8.0").is_empty());
+        assert!(versions("pkg/lib").is_empty());
         assert!(
             version_key(Path::new("pkg/1.0.0/lib/net8.0"))
                 > version_key(Path::new("pkg/lib/net8.0"))
