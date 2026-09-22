@@ -135,12 +135,13 @@ names the path and the project root. The same dispatchers answer MCP's `al_call`
 may be an agent and the path may be anything it asks for, so the boundary holds for every caller.
 
 A read-only single-file method (`parse`, `lint`, `metrics`, `hover`, `definition`, `references`,
-`implementations`, `completions`, `signatureHelp`, `documentSymbols`, `foldingRanges`,
+`implementations`, `completions`, `signatureHelp`, `rename`, `documentSymbols`, `foldingRanges`,
 `semanticTokens`, `inlayHints`, `codeActions`) also accepts `text` beside the path. The daemon then
 analyses that text and never opens the path, and the document it holds for the request is dropped
-when the request is answered. `text` is refused for a path inside the project, where the daemon's
-own copy is authoritative, and refused outright by any method that rewrites the file it names
-(`format`, `fix*`, `sortMembers`, `organizeFiles`, `rename`): supplied content is analysed, never
+when the request is answered. `rename` belongs here because it returns a `WorkspaceEdit` for the
+client to apply and writes nothing itself. `text` is refused for a path inside the project, where
+the daemon's own copy is authoritative, and refused outright by any method that rewrites the file it
+names (`format`, `fix*`, `sortMembers`, `organizeFiles`): supplied content is analysed, never
 written back.
 
 `al-explorer` uses that: on `-32002` from a read-only method it reads the file itself and asks

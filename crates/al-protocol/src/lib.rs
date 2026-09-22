@@ -9,6 +9,7 @@
 pub mod client;
 pub mod identity;
 pub mod jsonrpc;
+pub mod methods;
 pub mod socket;
 
 pub use client::{wait_for_endpoint_closed, DaemonClient};
