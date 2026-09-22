@@ -13,6 +13,7 @@ Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two 
 | Ghost diagnostics race: the server can publish diagnostics for a file after didClose (a harness test's own bug hid it as a panic 1 run in 3) | worktree fix | branch `campaign/fix-ghost-diagnostics` |
 | Formatter idempotence: two persisted proptest seeds (mutated fixtures with a `{` after a statement line, tab indentation) fail `format(format(x)) == format(x)` | worktree fix | branch `campaign/fix-formatter-idempotence` |
 | desloppify batch: split `resolution.rs`, `dispatch.rs`, `native_dap.rs`, `session.rs`, `xliff.rs`, `calls.rs`, `router.rs`, plus three open review A items | worktree refactor | branch `campaign/slop-splits-2`, `findings/slop-splits-2.md` |
+| Persisted symbol and source index on disk (cold start 54 s and 2.9 GB RSS today), keyed by app id, version and content hash | worktree build | branch `campaign/ai-persisted-index`, `findings/ai-persisted-index.md` |
 
 Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, CI runs on every push).
 
@@ -32,7 +33,7 @@ Queued:
 - `al-explorer packages` prints per-package source counts keyed by folded display name (`al-symbols` `index.rs:259`), so two `System` packages with one app id and different versions both show `0/502/1` against 529 manifest objects. Key by app id and version. Details in `findings/blog-progress.md`.
 - Blog: article 1 repeats a wrong diagnosis of the `trace` timeout (it is the cold call-graph build, 86 s with Base Application). Rewrite that paragraph. Articles 2, 4, 5, 8 after the daemon work and fix branches merge, then article 9, then the fact pass list in `findings/blog-progress.md`.
 - README.md line 339 omits `publish` from the CLI list. Rebuild `target/release` before measuring for articles (it predates `publish` and `free-ids`).
-- AI tooling build items 9 and 10: dependency package version diff, persisted symbol index (2.9 GB RSS and 54 s cold index today).
+- AI tooling build item 9: dependency package version diff.
 - Plugin leftovers: `plugin/evals/`, release binary download hook, test on a project with `.alpackages`.
 
 A review file without a `## Review complete` line means the agent died. Re-dispatch it to
