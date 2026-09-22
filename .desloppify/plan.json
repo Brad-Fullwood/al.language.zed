@@ -1,7 +1,7 @@
 {
   "version": 8,
   "created": "2026-09-21T00:40:45+00:00",
-  "updated": "2026-09-22T02:08:38+00:00",
+  "updated": "2026-09-22T02:14:24+00:00",
   "queue_order": [
     "review::.::holistic::abstraction_fitness::mockrecord_default_view_api",
     "review::.::holistic::abstraction_fitness::workspace_context_bag",
@@ -9,9 +9,6 @@
     "review::.::holistic::ai_generated_debt::test_only_public_overloads",
     "review::.::holistic::api_surface_coherence::string_errors_beside_typed_siblings",
     "review::.::holistic::api_surface_coherence::sync_async_query_twins",
-    "review::.::holistic::authorization_consistency::snapshot_profiling_basic_only_auth_model",
-    "review::.::holistic::authorization_consistency::tenant_scoping_header_vs_query",
-    "review::.::holistic::authorization_consistency::windows_auth_divergence",
     "review::.::holistic::contract_coherence::two_error_conventions_in_one_module",
     "review::.::holistic::convention_outlier::bulk_fix_dual_write_protocol",
     "review::.::holistic::cross_module_architecture::al_analysis_bundles_unrelated_capabilities",
@@ -4532,6 +4529,126 @@
         "status": "fixed",
         "attestation": "I have actually Grouped the parameters that are genuinely one thing: the two context structs in al-emit/src/symbol_reference.rs. The tree-walk helpers in suggest_event.rs, inlay_hints.rs, test_coverage.rs, signature.rs, dead_code.rs, transaction_lint.rs and backends/interp.rs keep their separate node, position and option arguments, and each now carries a comment naming what varies per call, so the arity is a stated choice rather than an accident. and I am not gaming the score."
       }
+    },
+    {
+      "timestamp": "2026-09-22T02:14:22+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::authorization_consistency::windows_auth_divergence"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:14:22+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::authorization_consistency::windows_auth_divergence"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "bc_server.rs's AuthMethod::Windows arm reads BC_USERNAME/BC_PASSWORD and sends HTTP Basic when both are present, matching al-bc's client, and carries that client's honest wording about no NTLM handshake when they are not. All three clients read the pair through the new al_bc::http_auth::basic_auth_from_env. Two tests assert the Authorization header is Basic with credentials and absent without.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T02:14:23+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::authorization_consistency::windows_auth_divergence"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "bc_server.rs's AuthMethod::Windows arm reads BC_USERNAME/BC_PASSWORD and sends HTTP Basic when both are present, matching al-bc's client, and carries that client's honest wording about no NTLM handshake when they are not. All three clients read the pair through the new al_bc::http_auth::basic_auth_from_env. Two tests assert the Authorization header is Basic with credentials and absent without.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually bc_server.rs's AuthMethod::Windows arm reads BC_USERNAME/BC_PASSWORD and sends HTTP Basic when both are present, matching al-bc's client, and carries that client's honest wording about no NTLM handshake when they are not. All three clients read the pair through the new al_bc::http_auth::basic_auth_from_env. Two tests assert the Authorization header is Basic with credentials and absent without. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:14:23+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::authorization_consistency::tenant_scoping_header_vs_query"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:14:23+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::authorization_consistency::tenant_scoping_header_vs_query"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "al-test's apply_tenant sends ?tenant= instead of the X-Tenant header al-bc documents as ignored by BC, keeping the empty and default skip. A wiremock test matching only on query_param(\"tenant\", ...) fails if the header form comes back.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T02:14:23+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::authorization_consistency::tenant_scoping_header_vs_query"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "al-test's apply_tenant sends ?tenant= instead of the X-Tenant header al-bc documents as ignored by BC, keeping the empty and default skip. A wiremock test matching only on query_param(\"tenant\", ...) fails if the header form comes back.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually al-test's apply_tenant sends ?tenant= instead of the X-Tenant header al-bc documents as ignored by BC, keeping the empty and default skip. A wiremock test matching only on query_param(\"tenant\", ...) fails if the header form comes back. and I am not gaming the score."
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:14:24+00:00",
+      "action": "reorder",
+      "issue_ids": [
+        "review::.::holistic::authorization_consistency::snapshot_profiling_basic_only_auth_model"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": null,
+      "detail": {
+        "position": "top",
+        "target": null,
+        "offset": null
+      }
+    },
+    {
+      "timestamp": "2026-09-22T02:14:24+00:00",
+      "action": "done",
+      "issue_ids": [
+        "review::.::holistic::authorization_consistency::snapshot_profiling_basic_only_auth_model"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Both doc comments say what actually happens: no credentials means no Authorization header, and there is no Windows-integrated fallback. apply_snapshot_auth prefers configured Basic credentials and otherwise uses the BC_ACCESS_TOKEN bearer override that BcClient and the test runner already read, with three tests covering the precedence.",
+      "detail": {}
+    },
+    {
+      "timestamp": "2026-09-22T02:14:24+00:00",
+      "action": "resolve",
+      "issue_ids": [
+        "review::.::holistic::authorization_consistency::snapshot_profiling_basic_only_auth_model"
+      ],
+      "cluster_name": null,
+      "actor": "user",
+      "note": "Both doc comments say what actually happens: no credentials means no Authorization header, and there is no Windows-integrated fallback. apply_snapshot_auth prefers configured Basic credentials and otherwise uses the BC_ACCESS_TOKEN bearer override that BcClient and the test runner already read, with three tests covering the precedence.",
+      "detail": {
+        "status": "fixed",
+        "attestation": "I have actually Both doc comments say what actually happens: no credentials means no Authorization header, and there is no Windows-integrated fallback. apply_snapshot_auth prefers configured Basic credentials and otherwise uses the BC_ACCESS_TOKEN bearer override that BcClient and the test runner already read, with three tests covering the precedence. and I am not gaming the score."
+      }
     }
   ],
   "epic_triage_meta": {},
@@ -4570,7 +4687,10 @@
     "review::.::holistic::error_consistency::duplicate_dap_error_enum",
     "review::.::holistic::low_level_elegance::lint_source_block_repeated_four_times",
     "review::.::holistic::low_level_elegance::unjustified_arg_threading_symbol_reference",
-    "review::.::holistic::design_coherence::high_arity_helpers"
+    "review::.::holistic::design_coherence::high_arity_helpers",
+    "review::.::holistic::authorization_consistency::windows_auth_divergence",
+    "review::.::holistic::authorization_consistency::tenant_scoping_header_vs_query",
+    "review::.::holistic::authorization_consistency::snapshot_profiling_basic_only_auth_model"
   ],
   "commit_tracking_branch": null,
   "scan_count_at_plan_start": 1

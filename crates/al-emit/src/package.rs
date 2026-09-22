@@ -41,7 +41,7 @@ pub enum EmitError {
 
 pub fn random_package_guid() -> Result<[u8; 16], EmitError> {
     let mut guid = [0u8; 16];
-    getrandom::getrandom(&mut guid).map_err(|e| EmitError::Random(e.to_string()))?;
+    getrandom::fill(&mut guid).map_err(|e| EmitError::Random(e.to_string()))?;
     Ok(guid)
 }
 
@@ -50,7 +50,7 @@ pub fn random_package_guid() -> Result<[u8; 16], EmitError> {
 /// these are inherently non-deterministic (like the package GUID).
 pub fn random_guid_braced() -> Result<String, EmitError> {
     let mut b = [0u8; 16];
-    getrandom::getrandom(&mut b).map_err(|e| EmitError::Random(e.to_string()))?;
+    getrandom::fill(&mut b).map_err(|e| EmitError::Random(e.to_string()))?;
     b[6] = (b[6] & 0x0f) | 0x40; // version 4
     b[8] = (b[8] & 0x3f) | 0x80; // variant
     Ok(format!(

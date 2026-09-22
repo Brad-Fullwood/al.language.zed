@@ -270,7 +270,7 @@ pub fn guid_value(args: &[Value]) -> Eval {
         return err("Any.GuidValue expects no arguments");
     }
     let mut buf = [0u8; 16];
-    if getrandom::getrandom(&mut buf).is_err() {
+    if getrandom::fill(&mut buf).is_err() {
         return err("Any.GuidValue: failed to obtain random bytes");
     }
     // RFC 4122 version 4 / variant bits

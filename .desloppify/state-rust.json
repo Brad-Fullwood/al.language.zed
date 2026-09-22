@@ -12,8 +12,8 @@
     "auto_resolved": 0,
     "deferred": 0,
     "false_positive": 0,
-    "fixed": 54,
-    "open": 1166,
+    "fixed": 57,
+    "open": 1163,
     "triaged_out": 0,
     "wontfix": 45,
     "by_tier": {
@@ -21,8 +21,8 @@
         "auto_resolved": 0,
         "deferred": 0,
         "false_positive": 0,
-        "fixed": 22,
-        "open": 15,
+        "fixed": 24,
+        "open": 13,
         "triaged_out": 0,
         "wontfix": 28
       },
@@ -30,8 +30,8 @@
         "auto_resolved": 0,
         "deferred": 0,
         "false_positive": 0,
-        "fixed": 11,
-        "open": 241,
+        "fixed": 12,
+        "open": 240,
         "triaged_out": 0,
         "wontfix": 17
       },
@@ -40148,11 +40148,11 @@
         "reasoning": "",
         "summary_hash": "174ae41e"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "bc_server.rs's AuthMethod::Windows arm reads BC_USERNAME/BC_PASSWORD and sends HTTP Basic when both are present, matching al-bc's client, and carries that client's honest wording about no NTLM handshake when they are not. All three clients read the pair through the new al_bc::http_auth::basic_auth_from_env. Two tests assert the Authorization header is Basic with credentials and absent without.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T02:14:23+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -40160,7 +40160,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually bc_server.rs's AuthMethod::Windows arm reads BC_USERNAME/BC_PASSWORD and sends HTTP Basic when both are present, matching al-bc's client, and carries that client's honest wording about no NTLM handshake when they are not. All three clients read the pair through the new al_bc::http_auth::basic_auth_from_env. Two tests assert the Authorization header is Basic with credentials and absent without. and I am not gaming the score.",
+        "attested_at": "2026-09-22T02:14:23+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::authorization_consistency::tenant_scoping_header_vs_query": {
       "id": "review::.::holistic::authorization_consistency::tenant_scoping_header_vs_query",
@@ -40187,11 +40193,11 @@
         "reasoning": "",
         "summary_hash": "dab6f216"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "al-test's apply_tenant sends ?tenant= instead of the X-Tenant header al-bc documents as ignored by BC, keeping the empty and default skip. A wiremock test matching only on query_param(\"tenant\", ...) fails if the header form comes back.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T02:14:23+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -40199,7 +40205,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually al-test's apply_tenant sends ?tenant= instead of the X-Tenant header al-bc documents as ignored by BC, keeping the empty and default skip. A wiremock test matching only on query_param(\"tenant\", ...) fails if the header form comes back. and I am not gaming the score.",
+        "attested_at": "2026-09-22T02:14:23+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::authorization_consistency::token_resolution_duplicated_per_dispatch": {
       "id": "review::.::holistic::authorization_consistency::token_resolution_duplicated_per_dispatch",
@@ -40501,11 +40513,11 @@
         "reasoning": "",
         "summary_hash": "b7b5e169"
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Both doc comments say what actually happens: no credentials means no Authorization header, and there is no Windows-integrated fallback. apply_snapshot_auth prefers configured Basic credentials and otherwise uses the BC_ACCESS_TOKEN bearer override that BcClient and the test runner already read, with three tests covering the precedence.",
       "first_seen": "2026-09-21T10:09:03+00:00",
       "last_seen": "2026-09-21T10:09:03+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-22T02:14:24+00:00",
       "reopen_count": 0,
       "work_item_kind": "review_defect",
       "issue_kind": "review_defect",
@@ -40513,7 +40525,13 @@
       "lang": "rust",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Both doc comments say what actually happens: no credentials means no Authorization header, and there is no Windows-integrated fallback. apply_snapshot_auth prefers configured Basic credentials and otherwise uses the BC_ACCESS_TOKEN bearer override that BcClient and the test runner already read, with three tests covering the precedence. and I am not gaming the score.",
+        "attested_at": "2026-09-22T02:14:24+00:00",
+        "scan_verified": false
+      }
     },
     "review::.::holistic::ai_generated_debt::triplicated_private_helpers": {
       "id": "review::.::holistic::ai_generated_debt::triplicated_private_helpers",
@@ -41767,8 +41785,8 @@
       "source": "holistic",
       "assessed_at": "2026-09-21T10:09:03+00:00",
       "needs_review_refresh": true,
-      "refresh_reason": "review_issue_wontfix",
-      "stale_since": "2026-09-22T01:47:10+00:00"
+      "refresh_reason": "review_issue_fixed",
+      "stale_since": "2026-09-22T02:14:24+00:00"
     },
     "contract_coherence": {
       "score": 75.0,
@@ -81406,13 +81424,13 @@
       "strict": 78.5,
       "verified_strict_score": 78.5,
       "checks": 10,
-      "failing": 3,
+      "failing": 0,
       "tier": 4,
       "detectors": {
         "subjective_assessment": {
           "potential": 10,
           "pass_rate": 0.785,
-          "failing": 3,
+          "failing": 0,
           "weighted_failures": 2.15,
           "assessment_score": 78.5,
           "placeholder": false,
