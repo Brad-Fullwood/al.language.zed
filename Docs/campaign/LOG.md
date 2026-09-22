@@ -143,3 +143,7 @@ Append-only. Newest entry last.
 ## 2026-09-22 07:40 BST: round 3 security review
 
 - 10 findings, 2 critical. The trust gate itself held: every privileged key consumer passes through it, no daemon method writes the store, trust is keyed to the canonical root. Around it: a repository can put its own text in the MCP `instructions` advisory, `al-explorer trust` runs with no terminal, `binary.arguments` in `.zed/settings.json` runs on open and is not in the digest, a planted socket captured a BC password in cleartext, a forged handshake was accepted, `snapshot` and `profiling` take credentials inline. Fix agent dispatched.
+
+## 2026-09-22 08:30 BST: queued fixes merged, a formatter seed
+
+- Merged `campaign/fix-queued-2` (28 commits). The property test for formatter idempotence found a new failing seed in the gate run. Seed persisted and committed, fix agent dispatched. Pushed with that one test red, since the seed file is the reproduction and the branch is a draft PR.

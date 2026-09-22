@@ -12,13 +12,15 @@ Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two 
 |------|------|--------|
 | desloppify review queue: work all 112 subjective items to empty (resolve, skip with reason, or defer items in files other branches hold), then rescan and record scores | worktree refactor | branch `campaign/slop-review-queue`, `findings/slop-review-queue.md` |
 | Fix R2 review B (19: rename and snapshot capture skip the gates, `.alpackages` symlink moves the boundary, extension path check unnormalised, plus a structural test that every dispatcher passes its gate) | worktree fix | branch `campaign/fix-r2-review-b` |
-| Fix queued items plus R2 review A (14: tooltip byte slice panic on localized packages, dead `skipped` and `parseIssues` reports, ID 50000 boundary, merge leftovers) | worktree fix | branch `campaign/fix-queued-2` |
+| Formatter idempotence: two persisted proptest seeds (mutated fixtures with a `{` after a statement line, tab indentation) fail `format(format(x)) == format(x)` | worktree fix | branch `campaign/fix-formatter-idempotence` |
 | Fix R3 security (10, 2 critical: repository text reaches the MCP `instructions` field, `binary.arguments` runs on open in Zed; plus trust confirmation on a TTY, endpoint peer check and unforgeable handshake, snapshot and profiling credential params, revoke takes effect, skills quote interpolated names) | worktree fix | branch `campaign/fix-r3-security` |
 
 Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, CI runs on every push).
 
 Queued:
 
+- Three review A findings still open: `extract_table_relation_table` has no caller, `PermissionAuditReport` doc comment truncated, `build_reference_counts` is 364 lines.
+- `dispatch_generate` cannot warn on IDs outside the project `idRanges` until the dispatcher is async.
 - `pack-native --validate` passes `analyzers: None`, which `resolve_analyzer_paths` reads as every installed analyzer. 29 cop errors on a project plain `alc` compiles, and the project's `al.codeAnalyzers` never reaches the call. Add a flag and honour the project setting through the trust gate.
 
 
@@ -83,6 +85,7 @@ round on the areas with the most findings.
 
 ## Done
 
+- Merged `campaign/fix-queued-2`: the seven queued items and the seven review A items. `test-run <id>` sibling calls work, MCP tool schemas derive from the daemon catalog, six workspace queries attribute per object in multi-object files, bare fields in a table's own procedure rename, the copilot scaffold template emitted fabricated API and now emits the documented one, `SymbolReference.json` carries `Variables`, ID 50000 accepted, tooltip prefix check is char-aware, `skipped` and `parseIssues` printed. Gates: 92 suites, 4858 passed, 1 failed (a new formatter idempotence seed, fix agent dispatched).
 - Merged `campaign/fix-daemon-lifecycle`: build identity handshake replaces a daemon built from other code, idle exit (30 minutes, `AL_DAEMON_IDLE_SECS`), exit when the project root is gone, PATH daemon refused on version mismatch, `daemon-shutdown` waits, plugin SessionEnd hook, harness stops its daemons. Open: a wedged request can hold a daemon past its idle window (warns every 60 s). Full gates: 92 suites, 4839 passed, 0 failed.
 - Merged `campaign/fix-r2-security`: 8 of 8 fixed. Project trust (`Docs/features/project-trust.md`, `al-explorer trust`), symlink-safe containment, one credential authorisation function, https required for credentials to non-loopback servers (`AL_ALLOW_INSECURE_BC_HTTP=1` overrides), NuGet feeds https only, daemon socket directory ownership check, checksum docs corrected. Full gates including zed-al: 92 suites, 4884 passed, 0 failed.
 - Merged `campaign/slop-syntax-symbols`: `formatting.rs`, `symbols.rs`, `index.rs` and `oauth.rs` split into module directories (largest file now 796 lines), the duplicate data loader in al-symbols removed, `LineIndex` and `SourceLines` merged, one HTTP retry policy, one temp path helper, typed `ObjectKind` error. Gates: 2825 tests across al-syntax, al-symbols, al-analysis, al-lsp and the harness. desloppify refuses to rescan until its 112 item review queue is empty.
