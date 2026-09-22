@@ -112,7 +112,11 @@ Part 5, quality of the new code:
 - fix: route `dispatch_rename` through `file_uri_from_params` like `format` and `sortMembers`.
   Then add a test that walks the dispatch table and asserts every method taking `uri`/`file`
   refuses an outside path with `-32002`, so the next dispatcher cannot be added without it.
-- status: open
+- status: fixed cbd148a4, with the dispatch-table test in 3c88ea2f. `dispatch_rename`
+  goes through `read_document_from_params`, and
+  `every_path_dispatcher_refuses_a_file_outside_the_project` drives every method the
+  table declares as taking a path. `rename` accepts `text` like the other read methods,
+  so it joins `al_protocol::methods::TEXT_CAPABLE_METHODS` and the reference.
 
 ### [SECURITY] a symlinked `.alpackages` widens the containment boundary to wherever it points
 
@@ -142,7 +146,9 @@ Part 5, quality of the new code:
   that resolves outside the project root unless it came from a trusted setting; and make
   `stays_inside_project` resolve the deepest existing ancestor the way
   `resolve_path_within_roots` does, so a symlink cannot make an outside path look inside.
-- status: open
+- status: fixed d51b10bb. `project_boundary` drops a root that resolves outside the
+  project root unless the project is trusted, and `stays_inside_project` resolves the
+  deepest existing ancestor, so a symlinked `./cache` is privileged.
 
 ### [SECURITY] the UNC guard is spelled with backslashes only, so the forward-slash form still reaches `canonicalize`
 
@@ -163,7 +169,8 @@ Part 5, quality of the new code:
   The text check is incomplete regardless of what Windows does with it.
 - fix: normalise separators before the check, or test both `\\` and `//` prefixes and the
   `?/UNC` / `?\UNC` pair. Add the forward-slash spellings to the existing test.
-- status: open
+- status: fixed 5296de64. Both separators are folded together before the check, and a
+  path `to_str` cannot decode is refused rather than allowed.
 
 ### [SLOP] two `serialized_response` helpers with the same name and swapped arguments
 
@@ -179,7 +186,8 @@ Part 5, quality of the new code:
   from `build_dispatch` to `insight_dispatch` would start answering `"obsolescence timeline"`
   instead of the report, and no test would fail.
 - fix: keep one helper, in `daemon/mod.rs`, with one argument order.
-- status: open
+- status: fixed d7d8caf0. One helper, in `daemon/mod.rs`. `ok_response` and the inline
+  copy in the inlay-hint dispatcher are gone too.
 
 ### [SLOP] the projection module doc gives an example that does not reduce anything
 
@@ -192,7 +200,7 @@ Part 5, quality of the new code:
   the key that holds the 194,951 bytes and drops the small ones. The measurement in the comment
   cannot have come from that call.
 - fix: state the parameters that do shrink the answer, or drop the example.
-- status: open
+- status: fixed aa61a42c. The example now names the parameters that shrink that answer.
 
 ### [SECURITY] `tests.snapshot_capture` spends the cached Business Central token without the trust gate
 
@@ -227,7 +235,10 @@ Part 5, quality of the new code:
   `accept_invalid_certs` when the authorization does not allow it. Add a test that lists every
   `acquire_token` / `NativeDebugSession::start` call site and asserts an authorisation call
   precedes it.
-- status: open
+- status: fixed 7e70106e, with the dispatch-table declaration in 3c88ea2f.
+  `acquire_bc_token` holds the authorisation and the acquisition together, and both
+  `debug start` and `tests.snapshot_capture` call it. `acceptInvalidCerts` is refused
+  unless the authorisation allows it.
 
 ### [SECURITY] the worktree-binary check compares strings, so `..` inside an absolute path walks past it
 
@@ -259,7 +270,10 @@ Part 5, quality of the new code:
 - fix: normalise the path textually before comparing (fold `.`, resolve `..`, collapse repeated
   separators, and compare case-insensitively on Windows and macOS), and reject any path that
   still contains `..` rather than trying to interpret it.
-- status: open
+- status: fixed 216e47f9. Both paths are folded into component lists and compared
+  component by component, case-insensitively for a Windows spelling; a path whose `..`
+  climbs above the root is refused. A symlinked ancestor is still invisible to a WASM
+  module with no filesystem API, which `Docs/current-limitations.md` now says.
 
 ### [BUG] `al-bin.sh` loops forever when `CLAUDE_PLUGIN_ROOT` is a relative path
 
@@ -272,7 +286,9 @@ Part 5, quality of the new code:
   `.mcp.json` runs this script, so the MCP server never starts and never reports why.
 - fix: make `search` absolute before the loop, the same way the fallback branch does, or stop
   when `dirname` returns the value it was given.
-- status: open
+- status: fixed 67d7bd08. `search` is absolute before the loop, and
+  `make plugin-validate` runs the script from a directory with no `target/` above it
+  and fails if it does not terminate.
 
 ### [TEST] a consistency test asserts on the word "signature" appearing in the source
 
@@ -285,7 +301,8 @@ Part 5, quality of the new code:
   verification) is not what it tests.
 - fix: drop it, or test the thing itself, for example that `verify_extracted_binaries` is the
   only verification call in the download path.
-- status: open
+- status: fixed 33bb4881. Dropped. What the extension verifies is pinned by
+  `binaries_are_verified_before_they_are_made_executable`.
 
 ### [BUG] `binary-checksums.txt` is the file the extension trusts and the one the attestation leaves out
 
@@ -303,7 +320,8 @@ Part 5, quality of the new code:
 - fix: include `binary-checksums.txt` in `checksums.txt` (and so in the attestation subjects),
   so a manual verifier can at least check it. Say in the docs that the extension's automatic
   path verifies integrity only.
-- status: open
+- status: fixed 33bb4881. `sha256sum binary-checksums.txt >> checksums.txt` runs before
+  the attestation step, so the file the extension reads is attested with the archives.
 
 ### [DOCS] the trust doc states three rules the code does not enforce everywhere
 
@@ -323,7 +341,10 @@ Part 5, quality of the new code:
   `dispatch_tests_run` picks its `BcServerConfig` at `tests_dispatch.rs:750-793` and does not.
 - fix: say that the rule covers cached credentials, and name the methods where a caller spends
   its own credentials and chooses its own TLS setting.
-- status: open
+- status: fixed 490e2eb2. The Credentials section now names the five methods that reach
+  a credential the daemon holds, and a section beside it names the methods where the
+  caller brings its own credential and chooses its own TLS setting: `snapshot`,
+  `profiling`, the `tests.run*` family and `debug start` with an explicit token.
 
 ### [DOCS] `--scope` help omits `table-impact`
 
@@ -332,7 +353,7 @@ Part 5, quality of the new code:
   `tableImpact`, and `Docs/reference/daemon-methods.md:91`, which lists four.
 - severity: low
 - fix: add `table-impact` to the help text.
-- status: open
+- status: fixed aa61a42c.
 
 ### [REGRESSION] publish is gated as if it spent a cached credential, and it never does
 
@@ -359,7 +380,9 @@ Part 5, quality of the new code:
   explicitly.
 - fix: say "Business Central credentials" rather than "a cached Business Central token" on this
   path, and reconcile the doc with the rule the code applies.
-- status: open
+- status: fixed 490e2eb2. `CredentialKind::Environment` describes that path as
+  "Business Central credentials", and the trust doc says why publish is gated although
+  it spends an environment credential.
 
 ### [DOCS] the settings reference never mentions trust
 
@@ -376,7 +399,9 @@ Part 5, quality of the new code:
   reference is out of step.
 - fix: add a "needs project trust" column or footnote to the table for those nine keys, linking
   to `Docs/features/project-trust.md`.
-- status: open
+- status: fixed 5736d552. Each gated key carries a lock mark and the legend links to
+  the trust document; `the_settings_reference_marks_every_gated_key` fails if one
+  loses it.
 
 ### [BUG] the LSP trust gate fails open when the client sends no root URI
 
@@ -395,7 +420,8 @@ Part 5, quality of the new code:
 - [UNVERIFIED] whether Zed ever omits `rootUri`. The asymmetry stands regardless.
 - fix: call `deny_privileged(config)` when the root cannot be determined, and say so in the
   advisory.
-- status: open
+- status: fixed 97b13970. The no-root case calls `deny_privileged` and says so, with a
+  test for a missing root and for a non-`file:` one.
 
 ### [SLOP] `plugin/scripts/*.sh` is shellchecked by neither CI nor `make shellcheck`
 
@@ -408,7 +434,8 @@ Part 5, quality of the new code:
   user's machine, so they are the shipped shell surface with the widest reach and the only one
   with no lint. The infinite loop reported above is in one of them.
 - fix: add `plugin/scripts/*.sh` to both lists.
-- status: open
+- status: fixed 67d7bd08. `plugin/scripts/*.sh` is in the ShellCheck list in `ci.yml`
+  and in `make shellcheck`.
 
 ### [SLOP] two `#[test]` functions that assert nothing and run nothing
 
@@ -420,7 +447,7 @@ Part 5, quality of the new code:
   measure nothing at runtime, which inflates the count and reads as coverage that is not there.
 - fix: make them `const _: () = { ... };` items, or delete them: the types are used by the tests
   in the same file that do assert.
-- status: open
+- status: fixed 97b13970. Both are `const` items now.
 
 ### [SIMPLIFY] the two functions that carry the credential decision are 629 and 468 lines
 
@@ -439,7 +466,11 @@ Part 5, quality of the new code:
 - fix: one `acquire_bc_token(workspace, &config, supplied, source)` helper that performs the
   authorisation and then the acquisition, so a caller cannot get the token without the check.
   Split the twelve `dispatch_debug` arms into functions while doing it.
-- status: open
+- status: fixed 729a0bde, and the helper in 7e70106e. `acquire_bc_token` is the one way
+  to a Business Central token, and each `debug` command is its own function.
+  `dispatch_tests_snapshot_capture` and `dispatch_tests_run_batch` are shorter by the
+  acquisition they no longer repeat but are not split: `tests_dispatch.rs` belongs to
+  another agent's queue in this round, so the edit there was kept to the gate.
 
 ### [SIMPLIFY] six public items in `al-project::trust` have no caller
 
@@ -454,7 +485,7 @@ Part 5, quality of the new code:
   `grant`, which is the one path that prints the values first.
 - fix: make them `pub(crate)`, keeping `TrustStore`/`TrustRecord` public only if the CLI's
   `--show` output is meant to be a stable shape.
-- status: open
+- status: fixed 65b7d596. All six are `pub(crate)`.
 
 ## Verified fixes
 
@@ -556,20 +587,46 @@ Each checked against the current code, and against a test that would fail withou
 
 ## Gaps in the repo's own consistency tests
 
-These are the checks the merge relied on, and what each one does not see.
+These are the checks the merge relied on, and what each one does not see. Each is followed by
+the test that now covers it.
 
 - `daemon_reference_names_every_dispatched_method` (`daemon/mod.rs:2054`) checks
   dispatcher -> docs only. It would not notice a documented method that no longer dispatches, a
   method routed to the wrong dispatcher, or a dispatcher that skips containment (which is how
   `rename` survived).
+  - closed by 3c88ea2f: `the_reference_catalogue_lists_only_methods_that_dispatch` reads the
+    reference's method lists and fails on a name the dispatch table does not hold, and
+    `every_path_dispatcher_refuses_a_file_outside_the_project` drives each declared path method
+    through `dispatch_request`. A method routed to the wrong dispatcher is still not caught:
+    nothing states what each method's answer should look like beyond its list shape.
 - Nothing compares `projection::list_target` or `scope::scoped_list` against the shapes the
   dispatchers actually return, so a wrong field name is a silent no-op rather than a failure.
+  - closed by aa61a42c: `every_declared_list_is_where_the_declaration_says` drives all 30
+    declared methods against an empty project and checks the shape each declaration promises,
+    and `scope_and_projection_agree_on_where_each_list_is` pins the four that take both.
 - Nothing compares the CLI's `READ_ONLY_FILE_METHODS` with the set of dispatchers that call
   `read_document_from_params`; the two agree today by hand.
+  - closed by 3c88ea2f: the list moved to `al_protocol::methods::TEXT_CAPABLE_METHODS`, which
+    both crates read, and `the_text_capable_methods_are_the_read_dispatchers` holds it against
+    the methods the dispatch table declares as `PathUse::Read`.
 - The containment tests all call the helper directly. No test drives a dispatcher with an
   out-of-project path.
+  - closed by cbd148a4 and 3c88ea2f: `rename_refuses_a_path_outside_the_project_and_leaves_no_document`
+    and the table walk above.
 - `src/settings_test.rs:231` covers `is_worktree_resident_program` with six literal paths and no
   normalisation case.
+  - closed by 216e47f9: `a_worktree_program_is_refused_however_the_path_is_spelled` covers
+    `..`, `.`, repeated separators, a trailing separator, Windows case and separator forms, a
+    `..` above the filesystem root, and the outside paths that must stay accepted.
+
+Two more the reviewers did not list, added with the fixes:
+
+- `the_authorized_dispatchers_are_the_ones_the_trust_doc_names` (3c88ea2f, 490e2eb2) holds the
+  methods that reach a Business Central credential against the trust document, and
+  `an_authorized_dispatcher_refuses_an_untrusted_repository_target` drives `debug` and
+  `publish` against an untrusted repository launch file.
+- `the_settings_reference_marks_every_gated_key` (5736d552) fails when a trust-gated setting
+  loses its mark in the settings reference.
 
 
 ## Review complete
