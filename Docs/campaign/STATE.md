@@ -12,12 +12,15 @@ Round 1 reviews are complete: 224 verified findings in 11 files. Six of seven fi
 |------|------|--------|
 | desloppify batch (done, 10 commits: four file splits, one data loader, one line table): waiting for the analysis third pass to merge, then merges the campaign branch into its own and re-applies campaign changes to the split files | worktree refactor | branch `campaign/slop-syntax-symbols`, `findings/slop-syntax-symbols.md` |
 | Daemon lifecycle: build identity in the handshake, idle exit, PATH fallback version check, `daemon-shutdown` waits for the socket, harness stops leaking daemons | worktree fix | branch `campaign/fix-daemon-lifecycle` |
-| Blog: articles 5 (`mcp-and-the-claude-code-plugin`) and 2 (`running-bc-tests-locally`), fix the `trace` paragraph in article 1 | blog repo branch `campaign/2026-09-rewrite` | `findings/blog-progress.md` |
 | Fix round 2 security findings (8: 1 critical, 3 high). Project trust: repository settings that name code, programs, feeds or credential targets apply only after `al-explorer trust`. Dangling symlink containment bypass. Scheme check on token targets | worktree fix | branch `campaign/fix-r2-security` |
 
 Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, CI runs on every push).
 
 Queued:
+
+- `al-explorer test-run <id>` passes the numeric ID where an object name is expected: a test calling a sibling procedure fails with `object '50144' not found in workspace`, while `test-run-all --filter` passes. Reproduced on a minimal codeunit. Found writing the tests article.
+- The named MCP tool `al_getdiagnostics` rejects `text` at its schema while `al_call` method `lint` accepts it.
+- Doc drift found by the blog writer: README.md:199-205 still describes removed plugin workarounds. `Docs/features/native-test-runtime.md:51-52` still says Round uses banker's rounding. `blog-plan.md` has `--include_used` (flag is `--include-used`).
 
 - Nine whole-workspace queries (dead_code, duplicates, sql_patterns, complexity, arch_lint, impact, native_check, obsolescence, obsolete_usage) walk each file from the root, so a multi-object file attributes every finding to the first object. `WorkspaceSource::objects` and `object_at_byte` exist for the fix.
 - After the desloppify branch merges: run `desloppify --lang rust scan --path .` from the main checkout and record the scores (the agent did not rescan, a forced rescan would reset the plan in the shared state file).
@@ -57,7 +60,7 @@ whichever ones pay off most. Record progress per workstream below so gaps are vi
 | F | Grammar: corpus tests, query drift between `languages/al` and `tree-sitter-al/queries` | R1 review running | From R1 findings |
 | G | AI tooling: make this project speed up and sharpen AI work on Business Central (see below) | Inventory, measurements and design done (`findings/ai-tooling-ideas.md`): latency is 4 to 150 ms warm, but 14 of 20 measured answers are too large for an agent (up to 9.4 MB). Plugin build running | Daemon projection work after the LSP fix branch merges |
 | H | Docs: `Docs/`, `README.md`, `ROADMAP.md` match the code, then unsloppify | R1 docs review running | From R1 findings |
-| I | Blog: replace the six articles with a new series on the current project, unsloppify each | On blog branch `campaign/2026-09-rewrite`: six posts deleted, site cleaned, `pnpm validate` passes (it failed on `main`), fact sheet and nine-article plan in `findings/blog-plan.md`, articles 1, 3, 6, 7 drafted (4 of 9) | Articles 2, 4, 5, 8 after the fix branches settle, article 9 last, final fact pass, merge to `main` |
+| I | Blog: replace the six articles with a new series on the current project, unsloppify each | On blog branch `campaign/2026-09-rewrite`: six posts deleted, site cleaned, `pnpm validate` passes (it failed on `main`), fact sheet and nine-article plan in `findings/blog-plan.md`, articles 1, 2, 3, 5, 6, 7 drafted (6 of 9), article 1 `trace` paragraph corrected | Articles 2, 4, 5, 8 after the fix branches settle, article 9 last, final fact pass, merge to `main` |
 
 ### G: AI tooling detail
 

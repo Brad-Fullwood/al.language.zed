@@ -284,8 +284,223 @@ holds, it is a separate finding about the MCP process's graph caching.
 6. `pnpm validate` on the blog: passes. 0 errors, 11 pre-existing lint warnings in site components
    unrelated to content, `astro check` 0 errors across 176 files, build and Pagefind index succeed.
 
+---
+
+## 4. `mcp-and-the-claude-code-plugin`
+
+**Title**: Giving an agent the symbol index: an MCP server and a plugin for BC
+**Words**: 2,514 total, 2,351 excluding code blocks. Plan target 1,800 to 2,200, so 151 over.
+**Commit**: `0fda763` on `campaign/2026-09-rewrite`.
+
+Measured 2026-09-22 with `al-explorer` and `al-lsp` 0.4.0 built fresh from `campaign/2026-09-21`
+at `6c93aada`, grammar submodule `38368a0`. The build ran in a `git clone --local --no-hardlinks`
+of the project, outside the PROJECT checkout. Commands ran against a scratch copy of
+`crates/al-test-harness/data/test_al_project` so no daemon state was left in the repository.
+
+### Facts used, with sources
+
+| Fact | Source | How verified |
+| --- | --- | --- |
+| an agent without the plugin greps and cannot open a `.app` | `README.md:147-151` | read |
+| 20 questions, private workspace, 8 packages, 12,336 package symbols, Base Application 28.3 45 MB | `findings/ai-tooling-ideas.md:209-218` | read |
+| "Twelve of the twenty queries answer in under 150 ms on a warm daemon" | `ai-tooling-ideas.md`, "What the numbers say" | quoted closely |
+| symbol index reaches 12,336 symbols in 1.4 s | same, "Cold start" table | read |
+| `location` 3.9 ms, `free-ids` 6.5 ms on the fixture | timed with `date +%s%N` around the process | measured today |
+| the eight largest answers (9,468,982 / 6,347,056 / 837,509 / 552,710 / 492,740 / 460,721 / 356,686 / 194,951 bytes) | `ai-tooling-ideas.md` §3b and the question table | read |
+| 14 of 20 too large for an agent | commit `fd97ced3` message, first paragraph | read |
+| 299 KB of `by-id codeunit 80` is 609 method signatures | `ai-tooling-ideas.md` question 9 | read |
+| `subscribers OnAfterPostSalesDoc` returned `[]` in 114 ms where `trace` found three | same, questions 3 and 3c | read |
+| `impact "Sales-Post.PostSalesDoc"` returned `{"impacted": []}`, real name `RunWithCheck` | same, question 5 | read |
+| projection applied once at the dispatch boundary in `daemon/projection.rs` | commit `fd97ced3` | read |
+| `{items, total, returned, offset, truncated}`, `truncated` is `offset + returned < total` | same | read |
+| `scope` on `impact`/`tableImpact`/`entrypoints`/`eventMap`, `outOfScopeCount`, runs before projection | same, and `Docs/reference/mcp-tools.md:50-53` | read |
+| MCP defaults `limit: 50` and `scope: workspace`, explicit value wins, `limit: 0` allowed | `mcp-tools.md:45-48` | read |
+| 1,437 -> 184 bytes and 6,006 -> 965 bytes with projection flags | ran all four commands, `wc -c` | measured today |
+| indentation was 43% of the bytes of `by-id codeunit 80` | `plugin/ROADMAP.md`, "Item 8, compact JSON" | read |
+| 19 MCP tools, names in source order | real `tools/list` handshake against `al-lsp mcp --project .` | measured today, 19 returned |
+| 92 daemon methods | ran the repository's own `dispatched_method_literals` extraction over `daemon/mod.rs` | measured today: 92 |
+| the `instructions` string | same MCP handshake | quoted verbatim |
+| input schemas derived from the method | `mcp-tools.md:55-57` | read |
+| `free-ids --kind table` output and 150 bytes compact | ran it | measured today |
+| "Off by default so the answer stays a few hundred bytes" | `crates/al-explorer/src/cli/args.rs` `include_used` doc | quoted verbatim |
+| `plugin/.mcp.json` contents | the file | quoted verbatim |
+| 8 skills, 2 subagents, 1 `SessionStart` hook | `ls plugin/`, `plugin/hooks/hooks.json` | counted |
+| `al-bin.sh` searches four locations | `plugin/scripts/al-bin.sh`, `README.md:159-164` | read |
+| the `.gitignore` near-miss and the one-character fix | `Docs/campaign/LOG.md:59`, commit `33f99f84` (`-.mcp.json` / `+/.mcp.json`) | read the diff |
+| `bc-symbol-scout` model, effort, skills, 20-line contract | `plugin/agents/bc-symbol-scout.md` | read |
+| Haiku runs used `claude-haiku-4-5-20251001`, "Haiku is the floor" | `plugin/TESTING.md:1-22` | read |
+| Round 1 answered with `find`/`Read` and `grep -r`, all eight skills unused, tools registered | `plugin/TESTING.md`, "Round 1: nothing triggered" | read |
+| the `bc-symbol-lookup` description rewrite, before and after | same | quoted verbatim |
+| the `SessionStart` hook fires only on an `app.json` with `id` and `publisher` | `plugin/scripts/al-session-context.sh` | read |
+| Round 2 `cd`, daemon startup error, three `al-lsp.log` reads, `.range` null, `find` fallback | `plugin/TESTING.md`, "Round 2" | read |
+| the Round 3 / Round 4 byte table, all seven rows | `plugin/TESTING.md`, "Results" | read |
+| Round 3 counts reconstructed, Round 4 counts measured from session streams | same, the sentence under the table | read |
+| Round 3 ran `jq`, `grep`, `seq \| grep -vxFf` for the ID question; Round 4 ran `free-ids` | same, "What changed in the answers" | read |
+| no run unzipped a `.app` or grepped for a symbol | same | read |
+| containment: project root, package cache, `.app` directories; the `format`/`~/.bashrc` case | `crates/al-lsp/src/server/daemon/containment.rs:1-30` module doc | read |
+| the `-32002` refusal message shape | real `al_call` with `parse` on `/tmp/elsewhere/Foo.al` | measured today, quoted with the root elided |
+| `..` normalised textually, deepest existing ancestor canonicalised, tail re-appended | `containment.rs:19-30` | read |
+| `text` accepted on a read-only method and the result | same `al_call` with `text` added | measured today, quoted verbatim |
+| `text` refused by a rewriting method, with the message | `al_call` with `format` and `text` | measured today, quoted verbatim |
+| cached token refused for a host the project does not name | `crates/al-lsp/src/server/daemon/debug_dispatch.rs:396-405` | quoted, host elided |
+| `authenticate` reports tenant and expiry only, never the token | `findings/r2-security.md`, "Reads credentials" | read |
+| `launch.json` is both the allowlist and a repository file | `findings/r2-security.md`, the high-severity launch.json finding, status `open` | read |
+| project trust: gated keys, trust store path, drop-and-report behaviour | `Docs/features/project-trust.md` on branch `campaign/fix-r2-security`, commit `bbf25313` | read; article says in progress |
+| untested: `bc-test-locally`, `bc-upgrade-impact`, `bc-cop-fixer`, no `.alpackages` run, no evals | `plugin/ROADMAP.md`, "Left for the next agent", `plugin/TESTING.md`, "Not covered" | read |
+| daemon reaches 2.9 GB resident, `daemon-shutdown` socket race | `plugin/ROADMAP.md`, "Memory" | read |
+
+### Items for the final fact pass
+
+1. **`ai-tooling-ideas.md` contradicts itself on the small-answer count.** "Of the twenty, six
+   produce output an agent can put in its context unchanged" is followed by a list of seven names
+   (`search`, `trace`, `events`, `source --procedure`, `dead-code`, `deps-graph`, `diag`). The
+   article uses 14 too large, which comes from the `fd97ced3` commit message. **Fix the findings
+   file, then re-check the article's "fourteen of the twenty".**
+2. **`README.md:199-205` is stale.** Its plugin Notes section still says `impact Item` returns
+   1,594 rows with no limit flag, `by-id codeunit 80` is 552 KB, and `subscribers` under-reports
+   where `trace` is correct, and that every skill pipes through `jq`. `plugin/ROADMAP.md` records
+   all of those as removed. The article does not repeat them, but the README should be updated
+   before anyone follows the link.
+3. **`blog-plan.md` §1.1 prints the flag as `--include_used`.** clap kebab-cases it: the working
+   flag is `--include-used`, confirmed by the error message from the binary. The article uses the
+   correct spelling.
+4. The Round 3 byte column is reconstructed rather than measured. The article says so. If those
+   runs are ever repeated with stream capture, replace the numbers.
+5. The package-side byte table in `plugin/TESTING.md` (552,710 / 194,951 / 450,532 / 484,680 /
+   342,252 / 837,509) predates the daemon changes and has not been re-measured. The article quotes
+   only the figures that also appear in `ai-tooling-ideas.md`, which are from the same era. Both
+   need a project with `.alpackages` to re-measure.
+6. The project-trust paragraph describes commit `bbf25313` on an unmerged branch. **Re-check
+   whether it merged, and whether the launch.json finding moved from `open`, before publishing.**
+7. The 92-method and 19-tool counts, against whatever `campaign/2026-09-21` has become.
+
+### Open questions for Brad
+
+- The article says the named MCP tool `al_getdiagnostics` rejects `text` at its schema, while
+  `al_call` with method `lint` accepts it. That asymmetry is real (measured) and is not described
+  anywhere. Is the named-tool schema meant to expose `text`, or is `al_call` the intended route?
+- `mcp-tools.md` says a `uri` or `file` outside the project is refused with `-32002`. The actual
+  MCP response carries `isError: true` and the message in `content`, with no JSON-RPC error code,
+  because the refusal happens inside `tools/call`. Worth aligning the doc or the response.
+
+---
+
+## 5. `running-bc-tests-locally`
+
+**Title**: Running Business Central tests without Business Central
+**Words**: 2,305 total, 1,910 excluding code blocks. Plan target 1,800 to 2,200.
+**Commit**: `b84a8c5`.
+
+Same binaries and scratch fixture as article 4. Three codeunits were added to the scratch copy for
+the article: `Rate Line` (table 50140, no triggers), `Rate Test` (50141) and `Staging Test` (50142).
+Two more, `Lie Test` (50143) and `Sibling Test` (50144), were used to verify fixes and are not in
+the article's transcripts. None of them exist in the PROJECT checkout.
+
+### Facts used, with sources
+
+| Fact | Source | How verified |
+| --- | --- | --- |
+| `al-runtime` 22,046 lines, `al-test` 9,960 lines | `find crates/<c>/src -name "*.rs" \| xargs wc -l` | recounted today |
+| `al-explorer tests` output, 3 codeunits | ran it | measured today |
+| `al-explorer test-classify` output, all five rows with reasons | ran it | quoted verbatim |
+| `test-run 50141` at 0.007 s warm | ran it | measured today |
+| 107 ms cold, including daemon start and indexing | `daemon-shutdown`, then the same command | measured today |
+| `test-run-all` refuses with "No launch config found" | ran it | quoted verbatim |
+| the router module doc, "conservative by design ... NOT tolerable" | `crates/al-test/src/router.rs:5-10` | quoted verbatim (keeps its em dashes) |
+| classifier walks the transitive call, trigger, interface and event graph, including initialize, cleanup, handlers and codeunit state | `Docs/features/native-test-runtime.md:96-101` | read |
+| three routing decisions, snapshot is a separate backend | `router.rs` `enum RoutingDecision` has 3 variants; `backends/` has `interp`, `live_bc`, `snapshot` | counted |
+| what routes to live BC | `native-test-runtime.md:171-185`, `Docs/current-limitations.md:38-41`, `router.rs:12-27` | read |
+| what runs locally, including the stub catalog and the record subset | `native-test-runtime.md:31-90` | read |
+| enforced `PureLogic` / `WithRecords` modes, capability error on a routing miss | `native-test-runtime.md:88-89`, `crates/al-runtime/src/interpreter/dispatch.rs:49` | read |
+| `Round` used `MidpointNearestEven`; the Microsoft `System.Round` quote; the two AL cases | `findings/r1-runtime-dap.md`, the Round finding | read |
+| `'<'` and `'>'` move the magnitude, now `ToZero` / `AwayFromZero` | same, "correction while fixing", and `dispatch.rs:1651-1654` | read both |
+| fall-off-the-end returned the last statement's value; the `TryCreate` shape; the empty-value inverse | `r1-runtime-dap.md`, that finding | read |
+| `Record "X" temporary` produced `Sales Header" temporary`; router strips it correctly; fix keys stores by table plus variable handle | `r1-runtime-dap.md`, that finding, status `fixed abbb8e07` | read |
+| unset enum/option fields had no typed zero; the `SetRange` and `AreEqual` cases | `r1-runtime-dap.md`, the first finding | read |
+| Code keys sorted by ASCII bytes; `'a'` then `'AA'`; the Integer/Decimal type-tag ordering | `findings/test-depth.md` F3 | read |
+| one caselessness rule two implementations; `SetRange(KEY, 'A', 'É')` then `'é'` returns 0 | `test-depth.md` F4 | read |
+| property tests run against a `BTreeMap` model over sequences of up to 30 operations | `test-depth.md`, "Runtime properties that hold" | read |
+| `Round(2.5, 1) = 3` on the built binary | wrote the assertion as an AL test and ran it | measured today, passes |
+| a procedure falling off the end returns `false` on the built binary | same | measured today, passes |
+| two `Record "X" temporary` variables do not share rows | same | measured today, passes |
+| dynamic Cobertura header with `line-coverage="unavailable"` | ran `test-run-all --coverage --cobertura-out cov.xml` | quoted verbatim from the generated file |
+| why line-rate is gone and what to gate on instead | `crates/al-test/src/output/cobertura.rs:225-234` doc comment | read |
+| snapshot capture/replay compares by project-relative file and line, not session-local breakpoint IDs; validate and diff need no BC | `native-test-runtime.md:188-194` | read |
+| `make live-bc-contracts` reports `UNAVAILABLE` with exit 2, else must pass publish/install, the DAP loop, a `liveBc` test, capture and replay | `Docs/current-limitations.md:63-69` | read |
+| "Business Central remains authoritative", four occurrences | grep across the repository | counted |
+
+### New finding, not yet in any findings file
+
+**`al-explorer test-run <id>` passes the numeric ID where an object name is expected.**
+
+A test that calls another procedure in the same codeunit without qualifying it fails:
+
+```
+$ al-explorer test-run 50144
+Codeunit "50144": 0/1 passed, 1 failed, 0 skipped
+  ✗ TestBareSiblingCall -- object '50144' not found in workspace
+```
+
+The same test through the name-based path passes:
+
+```
+$ al-explorer test-run-all --filter "TestBareSiblingCall"
+✓ Sibling Test: 1/1 passed, 0 failed, 0 skipped
+```
+
+Reproduced on a cold daemon and a warm one, with a codeunit whose only content is one `[Test]`
+procedure and one plain procedure returning `Integer`. The object is indexed correctly:
+`search "Sibling Test"` returns it with both methods, and `location` returns its file. So the
+failure is in the interpreter's procedure resolution when the run was started by ID.
+
+**Queue this as a finding.** It is in the article, named as a bug found while writing it. If it is
+fixed this week, the article's "A bug I found writing this" section needs rewriting or removing.
+
+### Items for the final fact pass
+
+1. **`Docs/features/native-test-runtime.md:51-52` is stale.** It still describes `Round` with a
+   "banker's-rounding default". `dispatch.rs:1651` is `MidpointAwayFromZero` since commit
+   `182c5c93`. **Fix the doc.** The article uses the code.
+2. **`blog-plan.md` §1.6 crate line counts are stale**: `al-runtime` 21,684 and `al-test` 9,216
+   against 22,046 and 9,960 today. The article uses today's counts.
+3. The `test-run <id>` bug above.
+4. The 0.007 s warm and 107 ms cold figures, against a rebuilt binary.
+5. The article states plainly that the local share of a real BC suite is not measured, which is
+   `blog-plan.md` §1.14's first UNVERIFIED. **If that measurement happens this week, the "What is
+   not measured" section should be replaced with the number rather than extended.**
+6. `plugin/skills/bc-test-locally/SKILL.md` shows a `test-classify` example with only the two
+   `Pure Logic Test` methods. Harmless, but it predates `interpRecord` and `liveBc` ever appearing
+   in the fixture.
+
+### Open questions for Brad
+
+- The codeunit-integrity rule means one `Record.Validate` call anywhere in a codeunit sends every
+  method in it to live BC. On a real suite that is probably the dominant cost of the routing. Is
+  per-method isolation worth pursuing, or is shared codeunit state genuinely the blocker?
+- `coberturaOut` is refused for a path outside the project, which is correct containment, but the
+  message ("'coberturaOut' path escapes the project root") arrives with no suggestion that a
+  relative path inside the project works. Worth one sentence in the error.
+- Snapshot capture and replay have no transcript in this article, because they need a tenant.
+  Should the series get one article with real live-BC output, or stay entirely reproducible?
+
+---
+
+## Update to the cross-article items
+
+Item 3 of "Cross-article items for the final fact pass" is done: the wrong `trace` diagnosis in
+`al-outside-vs-code` was replaced in commit `f27c0dc`. The paragraph now names the cold
+call-graph build as the cause, with `entrypoints` first succeeding at 86.4 s from cold against
+0.006 s for `trace` once the graph is cached, explains that `dead-code` never touches the graph,
+and records the background single-flight build, the `sourceIndex` progress report and the
+`AL_REQUEST_TIMEOUT_MS` / `--timeout-ms` deadline.
+
+`pnpm validate` after all three commits: 0 errors, 11 pre-existing lint warnings in site
+components, `astro check` 0 errors across 176 files, build and Pagefind index succeed.
+
 ## Remaining articles from the plan
 
-Not started: `al-outside-vs-code` is drafted by another pass; `running-bc-tests-locally`,
-`native-app-emitter`, `mcp-and-the-claude-code-plugin`, `zed-extension-and-release-integrity`,
-`what-an-ai-review-campaign-actually-looks-like` are outlined in `blog-plan.md` and unwritten.
+Drafted: `al-outside-vs-code`, `tree-sitter-grammar-for-al`, `symbols-without-the-compiler`,
+`one-engine-four-transports`, `mcp-and-the-claude-code-plugin`, `running-bc-tests-locally`.
+
+Not started: `native-app-emitter`, `zed-extension-and-release-integrity`,
+`what-an-ai-review-campaign-actually-looks-like`.
