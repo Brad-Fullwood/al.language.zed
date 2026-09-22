@@ -260,6 +260,7 @@ shellcheck:
 	@if command -v shellcheck >/dev/null 2>&1; then \
 		shellcheck \
 			scripts/*.sh \
+			plugin/scripts/*.sh \
 			crates/al-test-harness/editor-e2e/*.sh \
 			crates/al-test-harness/editor-e2e/container/*.sh \
 			tree-sitter-al/tests/*.sh \

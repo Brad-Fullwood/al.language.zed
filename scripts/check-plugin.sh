@@ -98,6 +98,24 @@ else
 	printf 'plugin-validate: shellcheck not installed, skipping (install it to run this check)\n' >&2
 fi
 
+# al-bin.sh walks upward looking for a target/ directory. A relative
+# CLAUDE_PLUGIN_ROOT used to walk down to "." and stay there, because
+# `dirname .` is `.`. .mcp.json runs this script, so the MCP server never
+# started and never said why. Run it from a directory with no target/ above it,
+# which is what makes the walk reach the top.
+if command -v timeout >/dev/null 2>&1; then
+	walk_dir="$(mktemp -d)"
+	(
+		cd "$walk_dir" &&
+			env -u AL_BIN_DIR -u CLAUDE_PLUGIN_DATA CLAUDE_PLUGIN_ROOT=. \
+				timeout 20 bash "$plugin/scripts/al-bin.sh" al-explorer >/dev/null 2>&1
+		[ "$?" -ne 124 ]
+	) || problem "al-bin.sh does not terminate with a relative CLAUDE_PLUGIN_ROOT"
+	rmdir "$walk_dir" 2>/dev/null || true
+else
+	printf 'plugin-validate: timeout not installed, skipping the al-bin.sh walk check\n' >&2
+fi
+
 # ── Claude Code's own validator ──────────────────────────────────
 if command -v claude >/dev/null 2>&1; then
 	claude plugin validate "$plugin" || problem "claude plugin validate failed"
