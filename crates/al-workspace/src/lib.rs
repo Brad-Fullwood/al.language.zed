@@ -308,6 +308,11 @@ pub struct Workspace {
     /// Set by al-lsp after workspace construction. In the LSP path the closure
     /// calls `client.show_message`; in the daemon path it logs. Not set in tests.
     pub notify_sink: std::sync::OnceLock<NotifySink>,
+    /// What the project's own settings files asked for and did not get,
+    /// because the project root is not trusted. `None` inside the `OnceLock`
+    /// means nothing was ignored. Reported by `doctor` and by the MCP
+    /// server's first tool result so the message is not only in a log.
+    pub trust_advisory: std::sync::OnceLock<Option<String>>,
     /// Cached insight graph, built lazily and invalidated when packages reload.
     /// Private — access via `get_or_build_insight_graph()` / `invalidate_insight_graph()`
     /// only, so the DCL build path and the `call_graph → insight_graph` lock-ordering
@@ -427,6 +432,7 @@ impl Workspace {
             semantic_cache: std::sync::RwLock::new(SemanticCache::new()),
             debug_session: tokio::sync::Mutex::new(None),
             notify_sink: std::sync::OnceLock::new(),
+            trust_advisory: std::sync::OnceLock::new(),
             insight_graph: std::sync::RwLock::new(None),
             call_graph: std::sync::RwLock::new(None),
             call_graph_dependency_fingerprint: std::sync::RwLock::new(None),

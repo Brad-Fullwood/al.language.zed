@@ -390,28 +390,14 @@ impl AlConfig {
     /// Project settings win. This keeps build backend, analyzer, and package
     /// folder selection aligned with the editor instead of silently reverting
     /// to defaults outside the LSP process.
+    ///
+    /// Settings that ship in the repository and can run code, load an assembly
+    /// or choose a package feed apply only when the project root is trusted;
+    /// see [`crate::trust`]. Callers that want to tell the user what was
+    /// ignored use [`crate::trust::evaluate`] instead, which returns the same
+    /// configuration with the decision beside it.
     pub fn load_effective(project_root: &Path) -> Result<Self, ConfigLoadError> {
-        let mut config = match Self::default_settings_path() {
-            Some(path) => Self::load(&path)?.unwrap_or_default(),
-            None => Self::default(),
-        };
-
-        for path in [
-            project_root.join(".vscode/settings.json"),
-            project_root.join(".zed/settings.json"),
-        ] {
-            let Some(value) = read_editor_settings_file(&path)? else {
-                continue;
-            };
-            let issues = config.merge_editor_settings(&value);
-            if !issues.is_empty() {
-                return Err(ConfigLoadError::InvalidSettings {
-                    path,
-                    message: issues.join(", "),
-                });
-            }
-        }
-        Ok(config)
+        Ok(crate::trust::evaluate(project_root)?.config)
     }
 
     /// Merge AL settings from an editor-shaped value.
@@ -823,7 +809,9 @@ fn validate_setting_shapes(
     issues
 }
 
-fn read_editor_settings_file(path: &Path) -> Result<Option<serde_json::Value>, ConfigLoadError> {
+pub(crate) fn read_editor_settings_file(
+    path: &Path,
+) -> Result<Option<serde_json::Value>, ConfigLoadError> {
     let metadata = match std::fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),

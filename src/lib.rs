@@ -535,12 +535,19 @@ impl zed::Extension for AlExtension {
             settings.settings.as_ref(),
         );
 
+        // A program that lives inside the worktree is one the clone brought
+        // with it, and `binary.path` returns from `find_or_download_binary`
+        // before any checksum verification. See
+        // `settings::is_worktree_resident_program`.
+        let worktree_root = worktree.root_path();
         let user_configured_path = settings
             .binary
             .as_ref()
             .and_then(|b| b.path.as_ref())
-            .map(|p| p.to_string());
-        let dotnet_path = settings::resolve_dotnet_path(settings.settings.as_ref());
+            .map(|p| p.to_string())
+            .filter(|path| !settings::is_worktree_resident_program(path, &worktree_root));
+        let dotnet_path = settings::resolve_dotnet_path(settings.settings.as_ref())
+            .filter(|path| !settings::is_worktree_resident_program(path, &worktree_root));
         self.cached_dotnet_path = dotnet_path.clone();
 
         let binary_path = self.find_or_download_binary(
@@ -684,11 +691,11 @@ impl zed::Extension for AlExtension {
         // (and the released API has no way to construct one), so download
         // progress is not surfaced in the status UI — see
         // find_or_download_binary's status_id doc.
-        let al_lsp_path = self.find_or_download_binary(
-            None,
-            Some(worktree),
-            user_provided_debug_adapter_path.as_deref(),
-        )?;
+        let worktree_root = worktree.root_path();
+        let adapter_path = user_provided_debug_adapter_path
+            .filter(|path| !settings::is_worktree_resident_program(path, &worktree_root));
+        let al_lsp_path =
+            self.find_or_download_binary(None, Some(worktree), adapter_path.as_deref())?;
 
         // Read the same lsp."al-lsp".settings block the LSP uses so the
         // al.useOfficialDap toggle lives alongside al.useOfficialLsp. The DAP

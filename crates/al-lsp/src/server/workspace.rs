@@ -941,6 +941,22 @@ async fn download_symbols_from_server(
             };
         }
     };
+    // The launch configuration ships in the repository, and this download
+    // presents the user's Business Central credential to the server it names.
+    if let Err(error) = al_project::trust::authorize_cached_credential(
+        &project.root,
+        &al_project::trust::BcTarget::from_launch(config),
+        match config.authentication {
+            al_bc::launch::AuthMethod::AAD => al_project::trust::CredentialKind::Bearer,
+            _ => al_project::trust::CredentialKind::Basic,
+        },
+        al_project::trust::TargetSource::Repository,
+    ) {
+        return DownloadBatch {
+            paths: Vec::new(),
+            failures: vec![error],
+        };
+    }
     info!(
         config = %config.name,
         server = %config.display_name(),
@@ -1046,12 +1062,27 @@ pub(crate) fn map_nuget_feeds(
 /// Custom feeds (`al.nugetFeeds`) are tried
 /// first; the public Microsoft feeds (MSSymbols/AppSourceSymbols/MSApps)
 /// are appended unless `al.useOnlyCustomFeeds` is set.
+///
+/// A feed that is neither https nor http to loopback is dropped here, named in
+/// the log, so the configured list and the list the client is given agree. The
+/// client refuses the same URLs again.
 pub(crate) fn effective_nuget_feeds(
     config: &al_project::config::AlConfig,
 ) -> Vec<al_project::project::NuGetFeed> {
     let mut feeds: Vec<al_project::project::NuGetFeed> = config
         .nuget_feeds
         .iter()
+        .filter(|feed| {
+            let acceptable = al_symbols::nuget::is_acceptable_feed_url(&feed.url);
+            if !acceptable {
+                warn!(
+                    feed = %feed.name,
+                    url = %feed.url,
+                    "Ignoring a NuGet feed that is neither https nor http to loopback"
+                );
+            }
+            acceptable
+        })
         .map(|f| al_project::project::NuGetFeed {
             name: f.name.clone(),
             index_url: f.url.clone(),
@@ -1937,6 +1968,29 @@ mod tests {
         let feeds = effective_nuget_feeds(&cfg);
         assert_eq!(feeds.len(), 1);
         assert_eq!(feeds[0].name, "corp");
+    }
+
+    #[test]
+    fn a_cleartext_feed_on_the_local_network_is_dropped() {
+        let cfg = al_project::config::AlConfig {
+            nuget_feeds: vec![
+                al_project::config::NuGetFeedConfig {
+                    name: "internal".into(),
+                    url: "http://10.0.0.5:8081/v3/index.json".into(),
+                },
+                al_project::config::NuGetFeedConfig {
+                    name: "local".into(),
+                    url: "http://127.0.0.1:8081/v3/index.json".into(),
+                },
+            ],
+            use_only_custom_feeds: true,
+            ..al_project::config::AlConfig::default()
+        };
+
+        let feeds = effective_nuget_feeds(&cfg);
+
+        assert_eq!(feeds.len(), 1, "{feeds:?}");
+        assert_eq!(feeds[0].name, "local");
     }
 
     #[test]

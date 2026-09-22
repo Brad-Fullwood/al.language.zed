@@ -496,6 +496,16 @@ SetLoadFields rule. Microsoft's CodeAnalysis bridge is optional and additive.
 
 On Zed Dev/Nightly (extension API >= 0.8) the `lsp.al-lsp.settings` keys autocomplete and validate as you type; on Stable Zed the settings still apply, just without in-editor autocomplete (use the template above). This lights up on Stable automatically once the 0.8 extension API reaches the registry.
 
+### Settings that need project trust
+
+Settings a repository carries in its own `.vscode/settings.json`, `.zed/settings.json` or
+`.vscode/launch.json` apply on a clone, which makes a few of them a way to choose what runs on
+your machine: analyzer assemblies, raw `alc` switches, assembly probing paths, package feeds, and
+the Business Central server a cached token is sent to. Those apply only after
+`al-explorer trust`. Everything else applies as before. See
+[project trust](Docs/features/project-trust.md) for the full list, the message you get when
+something is ignored, and how agents are treated.
+
 ### Project-file schemas (app.json, rulesets)
 
 This extension ships JSON Schemas for the AL project files you edit by hand: `app.json`,
@@ -594,6 +604,18 @@ Before tagging:
 9. Require green CI on the exact commit being tagged; the tag workflow enforces this before building artifacts.
 10. Push the superproject commit only after the referenced grammar commit is available remotely.
 11. Tag from the exact commit you want users to install.
+
+Every asset listed in `checksums.txt` also gets a Sigstore build-provenance attestation, signed
+against the release workflow's own identity. Check a downloaded asset with:
+
+```bash
+gh attestation verify al-linux-x86_64.tar.gz --repo Brad-Fullwood/al.language.zed
+```
+
+The checksums that ship beside the archives show a download arrived intact. They are not a
+signature, and the extension holds no key, so it does not verify one. See
+[current limitations](Docs/current-limitations.md#releases) for what each check does and does not
+cover.
 
 ## License
 

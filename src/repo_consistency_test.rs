@@ -738,6 +738,52 @@ fn readme_task_count_matches_the_shipped_language_package() {
     );
 }
 
+/// The release publishes build provenance, and the docs say plainly that the
+/// checksums are not a signature.
+///
+/// Both halves matter. Without the workflow step there is nothing to verify;
+/// without the wording a reader takes `binary-checksums.txt` for authenticity,
+/// which it is not, because the digests travel on the same release as the
+/// archives and the extension holds no key.
+#[test]
+fn release_provenance_is_published_and_described_honestly() {
+    let workflow = include_str!("../.github/workflows/release.yml");
+    let limitations = include_str!("../Docs/current-limitations.md");
+    let lib = include_str!("lib.rs");
+
+    assert!(
+        workflow.contains("actions/attest-build-provenance@"),
+        "release.yml must attest the release assets"
+    );
+    assert!(
+        workflow.contains("subject-checksums: artifacts/checksums.txt"),
+        "the attestation must cover the assets checksums.txt lists"
+    );
+    for permission in ["id-token: write", "attestations: write"] {
+        assert!(
+            workflow.contains(permission),
+            "the release job needs {permission} to sign a provenance statement"
+        );
+    }
+    assert!(
+        workflow.contains("attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8"),
+        "third-party actions are pinned to a commit SHA, not a tag"
+    );
+
+    assert!(
+        limitations.contains("gh attestation verify"),
+        "Docs/current-limitations.md must tell a reader how to verify provenance"
+    );
+    assert!(
+        limitations.contains("It does not show who produced it."),
+        "Docs/current-limitations.md must say what the checksum does not cover"
+    );
+    assert!(
+        !lib.contains("signature"),
+        "the extension verifies no signature, so its source must not claim one"
+    );
+}
+
 /// The extension refuses to run a downloaded binary whose digest does not
 /// match the release's `binary-checksums.txt`. That asset only exists because
 /// `release.yml` builds and uploads it, so the two must move together: a

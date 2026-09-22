@@ -977,6 +977,37 @@ fn extract_al_settings(value: serde_json::Value) -> serde_json::Value {
     value.get("al").cloned().unwrap_or(value)
 }
 
+/// Remove from `config` the privileged settings this project's own files ask
+/// for, unless the project is trusted, and return the message for the user.
+///
+/// The editor merges `.zed/settings.json` from the worktree into the user's
+/// own settings before sending them, so what arrives here does not say where
+/// each value came from. `al_project::trust::gate` asks the repository files
+/// and takes back exactly what they contribute.
+async fn gate_repository_settings(
+    root_uri: Option<&Url>,
+    config: &mut al_project::config::AlConfig,
+) -> Option<String> {
+    let root = root_uri?.to_file_path().ok()?;
+    let dotnet_advisory = al_project::trust::enforce_dotnet_path(&root);
+    match al_project::trust::gate(&root, config) {
+        Ok(decision) => match (decision.advisory(), dotnet_advisory) {
+            (Some(settings), Some(dotnet)) => Some(format!("{settings}\n{dotnet}")),
+            (settings, dotnet) => settings.or(dotnet),
+        },
+        Err(error) => {
+            tracing::warn!(%error, "cannot read this project's settings files for the trust check");
+            // Unreadable repository settings cannot be subtracted one value at
+            // a time, so every privileged field goes instead.
+            al_project::trust::deny_privileged(config);
+            Some(format!(
+                "AL settings that can run code were not applied: this project's settings files \
+                 could not be read ({error})"
+            ))
+        }
+    }
+}
+
 #[tower_lsp::async_trait]
 impl LanguageServer for AlServer {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
@@ -1023,7 +1054,8 @@ impl LanguageServer for AlServer {
 
         if let Some(init_opts) = params.initialization_options {
             let al_settings = extract_al_settings(init_opts);
-            let cap = {
+            let root_uri = self.root_uri.read().await.clone();
+            let (cap, advisory) = {
                 let mut config = self.workspace.config.write().await;
                 let report = config.merge_reporting(&al_settings);
                 if !report.is_empty() {
@@ -1033,8 +1065,14 @@ impl LanguageServer for AlServer {
                         "settings in initializationOptions were not applied"
                     );
                 }
-                config.max_document_size_bytes
+                let advisory = gate_repository_settings(root_uri.as_ref(), &mut config).await;
+                (config.max_document_size_bytes, advisory)
             };
+            if let Some(advisory) = advisory {
+                self.client
+                    .show_message(MessageType::WARNING, advisory)
+                    .await;
+            }
             // apply the per-document size cap to the store.
             self.workspace.documents.set_max_doc_bytes(cap);
             tracing::info!("Parsed initialization options into config");
@@ -1536,6 +1574,14 @@ impl LanguageServer for AlServer {
         let old_cache_path = staged_config.package_cache_path.clone();
         let old_local_paths = staged_config.app_local_folder_paths.clone();
         let report = staged_config.merge_reporting(&al_settings);
+        let root_uri = self.root_uri.read().await.clone();
+        if let Some(advisory) =
+            gate_repository_settings(root_uri.as_ref(), &mut staged_config).await
+        {
+            self.client
+                .show_message(MessageType::WARNING, advisory)
+                .await;
+        }
         let symbol_paths_changed = old_cache_path != staged_config.package_cache_path
             || old_local_paths != staged_config.app_local_folder_paths;
         if !report.unknown_keys.is_empty() {

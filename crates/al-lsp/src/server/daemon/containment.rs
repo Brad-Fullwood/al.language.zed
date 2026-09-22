@@ -69,6 +69,15 @@ pub(crate) fn resolve_path_within_roots(
     base: &Path,
     roots: &[PathBuf],
 ) -> Option<PathBuf> {
+    if is_unc(requested) {
+        // A UNC path such as `\\attacker.example\share\x` fails the root check
+        // below, but only after `canonicalize` has already made Windows open an
+        // SMB connection to that host, which is the usual way an NTLM hash
+        // leaves a machine. Refuse it before any filesystem call. On Unix the
+        // same string is an ordinary (if odd) file name, and no AL project
+        // uses one.
+        return None;
+    }
     let absolute = if requested.is_absolute() {
         requested.to_path_buf()
     } else {
@@ -119,8 +128,25 @@ pub(crate) fn resolve_path_within_roots(
     // `join` on an empty tail appends a separator, which later made
     // `write_junit_to_path` treat a file as a directory.
     let resolved = if tail.as_os_str().is_empty() {
-        canonical_existing
+        canonical_existing.clone()
     } else {
+        // `canonicalize` fails with ENOENT on a symlink whose target does not
+        // exist, so such a link lands in the tail unresolved and the textual
+        // `starts_with` below sees only the link's own path. `git` stores
+        // symlinks verbatim, so a repository can ship
+        // `results.xml -> ~/.config/autostart/update.desktop` and have the
+        // contained write follow it. Walk the tail and refuse any component
+        // that is a link of any kind.
+        let mut walked = canonical_existing.clone();
+        for component in tail.components() {
+            walked.push(component.as_os_str());
+            match std::fs::symlink_metadata(&walked) {
+                Ok(metadata) if metadata.file_type().is_symlink() => return None,
+                // Nothing there yet, so nothing deeper can exist either.
+                Err(_) => break,
+                Ok(_) => {}
+            }
+        }
         canonical_existing.join(&tail)
     };
 
@@ -128,6 +154,99 @@ pub(crate) fn resolve_path_within_roots(
         .iter()
         .any(|root| resolved.starts_with(root))
         .then_some(resolved)
+}
+
+/// Whether `path` is written in UNC form (`\\server\share\…`), including the
+/// verbatim spelling `\\?\UNC\…`.
+///
+/// Checked as text rather than through `Component::Prefix` so the answer is the
+/// same on every platform: a path parameter crosses the daemon boundary from
+/// any client, and a Linux daemon must not hand a Windows client a value it
+/// would then resolve differently.
+fn is_unc(path: &Path) -> bool {
+    path.to_str()
+        .is_some_and(|text| text.starts_with(r"\\") || text.starts_with(r"//?/UNC"))
+}
+
+/// Write `contents` to `path` without following a symlink at `path` itself.
+///
+/// `resolve_path_within_roots` refuses a symlink it can see, but a link planted
+/// between that check and this write would still capture it. On Unix
+/// `O_NOFOLLOW` closes the window in the kernel. Elsewhere the file is written
+/// to a fresh sibling and renamed, which is not atomic against the same race
+/// but never opens an existing link.
+pub(crate) async fn write_no_follow(path: &Path, contents: Vec<u8>) -> std::io::Result<()> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || write_no_follow_blocking(&path, &contents))
+        .await
+        .map_err(std::io::Error::other)?
+}
+
+#[cfg(unix)]
+fn write_no_follow_blocking(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|error| {
+            if error.raw_os_error() == Some(libc::ELOOP) {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "refusing to write through the symbolic link at '{}'",
+                        path.display()
+                    ),
+                )
+            } else {
+                error
+            }
+        })?;
+    file.write_all(contents)
+}
+
+#[cfg(not(unix))]
+fn write_no_follow_blocking(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    if let Ok(metadata) = std::fs::symlink_metadata(path) {
+        if metadata.file_type().is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "refusing to write through the symbolic link at '{}'",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "output path has no parent directory",
+        )
+    })?;
+    let temp = parent.join(format!(
+        ".{}.{}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("out"),
+        std::process::id()
+    ));
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        file.write_all(contents)?;
+    }
+    std::fs::rename(&temp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temp);
+    })
 }
 
 /// Resolve a user-provided output-file path against `project_root` and reject
@@ -257,6 +376,91 @@ mod tests {
         let resolved =
             resolve_path_within_roots(&cache.join("Base.app"), &roots[0], &roots).unwrap();
         assert_eq!(resolved, cache.canonicalize().unwrap().join("Base.app"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_dangling_symlink_inside_the_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let outside = tmp.path().join("outside/update.desktop");
+        // The target does not exist, which is what makes `canonicalize` fail
+        // and used to leave the link itself in the unresolved tail.
+        std::os::unix::fs::symlink(&outside, root.join("results.xml")).unwrap();
+
+        assert!(
+            resolve_path_within_roots(Path::new("results.xml"), &root, &project(&root)).is_none(),
+            "a dangling symlink must not pass as a not-yet-created file"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_file_below_a_symlinked_parent_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        // The parent is a link to a directory that does not exist yet, so the
+        // whole tail `out/report.xml` is unresolvable.
+        std::os::unix::fs::symlink(tmp.path().join("elsewhere"), root.join("out")).unwrap();
+
+        assert!(
+            resolve_path_within_roots(Path::new("out/report.xml"), &root, &project(&root))
+                .is_none()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlink_planted_after_the_check_does_not_capture_the_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let target = root.join("captured");
+        // The check passes on a path that does not exist; the link appears
+        // between the check and the write, which is the race O_NOFOLLOW closes.
+        let resolved =
+            resolve_path_within_roots(Path::new("results.xml"), &root, &project(&root)).unwrap();
+        std::os::unix::fs::symlink(&target, &resolved).unwrap();
+
+        let error = write_no_follow(&resolved, b"<testsuites/>".to_vec())
+            .await
+            .unwrap_err();
+
+        assert!(!target.exists(), "the write followed the planted link");
+        assert!(
+            error.to_string().contains("symbolic link"),
+            "{error}, raw {:?}",
+            error.raw_os_error()
+        );
+    }
+
+    #[tokio::test]
+    async fn writes_a_plain_output_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("results.xml");
+        write_no_follow(&path, b"<testsuites/>".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "<testsuites/>");
+    }
+
+    /// A UNC path is rejected before any filesystem call, so Windows never
+    /// opens the SMB connection that leaks an NTLM hash.
+    #[test]
+    fn rejects_a_unc_path_without_touching_the_filesystem() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        for requested in [
+            r"\\attacker.example\share\x",
+            r"\\attacker.example\share",
+            r"\\?\UNC\attacker.example\share\x",
+        ] {
+            assert!(
+                resolve_path_within_roots(Path::new(requested), &root, &project(&root)).is_none(),
+                "{requested} must be refused"
+            );
+        }
     }
 
     #[test]

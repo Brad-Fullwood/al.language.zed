@@ -95,6 +95,8 @@ pub enum PublishError {
     Build(String),
     #[error("Invalid app.json: {0}")]
     InvalidManifest(String),
+    #[error("{0}")]
+    Unauthorized(String),
 }
 
 /// Run the publish pipeline for the project.
@@ -330,7 +332,7 @@ fn resolve_server_config(
 ) -> Result<BcServerConfig, PublishError> {
     let debug_config = find_launch_config(project_root)?.ok_or(PublishError::NoLaunchConfig)?;
 
-    match config_name {
+    let chosen = match config_name {
         Some(name) => debug_config
             .configs
             .into_iter()
@@ -343,7 +345,21 @@ fn resolve_server_config(
             .into_iter()
             .next()
             .ok_or(PublishError::NoLaunchConfig),
-    }
+    }?;
+
+    // Publishing sends the user's Business Central credential to the server
+    // this repository's launch file names.
+    al_project::trust::authorize_cached_credential(
+        project_root,
+        &al_project::trust::BcTarget::from_launch(&chosen),
+        match chosen.authentication {
+            al_bc::launch::AuthMethod::AAD => al_project::trust::CredentialKind::Bearer,
+            _ => al_project::trust::CredentialKind::Basic,
+        },
+        al_project::trust::TargetSource::Repository,
+    )
+    .map_err(PublishError::Unauthorized)?;
+    Ok(chosen)
 }
 
 /// Extract the app GUID from app.json (needed for RAD).
@@ -500,6 +516,51 @@ mod tests {
         std::fs::write(zed.join("debug.json"), body).unwrap();
     }
 
+    /// `XDG_CONFIG_HOME` is process-wide, so the tests that redirect the trust
+    /// store hold this rather than running beside each other.
+    static TRUST_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A scratch trust store for one test. Dropping it restores the previous
+    /// `XDG_CONFIG_HOME` and releases the lock.
+    struct ScratchTrustStore {
+        _dir: tempfile::TempDir,
+        previous: Option<std::ffi::OsString>,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl ScratchTrustStore {
+        fn new() -> Self {
+            let guard = TRUST_STORE_LOCK
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let dir = tempfile::tempdir().unwrap();
+            let previous = std::env::var_os("XDG_CONFIG_HOME");
+            std::env::set_var("XDG_CONFIG_HOME", dir.path());
+            Self {
+                _dir: dir,
+                previous,
+                _guard: guard,
+            }
+        }
+    }
+
+    impl Drop for ScratchTrustStore {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+    }
+
+    /// Record `project_root` the way `al-explorer trust` does, against a
+    /// scratch store the test owns.
+    fn trust_for_test(project_root: &Path) -> ScratchTrustStore {
+        let store = ScratchTrustStore::new();
+        al_project::trust::grant(project_root).unwrap();
+        store
+    }
+
     #[test]
     fn resolve_config_named_match_returns_that_config() {
         let dir = tempfile::tempdir().unwrap();
@@ -507,17 +568,38 @@ mod tests {
             dir.path(),
             r#"[
                 {"label":"First","adapter":"al","environmentType":"OnPrem",
-                 "server":"http://first.example.com","serverInstance":"BC"},
+                 "server":"https://first.example.com","serverInstance":"BC"},
                 {"label":"Second","adapter":"al","environmentType":"OnPrem",
-                 "server":"http://second.example.com","serverInstance":"NAV"}
+                 "server":"https://second.example.com","serverInstance":"NAV"}
             ]"#,
         );
+        let _config = trust_for_test(dir.path());
 
         let cfg = resolve_server_config(dir.path(), Some("Second")).unwrap();
         assert_eq!(cfg.name, "Second");
-        assert_eq!(cfg.server.as_deref(), Some("http://second.example.com"));
+        assert_eq!(cfg.server.as_deref(), Some("https://second.example.com"));
         // display_name should reflect the matched (second) config.
-        assert_eq!(cfg.display_name(), "http://second.example.com/NAV");
+        assert_eq!(cfg.display_name(), "https://second.example.com/NAV");
+    }
+
+    #[test]
+    fn resolve_config_refuses_an_untrusted_on_premises_server() {
+        let dir = tempfile::tempdir().unwrap();
+        write_zed_debug(
+            dir.path(),
+            r#"[
+                {"label":"Only","adapter":"al","environmentType":"OnPrem",
+                 "server":"https://erp.example.com","serverInstance":"BC"}
+            ]"#,
+        );
+        let _store = ScratchTrustStore::new();
+
+        match resolve_server_config(dir.path(), None) {
+            Err(PublishError::Unauthorized(message)) => {
+                assert!(message.contains("not trusted"), "{message}")
+            }
+            other => panic!("expected Unauthorized, got {other:?}"),
+        }
     }
 
     #[test]

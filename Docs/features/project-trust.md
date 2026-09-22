@@ -1,0 +1,123 @@
+# Project trust
+
+`.vscode/settings.json`, `.zed/settings.json` and `.vscode/launch.json` are files a
+repository carries. Cloning a repository means accepting whatever they say, and most of
+what they say is harmless: formatting width, diagnostics scope, which lint rules run.
+
+A few keys are not harmless. They name a .NET assembly the AL compiler loads into its own
+process, raw switches appended to the `alc` command line, directories the compiler probes
+for assemblies, the package feed every symbol is downloaded from, and the Business Central
+server a cached bearer token is sent to. Believing those on the strength of a `git clone`
+means a repository chooses what runs on the machine that opened it.
+
+Values in that second group take effect only when the project root is trusted. Everything
+else applies as it always has.
+
+## What is gated
+
+| Setting | Why it is privileged |
+| --- | --- |
+| `al.codeAnalyzers` entries that are not built-in tokens | A path entry becomes `/analyzer:<path>`; Roslyn loads the assembly and runs its type initialisers |
+| `al.compilationOptions` | Appended verbatim to the `alc` command line, including `/analyzer:` and `/ruleset:` |
+| `al.ruleSetPath` outside the project | Reads a file from anywhere as `/ruleset:` |
+| `al.assemblyProbingPaths` | Directories the analyzer search walks and `/assemblyprobingpaths:` names |
+| `al.packageCachePath` outside the project | Chooses where `.app` symbol packages are read from, and reaches `/packagecachepath:` |
+| `al.appLocalFolderPaths` outside the project | Same, for additional symbol folders |
+| `al.nugetFeeds` | Every symbol package, including Base Application, comes from these URLs |
+| `al.useOnlyCustomFeeds` | Removes Microsoft's feeds, leaving only the configured ones |
+| `launch.json` / `debug.json` on-premises `server` | Receives the cached Business Central token and, with `acceptInvalidCerts`, decides whether TLS is verified |
+
+`${CodeCop}`, `${AppSourceCop}`, `${UICop}`, `${PerTenantExtensionCop}` and their bare
+spellings are built-in tokens: the toolchain resolves them to Microsoft's own assemblies, so
+they are not gated.
+
+Everything else in a repository's settings applies without trust: formatting, inlay hints,
+`al.diagnosticsScope`, `al.enableNativeLint` and its per-rule overrides, `al.incrementalBuild`,
+`al.useOfficialCompiler`, `al.maxDocumentSizeBytes`, a ruleset or package folder inside the
+project.
+
+## What untrusted looks like
+
+The privileged values are dropped and everything else is applied. You get one message naming
+each dropped setting and the command that turns them on:
+
+```
+This project is not trusted, so these settings from its own files were ignored:
+  al.codeAnalyzers = ./tools/Payload.dll (from .vscode/settings.json)
+  al.compilationOptions = /analyzer:/tmp/x.dll (from .vscode/settings.json)
+They can load code, run programs or receive credentials. Read them, then run:
+al-explorer trust /home/you/src/SomeApp
+```
+
+In Zed it arrives as a warning notification, in `al-explorer` on stderr, in the daemon and
+the MCP server in the log, and the MCP server also puts it in the `instructions` it hands
+the agent so the agent can pass it on.
+
+## Trusting a project
+
+```bash
+al-explorer trust --show          # what needs trust, and the current state
+al-explorer trust                 # print the values, then record them
+al-explorer trust --revoke        # remove the record
+```
+
+`trust` prints every privileged value before it writes the record. Read them first. The
+record covers exactly what was printed.
+
+The record lives in `~/.config/al-lsp/trusted-projects.json` (or `$XDG_CONFIG_HOME/al-lsp/`),
+outside every repository, mode 0600, written through a temp file and a rename. Each entry
+holds the canonical project root and a SHA-256 of the privileged values. Change one of those
+values in the repository and the digest stops matching, so the settings are ignored again
+until you run `trust` a second time. `al-explorer trust --show` reports that as `stale`.
+
+## Settings you wrote yourself
+
+A value the user supplies is not gated. That covers `~/.config/al-lsp/settings.json`, an
+`AL_*` environment variable and a CLI flag. It also covers Zed and VS Code user settings, with
+one qualification: the editor merges its user settings with the worktree's before handing them
+to the language server, so the server cannot see which file a value came from. It resolves
+that by reading the repository's own settings files and removing exactly the values they
+contribute. A privileged value written only in user settings survives; one the repository also
+asks for is gated until the project is trusted.
+
+## How agents are treated
+
+The MCP server and the daemon cannot grant trust, and no request through them can supply a
+privileged value inline:
+
+- `al_call` reaches the whole daemon method table, and no method writes
+  `trusted-projects.json`.
+- `al_debug start` with an inline configuration cannot name an on-premises server of its own:
+  a cached token goes only to a server the project's launch file names, and only when the
+  project is trusted. A caller that wants an unlisted server supplies its own `accessToken`,
+  which is its credential to spend.
+- Trust is granted by `al-explorer trust`, which runs in the user's terminal.
+
+An agent reads the repository. An AL comment, a symbol name in a dependency `.app` or a BC
+response can tell an agent what to call next. If asking an agent to "build this to confirm it
+compiles" were enough to load a repository's analyzer assembly, a repository could run code by
+writing a sentence.
+
+## Credentials
+
+Every path that spends a cached Business Central token goes through one authorisation
+function: debug start, publish, a test run against live BC, snapshot capture, and symbol
+download from a BC server.
+
+- Microsoft's Business Central online endpoints are always allowed. The endpoint is fixed, so
+  a repository cannot redirect the token.
+- An on-premises target is compared on scheme, host and port together. A launch configuration
+  naming `https://erp.example.com` does not authorise `http://erp.example.com`.
+- `http://` is refused for bearer and basic credentials unless the host is loopback. Set
+  `AL_ALLOW_INSECURE_BC_HTTP=1` to allow a cleartext server elsewhere on a network you trust.
+  An environment variable is a user-level decision, so it needs no project trust.
+- `acceptInvalidCerts` is honoured only where the project's own configuration sets it for the
+  same target, and only when the project is trusted.
+
+## Limits
+
+The Zed extension resolves `binary.path` (which `al-lsp` binary runs) and `dotnetPath` (which
+`dotnet` the toolchain spawns) from `LspSettings::for_worktree`, and the 0.7 extension API
+gives it one merged value with no provenance. See
+[current limitations](../current-limitations.md#zed-worktree-settings-and-executable-paths)
+for what that means and what al-lsp does about it.

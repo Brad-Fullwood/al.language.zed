@@ -271,6 +271,14 @@ async fn download_dependency_wave(
             Ok(cfg) => cfg,
             Err(error) => return vec![serde_json::json!({ "error": error })],
         };
+        // The launch configuration ships in the repository, and the download
+        // presents the user's Business Central credential to whatever server
+        // it names.
+        if let Err(error) =
+            crate::server::daemon::debug_dispatch::authorize_launch_target(workspace, cfg)
+        {
+            return vec![serde_json::json!({ "error": error })];
+        }
         let auth = match cfg.authentication {
             al_bc::launch::AuthMethod::Windows => al_symbols::bc_server::AuthMethod::Windows,
             al_bc::launch::AuthMethod::UserPassword => {

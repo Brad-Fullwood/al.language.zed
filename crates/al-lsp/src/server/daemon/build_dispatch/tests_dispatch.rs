@@ -1232,7 +1232,7 @@ async fn write_cobertura_dynamic_to_path(
     }
     let mut buf = Vec::new();
     al_test::output::cobertura::write_cobertura_dynamic(report, &mut buf)?;
-    tokio::fs::write(path, buf).await
+    crate::server::daemon::containment::write_no_follow(path, buf).await
 }
 pub(in crate::server::daemon) async fn dispatch_tests_run_auto(
     workspace: &std::sync::Arc<Workspace>,
@@ -1395,7 +1395,7 @@ async fn write_junit_to_path(
     }
     let mut buf = Vec::new();
     al_test::output::junit::write_junit(summaries, &mut buf)?;
-    tokio::fs::write(path, buf).await
+    crate::server::daemon::containment::write_no_follow(path, buf).await
 }
 async fn write_cobertura_to_path(
     report: &al_analysis::queries::test_coverage::CoverageReport,
@@ -1406,7 +1406,7 @@ async fn write_cobertura_to_path(
     }
     let mut buf = Vec::new();
     al_test::output::cobertura::write_cobertura(report, &mut buf)?;
-    tokio::fs::write(path, buf).await
+    crate::server::daemon::containment::write_no_follow(path, buf).await
 }
 pub(in crate::server::daemon) fn dispatch_tests_affected(
     workspace: &Workspace,
@@ -2072,7 +2072,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_capture(
             );
         }
     }
-    if let Err(error) = tokio::fs::write(&output, bytes).await {
+    if let Err(error) = crate::server::daemon::containment::write_no_follow(&output, bytes).await {
         return rpc_error(
             id,
             error_codes::INTERNAL_ERROR,

@@ -399,6 +399,17 @@ async fn run() {
                         return Err(format!("cannot read AL_DAP_SETTINGS_JSON: {error}"));
                     }
                 }
+                // The extension reads Zed's merged settings, so a value the
+                // worktree's own `.zed/settings.json` supplied arrives here
+                // looking exactly like one the user wrote.
+                let decision = al_project::trust::gate(&project_root, &mut config)
+                    .map_err(|error| error.to_string())?;
+                if let Some(advisory) = decision.advisory() {
+                    tracing::warn!("{advisory}");
+                }
+                if let Some(advisory) = al_project::trust::enforce_dotnet_path(&project_root) {
+                    tracing::warn!("{advisory}");
+                }
                 let mut project = al_project::project::find_project(&project_root)
                     .map_err(|error| error.to_string())?;
                 project

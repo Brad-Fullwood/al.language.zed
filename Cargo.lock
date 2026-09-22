@@ -218,6 +218,7 @@ dependencies = [
  "getrandom 0.2.17",
  "interprocess",
  "keyring",
+ "libc",
  "memmap2",
  "petgraph",
  "proptest",
@@ -254,10 +255,12 @@ dependencies = [
  "al-types",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]
@@ -368,6 +371,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "url",
  "windows-sys 0.61.2",
  "wiremock",
  "zeroize",

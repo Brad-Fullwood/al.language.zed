@@ -1805,7 +1805,10 @@ fn open_browser(url: &str) -> bool {
         }
         #[cfg(target_os = "windows")]
         {
-            try_spawn("cmd", &["/c", "start", url])
+            // The empty argument is `start`'s window title. Without it a
+            // quoted URL is consumed as the title and no browser opens.
+            // `oauth::open_browser` already passes it.
+            try_spawn("cmd", &["/c", "start", "", url])
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         {

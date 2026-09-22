@@ -54,6 +54,7 @@ they are confined to: the daemon changes files only inside the project it has lo
 | `clear-cache` | — | Delete the symbol index cache |
 | `daemon-shutdown` | — | Stop the existing daemon for this project without spawning one; `--json` reports whether one was running |
 | `init-debug` | — | Scaffold `.zed/debug.json` |
+| `trust` | `[PROJECT] --show --revoke` | Let this project's own files supply settings that load code, run programs or receive Business Central credentials. See [project trust](../features/project-trust.md) |
 
 ## Symbols & objects
 

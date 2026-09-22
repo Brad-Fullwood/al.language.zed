@@ -545,6 +545,9 @@ fn every_top_level_command_has_a_structured_black_box_path() {
         &["profiler-hints", "Hello World.DoSomething"],
         &["sort-members", "src/HelloWorld.al", "--dry-run"],
         &["organize-files", "--dry-run"],
+        // `--show` reports the trust state without recording anything, so the
+        // catalog is covered without writing to the user's config directory.
+        &["trust", "--show"],
         // Keep shutdown last: subsequent commands would otherwise spawn a new
         // daemon and leave it alive while the temporary project is removed.
         &["daemon-shutdown"],

@@ -204,8 +204,13 @@ pub fn cmd_pack_native(
     // Our native compiler identifies itself in the manifest's <Build>.
     let compiler_version = concat!("al-explorer/", env!("CARGO_PKG_VERSION"));
     let timestamp = al_emit::now_timestamp();
-    let config = match al_project::config::AlConfig::load_effective(&dir) {
-        Ok(config) => config,
+    let config = match al_project::trust::evaluate(&dir) {
+        Ok(evaluated) => {
+            if let Some(advisory) = evaluated.decision.advisory() {
+                eprintln!("{advisory}");
+            }
+            evaluated.config
+        }
         Err(error) => {
             return report_error(&format!("cannot load AL project settings: {error}"), json);
         }

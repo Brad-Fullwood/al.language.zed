@@ -266,6 +266,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Build provenance: `id-token` mints the Sigstore signing certificate and
+      # `attestations` records the statement against this repository.
+      id-token: write
+      attestations: write
 
     steps:
       - name: Checkout
@@ -325,6 +329,18 @@ jobs:
             echo "::error::binary-checksums.txt covers $covered of $expected platform archives — the extension would refuse to start from an uncovered one"
             exit 1
           fi
+
+      # checksums.txt and binary-checksums.txt travel beside the archives on
+      # the same release, so they show a download arrived intact and nothing
+      # more. A build attestation is signed by Sigstore against this workflow's
+      # identity, which is what `gh attestation verify --repo` checks, so it
+      # says the bytes came out of this workflow rather than merely matching a
+      # digest published next to them. Subjects come from checksums.txt, whose
+      # names are already the flattened release asset names.
+      - name: Attest the release assets
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: artifacts/checksums.txt
 
       - name: Create GitHub Release and upload assets
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2

@@ -337,5 +337,10 @@ pub fn run(cli: Cli) -> ExitCode {
             lsp::cmd_sort_members(file.as_deref(), all, dry_run, cli.json)
         }
         Commands::OrganizeFiles { dry_run } => lsp::cmd_organize_files(dry_run, cli.json),
+        Commands::Trust {
+            project,
+            show,
+            revoke,
+        } => commands::trust::cmd_trust(project.as_deref(), show, revoke, cli.json),
     }
 }

@@ -48,6 +48,8 @@ pub enum NuGetError {
     Json(#[from] serde_json::Error),
     #[error("NuGet client state lock '{0}' is poisoned")]
     StatePoisoned(&'static str),
+    #[error("No usable NuGet feed: every configured feed was refused ({0})")]
+    NoAcceptableFeed(String),
 }
 
 #[derive(Debug, Clone)]
@@ -197,8 +199,55 @@ pub struct NuGetClient {
     country: Option<String>,
 }
 
+/// Whether a feed URL may be requested.
+///
+/// https, or http to a loopback host for a feed served on the developer's own
+/// machine. Anything else is refused before the first request: a feed URL from
+/// a project file is a place the machine connects to on the project's say-so,
+/// and a plain-http feed on the local network both reaches hosts an attacker
+/// cannot and returns the object names, procedure names and documentation an
+/// agent later reads back as if they were Microsoft's.
+#[must_use]
+pub fn is_acceptable_feed_url(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url.trim()) else {
+        return false;
+    };
+    match parsed.scheme() {
+        "https" => true,
+        "http" => parsed.host_str().is_some_and(|host| {
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+        }),
+        _ => false,
+    }
+}
+
 impl NuGetClient {
     pub fn new(feeds: Vec<NuGetFeed>) -> Result<Self, NuGetError> {
+        let (feeds, refused): (Vec<NuGetFeed>, Vec<NuGetFeed>) = feeds
+            .into_iter()
+            .partition(|feed| is_acceptable_feed_url(&feed.index_url));
+        if !refused.is_empty() {
+            warn!(
+                feeds = ?refused.iter().map(|feed| feed.index_url.as_str()).collect::<Vec<_>>(),
+                "Refusing NuGet feeds that are neither https nor http to loopback"
+            );
+        }
+        // An empty list on the way in is a caller that has no feeds to offer,
+        // which is not the same as every feed being refused.
+        if feeds.is_empty() && !refused.is_empty() {
+            return Err(NuGetError::NoAcceptableFeed(
+                refused
+                    .iter()
+                    .map(|feed| feed.index_url.clone())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ));
+        }
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
             .build()?;
@@ -787,6 +836,46 @@ fn nuget_manifest_satisfies(path: &Path, package: &PackageRef) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_feed_url_must_be_https_or_loopback_http() {
+        assert!(is_acceptable_feed_url(
+            "https://dynamicssmb2.pkgs.visualstudio.com/x/v3/index.json"
+        ));
+        assert!(is_acceptable_feed_url(
+            "http://localhost:8081/v3/index.json"
+        ));
+        assert!(is_acceptable_feed_url(
+            "http://127.0.0.1:8081/v3/index.json"
+        ));
+        assert!(is_acceptable_feed_url("http://[::1]:8081/v3/index.json"));
+
+        // The finding's case: a repository pointing the machine at a host on
+        // the developer's network.
+        assert!(!is_acceptable_feed_url(
+            "http://10.0.0.5:8081/v3/index.json"
+        ));
+        assert!(!is_acceptable_feed_url(
+            "http://nuget.corp.example/index.json"
+        ));
+        assert!(!is_acceptable_feed_url("file:///etc/passwd"));
+        assert!(!is_acceptable_feed_url("gopher://example.com"));
+        assert!(!is_acceptable_feed_url(""));
+    }
+
+    #[test]
+    fn a_client_whose_every_feed_is_refused_does_not_build() {
+        let built = NuGetClient::new(vec![NuGetFeed {
+            index_url: "http://10.0.0.5:8081/v3/index.json".to_string(),
+        }]);
+        match built {
+            Err(NuGetError::NoAcceptableFeed(refused)) => {
+                assert!(refused.contains("10.0.0.5"), "{refused}")
+            }
+            Err(other) => panic!("expected NoAcceptableFeed, got {other}"),
+            Ok(_) => panic!("a cleartext feed on the local network must not build a client"),
+        }
+    }
 
     fn valid_app_bytes() -> Vec<u8> {
         app_bytes("test-id", "1.0.0.0")

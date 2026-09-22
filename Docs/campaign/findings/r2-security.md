@@ -64,7 +64,7 @@ Part B, agent-facing threat model:
   Windows equivalent. Checking `path.symlink_metadata()` for `is_symlink()` on the resolved path,
   and on every component of the re-appended tail that already exists, closes the case that
   `canonicalize` cannot see.
-- status: open
+- status: fixed ae4b7192
 
 ### [SECURITY] a cloned AL project executes code through `.vscode/settings.json` analyzer and compiler options
 
@@ -99,7 +99,7 @@ Part B, agent-facing threat model:
   per-project trust prompt, the way an editor gates workspace trust. At minimum, refuse an
   analyzer path that lies inside the project root, and refuse `compilationOptions` entries that
   begin `/analyzer`, `/ruleset` or `/assemblyprobingpaths` when they came from a project file.
-- status: open
+- status: fixed bbf25313
 
 ### [SECURITY] a repository's own launch.json is both the allowlist and the target for a Business Central bearer token
 
@@ -124,7 +124,7 @@ Part B, agent-facing threat model:
 - fix: apply a trust decision to the launch file itself, the same one the settings finding needs.
   A host that appears only in a project file, and not in user-level configuration, should require
   an explicit confirmation before a cached credential is spent on it.
-- status: open
+- status: fixed f344ab52
 
 ### [SECURITY] the inline debug host check compares host only, so `http://` downgrades past the TLS gate
 
@@ -142,7 +142,7 @@ Part B, agent-facing threat model:
   without tripping it.
 - fix: compare the scheme as well as the host, and refuse a cached credential for an `http://`
   on-premises target unless the project's own configuration uses `http://` for that host.
-- status: open
+- status: fixed f344ab52
 
 ### [SECURITY] a project can redirect symbol download to any URL, with no scheme check and no Microsoft fallback
 
@@ -169,7 +169,7 @@ Part B, agent-facing threat model:
   check, before the first request. Treat `nugetFeeds` and `useOnlyCustomFeeds` from a project
   file as needing the same trust decision as the analyzer settings, and say in the symbol-search
   result which feed a symbol came from so the agent can weight it.
-- status: open
+- status: fixed 388b9a0a
 
 ### [SECURITY] the daemon socket directory can fall into a shared temp directory on a multi-user Linux host
 
@@ -193,7 +193,7 @@ Part B, agent-facing threat model:
 - fix: refuse the fallback unless every component of the runtime directory is owned by the
   current user and not group- or world-writable, and prefer failing to start over binding in a
   directory that fails that test.
-- status: open
+- status: fixed 388b9a0a
 
 ### [SECURITY] the release checksum is not a signature, and the extension has no key to check one against
 
@@ -215,7 +215,7 @@ Part B, agent-facing threat model:
 - fix: sign the release with minisign or cosign and bake the public key into the extension, so
   the trust root is a key the maintainer holds rather than the publishing account. Until then,
   describe the check as integrity against a broken download, not authenticity.
-- status: open
+- status: fixed 7e473f90
 
 ### [SECURITY] Zed LSP settings choose the `dotnet` program and the language server binary, and Zed merges project-local settings
 
@@ -238,7 +238,7 @@ Part B, agent-facing threat model:
 - fix: resolve `binary.path` and `dotnetPath` only from user-level settings, or refuse a value
   that resolves inside the worktree. If the API cannot distinguish the two, reject any relative
   path and any absolute path under the worktree root.
-- status: open
+- status: fixed d4445c20
 
 ## Part B: the agent-facing surface
 
@@ -378,6 +378,8 @@ Each of these is a fix I tried to break and could not, with what was tried.
   `\\attacker.example\share\x` would make that call attempt an SMB connection, which is the
   classic NTLM-hash leak. The path is then rejected for being outside the roots, so the only
   effect is the lookup itself. [UNVERIFIED]: Linux-only review host, not reproduced.
+  Guarded anyway: `is_unc` refuses `\\server\share` and `\\?\UNC\…` as text, on every
+  platform, before any filesystem call, with a regression test that runs on Linux.
 - Windows drive-relative input such as `C:foo` reaches `base.join(...)`, where `PathBuf::push`
   replaces the whole path because the argument carries a prefix. The result resolves against the
   daemon's working directory rather than the project, and then fails the `starts_with` check
@@ -386,6 +388,7 @@ Each of these is a fix I tried to break and could not, with what was tried.
 - `crates/al-dap/src/dap/native_dap.rs:1812` spawns `cmd /c start <url>` without the empty title
   argument that `oauth.rs:729` passes, so a quoted URL is consumed as the window title. That reads
   as a functional bug rather than a security one, and was not reproduced. [UNVERIFIED]
+  Fixed anyway: the two call sites now pass the same argument list.
 
 ## Review complete
 
