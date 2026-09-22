@@ -96,10 +96,11 @@ live in [ROADMAP.md](../ROADMAP.md).
 
 ## Zed worktree settings and executable paths
 
-- `lsp."al-lsp".binary.path` chooses which `al-lsp` runs, and `al.dotnetPath`
+- `lsp."al-lsp".binary.path` chooses which program Zed runs and
+  `lsp."al-lsp".binary.arguments` gives it a command line. `al.dotnetPath`
   becomes the `AL_DOTNET_PATH` entry that decides which `dotnet` the toolchain
-  spawns. Both can be written in a project's `.zed/settings.json`, which ships
-  inside a clone.
+  spawns. All three can be written in a project's `.zed/settings.json`, which
+  ships inside a clone.
 - Zed itself gates this from v0.218.2-pre: an untrusted worktree starts in
   Restricted Mode, where `.zed/settings.json` is not parsed and no language
   server is spawned. See
@@ -109,18 +110,33 @@ live in [ROADMAP.md](../ROADMAP.md).
 - The extension cannot tell a user-level value from a worktree one.
   `LspSettings::for_worktree` returns them already merged, and
   `zed_extension_api` 0.7 keeps the location-taking `wit::get_settings` private,
-  so no public API asks for the user-level value alone. The extension therefore
-  refuses by location rather than by provenance: a relative path, or an absolute
-  path under the worktree root, is not used for `binary.path`, the debug adapter
-  path or `dotnetPath`. A program elsewhere on the machine still works.
-- al-lsp applies the same refusal on its own side, where it can read the
-  repository's files: an `AL_DOTNET_PATH` that this project's settings supplied,
-  or that resolves inside the project, is dropped unless the project is trusted,
-  and the toolchain falls back to `dotnet` from `PATH`. See
+  so no public API asks for the user-level value alone. It also cannot read
+  `trusted-projects.json`: it runs in Zed's WASM sandbox with no filesystem and
+  no process. And `binary.path` decides whether al-lsp runs at all, so al-lsp
+  cannot be the one to refuse it.
+- So the extension ignores `binary.path`, `binary.arguments` and the debug
+  adapter path outright, whoever wrote them. al-lsp is chosen by the extension:
+  the session cache, then `al-lsp` on `PATH`, then the cached or downloaded
+  release. Its arguments come from `al.useOfficialLsp`, which is an inert
+  toggle between two spellings the extension itself holds.
+  `settings::resolve_server_launch` is the decision, and
+  `settings_test::settings_cannot_choose_the_language_server_program_or_its_arguments`
+  is the test.
+- `binary.env` never reaches the extension: `zed_extension_api` 0.7's
+  `BinarySettings` carries `path` and `arguments` only. It is in the trust
+  digest anyway, so a newer API that exposes it does not silently widen an
+  existing record.
+- To run a specific `al-lsp` build, put it on `PATH`. A `binary.path` in user
+  settings no longer chooses it, which is the cost of the rule.
+- `dotnetPath` is different, because al-lsp is already running when it matters,
+  and al-lsp can read the repository's files. The extension filters by location
+  (`settings::is_worktree_resident_program`: a relative path, or an absolute
+  path under the worktree root, is not used), and al-lsp drops an
+  `AL_DOTNET_PATH` that this project's settings supplied unless the project is
+  trusted, falling back to `dotnet` from `PATH`. See
   [project trust](features/project-trust.md).
-- The consequence for a legitimate setup: a `dotnet` or `al-lsp` you keep inside
-  a project directory needs `al-explorer trust` on that project, or a path
-  outside it.
+- The consequence for a legitimate setup: a `dotnet` you keep inside a project
+  directory needs `al-explorer trust` on that project, or a path outside it.
 
 ## Releases
 

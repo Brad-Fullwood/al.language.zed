@@ -244,7 +244,18 @@ Tests
   treat `binary.path` the same way rather than only rejecting worktree-resident paths. Until
   the extension can consult the trust store, the safe default is to ignore both keys and
   document that `al-lsp` is chosen by the extension alone.
-- status: open
+- status: fixed. The extension ignores `binary.path`, `binary.arguments` and the debug
+  adapter path outright. The trust store is not reachable from the WASM sandbox, and
+  `binary.path` decides whether al-lsp runs at all, so al-lsp cannot refuse it on the
+  extension's behalf: the rule has to be the extension's own, and the only sound one it can
+  state alone is to ignore them. `settings::resolve_server_launch` is that decision, and
+  `src/lib.rs` calls it; `al-lsp` is chosen by the session cache, then `PATH`, then the
+  cached or downloaded release, and its arguments come from `al.useOfficialLsp`. `PATH` is
+  the escape hatch, which `manual_install_hint` now says instead of offering a `binary.path`
+  snippet. Documented in `Docs/features/project-trust.md`,
+  `Docs/current-limitations.md#zed-worktree-settings-and-executable-paths`, `README.md` and
+  `Docs/reference/lsp-commands.md`. `binary.env` never reaches the extension:
+  `zed_extension_api` 0.7's `BinarySettings` has `path` and `arguments` only.
 
 ### [SECURITY] `binary.arguments` is not in the trust digest, so trust granted once never goes stale when the payload changes
 
@@ -407,7 +418,18 @@ Tests
 - fix: test the decision, not the helper. Add a test over the value the extension actually
   hands Zed that fails when a repository's `.zed/settings.json` can choose the command or its
   arguments, and rename the helper so its result cannot be mistaken for an authorisation.
-- status: open
+- status: fixed. `settings_test::settings_cannot_choose_the_language_server_program_or_its_arguments`
+  runs `resolve_server_launch` with the finding's own payload and asserts the program is
+  `None` and no supplied argument reaches the command line;
+  `an_absolute_program_outside_the_worktree_is_refused_too` covers `/usr/bin/dotnet`,
+  `/opt/al-lsp/al-lsp` and `/bin/sh`, which is what the old assertions pinned the other way
+  up; `the_official_lsp_toggle_still_chooses_the_arguments` keeps the one switch that does
+  work. The helper test is renamed `a_dotnet_path_inside_the_worktree_is_refused` and says in
+  its doc comment that a false answer is not an authorisation. The helper itself keeps its
+  name: renaming a `pub fn` across `settings.rs`, `lib.rs` and `settings_test.rs` would
+  collide with the concurrent path-normalisation work in the same file, and the doc comment
+  on `is_worktree_resident_program` now states the limit in full. `dotnetPath` is its only
+  remaining caller, where `trust::enforce_dotnet_path` is the real gate.
 
 ## Verified sound
 

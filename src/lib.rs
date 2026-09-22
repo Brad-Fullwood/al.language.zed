@@ -54,16 +54,13 @@ fn is_safe_version(v: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
 }
 
-fn manual_install_hint(os: zed::Os) -> String {
-    let example_path = match os {
-        zed::Os::Windows => r"C:\\path\\to\\al-lsp.exe",
-        _ => "/path/to/al-lsp",
-    };
+fn manual_install_hint(_os: zed::Os) -> String {
     format!(
-        "Download a build manually from https://github.com/{GITHUB_REPO}/releases and \
-         point Zed at it via settings: \
-         {{\"lsp\": {{\"al-lsp\": {{\"binary\": {{\"path\": \"{example_path}\"}}}}}}}}. \
-         Alternatively install al-lsp onto your PATH (e.g. `cargo install`)."
+        "Download a build manually from https://github.com/{GITHUB_REPO}/releases and put \
+         al-lsp on your PATH, or install it there (e.g. `cargo install`). PATH is how a \
+         specific build is chosen: the extension ignores \
+         `lsp.\"al-lsp\".binary.path` and `binary.arguments`, because Zed hands them over \
+         merged with a worktree's own settings and they name a program to run."
     )
 }
 
@@ -525,27 +522,20 @@ impl zed::Extension for AlExtension {
     ) -> Result<zed::Command> {
         let settings = LspSettings::for_worktree(language_server_id.as_ref(), worktree)?;
 
-        // Explicit binary arguments take precedence over the backend setting.
-        let user_args = settings::resolve_server_args(
+        // `binary.path` and `binary.arguments` choose a program and its
+        // command line, and Zed hands them over merged, with no way to tell a
+        // user-written value from one a cloned repository wrote. Both are
+        // ignored. See `settings::resolve_server_launch`.
+        let launch = settings::resolve_server_launch(
+            settings.binary.as_ref().and_then(|b| b.path.as_deref()),
             settings
                 .binary
                 .as_ref()
-                .and_then(|b| b.arguments.as_ref())
-                .map(|args| args.to_vec()),
+                .and_then(|b| b.arguments.as_deref()),
             settings.settings.as_ref(),
         );
 
-        // A program that lives inside the worktree is one the clone brought
-        // with it, and `binary.path` returns from `find_or_download_binary`
-        // before any checksum verification. See
-        // `settings::is_worktree_resident_program`.
         let worktree_root = worktree.root_path();
-        let user_configured_path = settings
-            .binary
-            .as_ref()
-            .and_then(|b| b.path.as_ref())
-            .map(|p| p.to_string())
-            .filter(|path| !settings::is_worktree_resident_program(path, &worktree_root));
         let dotnet_path = settings::resolve_dotnet_path(settings.settings.as_ref())
             .filter(|path| !settings::is_worktree_resident_program(path, &worktree_root));
         self.cached_dotnet_path = dotnet_path.clone();
@@ -553,12 +543,12 @@ impl zed::Extension for AlExtension {
         let binary_path = self.find_or_download_binary(
             Some(language_server_id),
             Some(worktree),
-            user_configured_path.as_deref(),
+            launch.program.as_deref(),
         )?;
 
         Ok(zed::Command {
             command: binary_path,
-            args: user_args,
+            args: launch.args,
             env: dotnet_path
                 .map(|path| vec![("AL_DOTNET_PATH".to_string(), path)])
                 .unwrap_or_default(),
@@ -682,20 +672,20 @@ impl zed::Extension for AlExtension {
         &mut self,
         _adapter_name: String,
         config: zed::DebugTaskDefinition,
-        user_provided_debug_adapter_path: Option<String>,
+        _user_provided_debug_adapter_path: Option<String>,
         worktree: &zed::Worktree,
     ) -> Result<zed::DebugAdapterBinary> {
-        // Resolve al-lsp via the same chain used for LSP: user config →
-        // in-memory session cache → PATH → on-disk cached download (offline) →
-        // GitHub release download. No LanguageServerId exists on the DAP path
-        // (and the released API has no way to construct one), so download
-        // progress is not surfaced in the status UI — see
-        // find_or_download_binary's status_id doc.
-        let worktree_root = worktree.root_path();
-        let adapter_path = user_provided_debug_adapter_path
-            .filter(|path| !settings::is_worktree_resident_program(path, &worktree_root));
-        let al_lsp_path =
-            self.find_or_download_binary(None, Some(worktree), adapter_path.as_deref())?;
+        // Resolve al-lsp via the same chain used for LSP: in-memory session
+        // cache → PATH → on-disk cached download (offline) → GitHub release
+        // download. No LanguageServerId exists on the DAP path (and the
+        // released API has no way to construct one), so download progress is
+        // not surfaced in the status UI — see find_or_download_binary's
+        // status_id doc.
+        //
+        // The adapter path comes from the debug scenario, which a repository's
+        // `.zed/debug.json` writes, and it names the program to run. Same rule
+        // as `binary.path`: ignored. See `settings::resolve_server_launch`.
+        let al_lsp_path = self.find_or_download_binary(None, Some(worktree), None)?;
 
         // Read the same lsp."al-lsp".settings block the LSP uses so the
         // al.useOfficialDap toggle lives alongside al.useOfficialLsp. The DAP

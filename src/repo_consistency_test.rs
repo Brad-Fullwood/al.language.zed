@@ -288,9 +288,11 @@ fn github_repo_is_owner_slash_repo() {
 /// The reported new-user blocker is that when NO GitHub release exists yet,
 /// `latest_github_release(...)?` propagated a raw, opaque error (e.g. "no
 /// releases found") with zero guidance. That path must now be just as
-/// actionable as the asset-not-found path: it must name the releases URL, give
-/// a copy-paste `binary.path` settings snippet, and mention the PATH fallback,
-/// so a fresh user whose server fails to spawn knows exactly how to recover.
+/// actionable as the asset-not-found path: it must name the releases URL and
+/// the PATH install, so a fresh user whose server fails to spawn knows how to
+/// recover. It must not offer `binary.path`, which the extension ignores (see
+/// `settings::resolve_server_launch`): a recovery step that does nothing is
+/// worse than none.
 #[test]
 fn release_lookup_failure_is_actionable() {
     for os in [zed::Os::Linux, zed::Os::Mac, zed::Os::Windows] {
@@ -305,30 +307,20 @@ fn release_lookup_failure_is_actionable() {
             "release-lookup error must link the releases page: {msg}"
         );
         assert!(
-            msg.contains("\"al-lsp\"") && msg.contains("\"path\""),
-            "release-lookup error must include a binary.path settings snippet: {msg}"
+            msg.contains("PATH"),
+            "release-lookup error must name the PATH install: {msg}"
         );
         assert!(
-            msg.contains("PATH"),
-            "release-lookup error must mention the PATH fallback: {msg}"
+            !msg.contains("\"path\": \""),
+            "release-lookup error must not offer a binary.path snippet the extension \
+             ignores: {msg}"
         );
     }
-
-    let win = release_lookup_failure_message(zed::Os::Windows, "x");
-    assert!(
-        win.contains("al-lsp.exe"),
-        "Windows release-lookup error must reference al-lsp.exe: {win}"
-    );
-    let nix = release_lookup_failure_message(zed::Os::Linux, "x");
-    assert!(
-        nix.contains("/path/to/al-lsp") && !nix.contains(".exe"),
-        "Unix release-lookup error must use a POSIX example path: {nix}"
-    );
 }
 
 /// The asset-not-found message must keep its actionable recovery guidance
-/// (releases URL + settings snippet + PATH fallback). This pins the shared
-/// `manual_install_hint` contract so a refactor cannot silently strip it.
+/// (releases URL + PATH install). This pins the shared `manual_install_hint`
+/// contract so a refactor cannot silently strip it.
 #[test]
 fn asset_not_found_is_actionable() {
     let msg = spawn_failure_message(zed::Os::Linux, "al-linux-x86_64.tar.gz");
@@ -337,10 +329,8 @@ fn asset_not_found_is_actionable() {
         "asset-not-found error must name the missing asset: {msg}"
     );
     assert!(
-        msg.contains(&format!("https://github.com/{GITHUB_REPO}/releases"))
-            && msg.contains("\"path\"")
-            && msg.contains("PATH"),
-        "asset-not-found error must retain releases URL + settings snippet + PATH fallback: {msg}"
+        msg.contains(&format!("https://github.com/{GITHUB_REPO}/releases")) && msg.contains("PATH"),
+        "asset-not-found error must retain the releases URL and the PATH install: {msg}"
     );
 }
 

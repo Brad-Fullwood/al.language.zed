@@ -280,14 +280,18 @@ The extension manifest registers:
 
 The Zed extension resolves `al-lsp` in this order:
 
-1. `lsp.al-lsp.binary.path` from user settings (or the equivalent DAP/MCP-specific
-   override) — always scoped to the surface that configured it, never shared
-   with the others.
-2. An in-memory cache from an earlier resolution in the same Zed session.
-3. `al-lsp` on `PATH`.
-4. A previously downloaded extension binary already on disk, reused without any
+1. An in-memory cache from an earlier resolution in the same Zed session.
+2. `al-lsp` on `PATH`.
+3. A previously downloaded extension binary already on disk, reused without any
    network access — this is what lets a cached install start fully offline.
-5. The latest GitHub release asset for the current platform (requires network).
+4. The latest GitHub release asset for the current platform (requires network).
+
+`lsp.al-lsp.binary.path`, `lsp.al-lsp.binary.arguments` and the debug adapter path
+are not in that list. Zed hands the extension one value with a worktree's
+`.zed/settings.json` merged into the user's own, and those keys name a program
+and its command line, so a clone could choose what runs on open. `PATH` is how
+you point at a specific build. See
+[current limitations](Docs/current-limitations.md#zed-worktree-settings-and-executable-paths).
 
 ### LSP Features
 
@@ -453,19 +457,8 @@ expectation. LSP commands and the **AL Tools** MCP server cover the same operati
 
 ## Zed Settings
 
-Minimal manual binary override:
-
-```json
-{
-  "lsp": {
-    "al-lsp": {
-      "binary": {
-        "path": "/path/to/al-lsp"
-      }
-    }
-  }
-}
-```
+To run a build of your own, put it on `PATH`. The extension ignores
+`lsp.al-lsp.binary.path` and `lsp.al-lsp.binary.arguments`.
 
 Common AL settings:
 

@@ -130,8 +130,20 @@ download from a BC server.
 
 ## Limits
 
-The Zed extension resolves `binary.path` (which `al-lsp` binary runs) and `dotnetPath` (which
-`dotnet` the toolchain spawns) from `LspSettings::for_worktree`, and the 0.7 extension API
-gives it one merged value with no provenance. See
-[current limitations](../current-limitations.md#zed-worktree-settings-and-executable-paths)
-for what that means and what al-lsp does about it.
+The Zed extension reads `binary.path`, `binary.arguments` and `dotnetPath` from
+`LspSettings::for_worktree`, and the 0.7 extension API gives it one merged value with no
+provenance. The extension also cannot read this trust store: it runs in Zed's WASM sandbox,
+with no filesystem and no process.
+
+`binary.path` and `binary.arguments` name a program and its command line, and `binary.path`
+decides whether al-lsp runs at all, so al-lsp cannot refuse them on the extension's behalf.
+The extension ignores both, and the debug adapter path with them. Which `al-lsp` runs is the
+extension's own decision: the session cache, then `al-lsp` on `PATH`, then the cached or
+downloaded release. Put a specific build on `PATH` to use it.
+
+`binary.arguments`, `binary.env` and `lsp.al-lsp.initialization_options` are in the digest
+even so. A project trusted while `binary.path` said `/bin/sh` went stale only when the path
+changed, never when the arguments did, and the arguments are the setting.
+
+See [current limitations](../current-limitations.md#zed-worktree-settings-and-executable-paths)
+for `dotnetPath`, which al-lsp does gate on its own side.

