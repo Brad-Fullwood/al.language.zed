@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-24 08:00 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-24 11:30 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -79,6 +79,7 @@ round on the areas with the most findings.
 
 ## Done
 
+- 2026-09-24 r5 dogfood closed: 31 of 32 findings fixed, 1 partly (`findings/r5-dogfood.md`). Table and table-extension changes reach their tests, plain Insert/Modify/Delete raise table events in the call graph, `graph --scope workspace`, `impact` call/write/read, LSP-shaped JSON and readable text for completions/hints/symbols/folding, suggest-event says why a trace is partial.
 - 2026-09-24 features and CI: all six CI jobs green on PR 30 (first time this campaign; ubuntu ShellCheck, Windows data directory and output-pipe inheritance, macOS `/var` and `/tmp` symlinks). `package-diff <old.app> <new.app>` (Base Application 25 to 26: 1,137 changes, 7 s, only the ones the workspace uses), `obsolete --used`, a `.al` file watcher in the LSP server, a text outline for `symbols`, and the `bc-upgrade-impact` skill rewritten around them (it had told agents `obsolete` lists workspace uses and `breaking` diffs dependencies; neither did).
 - 2026-09-24 dogfood pass: a project scaffolded with `al-explorer new` against Base Application 26 symbols from the public NuGet feed (`Docs/campaign/LOG.md`). Fixed: `download-symbols` never returned after a successful download (the daemon waited on its own project read guard), the client failed a request on EINTR, the daemon never saw files written after it started (now an incremental scan per request), native compile rejected fields a table extension adds (ALN2404), go-to-definition on such a field opened the package outline, `free-ids` gave dependency tables field numbers outside `idRanges` and listed workspace extensions twice, `--fields` printed `?` columns in text mode, `al-explorer new` failed outside an AL project and wrote the nil GUID as app id, the daemon startup error lost the file it named. CI: ShellCheck SC2015, Windows data directory, macOS `/var` symlink refusal.
 - 2026-09-24 session: merged `fix-formatter-idempotence` (the persisted seed passes), `fix-ghost-diagnostics` and `slop-splits-2`. Diagnostics publishes now hold the generation read lock from the currency check through the send, so a didClose cannot slip between them (the harness test passes 32 of 32 at 12-way load). One Windows browser opener in al-types (`rundll32 url.dll,FileProtocolHandler`, http(s) only) replaces the two `cmd /c start` copies that split OAuth and debugger URLs at `&`. `pack-native --validate` runs the project's analyzers through the trust gate, `--analyzers` overrides. The harness judges a binary stale only against the crates it links. Review A: `extract_table_relation_table` removed, `PermissionAuditReport` doc restated. Gates: fmt and clippy clean, 95 suites, 5011 passed, 1 failed (`a_failed_file_write_leaves_the_whole_workspace_unchanged`, which needs a non-root user: the cloud container runs as root, which writes through a 0555 directory).
