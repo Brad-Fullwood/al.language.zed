@@ -2043,13 +2043,30 @@ mod runtime_dir_tests {
         let tmp = tempfile::tempdir().unwrap();
         let elsewhere = tmp.path().join("elsewhere");
         std::fs::create_dir(&elsewhere).unwrap();
-        let link = tmp.path().join("runtime");
+        let link = tmp.path().join("al-lsp");
         std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
 
-        let error = ensure_private_dir(&link.join("al-lsp")).unwrap_err();
+        let error = ensure_private_dir(&link).unwrap_err();
 
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
         assert!(error.to_string().contains("symbolic link"), "{error}");
+    }
+
+    /// macOS: `TMPDIR` is under `/var`, a root-owned link to `/private/var`.
+    /// A link this user or root owns, in a directory that passed, can only be
+    /// changed by them, so the runtime directory beneath it is accepted once
+    /// the directories it resolves to pass too.
+    #[test]
+    fn accepts_a_runtime_directory_under_a_link_this_user_owns() {
+        let tmp = tempfile::tempdir().unwrap();
+        let private = tmp.path().join("private");
+        std::fs::create_dir(&private).unwrap();
+        let var = tmp.path().join("var");
+        std::os::unix::fs::symlink(&private, &var).unwrap();
+
+        ensure_private_dir(&var.join("al-lsp")).unwrap();
+
+        assert!(private.join("al-lsp").is_dir());
     }
 
     /// The finding's case: on a shared host with `XDG_RUNTIME_DIR` unset the

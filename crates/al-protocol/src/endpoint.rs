@@ -71,14 +71,48 @@ pub fn check_directory_owner(dir: &Path) -> std::io::Result<()> {
 
 /// Every existing ancestor of `dir`, root first, so a refusal names the
 /// outermost directory that fails rather than the leaf inside it.
+///
+/// A symlinked component is followed rather than refused when root or this
+/// user owns the link: its containing directory has already passed, so
+/// nobody else can replace it, and every directory on the path it resolves to
+/// is checked the same way. macOS needs this, since `TMPDIR` lives under
+/// `/var` and `/tmp`, which are root-owned links into `/private`; refusing
+/// every link kept the daemon from starting there at all. The caller still
+/// refuses a link at the leaf itself.
 #[cfg(unix)]
 fn check_ancestors(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
     let mut walked = std::path::PathBuf::new();
     for component in dir.components() {
         walked.push(component.as_os_str());
-        if walked.exists() {
+        let Ok(metadata) = std::fs::symlink_metadata(&walked) else {
+            continue;
+        };
+        if !metadata.file_type().is_symlink() {
             check_directory_owner(&walked)?;
+            continue;
         }
+        // Safety: `geteuid` reads this process's own effective uid and cannot fail.
+        let me = unsafe { libc::geteuid() };
+        let owner = metadata.uid();
+        if owner != 0 && owner != me {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "the daemon runtime directory '{}' is a symbolic link owned by uid {owner}, \
+                     not by you (uid {me}) or root",
+                    walked.display()
+                ),
+            ));
+        }
+        let resolved = std::fs::canonicalize(&walked)?;
+        let mut prefix = std::path::PathBuf::new();
+        for resolved_component in resolved.components() {
+            prefix.push(resolved_component.as_os_str());
+            check_directory_owner(&prefix)?;
+        }
+        walked = resolved;
     }
     Ok(())
 }
