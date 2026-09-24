@@ -186,6 +186,7 @@ pub fn cmd_pack_native(
     project_dir: Option<&str>,
     out: Option<&str>,
     validate: bool,
+    analyzers: Option<&str>,
     json: bool,
 ) -> ExitCode {
     let dir = match project_dir {
@@ -276,7 +277,7 @@ pub fn cmd_pack_native(
     // This keeps syntax/project failures fast and makes `--validate` an
     // explicit compatibility oracle rather than the primary verifier.
     if validate {
-        if let Some(code) = validate_with_alc(&dir, json) {
+        if let Some(code) = validate_with_alc(&dir, analyzers, json) {
             return code;
         }
     }
@@ -361,12 +362,51 @@ fn create_validation_tempdir() -> std::io::Result<tempfile::TempDir> {
     tempfile::tempdir()
 }
 
+/// The analyzers `--validate` asks alc to run: the `--analyzers` list when one
+/// was given (empty entries dropped, so an empty value means none), otherwise
+/// the project's `al.codeAnalyzers` as the trust gate left it.
+fn validation_analyzers(requested: Option<&str>, project_setting: &[String]) -> Vec<String> {
+    match requested {
+        Some(list) => list
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .collect(),
+        None => project_setting.to_vec(),
+    }
+}
+
 /// Compile `dir` with the Microsoft AL compiler (alc) and, if it reports
 /// errors (or no toolchain is available), return an exit code so the caller
 /// refuses to emit. Returns `None` when validation passes and the native emit
 /// should proceed. Runs in a temp copy of the project so alc's output never
 /// pollutes the user's tree.
-fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
+///
+/// alc runs with the project's own analyzers and compilation settings. It used
+/// to get no analyzer list, which the build service reads as every installed
+/// analyzer, so a project that plain alc compiles failed on cop errors from
+/// analyzers it never enabled.
+fn validate_with_alc(
+    dir: &std::path::Path,
+    analyzers: Option<&str>,
+    json: bool,
+) -> Option<ExitCode> {
+    let settings = match al_project::trust::evaluate(dir) {
+        Ok(settings) => settings,
+        Err(error) => {
+            return Some(report_error(
+                &format!("reading the project's AL settings for --validate: {error}"),
+                json,
+            ));
+        }
+    };
+    if !json {
+        if let Some(advisory) = settings.decision.advisory() {
+            eprintln!("{advisory}");
+        }
+    }
+    let analyzers = validation_analyzers(analyzers, &settings.config.code_analyzers);
     let toolchain = match al_project::toolchain::find_toolchain() {
         Ok(t) => t,
         Err(e) => {
@@ -431,8 +471,8 @@ fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
         toolchain: Some(&toolchain),
         dependency_packages: None,
         package_cache: Some(&pkg_cache),
-        analyzers: None,
-        config: al_compile::CompilationConfigOptions::default(),
+        analyzers: Some(&analyzers),
+        config: al_compile::CompilationConfigOptions::from(&settings.config),
     }));
     // `tmp` (the `TempDir` guard) is dropped — and the directory removed —
     // when this function returns, on every path below.
@@ -662,5 +702,36 @@ mod validation_tempdir_tests {
             Some(pid_name.as_str()),
             "must not reproduce the old predictable pid-based directory name"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validation_analyzers;
+
+    fn project_setting() -> Vec<String> {
+        vec!["CodeCop".to_string(), "UICop".to_string()]
+    }
+
+    #[test]
+    fn validation_uses_the_project_setting_without_a_flag() {
+        assert_eq!(
+            validation_analyzers(None, &project_setting()),
+            project_setting()
+        );
+    }
+
+    #[test]
+    fn an_explicit_list_replaces_the_project_setting() {
+        assert_eq!(
+            validation_analyzers(Some(" AppSourceCop , PerTenantCop,"), &project_setting()),
+            vec!["AppSourceCop".to_string(), "PerTenantCop".to_string()]
+        );
+    }
+
+    #[test]
+    fn an_empty_value_runs_no_analyzer() {
+        assert!(validation_analyzers(Some(""), &project_setting()).is_empty());
+        assert!(validation_analyzers(Some(" , "), &project_setting()).is_empty());
     }
 }

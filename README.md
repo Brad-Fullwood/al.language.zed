@@ -339,10 +339,10 @@ complete shared daemon command catalog.
 
 The CLI command surface includes:
 
-- Project/setup: `setup`, `doctor`, `diag`, `new`, `packages`, `deps`, `deps-graph`, `clear-cache`, `daemon-shutdown`, `init-debug`.
-- Build/toolchain: `compile`, `pack-native`, `package`, `download-symbols`, `authenticate`.
+- Project/setup: `setup`, `doctor`, `diag`, `new`, `packages`, `deps`, `deps-graph`, `clear-cache`, `daemon-shutdown`, `init-debug`, `trust`.
+- Build/toolchain: `compile`, `pack-native`, `package`, `publish`, `download-symbols`, `authenticate`.
 - LSP-style queries: `hover`, `definition`, `references`, `signature`, `completions`, `symbols`, `folding`, `tokens`, `parse`, `rename`, `hints`.
-- Symbols and objects: `search`, `object`, `by-id`, `source`, `composed`, `builtins`, `rules`, `error-codes`, `generate-completions`, `version`.
+- Symbols and objects: `search`, `object`, `by-id`, `source`, `location`, `composed`, `builtins`, `rules`, `error-codes`, `generate-completions`, `version`.
 - Events and insight: `events`, `subscribers`, `event-source`, `trace`, `intercept`, `entrypoints`, `graph`, `impact`, `suggest-event`, `insight-stats`.
 - Analysis: `metrics`, `dead-code`, `sql-scan`, `duplicates`, `arch-lint`, `native-check`, `free-ids`, `breaking`, `upgrade`, `obsolete`, `audit-data`, `permission-audit`, `profiler-hints`.
 - Formatting/refactoring/codegen: `format`, `lint`, `fix`, `permissions`, `generate`, `add-application-area`, `add-tooltips`, `add-data-classification`, `sort-members`, `organize-files`.

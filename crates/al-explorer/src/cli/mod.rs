@@ -128,7 +128,14 @@ pub fn run(cli: Cli) -> ExitCode {
             project,
             out,
             validate,
-        } => build::cmd_pack_native(project.as_deref(), out.as_deref(), validate, cli.json),
+            analyzers,
+        } => build::cmd_pack_native(
+            project.as_deref(),
+            out.as_deref(),
+            validate,
+            analyzers.as_deref(),
+            cli.json,
+        ),
         Commands::Lint {
             file,
             all,

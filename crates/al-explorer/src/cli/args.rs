@@ -207,6 +207,12 @@ Examples:
         /// Requires a discovered toolchain (AL_TOOL_PATH or an installed ALTool).
         #[arg(long)]
         validate: bool,
+        /// Code analyzers alc runs during --validate (comma-separated, e.g.
+        /// CodeCop,UICop). Default: the project's `al.codeAnalyzers`, with any
+        /// custom analyzer an untrusted project names left out. An empty value
+        /// runs none.
+        #[arg(long, requires = "validate")]
+        analyzers: Option<String>,
     },
     /// Run native lint rules on AL file(s)
     #[command(after_help = "\
