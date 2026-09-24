@@ -305,6 +305,17 @@ fn result_schema(tool_name: &str) -> serde_json::Value {
             serde_json::json!({
                 "integrationPoints": {"type": "array", "items": {"type": "object"}},
                 "partial": {"type": "boolean"},
+                "depthCut": {
+                    "type": "boolean",
+                    "description": "A branch was cut at maxDepth calls; start deeper to see past it.",
+                },
+                "maxDepth": {"type": "integer"},
+                "withoutSource": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Procedures on the trace whose source is not loaded, so the events they raise are not followed.",
+                },
+                "withoutSourceCount": {"type": "integer"},
             }),
             &["integrationPoints", "partial"],
         ),
