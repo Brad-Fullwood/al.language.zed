@@ -263,7 +263,7 @@ pub(crate) fn verify_project_objects(
     verify_permissions(objects, external, &mut diagnostics);
     verify_local_interface_contracts(objects, &mut diagnostics);
     verify_field_property_typos(objects, &mut diagnostics);
-    verify_local_procedure_semantics(objects, &mut diagnostics);
+    verify_local_procedure_semantics(objects, external, &mut diagnostics);
     verify_provable_body_bindings(objects, external, &mut diagnostics);
     verify_local_event_contracts(objects, &mut diagnostics);
     diagnostics.sort_by(|a, b| {
@@ -563,7 +563,38 @@ fn verify_page_change_contracts(objects: &[EmitObject], out: &mut Vec<Verificati
 /// the method/attribute symbols extracted by `al-syntax`.  Cross-package calls
 /// intentionally remain outside this pass: a package SymbolReference does not
 /// retain enough source-level overload/body information to prove them.
-fn verify_local_procedure_semantics(objects: &[EmitObject], out: &mut Vec<VerificationDiagnostic>) {
+fn verify_local_procedure_semantics(
+    objects: &[EmitObject],
+    external: &ExternalSymbols,
+    out: &mut Vec<VerificationDiagnostic>,
+) {
+    // The procedures each known table declares, its extensions' included:
+    // `Cust.SelectCustomer(Cust)` calls a procedure of table Customer, not a
+    // built-in record method, and was refused as unknown.
+    let mut known_tables: HashSet<String> = external
+        .object_kinds
+        .iter()
+        .filter(|(kind, _)| *kind == ObjectKind::Table)
+        .map(|(_, name)| name.clone())
+        .collect();
+    let mut table_methods = external.table_methods.clone();
+    for object in objects {
+        let table = match object.entry.kind {
+            ObjectKind::Table => {
+                known_tables.insert(object.entry.name.to_ascii_lowercase());
+                object.entry.name.as_str()
+            }
+            ObjectKind::TableExtension => match object.entry.extends.as_deref() {
+                Some(extended) => extended,
+                None => continue,
+            },
+            _ => continue,
+        };
+        let table = table.unquote_identifier().to_ascii_lowercase();
+        for method in &object.entry.methods {
+            table_methods.insert((table.clone(), method.name.to_ascii_lowercase()));
+        }
+    }
     for object in objects {
         // Unqualified invocations bind to the containing object, not to a
         // coincidentally named procedure in another workspace object.
@@ -582,10 +613,18 @@ fn verify_local_procedure_semantics(objects: &[EmitObject], out: &mut Vec<Verifi
             };
             for site in call_sites(body) {
                 if let Some(receiver) = &site.receiver {
-                    let is_record = vars
+                    // Only a table this build knows can be said to lack a
+                    // method; an unknown one is ALN2401's to report.
+                    let table = vars
                         .get(&receiver.to_ascii_lowercase())
-                        .is_some_and(|ty| record_subtype(ty).is_some());
-                    if is_record && !known_record_method(&site.name) {
+                        .and_then(|ty| record_subtype(ty))
+                        .map(|table| table.unquote_identifier().to_ascii_lowercase())
+                        .filter(|table| known_tables.contains(table));
+                    let unknown = table.is_some_and(|table| {
+                        !known_record_method(&site.name)
+                            && !table_methods.contains(&(table, site.name.to_ascii_lowercase()))
+                    });
+                    if unknown {
                         out.push(VerificationDiagnostic::error_at_source_offset(
                             object,
                             body_offset + site.offset,

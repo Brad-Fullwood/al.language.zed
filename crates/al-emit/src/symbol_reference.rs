@@ -59,6 +59,9 @@ pub struct ExternalSymbols {
     /// package. Used to reject an explicitly declared dependency that is absent
     /// from `.alpackages` instead of emitting against an incomplete symbol set.
     pub package_ids: std::collections::HashSet<String>,
+    /// `(table, procedure)` for every procedure a dependency's table, or a
+    /// dependency's extension of a table, declares. Lowercase.
+    pub table_methods: std::collections::HashSet<(String, String)>,
 }
 
 const OBJECT_GROUPS: &[(&str, Option<ObjectKind>, bool)] = &[

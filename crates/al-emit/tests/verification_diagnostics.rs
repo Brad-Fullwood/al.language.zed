@@ -258,6 +258,49 @@ fn aln2209_unknown_method_on_a_record_and_unknown_local_call() {
     assert_reports(&unqualified, "ALN2209");
 }
 
+/// A table's own procedures, and those its extensions add, are methods of a
+/// Record of that table: `Cust.SelectCustomer(Cust);` was refused as
+/// unknown, so no extension calling a table procedure could be built.
+#[test]
+fn aln2209_accepts_procedures_the_table_and_its_extensions_declare() {
+    let codes = codes_for(&[
+        (
+            "T.Table.al",
+            "table 50100 \"Proc Table\"\n\
+             {\n\
+             \x20   fields { field(1; \"No.\"; Code[20]) { } }\n\
+             \x20   procedure SelectIt(var Rec: Record \"Proc Table\")\n\
+             \x20   begin\n\
+             \x20   end;\n\
+             }\n",
+        ),
+        (
+            "T.TableExt.al",
+            "tableextension 50101 \"Proc Ext\" extends \"Proc Table\"\n\
+             {\n\
+             \x20   procedure HasAddress(): Boolean\n\
+             \x20   begin\n\
+             \x20       exit(true);\n\
+             \x20   end;\n\
+             }\n",
+        ),
+        (
+            "C.Codeunit.al",
+            "codeunit 50102 C\n\
+             {\n\
+             \x20   procedure P()\n\
+             \x20   var\n\
+             \x20       Rec: Record \"Proc Table\";\n\
+             \x20   begin\n\
+             \x20       Rec.SelectIt(Rec);\n\
+             \x20       Rec.HasAddress();\n\
+             \x20   end;\n\
+             }\n",
+        ),
+    ]);
+    assert_silent(&codes, "ALN2209");
+}
+
 #[test]
 fn aln2203_and_aln2204_missing_and_valueless_exit_in_a_returning_procedure() {
     let missing = codes_for(&[(

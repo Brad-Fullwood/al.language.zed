@@ -191,6 +191,10 @@ fn parse_external_symbols(package_paths: &[PathBuf]) -> Result<ExternalSymbols, 
                         .entry((obj.name.to_lowercase(), f.name.to_lowercase()))
                         .or_insert_with(|| f.type_name.clone());
                 }
+                for m in &obj.methods {
+                    ext.table_methods
+                        .insert((obj.name.to_lowercase(), m.name.to_lowercase()));
+                }
             }
             // A dependency's table extension adds its fields to the table it
             // extends, and this app may read and write them too.
@@ -200,6 +204,10 @@ fn parse_external_symbols(package_paths: &[PathBuf]) -> Result<ExternalSymbols, 
                         ext.field_types
                             .entry((extended.to_lowercase(), f.name.to_lowercase()))
                             .or_insert_with(|| f.type_name.clone());
+                    }
+                    for m in &obj.methods {
+                        ext.table_methods
+                            .insert((extended.to_lowercase(), m.name.to_lowercase()));
                     }
                 }
             }
