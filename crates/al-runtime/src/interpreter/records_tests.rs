@@ -2204,3 +2204,98 @@ fn assert_expected_error_matches_a_substring_of_the_caught_error() {
         "expected a thrown-nothing failure, got: {none}"
     );
 }
+
+const POINT_LEDGER: &str = r#"table 50150 "Point Ledger"
+{
+    fields
+    {
+        field(1; "Entry No."; Integer) { }
+        field(2; Member; Code[20]) { }
+        field(3; Points; Decimal) { }
+    }
+    keys
+    {
+        key(PK; "Entry No.") { Clustered = true; }
+    }
+}
+"#;
+
+const POINT_CALC: &str = r#"codeunit 50151 "Point Calc"
+{
+    procedure Add(EntryNo: Integer; MemberCode: Code[20]; Amount: Decimal)
+    var
+        Ledger: Record "Point Ledger";
+    begin
+        Ledger.Init();
+        Ledger."Entry No." := EntryNo;
+        Ledger.Member := MemberCode;
+        Ledger.Points := Amount;
+        Ledger.Insert();
+    end;
+
+    procedure BalanceOfA(): Decimal
+    var
+        Ledger: Record "Point Ledger";
+    begin
+        Add(1, 'A', 10);
+        Add(2, 'B', 5);
+        Add(3, 'A', 32.5);
+        Ledger.SetRange(Member, 'A');
+        Ledger.CalcSums(Points);
+        exit(Ledger.Points);
+    end;
+
+    procedure NothingMatches(): Decimal
+    var
+        Ledger: Record "Point Ledger";
+    begin
+        Add(1, 'A', 10);
+        Ledger.SetRange(Member, 'Z');
+        Ledger.CalcSums(Points);
+        exit(Ledger.Points);
+    end;
+}
+"#;
+
+/// CalcSums was unsupported, so any test using it was routed to live BC.
+#[test]
+fn calcsums_totals_the_filtered_rows() {
+    let run_calc = |proc: &str| {
+        run(
+            &[("/ws/Ledger.al", POINT_LEDGER), ("/ws/Calc.al", POINT_CALC)],
+            "Point Calc",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(ok(run_calc("BalanceOfA")), Value::Decimal(dec!(42.5)));
+    assert_eq!(ok(run_calc("NothingMatches")), Value::Decimal(dec!(0)));
+}
+
+/// `case true of Points >= 1000:` evaluated only `Points` of each label and
+/// compared it with `true`, so every value fell through to `else`.
+#[test]
+fn case_true_of_compares_each_label_expression() {
+    let src = r#"codeunit 50160 Probe
+{
+    procedure Tier(Points: Decimal): Text
+    begin
+        case true of
+            Points >= 1000:
+                exit('GOLD');
+            Points >= 100:
+                exit('SILVER');
+            else
+                exit('NONE');
+        end;
+    end;
+}
+"#;
+    let tier = |points: Value| ok(run(&[("/ws/P.al", src)], "Probe", "Tier", vec![points]));
+    assert_eq!(tier(Value::Decimal(dec!(1000))), Value::Text("GOLD".into()));
+    assert_eq!(
+        tier(Value::Decimal(dec!(150))),
+        Value::Text("SILVER".into())
+    );
+    assert_eq!(tier(Value::Integer(99)), Value::Text("NONE".into()));
+}

@@ -227,6 +227,37 @@ fn normalize_key(key: &[Value]) -> PrimaryKey {
     key.iter().map(normalize_key_value).collect()
 }
 
+/// Sum numeric cells: Integer when every one is, Decimal otherwise.
+fn sum_cells<'a>(cells: impl Iterator<Item = &'a Value>) -> Result<Value, RecordError> {
+    let mut int_sum: i64 = 0;
+    let mut dec_sum = Decimal::ZERO;
+    let mut any_decimal = false;
+    for cell in cells {
+        match cell {
+            Value::Integer(n) | Value::BigInteger(n) => {
+                int_sum = int_sum
+                    .checked_add(*n)
+                    .ok_or(RecordError::FlowArithmeticOverflow("Sum"))?;
+                dec_sum = dec_sum
+                    .checked_add(Decimal::from(*n))
+                    .ok_or(RecordError::FlowArithmeticOverflow("Sum"))?;
+            }
+            Value::Decimal(d) => {
+                any_decimal = true;
+                dec_sum = dec_sum
+                    .checked_add(*d)
+                    .ok_or(RecordError::FlowArithmeticOverflow("Sum"))?;
+            }
+            _ => {}
+        }
+    }
+    Ok(if any_decimal {
+        Value::Decimal(dec_sum)
+    } else {
+        Value::Integer(int_sum)
+    })
+}
+
 fn row_matches_filters(filters: &BTreeMap<FieldNo, FieldFilter>, row: &Row) -> bool {
     for (&field, filter) in filters {
         let value = row.get(&field).unwrap_or(&Value::Empty);
@@ -756,6 +787,23 @@ impl MockRecord {
         self.count_in(&self.view)
     }
 
+    /// `CalcSums` — the total of `field` over the rows the view's filters
+    /// select. Integer when every contributing cell is, Decimal otherwise or
+    /// when the field is declared Decimal.
+    pub fn calc_sum_in(&self, view: &RecordView, field: FieldNo) -> Result<Value, RecordError> {
+        let total = sum_cells(
+            self.rows
+                .values()
+                .filter(|row| row_matches_filters(&view.filters, row))
+                .filter_map(|row| row.get(&field)),
+        )?;
+        let declared_decimal = matches!(self.field_defaults.get(&field), Some(Value::Decimal(_)));
+        Ok(match total {
+            Value::Integer(n) if declared_decimal => Value::Decimal(Decimal::from(n)),
+            other => other,
+        })
+    }
+
     pub fn x_rec(&self) -> &Row {
         &self.view.x_rec
     }
@@ -807,35 +855,7 @@ impl MockRecord {
                     .map_err(|_| RecordError::FlowArithmeticOverflow("Count"))?,
             )),
             FlowAgg::Exist => Ok(Value::Boolean(!matching.is_empty())),
-            FlowAgg::Sum => {
-                let mut int_sum: i64 = 0;
-                let mut dec_sum = Decimal::ZERO;
-                let mut any_decimal = false;
-                for cell in target_cells() {
-                    match cell {
-                        Value::Integer(n) | Value::BigInteger(n) => {
-                            int_sum = int_sum
-                                .checked_add(*n)
-                                .ok_or(RecordError::FlowArithmeticOverflow("Sum"))?;
-                            dec_sum = dec_sum
-                                .checked_add(Decimal::from(*n))
-                                .ok_or(RecordError::FlowArithmeticOverflow("Sum"))?;
-                        }
-                        Value::Decimal(d) => {
-                            any_decimal = true;
-                            dec_sum = dec_sum
-                                .checked_add(*d)
-                                .ok_or(RecordError::FlowArithmeticOverflow("Sum"))?;
-                        }
-                        _ => {}
-                    }
-                }
-                if any_decimal {
-                    Ok(Value::Decimal(dec_sum))
-                } else {
-                    Ok(Value::Integer(int_sum))
-                }
-            }
+            FlowAgg::Sum => sum_cells(target_cells()),
             FlowAgg::Average => {
                 let nums: Vec<Decimal> = target_cells().filter_map(as_number).collect();
                 if nums.is_empty() {

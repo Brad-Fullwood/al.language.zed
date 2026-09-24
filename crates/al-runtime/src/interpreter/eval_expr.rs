@@ -112,6 +112,12 @@ fn eval_expr_inner(
         // Calls and record reads need the dispatch context; scope access yields
         // an Option value; everything else unwraps.
         "postfix_expression" => eval_postfix(node, source, stack, ctx),
+        // A case label holding an operator (`Points >= 1000:` under
+        // `case true of`) is a binary expression; only its first operand was
+        // evaluated, so every such label compared `Points` with `true`.
+        "case_label_expression" if node.named_child_count() > 1 => {
+            eval_expression_node(node, source, stack, ctx)
+        }
         "parenthesized_expression" | "primary_expression" | "case_label_expression" => {
             match named_child(node, 0) {
                 Some(inner) => eval_expr(inner, source, stack, ctx),

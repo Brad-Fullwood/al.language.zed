@@ -786,6 +786,7 @@ pub fn supports_record_method(method: &str) -> bool {
             | "setcurrentkey"
             | "deleteall"
             | "calcfields"
+            | "calcsums"
     )
 }
 
@@ -821,6 +822,11 @@ pub(crate) fn dispatch_record_method(
     // field-name nodes are never evaluated as variables.
     if lower == "calcfields" {
         return dispatch_calcfields(table, handle, &nodes, source, ctx);
+    }
+    // CalcSums takes field names too, and totals each over the rows the
+    // view's filters select, into the buffer.
+    if lower == "calcsums" {
+        return dispatch_calcsums(table, handle, &nodes, source, ctx);
     }
 
     // SetCurrentKey takes only field references. Handle it before the general
@@ -1190,6 +1196,46 @@ pub(crate) fn field_get(
 /// `Rec.CalcFields(F1, F2, …)` — evaluate each named FlowField and store the
 /// result into the current buffer. Non-FlowField (or unparseable) args are
 /// ignored, matching BC's tolerance of explicitly-listed normal fields.
+fn dispatch_calcsums(
+    table: &TableRef,
+    handle: u64,
+    nodes: &[Node<'_>],
+    source: &[u8],
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    if nodes.is_empty() {
+        return eval_error("CalcSums: requires at least one field");
+    }
+    let key = match ensure_store(ctx, table) {
+        Ok(k) => k,
+        Err(e) => return eval_error(e),
+    };
+    let store = ctx.records.get_mut(&key).expect("store just ensured");
+    let mut view = store.take_view(handle);
+    for node in nodes {
+        let name = node_text(*node, source);
+        let result = store
+            .resolve_field(&name)
+            .map_err(|error| format!("CalcSums: {error}"))
+            .and_then(|field_no| {
+                store
+                    .record
+                    .calc_sum_in(&view, field_no)
+                    .map(|total| (field_no, total))
+                    .map_err(|error| format!("CalcSums: {error}"))
+            });
+        match result {
+            Ok((field_no, total)) => store.record.field_set_in(&mut view, field_no, total),
+            Err(error) => {
+                store.put_view(handle, view);
+                return eval_error(error);
+            }
+        }
+    }
+    store.put_view(handle, view);
+    Eval::Normal(Value::Empty)
+}
+
 fn dispatch_calcfields(
     table: &TableRef,
     handle: u64,
