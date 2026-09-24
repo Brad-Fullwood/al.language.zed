@@ -328,7 +328,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   its doubled quotes, so it does not match the object name al-syntax reports.
 - fix: strip one quote pair and unescape `""` for the `"` case, keeping the existing
   `'` handling for string-literal arguments.
-- status: open
+- status: fixed 768b1aae — one quote pair stripped, `""` and `''` unescaped, tests in `clean_attr_arg_tests`.
 
 ### [GAP] `sort_members` leaves a blank line stranded at the end of a body
 - where: crates/al-syntax/src/sort.rs:194-277 (`split_into_members`)
@@ -340,7 +340,7 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   before it. The output is still a pure reordering, so `is_pure_reordering` passes.
 - fix: split trailing blank lines off each member into a separator pool and re-emit
   one between members, keeping the line multiset intact.
-- status: open
+- status: fixed 768b1aae — trailing blanks stay in source position; `the_blank_line_between_members_stays_between_them`.
 
 ## Review complete
 
