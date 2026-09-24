@@ -159,3 +159,8 @@ Append-only. Newest entry last.
 ## 2026-09-22 12:10 BST: seventh usage limit
 
 - Limit hit about 10:30, reset 12:00. Three agents resumed. The round 3 security merge failed clippy: the review queue branch had bumped `getrandom` to 0.4 (`fill`) and the security branch used 0.2 (`getrandom`). One-line fix, gates rerunning.
+
+## 2026-09-24 06:30 BST: stray branches merged, four queued items fixed
+
+- Cloud session. Merged the three branches with unmerged commits: formatter idempotence, the ghost-diagnostics test, and three file splits. Fixed the ghost-diagnostics window in the server, the Windows `&` URL bug (both copies), `pack-native --validate` analyzers, two review A items, the README CLI list, and the harness stale-binary check that failed 270 tests after an al-explorer edit. Clippy caught split damage in `native_dap/mod.rs` doc comments. Gates: 95 suites, 5011 passed, 1 failed (root-only).
+- Branches fully merged into `campaign/2026-09-21` and safe to delete (the cloud session gets 403 on delete): `ai-daemon-projection`, `ai-free-ids`, `ai-plugin`, `fix-ci-platforms`, `fix-daemon-lifecycle`, `fix-formatter-idempotence`, `fix-ghost-diagnostics`, `fix-lsp-content-modified`, `fix-queued-2`, `fix-r1-analysis-insight`, `fix-r1-emit-bc-explorer`, `fix-r1-extension-ci`, `fix-r1-lsp-protocol`, `fix-r1-runtime-dap`, `fix-r1-symbols-project`, `fix-r1-syntax-grammar`, `fix-r1b-analysis`, `fix-r1b-runtime-dap`, `fix-r1c-analysis`, `fix-r2-review-b`, `fix-r2-security`, `fix-r3-security`, `slop-review-queue`, `slop-splits-2`, `slop-syntax-symbols`, `test-depth` (all under `campaign/`).

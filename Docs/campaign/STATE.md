@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-21 01:30 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-24 06:30 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -8,20 +8,23 @@ Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two 
 
 ## In flight
 
-| Item | Kind | Output |
-|------|------|--------|
-| Ghost diagnostics race: the server can publish diagnostics for a file after didClose (a harness test's own bug hid it as a panic 1 run in 3) | worktree fix | branch `campaign/fix-ghost-diagnostics` |
-| Formatter idempotence: two persisted proptest seeds (mutated fixtures with a `{` after a statement line, tab indentation) fail `format(format(x)) == format(x)` | worktree fix | branch `campaign/fix-formatter-idempotence` |
-| desloppify batch: split `resolution.rs`, `dispatch.rs`, `native_dap.rs`, `session.rs`, `xliff.rs`, `calls.rs`, `router.rs`, plus three open review A items | worktree refactor | branch `campaign/slop-splits-2`, `findings/slop-splits-2.md` |
-| Persisted symbol and source index on disk (cold start 54 s and 2.9 GB RSS today), keyed by app id, version and content hash | worktree build | branch `campaign/ai-persisted-index`, `findings/ai-persisted-index.md` |
+Nothing. The three unmerged fix branches (`fix-formatter-idempotence`, `fix-ghost-diagnostics`,
+`slop-splits-2`) are merged. `campaign/ai-persisted-index` never reached origin, so the
+persisted index is queued again below.
+
+Remote branch cleanup: every `campaign/*` branch except this one is merged into it. Cloud
+sessions can push only to `campaign/2026-09-21`, so deleting them is left to Brad (the list is in
+`LOG.md`, 2026-09-24).
 
 Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, CI runs on every push).
 
 Queued:
 
-- Three review A findings still open: `extract_table_relation_table` has no caller, `PermissionAuditReport` doc comment truncated, `build_reference_counts` is 364 lines.
+- Review A: `build_reference_counts` is 364 lines with five nested helpers (`code_lens.rs`). Split into `code_lens/` with the call-site predicates tested directly.
+- Persisted symbol and source index on disk (cold start 54 s and 2.9 GB RSS), keyed by app id, version and content hash.
+- Remaining file splits from the slop-splits-2 list: `session.rs`, `xliff.rs`, `calls.rs`, `router.rs`.
+- Rebuild `target/release` before measuring for articles (it predates `publish` and `free-ids`).
 - `dispatch_generate` cannot warn on IDs outside the project `idRanges` until the dispatcher is async.
-- `pack-native --validate` passes `analyzers: None`, which `resolve_analyzer_paths` reads as every installed analyzer. 29 cop errors on a project plain `alc` compiles, and the project's `al.codeAnalyzers` never reaches the call. Add a flag and honour the project setting through the trust gate.
 
 
 
@@ -32,7 +35,6 @@ Queued:
 - Workstream D (security): dedicated review after round 1 fixes are in, covering what changed.
 - `al-explorer packages` prints per-package source counts keyed by folded display name (`al-symbols` `index.rs:259`), so two `System` packages with one app id and different versions both show `0/502/1` against 529 manifest objects. Key by app id and version. Details in `findings/blog-progress.md`.
 - Blog: article 1 repeats a wrong diagnosis of the `trace` timeout (it is the cold call-graph build, 86 s with Base Application). Rewrite that paragraph. Articles 2, 4, 5, 8 after the daemon work and fix branches merge, then article 9, then the fact pass list in `findings/blog-progress.md`.
-- README.md line 339 omits `publish` from the CLI list. Rebuild `target/release` before measuring for articles (it predates `publish` and `free-ids`).
 - AI tooling build item 9: dependency package version diff.
 - Plugin leftovers: `plugin/evals/`, release binary download hook, test on a project with `.alpackages`.
 
@@ -85,6 +87,7 @@ round on the areas with the most findings.
 
 ## Done
 
+- 2026-09-24 session: merged `fix-formatter-idempotence` (the persisted seed passes), `fix-ghost-diagnostics` and `slop-splits-2`. Diagnostics publishes now hold the generation read lock from the currency check through the send, so a didClose cannot slip between them (the harness test passes 32 of 32 at 12-way load). One Windows browser opener in al-types (`rundll32 url.dll,FileProtocolHandler`, http(s) only) replaces the two `cmd /c start` copies that split OAuth and debugger URLs at `&`. `pack-native --validate` runs the project's analyzers through the trust gate, `--analyzers` overrides. The harness judges a binary stale only against the crates it links. Review A: `extract_table_relation_table` removed, `PermissionAuditReport` doc restated. Gates: fmt and clippy clean, 95 suites, 5011 passed, 1 failed (`a_failed_file_write_leaves_the_whole_workspace_unchanged`, which needs a non-root user: the cloud container runs as root, which writes through a 0555 directory).
 - Merged `campaign/fix-r3-security`: 10 of 10. The MCP advisory names keys only. The Zed extension ignores `binary.path`, `binary.arguments` and the debug adapter path from any settings (WASM sandbox cannot read the trust store), `PATH` is the way to run a specific build. `al-explorer trust` confirms on a terminal. Unix socket ownership and peer uid checked before connect, HMAC handshake with a per-user key. `snapshot` and `profiling` gated. Revoke takes effect per request. Open: Windows named pipe owner check (documented). Gates: 94 suites, 4995 passed, 1 failed (formatter seed).
 - Merged `campaign/fix-r2-review-b`: 19 of 19. The daemon dispatch match is generated from a capability registry (`dispatch_table!`), so every method declares whether it reads a path or reaches a credential, and tests drive those declarations end to end. `rename` contained, `tests.snapshot_capture` gated, `.alpackages` symlink root only with trust, extension path comparison by component. Full gates: 94 suites, 4966 passed, 2 failed (formatter seed in flight, ghost diagnostics race found).
 - Merged `campaign/slop-review-queue`: 112 review items closed (34 changed, 63 deferred behind live branches, 7 deferred, 3 accepted, 15 skipped as false positives). Strict 80.2 to 79.9 because the scan surface grew and the subjective dimensions are not re-scored until a fresh review. Architecture diagram now pinned to the manifests by a test (it caught the new harness dependency on al-protocol at once). Windows auth credentials unified across the three BC clients. Gates: 93 suites, 4873 passed, 1 failed (the formatter seed, fix in flight).
