@@ -7,7 +7,7 @@ use super::*;
 /// Extracts call sites from the procedure body, then:
 /// - `BareCall` → resolves against the same object's methods in `insight`.
 /// - `MemberCall` → resolves object against `symbols`, then finds method in `insight`.
-/// - `RecordOp` (run_trigger=true) → resolves variable to table via `var_types`,
+/// - `RecordOp` (any `RunTrigger`) → resolves variable to table via `var_types`,
 ///   then finds the table's `OnBefore{Op}Event` / `OnAfter{Op}Event` in `insight`.
 // Tree-walk inputs (tree / source / current object) plus three lookup tables
 // (symbols / insight graph / call graph) plus variable-type map plus the
@@ -117,11 +117,12 @@ pub fn populate_call_edges_for_procedure(
                     }
                 }
             }
-            CallSite::RecordOp {
-                variable,
-                op,
-                run_trigger: true,
-            } => {
+            // The table's OnBefore/OnAfter{Op}Event are raised whatever
+            // `RunTrigger` is: it decides only whether the table's own
+            // OnInsert/OnModify/OnDelete code runs, which is why subscribers
+            // test `if not RunTrigger then exit`. `Cust.Modify()` reaches
+            // them as surely as `Cust.Modify(true)`.
+            CallSite::RecordOp { variable, op, .. } => {
                 let table_name = match var_types.get(&variable.to_lowercase()) {
                     Some(t) => t.clone(),
                     None => continue,
@@ -145,9 +146,6 @@ pub fn populate_call_edges_for_procedure(
                     }
                 }
             }
-            CallSite::RecordOp {
-                run_trigger: false, ..
-            } => {}
             CallSite::CodeunitRun { target } => {
                 // `Codeunit.Run(Codeunit::"X")` dispatches to X.OnRun.
                 let onrun_key = NodeKey::Procedure(

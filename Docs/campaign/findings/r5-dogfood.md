@@ -545,7 +545,7 @@ Notation: `X` is the `al-explorer` binary, run with the project directory as cwd
     `Modify(true)`. Business Central raises the global table events whatever the `RunTrigger` value,
     so `TierCanBeCleared` (`Insert()`/`Modify()`) reaches it too. That behaviour is per the BC
     database-trigger-event documentation; confirm it before changing the rule.
-- status: partly fixed: runtime and al.codeAnalyzers 04d8460d, test codeunits c7c20856; test-classify reasons and test-coverage are open
+- status: fixed: runtime and al.codeAnalyzers 04d8460d, test codeunits c7c20856; test-classify skips attribute arguments and gives a reason once per file; table events are linked for any RunTrigger (subscribers check `if not RunTrigger then exit`, which only makes sense because the event is raised either way), so both tests reach the subscriber
 
 ## Commands exercised that behaved correctly
 

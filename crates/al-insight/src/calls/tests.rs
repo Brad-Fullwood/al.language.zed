@@ -510,6 +510,61 @@ end;
     );
 }
 
+/// BC raises OnBefore/OnAfterModifyEvent for `Modify()` too; `RunTrigger`
+/// decides only whether the table's OnModify code runs. The graph linked
+/// the events for `Modify(true)` alone, so test coverage credited a
+/// subscriber to one of the two tests that reach it.
+#[test]
+fn a_record_op_without_run_trigger_still_raises_the_table_events() {
+    let source = r#"codeunit 50100 "My CU"
+{
+procedure Clear()
+var
+    Cust: Record Customer;
+begin
+    Cust.Modify();
+end;
+}
+"#;
+    let result = al_syntax::AlParser::parse_quick(source);
+    let index = SymbolIndex::new();
+    index.add_entries(&[
+        make_codeunit(50100, "My CU", vec![regular_method("Clear")]),
+        make_table(
+            18,
+            "Customer",
+            vec![
+                integration_event("OnBeforeModifyEvent"),
+                integration_event("OnAfterModifyEvent"),
+            ],
+        ),
+    ]);
+    let mut insight = InsightGraph::new();
+    insight.build_from_index(&index);
+    let mut call_graph = CallGraph::build_from_insight(&insight);
+    populate_call_edges_for_procedure(
+        &result.tree,
+        source,
+        ObjectKind::Codeunit,
+        "My CU",
+        "Clear",
+        &index,
+        &insight,
+        &mut call_graph,
+    );
+    let caller = CallGraph::node_id_for(
+        &insight,
+        &NodeKey::Procedure(ObjectKind::Codeunit, "my cu".into(), "clear".into()),
+    )
+    .expect("caller node");
+    let triggers = call_graph
+        .callees_of(caller)
+        .iter()
+        .filter(|e| e.kind == super::super::index::EdgeKind::RecordTrigger)
+        .count();
+    assert_eq!(triggers, 2, "OnBefore and OnAfterModifyEvent");
+}
+
 #[test]
 fn fanout_score_counts_calls() {
     let source = r#"codeunit 50100 "Test CU"

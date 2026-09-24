@@ -6,7 +6,7 @@
 //! | Kind | Grammar pattern | Edge |
 //! |------|----------------|------|
 //! | Direct call | `Foo()` / `Obj.Method()` | `Calls` |
-//! | Record op (run_trigger=true) | `Rec.Insert(true)` | `Triggers` |
+//! | Record op | `Rec.Insert()` / `Rec.Insert(true)` | `Triggers` |
 //! | EventSubscriber attribute | `[EventSubscriber(...)]` | `SubscribesTo` |
 //!
 //! The top-level entry points are:
