@@ -17,13 +17,19 @@ pub(super) fn split_last<'a>(value: &'a str, needle: &str) -> Option<(&'a str, &
     // separator (which would leave `"a` / `b"` and fail to resolve the
     // receiver). Scanning by char index keeps every slice on a char boundary,
     // so multi-byte content inside quotes can't panic.
+    // Nor inside an argument list: in `Token.AsValue(A.B).AsText` the last
+    // separator is the one before `AsText`.
     let mut in_quotes = false;
+    let mut depth = 0usize;
     let mut last: Option<usize> = None;
     for (i, c) in value.char_indices() {
-        if c == '"' {
-            in_quotes = !in_quotes;
-        } else if !in_quotes && value[i..].starts_with(needle) {
-            last = Some(i);
+        match c {
+            '"' => in_quotes = !in_quotes,
+            _ if in_quotes => {}
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ if depth == 0 && value[i..].starts_with(needle) => last = Some(i),
+            _ => {}
         }
     }
     let idx = last?;
@@ -266,6 +272,10 @@ mod tests {
     fn split_last_splits_on_last_occurrence() {
         assert_eq!(split_last("a::b::c", "::"), Some(("a::b", "c")));
         assert_eq!(split_last("a.b.c", "."), Some(("a.b", "c")));
+        assert_eq!(
+            split_last("Token.AsValue(A.B).AsText", "."),
+            Some(("Token.AsValue(A.B)", "AsText"))
+        );
     }
 
     #[test]
