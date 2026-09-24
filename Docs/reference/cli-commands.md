@@ -127,7 +127,7 @@ they are confined to: the daemon changes files only inside the project it has lo
 | `trace <event>` | `--depth N (10) --tree` | Event propagation chain (`--tree` = full multi-hop) |
 | `intercept` | — | Full event interception map + orphans |
 | `entrypoints` | — | Procedures with no incoming calls |
-| `graph` | `--format json\|dot` | Insight graph export |
+| `graph` | `--format json\|dot`, global `--scope workspace\|packages\|all` | Insight graph export; `--scope workspace` keeps the workspace's objects and the nodes one edge away |
 | `insight-stats` | — | Node/edge counts |
 | `impact <symbol>` | `--table` | Who consumes this symbol/table |
 | `suggest-event` | `--object <x> [--procedure/--event <x>]`, or `--table <x> [--field <x>]` | Integration-point discovery (`--event` needs `--object`) |

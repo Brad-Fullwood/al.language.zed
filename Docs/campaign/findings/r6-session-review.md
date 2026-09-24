@@ -39,28 +39,28 @@ reads the old snake_case names).
 - severity: medium
 - scenario: in `Cust.Validate("Loyalty Tier", Tier);` the field name is an argument, so `receiver_before` finds no receiver and the text after it is `, Tier)`. The row comes out `type: read, confidence: low, note: "name match only"`. Probe output: `{"n":"Loyalty Mgt","type":"read","confidence":"low",...}`. In Business Central, Validate is the usual way to write a field, and the commit's point was to tell writes from reads. `SetRange`/`SetFilter`/`TestField` uses are also `read`, even though the enum has `Filter`.
 - fix: when the reference is the first argument of a `.Validate(`/`.SetRange(`/`.SetFilter(`/`.TestField(`/`.CalcFields(` member call, bind it through that call's receiver, and classify Validate as `Write` and SetRange/SetFilter as `Filter`.
-- status: open
+- status: fixed (a field passed as the first argument of Validate/ModifyAll/SetRange/SetFilter/TestField/CalcFields/... binds through that call's receiver; Validate and ModifyAll are `write`, SetRange and SetFilter `filter`)
 
 ### [R6-IMP-2] the impact tests would pass without the declaration exclusions
 - where: crates/al-analysis/src/queries/impact.rs:990-1000 (`impact_says_whether_a_consumer_calls_writes_or_reads`)
 - severity: low
 - scenario: `Loyalty Mgt` is expected as `[Call, Declares]`. `Promote` calls `SetTier`, so the test passes even if `use_of` counted the `procedure SetTier(` declaration as a `Call` (the name is followed by `(`). For the field, an unexcluded `field(50100; "Loyalty Tier"; ...)` would add an object-level `read` row to `Cust Ext`, and `dedupe` drops it because the object already has a `declares` row. Neither `is_field_declaration_name` nor the `name`-field check is exercised.
 - fix: add a case where the declaring object does not use its own member (expect `[Declares]` only), and unit-test `use_of`/`is_field_declaration_name` directly.
-- status: open
+- status: fixed (a declaring object that does not use its member must come back `[declares]` only, and the test fails with the declaration exclusion removed; `is_field_declaration_name` has a unit test)
 
 ### [R6-IMP-3] a member query no longer lists any package page or extension of the table
 - where: crates/al-analysis/src/queries/impact.rs:117
 - severity: low
 - scenario: `impact --scope all 'Customer."Credit Limit"'` used to list the package pages bound to Customer (`display`) and the package extensions of Customer (`extends`). These now sit behind `member_part.is_none()`. Package code has no source scan, so the member query reports nothing for packages except event subscribers, and nothing signals that it did not look. The old rows over-approximated. A package field or a dependent app is now reported as having no page consumers.
 - fix: for package entries, keep the SourceTable/extends rows under a member query as `confidence: low` with a note ("uses the table; the member use is not checked without source"). Leave the workspace rows as they are.
-- status: open
+- status: fixed (under a member query, package extensions and SourceTable pages of the object are listed with `confidence: low` and a note that the member use cannot be checked without source)
 
 ### [R6-IMP-4] the new `write` impact type is not in the impact skill
 - where: plugin/skills/bc-impact-check/SKILL.md:40-44
 - severity: low
 - scenario: the skill lists `declares`, `display`, `read`, `call`, `filter`, `extends` and `subscribe`. `impact` now also returns `"type":"write"`, and `call` for the declaring object's own internal uses beside its `declares` row. An agent following the skill has no meaning for `write`. `graph` in Docs/reference/cli-commands.md still lists `--format` only, not `--scope`.
 - fix: document `write` (field assigned) and the declaring-object internal-use row, and add `--scope` to the `graph` row.
-- status: open
+- status: fixed (the skill explains `write`, `filter`, `call` and the declaring object's own-use row; cli-commands.md lists `--scope` for `graph`)
 
 ### [R6-PROJ-1] `--fields` now refuses an optional field that no row happens to carry
 - where: crates/al-lsp/src/server/daemon/projection.rs:160 (`check_fields`)

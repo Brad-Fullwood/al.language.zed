@@ -39,9 +39,12 @@ so a wrong name costs one call rather than a silent empty list.
 Read three fields on every row:
 
 - `type`. `declares` is the object that defines the member, which is where to
-  make the change, not something the change breaks. `display` is a page or
-  report bound to the table through `SourceTable`. `read`, `call`, `filter`,
-  `extends` and `subscribe` are the rest.
+  make the change, not something the change breaks; if that object also uses
+  the member itself, it gets a second row (`call`, `write`, ...). `display` is
+  a page or report bound to the table through `SourceTable`. `write` assigns
+  the field (`:=`, `Validate`, `ModifyAll`), `filter` filters on it
+  (`SetRange`, `SetFilter`), `call` calls the procedure, `read` is any other
+  use. `extends` and `subscribe` are the rest.
 - `confidence`. `high` came from the call graph or from a binding that resolved.
   `low` with a `note` is a text match that could not be bound, so verify it.
 - `outOfScopeCount`. How many consumers `--scope workspace` left out.

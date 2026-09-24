@@ -110,28 +110,54 @@ pub fn impact(workspace: &Workspace, symbol: &str) -> Result<Vec<ImpactEntry>, I
     let (object_part, member_part) = parse_symbol(symbol);
     let mut results = Vec::new();
 
+    // Bounded: only kinds that can carry a SourceTable property.
+    const SOURCE_TABLE_KINDS: &[ObjectKind] = &[
+        ObjectKind::Page,
+        ObjectKind::PageExtension,
+        ObjectKind::Report,
+        ObjectKind::ReportExtension,
+        ObjectKind::Query,
+    ];
     // Extending an object, or building a page on it, uses the object and not
     // each of its members (as in `WorkspaceImpactIndex::consumers`): a field
-    // query listed every extension of Customer. The source scan below still
-    // reports the pages and extensions that use the member.
+    // query listed every extension of Customer as a certain consumer. The
+    // source scan below reports the workspace pages and extensions that use
+    // the member.
     if member_part.is_none() {
         // Bounded: only extensions of the named object via the by_extends index.
         for entry in workspace.symbols.get_extensions_of(&object_part) {
             check_extends(&entry, &object_part, None, &mut results);
         }
 
-        // Bounded: only kinds that can carry a SourceTable property.
-        const SOURCE_TABLE_KINDS: &[ObjectKind] = &[
-            ObjectKind::Page,
-            ObjectKind::PageExtension,
-            ObjectKind::Report,
-            ObjectKind::ReportExtension,
-            ObjectKind::Query,
-        ];
         for kind in SOURCE_TABLE_KINDS {
             for entry in workspace.symbols.get_by_kind(*kind) {
                 check_source_table(&entry, &object_part, &mut results);
             }
+        }
+    } else {
+        // Package code has no source to scan, so whether a package page or
+        // extension uses the member cannot be checked. List the ones built
+        // on the object as possible consumers rather than as none at all;
+        // the workspace's own are found by the source scan below.
+        let start = results.len();
+        for entry in workspace.symbols.get_extensions_of(&object_part) {
+            if !al_symbols::source_availability::is_workspace_package(&entry.package) {
+                check_extends(&entry, &object_part, None, &mut results);
+            }
+        }
+        for kind in SOURCE_TABLE_KINDS {
+            for entry in workspace.symbols.get_by_kind(*kind) {
+                if !al_symbols::source_availability::is_workspace_package(&entry.package) {
+                    check_source_table(&entry, &object_part, &mut results);
+                }
+            }
+        }
+        for entry in &mut results[start..] {
+            entry.confidence = ImpactConfidence::Low;
+            entry.note = Some(
+                "uses the object; whether it uses this member is not known without its source"
+                    .to_string(),
+            );
         }
     }
 
@@ -593,7 +619,7 @@ fn search_workspace_files_for_member(
             let mut other_receivers = declared_receivers(node, &source.text, |_| true);
             other_receivers.retain(|name| !receivers.contains(name));
             let rules_out = |reference: &tree_sitter::Range| {
-                receiver_before(&source.text, reference.start_byte)
+                receiver_of(&source.text, reference.start_byte)
                     .is_some_and(|receiver| other_receivers.contains(&receiver.to_lowercase()))
             };
             if refs.iter().all(rules_out) {
@@ -611,7 +637,7 @@ fn search_workspace_files_for_member(
                     .is_some_and(|table| table.to_lowercase() == object_lower);
 
             let bound = refs.iter().any(|reference| {
-                match receiver_before(&source.text, reference.start_byte) {
+                match receiver_of(&source.text, reference.start_byte) {
                     Some(receiver) => {
                         let lower = receiver.to_lowercase();
                         lower == object_lower
@@ -635,8 +661,9 @@ fn search_workspace_files_for_member(
                 .filter(|reference| !rules_out(reference))
                 .filter_map(|reference| use_of(node, &source.text, reference))
                 .max_by_key(|use_type| match use_type {
-                    ImpactType::Write => 2,
-                    ImpactType::Call => 1,
+                    ImpactType::Write => 3,
+                    ImpactType::Call => 2,
+                    ImpactType::Filter => 1,
                     _ => 0,
                 });
             let impact_type = if declares_target {
@@ -718,6 +745,9 @@ fn use_of(
     }
     if is_field_declaration_name(text, reference.start_byte) {
         return None;
+    }
+    if let Some((_, use_type)) = field_argument_call(text, reference.start_byte) {
+        return Some(use_type);
     }
     let after = text.get(reference.end_byte..)?.trim_start();
     Some(if after.starts_with('(') {
@@ -889,6 +919,42 @@ fn type_target_matches(type_text: &str, object_lower: &str, kind: Option<ObjectK
     target.to_lowercase() == object_lower
 }
 
+/// Record methods whose first argument names a field, and what the call
+/// does with it. `Cust.Validate("Loyalty Tier", X)` is the usual way to
+/// write a field, and was reported as an unbound read.
+const FIELD_ARGUMENT_METHODS: &[(&str, ImpactType)] = &[
+    ("validate", ImpactType::Write),
+    ("modifyall", ImpactType::Write),
+    ("setrange", ImpactType::Filter),
+    ("setfilter", ImpactType::Filter),
+    ("testfield", ImpactType::Read),
+    ("calcfields", ImpactType::Read),
+    ("calcsums", ImpactType::Read),
+    ("setloadfields", ImpactType::Read),
+    ("fieldno", ImpactType::Read),
+    ("fieldcaption", ImpactType::Read),
+];
+
+/// When the name at `offset` is the first argument of `Receiver.Method(`
+/// and the method takes a field there, the receiver and the use.
+fn field_argument_call(text: &str, offset: usize) -> Option<(String, ImpactType)> {
+    let before = text.get(..offset)?.trim_end().strip_suffix('(')?.trim_end();
+    let start = before
+        .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .map_or(0, |index| index + 1);
+    let method = &before[start..];
+    let (_, use_type) = FIELD_ARGUMENT_METHODS
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(method))?;
+    Some((receiver_before(text, start)?, *use_type))
+}
+
+/// The record a member at `offset` belongs to: the receiver before its
+/// `.`, or the receiver of the record method it is the field argument of.
+fn receiver_of(text: &str, offset: usize) -> Option<String> {
+    receiver_before(text, offset).or_else(|| field_argument_call(text, offset).map(|(r, _)| r))
+}
+
 /// The receiver identifier immediately preceding the `.` before `offset`, if
 /// the occurrence at `offset` is a member access.
 fn receiver_before(text: &str, offset: usize) -> Option<String> {
@@ -997,6 +1063,115 @@ mod tests {
             types_of(&procedure, "Loyalty Mgt"),
             vec![ImpactType::Call, ImpactType::Declares]
         );
+    }
+
+    /// `Validate` is the usual write and `SetRange` a filter; both name the
+    /// field as an argument, so there was no receiver to bind and the rows
+    /// came out as low-confidence reads.
+    #[test]
+    fn a_field_passed_to_validate_or_setrange_is_a_bound_write_or_filter() {
+        let ws = workspace_with_files(vec![
+            (
+                "/proj/Validator.al",
+                r#"codeunit 50120 Validator
+{
+    procedure Run(var Cust: Record Customer)
+    begin
+        Cust.Validate("Loyalty Tier", 'GOLD');
+    end;
+}
+"#,
+            ),
+            (
+                "/proj/Filterer.al",
+                r#"codeunit 50121 Filterer
+{
+    procedure Run()
+    var
+        Cust: Record Customer;
+    begin
+        Cust.SetRange("Loyalty Tier", 'GOLD');
+    end;
+}
+"#,
+            ),
+        ]);
+        ws.symbols.add_entries(&[make_table(18, "Customer")]);
+        let results = impact(&ws, "Customer.\"Loyalty Tier\"").unwrap();
+        for (name, expected) in [
+            ("Validator", ImpactType::Write),
+            ("Filterer", ImpactType::Filter),
+        ] {
+            let row = results
+                .iter()
+                .find(|entry| entry.name == name)
+                .unwrap_or_else(|| panic!("{name} missing: {results:?}"));
+            assert_eq!(row.impact_type, expected, "{name}");
+            assert_eq!(row.confidence, ImpactConfidence::High, "{name}: {row:?}");
+        }
+    }
+
+    /// The declaration is not a use: `procedure SetTier(` is followed by `(`
+    /// like a call, and `field(50100; "Loyalty Tier"; ...)` names the field.
+    #[test]
+    fn a_declaring_object_that_does_not_use_its_member_only_declares_it() {
+        let ws = workspace_with_files(vec![
+            (
+                "/proj/CustExt.al",
+                "tableextension 50100 \"Cust Ext\" extends Customer\n{\n    fields\n    {\n        field(50100; \"Loyalty Tier\"; Code[10]) { }\n    }\n}\n",
+            ),
+            (
+                "/proj/Mgt.al",
+                "codeunit 50101 \"Loyalty Mgt\"\n{\n    procedure SetTier(Tier: Code[10])\n    begin\n    end;\n}\n",
+            ),
+        ]);
+        ws.symbols.add_entries(&[make_table(18, "Customer")]);
+        let field = impact(&ws, "Customer.\"Loyalty Tier\"").unwrap();
+        assert_eq!(types_of(&field, "Cust Ext"), vec![ImpactType::Declares]);
+        let procedure = impact(&ws, "\"Loyalty Mgt\".SetTier").unwrap();
+        assert_eq!(
+            types_of(&procedure, "Loyalty Mgt"),
+            vec![ImpactType::Declares]
+        );
+    }
+
+    /// A member query listed no package page or extension at all once the
+    /// object-level rows were limited to object queries.
+    #[test]
+    fn a_member_query_lists_package_pages_on_the_table_as_possible_consumers() {
+        let ws = workspace_with_files(Vec::new());
+        let mut page = SymbolEntry {
+            kind: ObjectKind::Page,
+            id: 22,
+            name: "Customer List".to_string(),
+            package: "Base Application".to_string(),
+            ..Default::default()
+        };
+        page.properties = vec![al_symbols::PropertyValue {
+            name: "SourceTable".to_string(),
+            value: "Customer".to_string(),
+        }];
+        ws.symbols.add_entries(&[make_table(18, "Customer"), page]);
+        let results = impact(&ws, "Customer.\"Credit Limit (LCY)\"").unwrap();
+        let row = results
+            .iter()
+            .find(|entry| entry.name == "Customer List")
+            .unwrap_or_else(|| panic!("package page missing: {results:?}"));
+        assert_eq!(row.impact_type, ImpactType::Display);
+        assert_eq!(row.confidence, ImpactConfidence::Low);
+        assert!(row.note.is_some());
+    }
+
+    #[test]
+    fn a_table_field_name_is_recognised_as_its_declaration() {
+        let text = "field(50100; \"Loyalty Tier\"; Code[10])";
+        let name = text.find('"').unwrap();
+        assert!(is_field_declaration_name(text, name));
+        let control = "field(\"Loyalty Tier\"; Rec.\"Loyalty Tier\")";
+        assert!(!is_field_declaration_name(
+            control,
+            control.find('"').unwrap()
+        ));
     }
 
     #[test]
