@@ -389,9 +389,38 @@ pub fn cmd_deps_graph(format: &str, json: bool) -> ExitCode {
 fn baseline_params_from_app(baseline_app: &str) -> Result<serde_json::Value, String> {
     let pkg = al_symbols::app_reader::read_app_file(std::path::Path::new(baseline_app))
         .map_err(|e| format!("reading baseline .app {baseline_app}: {e}"))?;
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    if let Ok(manifest) = al_project::project::load_app_manifest(&cwd)
+        && let Some(warning) = different_app_warning(&pkg.app_id, &pkg.name, &manifest)
+    {
+        eprintln!("warning: {warning}");
+    }
     let baseline_symbols = serde_json::to_value(&pkg.objects)
         .map_err(|e| format!("serializing baseline symbols: {e}"))?;
     Ok(serde_json::json!({ "baselineSymbols": baseline_symbols }))
+}
+
+/// A warning when the baseline `.app` is not an earlier build of this
+/// project. Comparing another app's surface reports its whole API as
+/// removed, thousands of "breaking changes" with nothing wrong.
+fn different_app_warning(
+    baseline_id: &str,
+    baseline_name: &str,
+    project: &al_project::project::AppManifest,
+) -> Option<String> {
+    let normalize = |id: &str| {
+        id.trim_matches(|c| c == '{' || c == '}')
+            .to_ascii_lowercase()
+    };
+    if baseline_id.is_empty() || normalize(baseline_id) == normalize(&project.id) {
+        return None;
+    }
+    Some(format!(
+        "the baseline is \"{baseline_name}\" ({baseline_id}), not an earlier build of \"{}\" ({}); \
+         every object it has that this app lacks is reported as removed. To compare \
+         two versions of a dependency, use `package-diff`.",
+        project.name, project.id
+    ))
 }
 
 pub fn cmd_breaking_changes(baseline_app: Option<&str>, json: bool) -> ExitCode {
@@ -636,5 +665,39 @@ mod exit_status_tests {
     fn cross_version_checks_without_a_baseline_are_not_green() {
         assert_eq!(cmd_breaking_changes(None, true), ExitCode::FAILURE);
         assert_eq!(cmd_upgrade_report(None, true), ExitCode::FAILURE);
+    }
+}
+
+#[cfg(test)]
+mod baseline_tests {
+    use super::different_app_warning;
+
+    fn manifest(id: &str) -> al_project::project::AppManifest {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "name": "My App", "publisher": "Me", "version": "1.0.0.0"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_earlier_build_of_the_same_app_is_not_warned_about() {
+        let project = manifest("0a1b2c3d-0000-0000-0000-000000000001");
+        assert_eq!(
+            different_app_warning("{0A1B2C3D-0000-0000-0000-000000000001}", "My App", &project),
+            None
+        );
+    }
+
+    #[test]
+    fn another_app_as_baseline_is_warned_about() {
+        let project = manifest("0a1b2c3d-0000-0000-0000-000000000001");
+        let warning = different_app_warning(
+            "437dbf0e-84ff-417a-965d-ed2bb9650972",
+            "Base Application",
+            &project,
+        )
+        .expect("a different app id warns");
+        assert!(warning.contains("Base Application"), "{warning}");
+        assert!(warning.contains("package-diff"), "{warning}");
     }
 }
