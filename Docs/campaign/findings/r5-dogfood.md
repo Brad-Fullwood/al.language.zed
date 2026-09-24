@@ -440,7 +440,7 @@ Notation: `X` is the `al-explorer` binary, run with the project directory as cwd
   `Cust Ext read/extends` twice each, with no procedure or line to tell the rows apart. With a
   qualified `"Loyalty Mgt".SetLoyaltyTier`, the internal call in Loyalty Mgt collapses into its
   `declares` row.
-- status: open
+- status: fixed (each use is classified call/write/read, the declaration excluded; the declaring object keeps an internal-call row; repeated and redundant `read` rows dropped; member queries no longer list every extension)
 
 ### [TEXT-LIMIT-COUNTS] Text output under `--limit` prints the page size as the total
 - severity: low

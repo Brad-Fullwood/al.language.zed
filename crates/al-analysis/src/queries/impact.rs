@@ -13,7 +13,7 @@ use crate::workspace_sources::{self, WorkspaceSource};
 use al_workspace::Workspace;
 
 /// How a consumer references the symbol.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ImpactType {
     /// Field displayed on a page.
@@ -24,6 +24,8 @@ pub enum ImpactType {
     Filter,
     /// Procedure called from another object.
     Call,
+    /// Field assigned (`Rec.Field := ...`).
+    Write,
     /// Object extended by an extension object.
     Extends,
     /// Event subscribed to.
@@ -108,22 +110,28 @@ pub fn impact(workspace: &Workspace, symbol: &str) -> Result<Vec<ImpactEntry>, I
     let (object_part, member_part) = parse_symbol(symbol);
     let mut results = Vec::new();
 
-    // Bounded: only extensions of the named object via the by_extends index.
-    for entry in workspace.symbols.get_extensions_of(&object_part) {
-        check_extends(&entry, &object_part, None, &mut results);
-    }
+    // Extending an object, or building a page on it, uses the object and not
+    // each of its members (as in `WorkspaceImpactIndex::consumers`): a field
+    // query listed every extension of Customer. The source scan below still
+    // reports the pages and extensions that use the member.
+    if member_part.is_none() {
+        // Bounded: only extensions of the named object via the by_extends index.
+        for entry in workspace.symbols.get_extensions_of(&object_part) {
+            check_extends(&entry, &object_part, None, &mut results);
+        }
 
-    // Bounded: only kinds that can carry a SourceTable property.
-    const SOURCE_TABLE_KINDS: &[ObjectKind] = &[
-        ObjectKind::Page,
-        ObjectKind::PageExtension,
-        ObjectKind::Report,
-        ObjectKind::ReportExtension,
-        ObjectKind::Query,
-    ];
-    for kind in SOURCE_TABLE_KINDS {
-        for entry in workspace.symbols.get_by_kind(*kind) {
-            check_source_table(&entry, &object_part, &mut results);
+        // Bounded: only kinds that can carry a SourceTable property.
+        const SOURCE_TABLE_KINDS: &[ObjectKind] = &[
+            ObjectKind::Page,
+            ObjectKind::PageExtension,
+            ObjectKind::Report,
+            ObjectKind::ReportExtension,
+            ObjectKind::Query,
+        ];
+        for kind in SOURCE_TABLE_KINDS {
+            for entry in workspace.symbols.get_by_kind(*kind) {
+                check_source_table(&entry, &object_part, &mut results);
+            }
         }
     }
 
@@ -154,6 +162,7 @@ pub fn impact(workspace: &Workspace, symbol: &str) -> Result<Vec<ImpactEntry>, I
         search_workspace_files(&workspace_sources, &object_part, None, &mut results);
     }
 
+    dedupe(&mut results);
     Ok(results)
 }
 
@@ -237,6 +246,7 @@ impl WorkspaceImpactIndex {
             ),
             None => search_workspace_files(&self.sources, &object_part, kind, &mut results),
         }
+        dedupe(&mut results);
         results
     }
 }
@@ -618,13 +628,39 @@ fn search_workspace_files_for_member(
                 }
             });
 
+            // What the object does with the member: a write outweighs a call,
+            // and a call a read. The declaration itself is not a use.
+            let use_type = refs
+                .iter()
+                .filter(|reference| !rules_out(reference))
+                .filter_map(|reference| use_of(node, &source.text, reference))
+                .max_by_key(|use_type| match use_type {
+                    ImpactType::Write => 2,
+                    ImpactType::Call => 1,
+                    _ => 0,
+                });
             let impact_type = if declares_target {
                 ImpactType::Declares
-            } else if source_table_target {
+            } else if source_table_target && use_type.is_none_or(|t| t == ImpactType::Read) {
                 ImpactType::Display
             } else {
-                ImpactType::Read
+                use_type.unwrap_or(ImpactType::Read)
             };
+            // The declaring object can use its own member too: an internal
+            // call used to vanish into the `declares` row.
+            if let (true, Some(use_type)) = (declares_target, use_type) {
+                results.push(ImpactEntry {
+                    kind: object.kind,
+                    id: object.normalized_id,
+                    name: object.info.name.clone(),
+                    proc: None,
+                    field: None,
+                    impact_type: use_type,
+                    package: None,
+                    confidence: ImpactConfidence::High,
+                    note: None,
+                });
+            }
             results.push(ImpactEntry {
                 kind: object.kind,
                 id: object.normalized_id,
@@ -648,6 +684,116 @@ fn search_workspace_files_for_member(
             });
         }
     }
+}
+
+/// How the reference at `reference` uses the name: `None` for the
+/// declaration itself, `Call` before `(`, `Write` before an assignment, and
+/// `Read` otherwise.
+fn use_of(
+    root: tree_sitter::Node<'_>,
+    text: &str,
+    reference: &tree_sitter::Range,
+) -> Option<ImpactType> {
+    let mut node = root.descendant_for_byte_range(reference.start_byte, reference.end_byte)?;
+    // Climb through the wrappers that span exactly the name.
+    while let Some(parent) = node.parent() {
+        if parent.start_byte() != reference.start_byte || parent.end_byte() != reference.end_byte {
+            if matches!(
+                parent.kind(),
+                "procedure_declaration"
+                    | "trigger_declaration"
+                    | "event_procedure_declaration"
+                    | "field_declaration"
+                    | "regular_variable_declaration"
+                    | "parameter"
+                    | "enum_value_declaration"
+            ) && parent
+                .child_by_field_name("name")
+                .is_some_and(|name| name.start_byte() == reference.start_byte)
+            {
+                return None;
+            }
+            break;
+        }
+        node = parent;
+    }
+    if is_field_declaration_name(text, reference.start_byte) {
+        return None;
+    }
+    let after = text.get(reference.end_byte..)?.trim_start();
+    Some(if after.starts_with('(') {
+        ImpactType::Call
+    } else if [":=", "+=", "-=", "*=", "/="]
+        .iter()
+        .any(|operator| after.starts_with(operator))
+    {
+        ImpactType::Write
+    } else {
+        ImpactType::Read
+    })
+}
+
+/// Whether the name at `offset` is a table field's own name, the second
+/// part of `field(50100; "Loyalty Tier"; Code[10])`. The grammar parses the
+/// `field(...)` metadata generically, with no declaration node to ask.
+fn is_field_declaration_name(text: &str, offset: usize) -> bool {
+    let Some(before) = text.get(..offset) else {
+        return false;
+    };
+    let Some(before) = before.trim_end().strip_suffix(';') else {
+        return false;
+    };
+    let before = before.trim_end();
+    let digits = before.trim_end_matches(|c: char| c.is_ascii_digit());
+    if digits.len() == before.len() {
+        return false;
+    }
+    let Some(before) = digits.trim_end().strip_suffix('(') else {
+        return false;
+    };
+    let before = before.trim_end();
+    before.len() >= 5
+        && before.is_char_boundary(before.len() - 5)
+        && before[before.len() - 5..].eq_ignore_ascii_case("field")
+}
+
+/// Drop rows that repeat another: an exact duplicate, an object-level row
+/// (no procedure or field) that a more specific row of the same object and
+/// type already reports, and an object-level `read` of an object that has a
+/// row saying more. `Cust Subs read` was listed once from its symbol entry,
+/// with the procedure, and again from the source scan; `Cust Ext` was both
+/// `extends` and `read` because its header names the table.
+fn dedupe(results: &mut Vec<ImpactEntry>) {
+    let key = |entry: &ImpactEntry| (entry.kind, entry.name.to_lowercase(), entry.impact_type);
+    let object_level = |entry: &ImpactEntry| entry.proc.is_none() && entry.field.is_none();
+    let specific: std::collections::HashSet<_> = results
+        .iter()
+        .filter(|entry| !object_level(entry))
+        .map(key)
+        .collect();
+    let described: std::collections::HashSet<_> = results
+        .iter()
+        .filter(|entry| !object_level(entry) || entry.impact_type != ImpactType::Read)
+        .map(|entry| (entry.kind, entry.name.to_lowercase()))
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    results.retain(|entry| {
+        if object_level(entry) && specific.contains(&key(entry)) {
+            return false;
+        }
+        if object_level(entry)
+            && entry.impact_type == ImpactType::Read
+            && described.contains(&(entry.kind, entry.name.to_lowercase()))
+        {
+            return false;
+        }
+        seen.insert((
+            key(entry),
+            entry.proc.clone(),
+            entry.field.clone(),
+            entry.package.clone(),
+        ))
+    });
 }
 
 /// The `SourceTable` property value declared in an AL page, report or query
@@ -779,6 +925,112 @@ mod tests {
             parse_symbol(r#""Cust ""Main"" Rec"."Name""""#),
             ("Cust \"Main\" Rec".to_string(), Some("Name\"".to_string()))
         );
+    }
+
+    const LOYALTY_MGT: &str = r#"codeunit 50101 "Loyalty Mgt"
+{
+    procedure SetTier(var Cust: Record Customer; Tier: Code[10])
+    begin
+        Cust."Loyalty Tier" := Tier;
+    end;
+
+    procedure Promote(var Cust: Record Customer)
+    begin
+        SetTier(Cust, 'GOLD');
+    end;
+}
+"#;
+
+    const LOYALTY_TEST: &str = r#"codeunit 50110 "Loyalty Test"
+{
+    procedure Check()
+    var
+        Cust: Record Customer;
+        Mgt: Codeunit "Loyalty Mgt";
+    begin
+        Mgt.SetTier(Cust, 'GOLD');
+        if Cust."Loyalty Tier" <> 'GOLD' then
+            Error('');
+    end;
+}
+"#;
+
+    fn types_of(results: &[ImpactEntry], name: &str) -> Vec<ImpactType> {
+        let mut types: Vec<ImpactType> = results
+            .iter()
+            .filter(|entry| entry.name == name)
+            .map(|entry| entry.impact_type)
+            .collect();
+        types.sort_by_key(|t| format!("{t:?}"));
+        types
+    }
+
+    /// Every consumer used to be `read`: a call, an assignment and a
+    /// comparison looked the same.
+    #[test]
+    fn impact_says_whether_a_consumer_calls_writes_or_reads() {
+        let ws = workspace_with_files(vec![
+            (
+                "/proj/CustExt.al",
+                r#"tableextension 50100 "Cust Ext" extends Customer
+{
+    fields
+    {
+        field(50100; "Loyalty Tier"; Code[10]) { }
+    }
+}
+"#,
+            ),
+            ("/proj/Mgt.al", LOYALTY_MGT),
+            ("/proj/Test.al", LOYALTY_TEST),
+        ]);
+        ws.symbols.add_entries(&[make_table(18, "Customer")]);
+
+        let field = impact(&ws, "Customer.\"Loyalty Tier\"").unwrap();
+        assert_eq!(types_of(&field, "Cust Ext"), vec![ImpactType::Declares]);
+        assert_eq!(types_of(&field, "Loyalty Mgt"), vec![ImpactType::Write]);
+        assert_eq!(types_of(&field, "Loyalty Test"), vec![ImpactType::Read]);
+
+        let procedure = impact(&ws, "\"Loyalty Mgt\".SetTier").unwrap();
+        assert_eq!(types_of(&procedure, "Loyalty Test"), vec![ImpactType::Call]);
+        // The internal call from Promote is reported beside the declaration.
+        assert_eq!(
+            types_of(&procedure, "Loyalty Mgt"),
+            vec![ImpactType::Call, ImpactType::Declares]
+        );
+    }
+
+    #[test]
+    fn an_object_row_is_dropped_when_a_row_names_its_procedure() {
+        let row = |proc: Option<&str>| ImpactEntry {
+            kind: ObjectKind::Codeunit,
+            id: 50100,
+            name: "Cust Subs".into(),
+            proc: proc.map(Into::into),
+            field: None,
+            impact_type: ImpactType::Read,
+            package: None,
+            confidence: ImpactConfidence::High,
+            note: None,
+        };
+        let mut rows = vec![
+            row(Some("OnInsert")),
+            row(None),
+            row(Some("OnInsert")),
+            row(None),
+        ];
+        dedupe(&mut rows);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].proc.as_deref(), Some("OnInsert"));
+
+        // An extension's header names the table, which the source scan
+        // reads as a `read` beside its `extends` row.
+        let mut extends = row(None);
+        extends.impact_type = ImpactType::Extends;
+        let mut rows = vec![extends, row(None)];
+        dedupe(&mut rows);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].impact_type, ImpactType::Extends);
     }
 
     fn workspace_with_files(files: Vec<(&str, &str)>) -> Workspace {
