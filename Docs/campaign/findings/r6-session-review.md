@@ -102,7 +102,7 @@ reads the old snake_case names).
 - severity: medium
 - scenario: `refresh_xliff` rebuilds an existing unit from `..lang_unit.clone()`, and a unit whose source is unchanged is pushed as `lang_unit.clone()`. Both keep the language file's `developer_note` and `note`. Language files made before this change have no Developer note, and the regenerated `.g.xlf` now carries the `Comment`. Refresh drops it for every unit whose source text did not change, so translators never see the comment the commit set out to preserve. An edited `Comment` never propagates either. Separately, a `<note from="Developer">` that spans lines goes through the multi-line path into `current_note`, so the following Xliff Generator note overwrites it.
 - fix: in refresh, take `note` and `developer_note` from the generated unit and keep only target and state from the language unit. In the multi-line path, remember which note (`from=`) is being accumulated.
-- status: open
+- status: fixed (refresh builds each existing unit from the generated one and keeps only target and state from the language file; a multi-line Developer note is accumulated as the developer note)
 
 ### [R6-NEW-1] the analyzer settings `new` writes are ignored by the `.gitignore` it writes
 - where: crates/al-project/src/scaffold.rs:233-238 and :855

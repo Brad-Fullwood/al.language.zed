@@ -35,16 +35,23 @@ pub fn refresh_xliff(
 
     for gen_unit in generated {
         if let Some(lang_unit) = language.get(&gen_unit.id) {
+            // Everything but the translation comes from the generated file:
+            // keeping the language file's notes meant a developer `Comment`
+            // added or edited in the code never reached a unit that already
+            // existed.
             if lang_unit.source != gen_unit.source {
                 result_units.push(TranslationUnit {
-                    source: gen_unit.source.clone(),
                     target: lang_unit.target.clone(),
                     state: TranslationState::NeedsReviewTranslation,
-                    ..lang_unit.clone()
+                    ..gen_unit.clone()
                 });
                 refresh.changed.push(gen_unit.id.clone());
             } else {
-                result_units.push(lang_unit.clone());
+                result_units.push(TranslationUnit {
+                    target: lang_unit.target.clone(),
+                    state: lang_unit.state.clone(),
+                    ..gen_unit.clone()
+                });
                 refresh.preserved += 1;
             }
         } else {

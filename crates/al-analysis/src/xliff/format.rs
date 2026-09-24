@@ -110,7 +110,9 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
     /// closing tag.
     #[derive(Default)]
     struct MultiLine {
-        target_tag: Option<&'static str>, // "source" | "target" | "note"
+        // "source" | "target" | "note" | "developer-note" (a `<note>` from
+        // the Developer, which closes with `</note>` like the other)
+        target_tag: Option<&'static str>,
         accumulator: String,
     }
     let mut multi = MultiLine::default();
@@ -156,7 +158,8 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
         let trimmed = line.trim();
 
         if let Some(tag) = multi.target_tag {
-            let close_marker = format!("</{tag}>");
+            let element = if tag == "developer-note" { "note" } else { tag };
+            let close_marker = format!("</{element}>");
             if let Some(close_idx) = line.find(&close_marker) {
                 // Last chunk — append everything up to the close marker.
                 let last = &line[..close_idx];
@@ -166,6 +169,7 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
                     "source" => current_source = Some(body),
                     "target" => current_target = Some(body),
                     "note" => current_note = Some(body),
+                    "developer-note" => current_developer_note = Some(body),
                     _ => {}
                 }
                 multi.target_tag = None;
@@ -214,7 +218,11 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
                     current_note = Some(body);
                 }
             } else if let Some(partial) = extract_open_only(trimmed) {
-                multi.target_tag = Some("note");
+                multi.target_tag = Some(if trimmed.contains("from=\"Developer\"") {
+                    "developer-note"
+                } else {
+                    "note"
+                });
                 multi.accumulator = partial;
             }
         } else if trimmed.starts_with("</trans-unit>") {

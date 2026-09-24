@@ -1345,3 +1345,48 @@ fn a_label_comment_becomes_the_developer_note() {
     );
     assert_eq!(unit.object_name, "Hello");
 }
+
+/// A language file made before the Developer note existed has no comment;
+/// refreshing kept its notes, so the `Comment` never reached the unit.
+#[test]
+fn refresh_brings_the_developer_comment_into_existing_units() {
+    let unit = |developer_note: Option<&str>, target: Option<&str>, state| TranslationUnit {
+        id: "Codeunit 1 - NamedType GreetingMsg".to_string(),
+        object_type: "Codeunit".to_string(),
+        object_id: 0,
+        object_name: "Hello".to_string(),
+        source: "Hello".to_string(),
+        target: target.map(str::to_string),
+        state,
+        note: Some("Codeunit Hello - NamedType GreetingMsg".to_string()),
+        developer_note: developer_note.map(str::to_string),
+    };
+    let generated = vec![unit(Some("Shown on run"), None, TranslationState::New)];
+    let mut language = HashMap::new();
+    language.insert(
+        generated[0].id.clone(),
+        unit(None, Some("Hallo"), TranslationState::Translated),
+    );
+    let (units, refresh) = refresh_xliff(&generated, &language);
+    assert_eq!(refresh.preserved, 1);
+    assert_eq!(units[0].developer_note.as_deref(), Some("Shown on run"));
+    assert_eq!(units[0].target.as_deref(), Some("Hallo"));
+    assert_eq!(units[0].state, TranslationState::Translated);
+}
+
+#[test]
+fn a_multi_line_developer_note_is_not_taken_for_the_generator_note() {
+    let xml = r#"<trans-unit id="Codeunit 1 - NamedType GreetingMsg" size-unit="char" translate="yes" xml:space="preserve">
+          <source xml:space="preserve">Hello</source>
+          <note from="Developer" annotates="general" priority="2">Shown
+on run</note>
+          <note from="Xliff Generator" annotates="general" priority="3">Codeunit Hello - NamedType GreetingMsg</note>
+        </trans-unit>"#;
+    let units = parse_xliff(xml);
+    let unit = &units["Codeunit 1 - NamedType GreetingMsg"];
+    assert_eq!(unit.developer_note.as_deref(), Some("Shown\non run"));
+    assert_eq!(
+        unit.note.as_deref(),
+        Some("Codeunit Hello - NamedType GreetingMsg")
+    );
+}
