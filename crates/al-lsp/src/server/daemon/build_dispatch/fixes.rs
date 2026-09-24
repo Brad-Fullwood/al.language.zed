@@ -607,13 +607,7 @@ pub(in crate::server::daemon) fn dispatch_fix_application_area(
 
     let plan = match al_analysis::queries::bulk_fix::plan_application_area(&project_root, value) {
         Ok(plan) => plan,
-        Err(error) => {
-            return rpc_error(
-                id,
-                error_codes::CODE_ANALYSIS_ERROR,
-                &format!("application-area fix planning failed: {error}"),
-            );
-        }
+        Err(error) => return bulk_fix_error_response(id, "application-area", &error),
     };
     apply_bulk_fix_plan(workspace, id, plan, dry_run, "application-area")
 }
@@ -688,13 +682,7 @@ pub(in crate::server::daemon) fn dispatch_fix_tooltips(
 
     let plan = match al_analysis::queries::bulk_fix::plan_tooltips(&project_root, &tooltips) {
         Ok(plan) => plan,
-        Err(error) => {
-            return rpc_error(
-                id,
-                error_codes::CODE_ANALYSIS_ERROR,
-                &format!("tooltip fix planning failed: {error}"),
-            );
-        }
+        Err(error) => return bulk_fix_error_response(id, "tooltip", &error),
     };
     apply_bulk_fix_plan(workspace, id, plan, dry_run, "tooltip")
 }
@@ -719,15 +707,31 @@ pub(in crate::server::daemon) fn dispatch_fix_data_classification(
     let plan = match al_analysis::queries::bulk_fix::plan_data_classification(&project_root, value)
     {
         Ok(plan) => plan,
-        Err(error) => {
-            return rpc_error(
-                id,
-                error_codes::CODE_ANALYSIS_ERROR,
-                &format!("data-classification fix planning failed: {error}"),
-            );
-        }
+        Err(error) => return bulk_fix_error_response(id, "data-classification", &error),
     };
     apply_bulk_fix_plan(workspace, id, plan, dry_run, "data-classification")
+}
+
+/// A planning failure, coded by whose problem it is: a bad value or a
+/// workspace over the scan limits is the caller's to change
+/// (`INVALID_PARAMS`), a disk fault is internal, and source the fix cannot
+/// change safely is a code-analysis error. All three were
+/// `CODE_ANALYSIS_ERROR` while the plan returned a String.
+fn bulk_fix_error_response(
+    id: u64,
+    fix: &str,
+    error: &al_analysis::queries::bulk_fix::BulkFixError,
+) -> Response {
+    use al_analysis::queries::bulk_fix::BulkFixError;
+    match error {
+        BulkFixError::Scan(scan) => super::scan_error_response(id, scan),
+        BulkFixError::InvalidInput(message) => rpc_error(id, error_codes::INVALID_PARAMS, message),
+        BulkFixError::Refused(message) => rpc_error(
+            id,
+            error_codes::CODE_ANALYSIS_ERROR,
+            &format!("{fix} fix planning failed: {message}"),
+        ),
+    }
 }
 
 fn apply_bulk_fix_plan(
@@ -1275,5 +1279,30 @@ mod tests {
         let nodes = r["nodeCount"].as_u64().expect("nodeCount");
         assert!(nodes > 0, "a non-empty file must parse to >0 nodes");
         assert!(r.get("parseErrors").is_some());
+    }
+
+    #[test]
+    fn a_bulk_fix_failure_is_coded_by_whose_problem_it_is() {
+        use al_analysis::queries::bulk_fix::BulkFixError;
+        use al_source::file_index::ScanError;
+        let code = |error: BulkFixError| {
+            bulk_fix_error_response(1, "tooltip", &error)
+                .error
+                .expect("error response")
+                .code
+        };
+        assert_eq!(
+            code(BulkFixError::InvalidInput("bad".into())),
+            error_codes::INVALID_PARAMS
+        );
+        assert_eq!(
+            code(BulkFixError::Scan(ScanError::FileLimit { limit: 10 })),
+            error_codes::INVALID_PARAMS,
+            "a workspace over the scan limit is the caller's to narrow"
+        );
+        assert_eq!(
+            code(BulkFixError::Refused("malformed".into())),
+            error_codes::CODE_ANALYSIS_ERROR
+        );
     }
 }
