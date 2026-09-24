@@ -20,11 +20,8 @@ Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, 
 
 Queued:
 
-- CI on PR 30: ubuntu green. macOS tests and the Windows extension-integration step still fail; a triage agent is reading the logs.
+- CI on PR 30: pushed fixes for the macOS `/tmp` test and the Windows daemon holding its caller's output pipe (1b396b59); confirm both jobs go green.
 - `obsolete` lists every pending obsoletion in the loaded packages (1553 and 220 KB on Base Application 26). Add a mode that reports the obsolete package symbols the workspace code uses; `obsolete_usages` exists but is only reachable as a lint rule.
-- `symbols` prints JSON without `--json`.
-- The LSP server does not watch the disk either: a file changed outside the editor (git checkout, a generator) stays stale until reopened. Register `workspace/didChangeWatchedFiles` and route it through `al_workspace::refresh_workspace_files`, skipping open documents.
-- Four copies of `is_workspace_package` (al-symbols, al-lsp `daemon/scope.rs`, al-explorer `app/details.rs`, al-analysis `source.rs`).
 - Persisted symbol and source index on disk (cold start 54 s and 2.9 GB RSS), keyed by app id, version and content hash.
 - Remaining file splits from the slop-splits-2 list: `session.rs`, `xliff.rs`, `calls.rs`, `router.rs`.
 - Rebuild `target/release` before measuring for articles (it predates `publish` and `free-ids`).
