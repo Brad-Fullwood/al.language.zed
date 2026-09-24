@@ -387,7 +387,7 @@ Notation: `X` is the `al-explorer` binary, run with the project directory as cwd
   `sym.methods[].attributes` for `Obsolete`, and sets `state: ObsoleteState::Pending` (:122) and
   `caller_count: 0` (:127) on every package entry. Field, object and `ObsoleteState` properties are
   not read.
-- status: fixed 758715e7 (package objects and fields listed, package callers counted, overload-aware)
+- status: fixed 758715e7 (package objects and fields listed; the by-name package caller count was withdrawn after r6 R6-OBS-1, `obsolete --used` answers that)
 
 ### [TEST-AFFECTED-FIELDS] `test-affected` ignores field use
 - severity: medium

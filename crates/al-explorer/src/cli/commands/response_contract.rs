@@ -411,7 +411,6 @@ pub(super) fn validate(method: &str, params: Option<&Value>, result: &Value) -> 
                 ("object", Kind::String),
                 ("symbol", Kind::String),
                 ("state", Kind::String),
-                ("callerCount", Kind::Unsigned),
             ],
         ),
         "obsoleteUsages" => array_objects(

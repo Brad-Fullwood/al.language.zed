@@ -45,7 +45,12 @@ pub struct ObsoleteEntry {
     /// 1-based line number
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
-    pub caller_count: u32,
+    /// Call sites in the workspace, for a workspace declaration. Absent for
+    /// a package declaration: calls are counted by name, and a package
+    /// overload or a same-named procedure elsewhere would be counted too
+    /// (`obsoleteUsages` resolves the receiver for that question).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_count: Option<u32>,
 }
 
 /// Whether the timeline counts callers.
@@ -103,12 +108,6 @@ pub(crate) fn timeline_from_sources(
     // Package objects. The workspace's own objects are scanned from source
     // above; their symbol-index copies would list them twice.
     let symbols = workspace.symbols.all_entries();
-    let caller_count = |name: &str| {
-        call_counts
-            .as_ref()
-            .and_then(|counts| counts.get(&name.to_ascii_lowercase()).copied())
-            .unwrap_or(0)
-    };
     for sym in symbols.iter().filter(|s| {
         !s.synthetic && !al_symbols::source_availability::is_workspace_package(&s.package)
     }) {
@@ -146,8 +145,7 @@ pub(crate) fn timeline_from_sources(
                         tag,
                         file: None,
                         line: None,
-                        // By name, as for the workspace's own procedures.
-                        caller_count: caller_count(&method.name),
+                        caller_count: None,
                     });
                 }
             }
@@ -217,7 +215,7 @@ fn scan_node(
     if let Some((kind, symbol, obsoletion)) = declared_obsoletion(node, source, object_name) {
         results.push(ObsoleteEntry {
             object: object_name.to_string(),
-            caller_count: caller_count(counts, &symbol),
+            caller_count: Some(caller_count(counts, &symbol)),
             symbol,
             kind,
             state: obsoletion.state,
@@ -385,7 +383,7 @@ fn property_entry(
         tag: property("ObsoleteTag"),
         file: None,
         line: None,
-        caller_count: 0,
+        caller_count: None,
     })
 }
 
@@ -790,7 +788,7 @@ mod tests {
             .into_iter()
             .find(|e| e.symbol == "OldProc")
             .expect("OldProc");
-        assert_eq!(entry.caller_count, 2);
+        assert_eq!(entry.caller_count, Some(2));
     }
 
     #[test]

@@ -95,7 +95,7 @@ reads the old snake_case names).
 - severity: medium
 - scenario: `call_site_counts` counts every call site by name alone, member calls included (`al_syntax::collect_call_sites`). Base Application often obsoletes one overload and keeps another of the same name, and some obsolete procedures have common names (`Initialize`, `Code`, `GetDefaultDimID`). A workspace that calls only the replacement overload, or a same-named procedure on another object, now shows `callerCount: N > 0` on the obsolete package procedure. That reads as "the workspace uses this obsolete API". Before this commit package rows reported 0.
 - fix: count package callers from resolved call-graph edges to that object's method (or `obsoleteUsages`, which resolves the receiver). Until then, report package `callerCount` as unknown (omit it) rather than a by-name total.
-- status: open
+- status: fixed (`callerCount` is now omitted for package declarations, as unknown; workspace declarations keep their count. `obsolete --used` resolves receivers for the question of what the workspace uses)
 
 ### [R6-XLF-1] refresh never brings a developer `Comment` into an existing translation unit
 - where: crates/al-analysis/src/xliff/refresh.rs:36-49, crates/al-analysis/src/xliff/format.rs:168
