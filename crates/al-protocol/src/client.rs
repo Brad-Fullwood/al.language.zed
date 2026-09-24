@@ -1211,12 +1211,21 @@ mod windows_std_handles {
         GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
     };
 
+    /// Held for the guard's lifetime: the flags are process-wide, and a second
+    /// spawn that found them already cleared would record nothing to restore
+    /// while the first one's restore put them back mid-spawn.
+    static SPAWNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     pub(super) struct NotInherited {
         restore: Vec<HANDLE>,
+        _serialized: std::sync::MutexGuard<'static, ()>,
     }
 
     impl NotInherited {
         pub(super) fn new() -> Self {
+            let serialized = SPAWNING
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut restore = Vec::new();
             for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
                 // Safety: these read and set flags on this process's own
@@ -1237,7 +1246,10 @@ mod windows_std_handles {
                     }
                 }
             }
-            Self { restore }
+            Self {
+                restore,
+                _serialized: serialized,
+            }
         }
     }
 

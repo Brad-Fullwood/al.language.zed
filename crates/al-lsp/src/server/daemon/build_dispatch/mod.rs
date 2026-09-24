@@ -56,7 +56,8 @@ pub(super) fn dispatch_obsolete(workspace: &Workspace, id: u64) -> Response {
 /// developer asks before an upgrade, where `obsolete` lists every pending
 /// obsoletion in every loaded package (1,553 for Base Application 26).
 pub(super) fn dispatch_obsolete_usages(workspace: &Workspace, id: u64) -> Response {
-    match al_analysis::queries::obsolete_usage::obsolete_usages(workspace) {
+    // Parses every workspace source; keep it off the async workers.
+    match super::blocking(|| al_analysis::queries::obsolete_usage::obsolete_usages(workspace)) {
         Ok(findings) => serialized_response(id, &findings, "obsolete usages"),
         Err(error) => rpc_error(id, error_codes::INTERNAL_ERROR, &error.to_string()),
     }
