@@ -214,28 +214,6 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
     }
 }
 
-/// Extract the leading table-name component of a `TableRelation` property value.
-///
-/// AL `TableRelation` values can take several shapes:
-/// - `Customer` — bare identifier
-/// - `"Customer"` — quoted identifier
-/// - `"Sales Header"` — quoted multi-word
-/// - `Customer."No."` — table dot field
-/// - `"Sales Header"."No."`
-/// - `"Item" WHERE("Type" = CONST(Inventory))` — with filter clause
-/// - `Customer WHERE(...)`
-///
-/// For the conditional form this is the *first declared* branch's table.
-/// Callers that need every branch — anything asking "does this relation reach
-/// table X" — want [`extract_table_relation_tables`] instead.
-///
-/// Returns `None` if the value is empty after stripping. Pre-allocates no
-/// `String` on the happy path; returns a borrowed `&str` of the table-name
-/// slice.
-pub fn extract_table_relation_table(value: &str) -> Option<&str> {
-    extract_table_relation_tables(value).into_iter().next()
-}
-
 /// Every table referenced by a `TableRelation` value, in declaration order.
 ///
 /// AL's conditional form names one table per branch:
@@ -283,7 +261,7 @@ pub fn extract_table_relation_tables(value: &str) -> Vec<&str> {
     }
 
     // Declaration order, deduplicated in place: the first branch is the
-    // primary relation and `extract_table_relation_table` returns it. Sorting
+    // primary relation and callers taking the first element rely on it. Sorting
     // here used to make that the alphabetically first branch instead.
     let mut seen = std::collections::HashSet::new();
     tables.retain(|table| seen.insert(table.to_ascii_lowercase()));
@@ -672,30 +650,30 @@ mod tests {
 
     #[test]
     fn extract_table_relation_bare_identifier() {
-        assert_eq!(extract_table_relation_table("Customer"), Some("Customer"));
+        assert_eq!(extract_table_relation_tables("Customer"), vec!["Customer"]);
     }
 
     #[test]
     fn extract_table_relation_quoted_identifier() {
         assert_eq!(
-            extract_table_relation_table(r#""Customer""#),
-            Some("Customer")
+            extract_table_relation_tables(r#""Customer""#),
+            vec!["Customer"]
         );
     }
 
     #[test]
     fn extract_table_relation_quoted_multi_word() {
         assert_eq!(
-            extract_table_relation_table(r#""Sales Header""#),
-            Some("Sales Header")
+            extract_table_relation_tables(r#""Sales Header""#),
+            vec!["Sales Header"]
         );
     }
 
     #[test]
     fn extract_table_relation_table_dot_field() {
         assert_eq!(
-            extract_table_relation_table(r#""Customer"."No.""#),
-            Some("Customer")
+            extract_table_relation_tables(r#""Customer"."No.""#),
+            vec!["Customer"]
         );
     }
 
@@ -704,32 +682,34 @@ mod tests {
         // Real AL: `Customer WHERE("Blocked" = CONST(""))`. Prior code did
         // not split on whitespace, so this fell through and never matched.
         assert_eq!(
-            extract_table_relation_table(r#"Customer WHERE("Blocked" = CONST(""))"#),
-            Some("Customer")
+            extract_table_relation_tables(r#"Customer WHERE("Blocked" = CONST(""))"#),
+            vec!["Customer"]
         );
     }
 
     #[test]
     fn extract_table_relation_quoted_with_where_clause() {
         assert_eq!(
-            extract_table_relation_table(r#""Item" WHERE("Type" = CONST(Inventory))"#),
-            Some("Item")
+            extract_table_relation_tables(r#""Item" WHERE("Type" = CONST(Inventory))"#),
+            vec!["Item"]
         );
     }
 
     #[test]
     fn extract_table_relation_quoted_multiword_with_filter() {
         assert_eq!(
-            extract_table_relation_table(r#""Sales Header" WHERE("Document Type" = CONST(Order))"#),
-            Some("Sales Header")
+            extract_table_relation_tables(
+                r#""Sales Header" WHERE("Document Type" = CONST(Order))"#
+            ),
+            vec!["Sales Header"]
         );
     }
 
     #[test]
     fn extract_table_relation_rejects_empty() {
-        assert_eq!(extract_table_relation_table(""), None);
-        assert_eq!(extract_table_relation_table(r#""""#), None);
-        assert_eq!(extract_table_relation_table("   "), None);
+        assert_eq!(extract_table_relation_tables(""), Vec::<&str>::new());
+        assert_eq!(extract_table_relation_tables(r#""""#), Vec::<&str>::new());
+        assert_eq!(extract_table_relation_tables("   "), Vec::<&str>::new());
     }
 
     #[test]
@@ -811,7 +791,6 @@ mod tests {
             extract_table_relation_tables(value),
             vec!["Item", "Resource"]
         );
-        assert_ne!(extract_table_relation_table(value), Some("if"));
     }
 
     #[test]
@@ -832,9 +811,9 @@ mod tests {
         );
     }
 
-    /// The doc promises declaration order, and the singular helper promises
-    /// the primary relation. Sorting made both wrong: `Resource` came back as
-    /// "the" table for a relation whose first branch is `Zebra`.
+    /// The doc promises declaration order, so the first element is the primary
+    /// relation. Sorting made that wrong: `Apple` came back first for a relation
+    /// whose first branch is `Zebra`.
     #[test]
     fn extract_table_relation_tables_keeps_declaration_order() {
         let value = r#"IF (Type=CONST(Zebra)) Zebra."No." ELSE IF (Type=CONST(Apple)) Apple."No.""#;
@@ -843,7 +822,6 @@ mod tests {
             vec!["Zebra", "Apple"],
             "branches must come back in the order they are declared"
         );
-        assert_eq!(extract_table_relation_table(value), Some("Zebra"));
     }
 
     #[test]

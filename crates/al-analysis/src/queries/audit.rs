@@ -244,9 +244,9 @@ pub struct OverGrantedRightsEntry {
     pub reason: String,
 }
 
-/// Full result of the permission-set audit: per-object coverage plus over-broad
-/// (unused) grants. added the `over_broad` (object-level) and
-/// `over_granted_rights` (right-level / RIMDX) sections; `coverage` is unchanged.
+/// Full result of the permission-set audit: which objects a permission set
+/// covers, grants for objects nothing uses, `tabledata` rights beyond the
+/// observed writes, and the grant clauses that could not be read.
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionAuditReport {
