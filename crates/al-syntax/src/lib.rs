@@ -45,18 +45,29 @@ pub use types::{
 };
 
 /// Clean an attribute argument: trim, strip a leading `Type::` prefix, and strip
-/// surrounding `"`/`'` quotes. A pure string helper shared by the navigation,
+/// one surrounding `"`/`'` pair, unescaping the doubled quote inside it. A pure string helper shared by the navigation,
 /// insight and query layers.
 pub fn clean_attr_arg(s: &str) -> String {
     let s = s.trim();
-    let s = if let Some(pos) = s.find("::") {
-        &s[pos + 2..]
-    } else {
-        s
+    // `Codeunit::"Sales-Post"` names the object after the scope operator. A
+    // quoted argument is a name in its own right, `::` inside it included.
+    let s = match s.find("::") {
+        Some(pos) if !s.starts_with('"') && !s.starts_with('\'') => s[pos + 2..].trim(),
+        _ => s,
     };
-    let s = s.trim_matches('"');
-    let s = s.trim_matches('\'');
-    s.trim().to_string()
+    // One quote pair, with the doubled quote unescaped, so `"My ""Big"" Unit"`
+    // matches the name al-syntax reports for that object. An unbalanced value
+    // keeps the old lenient strip.
+    for quote in ['"', '\''] {
+        if s.len() >= 2 && s.starts_with(quote) && s.ends_with(quote) {
+            let doubled: String = [quote, quote].iter().collect();
+            return s[1..s.len() - 1]
+                .replace(&doubled, &quote.to_string())
+                .trim()
+                .to_string();
+        }
+    }
+    s.trim_matches('"').trim_matches('\'').trim().to_string()
 }
 
 /// Convert a byte-offset column (as produced by tree-sitter) within a UTF-8 line to a
@@ -384,6 +395,39 @@ mod clean_identifier_tests {
         assert_eq!(clean_identifier_text(""), None);
         assert_eq!(clean_identifier_text(r#""""#), None);
         assert_eq!(clean_identifier_text("   "), None);
+    }
+}
+
+#[cfg(test)]
+mod clean_attr_arg_tests {
+    use super::clean_attr_arg;
+
+    #[test]
+    fn strips_the_scope_prefix() {
+        assert_eq!(clean_attr_arg("ObjectType::Codeunit"), "Codeunit");
+        assert_eq!(clean_attr_arg(" Codeunit::\"Sales-Post\" "), "Sales-Post");
+    }
+
+    #[test]
+    fn unescapes_a_doubled_quote_inside_one_quote_pair() {
+        assert_eq!(
+            clean_attr_arg("\"My \"\"Big\"\" Codeunit\""),
+            "My \"Big\" Codeunit"
+        );
+        assert_eq!(clean_attr_arg("'Don''t'"), "Don't");
+        assert_eq!(clean_attr_arg("\"Name\"\"\""), "Name\"");
+    }
+
+    #[test]
+    fn keeps_a_scope_operator_inside_a_quoted_name() {
+        assert_eq!(clean_attr_arg("\"A::B\""), "A::B");
+    }
+
+    #[test]
+    fn plain_and_unbalanced_values_keep_the_lenient_strip() {
+        assert_eq!(clean_attr_arg("OnAfterPost"), "OnAfterPost");
+        assert_eq!(clean_attr_arg("'OnAfterPost"), "OnAfterPost");
+        assert_eq!(clean_attr_arg("''"), "");
     }
 }
 
