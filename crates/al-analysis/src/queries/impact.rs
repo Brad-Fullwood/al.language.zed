@@ -703,7 +703,6 @@ fn use_of(
                 "procedure_declaration"
                     | "trigger_declaration"
                     | "event_procedure_declaration"
-                    | "field_declaration"
                     | "regular_variable_declaration"
                     | "parameter"
                     | "enum_value_declaration"
