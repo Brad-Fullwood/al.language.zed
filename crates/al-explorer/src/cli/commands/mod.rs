@@ -460,11 +460,36 @@ where
                 print_json(&result);
             } else {
                 format_fn(&result);
+                print_page_footer(&result);
             }
             exit_code
         }
         Err(e) => report_error(&e, json),
     }
+}
+
+/// Under `--limit`, the text formatters count the rows they were given, so
+/// `Entry points (3 found)` hid 27,070 more. Say what the page is.
+fn print_page_footer(result: &serde_json::Value) {
+    if result.get("truncated").and_then(serde_json::Value::as_bool) != Some(true) {
+        return;
+    }
+    let (Some(total), Some(returned)) = (
+        result.get("total").and_then(serde_json::Value::as_u64),
+        result.get("returned").and_then(serde_json::Value::as_u64),
+    ) else {
+        return;
+    };
+    let offset = result
+        .get("offset")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    println!(
+        "\n(showing {} to {} of {total}; --offset {} for the next page)",
+        offset + 1,
+        offset + returned,
+        offset + returned
+    );
 }
 
 /// The global `--limit`, `--offset`, `--fields` and `--scope` for this
