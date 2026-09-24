@@ -1050,22 +1050,11 @@ mod tests {
         use al_symbols::{MethodSymbol, ObjectKind, SymbolEntry};
         let ws = Workspace::new();
         let mut entry = SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Codeunit,
             id: 80,
             name: "Sales-Post".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Base Application".to_string(),
-            methods: Vec::new(),
-            fields: Vec::new(),
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         };
         entry.methods = vec![MethodSymbol {
             name: "RunWithCheck".to_string(),

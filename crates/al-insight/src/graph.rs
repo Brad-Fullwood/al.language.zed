@@ -745,74 +745,45 @@ mod tests {
 
     fn make_codeunit(id: i32, name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Codeunit,
             id,
             name: name.to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "TestPkg".to_string(),
             methods,
-            fields: Vec::new(),
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 
     fn make_table(id: i32, name: &str) -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Table,
             id,
             name: name.to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "TestPkg".to_string(),
-            methods: Vec::new(),
             fields: vec![FieldSymbol {
                 id: 1,
                 name: "No.".to_string(),
                 type_name: "Code".to_string(),
                 properties: vec![],
             }],
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 
     fn make_table_ext(id: i32, name: &str, extends: &str) -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::TableExtension,
             id,
             name: name.to_string(),
             extends: Some(extends.to_string()),
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "ExtPkg".to_string(),
-            methods: Vec::new(),
             fields: vec![FieldSymbol {
                 id: 50100,
                 name: "Custom".to_string(),
                 type_name: "Boolean".to_string(),
                 properties: vec![],
             }],
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -1194,39 +1165,24 @@ mod tests {
         let index = SymbolIndex::new();
 
         let customer = SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Table,
             id: 18,
             name: "Customer".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "TestPkg".to_string(),
-            methods: Vec::new(),
             fields: vec![FieldSymbol {
                 id: 1,
                 name: "No.".to_string(),
                 type_name: "Code".to_string(),
                 properties: vec![],
             }],
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         };
 
         let sales_header = SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Table,
             id: 36,
             name: "Sales Header".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "TestPkg".to_string(),
-            methods: Vec::new(),
             fields: vec![FieldSymbol {
                 id: 2,
                 name: "Sell-to Customer No.".to_string(),
@@ -1236,12 +1192,7 @@ mod tests {
                     value: "Customer".to_string(),
                 }],
             }],
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         };
 
         index.add_entries(&[customer, sales_header]);
@@ -1273,39 +1224,24 @@ mod tests {
         let index = SymbolIndex::new();
 
         let item = SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Table,
             id: 27,
             name: "Item".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "TestPkg".to_string(),
-            methods: Vec::new(),
             fields: vec![FieldSymbol {
                 id: 1,
                 name: "No.".to_string(),
                 type_name: "Code".to_string(),
                 properties: vec![],
             }],
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         };
 
         let sales_line = SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Table,
             id: 37,
             name: "Sales Line".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "TestPkg".to_string(),
-            methods: Vec::new(),
             fields: vec![FieldSymbol {
                 id: 2,
                 name: "No.".to_string(),
@@ -1315,12 +1251,7 @@ mod tests {
                     value: "\"Item\" WHERE(\"Type\" = CONST(Inventory))".to_string(),
                 }],
             }],
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         };
 
         index.add_entries(&[item, sales_line]);

@@ -792,72 +792,42 @@ mod tests {
 
     fn make_table(id: i32, name: &str) -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Table,
             id,
             name: name.to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Base".to_string(),
-            methods: Vec::new(),
             fields: vec![FieldSymbol {
                 id: 1,
                 name: "No.".to_string(),
                 type_name: "Code".to_string(),
                 properties: vec![],
             }],
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 
     fn make_page_for_table(id: i32, name: &str, source_table: &str) -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Page,
             id,
             name: name.to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Base".to_string(),
-            methods: Vec::new(),
-            fields: Vec::new(),
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
             properties: vec![PropertyValue {
                 name: "SourceTable".to_string(),
                 value: source_table.to_string(),
             }],
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 
     fn make_table_ext(id: i32, name: &str, extends: &str) -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::TableExtension,
             id,
             name: name.to_string(),
             extends: Some(extends.to_string()),
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "ExtPkg".to_string(),
-            methods: Vec::new(),
-            fields: Vec::new(),
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 

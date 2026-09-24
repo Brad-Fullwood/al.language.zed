@@ -55,22 +55,12 @@ pub(crate) fn tree_of(text: &str) -> tree_sitter::Tree {
 
 pub(crate) fn table_entry(id: i32, name: &str, fields: Vec<FieldSymbol>) -> SymbolEntry {
     SymbolEntry {
-        synthetic: false,
         kind: ObjectKind::Table,
         id,
         name: name.to_string(),
-        extends: None,
-        implements: Vec::new(),
-        namespace: String::new(),
         package: "Base".to_string(),
-        methods: Vec::new(),
         fields,
-        controls: Vec::new(),
-        enum_values: Vec::new(),
-        keys: Vec::new(),
-        properties: Vec::new(),
-        permissions: Vec::new(),
-        variables: Vec::new(),
+        ..Default::default()
     }
 }
 
@@ -112,22 +102,12 @@ pub(crate) fn field(id: i32, name: &str, type_name: &str) -> FieldSymbol {
 
 pub(crate) fn enum_entry(id: i32, name: &str, values: Vec<EnumValueSymbol>) -> SymbolEntry {
     SymbolEntry {
-        synthetic: false,
         kind: ObjectKind::Enum,
         id,
         name: name.to_string(),
-        extends: None,
-        implements: Vec::new(),
-        namespace: String::new(),
         package: "Base".to_string(),
-        methods: Vec::new(),
-        fields: Vec::new(),
-        controls: Vec::new(),
         enum_values: values,
-        keys: Vec::new(),
-        properties: Vec::new(),
-        permissions: Vec::new(),
-        variables: Vec::new(),
+        ..Default::default()
     }
 }
 

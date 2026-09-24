@@ -1075,13 +1075,9 @@ mod tests {
 
     fn make_table_entry() -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Table,
             id: 18,
             name: "Customer".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Base Application".to_string(),
             methods: vec![
                 MethodSymbol {
@@ -1117,32 +1113,21 @@ mod tests {
                     properties: vec![],
                 },
             ],
-            controls: Vec::new(),
-            enum_values: Vec::new(),
             keys: vec![KeySymbol {
                 name: "PK".to_string(),
                 field_names: vec!["No.".to_string()],
                 properties: vec![],
             }],
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 
     fn make_enum_entry() -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Enum,
             id: 50100,
             name: "Sales Document Type".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Base Application".to_string(),
-            methods: Vec::new(),
-            fields: Vec::new(),
-            controls: Vec::new(),
             enum_values: vec![
                 EnumValueSymbol {
                     ordinal: 0,
@@ -1161,22 +1146,15 @@ mod tests {
                     name: "Credit Memo".to_string(),
                 },
             ],
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 
     fn make_codeunit_with_events() -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Codeunit,
             id: 80,
             name: "Sales-Post".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Base Application".to_string(),
             methods: vec![
                 MethodSymbol {
@@ -1216,43 +1194,29 @@ mod tests {
                     is_local: true,
                 },
             ],
-            fields: Vec::new(),
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
             variables: vec![VariableSymbol {
                 name: "TotalAmount".to_string(),
                 type_name: "Decimal".to_string(),
                 is_protected: false,
             }],
+            ..Default::default()
         }
     }
 
     fn make_table_ext_entry() -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::TableExtension,
             id: 50100,
             name: "Customer Ext".to_string(),
             extends: Some("Customer".to_string()),
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "My Extension".to_string(),
-            methods: Vec::new(),
             fields: vec![FieldSymbol {
                 id: 50100,
                 name: "Custom Field".to_string(),
                 type_name: "Boolean".to_string(),
                 properties: vec![],
             }],
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -1351,22 +1315,11 @@ mod tests {
     #[test]
     fn render_outline_empty_object() {
         let entry = SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Codeunit,
             id: 50100,
             name: "Empty CU".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "pkg".to_string(),
-            methods: Vec::new(),
-            fields: Vec::new(),
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         };
 
         let outline = render_outline(&entry);
@@ -1672,22 +1625,11 @@ mod tests {
         table.kind = ObjectKind::Table;
         table.id = 27;
         let codeunit = SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Codeunit,
             id: 99,
             name: "Item".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Base Application".to_string(),
-            methods: Vec::new(),
-            fields: Vec::new(),
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         };
         ws.symbols.add_entries_owned(vec![table, codeunit]);
 

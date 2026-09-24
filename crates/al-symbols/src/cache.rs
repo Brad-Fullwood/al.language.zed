@@ -460,27 +460,17 @@ mod tests {
             version: "1.0.0.0".to_string(),
             object_count: 1,
             objects: vec![SymbolEntry {
-                synthetic: false,
                 kind: ObjectKind::Table,
                 id: 1,
                 name: "TestTable".to_string(),
-                extends: None,
-                implements: Vec::new(),
-                namespace: String::new(),
                 package: name.to_string(),
-                methods: Vec::new(),
                 fields: vec![FieldSymbol {
                     id: 1,
                     name: "No.".to_string(),
                     type_name: "Code".to_string(),
                     properties: vec![],
                 }],
-                controls: Vec::new(),
-                enum_values: Vec::new(),
-                keys: Vec::new(),
-                properties: Vec::new(),
-                permissions: Vec::new(),
-                variables: Vec::new(),
+                ..Default::default()
             }],
         };
 

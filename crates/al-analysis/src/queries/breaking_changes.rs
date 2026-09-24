@@ -795,22 +795,12 @@ mod tests {
 
     fn make_codeunit(name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Codeunit,
             id: 50100,
             name: name.to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Test".to_string(),
             methods,
-            fields: Vec::new(),
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -930,15 +920,10 @@ mod tests {
     #[test]
     fn detects_removed_field() {
         let old_table = SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Table,
             id: 18,
             name: "Customer".to_string(),
-            extends: None,
-            implements: Vec::new(),
             package: "Base".to_string(),
-            namespace: String::new(),
-            methods: Vec::new(),
             fields: vec![
                 FieldSymbol {
                     id: 1,
@@ -953,12 +938,7 @@ mod tests {
                     properties: vec![],
                 },
             ],
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         };
 
         let new_table = SymbolEntry {
@@ -1030,17 +1010,10 @@ mod tests {
     fn detects_enum_value_removed() {
         use al_symbols::EnumValueSymbol;
         let make_enum = |values: Vec<&str>| SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Enum,
             id: 50100,
             name: "Status".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Test".to_string(),
-            methods: Vec::new(),
-            fields: Vec::new(),
-            controls: Vec::new(),
             enum_values: values
                 .into_iter()
                 .enumerate()
@@ -1049,10 +1022,7 @@ mod tests {
                     name: n.to_string(),
                 })
                 .collect(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         };
         let baseline = vec![make_enum(vec!["Open", "Pending", "Closed"])];
         let current = vec![make_enum(vec!["Open", "Closed"])];

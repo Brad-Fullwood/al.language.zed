@@ -731,13 +731,9 @@ mod tests {
         use al_symbols::{AttributeSymbol, MethodSymbol, ObjectKind, ParameterSymbol, SymbolEntry};
         let ws = Workspace::new();
         let entries = vec![SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Codeunit,
             id: 50100,
             name: "Legacy CU".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "TestPkg".to_string(),
             methods: vec![MethodSymbol {
                 name: "OldHelper".to_string(),
@@ -756,13 +752,7 @@ mod tests {
                 }],
                 is_local: false,
             }],
-            fields: Vec::new(),
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }];
         ws.symbols.add_entries(&entries);
 

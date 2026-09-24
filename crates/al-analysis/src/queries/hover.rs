@@ -610,13 +610,9 @@ mod tests {
     #[test]
     fn test_format_symbol_hover() {
         let entry = al_symbols::SymbolEntry {
-            synthetic: false,
             kind: al_symbols::ObjectKind::Table,
             id: 18,
             name: "Customer".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Base Application".to_string(),
             methods: vec![al_symbols::MethodSymbol {
                 name: "GetBalance".to_string(),
@@ -631,12 +627,7 @@ mod tests {
                 type_name: "Code".to_string(),
                 properties: vec![],
             }],
-            controls: vec![],
-            enum_values: vec![],
-            keys: vec![],
-            properties: vec![],
-            permissions: vec![],
-            variables: vec![],
+            ..Default::default()
         };
         let result = format_symbol_hover(&entry);
         assert!(result.contains("Table"));
@@ -672,13 +663,9 @@ mod tests {
 
     fn table_entry() -> al_symbols::SymbolEntry {
         al_symbols::SymbolEntry {
-            synthetic: false,
             kind: al_symbols::ObjectKind::Table,
             id: 18,
             name: "Customer".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Base Application".to_string(),
             methods: vec![
                 al_symbols::MethodSymbol {
@@ -696,13 +683,7 @@ mod tests {
                     is_local: true,
                 },
             ],
-            fields: vec![],
-            controls: vec![],
-            enum_values: vec![],
-            keys: vec![],
-            properties: vec![],
-            permissions: vec![],
-            variables: vec![],
+            ..Default::default()
         }
     }
 
@@ -723,17 +704,10 @@ mod tests {
     #[test]
     fn format_symbol_hover_renders_enum_values() {
         let entry = al_symbols::SymbolEntry {
-            synthetic: false,
             kind: al_symbols::ObjectKind::Enum,
             id: 50100,
             name: "Color".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "MyApp".to_string(),
-            methods: vec![],
-            fields: vec![],
-            controls: vec![],
             enum_values: vec![
                 al_symbols::EnumValueSymbol {
                     name: "Red".to_string(),
@@ -744,10 +718,7 @@ mod tests {
                     ordinal: 1,
                 },
             ],
-            keys: vec![],
-            properties: vec![],
-            permissions: vec![],
-            variables: vec![],
+            ..Default::default()
         };
         let result = format_symbol_hover(&entry);
         assert!(result.contains("Enum"), "got: {result:?}");

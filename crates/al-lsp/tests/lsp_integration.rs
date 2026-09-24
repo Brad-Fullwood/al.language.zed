@@ -130,13 +130,9 @@ fn build_test_index() -> SymbolIndex {
     let index = SymbolIndex::new();
     index.add_entries(&[
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Table,
             id: 18,
             name: "Customer".to_string(),
-            extends: None,
-            implements: vec![],
-            namespace: String::new(),
             package: "Base Application".to_string(),
             methods: vec![
                 MethodSymbol {
@@ -185,21 +181,12 @@ fn build_test_index() -> SymbolIndex {
                     properties: vec![],
                 },
             ],
-            controls: vec![],
-            enum_values: vec![],
-            keys: vec![],
-            properties: vec![],
-            permissions: Vec::new(),
-            variables: vec![],
+            ..Default::default()
         },
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Codeunit,
             id: 80,
             name: "Sales-Post".to_string(),
-            extends: None,
-            implements: vec![],
-            namespace: String::new(),
             package: "Base Application".to_string(),
             methods: vec![MethodSymbol {
                 name: "RunWithCheck".to_string(),
@@ -212,26 +199,13 @@ fn build_test_index() -> SymbolIndex {
                 attributes: vec![],
                 is_local: false,
             }],
-            fields: vec![],
-            controls: vec![],
-            enum_values: vec![],
-            keys: vec![],
-            properties: vec![],
-            permissions: Vec::new(),
-            variables: vec![],
+            ..Default::default()
         },
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Enum,
             id: 1530,
             name: "Customer Blocked".to_string(),
-            extends: None,
-            implements: vec![],
-            namespace: String::new(),
             package: "Base Application".to_string(),
-            methods: vec![],
-            fields: vec![],
-            controls: vec![],
             enum_values: vec![
                 EnumValueSymbol {
                     ordinal: 0,
@@ -250,10 +224,7 @@ fn build_test_index() -> SymbolIndex {
                     name: "All".to_string(),
                 },
             ],
-            keys: vec![],
-            properties: vec![],
-            permissions: Vec::new(),
-            variables: vec![],
+            ..Default::default()
         },
     ]);
     index
