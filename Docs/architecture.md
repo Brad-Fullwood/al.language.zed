@@ -99,7 +99,6 @@ graph TD
   al_publish --> al_compile
   al_publish --> al_project
   al_publish --> al_workspace
-  al_publish --> al_types
 
   al_test --> al_types
   al_test --> al_syntax
