@@ -214,6 +214,111 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
     }
 }
 
+/// Add the workspace's procedure-local `Record <table>` variables to a
+/// [`table_impact`] result.
+///
+/// Symbol entries carry an object's global variables and its procedures'
+/// parameters, but not the variables declared inside a procedure, which is
+/// where most code holds a record: a test codeunit whose only use of
+/// Customer was two `Cust: Record Customer` locals did not appear at all.
+pub fn add_workspace_local_record_variables(
+    result: &mut TableImpactResult,
+    files: &al_source::file_index::FileIndex,
+    table_name: &str,
+) {
+    let mut paths: Vec<std::path::PathBuf> = files
+        .files
+        .iter()
+        .map(|entry| entry.key().clone())
+        .collect();
+    paths.sort();
+    for path in paths {
+        let Some((text, tree)) = files.get_cached_parse(&path) else {
+            continue;
+        };
+        let objects = files
+            .object_infos
+            .get(&path)
+            .map(|infos| infos.value().clone())
+            .unwrap_or_default();
+        let source = text.as_bytes();
+        let mut stack = vec![tree.root_node()];
+        while let Some(node) = stack.pop() {
+            let mut cursor = node.walk();
+            stack.extend(node.children(&mut cursor));
+            if node.kind() != "regular_variable_declaration" {
+                continue;
+            }
+            let Some(procedure) = std::iter::successors(node.parent(), |n| n.parent()).find(|n| {
+                matches!(
+                    n.kind(),
+                    "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration"
+                )
+            }) else {
+                continue; // an object-level global: already in the entry
+            };
+            let is_record = node
+                .child_by_field_name("type")
+                .and_then(|ty| ty.utf8_text(source).ok())
+                .is_some_and(|ty| is_record_of(ty, table_name));
+            if !is_record {
+                continue;
+            }
+            let Some(object) = objects.iter().find(|object| {
+                object.range.start_byte <= node.start_byte()
+                    && node.end_byte() <= object.range.end_byte
+            }) else {
+                continue;
+            };
+            let procedure_name = procedure
+                .child_by_field_name("name")
+                .and_then(|name| name.utf8_text(source).ok())
+                .map(|name| name.unquote_identifier().into_owned())
+                .unwrap_or_default();
+            let mut cursor = node.walk();
+            let names: Vec<String> = node
+                .children_by_field_name("name", &mut cursor)
+                .filter_map(|name| name.utf8_text(source).ok())
+                .map(|name| name.unquote_identifier().into_owned())
+                .collect();
+            let kind = object
+                .kind
+                .parse::<ObjectKind>()
+                .map(|kind| kind.to_string())
+                .unwrap_or_else(|_| object.kind.clone());
+            let index = match result.objects.iter().position(|existing| {
+                existing.object_kind == kind
+                    && existing.object_name.eq_ignore_ascii_case(&object.name)
+            }) {
+                Some(index) => index,
+                None => {
+                    result.objects.push(ObjectImpact {
+                        object_kind: kind.clone(),
+                        object_name: object.name.clone(),
+                        package: "workspace".to_string(),
+                        impacts: Vec::new(),
+                    });
+                    result.objects.len() - 1
+                }
+            };
+            for name in names {
+                result.objects[index].impacts.push(TableImpact {
+                    operation: TableOperationKind::RecordVariable,
+                    location_hint: Some(format!("var {name} in {procedure_name}")),
+                });
+                result.total_impacts += 1;
+            }
+        }
+    }
+    result.objects.sort_by(|a, b| {
+        a.object_name
+            .as_bytes()
+            .iter()
+            .map(u8::to_ascii_lowercase)
+            .cmp(b.object_name.as_bytes().iter().map(u8::to_ascii_lowercase))
+    });
+}
+
 /// Every table referenced by a `TableRelation` value, in declaration order.
 ///
 /// AL's conditional form names one table per branch:
@@ -367,6 +472,36 @@ pub fn is_record_of(type_name: &str, table_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A codeunit whose only use of a table is procedure-local variables.
+    #[test]
+    fn local_record_variables_count_as_table_uses() {
+        let files = al_source::file_index::FileIndex::new();
+        files.add_file(
+            std::path::PathBuf::from("/ws/LoyaltyTest.Codeunit.al"),
+            "codeunit 50103 \"Loyalty Test\"\n{\n    var\n        Global: Record Item;\n\n    procedure TierCanBeCleared()\n    var\n        Cust, Other: Record Customer;\n        Count: Integer;\n    begin\n    end;\n}\n"
+                .to_string(),
+        );
+        let mut result = table_impact(&SymbolIndex::new(), "Customer");
+
+        add_workspace_local_record_variables(&mut result, &files, "Customer");
+
+        assert_eq!(result.objects.len(), 1, "{result:#?}");
+        assert_eq!(result.objects[0].object_name, "Loyalty Test");
+        let hints: Vec<_> = result.objects[0]
+            .impacts
+            .iter()
+            .filter_map(|impact| impact.location_hint.clone())
+            .collect();
+        assert_eq!(
+            hints,
+            vec![
+                "var Cust in TierCanBeCleared",
+                "var Other in TierCanBeCleared"
+            ]
+        );
+        assert_eq!(result.total_impacts, 2);
+    }
     use al_symbols::{
         AttributeSymbol, FieldSymbol, MethodSymbol, ObjectKind, ParameterSymbol, PropertyValue,
         SymbolEntry, SymbolIndex, VariableSymbol,

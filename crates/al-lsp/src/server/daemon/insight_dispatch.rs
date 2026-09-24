@@ -318,7 +318,12 @@ pub(super) fn dispatch_table_impact(
     if let Err(error) = workspace.get_or_build_call_graph() {
         return graph_build_error(id, "tableImpact", error);
     }
-    let result = al_insight::analysis::table_impact(&workspace.symbols, table);
+    let mut result = al_insight::analysis::table_impact(&workspace.symbols, table);
+    al_insight::analysis::add_workspace_local_record_variables(
+        &mut result,
+        &workspace.file_index,
+        table,
+    );
     if result.total_impacts == 0 {
         if let SymbolResolution::UnknownObject { name, candidates } =
             resolve_impact_symbol(workspace, table)

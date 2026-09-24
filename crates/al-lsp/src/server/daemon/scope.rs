@@ -222,6 +222,20 @@ pub(crate) fn apply(
         object.insert(field.to_string(), serde_json::Value::Array(kept));
         // The event map's orphan subscribers are a second list of the same
         // origin, and were returned unscoped.
+        if method == "tableImpact" {
+            // `totalImpacts` counted the sites of every object, listed or not.
+            let kept_sites: usize =
+                object
+                    .get(field)
+                    .and_then(|v| v.as_array())
+                    .map_or(0, |rows| {
+                        rows.iter()
+                            .filter_map(|row| row.get("impacts").and_then(|v| v.as_array()))
+                            .map(Vec::len)
+                            .sum()
+                    });
+            object.insert("totalImpacts".into(), serde_json::json!(kept_sites));
+        }
         if method == "eventMap" {
             // The CLI header counts `totalEvents`, which described the whole
             // map over a scoped list.
