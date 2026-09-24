@@ -317,7 +317,8 @@ highlight match is case-insensitive; `languages/al/*` is byte-identical to
   belong with `clean_attr_arg` instead.
 - note: left open deliberately. al-analysis was being edited on another branch
   while this fix ran, so only `node_clean_name` was changed there.
-- status: open
+- status: fixed 9997aedf and 30502a20 — `al_syntax::IdentifierText::unquote_identifier` at every
+  identifier site; the ones that also strip `'` are property values and were left.
 
 ### [BUG] `clean_attr_arg` does not unescape doubled quotes
 - where: crates/al-syntax/src/lib.rs:52

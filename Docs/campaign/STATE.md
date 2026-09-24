@@ -27,7 +27,6 @@ Queued:
 
 
 
-- 124 `trim_matches('"')` identifier cleanups in al-analysis (102) and al-insight (22), replace with `al_syntax::node_text_clean`. Start after both analysis fix branches merge.
 - al-dap and al-publish post to different BC dev endpoints (needs a live server to settle). The duplicated response validation framework in al-explorer (about 300 lines to move).
 - desloppify fix batches (`findings/desloppify.md` section 4), file splits after the owning fix branch merges.
 - Workstream E (tests): coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis. Start when a build slot frees.
