@@ -44,77 +44,6 @@ impl Kind {
     }
 }
 
-pub(super) fn handles(method: &str) -> bool {
-    matches!(
-        method,
-        "compile"
-            | "package"
-            | "publish"
-            | "debug"
-            | "snapshot"
-            | "profiling"
-            | "trace"
-            | "graphExport"
-            | "deadCode"
-            | "impact"
-            | "tableImpact"
-            | "traceChain"
-            | "eventMap"
-            | "suggestEvent"
-            | "clearCache"
-            | "shutdown"
-            | "setup"
-            | "downloadSymbols"
-            | "lint"
-            | "format"
-            | "hover"
-            | "definition"
-            | "typeDefinition"
-            | "declaration"
-            | "implementation"
-            | "references"
-            | "signatureHelp"
-            | "completions"
-            | "documentSymbols"
-            | "foldingRanges"
-            | "semanticTokens"
-            | "rename"
-            | "permissions"
-            | "parse"
-            | "inlayHints"
-            | "fix"
-            | "authenticate"
-            | "newProject"
-            | "metrics"
-            | "profiler.hints"
-            | "sortMembers"
-            | "organizeFiles"
-            | "tests.snapshot_capture"
-            | "tests.snapshot_validate"
-            | "tests.snapshot_replay"
-            | "tests.snapshot_diff"
-            | "tests.mutate"
-            | "search"
-            | "source"
-            | "location"
-            | "events"
-            | "subscribers"
-            | "eventSource"
-            | "composed"
-            | "packages"
-            | "generate"
-            | "deps.graph"
-            | "duplicates"
-            | "fix.applicationArea"
-            | "fix.tooltips"
-            | "fix.dataClassification"
-            | "tests.run"
-            | "tests.run_batch"
-            | "tests.run_auto"
-            | "tests.last_results"
-    )
-}
-
 pub(super) fn validate(method: &str, params: Option<&Value>, result: &Value) -> Result<(), String> {
     let validation = match method {
         "compile" | "package" => validate_build(result),
@@ -465,6 +394,226 @@ pub(super) fn validate(method: &str, params: Option<&Value>, result: &Value) -> 
         "tests.run" => validate_test_run(result),
         "tests.run_batch" | "tests.run_auto" => validate_test_run_batch(method, result),
         "tests.last_results" => validate_test_last_results(params, result),
+        "entrypoints" => array_objects(
+            result,
+            method,
+            &[
+                ("type", Kind::String),
+                ("object_name", Kind::String),
+                ("name", Kind::String),
+            ],
+        ),
+        "obsolete" => array_objects(
+            result,
+            method,
+            &[
+                ("kind", Kind::String),
+                ("object", Kind::String),
+                ("symbol", Kind::String),
+                ("state", Kind::String),
+                ("callerCount", Kind::Unsigned),
+            ],
+        ),
+        "obsoleteUsages" => array_objects(
+            result,
+            method,
+            &[("file", Kind::String), ("message", Kind::String)],
+        ),
+        "packageDiff" => fields(
+            result,
+            method,
+            &[
+                ("totalChanges", Kind::Unsigned),
+                ("breakingChanges", Kind::Unsigned),
+                ("affectingWorkspace", Kind::Unsigned),
+                ("changes", Kind::Array),
+            ],
+        ),
+        "audit.dataClassification" => array_objects(
+            result,
+            method,
+            &[
+                ("table", Kind::String),
+                ("field", Kind::String),
+                ("classification", Kind::String),
+                ("risk", Kind::String),
+            ],
+        ),
+        "breaking" => array_objects(
+            result,
+            method,
+            &[
+                ("kind", Kind::String),
+                ("object", Kind::String),
+                ("objectKind", Kind::String),
+                ("description", Kind::String),
+                ("isBreaking", Kind::Boolean),
+            ],
+        ),
+        "arch.lint" => array_objects(
+            result,
+            method,
+            &[
+                ("ruleId", Kind::String),
+                ("message", Kind::String),
+                ("object", Kind::String),
+            ],
+        ),
+        "nativeCheck" => array_objects(
+            result,
+            method,
+            &[
+                ("code", Kind::String),
+                ("severity", Kind::String),
+                ("objectType", Kind::String),
+                ("objectName", Kind::String),
+                ("message", Kind::String),
+            ],
+        ),
+        "upgrade" => array_objects(
+            result,
+            method,
+            &[
+                ("kind", Kind::String),
+                ("object", Kind::String),
+                ("description", Kind::String),
+                ("migrationHint", Kind::String),
+                ("severity", Kind::String),
+            ],
+        ),
+        "object" | "byId" => array_objects(
+            result,
+            method,
+            &[
+                ("kind", Kind::String),
+                ("id", Kind::Integer),
+                ("name", Kind::String),
+                ("package", Kind::String),
+            ],
+        ),
+        "sqlPatterns" => array_objects(
+            result,
+            method,
+            &[
+                ("kind", Kind::String),
+                ("message", Kind::String),
+                ("object", Kind::String),
+                ("procedure", Kind::String),
+                ("line", Kind::Unsigned),
+            ],
+        ),
+        "rules" => array_objects(
+            result,
+            method,
+            &[
+                ("code", Kind::String),
+                ("severity", Kind::String),
+                ("name", Kind::String),
+                ("description", Kind::String),
+            ],
+        ),
+        "errorCodes" => array_objects(
+            result,
+            method,
+            &[("code", Kind::String), ("description", Kind::String)],
+        ),
+        "builtinTypes" => array_objects(
+            result,
+            method,
+            &[("name", Kind::String), ("methods", Kind::Array)],
+        ),
+        "tests.discover" => validate_test_discovery(result),
+        "insightStats" => fields(
+            result,
+            method,
+            &[("nodes", Kind::Unsigned), ("edges", Kind::Unsigned)],
+        ),
+        // `mode` selects which of the remaining fields are present, so it is
+        // the one field the formatter cannot do without.
+        "freeIds" => fields(
+            result,
+            method,
+            &[("mode", Kind::String), ("usedCount", Kind::Integer)],
+        ),
+        "xlf.generate" => validate_xlf_generate(result),
+        "xlf.refresh" => fields(
+            result,
+            method,
+            &[
+                ("added", Kind::Array),
+                ("changed", Kind::Array),
+                ("removed", Kind::Array),
+                ("preserved", Kind::Unsigned),
+            ],
+        ),
+        "xlf.untranslated" => fields(
+            result,
+            method,
+            &[("count", Kind::Unsigned), ("untranslated", Kind::Array)],
+        )
+        .and_then(|()| {
+            named_array_objects(
+                result,
+                "untranslated",
+                &[("id", Kind::String), ("source", Kind::String)],
+            )
+        }),
+        "xlf.suggest" => fields(
+            result,
+            method,
+            &[("count", Kind::Unsigned), ("suggestions", Kind::Array)],
+        )
+        .and_then(|()| {
+            named_array_objects(
+                result,
+                "suggestions",
+                &[
+                    ("unit_id", Kind::String),
+                    ("source", Kind::String),
+                    ("suggested_translation", Kind::String),
+                    ("confidence", Kind::Number),
+                ],
+            )
+        }),
+        "diag" => fields(result, method, &[]),
+        "tests.coverage" => fields(
+            result,
+            method,
+            &[("coverage", Kind::Array), ("untested", Kind::Array)],
+        ),
+        "tests.affected" => named_array_objects(
+            result,
+            "affected",
+            &[
+                ("codeunitName", Kind::String),
+                ("codeunitId", Kind::Integer),
+                ("methodName", Kind::String),
+                ("line", Kind::Integer),
+            ],
+        ),
+        "tests.classify" => named_array_objects(
+            result,
+            "classifications",
+            &[
+                ("codeunitId", Kind::Integer),
+                ("codeunitName", Kind::String),
+                ("methodName", Kind::String),
+                ("decision", Kind::String),
+                ("runsLocally", Kind::Boolean),
+                ("execution", Kind::String),
+                ("reasons", Kind::Array),
+            ],
+        ),
+        "permissions.audit" => validate_permissions_audit(result),
+        "deps" => fields(
+            result,
+            method,
+            &[
+                ("project", Kind::Object),
+                ("explicit", Kind::Array),
+                ("all", Kind::Array),
+            ],
+        ),
         _ => {
             return Err(format!(
                 "no manual response contract is registered for '{method}'"
@@ -1404,6 +1553,109 @@ fn validate_test_status(value: &Value, label: &str) -> Result<(), String> {
         )),
         None => Err(format!("{label} must be a string")),
     }
+}
+
+fn validate_test_discovery(result: &Value) -> Result<(), String> {
+    array_objects(
+        result,
+        "tests.discover",
+        &[
+            ("name", Kind::String),
+            ("id", Kind::Integer),
+            ("file", Kind::String),
+            ("tests", Kind::Array),
+            ("testInitializers", Kind::Array),
+            ("testCleanups", Kind::Array),
+        ],
+    )?;
+    for (index, codeunit) in result.as_array().into_iter().flatten().enumerate() {
+        for field in ["tests", "testInitializers", "testCleanups"] {
+            array_objects(
+                &codeunit[field],
+                &format!("tests.discover[{index}].{field}"),
+                &[
+                    ("name", Kind::String),
+                    ("line", Kind::Unsigned),
+                    ("handlerFunctions", Kind::Array),
+                ],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_xlf_generate(result: &Value) -> Result<(), String> {
+    fields(result, "xlf.generate", &[("units", Kind::Unsigned)])?;
+    match result.get("path") {
+        Some(path) if path.is_null() || path.is_string() => Ok(()),
+        Some(path) => Err(format!(
+            "xlf.generate.path must be a string or null, got {}",
+            type_name(path)
+        )),
+        None => Err("xlf.generate is missing required field 'path'".to_string()),
+    }
+}
+
+fn validate_permissions_audit(result: &Value) -> Result<(), String> {
+    // `parseIssues` carries the clauses the audit could not read. A consumer
+    // that does not look at it calls a set clean when the clause took no part
+    // in any check.
+    fields(
+        result,
+        "permissions.audit",
+        &[
+            ("coverage", Kind::Array),
+            ("overBroad", Kind::Array),
+            ("overGrantedRights", Kind::Array),
+            ("parseIssues", Kind::Array),
+        ],
+    )?;
+    named_array_objects(
+        result,
+        "coverage",
+        &[
+            ("kind", Kind::String),
+            ("id", Kind::Integer),
+            ("name", Kind::String),
+            ("covered", Kind::Boolean),
+            ("coveredBy", Kind::Array),
+        ],
+    )?;
+    named_array_objects(
+        result,
+        "overBroad",
+        &[
+            ("permissionSet", Kind::String),
+            ("objectType", Kind::String),
+            ("object", Kind::String),
+            ("rights", Kind::String),
+            ("reason", Kind::String),
+        ],
+    )?;
+    named_array_objects(
+        result,
+        "overGrantedRights",
+        &[
+            ("permissionSet", Kind::String),
+            ("objectType", Kind::String),
+            ("object", Kind::String),
+            ("grantedRights", Kind::String),
+            ("overGranted", Kind::String),
+            ("observedRights", Kind::String),
+            ("reason", Kind::String),
+        ],
+    )?;
+    named_array_objects(
+        result,
+        "parseIssues",
+        &[
+            ("permissionSet", Kind::String),
+            ("file", Kind::String),
+            ("clause", Kind::Integer),
+            ("text", Kind::String),
+            ("reason", Kind::String),
+        ],
+    )
 }
 
 fn type_name(value: &Value) -> &'static str {
