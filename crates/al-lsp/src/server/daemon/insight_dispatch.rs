@@ -44,6 +44,11 @@ pub(super) fn dispatch_trace(
     // serve the WORKSPACE-ENRICHED graph (packages + workspace
     // objects/procedures/calls), not the package-only one. The enriched build
     // is cached; the returned call-graph read guard is held only while serving.
+    // A subscriber's body calls are outgoing edges of a procedure the lazy
+    // graph may not have resolved yet.
+    if let Err(error) = workspace.complete_workspace_call_edges() {
+        return graph_build_error(id, "trace", error);
+    }
     let (graph, _cg_guard) = match workspace.get_or_build_call_graph() {
         Ok(graph) => graph,
         Err(error) => return graph_build_error(id, "trace", error),
@@ -56,6 +61,10 @@ pub(super) fn dispatch_trace(
 }
 
 pub(super) fn dispatch_entrypoints(workspace: &Workspace, id: u64) -> Response {
+    // Callers are incoming edges, which only a fully resolved graph has.
+    if let Err(error) = workspace.complete_workspace_call_edges() {
+        return graph_build_error(id, "entrypoints", error);
+    }
     let (graph, _cg_guard) = match workspace.get_or_build_call_graph() {
         Ok(graph) => graph,
         Err(error) => return graph_build_error(id, "entrypoints", error),
@@ -477,6 +486,11 @@ pub(super) fn dispatch_trace_chain(
         Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
     };
 
+    // A subscriber's body calls are outgoing edges of a procedure the lazy
+    // graph may not have resolved yet.
+    if let Err(error) = workspace.complete_workspace_call_edges() {
+        return graph_build_error(id, "traceChain", error);
+    }
     let (insight, cg_guard) = match workspace.get_or_build_call_graph() {
         Ok(graph) => graph,
         Err(error) => return graph_build_error(id, "traceChain", error),
@@ -505,6 +519,39 @@ pub(super) fn dispatch_event_map(workspace: &Workspace, id: u64) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A procedure called only from a low-fanout file had no resolved
+    /// incoming edge, so `entrypoints` listed it as never called.
+    #[test]
+    fn entrypoints_leaves_out_procedures_called_from_their_own_object() {
+        let workspace = Workspace::new();
+        // A busier file puts the probe below the eager tier, whose threshold
+        // is relative: a lone file is always in it.
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/ws/Busy.Codeunit.al"),
+            "codeunit 50107 Busy\n{\n    procedure Run()\n    begin\n        Step(); Step(); Step(); Step(); Step(); Step();\n    end;\n\n    procedure Step()\n    begin\n    end;\n}\n"
+                .to_string(),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/ws/CallProbe.Codeunit.al"),
+            "codeunit 50106 \"Call Probe\"\n{\n    trigger OnRun()\n    begin\n        FromTrigger();\n    end;\n\n    procedure Caller()\n    begin\n        FromProcedure();\n    end;\n\n    procedure FromTrigger()\n    begin\n    end;\n\n    procedure FromProcedure()\n    begin\n    end;\n}\n"
+                .to_string(),
+        );
+
+        let response = dispatch_entrypoints(&workspace, 1);
+
+        let names: Vec<String> = response
+            .result
+            .unwrap_or_else(|| panic!("{:?}", response.error))
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row["name"].as_str().map(str::to_string))
+            .collect();
+        assert!(names.contains(&"Caller".to_string()), "{names:?}");
+        assert!(!names.contains(&"FromTrigger".to_string()), "{names:?}");
+        assert!(!names.contains(&"FromProcedure".to_string()), "{names:?}");
+    }
 
     fn workspace_with_malformed_dependency_source() -> (Workspace, tempfile::NamedTempFile) {
         use std::io::{Cursor, Write};

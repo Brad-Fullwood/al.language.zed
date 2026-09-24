@@ -430,6 +430,11 @@ fn recurse_subscriber(
     let mut children = Vec::new();
 
     for edge in callees {
+        // A subscriber's subscription edge leads back to the event being
+        // traced, which printed as a cycle in place of the subscriber's body.
+        if edge.kind == EdgeKind::EventSubscription {
+            continue;
+        }
         let callee_id = edge.to;
         let info = cg.node_info(callee_id);
         let node_type = info.map(|i| i.node_type.as_str()).unwrap_or("unknown");

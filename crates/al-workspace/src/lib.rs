@@ -857,6 +857,56 @@ impl Workspace {
         (fingerprint, missing)
     }
 
+    /// Resolve the outgoing call edges of every workspace procedure in the
+    /// cached call graph.
+    ///
+    /// The build resolves only high-fanout files eagerly; the rest resolve
+    /// when a query reaches them. A query that reads *incoming* edges
+    /// (`entrypoints`: who calls this?) or walks a subscriber's body (`trace`)
+    /// never reaches them, so a procedure called only from a low-fanout file
+    /// looked uncalled. Holding `call_graph_build_lock` keeps a rebuild from
+    /// publishing a new graph while this fills in the current one; the lock
+    /// order (build lock, then graph locks) is the builder's own.
+    /// Already-resolved procedures are skipped, so repeat calls are cheap.
+    pub fn complete_workspace_call_edges(&self) -> Result<(), CallGraphBuildError> {
+        drop(self.get_or_build_call_graph()?);
+        let _build_lock = self
+            .call_graph_build_lock
+            .lock()
+            .map_err(|_| WorkspaceStateError::poisoned("call_graph_build_lock"))?;
+        let Some(insight) = self
+            .insight_graph
+            .read()
+            .map_err(|_| WorkspaceStateError::poisoned("insight_graph"))?
+            .as_ref()
+            .cloned()
+        else {
+            return Ok(());
+        };
+        let mut guard = self
+            .call_graph
+            .write()
+            .map_err(|_| WorkspaceStateError::poisoned("call_graph"))?;
+        let Some(call_graph) = guard.as_mut() else {
+            return Ok(());
+        };
+        let mut resolve = || {
+            al_insight::calls::resolve_all_workspace_call_edges(
+                &self.file_index,
+                &self.symbols,
+                &insight,
+                call_graph,
+            )
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(resolve)
+            }
+            _ => resolve(),
+        }?;
+        Ok(())
+    }
+
     /// Get (or lazily build) the cached CallGraph.
     ///
     /// **Lock ordering invariant:** This function briefly validates
