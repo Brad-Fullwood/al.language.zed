@@ -798,6 +798,9 @@ pub(crate) fn eval_call(
     //
     // We handle both by inspecting child kinds.
     let (receiver, proc_name, args_node) = extract_call_parts(node, source);
+    // Argument evaluation clears the statement marker; builtins whose failure
+    // differs by position (a statement `Evaluate(...)` raises) need it back.
+    let statement = ctx.stmt_position;
 
     // MaxStrLen is defined by the argument's declared Text[N]/Code[N] type,
     // not its current contents. Preserve that lvalue metadata before normal
@@ -850,16 +853,27 @@ pub(crate) fn eval_call(
                 };
                 return records::dispatch_text_method(&recv, &proc_name, args, stack);
             }
-            Some(Value::Dict(_))
-                if records::supports_dict_method(&proc_name)
-                    || proc_name.eq_ignore_ascii_case("get") =>
-            {
+            Some(Value::Dict(_)) if records::supports_dict_method(&proc_name) => {
                 let recv = recv.to_string();
                 let args = match eval_args_opt(args_node, source, stack, ctx) {
                     Ok(v) => v,
                     Err(ArgsShort::Error(e)) => return Eval::Error(e),
                     Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
                 };
+                // `Get(key, var value)` answers whether the key exists and
+                // writes the value to the caller's variable.
+                if proc_name.eq_ignore_ascii_case("get") && args.len() == 2 {
+                    return match records::dict_lookup(&recv, &args[0], stack) {
+                        Ok(Some(value)) => {
+                            ctx.var_writebacks.clear();
+                            ctx.var_writebacks.push((1, value));
+                            apply_var_writebacks(args_node, source, stack, ctx);
+                            Eval::Normal(Value::Boolean(true))
+                        }
+                        Ok(None) => Eval::Normal(Value::Boolean(false)),
+                        Err(error) => crate::interpreter::eval_error(error),
+                    };
+                }
                 return records::dispatch_dict_method(&recv, &proc_name, args, stack);
             }
             Some(Value::Codeunit { object_name }) => {
@@ -883,6 +897,7 @@ pub(crate) fn eval_call(
         Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
     };
 
+    ctx.stmt_position = statement;
     let result = dispatch_call_scoped(receiver.as_deref(), &proc_name, args, stack, ctx);
     apply_var_writebacks(args_node, source, stack, ctx);
     result

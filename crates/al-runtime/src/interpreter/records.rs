@@ -787,6 +787,7 @@ pub fn supports_record_method(method: &str) -> bool {
             | "deleteall"
             | "calcfields"
             | "calcsums"
+            | "modifyall"
     )
 }
 
@@ -827,6 +828,10 @@ pub(crate) fn dispatch_record_method(
     // view's filters select, into the buffer.
     if lower == "calcsums" {
         return dispatch_calcsums(table, handle, &nodes, source, ctx);
+    }
+    // ModifyAll(Field, Value[, RunTrigger]): the first argument names a field.
+    if lower == "modifyall" {
+        return dispatch_modifyall(table, handle, &nodes, source, stack, ctx);
     }
 
     // SetCurrentKey takes only field references. Handle it before the general
@@ -1193,9 +1198,56 @@ pub(crate) fn field_get(
     Eval::Normal(read_buffer_field(store, handle, f))
 }
 
-/// `Rec.CalcFields(F1, F2, …)` — evaluate each named FlowField and store the
-/// result into the current buffer. Non-FlowField (or unparseable) args are
-/// ignored, matching BC's tolerance of explicitly-listed normal fields.
+/// `Rec.ModifyAll(Field, Value[, RunTrigger])` — set `Field` on every row the
+/// view's filters select.
+fn dispatch_modifyall(
+    table: &TableRef,
+    handle: u64,
+    nodes: &[Node<'_>],
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    let (field_node, value_node) = match nodes {
+        [field, value] | [field, value, _] => (*field, *value),
+        _ => return eval_error("ModifyAll expects (Field, Value[, RunTrigger])"),
+    };
+    let value = match eval_expr(value_node, source, stack, ctx) {
+        Eval::Normal(value) => value,
+        other => return other,
+    };
+    let run_trigger = match nodes.get(2) {
+        None => false,
+        Some(node) => match eval_expr(*node, source, stack, ctx) {
+            Eval::Normal(Value::Boolean(flag)) => flag,
+            Eval::Normal(_) => return eval_error("ModifyAll: RunTrigger must be a Boolean"),
+            other => return other,
+        },
+    };
+    let key = match ensure_store(ctx, table) {
+        Ok(k) => k,
+        Err(e) => return eval_error(e),
+    };
+    let store = ctx.records.get_mut(&key).expect("store just ensured");
+    let field_no = match store.resolve_field(&node_text(field_node, source)) {
+        Ok(field_no) => field_no,
+        Err(error) => return eval_error(format!("ModifyAll: {error}")),
+    };
+    let value = match store.coerce_to_field(field_no, value) {
+        Ok(value) => value,
+        Err(error) => return eval_error(format!("ModifyAll: {error}")),
+    };
+    let view = store.take_view(handle);
+    let result = store
+        .record
+        .modify_all_in(&view, field_no, value, run_trigger);
+    store.put_view(handle, view);
+    match result {
+        Ok(_) => Eval::Normal(Value::Empty),
+        Err(error) => eval_error(format!("ModifyAll: {error}")),
+    }
+}
+
 fn dispatch_calcsums(
     table: &TableRef,
     handle: u64,
@@ -1236,6 +1288,9 @@ fn dispatch_calcsums(
     Eval::Normal(Value::Empty)
 }
 
+/// `Rec.CalcFields(F1, F2, …)` — evaluate each named FlowField and store the
+/// result into the current buffer. Non-FlowField (or unparseable) args are
+/// ignored, matching BC's tolerance of explicitly-listed normal fields.
 fn dispatch_calcfields(
     table: &TableRef,
     handle: u64,
@@ -1487,7 +1542,7 @@ fn descend_to_postfix(node: Node<'_>) -> Option<Node<'_>> {
 pub fn supports_list_method(method: &str) -> bool {
     matches!(
         method.to_ascii_lowercase().as_str(),
-        "add" | "get" | "count" | "contains" | "indexof" | "remove" | "removeat" | "set"
+        "add" | "get" | "count" | "contains" | "indexof" | "insert" | "remove" | "removeat" | "set"
     )
 }
 
@@ -1565,6 +1620,26 @@ pub(crate) fn dispatch_list_method(
             Err(error) => eval_error(error),
         },
         "set" => eval_error("List.Set expects exactly an Integer index and one value"),
+        // `Insert(index, value)`: 1-based, up to one past the end.
+        "insert" => match args.as_slice() {
+            [Value::Integer(index), value] => {
+                let position = index
+                    .checked_sub(1)
+                    .and_then(|index| usize::try_from(index).ok())
+                    .filter(|index| *index <= items.len());
+                match position {
+                    Some(position) => {
+                        items.insert(position, value.clone());
+                        Eval::Normal(Value::Boolean(true))
+                    }
+                    None => eval_error(format!(
+                        "List.Insert: index {index} out of range 1..{}",
+                        items.len() + 1
+                    )),
+                }
+            }
+            _ => eval_error("List.Insert expects an Integer index and one value"),
+        },
         other => eval_error(format!("unsupported List method: {other}")),
     }
 }
@@ -1767,8 +1842,21 @@ pub(crate) fn dispatch_text_method(
 pub fn supports_dict_method(method: &str) -> bool {
     matches!(
         method.to_ascii_lowercase().as_str(),
-        "add" | "set" | "containskey" | "remove" | "count" | "keys" | "values"
+        "add" | "get" | "set" | "containskey" | "remove" | "count" | "keys" | "values"
     )
+}
+
+/// The value `recv` holds under `key`, for the two-argument
+/// `Dictionary.Get(key, var value)`, which writes it back to its caller.
+pub(crate) fn dict_lookup(
+    recv: &str,
+    key: &Value,
+    stack: &ScopeStack,
+) -> Result<Option<Value>, String> {
+    let Some(Value::Dict(entries)) = stack.lookup(recv) else {
+        return Err(format!("'{recv}' is not a Dictionary"));
+    };
+    Ok(entries.get(&dict_key(key)?).cloned())
 }
 
 /// Serialise a dictionary key value into the `Dict` map's string key space.
@@ -1926,7 +2014,30 @@ pub(crate) fn default_for_structured(type_text: &str) -> Option<Value> {
     if lower == "variant" {
         return Some(Value::Variant(Box::new(Value::Null)));
     }
+    if let Some(array) = default_for_array(trimmed) {
+        return Some(array);
+    }
     None
+}
+
+/// `array[N] of T` with a scalar `T`: `N` default elements. Several
+/// dimensions (`array[2, 3]`) are left unbound, as are arrays of records.
+fn default_for_array(type_text: &str) -> Option<Value> {
+    let rest = strip_keyword(type_text, "array")?.trim_start();
+    let rest = rest.strip_prefix('[')?;
+    let close = rest.find(']')?;
+    let length: usize = rest[..close].trim().parse().ok()?;
+    let element = strip_keyword(rest[close + 1..].trim_start(), "of")?.trim();
+    let base = element.split('[').next()?.trim();
+    let default = Value::default_for(base)?;
+    Some(Value::Array(vec![default; length]))
+}
+
+/// `text` after a leading `keyword`, compared without case.
+fn strip_keyword<'a>(text: &'a str, keyword: &str) -> Option<&'a str> {
+    text.get(..keyword.len())
+        .filter(|head| head.eq_ignore_ascii_case(keyword))
+        .map(|_| &text[keyword.len()..])
 }
 
 /// Extract the subtype name following a leading keyword, stripping quotes.

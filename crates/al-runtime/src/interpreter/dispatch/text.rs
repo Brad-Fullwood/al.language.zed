@@ -295,6 +295,79 @@ pub(super) fn builtin_incstr(args: &[Value]) -> Eval {
     Eval::Normal(Value::Text(result))
 }
 
+/// `DelStr(s, pos[, len])` — `s` without `len` characters from `pos`
+/// (1-based); without `len`, everything from `pos` on.
+pub(super) fn builtin_delstr(args: &[Value]) -> Eval {
+    let (s, pos) = match args {
+        [Value::Text(s) | Value::Code(s), Value::Integer(pos), ..] if args.len() <= 3 => {
+            (s.clone(), *pos)
+        }
+        _ => return eval_error("DelStr expects (Text, Integer[, Integer])"),
+    };
+    if pos < 1 {
+        return eval_error("DelStr: position must be >= 1");
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let start = usize::try_from(pos - 1)
+        .unwrap_or(usize::MAX)
+        .min(chars.len());
+    let end = match args.get(2) {
+        None => chars.len(),
+        Some(Value::Integer(len)) if *len >= 0 => start
+            .saturating_add(usize::try_from(*len).unwrap_or(usize::MAX))
+            .min(chars.len()),
+        Some(_) => return eval_error("DelStr: length must be a non-negative Integer"),
+    };
+    let kept: String = chars[..start].iter().chain(&chars[end..]).collect();
+    Eval::Normal(match &args[0] {
+        Value::Code(_) => Value::Code(kept),
+        _ => Value::Text(kept),
+    })
+}
+
+/// `Evaluate(var x, text)`: the value `text` spells, of `x`'s type. The new
+/// value goes back to `x` through the call's var write-back; the result is
+/// whether it parsed. Formats are the invariant ones (`12.5`, `true`).
+pub(super) fn builtin_evaluate(args: &[Value]) -> Result<(bool, Option<Value>), String> {
+    let (target, raw) = match args {
+        [target, Value::Text(raw) | Value::Code(raw)] => (target, raw.as_str()),
+        [_, other] => {
+            return Err(format!(
+                "Evaluate expects Text as its second argument, got {}",
+                other.type_name()
+            ))
+        }
+        _ => return Err("Evaluate expects (var Variable, Text)".to_string()),
+    };
+    let text = raw.trim();
+    let parsed = match target {
+        Value::Integer(_) => text.parse::<i64>().ok().map(Value::Integer),
+        Value::BigInteger(_) => text
+            .trim_end_matches(['l', 'L'])
+            .parse::<i64>()
+            .ok()
+            .map(Value::BigInteger),
+        Value::Decimal(_) => text
+            .parse::<rust_decimal::Decimal>()
+            .ok()
+            .map(Value::Decimal),
+        Value::Boolean(_) => match text.to_ascii_lowercase().as_str() {
+            "true" | "yes" | "1" => Some(Value::Boolean(true)),
+            "false" | "no" | "0" => Some(Value::Boolean(false)),
+            _ => None,
+        },
+        Value::Text(_) => Some(Value::Text(raw.to_string())),
+        Value::Code(_) => Some(Value::Code(text.to_uppercase())),
+        other => {
+            return Err(format!(
+                "Evaluate into {} is not supported by the local runtime",
+                other.type_name()
+            ))
+        }
+    };
+    Ok((parsed.is_some(), parsed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

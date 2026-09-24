@@ -178,6 +178,168 @@ pub(crate) fn clock_current_datetime() -> i64 {
         + crate::interpreter::value::AL_EPOCH_TO_UNIX_DAYS * crate::interpreter::value::MS_PER_DAY
 }
 
+/// Monday = 1 … Sunday = 7 for an AL day count.
+fn weekday_of(date: i64) -> i64 {
+    // 1970-01-01, day AL_EPOCH_TO_UNIX_DAYS, was a Thursday.
+    let unix = date - crate::interpreter::value::AL_EPOCH_TO_UNIX_DAYS;
+    (unix.rem_euclid(7) + 3) % 7 + 1
+}
+
+/// `Date2DWY(date, what)` — 1: weekday (Monday = 1), 2: ISO week number,
+/// 3: the year that week belongs to.
+pub(super) fn builtin_date2dwy(args: &[Value]) -> Eval {
+    let (date, what) = match args {
+        [Value::Date(d), Value::Integer(w)] => (*d, *w),
+        _ => return eval_error("Date2DWY expects (Date, Integer)"),
+    };
+    if date == 0 {
+        return eval_error("Date2DWY is undefined for 0D");
+    }
+    let weekday = weekday_of(date);
+    // ISO: the week belongs to the year of its Thursday.
+    let thursday = date - weekday + 4;
+    let (year, _, _) = crate::interpreter::value::ymd_from_al_days(thursday);
+    let week = (thursday - crate::interpreter::value::al_days_from_ymd(year, 1, 1)) / 7 + 1;
+    match what {
+        1 => Eval::Normal(Value::Integer(weekday)),
+        2 => Eval::Normal(Value::Integer(week)),
+        3 => Eval::Normal(Value::Integer(year)),
+        other => eval_error(format!(
+            "Date2DWY: the what argument must be 1, 2 or 3, got {other}"
+        )),
+    }
+}
+
+/// `CalcDate(formula[, date])` for the invariant date formula language:
+/// terms such as `+1D`, `-2W`, `3M`, `1Q`, `1Y`, and `CD`/`CW`/`CM`/`CQ`/`CY`
+/// for the end of the current period (`-CM` for its start), applied left to
+/// right (`<CM+1D>` is the first of next month). Without `date`, today.
+pub(super) fn builtin_calcdate(args: &[Value]) -> Eval {
+    let (formula, date) = match args {
+        [Value::Text(f) | Value::Code(f)] => (f.as_str(), clock_today()),
+        [Value::Text(f) | Value::Code(f), Value::Date(d)] => (f.as_str(), *d),
+        _ => return eval_error("CalcDate expects (Text[, Date])"),
+    };
+    if date == 0 {
+        return eval_error("CalcDate is undefined for 0D");
+    }
+    match calc_date(formula, date) {
+        Ok(result) => Eval::Normal(Value::Date(result)),
+        Err(error) => eval_error(format!("CalcDate: {error}")),
+    }
+}
+
+fn calc_date(formula: &str, mut date: i64) -> Result<i64, String> {
+    use crate::interpreter::value::{al_days_from_ymd, ymd_from_al_days};
+    let text: String = formula
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_uppercase();
+    if text.is_empty() {
+        return Err(format!("'{formula}' is not a date formula"));
+    }
+    let days_in_month = |year: i64, month: i64| {
+        let (next_year, next_month) = if month == 12 {
+            (year + 1, 1)
+        } else {
+            (year, month + 1)
+        };
+        al_days_from_ymd(next_year, next_month, 1) - al_days_from_ymd(year, month, 1)
+    };
+    let add_months = |date: i64, months: i64| {
+        let (year, month, day) = ymd_from_al_days(date);
+        let index = year * 12 + (month - 1) + months;
+        let (year, month) = (index.div_euclid(12), index.rem_euclid(12) + 1);
+        al_days_from_ymd(year, month, day.min(days_in_month(year, month)))
+    };
+    let chars: Vec<char> = text.chars().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        let mut sign = 1;
+        if chars[index] == '+' || chars[index] == '-' {
+            if chars[index] == '-' {
+                sign = -1;
+            }
+            index += 1;
+        }
+        let current = chars.get(index) == Some(&'C');
+        if current {
+            index += 1;
+        }
+        let start = index;
+        while index < chars.len() && chars[index].is_ascii_digit() {
+            index += 1;
+        }
+        let count: i64 = if start == index {
+            1
+        } else {
+            chars[start..index]
+                .iter()
+                .collect::<String>()
+                .parse()
+                .unwrap_or(0)
+        };
+        let Some(&unit) = chars.get(index) else {
+            return Err(format!("'{formula}' ends without a unit"));
+        };
+        index += 1;
+        let (year, month, _) = ymd_from_al_days(date);
+        date = if current {
+            let forward = sign > 0;
+            match unit {
+                'D' => date,
+                'W' => {
+                    let weekday = weekday_of(date);
+                    if forward {
+                        date + (7 - weekday)
+                    } else {
+                        date - (weekday - 1)
+                    }
+                }
+                'M' => {
+                    if forward {
+                        al_days_from_ymd(year, month, days_in_month(year, month))
+                    } else {
+                        al_days_from_ymd(year, month, 1)
+                    }
+                }
+                'Q' => {
+                    let first = (month - 1) / 3 * 3 + 1;
+                    if forward {
+                        let last = first + 2;
+                        al_days_from_ymd(year, last, days_in_month(year, last))
+                    } else {
+                        al_days_from_ymd(year, first, 1)
+                    }
+                }
+                'Y' => {
+                    if forward {
+                        al_days_from_ymd(year, 12, 31)
+                    } else {
+                        al_days_from_ymd(year, 1, 1)
+                    }
+                }
+                other => return Err(format!("unsupported period 'C{other}' in '{formula}'")),
+            }
+        } else {
+            let count = sign * count;
+            match unit {
+                'D' => date + count,
+                'W' => date + 7 * count,
+                'M' => add_months(date, count),
+                'Q' => add_months(date, 3 * count),
+                'Y' => add_months(date, 12 * count),
+                other => return Err(format!("unsupported unit '{other}' in '{formula}'")),
+            }
+        };
+    }
+    Ok(date)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -121,6 +121,48 @@ pub(super) fn builtin_power(args: &[Value]) -> Eval {
     }
 }
 
+/// `Maximum(a, b)` / `Minimum(a, b)` over Integer and Decimal values; a mix
+/// compares and returns as Decimal.
+pub(super) fn builtin_extreme(args: &[Value], maximum: bool) -> Eval {
+    let name = if maximum { "Maximum" } else { "Minimum" };
+    match args {
+        [Value::Integer(a), Value::Integer(b)] => {
+            Eval::Normal(Value::Integer(if (a >= b) == maximum { *a } else { *b }))
+        }
+        [a, b] => {
+            let (Some(x), Some(y)) = (decimal_of(a), decimal_of(b)) else {
+                return eval_error(format!("{name} expects two numbers"));
+            };
+            Eval::Normal(Value::Decimal(if (x >= y) == maximum { x } else { y }))
+        }
+        _ => eval_error(format!("{name} expects exactly 2 arguments")),
+    }
+}
+
+fn decimal_of(value: &Value) -> Option<rust_decimal::Decimal> {
+    match value {
+        Value::Integer(n) | Value::BigInteger(n) => Some(rust_decimal::Decimal::from(*n)),
+        Value::Decimal(d) => Some(*d),
+        _ => None,
+    }
+}
+
+/// `ArrayLen(a)` — the number of elements of a one-dimensional array.
+pub(super) fn builtin_arraylen(args: &[Value]) -> Eval {
+    match args {
+        [Value::Array(items)] | [Value::Array(items), Value::Integer(1)] => {
+            match i64::try_from(items.len()) {
+                Ok(len) => Eval::Normal(Value::Integer(len)),
+                Err(_) => eval_error("ArrayLen exceeds the supported Integer range"),
+            }
+        }
+        [Value::Array(_), _] => {
+            eval_error("ArrayLen of a dimension other than 1 is not supported locally")
+        }
+        _ => eval_error("ArrayLen expects an array"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

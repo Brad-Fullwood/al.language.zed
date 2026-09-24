@@ -4,6 +4,7 @@ pub mod coverage;
 pub mod dispatch;
 pub mod eval_expr;
 pub mod eval_stmt;
+mod indexing;
 pub mod records;
 pub mod scope;
 pub mod value;

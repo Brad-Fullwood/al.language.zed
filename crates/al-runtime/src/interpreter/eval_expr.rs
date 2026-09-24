@@ -10,6 +10,7 @@ use tree_sitter::Node;
 
 use super::error_info;
 use crate::interpreter::dispatch::DispatchCtx;
+use crate::interpreter::indexing;
 use crate::interpreter::records;
 use crate::interpreter::scope::{Eval, ScopeStack};
 use crate::interpreter::value::{self, Decimal, ErrorInfo, Value};
@@ -527,6 +528,10 @@ fn eval_postfix(
         }
     }
 
+    if let Some((name, suffix)) = indexing::indexed_variable(node, source) {
+        return indexing::read_element(&name, suffix, source, stack, ctx);
+    }
+
     // Plain wrapper — evaluate the primary expression.
     match named_child(node, 0) {
         Some(inner) => eval_expr(inner, source, stack, ctx),
@@ -790,6 +795,16 @@ fn eval_expression_node(
                 Eval::Normal(v) => v,
                 other => return other,
             };
+
+        // `Slots[i] := value` / `Name[1] := 'x'`: one element of an array or
+        // one character of a Text.
+        if let Some((name, suffix)) = indexing::indexed_variable(lhs_node, source) {
+            let combine = |current: Value, rhs: Value| match kind {
+                AssignKind::Plain => Eval::Normal(rhs),
+                AssignKind::Compound(base_op) => apply_binary(base_op, current, rhs),
+            };
+            return indexing::write_element(&name, suffix, source, rhs_val, &combine, stack, ctx);
+        }
 
         // Record field assignment: `Rec."Field" := value` / `Rec.Amount += 5`.
         // Handled before the plain-identifier path so the whole record isn't

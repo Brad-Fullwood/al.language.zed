@@ -66,6 +66,8 @@ pub enum RecordError {
     TriggerExecutionUnsupported(&'static str),
     #[error("arithmetic overflow while calculating FlowField {0}")]
     FlowArithmeticOverflow(&'static str),
+    #[error("field {0} is part of the primary key; ModifyAll cannot change it")]
+    PrimaryKeyModifyAll(FieldNo),
     #[error("invalid FIND direction '{0}' (expected '-' or '+')")]
     InvalidFindDirection(char),
 }
@@ -785,6 +787,32 @@ impl MockRecord {
 
     pub fn count(&self) -> usize {
         self.count_in(&self.view)
+    }
+
+    /// `ModifyAll(field, value)` — set `field` on every row the view's
+    /// filters select, returning how many changed. A primary-key field would
+    /// move rows and is refused.
+    pub fn modify_all_in(
+        &mut self,
+        view: &RecordView,
+        field: FieldNo,
+        value: Value,
+        run_trigger: bool,
+    ) -> Result<usize, RecordError> {
+        if run_trigger {
+            return Err(RecordError::TriggerExecutionUnsupported("ModifyAll"));
+        }
+        if self.primary_key_fields().contains(&field) {
+            return Err(RecordError::PrimaryKeyModifyAll(field));
+        }
+        let mut changed = 0;
+        for row in self.rows.values_mut() {
+            if row_matches_filters(&view.filters, row) {
+                row.insert(field, value.clone());
+                changed += 1;
+            }
+        }
+        Ok(changed)
     }
 
     /// `CalcSums` — the total of `field` over the rows the view's filters

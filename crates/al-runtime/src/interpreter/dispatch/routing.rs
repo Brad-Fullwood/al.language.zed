@@ -10,17 +10,20 @@ use crate::interpreter::value::Value;
 use crate::stubs;
 
 use super::datetime::{
-    builtin_createdatetime, builtin_date2dmy, builtin_dmy2date, builtin_dt2date, builtin_dt2time,
-    builtin_workdate, clock_current_datetime, clock_time, clock_today,
+    builtin_calcdate, builtin_createdatetime, builtin_date2dmy, builtin_date2dwy, builtin_dmy2date,
+    builtin_dt2date, builtin_dt2time, builtin_workdate, clock_current_datetime, clock_time,
+    clock_today,
 };
 use super::dialog::{builtin_error, formatted_dialog_text};
-use super::numeric::{builtin_abs, builtin_power, builtin_round};
+use super::numeric::{
+    builtin_abs, builtin_arraylen, builtin_extreme, builtin_power, builtin_round,
+};
 use super::random::{builtin_random, builtin_randomize};
 use super::render::{builtin_format, builtin_strsubstno, render_value};
 use super::text::{
-    builtin_convertstr, builtin_copystr, builtin_delchr, builtin_incstr, builtin_indexof,
-    builtin_lowercase, builtin_maxstrlen, builtin_padstr, builtin_selectstr, builtin_strlen,
-    builtin_strpos, builtin_uppercase,
+    builtin_convertstr, builtin_copystr, builtin_delchr, builtin_delstr, builtin_evaluate,
+    builtin_incstr, builtin_indexof, builtin_lowercase, builtin_maxstrlen, builtin_padstr,
+    builtin_selectstr, builtin_strlen, builtin_strpos, builtin_uppercase,
 };
 use super::workspace_procedure::dispatch_workspace_procedure;
 use super::DispatchCtx;
@@ -59,10 +62,9 @@ pub(crate) fn dispatch_call_scoped(
     // builtins and non-workspace calls (which never populate it) leave the
     // channel empty for the caller to observe.
     ctx.var_writebacks.clear();
-    // Statement-position information applies only to record-method dispatch
-    // (which consumes it before reaching here); make sure it never leaks into
-    // a callee's body.
-    ctx.stmt_position = false;
+    // Statement position matters only to builtins that fail differently as a
+    // statement (Evaluate); take it so it never leaks into a callee's body.
+    let statement = std::mem::take(&mut ctx.stmt_position);
     if let Some(recv) = receiver {
         if stubs::is_context_member(recv, procedure) {
             return dispatch_stub_with_context(recv, procedure, &args, ctx);
@@ -222,6 +224,33 @@ pub(crate) fn dispatch_call_scoped(
             "selectstr" => return builtin_selectstr(&args),
             "incstr" => return builtin_incstr(&args),
             "date2dmy" => return builtin_date2dmy(&args),
+            "date2dwy" => return builtin_date2dwy(&args),
+            "calcdate" => return builtin_calcdate(&args),
+            "delstr" => return builtin_delstr(&args),
+            "maximum" => return builtin_extreme(&args, true),
+            "minimum" => return builtin_extreme(&args, false),
+            "arraylen" => return builtin_arraylen(&args),
+            "evaluate" => {
+                // A failed Evaluate as a statement is a runtime error in BC;
+                // in an expression (`if Evaluate(...)`) it is `false`.
+                return match builtin_evaluate(&args) {
+                    Ok((true, Some(value))) => {
+                        ctx.var_writebacks.clear();
+                        ctx.var_writebacks.push((0, value));
+                        Eval::Normal(Value::Boolean(true))
+                    }
+                    Ok(_) if statement => eval_error(format!(
+                        "Evaluate: '{}' is not a valid {}",
+                        match &args[1] {
+                            Value::Text(t) | Value::Code(t) => t.as_str(),
+                            _ => "",
+                        },
+                        args[0].type_name()
+                    )),
+                    Ok(_) => Eval::Normal(Value::Boolean(false)),
+                    Err(error) => eval_error(error),
+                };
+            }
             "dmy2date" => return builtin_dmy2date(&args, ctx),
             "dt2date" => return builtin_dt2date(&args),
             "dt2time" => return builtin_dt2time(&args),
@@ -306,6 +335,13 @@ pub fn supports_global_builtin(name: &str) -> bool {
             | "selectstr"
             | "incstr"
             | "date2dmy"
+            | "date2dwy"
+            | "calcdate"
+            | "delstr"
+            | "maximum"
+            | "minimum"
+            | "arraylen"
+            | "evaluate"
             | "dmy2date"
             | "dt2date"
             | "dt2time"
@@ -431,6 +467,13 @@ mod tests {
             "SelectStr",
             "IncStr",
             "Date2DMY",
+            "Date2DWY",
+            "CalcDate",
+            "DelStr",
+            "Maximum",
+            "Minimum",
+            "ArrayLen",
+            "Evaluate",
             "DMY2Date",
             "DT2Date",
             "DT2Time",
@@ -456,10 +499,10 @@ mod tests {
             }
         }
         assert!(
-            !supports_global_builtin("Evaluate"),
+            !supports_global_builtin("GlobalLanguage"),
             "unimplemented globals must stay off the safe-list"
         );
-        assert!(!supports_global_builtin("CalcDate"));
+        assert!(!supports_global_builtin("ApplicationPath"));
     }
 
     #[test]

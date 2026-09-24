@@ -650,7 +650,7 @@ end;
 
 #[test]
 fn unimplemented_bare_global_routes_to_live_bc() {
-    // `Evaluate` (and any other global the interpreter does not
+    // `GlobalLanguage` (and any other global the interpreter does not
     // implement) has no local body: routing it to Interp would fail at
     // runtime with "procedure not found" instead of falling back to BC.
     let workspace = Workspace::new();
@@ -661,11 +661,9 @@ fn unimplemented_bare_global_routes_to_live_bc() {
 Subtype = Test;
 
 [Test]
-procedure UsesEvaluate()
-var
-    t: Integer;
+procedure UsesGlobalLanguage()
 begin
-    Evaluate(t, '42');
+    GlobalLanguage(1033);
 end;
 }"#
         .to_string(),
@@ -675,7 +673,7 @@ end;
     assert!(
         result.reasons.iter().any(|reason| reason
             .message
-            .contains("global 'Evaluate' that the local interpreter does not implement")),
+            .contains("global 'GlobalLanguage' that the local interpreter does not implement")),
         "unexpected reasons: {:?}",
         result.reasons
     );
@@ -784,7 +782,7 @@ end;
 }
 
 #[test]
-fn dictionary_get_routes_to_live_bc_but_supported_methods_stay_local() {
+fn dictionary_methods_including_get_with_var_stay_local() {
     let workspace = Workspace::new();
     workspace.file_index.add_file(
         std::path::PathBuf::from("/tmp/DictRouting.Codeunit.al"),
@@ -816,21 +814,17 @@ end;
         .to_string(),
     );
     let results = classify_all(&workspace).unwrap();
-    // Codeunit integrity keeps every method on one backend; the Get user
-    // must drag the codeunit to LiveBc with an explicit reason.
-    let get_user = results
-        .iter()
-        .find(|result| result.method_name == "UsesDictGet")
-        .expect("dict get classification");
-    assert_eq!(get_user.decision, RoutingDecision::LiveBc);
-    assert!(
-        get_user
-            .reasons
-            .iter()
-            .any(|reason| reason.message.contains("unsupported Dictionary.Get")),
-        "unexpected reasons: {:?}",
-        get_user.reasons
-    );
+    // `Get(key, var value)` runs locally, so neither method needs live BC.
+    for result in &results {
+        assert_eq!(
+            result.decision,
+            RoutingDecision::Interp,
+            "{} routed with {:?}",
+            result.method_name,
+            result.reasons
+        );
+    }
+    assert_eq!(results.len(), 2);
 }
 
 #[test]
