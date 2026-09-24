@@ -110,6 +110,9 @@ pub enum SourceLookupError {
         /// Names the object does declare, closest first. Empty when the
         /// object's members could not be read.
         candidates: Vec<String>,
+        /// How many members the object declares in all, so a short list is
+        /// not read as the whole.
+        declared: usize,
     },
     #[error("{} '{member}' in object '{object}' is unavailable: {reason}", kind.label())]
     MemberUnavailable {
@@ -136,6 +139,7 @@ fn member_not_found_fmt(
     member: &String,
     kind: &SourceMemberKind,
     candidates: &[String],
+    declared: &usize,
     f: &mut fmt::Formatter<'_>,
 ) -> fmt::Result {
     write!(
@@ -147,6 +151,12 @@ fn member_not_found_fmt(
     )?;
     if candidates.is_empty() {
         write!(f, ". List its members with listProcedures")
+    } else if *declared > candidates.len() {
+        write!(
+            f,
+            ". Closest of its {declared} members: {}. List them all with listProcedures",
+            candidates.join(", ")
+        )
     } else {
         write!(f, ". It declares: {}", candidates.join(", "))
     }
@@ -377,6 +387,7 @@ fn try_workspace_source(
             member: member.name.to_string(),
             kind: member.kind,
             candidates: member_candidates(&text, member.name),
+            declared: member_outlines(&text).len(),
         });
     }
 
@@ -477,6 +488,7 @@ fn try_package_source(
                     member: member.name.to_string(),
                     kind: member.kind,
                     candidates: member_candidates(&full_source, member.name),
+                    declared: member_outlines(&full_source).len(),
                 });
             }
 
@@ -522,12 +534,11 @@ fn try_package_source(
                 kind: member.kind,
                 // No AL source here, only SymbolReference.json metadata, so
                 // the candidates come from the indexed method names.
-                candidates: entry
-                    .methods
-                    .iter()
-                    .map(|method| method.name.clone())
-                    .take(8)
-                    .collect(),
+                candidates: closest_names(
+                    entry.methods.iter().map(|method| method.name.as_str()),
+                    member.name,
+                ),
+                declared: entry.methods.len(),
             })?;
         let sig = render_method_signature(method);
         return Ok(SourceResult {
@@ -761,28 +772,57 @@ fn member_outlines(source: &str) -> Vec<MemberOutline> {
 /// object to read one name off it.
 pub fn member_candidates(source: &str, wanted: &str) -> Vec<String> {
     let outlines = member_outlines(source);
+    closest_names(outlines.iter().map(|outline| outline.name.as_str()), wanted)
+}
+
+/// Up to eight of `names` to offer for a mistyped `wanted`, closest first:
+/// those containing it, contained in it, sharing its first four letters
+/// (`PostSalesDoc` for `PostSalesLines`), or within two edits of it
+/// (`OnAfterPostSalesDocc`). With nothing close, the first eight.
+fn closest_names<'a>(names: impl Iterator<Item = &'a str>, wanted: &str) -> Vec<String> {
     let wanted_lower = wanted.to_lowercase();
-    let mut close: Vec<String> = outlines
+    let names: Vec<&str> = names.collect();
+    let mut close: Vec<(usize, &str)> = names
         .iter()
-        .filter(|outline| {
-            let lower = outline.name.to_lowercase();
-            lower.contains(&wanted_lower)
+        .filter_map(|name| {
+            let lower = name.to_lowercase();
+            let distance = edit_distance(&lower, &wanted_lower);
+            let related = lower.contains(&wanted_lower)
                 || wanted_lower.contains(&lower)
-                // A wrong guess is usually right about the first word:
-                // `PostSalesDoc` for `PostSalesLines`.
                 || shared_prefix_len(&lower, &wanted_lower) >= 4
+                || distance <= 2;
+            related.then_some((distance, *name))
         })
-        .map(|outline| outline.name.clone())
         .collect();
-    if close.is_empty() {
-        close = outlines
-            .iter()
-            .take(8)
-            .map(|outline| outline.name.clone())
-            .collect();
+    close.sort_by_key(|(distance, _)| *distance);
+    let mut out: Vec<String> = if close.is_empty() {
+        names.iter().map(|name| name.to_string()).collect()
+    } else {
+        close
+            .into_iter()
+            .map(|(_, name)| name.to_string())
+            .collect()
+    };
+    out.dedup();
+    out.truncate(8);
+    out
+}
+
+/// Levenshtein distance over bytes; names are ASCII identifiers.
+fn edit_distance(left: &str, right: &str) -> usize {
+    let right = right.as_bytes();
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    for (i, a) in left.bytes().enumerate() {
+        let mut current = vec![i + 1; right.len() + 1];
+        for (j, b) in right.iter().enumerate() {
+            let cost = usize::from(a != *b);
+            current[j + 1] = (previous[j] + cost)
+                .min(previous[j + 1] + 1)
+                .min(current[j] + 1);
+        }
+        previous = current;
     }
-    close.truncate(8);
-    close
+    previous[right.len()]
 }
 
 /// How many leading bytes two lowercased names share.
@@ -1461,6 +1501,22 @@ mod tests {
             member_candidates(source, "zzzz").len(),
             2,
             "nothing close means offer what there is"
+        );
+    }
+
+    /// `OnAfterPostSalesDocc` is one letter off; the first eight names of a
+    /// several-hundred-procedure codeunit were offered instead.
+    #[test]
+    fn a_one_letter_typo_offers_the_name_it_meant() {
+        let names = [
+            "RunWithCheck",
+            "CopyToTempLines",
+            "OnAfterPostSalesDoc",
+            "PostItemLine",
+        ];
+        assert_eq!(
+            closest_names(names.into_iter(), "OnAfterPostSalesDocc"),
+            vec!["OnAfterPostSalesDoc".to_string()]
         );
     }
 
