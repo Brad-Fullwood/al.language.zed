@@ -472,6 +472,44 @@ pub fn cmd_intercept(json: bool) -> ExitCode {
     }
 }
 
+/// Why a suggest-event answer leaves something out.
+fn print_suggest_event_gaps(result: &serde_json::Value) {
+    if result.get("depthCut").and_then(|v| v.as_bool()) == Some(true) {
+        let depth = result
+            .get("maxDepth")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(10);
+        eprintln!(
+            "Note: the trace stops {depth} calls deep, so events further down are not \
+             listed. Start from a deeper --procedure to see them."
+        );
+    }
+    let count = result
+        .get("withoutSourceCount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    if count > 0 {
+        let names: Vec<&str> = result
+            .get("withoutSource")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str())
+            .take(5)
+            .collect();
+        let more = if count as usize > names.len() {
+            format!(" and {} more", count as usize - names.len())
+        } else {
+            String::new()
+        };
+        eprintln!(
+            "Note: {count} procedure(s) on the trace have no source loaded (package code), so \
+             the events they raise are not followed: {}{more}.",
+            names.join(", ")
+        );
+    }
+}
+
 pub fn cmd_suggest_event(
     object: Option<String>,
     kind: Option<String>,
@@ -584,16 +622,12 @@ pub fn cmd_suggest_event(
                     }
                 }
                 if partial {
-                    eprintln!(
-                        "Note: Some call paths are still being analyzed. Results may be incomplete."
-                    );
+                    print_suggest_event_gaps(&result);
                 }
             }
-            if partial {
-                ExitCode::from(75)
-            } else {
-                ExitCode::SUCCESS
-            }
+            // A cut trace is the whole answer to this query, not a transient
+            // state: retrying gives the same result, so it is not exit 75.
+            ExitCode::SUCCESS
         }
         Err(e) => report_error(&e, json),
     }

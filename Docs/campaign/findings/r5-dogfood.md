@@ -511,7 +511,7 @@ Notation: `X` is the `al-explorer` binary, run with the project directory as cwd
   `X suggest-event --event OnAfterPostSalesDoc` requires `--object`. `X suggest-event --object Sales-Post
   --procedure PostItemLine` prints `Some call paths are still being analyzed` on every run, including
   warm ones.
-- status: partly fixed e623104d (help names `impact --table` and `intercept`, docs name `--object`); the "still analyzed" message is open
+- status: fixed e623104d (help names `impact --table` and `intercept`, docs name `--object`); the "still analyzed" note now says whether the trace was cut at depth 10 or reached package code without source, workspace call edges are completed first, and exit 75 is gone
 
 ### [FIELDS-UNKNOWN] `--fields` with unknown names returns empty rows silently
 - severity: low

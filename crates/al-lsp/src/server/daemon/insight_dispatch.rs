@@ -338,6 +338,12 @@ pub(super) fn dispatch_suggest_event(
             }
         };
 
+    // The trace walks outgoing call edges, which the lazy graph leaves
+    // unresolved for most workspace procedures until a query reaches them:
+    // every run reported "still being analyzed" and stopped there.
+    if let Err(error) = workspace.complete_workspace_call_edges() {
+        return graph_build_error(id, "suggestEvent", error);
+    }
     match al_analysis::queries::suggest_event::suggest_event(workspace, &query) {
         Ok(result) => serialized_response(id, &result, "suggestEvent"),
         Err(al_analysis::queries::suggest_event::SuggestEventError::Graph(error)) => {

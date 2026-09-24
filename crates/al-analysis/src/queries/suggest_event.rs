@@ -138,10 +138,59 @@ pub enum QuerySource {
 #[serde(rename_all = "camelCase")]
 pub struct SuggestEventResult {
     pub integration_points: Vec<IntegrationPoint>,
-    /// True when any procedure in the trace had unresolved call edges
-    /// (i.e. source not yet parsed), so results may be incomplete.
+    /// True when the answer is known to leave something out: see
+    /// `depth_cut` and `without_source`. The same query gives the same
+    /// answer every time; nothing is still being analysed.
     pub partial: bool,
+    /// A branch reached [`MAX_TRACE_DEPTH`] calls and was cut there.
+    pub depth_cut: bool,
+    /// The depth the trace stops at.
+    pub max_depth: usize,
+    /// Procedures on the trace whose calls are not known, because their
+    /// source is not loaded (package code): the events they raise are not
+    /// followed. The first [`MAX_LISTED_WITHOUT_SOURCE`], sorted.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub without_source: Vec<String>,
+    /// How many such procedures there were in all.
+    pub without_source_count: usize,
 }
+
+/// How many procedures without source a result names.
+const MAX_LISTED_WITHOUT_SOURCE: usize = 20;
+
+/// What a trace could not follow.
+#[derive(Debug, Default)]
+struct TraceGaps {
+    depth_cut: bool,
+    without_source: std::collections::BTreeSet<String>,
+}
+
+impl TraceGaps {
+    fn note_unresolved(&mut self, cg: &CallGraph, node_id: NodeId, object: &str, name: &str) {
+        if cg.resolution_state(node_id) == EdgeResolutionState::Unresolved {
+            self.without_source.insert(format!("{object}.{name}"));
+        }
+    }
+}
+
+fn result_from(points: Vec<IntegrationPoint>, gaps: TraceGaps) -> SuggestEventResult {
+    let without_source_count = gaps.without_source.len();
+    SuggestEventResult {
+        integration_points: points,
+        partial: gaps.depth_cut || without_source_count > 0,
+        depth_cut: gaps.depth_cut,
+        max_depth: MAX_TRACE_DEPTH,
+        without_source: gaps
+            .without_source
+            .into_iter()
+            .take(MAX_LISTED_WITHOUT_SOURCE)
+            .collect(),
+        without_source_count,
+    }
+}
+
+/// How many calls deep a trace follows before it stops.
+pub const MAX_TRACE_DEPTH: usize = 10;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -216,7 +265,7 @@ fn query_procedure(
 
     let mut points: Vec<IntegrationPoint> = Vec::new();
     let mut visited: HashMap<NodeId, usize> = HashMap::new();
-    let mut partial = false;
+    let mut gaps = TraceGaps::default();
 
     if let Some(proc_name) = procedure_name {
         let proc_key = NodeKey::Procedure(
@@ -231,9 +280,6 @@ fn query_procedure(
                 edge_kind: "start".to_string(),
             };
             if let Some(cg) = cg_opt {
-                if cg.resolution_state(node_id) == EdgeResolutionState::Unresolved {
-                    partial = true;
-                }
                 trace_from_node(
                     node_id,
                     &insight,
@@ -241,10 +287,10 @@ fn query_procedure(
                     &workspace.symbols,
                     &mut points,
                     &mut visited,
-                    &mut partial,
+                    &mut gaps,
                     vec![hop],
                     0,
-                    10,
+                    MAX_TRACE_DEPTH,
                 );
             }
         } else {
@@ -283,9 +329,6 @@ fn query_procedure(
                     edge_kind: "start".to_string(),
                 };
                 if let Some(cg) = cg_opt {
-                    if cg.resolution_state(node_id) == EdgeResolutionState::Unresolved {
-                        partial = true;
-                    }
                     trace_from_node(
                         node_id,
                         &insight,
@@ -293,10 +336,10 @@ fn query_procedure(
                         &workspace.symbols,
                         &mut points,
                         &mut visited,
-                        &mut partial,
+                        &mut gaps,
                         vec![hop],
                         0,
-                        10,
+                        MAX_TRACE_DEPTH,
                     );
                 }
             }
@@ -313,10 +356,7 @@ fn query_procedure(
 
     points = dedup_points(points);
     points = apply_filters(&workspace.symbols, points, filter_table, filter_field);
-    Ok(SuggestEventResult {
-        integration_points: points,
-        partial,
-    })
+    Ok(result_from(points, gaps))
 }
 
 fn query_table(
@@ -378,10 +418,7 @@ fn query_table(
 
     points = dedup_points(points);
     points = apply_filters(&workspace.symbols, points, None, filter_field);
-    Ok(SuggestEventResult {
-        integration_points: points,
-        partial: false,
-    })
+    Ok(result_from(points, TraceGaps::default()))
 }
 
 fn query_event(
@@ -399,7 +436,7 @@ fn query_event(
 
     let mut points: Vec<IntegrationPoint> = Vec::new();
     let mut visited: HashMap<NodeId, usize> = HashMap::new();
-    let mut partial = false;
+    let mut gaps = TraceGaps::default();
 
     let event_key = NodeKey::Event(
         object_kind,
@@ -448,10 +485,10 @@ fn query_event(
                     &workspace.symbols,
                     &mut points,
                     &mut visited,
-                    &mut partial,
+                    &mut gaps,
                     vec![sub_hop],
                     0,
-                    10,
+                    MAX_TRACE_DEPTH,
                 );
             }
         }
@@ -466,10 +503,7 @@ fn query_event(
 
     points = dedup_points(points);
     points = apply_filters(&workspace.symbols, points, filter_table, filter_field);
-    Ok(SuggestEventResult {
-        integration_points: points,
-        partial,
-    })
+    Ok(result_from(points, gaps))
 }
 
 /// Recursively trace from a node, collecting events along the way.
@@ -484,7 +518,7 @@ fn trace_from_node(
     symbols: &Arc<SymbolIndex>,
     points: &mut Vec<IntegrationPoint>,
     visited: &mut HashMap<NodeId, usize>,
-    partial: &mut bool,
+    gaps: &mut TraceGaps,
     path: Vec<TraceHop>,
     depth: usize,
     max_depth: usize,
@@ -492,7 +526,7 @@ fn trace_from_node(
     if depth >= max_depth {
         // The branch below this node is not in the result. Say so rather than
         // report a silently truncated set as complete.
-        *partial = true;
+        gaps.depth_cut = true;
         return;
     }
     // Best depth per node, not a plain visited set. A node first reached at
@@ -559,7 +593,7 @@ fn trace_from_node(
                     symbols,
                     points,
                     visited,
-                    partial,
+                    gaps,
                     new_path,
                     depth + 1,
                     max_depth,
@@ -573,9 +607,7 @@ fn trace_from_node(
         | InsightNode::Subscriber {
             object_name, name, ..
         } => {
-            if cg.resolution_state(node_id) == EdgeResolutionState::Unresolved {
-                *partial = true;
-            }
+            gaps.note_unresolved(cg, node_id, object_name, name);
 
             for edge in cg.callees_of(node_id) {
                 let hop = TraceHop {
@@ -592,7 +624,7 @@ fn trace_from_node(
                     symbols,
                     points,
                     visited,
-                    partial,
+                    gaps,
                     new_path,
                     depth + 1,
                     max_depth,
@@ -908,6 +940,38 @@ fn is_record_of_table(type_name: &str, table_lower: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// "Some call paths are still being analyzed" printed on every run: the
+    /// flag meant a depth cut or package code without source, and neither
+    /// changes on a retry. The result now says which.
+    #[test]
+    fn the_result_says_why_it_is_partial() {
+        let complete = result_from(Vec::new(), TraceGaps::default());
+        assert!(!complete.partial);
+        assert_eq!(complete.without_source_count, 0);
+
+        let mut gaps = TraceGaps::default();
+        gaps.without_source
+            .extend((0..25).map(|index| format!("Sales-Post.P{index:02}")));
+        let result = result_from(Vec::new(), gaps);
+        assert!(result.partial);
+        assert!(!result.depth_cut);
+        assert_eq!(result.without_source_count, 25);
+        assert_eq!(result.without_source.len(), MAX_LISTED_WITHOUT_SOURCE);
+        assert_eq!(result.without_source[0], "Sales-Post.P00");
+
+        let cut = result_from(
+            Vec::new(),
+            TraceGaps {
+                depth_cut: true,
+                ..TraceGaps::default()
+            },
+        );
+        assert!(cut.partial && cut.depth_cut);
+        let json = serde_json::to_value(&cut).unwrap();
+        assert_eq!(json["maxDepth"], MAX_TRACE_DEPTH);
+        assert!(json.get("withoutSource").is_none());
+    }
     use al_symbols::*;
 
     fn make_codeunit(id: i32, name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
@@ -1529,7 +1593,7 @@ mod tests {
         let symbols = Arc::new(symbols);
         let mut points = Vec::new();
         let mut visited = HashMap::new();
-        let mut partial = false;
+        let mut gaps = TraceGaps::default();
         trace_from_node(
             chain[0],
             &g,
@@ -1537,7 +1601,7 @@ mod tests {
             &symbols,
             &mut points,
             &mut visited,
-            &mut partial,
+            &mut gaps,
             vec![start_hop("CU", "P0")],
             0,
             10,
@@ -1593,7 +1657,7 @@ mod tests {
         let symbols = Arc::new(SymbolIndex::new());
         let mut points = Vec::new();
         let mut visited = HashMap::new();
-        let mut partial = false;
+        let mut gaps = TraceGaps::default();
         // Must return (not hang / overflow) despite the cycle.
         trace_from_node(
             proc_a,
@@ -1602,7 +1666,7 @@ mod tests {
             &symbols,
             &mut points,
             &mut visited,
-            &mut partial,
+            &mut gaps,
             vec![start_hop("CU", "ProcA")],
             0,
             10,
@@ -1657,7 +1721,7 @@ mod tests {
         let symbols = Arc::new(SymbolIndex::new());
         let mut points = Vec::new();
         let mut visited = HashMap::new();
-        let mut partial = false;
+        let mut gaps = TraceGaps::default();
         trace_from_node(
             root,
             &g,
@@ -1665,7 +1729,7 @@ mod tests {
             &symbols,
             &mut points,
             &mut visited,
-            &mut partial,
+            &mut gaps,
             vec![start_hop("CU", "Root")],
             0,
             10,
