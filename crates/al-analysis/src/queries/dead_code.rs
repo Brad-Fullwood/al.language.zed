@@ -393,12 +393,22 @@ fn find_orphaned_subscribers(
 
     collect_event_subscribers(object, source, &mut subscribers);
 
-    for (proc_name, target_object, target_event, line) in &subscribers {
+    for (proc_name, target_kind, target_object, target_event, line) in &subscribers {
         // Skip entries where attribute parsing failed to extract a target object name.
         // An empty target would cause false positives (nothing in the index matches "").
         if target_object.is_empty() {
             continue;
         }
+
+        // `ObjectType::Codeunit, 80` names the publisher by ID: find the
+        // object with that ID before asking whether it exists by name.
+        let target_object = match target_object.trim().parse::<i32>() {
+            Ok(id) => match publisher_by_id(workspace, target_kind.as_deref(), id) {
+                Some(name) => name,
+                None => target_object.clone(),
+            },
+            Err(_) => target_object.clone(),
+        };
 
         // Check if the target object exists in the symbol index OR in workspace files.
         // Use get_by_name (exact, case-insensitive) rather than search (fuzzy substring)
@@ -530,10 +540,43 @@ fn collect_declared_event_names(
 }
 
 /// Collect event subscriber procedures iteratively: (proc_name, target_object, target_event, line_1based).
+/// A subscriber procedure: its name, the publisher kind and object named by
+/// the attribute, the event, and the procedure's line.
+type Subscription = (String, Option<String>, String, String, u32);
+
+/// The object of `kind` (any publisher kind when unknown) whose ID is `id`.
+fn publisher_by_id(workspace: &Workspace, kind: Option<&str>, id: i32) -> Option<String> {
+    let kind = kind.and_then(|kind| kind.parse::<al_symbols::ObjectKind>().ok());
+    let matches_kind = |candidate: al_symbols::ObjectKind| {
+        kind.map_or(!candidate.is_extension(), |kind| kind == candidate)
+    };
+    for entry in workspace.symbols.all_entries() {
+        if entry.id == id && matches_kind(entry.kind) {
+            return Some(entry.name.clone());
+        }
+    }
+    workspace.file_index.object_infos.iter().find_map(|infos| {
+        infos.value().iter().find_map(|info| {
+            let candidate = info.kind.parse::<al_symbols::ObjectKind>().ok()?;
+            (info.id == Some(i64::from(id)) && matches_kind(candidate)).then(|| info.name.clone())
+        })
+    })
+}
+
+/// The publisher kind in the attribute's first argument: `Codeunit` for
+/// `ObjectType::Codeunit`.
+fn parse_subscriber_kind(attr_text: &str) -> Option<String> {
+    let inner = attr_text.split_once('(')?.1;
+    let first = split_args(inner).into_iter().next()?;
+    let first = first.trim();
+    let kind = first.rsplit_once("::").map_or(first, |(_, kind)| kind);
+    Some(kind.trim().to_string()).filter(|kind| !kind.is_empty())
+}
+
 fn collect_event_subscribers(
     root: tree_sitter::Node,
     source: &[u8],
-    subscribers: &mut Vec<(String, String, String, u32)>,
+    subscribers: &mut Vec<Subscription>,
 ) {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -548,11 +591,18 @@ fn collect_event_subscribers(
                         if let Ok(proc_name) = name_node.utf8_text(source) {
                             let proc_name = al_syntax::clean_identifier(proc_name);
                             let (target_object, target_event) = parse_subscriber_args(text);
+                            let target_kind = parse_subscriber_kind(text);
                             let line = al_syntax::procedure_keyword_row(node)
                                 .unwrap_or_else(|| node.start_position().row)
                                 as u32
                                 + 1;
-                            subscribers.push((proc_name, target_object, target_event, line));
+                            subscribers.push((
+                                proc_name,
+                                target_kind,
+                                target_object,
+                                target_event,
+                                line,
+                            ));
                         }
                     }
                 }
@@ -1222,6 +1272,52 @@ codeunit 50101 "Ship Helper"
         let (obj, _) =
             parse_subscriber_args("[EventSubscriber(ObjectType::Table, Table::\"Item\", 'OnX')]");
         assert_eq!(obj, "Item");
+    }
+
+    /// `ObjectType::Codeunit, 50100` names the publisher by ID, as AL allows
+    /// and every package subscriber does. Looking `50100` up as a name called
+    /// the subscriber orphaned, with high confidence, and told the user to
+    /// delete live code.
+    #[test]
+    fn a_subscriber_naming_its_publisher_by_id_is_not_orphaned() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/src/Publisher.al"),
+            r#"codeunit 50100 "Sales Publisher"
+{
+    [IntegrationEvent(false, false)]
+    local procedure OnAfterPost()
+    begin
+    end;
+}"#
+            .to_string(),
+        );
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/src/Subscriber.al"),
+            r#"codeunit 50101 "Sales Subscriber"
+{
+    [EventSubscriber(ObjectType::Codeunit, 50100, 'OnAfterPost', '', false, false)]
+    local procedure ByNumericId()
+    begin
+    end;
+
+    [EventSubscriber(ObjectType::Codeunit, 50199, 'OnAfterPost', '', false, false)]
+    local procedure ToAMissingId()
+    begin
+    end;
+}"#
+            .to_string(),
+        );
+
+        let results = dead_code(&ws).unwrap();
+        let orphans: Vec<_> = results
+            .iter()
+            .filter(|r| r.kind == UnusedKind::Subscriber)
+            .map(|r| r.name.as_str())
+            .collect();
+
+        assert!(!orphans.contains(&"ByNumericId"), "{orphans:?}");
+        assert!(orphans.contains(&"ToAMissingId"), "{orphans:?}");
     }
 
     /// `_target_event` was bound but never used, so a subscriber to a removed

@@ -105,6 +105,7 @@ pub fn subscribers_of(graph: &InsightGraph, query: &str) -> Vec<MatchedSubscribe
                 name,
                 target_object,
                 target_event,
+                ..
             } = &graph.graph[idx]
             else {
                 continue;
@@ -198,6 +199,7 @@ pub fn discover_events(graph: &InsightGraph) -> EventDiscoveryResult {
                     name,
                     target_object,
                     target_event,
+                    ..
                 } => (
                     object_kind.to_string(),
                     object_name.clone(),

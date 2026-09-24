@@ -1486,6 +1486,7 @@ mod tests {
                 object_kind: ObjectKind::Codeunit,
                 object_name: object.to_string(),
                 name: name.to_string(),
+                target_kind: None,
                 target_object: target_object.to_string(),
                 target_event: target_event.to_string(),
             },

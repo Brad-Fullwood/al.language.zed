@@ -251,6 +251,7 @@ pub(super) fn register_single_procedure(
         insight.add_edge(obj_idx, evt_idx, InsightEdge::Publishes);
     } else if is_subscriber {
         let (target_object, target_event) = parse_subscriber_target_from_attrs(&attributes);
+        let target_kind = subscriber_target_kind(&attributes);
         let key = NodeKey::Subscriber(
             object_kind,
             object_name.to_lowercase(),
@@ -262,6 +263,7 @@ pub(super) fn register_single_procedure(
                 object_kind,
                 object_name: object_name.to_string(),
                 name: proc_name,
+                target_kind,
                 target_object,
                 target_event,
             },
@@ -345,6 +347,18 @@ pub(super) fn parse_subscriber_target_from_attrs(attrs: &[(String, String)]) -> 
         }
     }
     (String::new(), String::new())
+}
+
+/// The publisher kind an `EventSubscriber` attribute names in its first
+/// argument (`ObjectType::Codeunit`, or a bare `Codeunit`).
+pub(super) fn subscriber_target_kind(attrs: &[(String, String)]) -> Option<ObjectKind> {
+    let (_, args_text) = attrs
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(crate::attr_names::EVENT_SUBSCRIBER))?;
+    let first = extract_attribute_args(args_text).into_iter().next()?;
+    let first = first.trim();
+    let kind = first.rsplit_once("::").map_or(first, |(_, kind)| kind);
+    kind.trim().parse::<ObjectKind>().ok()
 }
 
 /// Extract comma-separated arguments from an attribute text like `[Attr(a, b, c)]`.
