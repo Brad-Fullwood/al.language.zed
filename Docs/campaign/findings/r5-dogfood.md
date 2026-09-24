@@ -341,7 +341,7 @@ Notation: `X` is the `al-explorer` binary, run with the project directory as cwd
 - likely cause: `crates/al-lsp/src/server/daemon/scope.rs:90-92` classifies an `eventMap` row by
   object name, which is the publisher (a package), so a workspace subscriber never makes its row
   "workspace". The scope filter is not applied to `orphanSubscribers` at all.
-- status: open
+- status: fixed 994115d4 (the workspace's own subscribers and the events it raises are kept; package orphans dropped)
 
 ### [TABLE-IMPACT-LOCALS] `impact --table` leaves out objects that use the table only through local variables
 - severity: medium
@@ -354,7 +354,7 @@ Notation: `X` is the `al-explorer` binary, run with the project directory as cwd
 - likely cause: `crates/al-insight/src/analysis.rs:161-168` reads only `entry.variables` (object-level
   globals) and method parameters. Procedure-local variables are not in `SymbolEntry`. The header uses
   `totalImpacts` computed before the scope filter.
-- status: open
+- status: fixed e67e78b2 (procedure-local Record variables counted)
 
 ### [STALE-SEARCH-AFTER-DELETE] `search` keeps returning a deleted workspace object
 - severity: medium
@@ -370,7 +370,7 @@ Notation: `X` is the `al-explorer` binary, run with the project directory as cwd
   comment in `crates/al-lsp/src/server/daemon/build_dispatch/codegen.rs:452`), and the per-request file
   refresh does not remove them from the symbol index when a file disappears. `dispatch_search`
   (`lsp_dispatch.rs:342`) reads that index first.
-- status: open
+- status: fixed dcf4cf00 (a vanished workspace object is dropped from the index)
 
 ### [OBSOLETE-INCOMPLETE] `obsolete` lists only `[Obsolete]` procedures, all as pending with zero callers
 - severity: medium
@@ -387,7 +387,7 @@ Notation: `X` is the `al-explorer` binary, run with the project directory as cwd
   `sym.methods[].attributes` for `Obsolete`, and sets `state: ObsoleteState::Pending` (:122) and
   `caller_count: 0` (:127) on every package entry. Field, object and `ObsoleteState` properties are
   not read.
-- status: open
+- status: fixed 758715e7 (package objects and fields listed, package callers counted, overload-aware)
 
 ### [TEST-AFFECTED-FIELDS] `test-affected` ignores field use
 - severity: medium
@@ -411,7 +411,7 @@ Notation: `X` is the `al-explorer` binary, run with the project directory as cwd
 - likely cause: `crates/al-analysis/src/generators.rs:54` (`generate_page`) copies every field.
   `crates/al-lsp/src/server/daemon/build_dispatch/codegen.rs:485-487` uses `unwrap_or_default()` on
   the page-type parse.
-- status: open
+- status: fixed 1ad4356b (Removed fields left out, unknown page type is an error)
 
 ### [COMPLETIONS-PROJECTION] `--limit`/`--fields` do nothing on `completions`, `hints`, `symbols` and `folding`, and their text mode prints raw JSON
 - severity: low
@@ -449,7 +449,7 @@ Notation: `X` is the `al-explorer` binary, run with the project directory as cwd
   prints `1 findings`.
 - expected: `3 of 27073 (truncated)` or similar.
 - actual: a human reader cannot tell the list was cut.
-- status: open
+- status: fixed e819b42f (the footer names the page and the total)
 
 ### [SORT-MEMBERS-DRYRUN] `sort-members --dry-run` says "Members sorted."
 - severity: low
@@ -458,7 +458,7 @@ Notation: `X` is the `al-explorer` binary, run with the project directory as cwd
   no preview.
 - expected: "would reorder members" plus the preview (JSON already has `sorted`/`dryRun`).
 - likely cause: `crates/al-explorer/src/cli/commands/lsp/refactor.rs:77-80` ignores `dry_run`.
-- status: open
+- status: fixed 7348280e (the dry run lists the moves)
 
 ### [SOURCE-CANDIDATES] A wrong `source --procedure` lists the first eight declarations only
 - severity: low
@@ -467,7 +467,7 @@ Notation: `X` is the `al-explorer` binary, run with the project directory as cwd
 - actual: `It declares: RunWithCheck, CopyToTempLines, ... PostItemLine`, which is eight names of
   several hundred, with no "and N more", and the one-letter typo is not suggested.
 - likely cause: `crates/al-analysis/src/queries/source.rs:525-529` (`.take(8)` in declaration order).
-- status: open
+- status: fixed 8ac320c1 (closest names first, and how many are declared)
 
 ### [LINT-RANGES] Lint diagnostics span the whole line and lowercase variable names
 - severity: low
@@ -501,7 +501,7 @@ Notation: `X` is the `al-explorer` binary, run with the project directory as cwd
 - related: `X breaking --baseline-app old/…Base Application_25….app` takes 15.5 s and reports 7569
   breaking changes. The baseline is a different app (its appId differs from `app.json`), and nothing
   warns about it.
-- status: open
+- status: partly fixed: the timeout message 3b20538c, the different-app warning e57b81f9; no cache (it would pin two Base Applications in memory)
 
 ### [DOCS-FLAG-NAMES] Help and docs name commands and flag combinations that do not exist
 - severity: low
@@ -511,14 +511,14 @@ Notation: `X` is the `al-explorer` binary, run with the project directory as cwd
   `X suggest-event --event OnAfterPostSalesDoc` requires `--object`. `X suggest-event --object Sales-Post
   --procedure PostItemLine` prints `Some call paths are still being analyzed` on every run, including
   warm ones.
-- status: open
+- status: partly fixed e623104d (help names `impact --table` and `intercept`, docs name `--object`); the "still analyzed" message is open
 
 ### [FIELDS-UNKNOWN] `--fields` with unknown names returns empty rows silently
 - severity: low
 - repro: `X --fields bogus --limit 2 packages` returns `{"items": [{}, {}], ...}`, and `--fields
   kind,name` on `packages` silently drops `kind`.
 - expected: an error, or a warning naming the fields the rows actually have.
-- status: open
+- status: fixed fca54c75 (unknown names are an error that lists the fields rows have)
 
 ### [XLF-NOTES] Generated XLIFF drops the label's `Comment` and uses bare notes
 - severity: low
@@ -528,7 +528,7 @@ Notation: `X` is the `al-explorer` binary, run with the project directory as cwd
   in the `.g.xlf`.
 - actual: one bare `<note>` with the path, no developer note, and `<target state="new"/>` in the
   generated file.
-- status: open
+- status: fixed 5f5b2e79 (Developer and Xliff Generator notes, no `<target>` in the .g.xlf)
 
 ### [MISC-SCAFFOLD] Small scaffold issues
 - severity: low
@@ -545,7 +545,7 @@ Notation: `X` is the `al-explorer` binary, run with the project directory as cwd
     `Modify(true)`. Business Central raises the global table events whatever the `RunTrigger` value,
     so `TierCanBeCleared` (`Insert()`/`Modify()`) reaches it too. That behaviour is per the BC
     database-trigger-event documentation; confirm it before changing the rule.
-- status: open
+- status: partly fixed: runtime and al.codeAnalyzers 04d8460d, test codeunits c7c20856; test-classify reasons and test-coverage are open
 
 ## Commands exercised that behaved correctly
 
