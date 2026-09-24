@@ -105,11 +105,25 @@ fn row_is_workspace(
     }
     match origin {
         Origin::PackageField => true,
-        Origin::ObjectName => row
-            .get("objectName")
-            .or_else(|| row.get("object_name"))
-            .and_then(|v| v.as_str())
-            .is_some_and(|name| workspace_names.contains(&name.to_lowercase())),
+        // An `eventMap` row names its objects under `publisher` and
+        // `subscribers`, not at the top: reading only a top-level
+        // `objectName` put every event out of the workspace, including those
+        // the workspace publishes or subscribes to.
+        Origin::ObjectName => {
+            let is_workspace = |value: &serde_json::Value| {
+                value
+                    .get("objectName")
+                    .or_else(|| value.get("object_name"))
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|name| workspace_names.contains(&name.to_lowercase()))
+            };
+            is_workspace(row)
+                || row.get("publisher").is_some_and(is_workspace)
+                || row
+                    .get("subscribers")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|subscribers| subscribers.iter().any(is_workspace))
+        }
     }
 }
 
@@ -206,6 +220,25 @@ pub(crate) fn apply(
         };
         let (kept, dropped) = filter_rows(rows, scope, origin, &names);
         object.insert(field.to_string(), serde_json::Value::Array(kept));
+        // The event map's orphan subscribers are a second list of the same
+        // origin, and were returned unscoped.
+        if method == "eventMap" {
+            // The CLI header counts `totalEvents`, which described the whole
+            // map over a scoped list.
+            let kept_events = object
+                .get(field)
+                .and_then(|v| v.as_array())
+                .map_or(0, Vec::len);
+            object.insert("totalEvents".into(), serde_json::json!(kept_events));
+            if let Some(serde_json::Value::Array(orphans)) = object.remove("orphanSubscribers") {
+                let (orphans, _) = filter_rows(orphans, scope, origin, &names);
+                object.insert("totalOrphans".into(), serde_json::json!(orphans.len()));
+                object.insert(
+                    "orphanSubscribers".into(),
+                    serde_json::Value::Array(orphans),
+                );
+            }
+        }
         object.insert("scope".into(), serde_json::json!(scope_label));
         object.insert("outOfScopeCount".into(), serde_json::json!(dropped));
         serde_json::Value::Object(object)
@@ -245,6 +278,50 @@ mod tests {
             error: None,
             ..Default::default()
         }
+    }
+
+    /// Event rows name their objects under `publisher` and `subscribers`.
+    #[test]
+    fn an_event_the_workspace_subscribes_to_is_in_the_workspace_scope() {
+        let ws = workspace_with(&["Loyalty Mgt"]);
+        let response = Response {
+            id: 1,
+            result: Some(serde_json::json!({
+                "events": [
+                    {
+                        "eventName": "OnAfterPostSalesDoc",
+                        "publisher": { "objectName": "Sales-Post" },
+                        "subscribers": [{ "objectName": "Loyalty Mgt" }]
+                    },
+                    {
+                        "eventName": "OnApprove",
+                        "publisher": { "objectName": "Approvals Mgmt." },
+                        "subscribers": [{ "objectName": "Workflow Event Handling" }]
+                    }
+                ],
+                "orphanSubscribers": [
+                    { "objectName": "Workflow Event Handling" },
+                    { "objectName": "Loyalty Mgt" }
+                ],
+                "totalOrphans": 2
+            })),
+            error: None,
+            ..Default::default()
+        };
+
+        let result = apply(
+            &ws,
+            "eventMap",
+            &serde_json::json!({ "scope": "workspace" }),
+            response,
+        )
+        .result
+        .unwrap();
+
+        let events = result["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1, "{result}");
+        assert_eq!(events[0]["eventName"], "OnAfterPostSalesDoc");
+        assert_eq!(result["totalOrphans"], 1, "{result}");
     }
 
     #[test]
