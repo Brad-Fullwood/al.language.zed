@@ -562,17 +562,8 @@ impl FileIndex {
             }
             self.file_metadata.insert(path.clone(), m);
         }
-        // Remove the old object-name mappings for this path (if any), so
-        // stale entries don't linger when objects are renamed/replaced.
-        if let Some((_, old_obj_names)) = self.path_to_object.remove(&path) {
-            for old_obj_name in old_obj_names {
-                self.remove_owned_object_mapping(&old_obj_name, &path);
-            }
-        }
-        self.remove_procedures_for_file(&path);
-
         let result = al_syntax::AlParser::parse_quick(&content);
-        self.index_from_result(path, content, &result.tree);
+        self.replace_file_entries(path, content, &result.tree);
     }
 
     /// Add a file to the index using a pre-parsed tree, skipping the internal parse.
@@ -580,17 +571,44 @@ impl FileIndex {
     /// Used by `on_document_change` in `al_workspace` to avoid a double-parse:
     /// the caller parses once to warm the document cache, then passes the same tree here.
     ///
-    /// The caller is responsible for removing old object-name mappings via
-    /// `path_to_object` and cleaning up stale procedure entries before calling this.
+    /// Mappings the file no longer declares are removed.
     pub fn add_file_with_tree(&self, path: PathBuf, content: String, tree: tree_sitter::Tree) {
-        if let Some((_, old_obj_names)) = self.path_to_object.remove(&path) {
-            for old_obj_name in old_obj_names {
-                self.remove_owned_object_mapping(&old_obj_name, &path);
-            }
-        }
-        self.remove_procedures_for_file(&path);
+        self.replace_file_entries(path, content, &tree);
+    }
 
-        self.index_from_result(path, content, &tree);
+    /// Re-index `path`, replacing its entries rather than removing them first.
+    ///
+    /// Each object and procedure name the file still declares has its owner
+    /// list swapped under one map-entry lock, and only the names it no longer
+    /// declares are removed afterwards. Removing everything first left a
+    /// window in which a request on another daemon connection found the
+    /// file's objects missing while a refresh re-indexed it.
+    fn replace_file_entries(&self, path: PathBuf, content: String, tree: &tree_sitter::Tree) {
+        let old_objects = self
+            .path_to_object
+            .get(&path)
+            .map(|names| names.value().clone())
+            .unwrap_or_default();
+        let old_procedures = self.procedures_snapshot(&path);
+        self.index_from_result(path.clone(), content, tree);
+        let new_objects = self
+            .path_to_object
+            .get(&path)
+            .map(|names| names.value().clone())
+            .unwrap_or_default();
+        for name in old_objects
+            .iter()
+            .filter(|name| !new_objects.contains(name))
+        {
+            self.remove_owned_object_mapping(name, &path);
+        }
+        let new_procedures = self.procedures_snapshot(&path);
+        for name in old_procedures
+            .iter()
+            .filter(|name| !new_procedures.contains(name))
+        {
+            self.remove_owned_procedure(name, &path);
+        }
     }
 
     /// Snapshot the per-path procedure-name list as it currently stands in
@@ -648,25 +666,34 @@ impl FileIndex {
         if infos.is_empty() {
             self.object_info.remove(&path);
             self.object_infos.remove(&path);
+            self.path_to_object.remove(&path);
         } else {
             let app_root = self.app_root_for(&path);
-            let mut declared_names = Vec::with_capacity(infos.len());
+            // This file's owners per name, swapped in under one entry lock
+            // each: same-named owners in other files (a second app in the
+            // same workspace root) survive, and a reader never sees the name
+            // without this file's current owner.
+            let mut by_name: Vec<(String, Vec<ObjectEntry>)> = Vec::new();
             for info in &infos {
                 if info.name.is_empty() {
                     continue;
                 }
                 let obj_name = info.name.to_lowercase();
-                // Ownership is keyed by (path, kind): an owner is replaced only
-                // by a declaration of the same kind in the same file. Owners of
-                // other kinds, and same-kind owners in other files (a second app
-                // in the same workspace root declaring the same name), survive.
-                let mut owners = self.objects.entry(obj_name.clone()).or_default();
-                owners.retain(|e| e.path != path || !e.kind.eq_ignore_ascii_case(&info.kind));
-                owners.push(ObjectEntry {
+                let entry = ObjectEntry {
                     kind: info.kind.clone(),
                     path: path.clone(),
                     app_root: app_root.clone(),
-                });
+                };
+                match by_name.iter_mut().find(|(name, _)| *name == obj_name) {
+                    Some((_, entries)) => entries.push(entry),
+                    None => by_name.push((obj_name, vec![entry])),
+                }
+            }
+            let mut declared_names = Vec::with_capacity(by_name.len());
+            for (obj_name, entries) in by_name {
+                let mut owners = self.objects.entry(obj_name.clone()).or_default();
+                owners.retain(|e| e.path != path);
+                owners.extend(entries);
                 drop(owners);
                 declared_names.push(obj_name);
             }
@@ -683,7 +710,7 @@ impl FileIndex {
         // upward dependency from file_index (core infrastructure) into the
         // queries module (higher-level LSP feature code).
         let doc_symbols = al_syntax::extract_document_symbols(tree, &content);
-        let mut proc_names = Vec::new();
+        let mut by_name: Vec<(String, Vec<CachedProcedureInfo>)> = Vec::new();
         for sym in &doc_symbols {
             if let Some(children) = &sym.children {
                 for child in children {
@@ -699,16 +726,26 @@ impl FileIndex {
                             file: path.clone(),
                             selection_range: child.selection_range,
                         };
-                        self.procedures
-                            .entry(proc_key.clone())
-                            .or_default()
-                            .push(info);
-                        proc_names.push(proc_key);
+                        match by_name.iter_mut().find(|(name, _)| *name == proc_key) {
+                            Some((_, infos)) => infos.push(info),
+                            None => by_name.push((proc_key, vec![info])),
+                        }
                     }
                 }
             }
         }
-        if !proc_names.is_empty() {
+        // Swapped per name like the objects above.
+        let mut proc_names = Vec::with_capacity(by_name.len());
+        for (proc_key, infos) in by_name {
+            let mut entries = self.procedures.entry(proc_key.clone()).or_default();
+            entries.retain(|e| e.file != path);
+            entries.extend(infos);
+            drop(entries);
+            proc_names.push(proc_key);
+        }
+        if proc_names.is_empty() {
+            self.path_to_procedures.remove(&path);
+        } else {
             self.path_to_procedures.insert(path.clone(), proc_names);
         }
 
@@ -904,14 +941,20 @@ impl FileIndex {
     fn remove_procedures_for_file(&self, path: &Path) {
         if let Some((_, old_proc_names)) = self.path_to_procedures.remove(path) {
             for proc_name in old_proc_names {
-                // Retain and conditional removal must hold one shard lock.
-                use dashmap::mapref::entry::Entry;
-                if let Entry::Occupied(mut occ) = self.procedures.entry(proc_name) {
-                    occ.get_mut().retain(|e| e.file != path);
-                    if occ.get().is_empty() {
-                        occ.remove();
-                    }
-                }
+                self.remove_owned_procedure(&proc_name, path);
+            }
+        }
+    }
+
+    /// Drop `path`'s entries for one procedure name, and the name when no
+    /// file declares it any more.
+    fn remove_owned_procedure(&self, proc_name: &str, path: &Path) {
+        // Retain and conditional removal must hold one shard lock.
+        use dashmap::mapref::entry::Entry;
+        if let Entry::Occupied(mut occ) = self.procedures.entry(proc_name.to_string()) {
+            occ.get_mut().retain(|e| e.file != path);
+            if occ.get().is_empty() {
+                occ.remove();
             }
         }
     }
@@ -1200,6 +1243,75 @@ fn stage_files(paths: &[PathBuf]) -> Result<Vec<(PathBuf, String, FileMetadata)>
 mod tests {
     use super::*;
     use std::fs;
+
+    /// A daemon refresh re-indexes a changed file while requests on other
+    /// connections read the index. Removing the file's entries before
+    /// re-adding them let such a request find the object missing.
+    #[test]
+    fn re_indexing_a_file_never_hides_its_object_or_procedures() {
+        let index = std::sync::Arc::new(FileIndex::new());
+        let path = PathBuf::from("/ws/Mgt.Codeunit.al");
+        let text = |n: usize| {
+            format!(
+                "codeunit 50100 Mgt\n{{\n    procedure Run()\n    begin\n        Message('{n}');\n    end;\n}}\n"
+            )
+        };
+        index.add_file(path.clone(), text(0));
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = {
+            let (index, done) = (index.clone(), done.clone());
+            std::thread::spawn(move || {
+                let mut misses = 0;
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    if index.object_path("mgt").is_none() {
+                        misses += 1;
+                    }
+                    if index
+                        .procedures
+                        .get("run")
+                        .is_none_or(|entries| entries.is_empty())
+                    {
+                        misses += 1;
+                    }
+                }
+                misses
+            })
+        };
+        for n in 1..2000 {
+            index.add_file(path.clone(), text(n));
+        }
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            reader.join().unwrap(),
+            0,
+            "a reader saw the object or procedure missing"
+        );
+    }
+
+    #[test]
+    fn re_indexing_drops_what_the_file_no_longer_declares() {
+        let index = FileIndex::new();
+        let path = PathBuf::from("/ws/Obj.al");
+        index.add_file(
+            path.clone(),
+            "table 50100 Old\n{\n}\ncodeunit 50101 Keep\n{\n    procedure Gone()\n    begin\n    end;\n    procedure Stays()\n    begin\n    end;\n}\n"
+                .to_string(),
+        );
+        index.add_file(
+            path.clone(),
+            "page 50100 Old\n{\n}\ncodeunit 50101 Keep\n{\n    procedure Stays()\n    begin\n    end;\n}\n"
+                .to_string(),
+        );
+        assert_eq!(index.object_path_of_kind("Old", &["table"]), None);
+        assert_eq!(
+            index.object_path_of_kind("Old", &["page"]),
+            Some(path.clone())
+        );
+        assert_eq!(index.object_path("Keep"), Some(path.clone()));
+        assert!(index.procedures.get("gone").is_none());
+        assert_eq!(index.procedures.get("stays").map(|e| e.len()), Some(1));
+        assert_eq!(index.procedures_snapshot(&path), vec!["stays".to_string()]);
+    }
 
     /// A same-length rewrite that keeps the mtime (a coarse filesystem clock,
     /// or two writes inside one tick) must still be picked up.
