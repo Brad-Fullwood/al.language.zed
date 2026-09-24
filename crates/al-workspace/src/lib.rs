@@ -38,12 +38,27 @@ use al_source::file_index::FileIndex;
 pub type NotifySink = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Summary metadata for a loaded symbol package.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct PackageInfo {
+    /// The manifest's app id; empty for a package without one.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub app_id: String,
     pub name: String,
     pub publisher: String,
     pub version: String,
     pub object_count: usize,
+}
+
+impl From<&al_symbols::model::SymbolPackage> for PackageInfo {
+    fn from(package: &al_symbols::model::SymbolPackage) -> Self {
+        Self {
+            app_id: package.app_id.clone(),
+            name: package.name.clone(),
+            publisher: package.publisher.clone(),
+            version: package.version.clone(),
+            object_count: package.object_count,
+        }
+    }
 }
 
 type DependencyFingerprint = Vec<(PathBuf, u64, std::time::SystemTime)>;
@@ -1231,15 +1246,7 @@ pub async fn initialize_core_workspace(
 
             workspace.invalidate_insight_graph();
 
-            let pkg_info: Vec<PackageInfo> = loaded
-                .iter()
-                .map(|p| PackageInfo {
-                    name: p.name.clone(),
-                    publisher: p.publisher.clone(),
-                    version: p.version.clone(),
-                    object_count: p.object_count,
-                })
-                .collect();
+            let pkg_info: Vec<PackageInfo> = loaded.iter().map(PackageInfo::from).collect();
             workspace.replace_package_info(pkg_info);
 
             // Scan workspace .al files. file_index.scan walks the tree
@@ -2092,6 +2099,7 @@ mod workspace_lifecycle_tests {
         assert_eq!(workspace.memory_stats().unwrap().error_code_count, 0);
 
         workspace.package_info.write().unwrap().push(PackageInfo {
+            app_id: String::new(),
             name: "Base Application".to_string(),
             publisher: "Microsoft".to_string(),
             version: "1.0.0.0".to_string(),
@@ -2137,6 +2145,7 @@ mod workspace_lifecycle_tests {
         on_document_change(&workspace, &uri, text);
         workspace.file_index.add_file(path, text.to_string());
         workspace.package_info.write().unwrap().push(PackageInfo {
+            app_id: String::new(),
             name: "Measured Package".to_string(),
             publisher: "Test".to_string(),
             version: "1.0.0.0".to_string(),

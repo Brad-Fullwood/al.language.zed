@@ -655,12 +655,7 @@ fn refresh_workspace_after_download(
             !(existing.name.eq_ignore_ascii_case(&package.name)
                 && existing.publisher.eq_ignore_ascii_case(&package.publisher))
         });
-        package_info.push(al_workspace::PackageInfo {
-            name: package.name.clone(),
-            publisher: package.publisher.clone(),
-            version: package.version.clone(),
-            object_count: package.object_count,
-        });
+        package_info.push(al_workspace::PackageInfo::from(package));
     }
     drop(package_info);
     workspace.invalidate_insight_graph();

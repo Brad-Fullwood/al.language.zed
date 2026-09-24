@@ -772,12 +772,7 @@ fn missing_dependencies(
 fn set_package_info(workspace: &Workspace, packages: &[al_symbols::model::SymbolPackage]) {
     let info = packages
         .iter()
-        .map(|package| al_workspace::PackageInfo {
-            name: package.name.clone(),
-            publisher: package.publisher.clone(),
-            version: package.version.clone(),
-            object_count: package.object_count,
-        })
+        .map(al_workspace::PackageInfo::from)
         .collect();
     workspace.replace_package_info(info);
 }

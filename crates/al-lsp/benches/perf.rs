@@ -311,6 +311,7 @@ fn report_stats_once() {
         .write()
         .expect("package lock")
         .push(PackageInfo {
+            app_id: String::new(),
             name: "BenchPkg".to_string(),
             publisher: "Benchmark".to_string(),
             version: "1.0.0.0".to_string(),

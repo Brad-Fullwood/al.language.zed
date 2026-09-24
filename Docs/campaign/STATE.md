@@ -33,7 +33,6 @@ Queued:
 - desloppify fix batches (`findings/desloppify.md` section 4), file splits after the owning fix branch merges.
 - Workstream E (tests): coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis. Start when a build slot frees.
 - Workstream D (security): dedicated review after round 1 fixes are in, covering what changed.
-- `al-explorer packages` prints per-package source counts keyed by folded display name (`al-symbols` `index.rs:259`), so two `System` packages with one app id and different versions both show `0/502/1` against 529 manifest objects. Key by app id and version. Details in `findings/blog-progress.md`.
 - Blog: article 1 repeats a wrong diagnosis of the `trace` timeout (it is the cold call-graph build, 86 s with Base Application). Rewrite that paragraph. Articles 2, 4, 5, 8 after the daemon work and fix branches merge, then article 9, then the fact pass list in `findings/blog-progress.md`.
 - AI tooling build item 9: dependency package version diff.
 - Plugin leftovers: `plugin/evals/`, release binary download hook, test on a project with `.alpackages`.

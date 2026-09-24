@@ -1058,13 +1058,14 @@ pub(super) fn dispatch_packages(workspace: &Workspace, id: u64) -> Response {
             let object = value
                 .as_object_mut()
                 .ok_or_else(|| format!("serialized package {index} is not an object"))?;
-            let availability =
-                serde_json::to_value(workspace.symbols.package_source_availability(&package.name))
-                    .map_err(|error| {
-                        format!(
-                            "package {index} source availability is not JSON serializable: {error}"
-                        )
-                    })?;
+            let availability = serde_json::to_value(
+                workspace
+                    .symbols
+                    .package_source_availability_for(&package.app_id, &package.name),
+            )
+            .map_err(|error| {
+                format!("package {index} source availability is not JSON serializable: {error}")
+            })?;
             object.insert("source_availability".into(), availability);
             Ok::<_, String>(value)
         })
@@ -1963,6 +1964,7 @@ mod tests {
             .write()
             .unwrap()
             .push(al_workspace::PackageInfo {
+                app_id: String::new(),
                 name: "Base Application".to_string(),
                 publisher: "Microsoft".to_string(),
                 version: "1.0.0.0".to_string(),

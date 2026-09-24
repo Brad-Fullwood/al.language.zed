@@ -1738,17 +1738,8 @@ impl LanguageServer for AlServer {
             self.workspace.symbols.replace_with(&symbols);
             *published_project = Some(project);
             *published_config = staged_config.clone();
-            self.workspace.replace_package_info(
-                loaded
-                    .iter()
-                    .map(|package| al_workspace::PackageInfo {
-                        name: package.name.clone(),
-                        publisher: package.publisher.clone(),
-                        version: package.version.clone(),
-                        object_count: package.object_count,
-                    })
-                    .collect(),
-            );
+            self.workspace
+                .replace_package_info(loaded.iter().map(al_workspace::PackageInfo::from).collect());
             self.workspace.invalidate_insight_graph();
             self.workspace.mark_package_generation_changed();
             self.workspace.mark_generation_changed();

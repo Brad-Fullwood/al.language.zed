@@ -142,6 +142,12 @@ This repository is public. No customer names, paths, tenant IDs or object names 
 **Queue this as a finding.** Two candidate fixes: bucket the summary by package identity rather
 than display name, or report the summary as "not available for a duplicated display name".
 
+Fixed on 2026-09-24: every batch loader keeps only the highest version per app id
+(`newest_per_identity` in `al-symbols/src/index/loading.rs`), so one `System` row remains and it is
+the 28.0 package. The summary is counted per identity (`package_source_availability_for`), and
+`packages` JSON carries `app_id`. The article's "Where that table is currently wrong" section needs
+rewriting.
+
 ### Re-check at the end of the week
 
 1. Every payload size in the table, against a rebuilt `target/release`. The binary used here was
