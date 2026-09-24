@@ -470,7 +470,7 @@ where
 
 /// Under `--limit`, the text formatters count the rows they were given, so
 /// `Entry points (3 found)` hid 27,070 more. Say what the page is.
-fn print_page_footer(result: &serde_json::Value) {
+pub(crate) fn print_page_footer(result: &serde_json::Value) {
     if result.get("truncated").and_then(serde_json::Value::as_bool) != Some(true) {
         return;
     }
@@ -616,6 +616,27 @@ fn params_with_text(
     Some(retry)
 }
 
+/// Say so when `--limit`, `--offset` or `--fields` came back as a whole,
+/// unpaged list: the daemon has no list target for the method, and the
+/// flags used to be dropped without a word.
+fn warn_if_not_projected(
+    method: &str,
+    sent: Option<&serde_json::Value>,
+    result: &serde_json::Value,
+) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let asked = sent.is_some_and(|params| {
+        ["limit", "offset", "fields"]
+            .iter()
+            .any(|key| params.get(key).is_some())
+    });
+    if asked && result.is_array() && !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!(
+            "warning: --limit, --offset and --fields do not apply to `{method}`; the whole result is shown"
+        );
+    }
+}
+
 /// Whether the request narrowed each row to a chosen set of keys.
 fn asked_for_fields(params: Option<&serde_json::Value>) -> bool {
     params
@@ -645,6 +666,7 @@ pub fn request_checked(
                     let checked = list_rows(&result).clone();
                     response_contract::validate(method, sent.as_ref(), &checked)?;
                 }
+                warn_if_not_projected(method, sent.as_ref(), &result);
                 return Ok(result);
             }
             Err(error) => error,

@@ -396,6 +396,21 @@ fn print_position_query_human(method: &str, result: &serde_json::Value) {
                 );
             }
         }
+        "completions" => {
+            let items = list_rows(result)
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            for item in items {
+                let label = item["label"].as_str().unwrap_or("?");
+                match item["detail"].as_str().filter(|detail| !detail.is_empty()) {
+                    Some(detail) => println!("{label}  {detail}"),
+                    None => println!("{label}"),
+                }
+            }
+            eprintln!("\n{} completion(s)", items.len());
+        }
+        "signatureHelp" => print_signature_help(result),
         _ => {
             println!("Result:");
             println!(
@@ -403,6 +418,37 @@ fn print_position_query_human(method: &str, result: &serde_json::Value) {
                 serde_json::to_string_pretty(result).unwrap_or_default()
             );
         }
+    }
+    print_page_footer(result);
+}
+
+/// Each signature on its own line, the active one marked and its active
+/// parameter in brackets: `> SetTier(var Cust: Record Customer; [Tier: Code[10]])`.
+fn print_signature_help(result: &serde_json::Value) {
+    let active_signature = result["activeSignature"].as_u64().unwrap_or(0);
+    let signatures = result["signatures"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    for (index, signature) in signatures.iter().enumerate() {
+        let mut label = signature["label"].as_str().unwrap_or("?").to_string();
+        let active_parameter = signature["activeParameter"]
+            .as_u64()
+            .or_else(|| result["activeParameter"].as_u64());
+        let parameter = active_parameter
+            .and_then(|active| signature["parameters"].get(active as usize))
+            .and_then(|parameter| parameter["label"].as_str());
+        if let Some(parameter) = parameter
+            && let Some(start) = label.find(parameter)
+        {
+            label.replace_range(start..start + parameter.len(), &format!("[{parameter}]"));
+        }
+        let marker = if index as u64 == active_signature {
+            ">"
+        } else {
+            " "
+        };
+        println!("{marker} {label}");
     }
 }
 
@@ -424,11 +470,12 @@ pub fn cmd_symbols(file: &str, json: bool) -> ExitCode {
         Some(serde_json::json!({ "uri": uri })),
     ) {
         Ok(result) => {
-            let outline = render_outline(&result);
+            let outline = render_outline(list_rows(&result));
             if outline.is_empty() {
                 eprintln!("No symbols in {file}");
             } else {
                 print!("{outline}");
+                print_page_footer(&result);
             }
             ExitCode::SUCCESS
         }
@@ -466,7 +513,43 @@ fn render_outline(symbols: &serde_json::Value) -> String {
 }
 
 pub fn cmd_folding(file: &str, json: bool) -> ExitCode {
-    cmd_file_query("foldingRanges", file, json)
+    if json {
+        return cmd_file_query("foldingRanges", file, json);
+    }
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+    let uri = match file_to_uri(file) {
+        Ok(uri) => uri,
+        Err(error) => return report_error(&error, json),
+    };
+    match request_checked(
+        &mut client,
+        "foldingRanges",
+        Some(serde_json::json!({ "uri": uri })),
+    ) {
+        Ok(result) => {
+            let ranges = list_rows(&result)
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            if ranges.is_empty() {
+                eprintln!("No folding ranges in {file}");
+            } else {
+                // 1-based, as the command's input and every other text output.
+                for range in ranges {
+                    let start = range["startLine"].as_u64().map_or(0, |line| line + 1);
+                    let end = range["endLine"].as_u64().map_or(0, |line| line + 1);
+                    let kind = range["kind"].as_str().unwrap_or("region");
+                    println!("{start}-{end}  {kind}");
+                }
+                print_page_footer(&result);
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
 }
 
 pub fn cmd_tokens(file: &str, json: bool) -> ExitCode {

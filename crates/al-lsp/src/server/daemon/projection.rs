@@ -55,6 +55,10 @@ pub(crate) const LIST_TARGETS: &[(&str, ListTarget)] = &[
     ("profiler.hints", ListTarget::Root),
     ("breaking", ListTarget::Root),
     ("upgrade", ListTarget::Root),
+    ("completions", ListTarget::Root),
+    ("inlayHints", ListTarget::Root),
+    ("documentSymbols", ListTarget::Root),
+    ("foldingRanges", ListTarget::Root),
     // Methods whose result keeps other fields around one array.
     ("impact", ListTarget::Field("impacted")),
     ("packageDiff", ListTarget::Field("changes")),

@@ -75,6 +75,8 @@ pub fn inlay_hints(
     if hints.is_empty() {
         Ok(None)
     } else {
+        // In document order, so a page of them (`--limit`) is the first N.
+        hints.sort_by_key(|hint| (hint.position.line, hint.position.character));
         Ok(Some(hints))
     }
 }

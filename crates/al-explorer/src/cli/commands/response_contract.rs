@@ -182,7 +182,7 @@ pub(super) fn validate(method: &str, params: Option<&Value>, result: &Value) -> 
                 array_objects(
                     result,
                     "foldingRanges",
-                    &[("start_line", Kind::Unsigned), ("end_line", Kind::Unsigned)],
+                    &[("startLine", Kind::Unsigned), ("endLine", Kind::Unsigned)],
                 )
             }
         }
@@ -1703,21 +1703,21 @@ mod tests {
     #[test]
     fn daemon_folding_and_semantic_token_shapes_are_accepted_exactly() {
         let folding = serde_json::json!([{
-            "start_line": 1,
-            "start_character": null,
-            "end_line": 4,
-            "end_character": null,
-            "kind": "Region"
+            "startLine": 1,
+            "startCharacter": null,
+            "endLine": 4,
+            "endCharacter": null,
+            "kind": "region"
         }]);
         assert!(validate("foldingRanges", None, &folding).is_ok());
         assert!(
             validate(
                 "foldingRanges",
                 None,
-                &serde_json::json!([{"startLine": 1, "endLine": 4}])
+                &serde_json::json!([{"start_line": 1, "end_line": 4}])
             )
             .is_err(),
-            "the daemon's transport-agnostic folding shape must not drift to an unannounced LSP shape"
+            "the Rust field names are not the wire shape"
         );
 
         let tokens = serde_json::json!([{

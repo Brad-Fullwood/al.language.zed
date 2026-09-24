@@ -253,7 +253,7 @@ fn cli_commands_use_the_real_project_daemon() {
         ),
         (
             &["folding", "src/HelloWorld.al", "--json"][..],
-            "\"start_line\":",
+            "\"startLine\":",
         ),
         (
             &["tokens", "src/HelloWorld.al", "--json"][..],

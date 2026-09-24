@@ -199,10 +199,15 @@ pub fn cmd_hints(
                 if hints.is_empty() {
                     eprintln!("No inlay hints");
                 } else {
-                    for h in hints {
-                        print_json(h);
+                    // `line:col label`, 1-based like the command's input.
+                    for hint in hints {
+                        let line = hint["position"]["line"].as_u64().map_or(0, |l| l + 1);
+                        let col = hint["position"]["character"].as_u64().map_or(0, |c| c + 1);
+                        let label = hint["label"].as_str().unwrap_or("?");
+                        println!("{line}:{col}  {label}");
                     }
                     eprintln!("\n{} hints", hints.len());
+                    print_page_footer(&result);
                 }
             }
             ExitCode::SUCCESS

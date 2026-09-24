@@ -427,7 +427,7 @@ Notation: `X` is the `al-explorer` binary, run with the project directory as cwd
 - likely cause: these methods are missing from `LIST_TARGETS`
   (`crates/al-lsp/src/server/daemon/projection.rs:33-68`). The CLI printers for them serialise the
   internal structs directly.
-- status: open
+- status: fixed (the four methods are list targets; camelCase JSON and a string hint label; readable text for completions, signature, hints and folding; a warning when the flags meet an unpaged list). JSON positions stay 0-based, as LSP
 
 ### [IMPACT-TYPES] `impact` labels calls and writes as `read` and repeats rows
 - severity: low

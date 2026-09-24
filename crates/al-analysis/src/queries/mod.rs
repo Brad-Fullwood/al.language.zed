@@ -237,6 +237,7 @@ pub enum AlSymbolKind {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AlDocumentSymbol {
     pub name: std::string::String,
     pub detail: Option<std::string::String>,
@@ -247,6 +248,7 @@ pub struct AlDocumentSymbol {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AlFoldingRangeKind {
     Comment,
     Imports,
@@ -254,6 +256,7 @@ pub enum AlFoldingRangeKind {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AlFoldingRange {
     pub start_line: u32,
     pub start_character: Option<u32>,
@@ -268,17 +271,22 @@ pub enum AlInlayHintKind {
     Parameter,
 }
 
+/// Serialised as the bare string, as LSP writes a string label.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
 pub enum AlInlayHintLabel {
     String(std::string::String),
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AlInlayHint {
     pub position: Position,
     pub label: AlInlayHintLabel,
     pub kind: Option<AlInlayHintKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub padding_left: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub padding_right: Option<bool>,
 }
 
@@ -380,6 +388,60 @@ impl From<Range> for al_syntax::types::SyntaxRange {
 #[allow(clippy::items_after_test_module)] // From<Syntax*> impls follow (relocated in extraction)
 mod query_types_tests {
     use super::*;
+
+    /// The daemon's wire shape is LSP's: camelCase keys and a string label,
+    /// not the Rust field names and enum tagging.
+    #[test]
+    fn hints_folding_and_symbols_serialise_as_lsp_does() {
+        let hint = AlInlayHint {
+            position: Position {
+                line: 1,
+                character: 2,
+            },
+            label: AlInlayHintLabel::String("Cust:".into()),
+            kind: Some(AlInlayHintKind::Parameter),
+            padding_left: None,
+            padding_right: Some(true),
+        };
+        assert_eq!(
+            serde_json::to_value(&hint).unwrap(),
+            serde_json::json!({
+                "position": {"line": 1, "character": 2},
+                "label": "Cust:",
+                "kind": "Parameter",
+                "paddingRight": true,
+            })
+        );
+        let folding = AlFoldingRange {
+            start_line: 1,
+            start_character: None,
+            end_line: 4,
+            end_character: None,
+            kind: Some(AlFoldingRangeKind::Region),
+        };
+        let folding = serde_json::to_value(&folding).unwrap();
+        assert_eq!(folding["startLine"], 1);
+        assert_eq!(folding["kind"], "region");
+        let range = Range {
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 0,
+                character: 1,
+            },
+        };
+        let symbol = AlDocumentSymbol {
+            name: "X".into(),
+            detail: None,
+            kind: AlSymbolKind::Class,
+            range,
+            selection_range: range,
+            children: None,
+        };
+        assert!(serde_json::to_value(&symbol).unwrap()["selectionRange"].is_object());
+    }
 
     #[test]
     fn workspace_edit_serializes_to_lsp_map_format() {
