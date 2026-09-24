@@ -21,7 +21,6 @@ Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, 
 Queued:
 
 - Persisted symbol and source index on disk (cold start 54 s and 2.9 GB RSS), keyed by app id, version and content hash.
-- Remaining file splits from the slop-splits-2 list: `session.rs`, `xliff.rs`, `calls.rs`, `router.rs`.
 - Rebuild `target/release` before measuring for articles (it predates `publish` and `free-ids`).
 - `dispatch_generate` cannot warn on IDs outside the project `idRanges` until the dispatcher is async.
 - Daemon requests read the file index while another connection's request may be refreshing it (`findings/r4-session-review.md` RACE-DAEMON-REFRESH). A request-wide read guard would let one long request hold off every new one; give daemon requests a snapshot instead.
