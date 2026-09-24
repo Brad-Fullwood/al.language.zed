@@ -27,11 +27,7 @@ pub fn register_workspace_nodes(
     // blocking concurrent did_change writers to that shard for the
     // duration of the build. Cloning the snapshot is cheap (kB-scale)
     // versus the cost of an N-file tree walk that follows.
-    let snapshot: Vec<(std::path::PathBuf, al_source::file_index::CachedObjectInfo)> = file_index
-        .object_info
-        .iter()
-        .map(|e| (e.key().clone(), e.value().clone()))
-        .collect();
+    let snapshot = indexed_objects(file_index);
 
     for (path, info) in snapshot {
         let path = path.as_path();
@@ -51,26 +47,22 @@ pub fn register_workspace_nodes(
         );
 
         let (source, tree) = indexed_parse(file_index, path)?;
+        // This object's own declaration: the whole tree gave the first
+        // object of a file every member of the file.
+        let node = object_node(&tree, info);
 
         let source_bytes = source.as_bytes();
-        register_procedures_from_tree(
-            tree.root_node(),
-            source_bytes,
-            ok,
-            &info.name,
-            obj_idx,
-            insight,
-        );
+        register_procedures_from_tree(node, source_bytes, ok, &info.name, obj_idx, insight);
 
         // Also extract MethodSymbol + FieldSymbol data and add to the
         // SymbolIndex so that parameter lookups (lookup_event_params) find
         // workspace methods and scaffolding (`generate page --table`) finds
         // workspace table fields. Always push the entry — even a
         // member-less object must be resolvable by name/id/composition.
-        let methods = extract_methods_from_tree(tree.root_node(), source_bytes);
+        let methods = extract_methods_from_tree(node, source_bytes);
         let fields = match ok {
             ObjectKind::Table | ObjectKind::TableExtension => {
-                extract_fields_from_tree(tree.root_node(), source_bytes)
+                extract_fields_from_tree(node, source_bytes)
             }
             _ => Vec::new(),
         };
@@ -81,13 +73,13 @@ pub fn register_workspace_nodes(
             package: "workspace".to_string(),
             methods,
             fields,
-            extends: info_extends_from_tree(tree.root_node(), source_bytes),
+            extends: info_extends_from_tree(node, source_bytes),
             // Capture the `implements` clause so interface dispatch
             // resolution can find implementors. This pass is the authoritative
             // source for workspace symbol entries (it clobbers the "workspace"
             // package), so without it `implements` would always be empty.
             implements: info_implements_from_tree(tree.root_node(), source_bytes, &info.name),
-            properties: extract_object_properties_from_tree(tree.root_node(), source_bytes),
+            properties: extract_object_properties_from_tree(node, source_bytes),
             ..Default::default()
         });
     }
@@ -117,13 +109,7 @@ pub fn register_dependency_source_nodes(
     file_index: &FileIndex,
     insight: &mut InsightGraph,
 ) -> Result<(), SourceGraphError> {
-    let snapshot: Vec<(std::path::PathBuf, al_source::file_index::CachedObjectInfo)> = file_index
-        .object_info
-        .iter()
-        .map(|entry| (entry.key().clone(), entry.value().clone()))
-        .collect();
-
-    for (path, info) in snapshot {
+    for (path, info) in indexed_objects(file_index) {
         let object_kind = indexed_object_kind(&path, &info)?;
         let object_id = indexed_object_id(&path, &info, object_kind)?;
         let object_key = NodeKey::Object(object_kind, info.name.to_lowercase());
@@ -138,7 +124,7 @@ pub fn register_dependency_source_nodes(
         );
         let (source, tree) = indexed_parse(file_index, &path)?;
         register_procedures_from_tree(
-            tree.root_node(),
+            object_node(&tree, &info),
             source.as_bytes(),
             object_kind,
             &info.name,
@@ -149,6 +135,52 @@ pub fn register_dependency_source_nodes(
 
     insight.resolve_subscriber_edges();
     Ok(())
+}
+
+/// Every object declaration the file index holds, one row per object: a file
+/// declaring a table and then a codeunit yields both. Snapshotted so no
+/// shard lock is held while the trees are walked.
+pub(super) fn indexed_objects(
+    file_index: &FileIndex,
+) -> Vec<(std::path::PathBuf, al_source::file_index::CachedObjectInfo)> {
+    let mut objects: Vec<_> = file_index
+        .object_infos
+        .iter()
+        .flat_map(|entry| {
+            let path = entry.key().clone();
+            entry
+                .value()
+                .iter()
+                .map(|info| (path.clone(), info.clone()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    objects.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then(a.1.range.start_byte.cmp(&b.1.range.start_byte))
+    });
+    objects
+}
+
+/// The `object_declaration` node `info` was read from, or the root when the
+/// range no longer names one.
+pub(super) fn object_node<'t>(
+    tree: &'t tree_sitter::Tree,
+    info: &al_source::file_index::CachedObjectInfo,
+) -> tree_sitter::Node<'t> {
+    let root = tree.root_node();
+    let mut node = match root.descendant_for_byte_range(info.range.start_byte, info.range.end_byte)
+    {
+        Some(node) => node,
+        None => return root,
+    };
+    while node.kind() != "object_declaration" {
+        match node.parent() {
+            Some(parent) => node = parent,
+            None => return root,
+        }
+    }
+    node
 }
 
 /// Iteratively walk the AST registering procedure/trigger declarations.

@@ -26,7 +26,7 @@ end;
 #[test]
 fn workspace_node_registration_rejects_invalid_indexed_object_kind() {
     let (index, path) = indexed_codeunit("/workspace/InvalidKind.al");
-    index.object_info.get_mut(&path).unwrap().kind = "unknown-object".to_string();
+    index.object_infos.get_mut(&path).unwrap()[0].kind = "unknown-object".to_string();
 
     let error = register_workspace_nodes(&index, &SymbolIndex::new(), &mut InsightGraph::new())
         .unwrap_err();
@@ -39,7 +39,7 @@ fn workspace_node_registration_rejects_invalid_indexed_object_kind() {
 #[test]
 fn workspace_node_registration_rejects_missing_and_out_of_range_ids() {
     let (missing_index, missing_path) = indexed_codeunit("/workspace/MissingId.al");
-    missing_index.object_info.get_mut(&missing_path).unwrap().id = None;
+    missing_index.object_infos.get_mut(&missing_path).unwrap()[0].id = None;
     let missing_error = register_workspace_nodes(
         &missing_index,
         &SymbolIndex::new(),
@@ -52,7 +52,7 @@ fn workspace_node_registration_rejects_missing_and_out_of_range_ids() {
     );
 
     let (large_index, large_path) = indexed_codeunit("/workspace/LargeId.al");
-    large_index.object_info.get_mut(&large_path).unwrap().id = Some(i64::from(i32::MAX) + 1);
+    large_index.object_infos.get_mut(&large_path).unwrap()[0].id = Some(i64::from(i32::MAX) + 1);
     let large_error =
         register_workspace_nodes(&large_index, &SymbolIndex::new(), &mut InsightGraph::new())
             .unwrap_err();
@@ -65,11 +65,11 @@ fn workspace_node_registration_rejects_missing_and_out_of_range_ids() {
 #[test]
 fn workspace_node_registration_rejects_missing_cached_parse() {
     let (index, indexed_path) = indexed_codeunit("/workspace/Indexed.al");
-    let info = index.object_info.get(&indexed_path).unwrap().clone();
-    index.object_info.clear();
+    let infos = index.object_infos.get(&indexed_path).unwrap().clone();
+    index.object_infos.clear();
     index
-        .object_info
-        .insert(PathBuf::from("/workspace/MissingTree.al"), info);
+        .object_infos
+        .insert(PathBuf::from("/workspace/MissingTree.al"), infos);
 
     let error = register_workspace_nodes(&index, &SymbolIndex::new(), &mut InsightGraph::new())
         .unwrap_err();
@@ -1124,4 +1124,72 @@ fn codeunit_run_target_parsed() {
     assert!(is_codeunit_run_method("Run"));
     assert!(is_codeunit_run_method("runmodal"));
     assert!(!is_codeunit_run_method("Post"));
+}
+
+/// In a file declaring a table and then a codeunit, the codeunit was not in
+/// the graph: registration read only a file's first object and credited it
+/// with every procedure in the file.
+#[test]
+fn every_object_of_a_multi_object_file_gets_its_own_members() {
+    let index = FileIndex::new();
+    index.add_file(
+        PathBuf::from("/workspace/Two.al"),
+        r#"table 50150 Ledger
+{
+    fields
+    {
+        field(1; "Entry No."; Integer) { }
+    }
+}
+
+codeunit 50151 Calc
+{
+    procedure Add()
+    begin
+        Helper();
+    end;
+
+    local procedure Helper()
+    begin
+    end;
+}
+"#
+        .to_string(),
+    );
+    let symbols = SymbolIndex::new();
+    let mut insight = InsightGraph::new();
+    register_workspace_nodes(&index, &symbols, &mut insight).expect("registers");
+    let add = NodeKey::Procedure(ObjectKind::Codeunit, "calc".into(), "add".into());
+    let helper = NodeKey::Procedure(ObjectKind::Codeunit, "calc".into(), "helper".into());
+    assert!(insight.get_node(&add).is_some(), "Calc.Add registered");
+    assert!(
+        insight
+            .get_node(&NodeKey::Procedure(
+                ObjectKind::Table,
+                "ledger".into(),
+                "add".into()
+            ))
+            .is_none(),
+        "Add is not the table's"
+    );
+    let calc = symbols.get_by_name("Calc");
+    assert!(
+        calc.iter().any(|entry| entry.methods.len() == 2),
+        "{calc:?}"
+    );
+    let ledger = symbols.get_by_name("Ledger");
+    assert!(
+        ledger.iter().all(|entry| entry.methods.is_empty()),
+        "{ledger:?}"
+    );
+
+    let insight = std::sync::Arc::new(insight);
+    let mut graph = CallGraph::build_from_insight(&insight);
+    resolve_all_workspace_call_edges(&index, &symbols, &insight, &mut graph).expect("resolves");
+    let add_id = CallGraph::node_id_for(&insight, &add).unwrap();
+    let helper_id = CallGraph::node_id_for(&insight, &helper).unwrap();
+    assert!(graph
+        .callees_of(add_id)
+        .iter()
+        .any(|edge| edge.to == helper_id));
 }

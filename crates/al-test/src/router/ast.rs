@@ -28,7 +28,8 @@ pub(super) fn classify_procedure_ast(
         return;
     };
     let bytes = text.as_bytes();
-    let Some(procedure) = find_callable_node(tree.root_node(), bytes, &location.name) else {
+    let scope = object_scope(workspace, &location.file, &tree, &location.object);
+    let Some(procedure) = find_callable_node(scope, bytes, &location.name) else {
         *decision = RoutingDecision::LiveBc;
         push_reason(
             reasons,
@@ -487,9 +488,15 @@ pub(super) fn classify_call(
                     .object_path_of_kind(subtype, &["codeunit"])
             })
             .flatten()
-            .and_then(|path| workspace.file_index.get_cached_parse(&path))
-            .is_some_and(|(text, tree)| {
-                find_callable_node(tree.root_node(), text.as_bytes(), &method).is_some()
+            .and_then(|path| {
+                workspace
+                    .file_index
+                    .get_cached_parse(&path)
+                    .map(|parsed| (path, parsed))
+            })
+            .is_some_and(|(path, (text, tree))| {
+                let scope = object_scope(workspace, &path, &tree, subtype);
+                find_callable_node(scope, text.as_bytes(), &method).is_some()
             });
         let has_stub = !subtype.is_empty() && al_runtime::stubs::is_supported(subtype, &method);
         if !has_local_body && !has_stub {

@@ -238,7 +238,18 @@ pub fn extract_procedure_object_var_types(
     let Some(proc_node) = find_procedure_node(tree, source_bytes, procedure_name) else {
         return result;
     };
+    result.extend(procedure_object_var_types_in_node(proc_node, source));
+    result
+}
 
+/// [`extract_procedure_object_var_types`] for a declaration node the caller
+/// already holds.
+pub fn procedure_object_var_types_in_node(
+    proc_node: tree_sitter::Node<'_>,
+    source: &str,
+) -> HashMap<String, String> {
+    let source_bytes = source.as_bytes();
+    let mut result = HashMap::new();
     let mut cursor = proc_node.walk();
     for child in proc_node.children(&mut cursor) {
         match child.kind() {

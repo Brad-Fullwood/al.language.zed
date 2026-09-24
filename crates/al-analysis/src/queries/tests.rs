@@ -66,30 +66,32 @@ pub fn discover_tests(workspace: &Workspace) -> Result<Vec<TestCodeunit>, TestQu
 
     let sources =
         crate::workspace_sources::snapshot(workspace).map_err(super::WorkspaceQueryError::from)?;
-    for source_file in sources {
+    for source_file in &sources {
         let path = source_file.path.to_string_lossy().to_string();
         let source = source_file.text.as_bytes();
 
-        if !al_syntax::language_data::is_test_container_kind(&source_file.object.info.kind) {
-            continue;
-        }
+        // Every object in the file: a test codeunit after a table in the
+        // same file was never discovered.
+        for (object, root) in source_file.object_nodes() {
+            if !al_syntax::language_data::is_test_container_kind(&object.info.kind) {
+                continue;
+            }
+            let is_test_subtype = has_test_subtype(root, source);
+            let test_procs = collect_test_procedures(root, source);
+            let test_initializers =
+                collect_procedures_with_attribute(root, source, "TestInitialize");
+            let test_cleanups = collect_procedures_with_attribute(root, source, "TestCleanup");
 
-        let obj_id = source_file.object.normalized_id;
-        let root = source_file.tree.root_node();
-        let is_test_subtype = has_test_subtype(root, source);
-        let test_procs = collect_test_procedures(root, source);
-        let test_initializers = collect_procedures_with_attribute(root, source, "TestInitialize");
-        let test_cleanups = collect_procedures_with_attribute(root, source, "TestCleanup");
-
-        if is_test_subtype || !test_procs.is_empty() {
-            results.push(TestCodeunit {
-                name: source_file.object.info.name.clone(),
-                id: obj_id,
-                file: path,
-                tests: test_procs,
-                test_initializers,
-                test_cleanups,
-            });
+            if is_test_subtype || !test_procs.is_empty() {
+                results.push(TestCodeunit {
+                    name: object.info.name.clone(),
+                    id: object.normalized_id,
+                    file: path.clone(),
+                    tests: test_procs,
+                    test_initializers,
+                    test_cleanups,
+                });
+            }
         }
     }
 
@@ -211,11 +213,9 @@ pub fn files_reachable_from_tests(
     let mut seen: HashSet<NodeId> = HashSet::new();
     let mut queue = std::collections::VecDeque::new();
     for codeunit in &discovered {
-        let kind = object_identity_for_path(workspace, &codeunit.file)?
-            .map(|(kind, _)| kind)
-            .ok_or_else(|| TestQueryError::MissingObjectDeclaration {
-                path: PathBuf::from(&codeunit.file),
-            })?;
+        // Tests live only in codeunits; the file's first object may be a
+        // table the codeunit sits after.
+        let kind = ObjectKind::Codeunit;
         let object = codeunit.name.to_lowercase();
         for procedure in &codeunit.tests {
             let key = NodeKey::Procedure(kind, object.clone(), procedure.name.to_lowercase());
@@ -356,11 +356,7 @@ fn affected_via_call_graph(
 
     let mut affected = Vec::new();
     for cu in discover_tests(workspace)? {
-        let kind = object_identity_for_path(workspace, &cu.file)?
-            .map(|(kind, _)| kind)
-            .ok_or_else(|| TestQueryError::MissingObjectDeclaration {
-                path: PathBuf::from(&cu.file),
-            })?;
+        let kind = ObjectKind::Codeunit;
         let obj_lower = cu.name.to_lowercase();
         for proc in &cu.tests {
             let key = NodeKey::Procedure(kind, obj_lower.clone(), proc.name.to_lowercase());

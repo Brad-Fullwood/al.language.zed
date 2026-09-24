@@ -10,21 +10,40 @@ fn live_reason_names_the_disqualifying_reason_not_a_supported_call() {
         file: None,
         line: None,
     };
-    let classifications = vec![ClassifyResult {
-        codeunit_id: 50110,
-        codeunit_name: "Loyalty Test".to_string(),
-        method_name: "SetTier".to_string(),
-        decision: RoutingDecision::LiveBc,
-        reasons: vec![
-            reason("calls supported Record.Get"),
-            reason("uses record table 'Customer' without a workspace table definition"),
-        ],
-    }];
+    let classifications = vec![
+        ClassifyResult {
+            codeunit_id: 50110,
+            codeunit_name: "Loyalty Test".to_string(),
+            method_name: "SetTier".to_string(),
+            decision: RoutingDecision::LiveBc,
+            reasons: vec![
+                reason("calls supported Record.Get"),
+                reason("uses record table 'Customer' without a workspace table definition"),
+            ],
+        },
+        ClassifyResult {
+            codeunit_id: 50152,
+            codeunit_name: "Point Tests".to_string(),
+            method_name: "Balance".to_string(),
+            decision: RoutingDecision::LiveBc,
+            reasons: vec![reason("calls unsupported Record.CalcSums")],
+        },
+    ];
+    let only = |ids: &[i32]| {
+        ids.iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+    };
     assert_eq!(
-        super::live_reason(&classifications).as_deref(),
+        super::live_reason(&classifications, &only(&[50110])).as_deref(),
         Some("uses record table 'Customer' without a workspace table definition")
     );
-    assert_eq!(super::live_reason(&[]), None);
+    // The codeunit being run, not the first live one in the workspace.
+    assert_eq!(
+        super::live_reason(&classifications, &only(&[50152])).as_deref(),
+        Some("calls unsupported Record.CalcSums")
+    );
+    assert_eq!(super::live_reason(&[], &only(&[1])), None);
 }
 
 fn empty_ws() -> Workspace {

@@ -129,10 +129,18 @@ fn resolve_mutation_file_allowlist(
 /// The first reason a test was sent to live Business Central, skipping the
 /// "calls supported ..." notes the router records beside the reason that
 /// disqualified it.
-fn live_reason(classifications: &[al_test::router::ClassifyResult]) -> Option<String> {
-    let live = classifications
-        .iter()
-        .find(|c| c.decision == al_test::router::RoutingDecision::LiveBc)?;
+/// Why the codeunits sent to live BC went there. Only those codeunits: the
+/// first live classification of the whole workspace named another
+/// codeunit's reason (`test-run` of a codeunit using a workspace table said
+/// it needed BC for the Customer table).
+fn live_reason(
+    classifications: &[al_test::router::ClassifyResult],
+    live_codeunits: &std::collections::BTreeSet<i32>,
+) -> Option<String> {
+    let live = classifications.iter().find(|c| {
+        c.decision == al_test::router::RoutingDecision::LiveBc
+            && live_codeunits.contains(&c.codeunit_id)
+    })?;
     live.reasons
         .iter()
         .find(|reason| !reason.message.contains("calls supported"))
@@ -846,11 +854,11 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
                 .await
         }));
     }
-    let live_codeunits = live_tests
+    let live_codeunit_ids = live_tests
         .iter()
         .map(|test| test.codeunit_id)
-        .collect::<std::collections::BTreeSet<_>>()
-        .len();
+        .collect::<std::collections::BTreeSet<_>>();
+    let live_codeunits = live_codeunit_ids.len();
     if !live_tests.is_empty() {
         // Routing guarantees server_config is Some when live tests exist.
         let Some(cfg) = server_config else {
@@ -902,7 +910,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
     if !backend_errors.is_empty() {
         // "Missing credentials" alone left the caller to guess why tests it
         // expected to run locally needed a server at all.
-        let live_note = live_reason(&classifications)
+        let live_note = live_reason(&classifications, &live_codeunit_ids)
             .map(|reason| {
                 format!(
                     ". The tests in {live_codeunits} codeunit(s) were routed to live Business \

@@ -209,19 +209,10 @@ pub fn classify_codeunits(
     let mut out = Vec::new();
     for cu in codeunits {
         let codeunit_start = out.len();
-        let path = std::path::Path::new(&cu.file);
-        let info = workspace.file_index.object_info.get(path).ok_or_else(|| {
-            RoutingError::MissingObjectInfo {
-                path: path.to_path_buf(),
-            }
-        })?;
-        let kind =
-            info.kind
-                .parse::<ObjectKind>()
-                .map_err(|_| RoutingError::InvalidObjectKind {
-                    path: path.to_path_buf(),
-                    kind: info.kind.clone(),
-                })?;
+        // Tests live only in codeunits. The file's first object may be a
+        // table the test codeunit follows, which made every test "absent
+        // from the call graph".
+        let kind = ObjectKind::Codeunit;
         for proc in &cu.tests {
             let (handler_support, handler_reasons) = local_handler_support(workspace, cu, proc);
             let key = NodeKey::Procedure(
@@ -359,17 +350,65 @@ fn conservative_result(
     }
 }
 
+/// The declaration of `object` in the file at `path`, or the root when the
+/// file does not declare it. A file can hold several objects, and a search
+/// by procedure name over the whole tree found the first object's.
+pub(super) fn object_scope<'t>(
+    workspace: &Workspace,
+    path: &std::path::Path,
+    tree: &'t tree_sitter::Tree,
+    object: &str,
+) -> tree_sitter::Node<'t> {
+    let root = tree.root_node();
+    let Some(range) = workspace
+        .file_index
+        .object_infos
+        .get(path)
+        .and_then(|infos| {
+            infos
+                .iter()
+                .find(|info| info.name.eq_ignore_ascii_case(object))
+                .map(|info| info.range)
+        })
+    else {
+        return root;
+    };
+    let Some(mut node) = root.descendant_for_byte_range(range.start_byte, range.end_byte) else {
+        return root;
+    };
+    while node.kind() != "object_declaration" {
+        match node.parent() {
+            Some(parent) => node = parent,
+            None => return root,
+        }
+    }
+    node
+}
+
 fn build_procedure_catalog(workspace: &Workspace) -> ProcedureCatalog {
     let mut catalog = HashMap::new();
-    for entry in workspace.file_index.object_info.iter() {
-        let path = entry.key().clone();
-        let object = entry.value().name.to_ascii_lowercase();
+    let objects: Vec<(PathBuf, String)> = workspace
+        .file_index
+        .object_infos
+        .iter()
+        .flat_map(|entry| {
+            let path = entry.key().clone();
+            entry
+                .value()
+                .iter()
+                .map(|info| (path.clone(), info.name.clone()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    for (path, object_name) in objects {
+        let object = object_name.to_ascii_lowercase();
         let Some((text, tree)) = workspace.file_index.get_cached_parse(&path) else {
             continue;
         };
         let bytes = text.as_bytes();
-        let has_object_globals = has_object_global_declarations(tree.root_node());
-        let mut stack = vec![tree.root_node()];
+        let scope = object_scope(workspace, &path, &tree, &object_name);
+        let has_object_globals = has_object_global_declarations(scope);
+        let mut stack = vec![scope];
         while let Some(node) = stack.pop() {
             if matches!(
                 node.kind(),
@@ -384,7 +423,7 @@ fn build_procedure_catalog(workspace: &Workspace) -> ProcedureCatalog {
                         (object.clone(), clean.to_ascii_lowercase()),
                         ProcedureLocation {
                             file: path.clone(),
-                            object: entry.value().name.clone(),
+                            object: object_name.clone(),
                             name: clean,
                             has_object_globals,
                         },
@@ -514,7 +553,8 @@ fn local_handler_support(
     };
     let source = text.as_bytes();
     for handler_name in &procedure.handler_functions {
-        let Some(handler) = find_callable_node(tree.root_node(), source, handler_name) else {
+        let scope = object_scope(workspace, path, &tree, &codeunit.name);
+        let Some(handler) = find_callable_node(scope, source, handler_name) else {
             reasons.push(RoutingReason {
                 message: format!(
                     "configured handler procedure '{handler_name}' is missing from the test codeunit"

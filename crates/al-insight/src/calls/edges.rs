@@ -24,14 +24,48 @@ pub fn populate_call_edges_for_procedure(
     insight: &InsightGraph,
     call_graph: &mut CallGraph,
 ) {
-    let call_sites = extract_call_sites(tree, source, procedure_name);
-    let var_types = extract_procedure_var_types(tree, source, procedure_name);
+    populate_call_edges_in_object(
+        tree.root_node(),
+        source,
+        object_kind,
+        object_name,
+        procedure_name,
+        symbols,
+        insight,
+        call_graph,
+    );
+}
+
+/// [`populate_call_edges_for_procedure`] for the procedure declared inside
+/// `object_node`. In a file holding several objects, two of them can declare
+/// the same procedure name (an interface and its implementation); a
+/// whole-tree lookup found the first.
+#[allow(clippy::too_many_arguments)]
+pub fn populate_call_edges_in_object(
+    object_node: tree_sitter::Node<'_>,
+    source: &str,
+    object_kind: ObjectKind,
+    object_name: &str,
+    procedure_name: &str,
+    symbols: &SymbolIndex,
+    insight: &InsightGraph,
+    call_graph: &mut CallGraph,
+) {
+    let Some(proc_node) = find_procedure_in_node(
+        object_node,
+        source.as_bytes(),
+        &procedure_name.to_lowercase(),
+    ) else {
+        return;
+    };
+    let call_sites = call_sites_in_node(proc_node, source);
+    let var_types = procedure_var_types_in_node(proc_node, source);
     // Collect object-typed variable declarations (codeunit / page /
     // report / xmlport / query / interface), not just Record. Used to resolve
     // `MyVar.Method()` where `MyVar` is e.g. `Codeunit "Sales-Post"` — the
     // prior code looked up `MyVar` itself in the symbol index, only matching
     // when the variable name happened to equal a real object name.
-    let object_var_types = extract_procedure_object_var_types(tree, source, procedure_name);
+    let object_var_types = procedure_object_var_types_in_node(proc_node, source);
 
     // A callable workspace member can be represented by three graph node
     // variants. Event publishers and subscribers used to be registered as
@@ -297,13 +331,13 @@ pub fn populate_workspace_call_edges(
         usize,
     )> = Vec::new();
 
-    for entry in file_index.object_info.iter() {
-        let path = entry.key().clone();
-        let info = entry.value().clone();
-
+    // Every object of every file, not only a file's first one: in a file
+    // holding a table and then a codeunit, the codeunit's procedures were
+    // never resolved (and were looked up under the table).
+    for (path, info) in indexed_objects(file_index) {
         let (source, tree) = indexed_parse(file_index, &path)?;
-
-        let score = fanout_score(&tree);
+        let mut score = 0;
+        count_call_suffixes(object_node(&tree, &info), &mut score);
         file_scores.push((path, source, tree, info, score));
     }
 
@@ -321,8 +355,9 @@ pub fn populate_workspace_call_edges(
         }
 
         let ok = indexed_object_kind(path, info)?;
+        let node = object_node(tree, info);
 
-        let procedures = collect_procedure_names_from_tree(tree.root_node(), source.as_bytes());
+        let procedures = collect_procedure_names_from_tree(node, source.as_bytes());
         for proc_name in procedures {
             let proc_id =
                 callable_node_id(insight, ok, &info.name, &proc_name).ok_or_else(|| {
@@ -336,8 +371,8 @@ pub fn populate_workspace_call_edges(
             if call_graph.resolution_state(proc_id) == EdgeResolutionState::Unresolved {
                 call_graph.set_resolution_state(proc_id, EdgeResolutionState::Resolving);
 
-                populate_call_edges_for_procedure(
-                    tree, source, ok, &info.name, &proc_name, symbols, insight, call_graph,
+                populate_call_edges_in_object(
+                    node, source, ok, &info.name, &proc_name, symbols, insight, call_graph,
                 );
 
                 call_graph.set_resolution_state(proc_id, EdgeResolutionState::Resolved);
@@ -371,14 +406,12 @@ pub fn resolve_all_workspace_call_edges(
 ) -> Result<usize, SourceGraphError> {
     let mut resolved = 0;
 
-    for entry in file_index.object_info.iter() {
-        let path = entry.key().clone();
-        let info = entry.value().clone();
-
+    for (path, info) in indexed_objects(file_index) {
         let (source, tree) = indexed_parse(file_index, &path)?;
         let ok = indexed_object_kind(&path, &info)?;
+        let node = object_node(&tree, &info);
 
-        let procedures = collect_procedure_names_from_tree(tree.root_node(), source.as_bytes());
+        let procedures = collect_procedure_names_from_tree(node, source.as_bytes());
         for proc_name in procedures {
             let proc_id =
                 callable_node_id(insight, ok, &info.name, &proc_name).ok_or_else(|| {
@@ -390,8 +423,8 @@ pub fn resolve_all_workspace_call_edges(
                     }
                 })?;
             if call_graph.resolution_state(proc_id) != EdgeResolutionState::Resolved {
-                populate_call_edges_for_procedure(
-                    &tree, &source, ok, &info.name, &proc_name, symbols, insight, call_graph,
+                populate_call_edges_in_object(
+                    node, &source, ok, &info.name, &proc_name, symbols, insight, call_graph,
                 );
                 call_graph.set_resolution_state(proc_id, EdgeResolutionState::Resolved);
                 resolved += 1;
