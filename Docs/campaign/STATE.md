@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-24 06:30 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-24 08:00 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -20,6 +20,11 @@ Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, 
 
 Queued:
 
+- CI on PR 30: ubuntu green. macOS tests and the Windows extension-integration step still fail; a triage agent is reading the logs.
+- `obsolete` lists every pending obsoletion in the loaded packages (1553 and 220 KB on Base Application 26). Add a mode that reports the obsolete package symbols the workspace code uses; `obsolete_usages` exists but is only reachable as a lint rule.
+- `symbols` prints JSON without `--json`.
+- The LSP server does not watch the disk either: a file changed outside the editor (git checkout, a generator) stays stale until reopened. Register `workspace/didChangeWatchedFiles` and route it through `al_workspace::refresh_workspace_files`, skipping open documents.
+- Four copies of `is_workspace_package` (al-symbols, al-lsp `daemon/scope.rs`, al-explorer `app/details.rs`, al-analysis `source.rs`).
 - Persisted symbol and source index on disk (cold start 54 s and 2.9 GB RSS), keyed by app id, version and content hash.
 - Remaining file splits from the slop-splits-2 list: `session.rs`, `xliff.rs`, `calls.rs`, `router.rs`.
 - Rebuild `target/release` before measuring for articles (it predates `publish` and `free-ids`).
@@ -84,6 +89,7 @@ round on the areas with the most findings.
 
 ## Done
 
+- 2026-09-24 dogfood pass: a project scaffolded with `al-explorer new` against Base Application 26 symbols from the public NuGet feed (`Docs/campaign/LOG.md`). Fixed: `download-symbols` never returned after a successful download (the daemon waited on its own project read guard), the client failed a request on EINTR, the daemon never saw files written after it started (now an incremental scan per request), native compile rejected fields a table extension adds (ALN2404), go-to-definition on such a field opened the package outline, `free-ids` gave dependency tables field numbers outside `idRanges` and listed workspace extensions twice, `--fields` printed `?` columns in text mode, `al-explorer new` failed outside an AL project and wrote the nil GUID as app id, the daemon startup error lost the file it named. CI: ShellCheck SC2015, Windows data directory, macOS `/var` symlink refusal.
 - 2026-09-24 session: merged `fix-formatter-idempotence` (the persisted seed passes), `fix-ghost-diagnostics` and `slop-splits-2`. Diagnostics publishes now hold the generation read lock from the currency check through the send, so a didClose cannot slip between them (the harness test passes 32 of 32 at 12-way load). One Windows browser opener in al-types (`rundll32 url.dll,FileProtocolHandler`, http(s) only) replaces the two `cmd /c start` copies that split OAuth and debugger URLs at `&`. `pack-native --validate` runs the project's analyzers through the trust gate, `--analyzers` overrides. The harness judges a binary stale only against the crates it links. Review A: `extract_table_relation_table` removed, `PermissionAuditReport` doc restated. Gates: fmt and clippy clean, 95 suites, 5011 passed, 1 failed (`a_failed_file_write_leaves_the_whole_workspace_unchanged`, which needs a non-root user: the cloud container runs as root, which writes through a 0555 directory).
 - Merged `campaign/fix-r3-security`: 10 of 10. The MCP advisory names keys only. The Zed extension ignores `binary.path`, `binary.arguments` and the debug adapter path from any settings (WASM sandbox cannot read the trust store), `PATH` is the way to run a specific build. `al-explorer trust` confirms on a terminal. Unix socket ownership and peer uid checked before connect, HMAC handshake with a per-user key. `snapshot` and `profiling` gated. Revoke takes effect per request. Open: Windows named pipe owner check (documented). Gates: 94 suites, 4995 passed, 1 failed (formatter seed).
 - Merged `campaign/fix-r2-review-b`: 19 of 19. The daemon dispatch match is generated from a capability registry (`dispatch_table!`), so every method declares whether it reads a path or reaches a credential, and tests drive those declarations end to end. `rename` contained, `tests.snapshot_capture` gated, `.alpackages` symlink root only with trust, extension path comparison by component. Full gates: 94 suites, 4966 passed, 2 failed (formatter seed in flight, ghost diagnostics race found).
