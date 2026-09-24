@@ -80,6 +80,13 @@ pub fn definition(
                     }
                 }
             }
+            // The receiver is a known object and the member is not one of
+            // its own. The name-only stages below would jump to any
+            // same-named procedure in the workspace: `Cust.Refresh()` on a
+            // record landed on a page extension's `Refresh`.
+            if receiver.type_subtype.is_some() && is_object_type(&receiver.type_name) {
+                return Ok(None);
+            }
         }
     }
 
@@ -228,6 +235,25 @@ pub fn definition(
     }
 
     Ok(None)
+}
+
+/// Whether `type_name` (`Record`, `Codeunit`, ...) is a type whose subtype
+/// names an AL object with its own members.
+fn is_object_type(type_name: &str) -> bool {
+    [
+        "record",
+        "codeunit",
+        "page",
+        "report",
+        "query",
+        "xmlport",
+        "enum",
+        "interface",
+        "testpage",
+        "testrequestpage",
+    ]
+    .iter()
+    .any(|object_type| type_name.eq_ignore_ascii_case(object_type))
 }
 
 /// The `table` or `tableextension` declaration whose member body holds `node`,
@@ -643,6 +669,55 @@ mod tests {
             "{locs:?}"
         );
         assert_eq!(locs[0].range.start.line, 4, "{locs:?}");
+    }
+
+    /// A record's member that the table does not have is not any same-named
+    /// procedure elsewhere: `Cust.Refresh()` used to land on a page
+    /// extension's `Refresh`.
+    #[test]
+    fn an_unknown_member_of_a_resolved_record_does_not_jump_by_name() {
+        let ws = Workspace::new();
+        let page_extension = std::path::PathBuf::from("/ws/CustCard.PageExt.al");
+        ws.file_index.add_file(
+            page_extension.clone(),
+            r#"pageextension 50102 "Cust Card Ext" extends Customer
+{
+    procedure Refresh()
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+        let uri = Url::parse("file:///ws/Uses.Codeunit.al").unwrap();
+        open_doc(
+            &ws,
+            &uri,
+            r#"codeunit 50101 Uses
+{
+    procedure Run(var Cust: Record Customer)
+    begin
+        Cust.Refresh();
+    end;
+}
+"#,
+        );
+
+        // Line 4 is `        Cust.Refresh();`.
+        let locs = definition(
+            &ws,
+            &uri,
+            Position {
+                line: 4,
+                character: 14,
+            },
+        )
+        .unwrap_or_default();
+        let page_uri = Url::from_file_path(&page_extension).unwrap();
+        assert!(
+            locs.iter().all(|location| location.uri != page_uri),
+            "{locs:?}"
+        );
     }
 
     /// A bare field name inside the table's own procedure is an implicit `Rec`

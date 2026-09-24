@@ -274,7 +274,9 @@ pub(crate) fn resolve_member(
                 }
             }
 
-            if let Some(member) = workspace_extension_member(workspace, subtype, &target_name) {
+            if let Some(member) =
+                workspace_extension_member(workspace, &receiver.type_name, subtype, &target_name)
+            {
                 tracing::debug!(
                     member = %target_name,
                     result = "workspace_extension_member",
