@@ -1450,6 +1450,9 @@ pub fn refresh_workspace_files(
     if delta.is_empty() {
         return Ok(delta);
     }
+    if delta.topology_changed {
+        forget_vanished_workspace_objects(workspace);
+    }
     // A table extension's edit changes the composed table under another
     // object's name, so the cache is dropped whole; it refills per object.
     workspace.symbols.invalidate_all_composed();
@@ -1478,9 +1481,25 @@ pub fn apply_disk_changes(
             None => workspace.file_index.remove_file(&path),
         }
     }
+    forget_vanished_workspace_objects(workspace);
     workspace.symbols.invalidate_all_composed();
     workspace.invalidate_insight_graph();
     workspace.mark_generation_changed();
+}
+
+/// Drop the symbol entries of workspace objects no file declares any more.
+///
+/// They are re-registered when the call graph is next built; until then
+/// `search` kept returning an object whose file had been deleted or renamed.
+fn forget_vanished_workspace_objects(workspace: &Workspace) {
+    workspace
+        .symbols
+        .retain_package_entries("workspace", |entry| {
+            workspace
+                .file_index
+                .find_by_object_name(&entry.name)
+                .is_some()
+        });
 }
 
 /// Invalidate the composed symbol cache when a file is closed.
@@ -1507,6 +1526,28 @@ pub fn on_document_close(workspace: &Workspace, uri: &url::Url) {
 #[cfg(test)]
 mod workspace_lifecycle_tests {
     use super::*;
+
+    /// A deleted file's object stayed in the symbol index, and so in
+    /// `search`, until the call graph was next built.
+    #[test]
+    fn a_deleted_file_s_object_leaves_the_symbol_index() {
+        let workspace = Workspace::new();
+        let path = std::path::PathBuf::from("/ws/Probe.Codeunit.al");
+        workspace
+            .file_index
+            .add_file(path.clone(), "codeunit 50106 Probe\n{\n}\n".to_string());
+        workspace.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Codeunit,
+            id: 50106,
+            name: "Probe".to_string(),
+            package: "workspace".to_string(),
+            ..Default::default()
+        }]);
+
+        apply_disk_changes(&workspace, vec![(path, None)]);
+
+        assert!(workspace.symbols.find_by_name("Probe").is_none());
+    }
     use url::Url;
 
     fn make_workspace() -> Workspace {
