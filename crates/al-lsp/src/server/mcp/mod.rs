@@ -1314,6 +1314,12 @@ fn apply_agent_defaults(method: &str, mut params: serde_json::Value) -> serde_js
     if method == "search" && !object.contains_key("summary") {
         object.insert("summary".into(), serde_json::json!(true));
     }
+    // One line per member: Base Application's Customer was 113 KB with
+    // members as objects, 110 KB of it field properties and parameter
+    // objects.
+    if matches!(method, "object" | "byId") && !object.contains_key("signatures") {
+        object.insert("signatures".into(), serde_json::json!(true));
+    }
     params
 }
 

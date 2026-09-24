@@ -542,6 +542,10 @@ pub(super) fn dispatch_object(
     let Some(name) = params.get("name").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
+    let signatures = match optional_bool_param(params, "signatures", false) {
+        Ok(signatures) => signatures,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
     // `kind` is optional: editor tasks only have the
     // symbol under the cursor. When omitted, resolve by name — unambiguous
     // single-kind matches proceed; multi-kind matches get an actionable
@@ -602,6 +606,9 @@ pub(super) fn dispatch_object(
             &format!("object lookup produced invalid metadata: {error}"),
         );
     }
+    if signatures {
+        matches.iter_mut().for_each(member_signatures);
+    }
     if matches.is_empty() {
         Response {
             id,
@@ -618,6 +625,129 @@ pub(super) fn dispatch_object(
             result: Some(serde_json::json!(matches)),
             error: None,
             ..Default::default()
+        }
+    }
+}
+
+/// Render an object's members as one line each, for `signatures: true`.
+///
+/// Base Application's Customer table was 113 KB as JSON, 110 KB of it
+/// fields with every property (tooltips included) and methods with their
+/// parameters as objects. An agent asking what Customer has needs the
+/// names and types: `1 "No.": Code[20]`,
+/// `AssistEdit(OldCust: Record "Customer"): Boolean`.
+fn member_signatures(object: &mut serde_json::Value) {
+    fn text<'a>(value: &'a serde_json::Value, key: &str) -> &'a str {
+        value.get(key).and_then(|v| v.as_str()).unwrap_or("")
+    }
+    fn quoted(name: &str) -> String {
+        if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            name.to_string()
+        } else {
+            format!("\"{name}\"")
+        }
+    }
+    fn property<'a>(member: &'a serde_json::Value, name: &str) -> Option<&'a str> {
+        member
+            .get("properties")?
+            .as_array()?
+            .iter()
+            .find(|p| text(p, "name").eq_ignore_ascii_case(name))
+            .map(|p| text(p, "value"))
+    }
+    let Some(object) = object.as_object_mut() else {
+        return;
+    };
+    if let Some(serde_json::Value::Array(fields)) = object.get_mut("fields") {
+        for field in fields.iter_mut() {
+            let mut line = format!(
+                "{} {}: {}",
+                field.get("id").map(|id| id.to_string()).unwrap_or_default(),
+                quoted(text(field, "name")),
+                text(field, "type_name")
+            );
+            if let Some(class) =
+                property(field, "FieldClass").filter(|c| !c.eq_ignore_ascii_case("Normal"))
+            {
+                line.push_str(&format!(" ({class})"));
+            }
+            if let Some(state) =
+                property(field, "ObsoleteState").filter(|s| !s.eq_ignore_ascii_case("No"))
+            {
+                line.push_str(&format!(" (obsolete: {state})"));
+            }
+            *field = serde_json::Value::String(line);
+        }
+    }
+    if let Some(serde_json::Value::Array(methods)) = object.get_mut("methods") {
+        for method in methods.iter_mut() {
+            let mut line = String::new();
+            for attribute in method
+                .get("attributes")
+                .and_then(|a| a.as_array())
+                .into_iter()
+                .flatten()
+            {
+                // Arguments kept: an Obsolete attribute's reason names the
+                // replacement.
+                let arguments: Vec<String> = attribute
+                    .get("arguments")
+                    .and_then(|a| a.as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|a| a.as_str())
+                    .map(|a| format!("'{a}'"))
+                    .collect();
+                if arguments.is_empty() {
+                    line.push_str(&format!("[{}] ", text(attribute, "name")));
+                } else {
+                    line.push_str(&format!(
+                        "[{}({})] ",
+                        text(attribute, "name"),
+                        arguments.join(", ")
+                    ));
+                }
+            }
+            if method.get("is_local").and_then(|v| v.as_bool()) == Some(true) {
+                line.push_str("local ");
+            }
+            let parameters: Vec<String> = method
+                .get("parameters")
+                .and_then(|p| p.as_array())
+                .into_iter()
+                .flatten()
+                .map(|parameter| {
+                    let var = if parameter.get("is_var").and_then(|v| v.as_bool()) == Some(true) {
+                        "var "
+                    } else {
+                        ""
+                    };
+                    format!(
+                        "{var}{}: {}",
+                        text(parameter, "name"),
+                        text(parameter, "type_name")
+                    )
+                })
+                .collect();
+            line.push_str(&format!(
+                "{}({})",
+                text(method, "name"),
+                parameters.join("; ")
+            ));
+            if let Some(ret) = method.get("return_type").and_then(|v| v.as_str()) {
+                line.push_str(&format!(": {ret}"));
+            }
+            *method = serde_json::Value::String(line);
+        }
+    }
+    if let Some(serde_json::Value::Array(variables)) = object.get_mut("variables") {
+        for variable in variables.iter_mut() {
+            let line = format!(
+                "{}: {}",
+                text(variable, "name"),
+                text(variable, "type_name")
+            );
+            *variable = serde_json::Value::String(line);
         }
     }
 }
@@ -703,6 +833,10 @@ pub(super) fn dispatch_by_id(
     let Some(obj_id) = super::extract_i32(params, "id") else {
         return invalid_params(id);
     };
+    let signatures = match optional_bool_param(params, "signatures", false) {
+        Ok(signatures) => signatures,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
     let kind = match super::parse_object_kind(id, kind_str) {
         Ok(k) => k,
         Err(e) => return e,
@@ -755,6 +889,9 @@ pub(super) fn dispatch_by_id(
             error_codes::INTERNAL_ERROR,
             &format!("object ID lookup produced invalid metadata: {error}"),
         );
+    }
+    if signatures {
+        value.iter_mut().for_each(member_signatures);
     }
     if value.is_empty() {
         Response {
@@ -1186,6 +1323,47 @@ pub(super) fn dispatch_deps(workspace: &Workspace, id: u64) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn member_signatures_render_one_line_per_member() {
+        let mut object = serde_json::json!({
+            "kind": "Table",
+            "name": "Customer",
+            "fields": [
+                {"id": 1, "name": "No.", "type_name": "Code[20]",
+                 "properties": [{"name": "ToolTip", "value": "long text"}]},
+                {"id": 59, "name": "Balance", "type_name": "Decimal",
+                 "properties": [{"name": "FieldClass", "value": "FlowField"}]},
+                {"id": 7, "name": "Old", "type_name": "Text[30]",
+                 "properties": [{"name": "ObsoleteState", "value": "Removed"}]}
+            ],
+            "methods": [
+                {"name": "LookupCustomer",
+                 "parameters": [{"name": "Customer", "type_name": "Record \"Customer\"", "is_var": true}],
+                 "return_type": "Boolean",
+                 "attributes": [{"name": "Obsolete", "arguments": ["Use SelectCustomer instead.", "24.0"]}],
+                 "is_local": false}
+            ],
+            "variables": [{"name": "SalesSetup", "type_name": "Record \"Sales & Receivables Setup\""}]
+        });
+        member_signatures(&mut object);
+        assert_eq!(
+            object["fields"],
+            serde_json::json!([
+                "1 \"No.\": Code[20]",
+                "59 Balance: Decimal (FlowField)",
+                "7 Old: Text[30] (obsolete: Removed)"
+            ])
+        );
+        assert_eq!(
+            object["methods"][0],
+            "[Obsolete('Use SelectCustomer instead.', '24.0')] LookupCustomer(var Customer: Record \"Customer\"): Boolean"
+        );
+        assert_eq!(
+            object["variables"][0],
+            "SalesSetup: Record \"Sales & Receivables Setup\""
+        );
+    }
 
     /// JSON-RPC 2.0 §5: every response carries exactly one of `result` or
     /// `error`. `Response { result: None, error: None }` serialises to

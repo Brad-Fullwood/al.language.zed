@@ -107,6 +107,11 @@ Object-with-array methods, with the field projected: `impact` (`impacted`), `tab
 refused, because rows leave optional keys out when they are empty (a workspace `impact` row has no
 `package`); the result names it in `absentFields` instead.
 
+`object` and `byId` also take `signatures: true`, which renders each field, procedure and global
+variable as one line (`1 "No.": Code[20]`, `AssistEdit(OldCust: Record "Customer"): Boolean`)
+instead of an object with every property: Base Application's Customer table goes from 113 KB to
+24 KB. MCP callers get it by default.
+
 MCP callers get `limit: 50` when they do not pass one, because a tool result goes straight into a
 context window. An explicit `limit` always wins, including `limit: 0` for a count.
 
