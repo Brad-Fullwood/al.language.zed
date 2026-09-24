@@ -367,6 +367,42 @@ fn isolated_test_project() -> tempfile::TempDir {
     project
 }
 
+/// The daemon read the workspace once at startup, so a file written or edited
+/// after its first request was invisible until it exited: an agent that
+/// created an object and then looked it up was told it did not exist.
+#[test]
+fn a_running_daemon_sees_files_written_after_it_started() {
+    let project = isolated_test_project();
+    let search = |name: &str| {
+        let output = run_al_in(project.path(), &["--json", "search", name]);
+        assert!(output.status.success(), "search {name} failed: {output:?}");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    // The first request starts the daemon and indexes the fixture.
+    assert!(!search("Written Later").contains("Written Later"));
+
+    let path = project.path().join("src").join("WrittenLater.Codeunit.al");
+    std::fs::write(&path, "codeunit 50190 \"Written Later\"\n{\n}\n").expect("write");
+    let found = search("Written Later");
+
+    std::fs::write(&path, "codeunit 50190 \"Renamed Later\"\n{\n}\n").expect("rewrite");
+    let renamed = search("Later");
+
+    std::fs::remove_file(&path).expect("delete");
+    let deleted = search("Later");
+    let _ = run_al_in(project.path(), &["daemon-shutdown"]);
+
+    assert!(found.contains("Written Later"), "a new file: {found}");
+    assert!(
+        renamed.contains("Renamed Later") && !renamed.contains("Written Later"),
+        "an edited file: {renamed}"
+    );
+    assert!(
+        !deleted.contains("Renamed Later"),
+        "a deleted file: {deleted}"
+    );
+}
+
 /// `test-run <id>` without `--name` left the daemon filling `codeunitName`
 /// with the ID as a string, and the interpreter then used "50145" as the
 /// current object, so an unqualified call to a sibling procedure failed with

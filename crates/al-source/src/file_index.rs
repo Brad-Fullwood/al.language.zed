@@ -92,6 +92,9 @@ pub struct ScanDelta {
     pub changed: Vec<PathBuf>,
     /// Files that were removed from disk and dropped from the index.
     pub removed: Vec<PathBuf>,
+    /// Whether an object was added, removed or renamed, or a file's procedure
+    /// set changed. A body-only edit leaves the object and call topology alone.
+    pub topology_changed: bool,
 }
 
 impl ScanDelta {
@@ -492,7 +495,10 @@ impl FileIndex {
         // Discovery and every changed-file read completed successfully. Only
         // now publish the new generation and evict deleted paths.
         for (path, content, metadata) in staged {
+            let before = self.topology_of(&path);
             self.add_file_with_meta(path.clone(), content, Some(metadata));
+            let after = self.topology_of(&path);
+            delta.topology_changed |= before != after;
             delta.changed.push(path);
         }
 
@@ -500,10 +506,10 @@ impl FileIndex {
         for path in indexed_paths {
             if !on_disk.contains(&path) {
                 self.remove_file(&path);
+                delta.topology_changed = true;
                 delta.removed.push(path);
             }
         }
-
         Ok(delta)
     }
 
@@ -557,6 +563,32 @@ impl FileIndex {
     /// the index. Used to detect topology changes between two consecutive
     /// indexings of the same file: if the post-edit set equals the pre-edit
     /// set, only the call-edge cache needs to be invalidated.
+    /// The objects `path` declares, as `(kind, id, name)` in lowercase, and
+    /// its procedure names: what a change must alter before cross-file graphs
+    /// built from this file are out of date.
+    #[allow(clippy::type_complexity)]
+    fn topology_of(&self, path: &Path) -> (Vec<(String, Option<i64>, String)>, Vec<String>) {
+        let objects = self
+            .object_infos
+            .get(path)
+            .map(|infos| {
+                infos
+                    .iter()
+                    .map(|info| {
+                        (
+                            info.kind.to_ascii_lowercase(),
+                            info.id,
+                            info.name.to_lowercase(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut procedures = self.procedures_snapshot(path);
+        procedures.sort();
+        (objects, procedures)
+    }
+
     pub fn procedures_snapshot(&self, path: &Path) -> Vec<String> {
         self.path_to_procedures
             .get(path)
@@ -1854,6 +1886,37 @@ codeunit 50101 "Second Codeunit"
             "Old object name should be removed after file is re-indexed"
         );
         assert_eq!(index.len(), 3);
+    }
+
+    #[test]
+    fn incremental_scan_tells_a_body_edit_from_a_topology_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Mgt.Codeunit.al");
+        let body = |statement: &str, procedure: &str| {
+            format!(
+                "codeunit 50100 Mgt\n{{\n    procedure {procedure}()\n    begin\n        {statement}\n    end;\n}}\n"
+            )
+        };
+        fs::write(&path, body("Message('a');", "Run")).unwrap();
+        let index = FileIndex::new();
+        index.incremental_scan(dir.path()).unwrap();
+
+        fs::write(&path, body("Message('a longer body');", "Run")).unwrap();
+        let delta = index.incremental_scan(dir.path()).unwrap();
+        assert_eq!(delta.changed, vec![path.clone()]);
+        assert!(
+            !delta.topology_changed,
+            "a body-only edit keeps the topology"
+        );
+
+        fs::write(&path, body("Message('a longer body');", "RunAll")).unwrap();
+        let delta = index.incremental_scan(dir.path()).unwrap();
+        assert!(delta.topology_changed, "a renamed procedure changes it");
+
+        fs::remove_file(&path).unwrap();
+        let delta = index.incremental_scan(dir.path()).unwrap();
+        assert_eq!(delta.removed, vec![path]);
+        assert!(delta.topology_changed, "a removed file changes it");
     }
 
     #[test]

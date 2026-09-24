@@ -1383,6 +1383,35 @@ pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
     workspace.mark_generation_changed();
 }
 
+/// Bring the file index in line with the `.al` files under `root` on disk:
+/// re-read the ones whose size or modification time changed, add new ones,
+/// drop deleted ones, and invalidate what was derived from them.
+///
+/// For callers that hold no editor overlays. The daemon behind al-explorer and
+/// MCP read the workspace once at startup and answered from that snapshot
+/// until it exited, so a file an agent had just written or edited was
+/// invisible to every query. An editor's open documents are newer than the
+/// disk, so the LSP server must not use this for them.
+pub fn refresh_workspace_files(
+    workspace: &Workspace,
+    root: &std::path::Path,
+) -> Result<al_source::file_index::ScanDelta, al_source::file_index::ScanError> {
+    let delta = workspace.file_index.incremental_scan(root)?;
+    if delta.is_empty() {
+        return Ok(delta);
+    }
+    // A table extension's edit changes the composed table under another
+    // object's name, so the cache is dropped whole; it refills per object.
+    workspace.symbols.invalidate_all_composed();
+    if delta.topology_changed {
+        workspace.invalidate_insight_graph();
+    } else {
+        workspace.invalidate_call_graph_only();
+    }
+    workspace.mark_generation_changed();
+    Ok(delta)
+}
+
 /// Invalidate the composed symbol cache when a file is closed.
 ///
 /// Only handles symbol cache invalidation — the decision about whether to remove

@@ -799,12 +799,50 @@ async fn refresh_trust(workspace: &Workspace) {
     }
 }
 
+/// Pick up `.al` files written, edited or deleted since the last request.
+///
+/// A metadata walk of the project per request; files whose size and mtime are
+/// unchanged are not read. Refreshes run one at a time, so a burst of requests
+/// after an edit re-reads the file once and every one of them sees it.
+async fn refresh_workspace_files(workspace: &std::sync::Arc<Workspace>) {
+    static REFRESH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    let Some(project_root) = workspace
+        .project
+        .try_read()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|project| project.root.clone()))
+    else {
+        return;
+    };
+    let _serialized = REFRESH.lock().await;
+    let scan_workspace = std::sync::Arc::clone(workspace);
+    let scanned = tokio::task::spawn_blocking(move || {
+        al_workspace::refresh_workspace_files(&scan_workspace, &project_root)
+    })
+    .await;
+    match scanned {
+        Ok(Ok(delta)) if !delta.is_empty() => tracing::info!(
+            changed = delta.changed.len(),
+            removed = delta.removed.len(),
+            topology_changed = delta.topology_changed,
+            "daemon: workspace files changed on disk"
+        ),
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "daemon: could not refresh workspace files from disk")
+        }
+        Err(error) => tracing::warn!(%error, "daemon: workspace refresh worker failed"),
+    }
+}
+
 pub(crate) async fn dispatch_request(
     workspace: &std::sync::Arc<Workspace>,
     req: Request,
     shutdown: &Notify,
 ) -> Response {
     refresh_trust(workspace).await;
+    refresh_workspace_files(workspace).await;
     let method = req.method.clone();
     let params = req.params.clone().unwrap_or(serde_json::Value::Null);
     let declared = DISPATCHERS
