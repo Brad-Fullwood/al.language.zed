@@ -524,11 +524,16 @@ pub fn find_entry_points<'g>(
 }
 
 pub fn export_dot(graph: &InsightGraph) -> String {
+    export_dot_where(graph, |_| true)
+}
+
+/// [`export_dot`] over the nodes `keep` accepts, and the edges between them.
+pub fn export_dot_where(graph: &InsightGraph, keep: impl Fn(usize) -> bool) -> String {
     let mut dot = String::from("digraph insight {\n");
     dot.push_str("    rankdir=LR;\n");
     dot.push_str("    node [shape=box];\n\n");
 
-    for idx in graph.graph.node_indices() {
+    for idx in graph.graph.node_indices().filter(|idx| keep(idx.index())) {
         let node = &graph.graph[idx];
         let (label, shape) = match node {
             InsightNode::Object { kind, name, .. } => (format!("{kind}\\n{name}"), "box"),
@@ -554,7 +559,11 @@ pub fn export_dot(graph: &InsightGraph) -> String {
 
     dot.push('\n');
 
-    for edge_ref in graph.graph.edge_references() {
+    for edge_ref in graph
+        .graph
+        .edge_references()
+        .filter(|edge| keep(edge.source().index()) && keep(edge.target().index()))
+    {
         writeln!(
             dot,
             "    n{} -> n{} [label=\"{}\"];",
@@ -567,6 +576,45 @@ pub fn export_dot(graph: &InsightGraph) -> String {
 
     dot.push_str("}\n");
     dot
+}
+
+/// The indices of a slice of the graph: the nodes whose object `own`
+/// accepts (by name), and with `neighbours` every node one edge away from
+/// them, so a call out of the slice still shows where it goes.
+pub fn graph_slice(
+    graph: &InsightGraph,
+    own: impl Fn(&str) -> bool,
+    neighbours: bool,
+) -> HashSet<usize> {
+    let mut keep = HashSet::new();
+    for idx in graph.graph.node_indices() {
+        let object_name = match &graph.graph[idx] {
+            InsightNode::Object { name, .. } => name,
+            InsightNode::Procedure { object_name, .. }
+            | InsightNode::Event { object_name, .. }
+            | InsightNode::Subscriber { object_name, .. } => object_name,
+        };
+        if !own(object_name) {
+            continue;
+        }
+        keep.insert(idx.index());
+        if neighbours {
+            keep.extend(graph.graph.neighbors_undirected(idx).map(|n| n.index()));
+        }
+    }
+    keep
+}
+
+/// Nodes plus edges of the slice `keep`, the size an export of it has.
+pub fn slice_size(graph: &InsightGraph, keep: &HashSet<usize>) -> usize {
+    keep.len()
+        + graph
+            .graph
+            .edge_references()
+            .filter(|edge| {
+                keep.contains(&edge.source().index()) && keep.contains(&edge.target().index())
+            })
+            .count()
 }
 
 #[derive(Serialize)]
@@ -585,9 +633,16 @@ pub struct EdgeJson {
 }
 
 pub fn export_json(graph: &InsightGraph) -> GraphJson {
+    export_json_where(graph, |_| true)
+}
+
+/// [`export_json`] over the nodes `keep` accepts, and the edges between
+/// them. Node ids stay the graph's own indices.
+pub fn export_json_where(graph: &InsightGraph, keep: impl Fn(usize) -> bool) -> GraphJson {
     let nodes: Vec<serde_json::Value> = graph
         .graph
         .node_indices()
+        .filter(|idx| keep(idx.index()))
         .map(|idx| {
             let node = &graph.graph[idx];
             // InsightNode contains only JSON-compatible fields. A failure
@@ -605,6 +660,7 @@ pub fn export_json(graph: &InsightGraph) -> GraphJson {
     let edges: Vec<EdgeJson> = graph
         .graph
         .edge_references()
+        .filter(|e| keep(e.source().index()) && keep(e.target().index()))
         .map(|e| EdgeJson {
             from: e.source().index(),
             to: e.target().index(),
@@ -619,6 +675,47 @@ pub fn export_json(graph: &InsightGraph) -> GraphJson {
 mod tests {
     use super::*;
     use al_symbols::{MethodSymbol, ObjectKind, SymbolEntry, SymbolIndex};
+
+    /// A workspace slice keeps its own nodes and the ones a single edge
+    /// away, and exports only the edges inside it.
+    #[test]
+    fn a_graph_slice_keeps_its_objects_and_their_neighbours() {
+        let mut graph = InsightGraph::new();
+        let proc = |object: &str, name: &str| InsightNode::Procedure {
+            object_kind: ObjectKind::Codeunit,
+            object_name: object.into(),
+            name: name.into(),
+            is_local: false,
+        };
+        let key = |object: &str, name: &str| {
+            NodeKey::Procedure(
+                ObjectKind::Codeunit,
+                object.to_lowercase(),
+                name.to_lowercase(),
+            )
+        };
+        let mine = graph.ensure_node(key("Mine", "Run"), proc("Mine", "Run"));
+        let post = graph.ensure_node(key("Sales-Post", "Post"), proc("Sales-Post", "Post"));
+        let deep = graph.ensure_node(key("Sales-Post", "Deep"), proc("Sales-Post", "Deep"));
+        let other = graph.ensure_node(key("Other", "X"), proc("Other", "X"));
+        graph.add_edge(mine, post, InsightEdge::Calls);
+        graph.add_edge(post, deep, InsightEdge::Calls);
+        graph.add_edge(other, deep, InsightEdge::Calls);
+
+        let keep = graph_slice(&graph, |name| name == "Mine", true);
+        let expected: HashSet<usize> = [mine.index(), post.index()].into_iter().collect();
+        assert_eq!(keep, expected);
+        assert_eq!(
+            slice_size(&graph, &keep),
+            3,
+            "two nodes and the edge between them"
+        );
+
+        let json = export_json_where(&graph, |index| keep.contains(&index));
+        assert_eq!(json.nodes.len(), 2);
+        assert_eq!(json.edges.len(), 1);
+        assert!(!export_dot_where(&graph, |index| keep.contains(&index)).contains("Other"));
+    }
 
     fn make_codeunit_with_events(
         id: i32,

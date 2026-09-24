@@ -58,8 +58,31 @@ pub(crate) fn scoped_list(method: &str) -> Option<&'static str> {
         .map(|(_, field)| *field)
 }
 
+/// `graphExport` takes a scope too, over graph nodes rather than rows: a
+/// project with Base Application has a graph too large to export whole.
 pub(crate) fn accepts_scope(method: &str) -> bool {
-    scoped_list(method).is_some()
+    scoped_list(method).is_some() || method == "graphExport"
+}
+
+/// The `scope` a request asked for, if any.
+pub(crate) fn scope_param(params: &serde_json::Value) -> Result<Option<Scope>, String> {
+    match params.get("scope") {
+        None => Ok(None),
+        Some(value) => match value.as_str() {
+            Some(raw) => Scope::parse(raw).map(Some),
+            None => Err("'scope' must be a string".to_string()),
+        },
+    }
+}
+
+impl Scope {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Workspace => "workspace",
+            Self::Packages => "packages",
+            Self::All => "all",
+        }
+    }
 }
 
 /// Names of the objects the open workspace declares, lowercased.
@@ -67,7 +90,7 @@ pub(crate) fn accepts_scope(method: &str) -> bool {
 /// `entrypoints` and `eventMap` rows carry an object name but no package,
 /// because their nodes come from the insight graph. Membership of this set is
 /// the same question the `package` field answers for the other two.
-fn workspace_object_names(workspace: &Workspace) -> std::collections::HashSet<String> {
+pub(crate) fn workspace_object_names(workspace: &Workspace) -> std::collections::HashSet<String> {
     workspace
         .file_index
         .object_info
@@ -161,36 +184,23 @@ pub(crate) fn apply(
     let Some(field) = scoped_list(method) else {
         return response;
     };
-    let scope = match params.get("scope") {
-        None => return response,
-        Some(value) => match value.as_str().map(Scope::parse) {
-            Some(Ok(scope)) => scope,
-            Some(Err(error)) => {
-                return super::rpc_error(
-                    response.id,
-                    al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
-                    &error,
-                );
-            }
-            None => {
-                return super::rpc_error(
-                    response.id,
-                    al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
-                    "'scope' must be a string",
-                );
-            }
-        },
+    let scope = match scope_param(params) {
+        Ok(Some(scope)) => scope,
+        Ok(None) => return response,
+        Err(error) => {
+            return super::rpc_error(
+                response.id,
+                al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
+                &error,
+            );
+        }
     };
     let Some(result) = response.result else {
         return response;
     };
     let names = workspace_object_names(workspace);
     let origin = origin_of(method);
-    let scope_label = match scope {
-        Scope::Workspace => "workspace",
-        Scope::Packages => "packages",
-        Scope::All => "all",
-    };
+    let scope_label = scope.label();
 
     let narrowed = if field.is_empty() {
         let serde_json::Value::Array(rows) = result else {

@@ -489,7 +489,7 @@ Notation: `X` is the `al-explorer` binary, run with the project directory as cwd
 - repro: `X graph` or `X --scope workspace graph`.
 - actual: `Graph too large to export in one response: 117018 nodes+edges exceeds cap of 50000`.
   `--scope` is silently ignored, so there is no way to export the workspace part.
-- status: open
+- status: fixed (`graphExport` takes `scope`; `workspace` keeps its objects and one hop out: 10 nodes, 6 edges on the bench; the cap error names `--scope workspace`; MCP defaults to workspace)
 
 ### [PERF-PACKAGE-DIFF] `package-diff` takes about 6 s every run
 - severity: low
