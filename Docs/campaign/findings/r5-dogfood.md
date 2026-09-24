@@ -474,7 +474,7 @@ Notation: `X` is the `al-explorer` binary, run with the project directory as cwd
 - repro: `X --json lint` on a codeunit with `if Cust.FindFirst() then;` inside a loop:
   `"column": 1, "endColumn": 42` and message `Record cust is read without a preceding SetLoadFields ...`.
 - expected: the range of the call, and the variable as written (`Cust`).
-- status: open
+- status: fixed (AL-NL001 and AL-NL005 span `Cust.FindFirst()`, and the message names the variable as written)
 
 ### [SIGNATURE-IN-STRING] No signature help while the cursor is inside a string argument
 - severity: low
