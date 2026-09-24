@@ -197,6 +197,9 @@ pub(super) fn dispatch_rename(
     match result {
         Ok(Some(we)) => serialized_response(id, &we, "textDocument/rename"),
         Ok(None) => Response::null(id),
+        Err(error @ al_analysis::queries::rename::RenameError::Collision { .. }) => {
+            rpc_error(id, error_codes::INVALID_PARAMS, &error.to_string())
+        }
         Err(error) => rpc_error(
             id,
             error_codes::INTERNAL_ERROR,
