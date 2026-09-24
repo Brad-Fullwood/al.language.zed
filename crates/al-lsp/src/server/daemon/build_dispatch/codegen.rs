@@ -482,9 +482,11 @@ pub(in crate::server::daemon) fn dispatch_generate(
                 .get("pageType")
                 .and_then(|v| v.as_str())
                 .unwrap_or("List");
-            let page_type = page_type_str
-                .parse::<al_analysis::generators::PageType>()
-                .unwrap_or_default();
+            // `--page-type Bogus` used to give a List without a word.
+            let page_type = match page_type_str.parse::<al_analysis::generators::PageType>() {
+                Ok(page_type) => page_type,
+                Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
+            };
 
             let Some(source) = table_entry else {
                 return rpc_error(

@@ -187,7 +187,10 @@ pub fn generate_test(config: &GenerateTestConfig) -> String {
 }
 
 fn collect_normal_fields(fields: &[FieldSymbol]) -> Vec<&FieldSymbol> {
-    let user_fields: Vec<&FieldSymbol> = fields.iter().filter(|f| !is_system_field(f)).collect();
+    let user_fields: Vec<&FieldSymbol> = fields
+        .iter()
+        .filter(|f| !is_system_field(f) && !is_gone(f))
+        .collect();
     let stored: Vec<&FieldSymbol> = user_fields
         .iter()
         .copied()
@@ -203,6 +206,17 @@ fn collect_normal_fields(fields: &[FieldSymbol]) -> Vec<&FieldSymbol> {
     } else {
         stored
     }
+}
+
+/// A field whose `ObsoleteState` is `Removed` or `Moved` no longer exists
+/// for code compiled against this version: Customer's "Coupled to CRM" in
+/// Base Application 26 made the generated page fail to compile.
+fn is_gone(f: &FieldSymbol) -> bool {
+    f.properties.iter().any(|property| {
+        property.name.eq_ignore_ascii_case("ObsoleteState")
+            && (property.value.eq_ignore_ascii_case("Removed")
+                || property.value.eq_ignore_ascii_case("Moved"))
+    })
 }
 
 fn is_system_field(f: &FieldSymbol) -> bool {
@@ -342,6 +356,25 @@ mod tests {
     use super::*;
     use crate::test_support::assert_al_parses;
     use al_symbols::model::{FieldSymbol, ObjectKind, SymbolEntry};
+
+    /// A field Removed in this version is not there to bind to.
+    #[test]
+    fn a_page_leaves_out_removed_and_moved_fields() {
+        let mut coupled = make_field(2, "Coupled to CRM", "Boolean");
+        coupled.properties = vec![al_symbols::PropertyValue {
+            name: "ObsoleteState".to_string(),
+            value: "Removed".to_string(),
+        }];
+        let table = make_table("Customer", vec![make_field(1, "No.", "Code[20]"), coupled]);
+        let code = generate_page(&GeneratePageConfig {
+            object_id: 50100,
+            page_name: "Customers".to_string(),
+            page_type: PageType::List,
+            source_table: table,
+        });
+        assert!(code.contains("\"No.\""), "{code}");
+        assert!(!code.contains("Coupled to CRM"), "{code}");
+    }
 
     fn make_table(name: &str, fields: Vec<FieldSymbol>) -> SymbolEntry {
         SymbolEntry {
