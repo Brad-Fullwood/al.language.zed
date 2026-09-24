@@ -328,13 +328,22 @@ fn affected_via_call_graph(
     }
     // A table or table extension has few graph members of its own, but its
     // fields are read and written by every procedure holding its records.
-    for table in changed_tables(workspace, &want) {
-        for (kind, object, procedure) in
-            al_insight::analysis::workspace_procedures_using_table(&workspace.file_index, &table)
-        {
-            let key = NodeKey::Procedure(kind, object.to_lowercase(), procedure.to_lowercase());
-            seeds.extend(CallGraph::node_id_for(&insight, &key));
-        }
+    // One walk of the workspace for all the changed tables.
+    let tables = changed_tables(workspace, &want);
+    for (kind, object, procedure) in
+        al_insight::analysis::workspace_procedures_using_tables(&workspace.file_index, &tables)
+    {
+        let (object, procedure) = (object.to_lowercase(), procedure.to_lowercase());
+        // A subscriber or an event publisher has its own node kind.
+        seeds.extend(
+            [
+                NodeKey::Procedure(kind, object.clone(), procedure.clone()),
+                NodeKey::Subscriber(kind, object.clone(), procedure.clone()),
+                NodeKey::Event(kind, object, procedure),
+            ]
+            .iter()
+            .find_map(|key| CallGraph::node_id_for(&insight, key)),
+        );
     }
     if seeds.is_empty() {
         // Changed object(s) exist but contribute no graph members (e.g. an
@@ -1189,13 +1198,49 @@ mod affected_call_graph {
     begin
         V.Init();
     end;
+
+    [Test]
+    procedure ThroughTempBuffer()
+    var
+        Buffer: Record Customer temporary;
+    begin
+        Buffer.Insert();
+    end;
+
+    [Test]
+    procedure ThroughOnRun()
+    begin
+        Codeunit.Run(Codeunit::"Loyalty Job");
+    end;
+}
+"#
+            .to_string(),
+        );
+        ws.file_index.add_file(
+            PathBuf::from("/ws/job.al"),
+            r#"codeunit 50102 "Loyalty Job"
+{
+    trigger OnRun()
+    var
+        Cust: Record Customer;
+    begin
+        Cust.Modify();
+    end;
 }
 "#
             .to_string(),
         );
         let (mode, names) = affected_names(&ws, &["/ws/custext.al"]);
         assert_eq!(mode, AffectedMode::CallGraph);
-        assert_eq!(names, vec!["Direct".to_string(), "ThroughMgt".to_string()]);
+        assert_eq!(
+            names,
+            vec![
+                "Direct".to_string(),
+                "ThroughMgt".to_string(),
+                "ThroughOnRun".to_string(),
+                "ThroughTempBuffer".to_string()
+            ]
+        );
     }
 
     #[test]

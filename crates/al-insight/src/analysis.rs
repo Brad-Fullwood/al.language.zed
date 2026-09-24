@@ -319,16 +319,19 @@ pub fn add_workspace_local_record_variables(
     });
 }
 
-/// The workspace procedures that hold a `Record <table>`: as a parameter,
-/// a local variable, or through an object-level global, which makes every
-/// procedure of that object a user.
+/// The workspace procedures that hold a `Record` of any of `tables`: as a
+/// parameter, a local variable, or through an object-level global, which
+/// makes every procedure of that object a user.
 ///
 /// Returned as `(object kind, object name, procedure name)`, in the file
-/// index's path order.
-pub fn workspace_procedures_using_table(
+/// index's path order. Triggers are included under their trigger name.
+pub fn workspace_procedures_using_tables(
     files: &al_source::file_index::FileIndex,
-    table_name: &str,
+    tables: &[String],
 ) -> Vec<(ObjectKind, String, String)> {
+    if tables.is_empty() {
+        return Vec::new();
+    }
     let mut paths: Vec<std::path::PathBuf> = files
         .files
         .iter()
@@ -349,7 +352,7 @@ pub fn workspace_procedures_using_table(
         let holds_record = |node: tree_sitter::Node| {
             node.child_by_field_name("type")
                 .and_then(|ty| ty.utf8_text(source).ok())
-                .is_some_and(|ty| is_record_of(ty, table_name))
+                .is_some_and(|ty| tables.iter().any(|table| is_record_of(ty, table)))
         };
         // Procedures per object, and whether the object has a global record.
         let mut procedures: Vec<(usize, tree_sitter::Node)> = Vec::new();
@@ -365,7 +368,9 @@ pub fn workspace_procedures_using_table(
                 })
             };
             match node.kind() {
-                "procedure_declaration" => {
+                // Triggers (`OnRun`, a field's `OnValidate`) and subscribers
+                // run code holding records as much as procedures do.
+                "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration" => {
                     if let Some(object) = object_of(node) {
                         procedures.push((object, node));
                     }
@@ -562,7 +567,24 @@ pub fn is_record_of(type_name: &str, table_name: &str) -> bool {
     if table_name.is_empty() {
         return false;
     }
-    let t = type_name.trim();
+    let mut t = type_name.trim();
+    // `array[5] of Record Customer` holds Customer records too.
+    if t.len() > 5 && t[..5].eq_ignore_ascii_case("array") {
+        if let Some(of) = t.to_ascii_lowercase().find(" of ") {
+            t = t[of + 4..].trim();
+        }
+    }
+    // `Record Customer temporary`: the keyword follows the name.
+    if let Some(head) = t
+        .len()
+        .checked_sub("temporary".len())
+        .filter(|split| t.is_char_boundary(*split))
+        .filter(|split| t[*split..].eq_ignore_ascii_case("temporary"))
+        .map(|split| t[..split].trim_end())
+        .filter(|head| head.split_whitespace().count() >= 2)
+    {
+        t = head;
+    }
     let rest = match t.split_once(|c: char| c.is_whitespace()) {
         Some((prefix, rest)) if prefix.eq_ignore_ascii_case("Record") => rest.trim(),
         _ => return false,
@@ -972,6 +994,23 @@ mod tests {
                 .any(|i| i.operation == TableOperationKind::Relation),
             "Relation impact must be detected even when filter clause is present"
         );
+    }
+
+    #[test]
+    fn is_record_of_reads_temporary_records_and_arrays() {
+        assert!(is_record_of("Record Customer temporary", "customer"));
+        assert!(is_record_of(
+            "Record \"Sales Header\" Temporary",
+            "sales header"
+        ));
+        assert!(is_record_of("array[5] of Record Customer", "customer"));
+        assert!(is_record_of(
+            "Array[2, 3] of Record Customer temporary",
+            "customer"
+        ));
+        // A table that is itself named Temporary keeps its name.
+        assert!(is_record_of("Record Temporary", "temporary"));
+        assert!(!is_record_of("array[5] of Integer", "integer"));
     }
 
     #[test]
