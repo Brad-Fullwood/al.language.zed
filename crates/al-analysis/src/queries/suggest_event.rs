@@ -161,7 +161,10 @@ const MAX_LISTED_WITHOUT_SOURCE: usize = 20;
 /// What a trace could not follow.
 #[derive(Debug, Default)]
 struct TraceGaps {
-    depth_cut: bool,
+    /// Nodes the depth limit stopped at that have something below them (an
+    /// event, callees or subscribers) and were not traced from a shallower
+    /// depth instead.
+    cut: HashSet<NodeId>,
     without_source: std::collections::BTreeSet<String>,
 }
 
@@ -177,8 +180,8 @@ fn result_from(points: Vec<IntegrationPoint>, gaps: TraceGaps) -> SuggestEventRe
     let without_source_count = gaps.without_source.len();
     SuggestEventResult {
         integration_points: points,
-        partial: gaps.depth_cut || without_source_count > 0,
-        depth_cut: gaps.depth_cut,
+        partial: !gaps.cut.is_empty() || without_source_count > 0,
+        depth_cut: !gaps.cut.is_empty(),
         max_depth: MAX_TRACE_DEPTH,
         without_source: gaps
             .without_source
@@ -525,8 +528,20 @@ fn trace_from_node(
 ) {
     if depth >= max_depth {
         // The branch below this node is not in the result. Say so rather than
-        // report a silently truncated set as complete.
-        gaps.depth_cut = true;
+        // report a silently truncated set as complete, but only when there
+        // is something below it, and not for a node traced from a shallower
+        // depth (which `visited` records).
+        let traced = visited.get(&node_id).is_some_and(|&seen| seen < max_depth);
+        let is_event = matches!(
+            insight.graph[petgraph::graph::NodeIndex::new(node_id.0)],
+            InsightNode::Event { .. }
+        );
+        let has_more = is_event
+            || !cg.callees_of(node_id).is_empty()
+            || !cg.subscribers_of(node_id).is_empty();
+        if !traced && has_more {
+            gaps.cut.insert(node_id);
+        }
         return;
     }
     // Best depth per node, not a plain visited set. A node first reached at
@@ -537,6 +552,8 @@ fn trace_from_node(
         Some(&seen) if seen <= depth => return,
         _ => visited.insert(node_id, depth),
     };
+    // Reached within the limit after all: it is traced below.
+    gaps.cut.remove(&node_id);
 
     let node_idx = petgraph::graph::NodeIndex::new(node_id.0);
     let node = &insight.graph[node_idx];
@@ -963,7 +980,7 @@ mod tests {
         let cut = result_from(
             Vec::new(),
             TraceGaps {
-                depth_cut: true,
+                cut: [NodeId(0)].into_iter().collect(),
                 ..TraceGaps::default()
             },
         );
@@ -1564,6 +1581,40 @@ mod tests {
             procedure: procedure.to_string(),
             edge_kind: "start".to_string(),
         }
+    }
+
+    /// A chain that ends exactly at the limit leaves nothing out; one that
+    /// goes on does. `depthCut` was set for both.
+    #[test]
+    fn a_leaf_at_the_depth_limit_is_not_a_cut() {
+        let run = |length: usize| {
+            let mut g = InsightGraph::new();
+            let chain: Vec<NodeId> = (0..length)
+                .map(|i| add_proc(&mut g, "CU", &format!("P{i}")))
+                .collect();
+            let g = Arc::new(g);
+            let mut cg = CallGraph::build_from_insight(&g);
+            for pair in chain.windows(2) {
+                cg.add_direct_call(pair[0], pair[1]);
+            }
+            let symbols = Arc::new(SymbolIndex::new());
+            let mut gaps = TraceGaps::default();
+            trace_from_node(
+                chain[0],
+                &g,
+                &cg,
+                &symbols,
+                &mut Vec::new(),
+                &mut HashMap::new(),
+                &mut gaps,
+                vec![start_hop("CU", "P0")],
+                0,
+                3,
+            );
+            !gaps.cut.is_empty()
+        };
+        assert!(!run(4), "P3 at depth 3 is a leaf");
+        assert!(run(5), "P3 at depth 3 calls P4");
     }
 
     #[test]

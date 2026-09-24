@@ -81,14 +81,14 @@ reads the old snake_case names).
 - severity: low
 - scenario: `find_call_context` now cuts the prefix at an unclosed quote. `has_receiver(prefix)` and `resolve_receiver_signature` still `rfind('(')` on the whole line. For a local `Notify(Msg: Text)` typed as `Notify('See p. 3 (`, `has_receiver` finds the `(` inside the string and takes `3` as a receiver. The same-file and implicit-Rec lookups are skipped, and help is found only if the symbol index or builtins happen to have `Notify`.
 - fix: pass the truncated prefix (return it, or the paren offset, from `find_call_context`) to `has_receiver` and `resolve_receiver_signature`.
-- status: open
+- status: fixed (signature help cuts the line at the open literal before any receiver lookup, through `al_syntax::code_before_open_literal`; the `Notify('See p. 3 (` test fails without it)
 
 ### [R6-GRAPH-1] `graph --scope workspace` treats a file's second object as package code
 - where: crates/al-lsp/src/server/daemon/scope.rs:93 (`workspace_object_names`), used by crates/al-lsp/src/server/daemon/insight_dispatch.rs:181 (`scoped_graph_nodes`)
 - severity: low
 - scenario: the name set is built from `file_index.object_info`, which holds only the first object declared in each file. In a file declaring `table 50100 X` and then `page 50100 "X List"`, the page and its procedures fall out of the workspace slice unless they are one edge from X. Under `--scope packages` they are listed as package nodes and counted in `outOfScopeCount`. The helper was already used by entrypoints/eventMap scoping, and graph export now depends on it too.
 - fix: build the set from `object_infos` (every object in the file).
-- status: open
+- status: fixed (`workspace_object_names` reads `object_infos`, every object in a file)
 
 ### [R6-OBS-1] package obsolete procedures get a caller count by bare name
 - where: crates/al-analysis/src/queries/obsolescence.rs:150
@@ -109,13 +109,13 @@ reads the old snake_case names).
 - severity: low
 - scenario: the AppSource template's analyzers (`AppSourceCop`, `PerTenantExtensionCop`, `UICop`) moved from app.json to `.vscode/settings.json`, and `generate_gitignore` lists `.vscode/settings.json`. The analyzer choice therefore never reaches the repository. A teammate's clone or a CI checkout builds without AppSourceCop and UICop, while the author's machine runs them.
 - fix: stop ignoring `.vscode/settings.json` in the generated `.gitignore` (the file now holds project policy), or write the analyzers to a committed settings file and say so in the `new` output.
-- status: open
+- status: fixed (the generated `.gitignore` no longer ignores `.vscode/settings.json`, which holds `al.codeAnalyzers`)
 
 ### [R6-SE-1] `depthCut` fires for leaves and for nodes later reached at a shallower depth
 - where: crates/al-analysis/src/queries/suggest_event.rs:526-530
 - severity: low
 - scenario: `trace_from_node` sets `depth_cut` as soon as any node is reached at depth 10, before checking whether that node has callees. That node is dropped even if it is itself an event. In a diamond or cycle, a node first reached at depth 10 and then again at depth 2 is fully traced, but `depthCut` stays true. The CLI then prints "the trace stops 10 calls deep, so events further down are not listed. Start from a deeper --procedure" when nothing is missing. The commit's aim was to replace a misleading "partial" with an accurate reason.
 - fix: record the cut nodes and clear them when the same node is later visited at a shallower depth. Set `depthCut` only when a cut node that was never fully visited has callees, or is an event not otherwise recorded.
-- status: open
+- status: fixed (the cut is a set of nodes: recorded only when the node has an event, callees or subscribers below it, and removed when the node is traced from a shallower depth)
 
 ## Review complete

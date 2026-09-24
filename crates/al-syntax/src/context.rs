@@ -148,7 +148,7 @@ pub fn find_call_context(prefix: &str) -> Option<(&str, u32)> {
     // A cursor inside a string argument (`Call(X, 'GO|`) leaves an unclosed
     // quote, which the backward scan below would take for a closing one.
     // Everything from that quote on is part of the argument being typed.
-    let prefix = &prefix[..unclosed_quote_start(prefix).unwrap_or(prefix.len())];
+    let prefix = code_before_open_literal(prefix);
     let bytes = prefix.as_bytes();
     let mut paren_depth = 0i32;
     let mut comma_count = 0u32;
@@ -216,6 +216,13 @@ pub fn find_call_context(prefix: &str) -> Option<(&str, u32)> {
 
     debug!("find_call_context: no call context found");
     None
+}
+
+/// `prefix` up to a string literal or quoted identifier still open at its
+/// end: the code a cursor inside that literal is in. Anything after the
+/// quote (a `.`, a `(`) is text, not code.
+pub fn code_before_open_literal(prefix: &str) -> &str {
+    &prefix[..unclosed_quote_start(prefix).unwrap_or(prefix.len())]
 }
 
 /// The byte offset of the quote that opens a literal or quoted identifier

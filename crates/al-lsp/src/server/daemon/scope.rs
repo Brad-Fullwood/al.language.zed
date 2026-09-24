@@ -91,11 +91,20 @@ impl Scope {
 /// because their nodes come from the insight graph. Membership of this set is
 /// the same question the `package` field answers for the other two.
 pub(crate) fn workspace_object_names(workspace: &Workspace) -> std::collections::HashSet<String> {
+    // `object_infos`, not `object_info`: the latter holds only the first
+    // object of each file, so a page declared after its table in one file
+    // counted as package code.
     workspace
         .file_index
-        .object_info
+        .object_infos
         .iter()
-        .map(|entry| entry.value().name.to_lowercase())
+        .flat_map(|entry| {
+            entry
+                .value()
+                .iter()
+                .map(|info| info.name.to_lowercase())
+                .collect::<Vec<_>>()
+        })
         .collect()
 }
 
@@ -302,6 +311,17 @@ mod tests {
             error: None,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn every_object_in_a_file_is_a_workspace_object() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/Two.al"),
+            "table 50100 X\n{\n}\npage 50100 \"X List\"\n{\n}\n".to_string(),
+        );
+        let names = workspace_object_names(&ws);
+        assert!(names.contains("x") && names.contains("x list"), "{names:?}");
     }
 
     /// Event rows name their objects under `publisher` and `subscribers`.

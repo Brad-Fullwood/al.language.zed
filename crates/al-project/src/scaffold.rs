@@ -851,8 +851,8 @@ fn generate_gitignore() -> String {
 # Package cache
 .alpackages/
 
-# VS Code / Zed settings (keep debug.json)
-.vscode/settings.json
+# .vscode/settings.json is not ignored: it holds al.codeAnalyzers, which a
+# clone and CI must run too.
 
 # OS files
 .DS_Store
@@ -1200,6 +1200,15 @@ mod tests {
         assert!(dir.path().join(".zed/debug.json").exists());
         assert!(dir.path().join("src/HelloWorld.Codeunit.al").exists());
         assert!(dir.path().join(".vscode/settings.json").exists());
+        // The analyzers live there, so the generated .gitignore must not
+        // keep them out of the repository.
+        let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(
+            !gitignore
+                .lines()
+                .any(|line| line.trim() == ".vscode/settings.json"),
+            "{gitignore}"
+        );
     }
 
     /// `codeAnalyzers` is not an app.json property; the analyzers go to the

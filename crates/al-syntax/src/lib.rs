@@ -17,7 +17,10 @@ pub mod traversal;
 pub mod type_resolver;
 pub mod types;
 
-pub use context::{detect_context, extract_last_identifier, find_call_context, CompletionContext};
+pub use context::{
+    code_before_open_literal, detect_context, extract_last_identifier, find_call_context,
+    CompletionContext,
+};
 pub use folding::extract_folding_ranges;
 pub use formatting::{
     format_al, format_range, BlankLinesBetweenProcedures, BraceStyle, FormatOptions, KeywordCasing,
