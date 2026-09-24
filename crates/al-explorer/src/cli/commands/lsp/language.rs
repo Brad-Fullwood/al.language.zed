@@ -411,7 +411,62 @@ fn print_position_query_human(method: &str, result: &serde_json::Value) {
 }
 
 pub fn cmd_symbols(file: &str, json: bool) -> ExitCode {
-    cmd_file_query("documentSymbols", file, json)
+    if json {
+        return cmd_file_query("documentSymbols", file, json);
+    }
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+    let uri = match file_to_uri(file) {
+        Ok(uri) => uri,
+        Err(error) => return report_error(&error, json),
+    };
+    match request_checked(
+        &mut client,
+        "documentSymbols",
+        Some(serde_json::json!({ "uri": uri })),
+    ) {
+        Ok(result) => {
+            let outline = render_outline(&result);
+            if outline.is_empty() {
+                eprintln!("No symbols in {file}");
+            } else {
+                print!("{outline}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+/// Document symbols as an indented outline, one symbol per line with its
+/// 1-based line: `Method SetTier(var Cust: Record Customer)  :3`.
+fn render_outline(symbols: &serde_json::Value) -> String {
+    fn walk(symbols: &serde_json::Value, depth: usize, out: &mut String) {
+        for symbol in symbols.as_array().into_iter().flatten() {
+            let kind = symbol["kind"].as_str().unwrap_or("Symbol");
+            let name = symbol["name"].as_str().unwrap_or("?");
+            let detail = symbol["detail"].as_str().unwrap_or("");
+            let line = symbol["range"]["start"]["line"]
+                .as_u64()
+                .map_or(0, |l| l + 1);
+            let separator = if detail.starts_with('(') || detail.is_empty() {
+                ""
+            } else {
+                " "
+            };
+            out.push_str(&format!(
+                "{:indent$}{kind} {name}{separator}{detail}  :{line}\n",
+                "",
+                indent = depth * 2
+            ));
+            walk(&symbol["children"], depth + 1, out);
+        }
+    }
+    let mut out = String::new();
+    walk(symbols, 0, &mut out);
+    out
 }
 
 pub fn cmd_folding(file: &str, json: bool) -> ExitCode {
@@ -801,6 +856,31 @@ mod exit_status_tests {
         assert_eq!(
             rename_exit_code(&serde_json::json!({"changes": {}})),
             ExitCode::SUCCESS
+        );
+    }
+}
+
+#[cfg(test)]
+mod outline_tests {
+    use super::render_outline;
+
+    #[test]
+    fn outline_indents_children_and_shows_one_based_lines() {
+        let symbols = serde_json::json!([{
+            "name": "Loyalty Mgt",
+            "detail": "codeunit 50101",
+            "kind": "Class",
+            "range": { "start": { "line": 0, "character": 0 } },
+            "children": [{
+                "name": "SetTier",
+                "detail": "(var Cust: Record Customer)",
+                "kind": "Method",
+                "range": { "start": { "line": 2, "character": 4 } }
+            }]
+        }]);
+        assert_eq!(
+            render_outline(&symbols),
+            "Class Loyalty Mgt codeunit 50101  :1\n  Method SetTier(var Cust: Record Customer)  :3\n"
         );
     }
 }
