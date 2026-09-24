@@ -12,7 +12,11 @@ use serde::Serialize;
 use al_symbols::model::SymbolPackage;
 use al_workspace::Workspace;
 
-use super::breaking_changes::{analyze_breaking_changes_checked, BreakingChange};
+use al_symbols::{ObjectKind, SymbolEntry};
+
+use super::breaking_changes::{
+    analyze_breaking_changes_checked, BreakingChange, BreakingChangeKind,
+};
 use super::impact::{ImpactConfidence, ImpactEntry, ImpactError, WorkspaceImpactIndex};
 
 /// One package version, as the report names it.
@@ -89,16 +93,17 @@ pub fn package_diff(
     to: &SymbolPackage,
     include_unused: bool,
 ) -> Result<PackageDiffReport, PackageDiffError> {
-    let surface = |package: &SymbolPackage| -> Vec<_> {
-        package
-            .objects
-            .iter()
-            .filter(|entry| !entry.synthetic)
-            .cloned()
-            .collect()
-    };
-    let changes = analyze_breaking_changes_checked(&surface(from), &surface(to))
+    let old_surface = surface(from);
+    let mut changes = analyze_breaking_changes_checked(&old_surface, &surface(to))
         .map_err(PackageDiffError::Surface)?;
+    for change in &mut changes {
+        if change.is_breaking && already_removed(&old_surface, change) {
+            change.is_breaking = false;
+            change
+                .description
+                .push_str(" (it was already ObsoleteState = Removed, so nothing could use it)");
+        }
+    }
     let index = WorkspaceImpactIndex::new(workspace)?;
 
     let total_changes = changes.len();
@@ -154,6 +159,120 @@ pub fn package_diff(
         changes: kept,
         warning,
     })
+}
+
+/// A package's public surface as a dependent sees it: a table's fields and
+/// procedures, and an enum's values, include the ones an extension in the
+/// same package adds.
+/// Base Application 26 moved its manufacturing fields into such extensions
+/// (`Item."Production BOM No."` into "Mfg. Item"); diffing each table on its
+/// own reported all 145 as removed, and `Item."Production BOM No."` as a
+/// breaking use in code that still compiles.
+fn surface(package: &SymbolPackage) -> Vec<SymbolEntry> {
+    let mut objects: Vec<SymbolEntry> = package
+        .objects
+        .iter()
+        .filter(|entry| !entry.synthetic)
+        .cloned()
+        .collect();
+    let additions: Vec<(
+        String,
+        Vec<al_symbols::FieldSymbol>,
+        Vec<al_symbols::MethodSymbol>,
+    )> = objects
+        .iter()
+        .filter(|entry| entry.kind == ObjectKind::TableExtension)
+        .filter_map(|entry| {
+            let base = entry.extends.as_deref()?;
+            Some((
+                base.to_string(),
+                entry.fields.clone(),
+                entry.methods.clone(),
+            ))
+        })
+        .collect();
+    for (base, fields, methods) in additions {
+        let Some(table) = objects.iter_mut().find(|entry| {
+            entry.kind == ObjectKind::Table && entry.name.eq_ignore_ascii_case(&base)
+        }) else {
+            continue;
+        };
+        for field in fields {
+            if !table
+                .fields
+                .iter()
+                .any(|existing| existing.name.eq_ignore_ascii_case(&field.name))
+            {
+                table.fields.push(field);
+            }
+        }
+        for method in methods {
+            let same = |existing: &al_symbols::MethodSymbol| {
+                existing.name.eq_ignore_ascii_case(&method.name)
+                    && existing.parameters.len() == method.parameters.len()
+                    && existing
+                        .parameters
+                        .iter()
+                        .zip(&method.parameters)
+                        .all(|(a, b)| a.type_name.eq_ignore_ascii_case(&b.type_name))
+            };
+            if !table.methods.iter().any(same) {
+                table.methods.push(method);
+            }
+        }
+    }
+    // Enum extensions in the same package add values to their enum the same
+    // way ("Mfg. Inventory Order Type" adds Production).
+    let value_additions: Vec<(String, Vec<al_symbols::EnumValueSymbol>)> = objects
+        .iter()
+        .filter(|entry| entry.kind == ObjectKind::EnumExtension)
+        .filter_map(|entry| Some((entry.extends.clone()?, entry.enum_values.clone())))
+        .collect();
+    for (base, values) in value_additions {
+        let Some(target) = objects
+            .iter_mut()
+            .find(|entry| entry.kind == ObjectKind::Enum && entry.name.eq_ignore_ascii_case(&base))
+        else {
+            continue;
+        };
+        for value in values {
+            if !target
+                .enum_values
+                .iter()
+                .any(|existing| existing.name.eq_ignore_ascii_case(&value.name))
+            {
+                target.enum_values.push(value);
+            }
+        }
+    }
+    objects
+}
+
+/// Whether the removed object or field was already `ObsoleteState =
+/// Removed` in the old version: no dependent could compile against it, so
+/// dropping it breaks nothing. 270 of Base Application 25 to 26's field
+/// removals and 128 of its table removals are these.
+fn already_removed(old: &[SymbolEntry], change: &BreakingChange) -> bool {
+    let removed = |properties: &[al_symbols::PropertyValue]| {
+        properties.iter().any(|property| {
+            property.name.eq_ignore_ascii_case("ObsoleteState")
+                && property.value.eq_ignore_ascii_case("Removed")
+        })
+    };
+    let Some(object) = old.iter().find(|entry| {
+        entry.kind == change.object_kind && entry.name.eq_ignore_ascii_case(&change.object)
+    }) else {
+        return false;
+    };
+    match (&change.kind, change.member.as_deref()) {
+        (BreakingChangeKind::ObjectRemoved, _) => removed(&object.properties),
+        (BreakingChangeKind::FieldRemoved, Some(member)) => object
+            .fields
+            .iter()
+            .find(|field| field.name.eq_ignore_ascii_case(member))
+            .is_some_and(|field| removed(&field.properties) || removed(&object.properties)),
+        _ => false,
+    }
 }
 
 /// The `Object` or `"Object"."Member"` specifier `impact` takes, quoted so a
@@ -365,6 +484,46 @@ mod tests {
 
         assert_eq!(report.possibly_affecting, 0, "{report:#?}");
         assert!(report.changes.is_empty());
+    }
+
+    /// Base Application 26 moved fields into same-package table extensions
+    /// and dropped fields that were already `ObsoleteState = Removed`. Neither
+    /// breaks a dependent.
+    #[test]
+    fn moved_and_already_removed_fields_are_not_breaking() {
+        let workspace = Workspace::new();
+        let mut old_item = table(&[(1, "No."), (20, "Production BOM No."), (30, "Old Field")]);
+        old_item.name = "Item".to_string();
+        old_item.fields[2].properties = vec![al_symbols::PropertyValue {
+            name: "ObsoleteState".to_string(),
+            value: "Removed".to_string(),
+        }];
+        let mut new_item = table(&[(1, "No.")]);
+        new_item.name = "Item".to_string();
+        let mut mfg = table(&[(20, "Production BOM No.")]);
+        mfg.kind = ObjectKind::TableExtension;
+        mfg.id = 99000750;
+        mfg.name = "Mfg. Item".to_string();
+        mfg.extends = Some("Item".to_string());
+
+        let from = package("25.0.0.0", vec![old_item]);
+        let to = package("26.0.0.0", vec![new_item, mfg]);
+        let report = package_diff(&workspace, &from, &to, true).unwrap();
+
+        let members: Vec<_> = report
+            .changes
+            .iter()
+            .map(|change| (change.change.member.clone(), change.change.is_breaking))
+            .collect();
+        assert!(
+            !members.contains(&(Some("Production BOM No.".to_string()), true)),
+            "{members:?}"
+        );
+        assert!(
+            members.contains(&(Some("Old Field".to_string()), false)),
+            "{members:?}"
+        );
+        assert_eq!(report.breaking_changes, 0, "{report:#?}");
     }
 
     #[test]
