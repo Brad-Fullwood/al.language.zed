@@ -445,8 +445,16 @@ fn allocate_members(
 ) -> Result<FreeIdsReport, FreeIdsError> {
     let target = resolve_object(objects, name, query.kind)?;
 
+    // A base object owns its numbering space only when it is this app's own.
+    // A table or enum from a dependency gets new members through an
+    // extension, whose numbers must lie in this app's `idRanges`: asking for
+    // Customer's free fields in a per-tenant extension answered 13.
     let (mode, base_name, constrained) = match target.kind {
-        ObjectKind::Table => (FreeIdsMode::Field, target.name.clone(), false),
+        ObjectKind::Table => (
+            FreeIdsMode::Field,
+            target.name.clone(),
+            !target.is_workspace(),
+        ),
         ObjectKind::TableExtension => (
             FreeIdsMode::Field,
             target
@@ -455,7 +463,11 @@ fn allocate_members(
                 .unwrap_or_else(|| target.name.clone()),
             true,
         ),
-        ObjectKind::Enum => (FreeIdsMode::Value, target.name.clone(), false),
+        ObjectKind::Enum => (
+            FreeIdsMode::Value,
+            target.name.clone(),
+            !target.is_workspace(),
+        ),
         ObjectKind::EnumExtension => (
             FreeIdsMode::Value,
             target
@@ -635,7 +647,11 @@ fn collect_objects(workspace: &Workspace, ranges: &[IdRange]) -> Vec<ObjectRecor
     let mut objects = workspace_objects(workspace);
     let in_range = |id: i64| ranges.iter().any(|range| range.contains(id));
     for entry in workspace.symbols.all_entries() {
-        if entry.synthetic {
+        // Workspace objects come from the file index above; the symbol index
+        // holds them too, under a pseudo-package, and counting both listed
+        // every workspace extension twice in `sources`.
+        if entry.synthetic || al_symbols::source_availability::is_workspace_package(&entry.package)
+        {
             continue;
         }
         let id = i64::from(entry.id);
@@ -1087,6 +1103,32 @@ mod tests {
         assert_eq!(report.mode, FreeIdsMode::Field);
         assert_eq!(report.free, vec![3, 4]);
         assert!(report.ranges.is_empty(), "a base table is not range-bound");
+    }
+
+    #[test]
+    fn a_dependency_table_takes_new_fields_from_the_apps_id_ranges() {
+        let mut base = object(ObjectKind::Table, 18, "Customer");
+        base.members = vec![(1, "No.".into()), (2, "Name".into())];
+        base.package = "Base Application".to_string();
+        let ours = extension(
+            ObjectKind::TableExtension,
+            50100,
+            "Cust Ext",
+            "Customer",
+            &[(50100, "Loyalty Tier")],
+        );
+        let report = allocate(
+            &[base, ours],
+            &ranges(&[(50100, 50149)]),
+            &FreeIdsQuery {
+                object: Some("Customer".to_string()),
+                count: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(report.next_free, Some(50101));
+        assert!(!report.ranges.is_empty(), "the answer is range-bound");
     }
 
     #[test]
