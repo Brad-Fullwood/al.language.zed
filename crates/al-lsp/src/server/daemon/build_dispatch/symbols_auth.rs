@@ -397,33 +397,45 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
         },
     };
 
-    let project = match workspace.project.try_read() {
-        Ok(guard) => guard,
-        Err(_) => {
+    // Copy out what the download needs and release the project read guard
+    // here. It used to live to the end of the function (a `let _ = project;`
+    // does not drop anything), and the function takes `project.write()` once
+    // a package has been downloaded, so every successful download waited on
+    // its own guard forever and the caller never got a response.
+    let (all_deps, dest, project_configs, configured_packages) = {
+        let project = match workspace.project.try_read() {
+            Ok(guard) => guard,
+            Err(_) => {
+                return Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INTERNAL_ERROR,
+                        message: ERR_INITIALIZING.to_string(),
+                    }),
+                    ..Default::default()
+                };
+            }
+        };
+        let Some(project) = project.as_ref() else {
             return Response {
                 id,
                 result: None,
                 error: Some(RpcError {
                     code: error_codes::INTERNAL_ERROR,
-                    message: ERR_INITIALIZING.to_string(),
+                    message: ERR_NO_PROJECT.to_string(),
                 }),
                 ..Default::default()
             };
-        }
-    };
-    let Some(project) = project.as_ref() else {
-        return Response {
-            id,
-            result: None,
-            error: Some(RpcError {
-                code: error_codes::INTERNAL_ERROR,
-                message: ERR_NO_PROJECT.to_string(),
-            }),
-            ..Default::default()
         };
+        (
+            project.all_dependencies(),
+            project.packages_dir.clone(),
+            project.server_configs.clone(),
+            project.packages.clone(),
+        )
     };
 
-    let all_deps = project.all_dependencies();
     if all_deps.is_empty() {
         return Response {
             id,
@@ -441,9 +453,6 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
         };
     }
 
-    let dest = project.packages_dir.clone();
-    let project_configs = project.server_configs.clone();
-    let configured_packages = project.packages.clone();
     // Named in the result so the caller always knows which BC environment the
     // packages came from, whether or not it asked for one.
     let chosen_config = (source == "server")
@@ -453,8 +462,6 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
                 .map(|config| config.name.clone())
         })
         .flatten();
-
-    let _ = project;
 
     // don't re-download dependencies already satisfied in
     // package cache. The resolver fetched app.json MINIMUM versions — pulling

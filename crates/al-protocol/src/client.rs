@@ -109,6 +109,11 @@ fn read_bounded_line<R: BufRead>(
     loop {
         let available = match reader.fill_buf() {
             Ok(a) => a,
+            // A signal arriving mid-read (SIGCHLD, SIGWINCH, a debugger
+            // attaching) is not the daemon going away. `fill_buf` does not
+            // retry it the way `read_line` does, so a resize of the terminal
+            // failed a long request with "Interrupted system call".
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e)
                 if matches!(
                     e.kind(),
@@ -1622,6 +1627,34 @@ mod tests {
         let result = read_bounded_line(&mut reader, &mut Vec::new(), 64, None)
             .expect("under-cap line should succeed");
         assert_eq!(result.as_deref(), Some("hello world"));
+    }
+
+    /// A reader whose first read is interrupted by a signal, as a socket read
+    /// is when SIGCHLD or SIGWINCH arrives.
+    struct InterruptedOnce<'a> {
+        interrupted: bool,
+        rest: &'a [u8],
+    }
+
+    impl std::io::Read for InterruptedOnce<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            std::io::Read::read(&mut self.rest, buf)
+        }
+    }
+
+    #[test]
+    fn bounded_read_retries_a_read_interrupted_by_a_signal() {
+        let mut reader = std::io::BufReader::new(InterruptedOnce {
+            interrupted: false,
+            rest: b"{\"id\":1}\n",
+        });
+        let result = read_bounded_line(&mut reader, &mut Vec::new(), 64, None)
+            .expect("an interrupted read is retried, not reported");
+        assert_eq!(result.as_deref(), Some("{\"id\":1}"));
     }
 
     #[test]
