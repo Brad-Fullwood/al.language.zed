@@ -160,11 +160,17 @@ fn zero_like(bound: &Value) -> Option<Value> {
 struct SortKey {
     /// Field numbers, in priority order.
     fields: Vec<FieldNo>,
+    /// `Ascending(false)`: iterate the whole key, primary key included, in
+    /// reverse.
+    descending: bool,
 }
 
 impl SortKey {
     fn from_fields(fields: Vec<FieldNo>) -> Self {
-        SortKey { fields }
+        SortKey {
+            fields,
+            descending: false,
+        }
     }
 
     /// The sort key normalises each cell exactly as the primary-key index does. A BC
@@ -594,12 +600,27 @@ impl MockRecord {
         self.with_default_view(|table, view| table.rename_in(view, new_key_values))
     }
 
-    /// `SETCURRENTKEY(fields…)` — change iteration sort order.
+    /// `SETCURRENTKEY(fields…)` — change iteration sort order. The direction
+    /// set by `Ascending` is kept.
     #[allow(clippy::unused_self)]
     pub fn set_current_key_in(&self, view: &mut RecordView, fields: Vec<FieldNo>) {
-        view.sort_key = SortKey::from_fields(fields);
+        view.sort_key.fields = fields;
         view.iter_set.clear();
         view.iter_pos = None;
+    }
+
+    /// `ASCENDING(flag)` — iterate the current key forwards or backwards.
+    #[allow(clippy::unused_self)]
+    pub fn set_ascending_in(&self, view: &mut RecordView, ascending: bool) {
+        view.sort_key.descending = !ascending;
+        view.iter_set.clear();
+        view.iter_pos = None;
+    }
+
+    /// `ASCENDING()` — whether the view iterates forwards.
+    #[allow(clippy::unused_self)]
+    pub fn is_ascending_in(&self, view: &RecordView) -> bool {
+        !view.sort_key.descending
     }
 
     pub fn set_current_key(&mut self, fields: Vec<FieldNo>) {
@@ -669,6 +690,11 @@ impl MockRecord {
             let row_b = self.rows.get(b).unwrap();
             sort_key.key_of(row_a).cmp(&sort_key.key_of(row_b))
         });
+        // Ties on the current key fall back to primary-key order, which
+        // descending order reverses too.
+        if sort_key.descending {
+            keys.reverse();
+        }
 
         view.iter_set = keys;
     }

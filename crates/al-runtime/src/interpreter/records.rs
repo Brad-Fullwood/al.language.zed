@@ -788,6 +788,7 @@ pub fn supports_record_method(method: &str) -> bool {
             | "calcfields"
             | "calcsums"
             | "modifyall"
+            | "ascending"
     )
 }
 
@@ -968,6 +969,14 @@ fn run_record_method(
             store.record.reset_in(view);
             Eval::Normal(Value::Empty)
         }
+        "ascending" => match values.as_slice() {
+            [] => Eval::Normal(Value::Boolean(store.record.is_ascending_in(view))),
+            [Value::Boolean(ascending)] => {
+                store.record.set_ascending_in(view, *ascending);
+                Eval::Normal(Value::Boolean(*ascending))
+            }
+            _ => eval_error("Ascending expects an optional Boolean"),
+        },
         "insert" => match optional_boolean("Insert", &values) {
             Ok(run_trigger) => mutation_result("Insert", store.record.insert_in(view, run_trigger)),
             Err(error) => eval_error(error),

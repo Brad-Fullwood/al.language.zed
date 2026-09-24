@@ -2657,3 +2657,44 @@ fn chained_calls_apply_every_step_in_order() {
         "{unsupported}"
     );
 }
+
+const POINT_ORDER: &str = r#"codeunit 50153 "Point Order"
+{
+    procedure Order(): Text
+    var
+        Calc: Codeunit "Point Calc";
+        Ledger: Record "Point Ledger";
+        Seen: Text;
+    begin
+        Calc.Add(1, 'A', 5);
+        Calc.Add(2, 'B', 9);
+        Calc.Add(3, 'C', 5);
+        Ledger.SetCurrentKey(Points);
+        Ledger.Ascending(false);
+        if Ledger.Ascending() then
+            exit('still ascending');
+        if Ledger.FindSet() then
+            repeat
+                Seen += Ledger.Member;
+            until Ledger.Next() = 0;
+        Ledger.Reset();
+        Ledger.FindFirst();
+        exit(Seen + '|' + Ledger.Member);
+    end;
+}
+"#;
+
+/// Ascending was unsupported, so a test sorting backwards went to live BC.
+/// Descending order reverses ties on the current key too.
+#[test]
+fn ascending_false_iterates_the_key_backwards_until_reset() {
+    let files = [
+        ("/ws/Ledger.al", POINT_LEDGER),
+        ("/ws/Calc.al", POINT_CALC),
+        ("/ws/Order.al", POINT_ORDER),
+    ];
+    assert_eq!(
+        ok(run(&files, "Point Order", "Order", vec![])),
+        Value::Text("BCA|A".into())
+    );
+}
