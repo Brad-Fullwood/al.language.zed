@@ -124,9 +124,13 @@ replacement, as in the `bc-event-map` skill.
 ```
 
 Lists the calls in the workspace to obsolete procedures, with the reason and
-tag, so pending removals get fixed before they become errors. A name with an
-active overload anywhere is left out rather than guessed at, so this errs
-towards silence. Plain `obsolete` without `--used` lists every pending
+tag, so pending removals get fixed before they become errors. A call on a
+variable of a package object is judged against that object's overloads, picked
+by argument count and by the types of arguments that are variables or
+literals: `Crypto.SetEncryptionData(KeyText, ...)` with a `Text` key is
+reported, the `SecretText` call next to it is not. Any other call is reported
+only when every definition of the name is obsolete, so this errs towards
+silence. Plain `obsolete` without `--used` lists every pending
 obsoletion in every loaded package (over 1,500 on Base Application); use it
 with `--limit` only when the question is about the packages themselves.
 

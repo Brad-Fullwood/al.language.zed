@@ -29,8 +29,10 @@ launch configuration in the project. Params: `config` (launch configuration name
 launch configuration.
 
 `obsoleteUsages` lists the calls in the workspace to procedures that are obsolete, each with
-`file`, `range` and a `message` naming the reason and tag. A name with any active definition is
-left out rather than guessed at. `obsolete` lists every pending obsoletion in the loaded packages
+`file`, `range` and a `message` naming the reason and tag. A call on a variable of a package
+object is judged against that object's overloads, chosen by argument count and by the types of
+arguments that are variables or literals; any other call counts only when every definition of the
+name is obsolete. `obsolete` lists every pending obsoletion in the loaded packages
 instead.
 
 `packageDiff` compares two versions of a dependency and keeps the changes the workspace uses.
