@@ -474,6 +474,12 @@ pub fn cmd_init_debug(project_root: &std::path::Path, json: bool) -> ExitCode {
     }
 }
 
+/// Scaffold a project in `dir`, in this process.
+///
+/// Creating a project is the one command that runs where no project exists
+/// yet. It used to go through the daemon, whose path containment refuses every
+/// path while no project is loaded, so `al-explorer new` failed everywhere
+/// except inside another AL project.
 pub fn cmd_new(
     dir: &str,
     name: &str,
@@ -482,24 +488,28 @@ pub fn cmd_new(
     runtime: &str,
     json: bool,
 ) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
+    use al_project::scaffold;
 
     let directory = match absolutize_path(dir) {
         Ok(directory) => directory,
         Err(error) => return report_error(&error, json),
     };
-    let params = serde_json::json!({
-        "dir": directory,
-        "name": name,
-        "publisher": publisher,
-        "template": template,
-        "runtime": runtime,
-    });
+    let template = match template.parse::<scaffold::ProjectTemplate>() {
+        Ok(template) => template,
+        Err(error) => return report_error(&error, json),
+    };
+    if let Err(error) = scaffold::application_version_for_runtime(runtime) {
+        return report_error(&error, json);
+    }
+    let config = scaffold::ScaffoldConfig {
+        name: name.to_string(),
+        publisher: publisher.to_string(),
+        runtime: runtime.to_string(),
+        template,
+        ..scaffold::ScaffoldConfig::default()
+    };
 
-    match request_checked(&mut client, "newProject", Some(params)) {
+    match scaffold::create_project(std::path::Path::new(&directory), &config) {
         Ok(result) => {
             if json {
                 println!(
@@ -507,22 +517,14 @@ pub fn cmd_new(
                     serde_json::to_string_pretty(&result).unwrap_or_default()
                 );
             } else {
-                let project_dir = result
-                    .get("projectDir")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(dir);
-                println!("Created AL project: {project_dir}");
-                if let Some(files) = result.get("filesCreated").and_then(|v| v.as_array()) {
-                    for f in files {
-                        if let Some(name) = f.as_str() {
-                            println!("  {name}");
-                        }
-                    }
+                println!("Created AL project: {}", result.project_dir);
+                for file in &result.files_created {
+                    println!("  {file}");
                 }
             }
             ExitCode::SUCCESS
         }
-        Err(e) => report_error(&e, json),
+        Err(error) => report_error(&error, json),
     }
 }
 

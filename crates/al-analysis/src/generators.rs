@@ -292,12 +292,8 @@ fn generate_test_stubs(subject: &SymbolEntry) -> String {
         .join("\n")
 }
 
-/// The single placeholder `[Test]` procedure emitted when there is nothing to
-/// derive stubs from. Shared with `scaffold`'s test template, which emitted a
-/// byte-identical copy.
-pub(crate) fn default_test_stub() -> String {
-    "    [Test]\n    procedure TestSomething()\n    begin\n        Error('Placeholder test: implementation required');\n    end;\n".to_string()
-}
+/// The placeholder `[Test]` procedure, shared with the scaffold's test template.
+pub(crate) use al_project::scaffold::default_test_stub;
 
 /// Camel-case `name` into a bare AL identifier for a page control or report
 /// column.

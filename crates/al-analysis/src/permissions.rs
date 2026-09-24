@@ -121,15 +121,8 @@ pub fn render_al(entries: &[PermissionEntry], id: i64, name: &str) -> String {
     out
 }
 
-/// Escape a name for use inside AL double-quoted identifiers.
-///
-/// AL uses `""` to represent a literal double-quote inside a quoted identifier.
-/// Made `pub(crate)` so generators / scaffolders in sibling modules can share
-/// the same convention — duplicating it would risk one site forgetting to
-/// escape and emitting unparseable AL.
-pub(crate) fn al_escape_name(name: &str) -> String {
-    name.replace('"', "\"\"")
-}
+/// AL writes a literal `"` inside a quoted identifier as `""`.
+pub(crate) use al_project::scaffold::al_escape_name;
 
 /// Render a permission set as the XML the BC dev tools import.
 ///

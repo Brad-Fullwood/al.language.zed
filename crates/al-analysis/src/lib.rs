@@ -21,7 +21,9 @@ pub mod queries;
 // and it is part of what a consumer of this crate analyses AL with. No crate
 // in this workspace imports it today.
 pub mod resolution;
-pub mod scaffold;
+/// Project scaffolding lives in al-project so `al-explorer new` can run it
+/// without a daemon.
+pub use al_project::scaffold;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub(crate) mod workspace_sources;

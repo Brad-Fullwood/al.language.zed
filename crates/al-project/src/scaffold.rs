@@ -11,6 +11,19 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+/// Escape a name for a quoted AL identifier: AL writes a literal `"` inside
+/// one as `""`. Shared with al-analysis's generators and permission-set
+/// rendering so no generator forgets it and emits AL that does not parse.
+pub fn al_escape_name(name: &str) -> String {
+    name.replace('"', "\"\"")
+}
+
+/// The single placeholder `[Test]` procedure emitted when there is nothing to
+/// derive stubs from. Shared with al-analysis's test generator.
+pub fn default_test_stub() -> String {
+    "    [Test]\n    procedure TestSomething()\n    begin\n        Error('Placeholder test: implementation required');\n    end;\n".to_string()
+}
+
 /// Comma-separated list of the built-in template names, for error messages.
 const BUILTIN_TEMPLATE_NAMES: &str = "default, pte, appsource, library, test, copilot, agent, api";
 
@@ -120,7 +133,10 @@ impl Default for ScaffoldConfig {
         Self {
             name: "MyApp".to_string(),
             publisher: "Default Publisher".to_string(),
-            id: "00000000-0000-0000-0000-000000000000".to_string(),
+            // Every new project gets its own app id. The nil GUID made every
+            // scaffolded app the same app to Business Central, so publishing a
+            // second one replaced the first.
+            id: fresh_guid(),
             version: "1.0.0.0".to_string(),
             // Runtime 17.0 is the stable AL runtime shipped with BC 28. The
             // generated application minimum is derived from this value rather
@@ -689,7 +705,7 @@ fn substitute_path(rel: &Path, substitute: &impl Fn(&str) -> String) -> Result<P
 /// Generate a fresh v4-shaped GUID (canonical lowercase, unbraced) for the
 /// `{{id}}` placeholder when a descriptor requests `generateId`.
 ///
-/// al-analysis has no RNG dependency, so this seeds a SplitMix64 stream from the
+/// This crate has no RNG dependency, so this seeds a SplitMix64 stream from the
 /// wall clock, the process id, and a monotonic counter. That is *not*
 /// cryptographic randomness, but a scaffold's app id only needs to be unique,
 /// which this comfortably provides (distinct calls advance the counter).
@@ -902,7 +918,7 @@ fn generate_starter_codeunit(config: &ScaffoldConfig) -> String {
 }
 
 fn generate_library_codeunit(config: &ScaffoldConfig) -> String {
-    let name = crate::permissions::al_escape_name(&config.name);
+    let name = al_escape_name(&config.name);
     format!(
         r#"codeunit 50100 "{name} Library"
 {{
@@ -916,8 +932,8 @@ fn generate_library_codeunit(config: &ScaffoldConfig) -> String {
 }
 
 fn generate_test_codeunit(config: &ScaffoldConfig) -> String {
-    let name = crate::permissions::al_escape_name(&config.name);
-    let stub = crate::generators::default_test_stub();
+    let name = al_escape_name(&config.name);
+    let stub = default_test_stub();
     format!(
         r#"codeunit 50100 "{name} Test"
 {{
@@ -935,7 +951,7 @@ fn generate_test_codeunit(config: &ScaffoldConfig) -> String {
 /// chat with Copilot is not extensible.
 /// <https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/ai-build-capability-in-al>
 fn generate_copilot_capability_enum(config: &ScaffoldConfig) -> String {
-    let name = crate::permissions::al_escape_name(&config.name);
+    let name = al_escape_name(&config.name);
     let caption = al_escape_literal(&config.name);
     format!(
         r#"enumextension 50100 "{name} Copilot Capability" extends "Copilot Capability"
@@ -952,7 +968,7 @@ fn generate_copilot_capability_enum(config: &ScaffoldConfig) -> String {
 }
 
 fn generate_copilot_codeunit(config: &ScaffoldConfig) -> String {
-    let name = crate::permissions::al_escape_name(&config.name);
+    let name = al_escape_name(&config.name);
     format!(
         r#"codeunit 50100 "{name} Copilot Participant"
 {{
@@ -996,7 +1012,7 @@ fn generate_copilot_codeunit(config: &ScaffoldConfig) -> String {
 }
 
 fn generate_azure_openai_codeunit(config: &ScaffoldConfig) -> String {
-    let name = crate::permissions::al_escape_name(&config.name);
+    let name = al_escape_name(&config.name);
     let single_quoted = al_escape_literal(&config.name);
     format!(
         r#"codeunit 50101 "{name} Azure OpenAI Helper"
@@ -1011,7 +1027,7 @@ fn generate_azure_openai_codeunit(config: &ScaffoldConfig) -> String {
 }
 
 fn generate_agent_codeunit(config: &ScaffoldConfig) -> String {
-    let name = crate::permissions::al_escape_name(&config.name);
+    let name = al_escape_name(&config.name);
     format!(
         r#"codeunit 50100 "{name} Agent"
 {{
@@ -1029,7 +1045,7 @@ fn generate_agent_codeunit(config: &ScaffoldConfig) -> String {
 }
 
 fn generate_agent_job_handler(config: &ScaffoldConfig) -> String {
-    let name = crate::permissions::al_escape_name(&config.name);
+    let name = al_escape_name(&config.name);
     format!(
         r#"codeunit 50101 "{name} Agent Job Handler"
 {{
@@ -1064,7 +1080,7 @@ fn api_identifier(text: &str) -> String {
 }
 
 fn generate_api_page(config: &ScaffoldConfig) -> String {
-    let name = crate::permissions::al_escape_name(&config.name);
+    let name = al_escape_name(&config.name);
     // `EntityName = 'item'` over `SourceTable = Customer` made `/items` return
     // customers. The publisher and group come from the project rather than the
     // `defaultPublisher` / `defaultGroup` placeholders AppSourceCop flags.
@@ -1124,7 +1140,15 @@ fn generate_app_source_cop_json() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::assert_al_parses;
+
+    fn assert_al_parses(label: &str, source: &str) {
+        let result = al_syntax::parser::AlParser::parse_quick(source);
+        assert!(
+            result.errors.is_empty(),
+            "{label} did not parse cleanly:\n{source}\nerrors: {:?}",
+            result.errors
+        );
+    }
 
     #[test]
     fn scaffold_creates_all_files() {
@@ -1929,6 +1953,24 @@ mod tests {
         assert!(guard_relative(Path::new("../a")).is_err());
         assert!(guard_relative(Path::new("a/../../b")).is_err());
         assert!(guard_relative(Path::new("/abs")).is_err());
+    }
+
+    #[test]
+    fn a_built_in_template_gets_its_own_app_id() {
+        let ids: Vec<String> = (0..2)
+            .map(|_| {
+                let dir = tempfile::tempdir().unwrap();
+                let target = dir.path().join("app");
+                create_project(&target, &ScaffoldConfig::default()).unwrap();
+                let app: serde_json::Value = serde_json::from_str(
+                    &std::fs::read_to_string(target.join("app.json")).unwrap(),
+                )
+                .unwrap();
+                app["id"].as_str().unwrap().to_string()
+            })
+            .collect();
+        assert_ne!(ids[0], "00000000-0000-0000-0000-000000000000");
+        assert_ne!(ids[0], ids[1], "two projects must not share an app id");
     }
 
     #[test]
