@@ -951,6 +951,23 @@ impl LspClient {
         }
     }
 
+    /// Send `workspace/didChangeWatchedFiles` for paths relative to the
+    /// project, each with its LSP change type (1 created, 2 changed, 3 deleted).
+    pub async fn files_changed_on_disk(&mut self, changes: &[(&str, u32)]) {
+        let changes: Vec<Value> = changes
+            .iter()
+            .map(|(relative_path, change_type)| {
+                serde_json::json!({ "uri": self.file_uri(relative_path), "type": change_type })
+            })
+            .collect();
+        self.notify(
+            "workspace/didChangeWatchedFiles",
+            serde_json::json!({ "changes": changes }),
+        )
+        .await
+        .expect("workspace/didChangeWatchedFiles notify failed");
+    }
+
     pub async fn workspace_symbol(&mut self, query: &str) -> Vec<Value> {
         let params = serde_json::json!({ "query": query });
 

@@ -205,6 +205,9 @@ pub struct AlServer {
     /// when this is set; otherwise the server must return a plain `Location[]`.
     /// Captured from the `initialize` capabilities.
     pub(crate) definition_link_support: AtomicBool,
+    /// Whether the client can register `workspace/didChangeWatchedFiles`
+    /// dynamically, so files changed outside the editor reach the index.
+    pub(crate) watched_files_registration: AtomicBool,
     /// Whether the client advertised
     /// `textDocument.documentSymbol.hierarchicalDocumentSymbolSupport`. The LSP
     /// spec only permits the nested `DocumentSymbol[]` response when this is set;
@@ -470,6 +473,7 @@ impl AlServer {
             workspace_init_state,
             semantic_failure_reported: AtomicBool::new(false),
             definition_link_support: AtomicBool::new(false),
+            watched_files_registration: AtomicBool::new(false),
             document_symbol_hierarchical: AtomicBool::new(false),
             workspace_diagnostic_uris: Arc::new(Mutex::new(std::collections::HashSet::new())),
             semantic_diagnostic_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -1063,6 +1067,16 @@ impl LanguageServer for AlServer {
         self.definition_link_support
             .store(link_support, Ordering::Relaxed);
 
+        let watched_files = params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.did_change_watched_files.as_ref())
+            .and_then(|watched| watched.dynamic_registration)
+            .unwrap_or(false);
+        self.watched_files_registration
+            .store(watched_files, Ordering::Relaxed);
+
         // Only emit the nested `DocumentSymbol[]` outline when the client opted
         // in via `textDocument.documentSymbol.hierarchicalDocumentSymbolSupport`;
         // otherwise the LSP spec requires the flat `SymbolInformation[]` form.
@@ -1237,6 +1251,100 @@ impl LanguageServer for AlServer {
             }
         });
         *self.init_task.lock().await = Some(handle);
+
+        // Without a watcher the index only learns about files the editor has
+        // open, so a `git checkout` or a generator left every other file stale
+        // until it was opened. The registration is a request to the client;
+        // it runs on its own so `initialized` does not wait on the reply.
+        if self.watched_files_registration.load(Ordering::Relaxed) {
+            let client = self.client.clone();
+            tokio::spawn(async move {
+                let options = DidChangeWatchedFilesRegistrationOptions {
+                    watchers: vec![FileSystemWatcher {
+                        glob_pattern: GlobPattern::String("**/*.al".to_string()),
+                        kind: None,
+                    }],
+                };
+                let registration = Registration {
+                    id: "al-lsp-watched-al-files".to_string(),
+                    method: "workspace/didChangeWatchedFiles".to_string(),
+                    register_options: serde_json::to_value(options).ok(),
+                };
+                if let Err(error) = client.register_capability(vec![registration]).await {
+                    tracing::warn!(%error, "could not register the .al file watcher");
+                }
+            });
+        }
+    }
+
+    /// Re-read `.al` files changed outside the editor. An open document is
+    /// skipped: its editor text is newer than the disk.
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        match self.await_ready().await {
+            Ok(generation) => drop(generation),
+            Err(_) => return,
+        }
+        let project_root = self
+            .workspace
+            .project
+            .read()
+            .await
+            .as_ref()
+            .map(|project| project.root.clone());
+        let mut changes = Vec::new();
+        for event in params.changes {
+            if self.workspace.documents.contains(&event.uri) {
+                continue;
+            }
+            let Ok(path) = event.uri.to_file_path() else {
+                continue;
+            };
+            if !path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("al"))
+                || project_root
+                    .as_ref()
+                    .is_some_and(|root| !path.starts_with(root))
+            {
+                continue;
+            }
+            let text = if event.typ == FileChangeType::DELETED {
+                None
+            } else {
+                let read_path = path.clone();
+                match tokio::task::spawn_blocking(move || {
+                    al_source::file_index::read_source_file(&read_path)
+                })
+                .await
+                {
+                    Ok(Ok(text)) => text,
+                    Ok(Err(error)) => {
+                        tracing::warn!(path = %path.display(), %error, "watched file could not be read");
+                        continue;
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "watched file read worker failed");
+                        continue;
+                    }
+                }
+            };
+            changes.push((path, text));
+        }
+        if changes.is_empty() {
+            return;
+        }
+        let generation = self.workspace.generation_lock.write().await;
+        // The editor may have opened one of these while it was being read.
+        changes.retain(|(path, _)| {
+            Url::from_file_path(path).map_or(true, |uri| !self.workspace.documents.contains(&uri))
+        });
+        tracing::info!(files = changes.len(), "files changed on disk");
+        al_workspace::apply_disk_changes(&self.workspace, changes);
+        let scope = self.workspace.config.read().await.diagnostics_scope;
+        drop(generation);
+        if scope == al_project::config::DiagnosticsScope::Project {
+            self.schedule_workspace_diagnostics().await;
+        }
     }
 
     async fn shutdown(&self) -> Result<()> {

@@ -1412,6 +1412,27 @@ pub fn refresh_workspace_files(
     Ok(delta)
 }
 
+/// Apply files the editor reported changed on disk and does not have open:
+/// `Some(text)` re-indexes the file, `None` drops it. Then invalidate what
+/// was derived from them, as [`refresh_workspace_files`] does.
+pub fn apply_disk_changes(
+    workspace: &Workspace,
+    changes: Vec<(std::path::PathBuf, Option<String>)>,
+) {
+    if changes.is_empty() {
+        return;
+    }
+    for (path, text) in changes {
+        match text {
+            Some(text) => workspace.file_index.add_file(path, text),
+            None => workspace.file_index.remove_file(&path),
+        }
+    }
+    workspace.symbols.invalidate_all_composed();
+    workspace.invalidate_insight_graph();
+    workspace.mark_generation_changed();
+}
+
 /// Invalidate the composed symbol cache when a file is closed.
 ///
 /// Only handles symbol cache invalidation — the decision about whether to remove
