@@ -339,10 +339,33 @@ pub(super) fn dispatch_search(
         Ok(summary) => summary,
         Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
     };
+    // `limit` and `offset` also page the result (projection.rs), which
+    // needs every match to report `total` and `truncated`: capping the
+    // search at `limit` told a caller asking for 3 of 8 matches that 3 was
+    // all there was, and `offset 3` returned nothing. So a paged search
+    // collects every match, and serializes in full only the rows that can
+    // land in the page (with a margin for de-duplication below); the rest
+    // are summaries the projection drops.
+    const MAX_PAGED_MATCHES: usize = 10_000;
+    let paged = params.get("limit").is_some() || params.get("offset").is_some();
+    let offset = params
+        .get("offset")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|offset| usize::try_from(offset).ok())
+        .unwrap_or(0);
+    let (limit, full_rows) = if paged {
+        (
+            MAX_PAGED_MATCHES.max(limit),
+            offset.saturating_add(limit).saturating_add(64),
+        )
+    } else {
+        (limit, usize::MAX)
+    };
     let results = workspace.symbols.search(query, limit);
     let mut value: Vec<serde_json::Value> = match results
         .iter()
-        .map(|entry| symbol_entry_to_json(workspace, entry, summary))
+        .enumerate()
+        .map(|(row, entry)| symbol_entry_to_json(workspace, entry, summary || row >= full_rows))
         .collect::<Result<Vec<_>, _>>()
     {
         Ok(value) => value,
@@ -1641,6 +1664,39 @@ mod tests {
             &serde_json::json!({ "uri": "file:///tmp/x.al", "line": 0, "character": 0 }),
         );
         assert_invalid_params(&resp, 10);
+    }
+
+    /// `limit` pages the result, so the search itself must not stop at it:
+    /// the page is cut, and `total` counted, from every match.
+    #[test]
+    fn a_paged_search_returns_every_match_for_the_projection_to_page() {
+        let ws = al_workspace::Workspace::new();
+        let entries: Vec<al_symbols::SymbolEntry> = (0..5)
+            .map(|index| al_symbols::SymbolEntry {
+                kind: al_symbols::ObjectKind::Codeunit,
+                id: 80 + index,
+                name: format!("Sales-Post {index}"),
+                package: "Base Application".to_string(),
+                ..Default::default()
+            })
+            .collect();
+        ws.symbols.add_entries(&entries);
+
+        let params = serde_json::json!({ "query": "Sales-Post", "limit": 2, "offset": 2 });
+        let resp = dispatch_search(&ws, 13, &params);
+        let rows = resp
+            .result
+            .as_ref()
+            .and_then(|r| r.as_array())
+            .unwrap()
+            .len();
+        assert_eq!(rows, 5);
+
+        let paged = super::super::projection::apply("search", &params, resp);
+        let page = paged.result.unwrap();
+        assert_eq!(page["total"], 5, "{page}");
+        assert_eq!(page["returned"], 2, "{page}");
+        assert_eq!(page["truncated"], true, "{page}");
     }
 
     #[test]
