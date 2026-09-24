@@ -6,6 +6,7 @@
 //! told routes the test to live BC.
 
 use al_runtime::interpreter::dispatch::supports_global_builtin;
+use al_runtime::interpreter::enums::supports_enum_method;
 use al_runtime::interpreter::records::{
     supports_dict_method, supports_list_method, supports_record_method, supports_text_method,
 };
@@ -18,6 +19,11 @@ enum Step {
     List,
     Dictionary,
     Record,
+    /// A value of a workspace enum.
+    Enum,
+    /// A workspace enum type itself (`Enum::Colour`), for FromInteger,
+    /// Names and Ordinals.
+    EnumType,
     /// A value with no methods the chain can call (Integer, Boolean, ...).
     Scalar,
     /// A value of a type routing cannot tell.
@@ -66,13 +72,14 @@ const TEXT_BUILTINS: &[&str] = &[
 
 /// Whether the postfix children `primary` + `suffixes` form a chain the
 /// interpreter evaluates step by step (mirrors its own test): at least two
-/// suffixes, or a call on a literal, and no `::` step.
+/// suffixes, or a call on a literal; `::` steps may only lead it.
 pub(super) fn is_chain(primary: tree_sitter::Node<'_>, suffixes: &[tree_sitter::Node<'_>]) -> bool {
     let value_receiver = primary
         .named_child(0)
         .is_some_and(|inner| !matches!(inner.kind(), "name" | "object_keyword" | "type_keyword"));
+    let scope_steps = leading_scope_steps(suffixes);
     (suffixes.len() >= 2 || (value_receiver && !suffixes.is_empty()))
-        && suffixes.iter().all(|suffix| {
+        && suffixes[scope_steps..].iter().all(|suffix| {
             matches!(
                 suffix.kind(),
                 "member_call_suffix" | "call_suffix" | "member_suffix" | "index_suffix"
@@ -86,13 +93,38 @@ pub(super) fn is_chain(primary: tree_sitter::Node<'_>, suffixes: &[tree_sitter::
 pub(super) fn route(
     primary: tree_sitter::Node<'_>,
     suffixes: &[tree_sitter::Node<'_>],
-    head_type: Option<&str>,
+    head_type: Option<(&str, Option<&str>)>,
+    enum_declared: &dyn Fn(&str) -> bool,
     source: &[u8],
 ) -> Result<ChainRoute, String> {
     let head = primary_text(primary, source);
     let mut records = false;
-    let mut steps = suffixes.iter().peekable();
+    let scope_steps = leading_scope_steps(suffixes);
+    let mut steps = suffixes[scope_steps..].iter().peekable();
+    let require_enum = |type_name: &str| {
+        if enum_declared(type_name) {
+            Ok(())
+        } else {
+            Err(format!(
+                "uses enum '{type_name}' without a workspace declaration for ordinal resolution"
+            ))
+        }
+    };
     let mut current = match (primary.named_child(0).map(|n| n.kind()), steps.peek()) {
+        // `Colour::Blue.…`, `Enum::Colour::Blue.…` and `Enum::Colour.…`.
+        _ if scope_steps > 0 => {
+            if head.eq_ignore_ascii_case("enum") {
+                require_enum(&scope_member(suffixes[0], source))?;
+                if scope_steps >= 2 {
+                    Step::Enum
+                } else {
+                    Step::EnumType
+                }
+            } else {
+                require_enum(&head)?;
+                Step::Enum
+            }
+        }
         (Some("string" | "verbatim_string"), _) => Step::Text,
         (Some("name"), Some(first)) if first.kind() == "call_suffix" => {
             steps.next();
@@ -106,7 +138,11 @@ pub(super) fn route(
             }
         }
         (Some("name"), _) => match head_type {
-            Some(kind) => declared_step(kind),
+            Some(("enum", subtype)) => {
+                require_enum(subtype.unwrap_or_default())?;
+                Step::Enum
+            }
+            Some((kind, _)) => declared_step(kind),
             None => {
                 return Err(format!(
                     "cannot resolve receiver '{head}' of a chained call; routing conservatively"
@@ -129,6 +165,10 @@ pub(super) fn route(
                     Step::List => supports_list_method(&lower),
                     Step::Dictionary => supports_dict_method(&lower),
                     Step::Record => supports_record_method(&lower),
+                    Step::Enum => supports_enum_method(&lower),
+                    Step::EnumType => {
+                        matches!(lower.as_str(), "frominteger" | "names" | "ordinals")
+                    }
                     Step::Scalar | Step::Unknown => false,
                 };
                 if !supported {
@@ -181,6 +221,9 @@ fn method_result(receiver: Step, method: &str) -> Step {
             Step::Scalar
         }
         (Step::Dictionary, "keys" | "values") => Step::List,
+        (Step::Enum | Step::EnumType, "names" | "ordinals") => Step::List,
+        (Step::Enum, "asinteger") => Step::Scalar,
+        (Step::EnumType, "frominteger") => Step::Enum,
         // Element types are not tracked; a text-only method after this still
         // types the element.
         _ => Step::Unknown,
@@ -193,9 +236,28 @@ fn step_name(step: Step) -> &'static str {
         Step::List => "List",
         Step::Dictionary => "Dictionary",
         Step::Record => "Record",
+        Step::Enum => "enum value",
+        Step::EnumType => "enum type",
         Step::Scalar => "value without methods",
         Step::Unknown => "value of unknown type",
     }
+}
+
+/// How many `::` steps lead the chain.
+fn leading_scope_steps(suffixes: &[tree_sitter::Node<'_>]) -> usize {
+    suffixes
+        .iter()
+        .take_while(|suffix| suffix.kind() == "scope_suffix")
+        .count()
+}
+
+fn scope_member(scope: tree_sitter::Node<'_>, source: &[u8]) -> String {
+    scope
+        .child_by_field_name("member")
+        .or_else(|| scope.named_child(0))
+        .and_then(|member| member.utf8_text(source).ok())
+        .map(|text| text.unquote_identifier().into_owned())
+        .unwrap_or_default()
 }
 
 fn member_name(suffix: tree_sitter::Node<'_>, source: &[u8]) -> String {

@@ -65,6 +65,16 @@ pub(crate) fn dispatch_call_scoped(
     // Statement position matters only to builtins that fail differently as a
     // statement (Evaluate); take it so it never leaks into a callee's body.
     let statement = std::mem::take(&mut ctx.stmt_position);
+    // An enum variable never assigned carries only its ordinal; name it
+    // before any builtin or stub shows it.
+    let args = if args
+        .iter()
+        .any(|arg| matches!(arg, Value::Option { member, .. } if member.is_empty()))
+    {
+        crate::interpreter::enums::with_member_names(args, ctx)
+    } else {
+        args
+    };
     if let Some(recv) = receiver {
         if stubs::is_context_member(recv, procedure) {
             return dispatch_stub_with_context(recv, procedure, &args, ctx);

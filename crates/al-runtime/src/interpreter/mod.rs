@@ -3,6 +3,7 @@
 mod chain;
 pub mod coverage;
 pub mod dispatch;
+pub mod enums;
 pub mod eval_expr;
 pub mod eval_stmt;
 mod indexing;

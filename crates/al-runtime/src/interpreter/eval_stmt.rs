@@ -902,6 +902,19 @@ pub(crate) fn eval_call_parts(
                 }
                 return records::dispatch_dict_method(&recv, &proc_name, args, stack);
             }
+            Some(Value::Option { .. })
+                if crate::interpreter::enums::supports_enum_method(&proc_name) =>
+            {
+                let value = stack.lookup(recv).cloned().unwrap_or(Value::Null);
+                let args = match eval_args_opt(args_node, source, stack, ctx) {
+                    Ok(v) => v,
+                    Err(ArgsShort::Error(e)) => return Eval::Error(e),
+                    Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
+                };
+                return crate::interpreter::enums::dispatch_enum_method(
+                    &value, &proc_name, &args, ctx,
+                );
+            }
             Some(Value::Codeunit { object_name }) => {
                 let object_name = object_name.clone();
                 let args = match eval_args_opt(args_node, source, stack, ctx) {
@@ -986,6 +999,20 @@ fn simple_lvalue_name(node: Node<'_>, source: &[u8]) -> Option<String> {
 }
 
 /// Evaluate an optional argument-list node into a `Vec<Value>`.
+/// Evaluate a call's arguments; `Err` carries an error or an `exit` raised
+/// while evaluating one.
+pub(crate) fn eval_call_arguments(
+    args_node: Option<Node<'_>>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Result<Vec<Value>, Eval> {
+    eval_args_opt(args_node, source, stack, ctx).map_err(|short| match short {
+        ArgsShort::Error(error) => Eval::Error(error),
+        ArgsShort::Exit(value) => Eval::Exit(value),
+    })
+}
+
 fn eval_args_opt(
     args_node: Option<Node<'_>>,
     source: &[u8],

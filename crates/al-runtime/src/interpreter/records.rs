@@ -2085,7 +2085,7 @@ pub(crate) fn default_for_structured(type_text: &str) -> Option<Value> {
     if let Some(array) = default_for_array(trimmed) {
         return Some(array);
     }
-    None
+    crate::interpreter::enums::default_enum_value(trimmed)
 }
 
 /// `array[N] of T` with a scalar `T`: `N` default elements. Several

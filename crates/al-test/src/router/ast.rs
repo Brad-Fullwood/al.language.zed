@@ -304,10 +304,23 @@ pub(super) fn classify_call(
     }
 
     if super::chain::is_chain(primary, &children[1..]) {
-        let head_type = resolver
+        let head = resolver
             .resolve_type(&receiver, syntax_position(primary, source))
-            .map(|decl| decl.type_name.to_ascii_lowercase());
-        match super::chain::route(primary, &children[1..], head_type.as_deref(), source) {
+            .map(|decl| (decl.type_name.to_ascii_lowercase(), decl.type_subtype));
+        let enum_declared = |type_name: &str| {
+            workspace
+                .file_index
+                .object_path_of_kind(type_name, &["enum"])
+                .is_some()
+        };
+        match super::chain::route(
+            primary,
+            &children[1..],
+            head.as_ref()
+                .map(|(kind, subtype)| (kind.as_str(), subtype.as_deref())),
+            &enum_declared,
+            source,
+        ) {
             Ok(super::chain::ChainRoute::Local) => {}
             Ok(super::chain::ChainRoute::Records) => promote(
                 decision,
@@ -555,6 +568,27 @@ pub(super) fn classify_call(
                 reasons,
                 RoutingDecision::LiveBc,
                 &format!("calls unsupported Dictionary.{method} (requires BC semantics)"),
+                file,
+                member_node,
+                reachable,
+            );
+        }
+    } else if type_name == "enum" {
+        let subtype = decl.type_subtype.as_deref().unwrap_or("").trim();
+        let declared = workspace
+            .file_index
+            .object_path_of_kind(subtype, &["enum"])
+            .is_some();
+        if !declared || !al_runtime::interpreter::enums::supports_enum_method(&method) {
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::LiveBc,
+                &if declared {
+                    format!("calls unsupported Enum.{method} (requires BC semantics)")
+                } else {
+                    format!("calls {receiver}.{method} on enum '{subtype}' without a workspace declaration")
+                },
                 file,
                 member_node,
                 reachable,

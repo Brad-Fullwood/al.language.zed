@@ -1019,3 +1019,74 @@ end;
         untyped.reasons
     );
 }
+
+/// Enum methods had no local route: `C.AsInteger()` fell to "outside the
+/// verified local runtime capability set" and `Colour::Blue.AsInteger()`
+/// was read as a call on an object named Colour.
+#[test]
+fn enum_methods_on_workspace_enums_stay_local() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Colour.Enum.al"),
+        "enum 50191 Colour\n{\n    value(0; Red) { }\n    value(3; Blue) { }\n}\n".to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/EnumRouting.Codeunit.al"),
+        r#"codeunit 50182 "Enum Routing"
+{
+Subtype = Test;
+
+[Test]
+procedure LocalEnums()
+var
+    C: Enum Colour;
+    n: Integer;
+begin
+    n := C.AsInteger();
+    n := Colour::Blue.AsInteger();
+    C := Enum::Colour.FromInteger(3);
+    n := Enum::Colour.Names().Count();
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/EnumRouting2.Codeunit.al"),
+        r#"codeunit 50183 "Enum Routing 2"
+{
+Subtype = Test;
+
+[Test]
+procedure PackageEnum()
+var
+    n: Integer;
+begin
+    n := "Sales Document Type"::Order.AsInteger();
+end;
+}"#
+        .to_string(),
+    );
+    let results = classify_all(&workspace).unwrap();
+    let local = results
+        .iter()
+        .find(|result| result.method_name == "LocalEnums")
+        .expect("local enum classification");
+    assert_eq!(
+        local.decision,
+        RoutingDecision::Interp,
+        "workspace enum methods run locally: {:?}",
+        local.reasons
+    );
+    let package = results
+        .iter()
+        .find(|result| result.method_name == "PackageEnum")
+        .expect("package enum classification");
+    assert_eq!(package.decision, RoutingDecision::LiveBc);
+    assert!(
+        package.reasons.iter().any(|reason| reason
+            .message
+            .contains("enum 'Sales Document Type' without a workspace declaration")),
+        "unexpected reasons: {:?}",
+        package.reasons
+    );
+}

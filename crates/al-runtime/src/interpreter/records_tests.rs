@@ -2698,3 +2698,88 @@ fn ascending_false_iterates_the_key_backwards_until_reset() {
         Value::Text("BCA|A".into())
     );
 }
+
+const ENUM_PROBE: &str = r#"codeunit 50192 "Enum Probe"
+{
+    procedure AssignedFormat(): Text
+    var
+        C: Enum Colour;
+    begin
+        C := Colour::Blue;
+        exit(Format(C));
+    end;
+
+    procedure UnassignedIsOrdinalZero(): Boolean
+    var
+        C: Enum Colour;
+    begin
+        exit(C = Colour::Red);
+    end;
+
+    procedure AsInteger(): Integer
+    var
+        C: Enum Colour;
+    begin
+        C := Colour::Blue;
+        exit(C.AsInteger());
+    end;
+
+    procedure ValueAsInteger(): Integer
+    begin
+        exit(Colour::Blue.AsInteger() + Enum::Colour::Blue.AsInteger());
+    end;
+
+    procedure FromIntegerAndNames(): Text
+    var
+        C: Enum Colour;
+    begin
+        C := Enum::Colour.FromInteger(3);
+        exit(Format(C) + Format(Enum::Colour.Names().Count()));
+    end;
+
+    procedure UnassignedFormatAndNames(): Text
+    var
+        C: Enum Colour;
+    begin
+        exit(Format(C) + '|' + C.Names().Get(2));
+    end;
+
+    procedure CaseOnEnum(): Integer
+    var
+        C: Enum Colour;
+    begin
+        C := Enum::Colour::Blue;
+        case C of
+            Colour::Red: exit(1);
+            Colour::Blue: exit(2);
+        end;
+    end;
+}
+"#;
+
+const COLOUR_ENUM: &str =
+    "enum 50191 Colour\n{\n    value(0; Red) { }\n    value(3; Blue) { }\n}\n";
+
+/// `Enum` variables were never bound, so assigning one failed as an
+/// undeclared identifier, and no enum method ran locally.
+#[test]
+fn enum_variables_and_methods_run_locally() {
+    let call = |proc: &str| {
+        ok(run(
+            &[("/ws/Probe.al", ENUM_PROBE), ("/ws/Colour.al", COLOUR_ENUM)],
+            "Enum Probe",
+            proc,
+            vec![],
+        ))
+    };
+    assert_eq!(call("AssignedFormat"), Value::Text("Blue".into()));
+    assert_eq!(call("UnassignedIsOrdinalZero"), Value::Boolean(true));
+    assert_eq!(call("AsInteger"), Value::Integer(3));
+    assert_eq!(call("CaseOnEnum"), Value::Integer(2));
+    assert_eq!(call("ValueAsInteger"), Value::Integer(6));
+    assert_eq!(call("FromIntegerAndNames"), Value::Text("Blue2".into()));
+    assert_eq!(
+        call("UnassignedFormatAndNames"),
+        Value::Text("Red|Blue".into())
+    );
+}

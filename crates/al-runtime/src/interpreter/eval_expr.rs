@@ -558,7 +558,7 @@ fn eval_postfix(
 ///
 /// Workspace enum declarations are resolved through the same source catalog as
 /// procedure dispatch, preserving explicit (including sparse) ordinals.
-fn eval_scope_access(
+pub(crate) fn eval_scope_access(
     node: Node<'_>,
     scope_members: &[Node<'_>],
     source: &[u8],
@@ -609,28 +609,7 @@ fn eval_scope_access(
 }
 
 fn resolve_workspace_enum_ordinal(ctx: &DispatchCtx, type_name: &str, member: &str) -> Option<i64> {
-    let path = ctx.source.find_by_object_name(type_name)?;
-    let (text, tree) = ctx.source.get_cached_parse(&path)?;
-    let bytes = text.as_bytes();
-    let mut stack = vec![tree.root_node()];
-    while let Some(node) = stack.pop() {
-        if node.kind() == "enum_value_declaration" {
-            let name = node
-                .child_by_field_name("name")
-                .and_then(|name| name.utf8_text(bytes).ok())
-                .map(|name| name.unquote_identifier());
-            if name.is_some_and(|name| name.eq_ignore_ascii_case(member)) {
-                return node
-                    .child_by_field_name("id")
-                    .and_then(|id| id.utf8_text(bytes).ok())
-                    .and_then(|id| id.trim().parse::<i64>().ok());
-            }
-            continue;
-        }
-        let mut cursor = node.walk();
-        stack.extend(node.named_children(&mut cursor));
-    }
-    None
+    crate::interpreter::enums::workspace_enum_ordinal(ctx, type_name, member)
 }
 
 /// Evaluate an AL date literal (`20240701D`, `0D`) into a `Value::Date`.
