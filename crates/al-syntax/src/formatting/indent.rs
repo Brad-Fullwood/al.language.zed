@@ -79,6 +79,17 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     // Block comments do not consume pending single-statement indentation.
     let mut in_block_comment = false;
 
+    // Open `begin`/`case`/`repeat` blocks, each with the single-statement
+    // indentation it suspended. `if R.FindSet() then repeat ... until` and
+    // `if A then if B then begin ... end;` are one statement under the
+    // outer opener: the slot is consumed by the closing `until`/`end;`, not
+    // by the first statement inside the block, which used to shift the rest
+    // of the block out one level.
+    let mut block_stack: Vec<(BlockKind, i32)> = Vec::new();
+    // A suspended slot whose block closed with `end` and no `;`: the
+    // statement goes on with `else`.
+    let mut pending_else: i32 = 0;
+
     for line in text.lines() {
         let trimmed = line.trim();
         let started_in_block_comment = in_block_comment;
@@ -131,6 +142,13 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             code
         };
         let code_lower = code.to_lowercase();
+        let starts_else = code_lower == "else" || code_lower.starts_with("else ");
+        // A block closed with `end` and no `;` that is not followed by
+        // `else` ended its statement after all.
+        if pending_else > 0 && !starts_else {
+            indent_level = (indent_level - pending_else).max(0);
+            pending_else = 0;
+        }
 
         // `begin` closes a var section — dedent back to the procedure level
         if in_var_section && (code_lower == "begin" || code_lower.ends_with(" begin")) {
@@ -155,8 +173,13 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         }
 
         // `begin` after single-statement openers (if...then begin written separately)
-        // drains the single-stmt stack since begin starts a block
-        if single_stmt_depth > 0 && (code_lower == "begin" || code_lower.ends_with(" begin")) {
+        // drains the single-stmt stack since begin starts a block. An opener
+        // that ends in `begin` itself (`if B then begin`) is the statement an
+        // outer pending opener is waiting for; its slot is suspended below.
+        if single_stmt_depth > 0
+            && (code_lower == "begin" || code_lower.ends_with(" begin"))
+            && !opener_with_begin(&code_lower)
+        {
             indent_level = (indent_level - single_stmt_depth).max(0);
             single_stmt_depth = 0;
         }
@@ -234,7 +257,12 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             single_stmt_depth = 0;
         }
 
-        if code_lower.starts_with("until ") || code_lower == "until" {
+        let is_until = code_lower.starts_with("until ") || code_lower == "until";
+        if is_until {
+            if single_stmt_depth > 0 {
+                indent_level = (indent_level - single_stmt_depth).max(0);
+                single_stmt_depth = 0;
+            }
             indent_level = (indent_level - 1).max(0);
         }
 
@@ -299,11 +327,13 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         // block opener, closer, comment, or another single-stmt opener), pop
         // the stack. Comment-only lines are not executable statements and must
         // not consume single-stmt-depth.
+        let opens_case = code_lower.starts_with("case ") && code_lower.ends_with(" of");
         let is_block_opener = code.ends_with('{')
             || code_lower == "begin"
             || code_lower.ends_with(" begin")
             || code_lower == "var"
-            || code_lower == "repeat";
+            || code_lower == "repeat"
+            || opens_case;
         let is_single_stmt_opener = is_single_statement_opener(&code_lower);
 
         if single_stmt_depth > 0
@@ -318,6 +348,50 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             // This line consumed one single-statement slot; drain all
             indent_level = (indent_level - single_stmt_depth).max(0);
             single_stmt_depth = 0;
+        }
+
+        // Close the innermost block and give back the slot it suspended.
+        let mut carried = 0;
+        let closes_end = is_close && code_lower != "}";
+        if closes_end || is_until {
+            // Unbalanced source (half-typed code, a stray `until`) must not
+            // take a slot from a block of the other kind.
+            let wanted = if is_until {
+                BlockKind::Repeat
+            } else {
+                BlockKind::Begin
+            };
+            if block_stack.last().is_some_and(|(kind, _)| *kind == wanted) {
+                let (_, saved) = block_stack.pop().unwrap_or((wanted, 0));
+                if saved > 0 {
+                    if is_until || code_lower.ends_with(';') {
+                        indent_level = (indent_level - saved).max(0);
+                    } else if code_lower.ends_with(" begin") {
+                        carried = saved;
+                    } else {
+                        pending_else = saved;
+                    }
+                }
+            }
+        }
+        // A new block takes the pending slot with it.
+        let opens_block = code_lower == "begin"
+            || code_lower.ends_with(" begin")
+            || code_lower == "repeat"
+            || opens_case;
+        if opens_block {
+            let mut saved = carried + single_stmt_depth;
+            single_stmt_depth = 0;
+            if starts_else {
+                saved += pending_else;
+                pending_else = 0;
+            }
+            let kind = if code_lower == "repeat" {
+                BlockKind::Repeat
+            } else {
+                BlockKind::Begin
+            };
+            block_stack.push((kind, saved));
         }
 
         if code.ends_with('{') {
@@ -336,7 +410,8 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             // `else` without `begin` on same line — next stmt is single-stmt
             if !code_lower.ends_with(" begin") {
                 indent_level += 1;
-                single_stmt_depth += 1;
+                single_stmt_depth += 1 + pending_else;
+                pending_else = 0;
             }
         } else if code_lower.starts_with("case ") && code_lower.ends_with(" of") {
             indent_level += 1;
@@ -381,6 +456,22 @@ fn count_net_parens(line: &str) -> i32 {
 
 /// Single-statement openers are loaded from `tree-sitter-al/data/single_stmt_openers.json`
 /// via [`crate::language_data::single_stmt_openers`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockKind {
+    /// `begin ... end` and `case ... end`.
+    Begin,
+    /// `repeat ... until`.
+    Repeat,
+}
+
+/// `if B then begin`, `while B do begin`: an opener whose statement is the
+/// block it opens on the same line.
+fn opener_with_begin(trimmed_lower: &str) -> bool {
+    trimmed_lower
+        .strip_suffix(" begin")
+        .is_some_and(is_single_statement_opener)
+}
+
 fn is_single_statement_opener(trimmed_lower: &str) -> bool {
     crate::language_data::single_stmt_openers().iter().any(|o| {
         trimmed_lower.starts_with(o.prefix.as_str()) && trimmed_lower.ends_with(o.suffix.as_str())
@@ -397,6 +488,23 @@ mod tests {
 
     fn fmt(text: &str) -> String {
         format_al(text, &FormatOptions::default())
+    }
+
+    /// A block that is itself the statement of a single-statement opener:
+    /// `if R.FindSet() then repeat ... until`, `if A then if B then begin
+    /// ... end else begin ... end;`, a `case` under `if`, a `repeat` inside
+    /// a `while` under a `for`. The first statement inside the block used to
+    /// consume the outer opener's indent, shifting the rest of the block, and
+    /// its `until`/`end`, out one level.
+    #[test]
+    fn a_block_under_a_single_statement_opener_keeps_its_indentation() {
+        let formatted = include_str!("testdata/nested_single_statements.al");
+        assert_eq!(fmt(formatted), formatted, "already formatted input changed");
+        let flat: String = formatted
+            .lines()
+            .map(|line| format!("{}\n", line.trim_start()))
+            .collect();
+        assert_eq!(fmt(&flat), formatted, "flat input formatted differently");
     }
 
     #[test]
