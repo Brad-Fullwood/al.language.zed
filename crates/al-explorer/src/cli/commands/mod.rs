@@ -220,6 +220,12 @@ pub fn connect(project_dir: Option<&str>) -> Result<DaemonClient, String> {
                     "{e}\n\nHint: Is the daemon running? Start it with: al-lsp daemon --project {}",
                     root.display()
                 )
+            } else if e.contains("Invalid app.json at") {
+                format!(
+                    "{e}\n\nHint: no valid AL project was found from {}, and the app.json named \
+                     above could not be read as one. Run the command from the AL project directory.",
+                    root.display()
+                )
             } else if e.contains("app.json") {
                 format!(
                     "{e}\n\nHint: No AL project found. Ensure app.json exists in {}",

@@ -930,14 +930,7 @@ impl DaemonClient {
             .rev()
             .map(str::trim)
             .find(|line| !line.is_empty())
-            .map(|line| {
-                // tracing writes "<timestamp> ERROR target: message"; the
-                // message is what the caller needs.
-                line.rsplit_once(": ")
-                    .map(|(_, message)| message)
-                    .unwrap_or(line)
-                    .to_string()
-            })
+            .map(startup_error_message)
     }
 
     fn wait_for_daemon(
@@ -1193,8 +1186,69 @@ fn connect_stream(endpoint: &Path) -> std::io::Result<Stream> {
         .connect_sync()
 }
 
+/// The message in one line of the daemon's tracing output.
+///
+/// The daemon logs `<timestamp> <LEVEL> <message> error=<error>` with ANSI
+/// colour codes. The client used to keep the text after the last `": "`, which
+/// cut `Invalid app.json at <path>: missing field` down to `missing field` and
+/// dropped the one thing the user needed: which file.
+fn startup_error_message(line: &str) -> String {
+    let mut plain = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            for code in chars.by_ref() {
+                if code.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            plain.push(c);
+        }
+    }
+    if let Some((_, error)) = plain.split_once("error=") {
+        return error.trim().to_string();
+    }
+    let mut rest = plain.trim();
+    for _ in 0..2 {
+        let Some((head, tail)) = rest.split_once(char::is_whitespace) else {
+            break;
+        };
+        let is_prefix = head.starts_with(|c: char| c.is_ascii_digit())
+            || matches!(head, "ERROR" | "WARN" | "INFO" | "DEBUG" | "TRACE");
+        if !is_prefix {
+            break;
+        }
+        rest = tail.trim_start();
+    }
+    rest.to_string()
+}
+
 #[cfg(all(test, unix))]
 mod tests {
+    use super::startup_error_message;
+
+    #[test]
+    fn startup_error_keeps_the_path_in_a_structured_error() {
+        let line = "\u{1b}[2m2026-09-24T05:23:43.774319Z\u{1b}[0m \u{1b}[31mERROR\u{1b}[0m Daemon failed \u{1b}[3merror\u{1b}[0m\u{1b}[2m=\u{1b}[0mInvalid app.json at /work/schemas/app.json: missing field `id` at line 252 column 1";
+        assert_eq!(
+            startup_error_message(line),
+            "Invalid app.json at /work/schemas/app.json: missing field `id` at line 252 column 1"
+        );
+    }
+
+    #[test]
+    fn startup_error_drops_timestamp_and_level_from_a_plain_message() {
+        assert_eq!(
+            startup_error_message("2026-09-24T05:23:43Z ERROR Daemon failed: no socket dir"),
+            "Daemon failed: no socket dir"
+        );
+        assert_eq!(
+            startup_error_message("thread 'main' panicked"),
+            "thread 'main' panicked"
+        );
+    }
+
     use super::*;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
