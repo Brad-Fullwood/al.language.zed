@@ -3,7 +3,7 @@ use tower_lsp::lsp_types::*;
 use super::AlServer;
 
 // handle_document_symbol inlined in lsp::document_symbol with
-// spawn_blocking wrapper — see crates/al-lsp/src/server/lsp.rs.
+// spawn_blocking wrapper — see crates/al-lsp/src/server/lsp/mod.rs.
 
 pub(crate) fn handle_folding_range(server: &AlServer, uri: &Url) -> Option<Vec<FoldingRange>> {
     al_analysis::queries::folding::folding_ranges(&server.workspace, uri)
@@ -11,7 +11,7 @@ pub(crate) fn handle_folding_range(server: &AlServer, uri: &Url) -> Option<Vec<F
 }
 
 // handle_semantic_tokens inlined in lsp::semantic_tokens_full with
-// spawn_blocking wrapper — see crates/al-lsp/src/server/lsp.rs.
+// spawn_blocking wrapper — see crates/al-lsp/src/server/lsp/mod.rs.
 
 pub(crate) fn handle_signature_help(
     server: &AlServer,

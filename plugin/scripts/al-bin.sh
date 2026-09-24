@@ -32,7 +32,7 @@ esac
 
 # A candidate directory has to hold both binaries. al-explorer spawns the daemon
 # by looking next to its own executable before it walks PATH
-# (crates/al-protocol/src/client.rs), so a directory holding only one of them
+# (crates/al-protocol/src/client/mod.rs), so a directory holding only one of them
 # gives the CLI and the daemon different builds.
 has_pair() {
 	local dir="$1" name
