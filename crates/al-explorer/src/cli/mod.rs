@@ -335,6 +335,7 @@ pub fn run(cli: Cli) -> ExitCode {
                 lsp::cmd_obsolete(cli.json)
             }
         }
+        Commands::PackageDiff { from, to, all } => lsp::cmd_package_diff(&from, &to, all, cli.json),
         Commands::AuditData => lsp::cmd_audit_data_classification(cli.json),
         Commands::PermissionAudit => lsp::cmd_permission_audit(cli.json),
         Commands::DepsGraph { format } => lsp::cmd_deps_graph(&format, cli.json),

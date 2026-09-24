@@ -27,6 +27,7 @@ pub mod inlay_hints;
 pub mod native_check;
 pub mod obsolescence;
 pub mod obsolete_usage;
+pub mod package_diff;
 pub mod profiler_hints;
 pub mod references;
 pub mod rename;

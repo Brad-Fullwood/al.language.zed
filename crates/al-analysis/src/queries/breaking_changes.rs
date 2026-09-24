@@ -224,7 +224,10 @@ fn validate_entry_surface(label: &str, entry: &SymbolEntry) -> Result<(), String
                 permission.permission_object
             ));
         }
-        if !(0..=31).contains(&permission.value) {
+        // Five direct R/I/M/D/X bits and, above them, the same five for
+        // indirect permissions: Base Application 25 carries masks such as 32,
+        // 129 and 257, and allowing only 0..=31 refused every real package.
+        if !(0..=1023).contains(&permission.value) {
             return Err(format!(
                 "{label} {object} contains invalid permission mask {}",
                 permission.value
@@ -1489,12 +1492,28 @@ mod tests {
             permissions: vec![PermissionSymbol {
                 permission_object: 5,
                 object_id: 80,
-                value: 32,
+                value: 1024,
             }],
             ..Default::default()
         };
         let error = analyze_breaking_changes_checked(&[invalid_permissions], &[])
             .expect_err("unknown permission bits must fail");
         assert!(error.contains("invalid permission mask"), "{error}");
+
+        // Indirect bits sit above the direct ones; Microsoft's own packages
+        // use them, so they are a valid surface.
+        let indirect = SymbolEntry {
+            kind: ObjectKind::PermissionSet,
+            id: 50102,
+            name: "Indirect Permissions".to_string(),
+            permissions: vec![PermissionSymbol {
+                permission_object: 0,
+                object_id: 18,
+                value: 129,
+            }],
+            ..Default::default()
+        };
+        analyze_breaking_changes_checked(&[indirect], &[])
+            .expect("an indirect permission bit is a valid mask");
     }
 }

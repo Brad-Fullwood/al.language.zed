@@ -62,6 +62,52 @@ pub(super) fn dispatch_obsolete_usages(workspace: &Workspace, id: u64) -> Respon
     }
 }
 
+/// Diff two versions of a dependency and keep the changes the workspace uses.
+///
+/// Both packages are read by the daemon, inside the same boundary as every
+/// other path parameter: sending Base Application's symbols over the socket
+/// twice would be tens of megabytes.
+pub(super) fn dispatch_package_diff(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    let path = |key: &str| -> Result<std::path::PathBuf, String> {
+        let requested = params
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("Missing '{key}': the path of a .app package"))?;
+        super::containment::resolve_within_project(workspace, std::path::Path::new(requested))
+            .map_err(|message| format!("'{key}' {message}"))
+    };
+    let (from, to) = match (path("from"), path("to")) {
+        (Ok(from), Ok(to)) => (from, to),
+        (Err(message), _) | (_, Err(message)) => {
+            return rpc_error(id, error_codes::INVALID_PARAMS, &message);
+        }
+    };
+    let include_unused = params
+        .get("all")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let report = super::blocking(|| {
+        let read = |path: &std::path::Path| {
+            al_symbols::app_reader::read_app_file(path)
+                .map_err(|error| format!("could not read {}: {error}", path.display()))
+        };
+        let from = read(&from)?;
+        let to = read(&to)?;
+        al_analysis::queries::package_diff::package_diff(workspace, &from, &to, include_unused)
+            .map_err(|error| error.to_string())
+    });
+    match report {
+        Ok(report) => serialized_response(id, &report, "package diff"),
+        Err(message) => rpc_error(id, error_codes::CODE_ANALYSIS_ERROR, &message),
+    }
+}
+
 pub(super) fn dispatch_audit_data_classification(workspace: &Workspace, id: u64) -> Response {
     match al_analysis::queries::audit::data_classification_audit(workspace) {
         Ok(entries) => serialized_response(id, &entries, "data-classification audit"),

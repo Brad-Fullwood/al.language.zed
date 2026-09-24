@@ -17,7 +17,7 @@ below is available through MCP's `al_call`, whether or not it also has a named M
 `parse`, `metrics`, `sqlPatterns`, `sortMembers`, `organizeFiles`, `source`, `eventSource`,
 `location`, `permissions`, `compile`, `package`, `publish`, `newProject`, `errorCodes`, `builtinTypes`, `setup`,
 `clearCache`, `authenticate`, `downloadSymbols`, `snapshot`, `profiling`, `generate`, `obsolete`,
-`obsoleteUsages`,
+`obsoleteUsages`, `packageDiff`,
 `audit.dataClassification`, `permissions.audit`, `deps.graph`, `breaking`, `arch.lint`, `duplicates`,
 `upgrade`, `profiler.hints`, `nativeCheck`, `freeIds`, `diag`.
 
@@ -32,6 +32,16 @@ launch configuration.
 `file`, `range` and a `message` naming the reason and tag. A name with any active definition is
 left out rather than guessed at. `obsolete` lists every pending obsoletion in the loaded packages
 instead.
+
+`packageDiff` compares two versions of a dependency and keeps the changes the workspace uses.
+Params: `from` and `to` (paths to the two `.app` files, inside the project or its package
+folders; relative paths resolve against the project root), `all` (boolean, default false: also
+return the changes nothing in the workspace uses). The result names both packages and carries
+`totalChanges`, `breakingChanges`, `affectingWorkspace`, `possiblyAffecting` and `changes`, where
+each change has the `kind`, `object`, `member`, `description` and `isBreaking` of `breaking` plus
+`uses`, the workspace consumers whose receiver resolves to the changed object in `impact`'s row
+shape, and `possibleUses`, name matches whose receiver did not resolve. A change to a member
+counts only code that uses the member; extending the object is not a use of each of its members.
 
 `freeIds` allocates inside the `idRanges` declared in `app.json`. Params: `kind` (object kind
 keyword, omit for a per-kind summary), `object` (a table, tableextension, enum or enumextension
@@ -86,7 +96,8 @@ Root-array methods: `search`, `object`, `byId`, `events`, `subscribers`, `entryp
 
 Object-with-array methods, with the field projected: `impact` (`impacted`), `tableImpact`
 (`objects`), `eventMap` (`events`), `suggestEvent` (`integrationPoints`), `traceChain` (`chains`),
-`composed` (`extensions`), `tests.affected` (`affected`), `permissions.audit` (`coverage`).
+`composed` (`extensions`), `tests.affected` (`affected`), `permissions.audit` (`coverage`),
+`packageDiff` (`changes`).
 
 MCP callers get `limit: 50` when they do not pass one, because a tool result goes straight into a
 context window. An explicit `limit` always wins, including `limit: 0` for a count.

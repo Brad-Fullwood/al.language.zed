@@ -701,6 +701,24 @@ Examples:
         #[arg(long)]
         baseline_app: Option<String>,
     },
+    /// Compare two versions of a dependency and list the changes this
+    /// workspace's code uses
+    #[command(
+        name = "package-diff",
+        after_help = "\
+Examples:
+  al-explorer package-diff \".alpackages/old/Microsoft_Base Application_25.0.app\" \".alpackages/Microsoft_Base Application_26.0.app\"
+  al-explorer package-diff old.app new.app --all --json"
+    )]
+    PackageDiff {
+        /// The version the workspace was written against (.app path)
+        from: String,
+        /// The version to move to (.app path)
+        to: String,
+        /// Also list the changes nothing in the workspace uses
+        #[arg(long)]
+        all: bool,
+    },
     /// Run architecture lint rules
     #[command(name = "arch-lint")]
     ArchLint,

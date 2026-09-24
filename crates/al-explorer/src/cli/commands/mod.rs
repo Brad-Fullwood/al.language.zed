@@ -667,6 +667,21 @@ fn validate_run_command_result(method: &str, result: &serde_json::Value) -> Resu
                 ("callerCount", JsonFieldKind::Unsigned),
             ],
         )?,
+        "packageDiff" => {
+            for field in ["totalChanges", "breakingChanges", "affectingWorkspace"] {
+                if !result.get(field).is_some_and(serde_json::Value::is_u64) {
+                    return Err(format!(
+                        "{method} response is missing the unsigned integer '{field}'"
+                    ));
+                }
+            }
+            if !result
+                .get("changes")
+                .is_some_and(serde_json::Value::is_array)
+            {
+                return Err(format!("{method} response is missing the 'changes' array"));
+            }
+        }
         "obsoleteUsages" => validate_array_object_fields(
             result,
             method,
@@ -1327,6 +1342,12 @@ mod path_tests {
                 | "builtinTypes"
                 | "tests.discover" => serde_json::json!([]),
                 "insightStats" => serde_json::json!({"nodes": 0, "edges": 0}),
+                "packageDiff" => serde_json::json!({
+                    "totalChanges": 0,
+                    "breakingChanges": 0,
+                    "affectingWorkspace": 0,
+                    "changes": []
+                }),
                 "freeIds" => serde_json::json!({"mode": "summary", "usedCount": 0}),
                 "xlf.refresh" => {
                     serde_json::json!({

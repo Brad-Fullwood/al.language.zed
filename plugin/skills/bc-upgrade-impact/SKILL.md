@@ -26,7 +26,34 @@ ls .alpackages
 ```
 
 Two versions of the same app in `.alpackages` is both the problem and the
-opportunity: the older `.app` is the baseline for every command below.
+opportunity: the older `.app` is the `from` side of `package-diff` below.
+
+## What the new version changed that this code uses
+
+With the old and the new `.app` of one dependency on disk (inside the project
+or its package folders), diff them and keep the changes this workspace's code
+uses:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json package-diff \
+  "old/Microsoft_Base Application_25.0.23364.36035.app" \
+  ".alpackages/Microsoft_Base Application_26.0.30643.38226.app" \
+  | jq -c '{totalChanges, breakingChanges, affectingWorkspace, possiblyAffecting,
+            changes: [.changes[] | {kind, object, member, isBreaking,
+                                    uses: [.uses[] | .n], possible: [.possibleUses[]? | .n]}]}'
+```
+
+```json
+{"totalChanges":1137,"breakingChanges":1036,"affectingWorkspace":2,"possiblyAffecting":7,
+ "changes":[{"kind":"fieldRemoved","object":"Customer","member":"Picture","isBreaking":true,
+             "uses":["Uses Removed"],"possible":[]}]}
+```
+
+Base Application 25 to 26 is over a thousand changes; this answers which of
+them matter here in about 7 seconds. `uses` are confirmed (the receiver
+resolves to the changed object); `possibleUses` are name matches on a
+variable of another or unknown type, so check them before reporting.
+`--all` returns every change, used or not.
 
 ## Version conflicts and missing packages
 
@@ -39,11 +66,16 @@ opportunity: the older `.app` is the baseline for every command below.
 something you need. It resolves implicit and transitive dependencies from the
 `.app` manifests, not just the ones `app.json` declares.
 
-## Breaking changes against a baseline .app
+## This app's own breaking changes
+
+`breaking` and `upgrade` answer a different question: what this app changed
+in its own published surface since an earlier build of it, which is what an
+app that others depend on (AppSource, a shared library) must check before a
+release.
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json breaking \
-  --baseline-app ".alpackages/Microsoft_Base Application_28.1.49838.51422.app" \
+  --baseline-app "output/Publisher_MyApp_1.4.0.0.app" \
   | jq -c '{evaluated, n: (.changes | length), changes: [.changes[:20][] | {kind, symbol, detail}]}'
 ```
 
@@ -55,11 +87,8 @@ Without `--baseline-app` it refuses rather than printing a clean-looking zero:
 ```
 
 Check `evaluated` before you report anything. `upgrade --baseline-app <path>`
-has the same contract and returns `issues` instead of `changes`.
-
-Both compare the workspace against the baseline, not one package against
-another. To answer "what changed between 28.1 and 28.3", compare the workspace
-to each in turn and diff the two answers yourself.
+has the same contract and returns `issues` instead of `changes`. Neither
+compares two versions of a dependency; that is `package-diff`.
 
 ## Subscribers pointing at events that no longer exist
 
@@ -104,7 +133,9 @@ with `--limit` only when the question is about the packages themselves.
 ## Order of work
 
 1. `packages` and `deps-graph`: what is loaded and what conflicts.
-2. `breaking --baseline-app`: what the new version removed or changed.
+2. `package-diff <old.app> <new.app>`: what the new version of a dependency
+   changed that this code uses. (`breaking --baseline-app` compares this app
+   against an earlier build of itself.)
 3. `dead-code` filtered to orphaned subscribers: what stopped firing.
 4. `obsolete --used`: what is about to break next.
 5. `bc-test-locally`'s `test-affected` on the touched files.

@@ -151,6 +151,76 @@ pub fn impact(workspace: &Workspace, symbol: &str) -> Result<Vec<ImpactEntry>, I
     Ok(results)
 }
 
+/// The workspace's own consumers of many symbols, from one snapshot.
+///
+/// [`impact`] snapshots the workspace and scans every symbol entry, package
+/// entries included, on each call. A package diff asks about hundreds of
+/// changed symbols and only cares which of them the workspace uses, so this
+/// takes the snapshot once and scans only the workspace's entries.
+pub struct WorkspaceImpactIndex {
+    sources: Vec<WorkspaceSource>,
+    entries: Vec<Arc<SymbolEntry>>,
+}
+
+impl WorkspaceImpactIndex {
+    pub fn new(workspace: &Workspace) -> Result<Self, ImpactError> {
+        let sources = workspace_sources::snapshot(workspace).map_err(|error| {
+            ImpactError::IncompleteWorkspace {
+                reason: error.to_string(),
+            }
+        })?;
+        let entries = workspace
+            .symbols
+            .all_entries()
+            .into_iter()
+            .filter(|entry| {
+                !entry.synthetic
+                    && al_symbols::source_availability::is_workspace_package(&entry.package)
+            })
+            .collect();
+        Ok(Self { sources, entries })
+    }
+
+    /// Workspace consumers of `symbol` (`Object` or `Object.Member`), in
+    /// [`impact`]'s row shape. For a member, only the code that uses that
+    /// member counts; an extension of the object or a page built on it is a
+    /// use of the object.
+    pub fn consumers(&self, symbol: &str) -> Vec<ImpactEntry> {
+        const SOURCE_TABLE_KINDS: &[ObjectKind] = &[
+            ObjectKind::Page,
+            ObjectKind::PageExtension,
+            ObjectKind::Report,
+            ObjectKind::ReportExtension,
+            ObjectKind::Query,
+        ];
+        let (object_part, member_part) = parse_symbol(symbol);
+        let mut results = Vec::new();
+        for entry in &self.entries {
+            match &member_part {
+                Some(member) => check_member_consumers(entry, &object_part, member, &mut results),
+                // Extending an object, or showing it as a page's source
+                // table, is a use of the object. It is not a use of each of
+                // its members: listing every table extension of Customer
+                // against each removed Customer field buried the real uses.
+                None => {
+                    check_extends(entry, &object_part, &mut results);
+                    if SOURCE_TABLE_KINDS.contains(&entry.kind) {
+                        check_source_table(entry, &object_part, &mut results);
+                    }
+                    check_object_consumers(entry, &object_part, &mut results);
+                }
+            }
+        }
+        match &member_part {
+            Some(member) => {
+                search_workspace_files_for_member(&self.sources, &object_part, member, &mut results)
+            }
+            None => search_workspace_files(&self.sources, &object_part, &mut results),
+        }
+        results
+    }
+}
+
 /// Parse a symbol specifier into (object_name, optional_member_name).
 ///
 /// Examples:

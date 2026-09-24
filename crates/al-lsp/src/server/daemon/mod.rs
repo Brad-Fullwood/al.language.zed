@@ -1198,6 +1198,7 @@ dispatch_table! {
         "generate" [] => build_dispatch::dispatch_generate(workspace, id, &params),
         "obsolete" [] => build_dispatch::dispatch_obsolete(workspace, id),
         "obsoleteUsages" [] => build_dispatch::dispatch_obsolete_usages(workspace, id),
+        "packageDiff" [] => build_dispatch::dispatch_package_diff(workspace, id, &params),
         "audit.dataClassification" [] => {
             build_dispatch::dispatch_audit_data_classification(workspace, id)
         },

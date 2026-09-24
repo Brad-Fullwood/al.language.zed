@@ -57,6 +57,7 @@ pub(crate) const LIST_TARGETS: &[(&str, ListTarget)] = &[
     ("upgrade", ListTarget::Root),
     // Methods whose result keeps other fields around one array.
     ("impact", ListTarget::Field("impacted")),
+    ("packageDiff", ListTarget::Field("changes")),
     ("tableImpact", ListTarget::Field("objects")),
     ("eventMap", ListTarget::Field("events")),
     ("suggestEvent", ListTarget::Field("integrationPoints")),

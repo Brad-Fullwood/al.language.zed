@@ -97,6 +97,70 @@ pub fn cmd_obsolete_usages(json: bool) -> ExitCode {
     )
 }
 
+pub fn cmd_package_diff(from: &str, to: &str, all: bool, json: bool) -> ExitCode {
+    run_command(
+        "packageDiff",
+        Some(serde_json::json!({ "from": from, "to": to, "all": all })),
+        json,
+        None,
+        |result| {
+            let label = |side: &str| {
+                let package = &result[side];
+                format!(
+                    "{} {}",
+                    package["name"].as_str().unwrap_or("?"),
+                    package["version"].as_str().unwrap_or("?")
+                )
+            };
+            println!(
+                "{} -> {}: {} change(s), {} breaking, {} used by this workspace, {} possibly",
+                label("from"),
+                label("to"),
+                result["totalChanges"].as_u64().unwrap_or(0),
+                result["breakingChanges"].as_u64().unwrap_or(0),
+                result["affectingWorkspace"].as_u64().unwrap_or(0),
+                result["possiblyAffecting"].as_u64().unwrap_or(0),
+            );
+            if let Some(warning) = result["warning"].as_str() {
+                eprintln!("warning: {warning}");
+            }
+            for change in list_rows(&result["changes"])
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                let object = change["object"].as_str().unwrap_or("?");
+                let target = match change["member"].as_str() {
+                    Some(member) => format!("{object}.{member}"),
+                    None => object.to_string(),
+                };
+                let severity = if change["isBreaking"].as_bool().unwrap_or(false) {
+                    "breaking"
+                } else {
+                    "warning"
+                };
+                println!(
+                    "\n[{severity}] {target}: {}",
+                    change["description"].as_str().unwrap_or("")
+                );
+                for (key, prefix) in [("uses", ""), ("possibleUses", "possibly: ")] {
+                    for used in change[key].as_array().into_iter().flatten() {
+                        let kind = used["k"].as_str().unwrap_or("?");
+                        let name = used["n"].as_str().unwrap_or("?");
+                        let how = used["type"].as_str().unwrap_or("?");
+                        match used["proc"].as_str() {
+                            Some(procedure) => {
+                                println!("    {prefix}{kind} {name}, {procedure} ({how})")
+                            }
+                            None => println!("    {prefix}{kind} {name} ({how})"),
+                        }
+                    }
+                }
+            }
+        },
+    )
+}
+
 pub fn cmd_audit_data_classification(json: bool) -> ExitCode {
     run_command_with_exit(
         "audit.dataClassification",
