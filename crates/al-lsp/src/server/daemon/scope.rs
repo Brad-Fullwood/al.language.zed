@@ -11,6 +11,7 @@
 //! scope was going to drop.
 
 use al_protocol::jsonrpc::Response;
+use al_symbols::source_availability::is_workspace_package;
 use al_workspace::Workspace;
 
 /// Which part of the loaded symbol space an answer should cover.
@@ -59,14 +60,6 @@ pub(crate) fn scoped_list(method: &str) -> Option<&'static str> {
 
 pub(crate) fn accepts_scope(method: &str) -> bool {
     scoped_list(method).is_some()
-}
-
-/// Whether a package label names the open workspace.
-///
-/// Two spellings reach the wire: the symbol index writes `workspace` and the
-/// file-index bridge writes `(workspace)`.
-fn is_workspace_package(package: &str) -> bool {
-    package.eq_ignore_ascii_case("workspace") || package.eq_ignore_ascii_case("(workspace)")
 }
 
 /// Names of the objects the open workspace declares, lowercased.

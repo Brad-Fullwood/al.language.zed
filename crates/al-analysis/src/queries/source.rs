@@ -6,6 +6,7 @@
 //! - `package`: source extracted from .app ZIP archive
 //! - `outline`: rendered from SymbolReference.json (full signatures, no bodies)
 
+use al_symbols::source_availability::is_workspace_package;
 use al_symbols::{MethodSymbol, ObjectKind, SourceAvailability, SymbolEntry};
 use serde::Serialize;
 use std::fmt;
@@ -210,9 +211,7 @@ fn source_candidates(
     let package_filter = package_filter
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let workspace_requested = package_filter.is_none_or(|package| {
-        package.eq_ignore_ascii_case("workspace") || package.eq_ignore_ascii_case("(workspace)")
-    });
+    let workspace_requested = package_filter.is_none_or(is_workspace_package);
 
     let mut workspace_candidates = Vec::new();
     if workspace_requested {
@@ -264,10 +263,7 @@ fn source_candidates(
         .get_by_name(name)
         .into_iter()
         .filter(|entry| !entry.synthetic)
-        .filter(|entry| {
-            !entry.package.eq_ignore_ascii_case("workspace")
-                && !entry.package.eq_ignore_ascii_case("(workspace)")
-        })
+        .filter(|entry| !is_workspace_package(&entry.package))
         .filter(|entry| kind_filter.is_none_or(|expected| expected == entry.kind))
         .filter(|entry| {
             package_filter.is_none_or(|package| entry.package.eq_ignore_ascii_case(package))
