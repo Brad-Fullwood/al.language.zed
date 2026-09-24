@@ -30,6 +30,7 @@
 //! sequence propagates to the caller. `Eval::Exit` also short-circuits,
 //! unwinding back to the enclosing procedure.
 
+use al_syntax::IdentifierText;
 use tree_sitter::Node;
 
 use super::error_info;
@@ -265,7 +266,7 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
 
     let var_name = match var_node {
         Some(n) => match n.utf8_text(source) {
-            Ok(t) => t.trim_matches('"').to_string(),
+            Ok(t) => t.unquote_identifier().into_owned(),
             Err(_) => return Eval::Error(error_info("for_statement: invalid variable name")),
         },
         None => return Eval::Error(error_info("for_statement: missing variable")),
@@ -394,7 +395,7 @@ fn eval_foreach(
 
     let var_name = match var_node {
         Some(n) => match n.utf8_text(source) {
-            Ok(t) => t.trim_matches('"').to_string(),
+            Ok(t) => t.unquote_identifier().into_owned(),
             Err(_) => return Eval::Error(error_info("foreach: invalid variable name")),
         },
         None => return Eval::Error(error_info("foreach: missing variable")),
@@ -635,7 +636,7 @@ fn eval_assignment(
     }
 
     let lhs_name = match lhs_node.utf8_text(source) {
-        Ok(t) => t.trim_matches('"').to_ascii_lowercase(),
+        Ok(t) => t.unquote_identifier().to_ascii_lowercase(),
         Err(_) => return Eval::Error(error_info("assignment: invalid LHS identifier")),
     };
 
@@ -928,7 +929,7 @@ fn apply_var_writebacks(
 /// cannot corrupt a caller variable by matching the wrong slot.
 fn simple_lvalue_name(node: Node<'_>, source: &[u8]) -> Option<String> {
     let text = node.utf8_text(source).ok()?.trim();
-    let inner = text.trim_matches('"');
+    let inner = text.unquote_identifier();
     if inner.is_empty() {
         return None;
     }
@@ -998,12 +999,12 @@ fn extract_call_parts<'a>(
                     let receiver_text = node
                         .child(0)
                         .and_then(|n| n.utf8_text(source).ok())
-                        .map(|t| t.trim_matches('"').to_string());
+                        .map(|t| t.unquote_identifier().into_owned());
                     let proc_name = sfx
                         .named_children(&mut sfx.walk())
                         .find(|n| n.kind() == "identifier" || n.kind() == "name")
                         .and_then(|n| n.utf8_text(source).ok())
-                        .map(|t| t.trim_matches('"').to_string())
+                        .map(|t| t.unquote_identifier().into_owned())
                         .unwrap_or_default();
                     return (receiver_text, proc_name, args);
                 }
@@ -1016,16 +1017,16 @@ fn extract_call_parts<'a>(
                             if n.kind() == "primary_expression" {
                                 n.named_child(0)
                                     .and_then(|id| id.utf8_text(source).ok())
-                                    .map(|t| t.trim_matches('"').to_string())
+                                    .map(|t| t.unquote_identifier().into_owned())
                                     .or_else(|| {
                                         n.utf8_text(source)
                                             .ok()
-                                            .map(|t| t.trim_matches('"').to_string())
+                                            .map(|t| t.unquote_identifier().into_owned())
                                     })
                             } else {
                                 n.utf8_text(source)
                                     .ok()
-                                    .map(|t| t.trim_matches('"').to_string())
+                                    .map(|t| t.unquote_identifier().into_owned())
                             }
                         })
                         .unwrap_or_default();
@@ -1063,7 +1064,7 @@ fn extract_call_parts<'a>(
                 )
         })
         .filter_map(|(_, c)| c.utf8_text(source).ok())
-        .map(|t| t.trim_matches('"').to_string())
+        .map(|t| t.unquote_identifier().into_owned())
         .collect();
 
     match name_parts.as_slice() {
@@ -1179,7 +1180,7 @@ fn collect_arg_nodes<'a>(node: Node<'a>, out: &mut Vec<Node<'a>>) {
 fn node_text(node: Node<'_>, source: &[u8]) -> String {
     node.utf8_text(source)
         .unwrap_or("")
-        .trim_matches('"')
+        .unquote_identifier()
         .to_string()
 }
 

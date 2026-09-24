@@ -1,6 +1,7 @@
 //! Insight engine dispatchers — trace, entrypoints, graph export, dead code, impact, suggest_event.
 
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
+use al_syntax::IdentifierText;
 use al_workspace::Workspace;
 
 use super::{invalid_params, optional_bounded_usize_param, rpc_error, serialized_response};
@@ -399,14 +400,14 @@ fn split_object_member(symbol: &str) -> (String, Option<String>) {
             '"' => in_quotes = !in_quotes,
             '.' if !in_quotes => {
                 return (
-                    symbol[..index].trim().trim_matches('"').to_string(),
-                    Some(symbol[index + 1..].trim().trim_matches('"').to_string()),
+                    symbol[..index].unquote_identifier().into_owned(),
+                    Some(symbol[index + 1..].unquote_identifier().into_owned()),
                 );
             }
             _ => {}
         }
     }
-    (symbol.trim().trim_matches('"').to_string(), None)
+    (symbol.unquote_identifier().into_owned(), None)
 }
 
 /// Close-enough object names for a name the index does not hold. Uses the same

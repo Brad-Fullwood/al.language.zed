@@ -3,6 +3,7 @@
 //! These checks deliberately live below the CLI/LSP surfaces so every native
 //! build receives the same correctness gate without Microsoft AL tooling.
 
+use al_syntax::IdentifierText;
 use std::collections::{HashMap, HashSet};
 
 use al_symbols::model::{ObjectKind, SymbolEntry};
@@ -342,7 +343,7 @@ fn verify_provable_body_bindings(
         let vars = variable_types(&object.source_text);
         for (name, ty) in &vars {
             if let Some(table) = record_subtype(ty) {
-                let table = table.trim().trim_matches('"').to_ascii_lowercase();
+                let table = table.unquote_identifier().to_ascii_lowercase();
                 if !tables.contains(&table) {
                     let offset = object
                         .source_text
@@ -399,7 +400,7 @@ fn verify_provable_body_bindings(
                 let Some(table) = record_subtype(ty) else {
                     continue;
                 };
-                let table = table.trim().trim_matches('"').to_ascii_lowercase();
+                let table = table.unquote_identifier().to_ascii_lowercase();
                 let prefix = format!("{var}.\"");
                 if let Some(start) = trimmed.to_ascii_lowercase().find(&prefix) {
                     let rest = &trimmed[start + prefix.len()..];
@@ -466,7 +467,7 @@ fn verify_page_change_contracts(objects: &[EmitObject], out: &mut Vec<Verificati
             .extends
             .as_deref()
             .unwrap_or_default()
-            .trim_matches('"')
+            .unquote_identifier()
             .to_ascii_lowercase();
         for change in &object.control_changes {
             if change.kind.starts_with("add") {
@@ -1200,7 +1201,7 @@ fn verify_permissions(
             require_object(
                 &available,
                 kind,
-                permission.object_name.trim_matches('"'),
+                &permission.object_name.unquote_identifier(),
                 object,
                 "ALN2103",
                 format!(
@@ -1226,7 +1227,7 @@ fn verify_local_interface_contracts(objects: &[EmitObject], out: &mut Vec<Verifi
     for object in objects {
         for interface_name in &object.entry.implements {
             let Some(interface) =
-                interfaces.get(&interface_name.trim_matches('"').to_ascii_lowercase())
+                interfaces.get(&interface_name.unquote_identifier().to_ascii_lowercase())
             else {
                 // Dependency package method surfaces are not retained in the
                 // lightweight resolver; existence itself is checked by ALN2002.
@@ -1621,7 +1622,7 @@ fn verify_bindings(
             require_object(
                 &available,
                 ObjectKind::Interface,
-                interface.trim_matches('"'),
+                &interface.unquote_identifier(),
                 object,
                 "ALN2002",
                 format!(
@@ -1669,7 +1670,7 @@ fn verify_type(
         return;
     };
     let base = &trimmed[..space];
-    let subtype = trimmed[space..].trim().trim_matches('"');
+    let subtype = trimmed[space..].unquote_identifier();
     if subtype.is_empty() {
         return;
     }
@@ -1687,7 +1688,7 @@ fn verify_type(
     require_object(
         available,
         kind,
-        subtype,
+        &subtype,
         object,
         "ALN2003",
         format!(
@@ -1708,7 +1709,7 @@ fn verify_property_binding(
         .properties
         .iter()
         .find(|property| property.name.eq_ignore_ascii_case("SourceTable"))
-        .map(|property| property.value.trim().trim_matches('"'))
+        .map(|property| property.value.unquote_identifier())
         .filter(|value| !value.is_empty() && value.parse::<i32>().is_err())
     else {
         return;
@@ -1716,7 +1717,7 @@ fn verify_property_binding(
     require_object(
         available,
         ObjectKind::Table,
-        source_table,
+        &source_table,
         object,
         "ALN2004",
         format!(

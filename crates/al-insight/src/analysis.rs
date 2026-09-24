@@ -6,6 +6,7 @@
 //!
 //! Used by `al impact <TableName>` queries.
 
+use al_syntax::IdentifierText;
 use std::collections::HashMap;
 
 use serde::Serialize;
@@ -126,8 +127,7 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
                 if prop.name.eq_ignore_ascii_case("SourceTable")
                     && prop
                         .value
-                        .trim()
-                        .trim_matches('"')
+                        .unquote_identifier()
                         .eq_ignore_ascii_case(table_name)
                 {
                     impacts.push(TableImpact {

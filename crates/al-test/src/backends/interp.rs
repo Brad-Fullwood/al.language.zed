@@ -12,6 +12,7 @@
 //! The backend mirrors the LiveBcMode pattern: parallel JoinSet dispatch,
 //! per-test timeout, and channel-closed detection.
 
+use al_syntax::IdentifierText;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -713,7 +714,10 @@ fn find_procedure_node<'a>(root: Node<'a>, source: &[u8], proc_name: &str) -> Op
     while let Some(current) = stack_nodes.pop() {
         if current.kind() == "procedure_declaration" {
             if let Some(name_node) = current.child_by_field_name("name") {
-                let name = name_node.utf8_text(source).unwrap_or("").trim_matches('"');
+                let name = name_node
+                    .utf8_text(source)
+                    .unwrap_or("")
+                    .unquote_identifier();
                 if name.eq_ignore_ascii_case(proc_name) {
                     return Some(current);
                 }
@@ -721,7 +725,7 @@ fn find_procedure_node<'a>(root: Node<'a>, source: &[u8], proc_name: &str) -> Op
             let mut cursor = current.walk();
             for child in current.named_children(&mut cursor) {
                 if matches!(child.kind(), "identifier" | "quoted_identifier") {
-                    let name = child.utf8_text(source).unwrap_or("").trim_matches('"');
+                    let name = child.utf8_text(source).unwrap_or("").unquote_identifier();
                     if name.eq_ignore_ascii_case(proc_name) {
                         return Some(current);
                     }

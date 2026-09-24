@@ -6,6 +6,7 @@
 //! by differential testing against the local `alc` (see the project's emit
 //! example + the spike doc).
 
+use al_syntax::IdentifierText;
 use serde_json::{json, Map, Value};
 
 use super::method_id::{combine_hash, fnv1_hash, fnv1_hash_bytes, member_id, method_id, ParamSig};
@@ -177,7 +178,7 @@ pub fn build_symbol_reference(
             {
                 page_source_tables.insert(
                     o.entry.name.to_lowercase(),
-                    st.value.trim_matches('"').to_string(),
+                    st.value.unquote_identifier().into_owned(),
                 );
             }
         }
@@ -393,7 +394,7 @@ fn object_json(obj: &EmitObject, app_id: &str, app_name: &str, ctx: &SymbolRefCt
             .properties
             .iter()
             .find(|p| p.name.eq_ignore_ascii_case("SourceTable"))
-            .map(|p| p.value.trim_matches('"').to_string())
+            .map(|p| p.value.unquote_identifier().into_owned())
             .unwrap_or_default();
         if !obj.page_controls.is_empty() {
             m.insert(
@@ -441,7 +442,7 @@ fn object_json(obj: &EmitObject, app_id: &str, app_name: &str, ctx: &SymbolRefCt
         let base_table = e
             .extends
             .as_deref()
-            .and_then(|t| page_source_tables.get(&t.trim_matches('"').to_lowercase()))
+            .and_then(|t| page_source_tables.get(&t.unquote_identifier().to_lowercase()))
             .cloned()
             .unwrap_or_default();
         // alc forces every field added by a page customization non-editable in
@@ -568,7 +569,7 @@ fn object_json(obj: &EmitObject, app_id: &str, app_name: &str, ctx: &SymbolRefCt
                 let ty = field_types
                     .get(&(
                         table.to_lowercase(),
-                        source.trim_matches('"').to_lowercase(),
+                        source.unquote_identifier().to_lowercase(),
                     ))
                     .cloned()
                     .unwrap_or_else(|| "None".to_string());
@@ -1112,14 +1113,14 @@ fn resolve_field_type(
         return "None".to_string();
     };
     if let Some(field) = expr.strip_prefix("Rec.") {
-        let field = field.trim_matches('"');
+        let field = field.unquote_identifier();
         return ft
             .get(&(source_table.to_lowercase(), field.to_lowercase()))
             .cloned()
             .unwrap_or_else(|| "None".to_string());
     }
     locals
-        .get(&expr.trim_matches('"').to_lowercase())
+        .get(&expr.unquote_identifier().to_lowercase())
         .cloned()
         .unwrap_or_else(|| "None".to_string())
 }
@@ -1274,12 +1275,12 @@ fn permission_json(p: &PermissionDecl, resolver: &Resolver) -> Value {
         m.insert("PermissionObject".into(), json!(code));
     }
     m.insert("Value".into(), json!(permission_value(&p.permission)));
-    let name = p.object_name.trim_matches('"');
+    let name = p.object_name.unquote_identifier();
     // System (code 10) objects are platform built-ins, resolved from the
     // generated system-object table; every other kind resolves against the
     // project + referenced-app objects.
     let id = if code == 10 {
-        al_syntax::language_data::system_object_id(name).unwrap_or(0)
+        al_syntax::language_data::system_object_id(&name).unwrap_or(0)
     } else {
         resolver
             .get(&name.to_lowercase())
@@ -1390,7 +1391,7 @@ fn report_dataitem_json(
                 .iter()
                 .map(|(name, source)| {
                     let ty = field_types
-                        .get(&(table.clone(), source.trim_matches('"').to_lowercase()))
+                        .get(&(table.clone(), source.unquote_identifier().to_lowercase()))
                         .cloned()
                         .unwrap_or_else(|| "None".to_string());
                     json!({
@@ -1421,7 +1422,7 @@ fn report_dataitem_json(
 /// `#<module-id-without-dashes>#<object-name>` archive representation.
 fn qualified_object_name(name: &str, resolver: &Resolver) -> String {
     match resolver
-        .get(&name.trim_matches('"').to_lowercase())
+        .get(&name.unquote_identifier().to_lowercase())
         .and_then(|reference| reference.module_id.as_deref())
     {
         Some(module_id) => format!("#{}#{}", module_id.replace('-', ""), name),
@@ -1486,7 +1487,7 @@ fn property_json(p: &PropertyValue) -> Value {
 /// `IncludedPermissionSets` keeps each referenced name quoted-as-needed.
 fn object_property_json(p: &PropertyValue, resolver: &Resolver) -> Value {
     if p.name.eq_ignore_ascii_case("SourceTable") {
-        let name = p.value.trim_matches('"').to_lowercase();
+        let name = p.value.unquote_identifier().to_lowercase();
         if let Some(r) = resolver.get(&name) {
             return json!({ "Name": p.name, "Value": r.id.to_string() });
         }

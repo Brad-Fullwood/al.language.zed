@@ -16,6 +16,7 @@
 //!   workspace files.
 //! - [`fanout_score`] — count call-suffix nodes in a tree (used for tier ranking).
 
+use al_syntax::IdentifierText;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -243,7 +244,7 @@ fn find_procedure_in_node<'a>(
         if kind == "procedure_declaration" || kind == "trigger_declaration" {
             if let Some(name_node) = node.child_by_field_name("name") {
                 if let Ok(name_text) = name_node.utf8_text(source) {
-                    let clean = name_text.trim_matches('"').trim();
+                    let clean = name_text.unquote_identifier();
                     if clean.to_lowercase() == proc_name_lower {
                         return Some(node);
                     }
@@ -334,7 +335,7 @@ fn collect_record_from_regular_var_decl(
     };
 
     let name = match name_node.utf8_text(source).ok() {
-        Some(t) => t.trim_matches('"').trim().to_string(),
+        Some(t) => t.unquote_identifier().into_owned(),
         None => return,
     };
 
@@ -361,7 +362,7 @@ fn collect_record_from_parameter(
     };
 
     let name = match name_node.utf8_text(source).ok() {
-        Some(t) => t.trim_matches('"').trim().to_string(),
+        Some(t) => t.unquote_identifier().into_owned(),
         None => return,
     };
 
@@ -472,7 +473,7 @@ fn extract_object_subtype(
     let Some(name) = name_node
         .utf8_text(source)
         .ok()
-        .map(|t| t.trim_matches('"').trim().to_string())
+        .map(|t| t.unquote_identifier().into_owned())
     else {
         return;
     };
@@ -512,7 +513,7 @@ fn parse_type_reference_for_record(
             && (kind == "identifier" || kind == "name" || kind == "name_or_keyword")
         {
             if let Ok(text) = child.utf8_text(source) {
-                type_keyword = text.trim_matches('"').to_string();
+                type_keyword = text.unquote_identifier().into_owned();
             }
         } else if !type_keyword.is_empty()
             && matches!(
@@ -625,7 +626,7 @@ fn parse_postfix_expression(node: tree_sitter::Node, source: &[u8]) -> Option<Ca
             let method_name = method_node
                 .utf8_text(source)
                 .ok()?
-                .trim_matches('"')
+                .unquote_identifier()
                 .to_string();
 
             if let Some(op) = RecordOp::from_method_name(&method_name) {
@@ -663,7 +664,7 @@ fn parse_postfix_expression(node: tree_sitter::Node, source: &[u8]) -> Option<Ca
             let method_name = method_node
                 .utf8_text(source)
                 .ok()?
-                .trim_matches('"')
+                .unquote_identifier()
                 .to_string();
 
             Some(CallSite::MemberCall {
@@ -693,7 +694,7 @@ fn extract_primary_expression_name(node: tree_sitter::Node, source: &[u8]) -> Op
     inner
         .utf8_text(source)
         .ok()
-        .map(|t| t.trim_matches('"').to_string())
+        .map(|t| t.unquote_identifier().into_owned())
 }
 
 /// Parse the `RunTrigger` argument from a record-operation call suffix.
@@ -1020,7 +1021,7 @@ fn find_interface_implementors(
     symbols: &SymbolIndex,
     interface_name: &str,
 ) -> Vec<Arc<SymbolEntry>> {
-    let target = interface_name.trim_matches('"');
+    let target = interface_name.unquote_identifier();
     symbols
         .get_by_kind(ObjectKind::Codeunit)
         .into_iter()
@@ -1028,7 +1029,7 @@ fn find_interface_implementors(
             entry
                 .implements
                 .iter()
-                .any(|iface| iface.trim_matches('"').eq_ignore_ascii_case(target))
+                .any(|iface| iface.unquote_identifier().eq_ignore_ascii_case(&target))
         })
         .collect()
 }
@@ -1339,7 +1340,7 @@ fn info_extends_from_tree(root: tree_sitter::Node, source: &[u8]) -> Option<Stri
                     .or_else(|| node.children(&mut tgt_cursor).find(|c| c.kind() == "name"));
                 return target_node
                     .and_then(|t| t.utf8_text(source).ok())
-                    .map(|t| t.trim().trim_matches('"').to_string());
+                    .map(|t| t.unquote_identifier().into_owned());
             }
         }
         // The extends clause lives in the object header — don't descend into
@@ -1368,7 +1369,7 @@ fn info_implements_from_tree(
     source: &[u8],
     object_name: &str,
 ) -> Vec<String> {
-    let want = object_name.trim().trim_matches('"').to_lowercase();
+    let want = object_name.unquote_identifier().to_lowercase();
     let mut cursor = root.walk();
     let objects: Vec<tree_sitter::Node> = root
         .children(&mut cursor)
@@ -1397,7 +1398,7 @@ fn object_decl_name(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
     // object kind, so read it directly.
     node.child_by_field_name("name")
         .and_then(|n| n.utf8_text(source).ok())
-        .map(|t| t.trim().trim_matches('"').to_string())
+        .map(|t| t.unquote_identifier().into_owned())
 }
 
 fn collect_implements_from_object(node: tree_sitter::Node, source: &[u8]) -> Vec<String> {
@@ -1453,7 +1454,7 @@ fn collect_implements_from_object(node: tree_sitter::Node, source: &[u8]) -> Vec
 }
 
 fn push_interface(result: &mut Vec<String>, raw: &str) {
-    let clean = raw.trim().trim_matches('"').to_string();
+    let clean = raw.unquote_identifier().into_owned();
     if !clean.is_empty() {
         result.push(clean);
     }
@@ -1472,7 +1473,7 @@ fn field_symbol_from_section(
     let inner = text.trim().strip_prefix('(')?.strip_suffix(')')?;
     let mut parts = inner.splitn(3, ';');
     let id: i32 = parts.next()?.trim().parse().ok()?;
-    let name = parts.next()?.trim().trim_matches('"').to_string();
+    let name = parts.next()?.unquote_identifier().into_owned();
     let type_name = parts.next()?.trim().to_string();
     if name.is_empty() {
         return None;
@@ -1524,8 +1525,7 @@ fn extract_method_symbol(
     let proc_name = name_node
         .utf8_text(source)
         .ok()?
-        .trim_matches('"')
-        .trim()
+        .unquote_identifier()
         .to_string();
     if proc_name.is_empty() {
         return None;
@@ -1596,7 +1596,7 @@ fn extract_single_parameter(
             name = child
                 .utf8_text(source)
                 .ok()
-                .map(|s| s.trim_matches('"').to_string());
+                .map(|s| s.unquote_identifier().into_owned());
         } else if kind == "type_reference" {
             type_name = child.utf8_text(source).ok().unwrap_or("").to_string();
         }
@@ -1714,7 +1714,7 @@ fn register_single_procedure(
     };
 
     let proc_name = match name_node.utf8_text(source).ok() {
-        Some(t) => t.trim_matches('"').trim().to_string(),
+        Some(t) => t.unquote_identifier().into_owned(),
         None => return,
     };
 
@@ -2101,7 +2101,7 @@ fn collect_procedure_names_from_node(
                 "procedure_declaration" | "trigger_declaration" => {
                     if let Some(name_node) = child.child_by_field_name("name") {
                         if let Ok(text) = name_node.utf8_text(source) {
-                            let name = text.trim_matches('"').trim().to_string();
+                            let name = text.unquote_identifier().into_owned();
                             if !name.is_empty() {
                                 names.push(name);
                             }

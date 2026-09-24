@@ -7,6 +7,7 @@ use super::manifest::AppManifest;
 use super::package::{write_app_package, EmitError};
 use super::symbol_extract::EmitObject;
 use al_symbols::model::ObjectKind;
+use al_syntax::IdentifierText;
 
 /// A source file as it is stored in the `.app`. `archive_path` is the
 /// in-archive path; alc stores project sources under a `src/` prefix, so a
@@ -428,7 +429,7 @@ pub fn navigation_xml(
         .iter()
         .map(|o| (o.entry.name.to_lowercase(), o.entry.id))
         .collect();
-    let resolve = |name: &str| ids.get(&name.trim_matches('"').to_lowercase()).copied();
+    let resolve = |name: &str| ids.get(&name.unquote_identifier().to_lowercase()).copied();
     let cap_hash = name_hash("Caption");
     let terms_hash = name_hash("AdditionalSearchTerms");
     let e = super::manifest::xml_escape_attr;

@@ -24,6 +24,7 @@
 //! Invalid table metadata or FlowField formulas fail explicitly instead of
 //! fabricating field IDs, primary keys, or plain-buffer fallbacks.
 
+use al_syntax::IdentifierText;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -68,11 +69,11 @@ pub struct RecordStore {
 impl RecordStore {
     /// Resolve a field name through the parsed workspace schema.
     fn resolve_field(&self, name: &str) -> Result<FieldNo, String> {
-        let key = name.trim().trim_matches('"').to_ascii_lowercase();
+        let key = name.unquote_identifier().to_ascii_lowercase();
         self.field_by_name.get(&key).copied().ok_or_else(|| {
             format!(
                 "field '{}' is not declared on workspace table '{}'",
-                name.trim().trim_matches('"'),
+                name.unquote_identifier(),
                 self.record.table_name
             )
         })
@@ -125,7 +126,7 @@ fn records_disabled_error() -> Eval {
 
 /// Lowercased table-name store key.
 fn key_for(table_name: &str) -> String {
-    table_name.trim().trim_matches('"').to_ascii_lowercase()
+    table_name.unquote_identifier().to_ascii_lowercase()
 }
 
 /// Which backing store a record variable reads and writes.
@@ -279,8 +280,8 @@ fn load_table_meta(
     source: &dyn al_types::ProcedureSource,
     table_name: &str,
 ) -> Result<TableMeta, String> {
-    let want = table_name.trim().trim_matches('"');
-    let path = source.find_by_object_name(want).ok_or_else(|| {
+    let want = table_name.unquote_identifier();
+    let path = source.find_by_object_name(&want).ok_or_else(|| {
         format!(
             "record table '{want}' not found in workspace (native record ops require a workspace \
              table definition; base-app tables are not modelled)"
@@ -299,7 +300,7 @@ fn load_table_meta(
         ));
     }
     let bytes = text.as_bytes();
-    parse_table_meta(tree.root_node(), bytes, want, source)
+    parse_table_meta(tree.root_node(), bytes, &want, source)
         .map_err(|reason| format!("invalid metadata for record table '{want}': {reason}"))
 }
 
@@ -453,7 +454,7 @@ fn find_table_object<'a>(root: Node<'a>, source: &[u8], want: &str) -> Option<No
 fn object_name_of(obj: Node<'_>, source: &[u8]) -> Option<String> {
     obj.child_by_field_name("name")
         .and_then(|n| n.utf8_text(source).ok())
-        .map(|t| t.trim().trim_matches('"').to_string())
+        .map(|t| t.unquote_identifier().into_owned())
 }
 
 /// Get the `body` object_body of the `object_section` whose keyword equals `kw`.
@@ -562,7 +563,7 @@ fn parse_field_def(
                     child
                         .utf8_text(source)
                         .map_err(|error| format!("field name is not UTF-8: {error}"))?
-                        .trim_matches('"')
+                        .unquote_identifier()
                         .to_string(),
                 );
             }
@@ -671,7 +672,7 @@ fn option_field_default(
     if base_type.eq_ignore_ascii_case("option") {
         let member = option_members
             .and_then(|members| members.split(',').next())
-            .map(|m| m.trim().trim_matches('"').to_string())
+            .map(|m| m.unquote_identifier().into_owned())
             .unwrap_or_default();
         return Some(Value::Option {
             type_name: String::new(),
@@ -709,7 +710,7 @@ fn enum_member_with_ordinal_zero(
                 return node
                     .child_by_field_name("name")
                     .and_then(|name| name.utf8_text(bytes).ok())
-                    .map(|name| name.trim().trim_matches('"').to_string());
+                    .map(|name| name.unquote_identifier().into_owned());
             }
             continue;
         }
@@ -754,7 +755,7 @@ fn parse_key_fields(key: Node<'_>, source: &[u8]) -> Result<Vec<String>, String>
         let text = child
             .utf8_text(source)
             .map_err(|error| format!("primary-key field name is not UTF-8: {error}"))?;
-        names.push(text.trim_matches('"').to_string());
+        names.push(text.unquote_identifier().into_owned());
     }
     Ok(names)
 }
@@ -1408,7 +1409,7 @@ pub(crate) fn record_field_access(node: Node<'_>, source: &[u8]) -> Option<(Stri
     let recv = pf
         .child(0)
         .and_then(|n| n.utf8_text(source).ok())
-        .map(|t| t.trim_matches('"').to_string())?;
+        .map(|t| t.unquote_identifier().into_owned())?;
     let member_node = suffix.child_by_field_name("member").or_else(|| {
         let mut c = suffix.walk();
         let found = suffix
@@ -1418,7 +1419,7 @@ pub(crate) fn record_field_access(node: Node<'_>, source: &[u8]) -> Option<(Stri
     });
     let field = member_node
         .and_then(|n| n.utf8_text(source).ok())
-        .map(|t| t.trim_matches('"').to_string())?;
+        .map(|t| t.unquote_identifier().into_owned())?;
     Some((recv, field))
 }
 
@@ -1933,8 +1934,7 @@ fn unquote_subtype(raw: &str) -> String {
 fn node_text(node: Node<'_>, source: &[u8]) -> String {
     node.utf8_text(source)
         .unwrap_or("")
-        .trim()
-        .trim_matches('"')
+        .unquote_identifier()
         .to_string()
 }
 

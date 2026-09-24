@@ -25,6 +25,7 @@
 //!
 //! Anything outside the safe-list routes to `LiveBc`.
 
+use al_syntax::IdentifierText;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
@@ -378,7 +379,7 @@ fn build_procedure_catalog(workspace: &Workspace) -> ProcedureCatalog {
                     .child_by_field_name("name")
                     .and_then(|name| name.utf8_text(bytes).ok())
                 {
-                    let clean = name.trim().trim_matches('"').to_string();
+                    let clean = name.unquote_identifier().into_owned();
                     catalog.insert(
                         (object.clone(), clean.to_ascii_lowercase()),
                         ProcedureLocation {
@@ -900,11 +901,7 @@ fn classify_call(
     else {
         return;
     };
-    let receiver = primary
-        .utf8_text(source)
-        .unwrap_or("")
-        .trim()
-        .trim_matches('"');
+    let receiver = primary.utf8_text(source).unwrap_or("").unquote_identifier();
 
     // AL permits parameterless built-ins as statements without parentheses
     // (`Commit;`). In that shape the postfix expression has no call suffix.
@@ -930,7 +927,7 @@ fn classify_call(
             receiver.to_ascii_lowercase().as_str(),
             "message" | "confirm" | "strmenu" | "hyperlink"
         ) {
-            if !handler_support.supports(receiver) {
+            if !handler_support.supports(&receiver) {
                 promote(
                     decision,
                     reasons,
@@ -964,13 +961,13 @@ fn classify_call(
         // procedure of the same object (followed through the call graph), or
         // a receiver-less native stub. Everything else has no local
         // implementation and must route to LiveBc.
-        let is_builtin = al_runtime::interpreter::dispatch::supports_global_builtin(receiver);
+        let is_builtin = al_runtime::interpreter::dispatch::supports_global_builtin(&receiver);
         let is_same_object_procedure = is_builtin
             || catalog.contains_key(&(object.to_ascii_lowercase(), receiver.to_ascii_lowercase()));
         let is_stub = is_same_object_procedure
             || al_runtime::stubs::CATALOGS
                 .iter()
-                .any(|catalog| (catalog.resolve)(receiver).is_some());
+                .any(|catalog| (catalog.resolve)(&receiver).is_some());
         if !is_builtin && !is_same_object_procedure && !is_stub {
             promote(
                 decision,
@@ -992,13 +989,13 @@ fn classify_call(
                 .and_then(|scope| scope.child_by_field_name("member"))
                 .and_then(|member| member.utf8_text(source).ok())
                 .unwrap_or("")
-                .trim_matches('"')
+                .unquote_identifier()
         } else {
             receiver
         };
         if workspace
             .file_index
-            .object_path_of_kind(enum_type, &["enum"])
+            .object_path_of_kind(&enum_type, &["enum"])
             .is_none()
         {
             promote(
@@ -1025,8 +1022,7 @@ fn classify_call(
     let method = member_node
         .utf8_text(source)
         .unwrap_or("")
-        .trim()
-        .trim_matches('"');
+        .unquote_identifier();
 
     if matches!(
         receiver.to_ascii_lowercase().as_str(),
@@ -1053,7 +1049,7 @@ fn classify_call(
         line: point.row as u32,
         character: al_syntax::byte_col_to_utf16_col(line, point.column),
     };
-    let Some(decl) = resolver.resolve_type(receiver, position) else {
+    let Some(decl) = resolver.resolve_type(&receiver, position) else {
         promote(
             decision,
             reasons,
@@ -1069,7 +1065,7 @@ fn classify_call(
     };
     let type_name = decl.type_name.to_ascii_lowercase();
     if type_name == "record" {
-        let local = al_runtime::interpreter::records::supports_record_method(method);
+        let local = al_runtime::interpreter::records::supports_record_method(&method);
         let (floor, message) = if local {
             (
                 RoutingDecision::InterpRecord,
@@ -1091,7 +1087,7 @@ fn classify_call(
             reachable,
         );
     } else if type_name == "list" {
-        if !al_runtime::interpreter::records::supports_list_method(method) {
+        if !al_runtime::interpreter::records::supports_list_method(&method) {
             promote(
                 decision,
                 reasons,
@@ -1113,9 +1109,9 @@ fn classify_call(
             .flatten()
             .and_then(|path| workspace.file_index.get_cached_parse(&path))
             .is_some_and(|(text, tree)| {
-                find_callable_node(tree.root_node(), text.as_bytes(), method).is_some()
+                find_callable_node(tree.root_node(), text.as_bytes(), &method).is_some()
             });
-        let has_stub = !subtype.is_empty() && al_runtime::stubs::is_supported(subtype, method);
+        let has_stub = !subtype.is_empty() && al_runtime::stubs::is_supported(subtype, &method);
         if !has_local_body && !has_stub {
             promote(
                 decision,
@@ -1135,7 +1131,7 @@ fn classify_call(
             );
         }
     } else if type_name.starts_with("text") || type_name.starts_with("code") {
-        if !al_runtime::interpreter::records::supports_text_method(method) {
+        if !al_runtime::interpreter::records::supports_text_method(&method) {
             promote(
                 decision,
                 reasons,
@@ -1147,7 +1143,7 @@ fn classify_call(
             );
         }
     } else if type_name.starts_with("dictionary") {
-        if !al_runtime::interpreter::records::supports_dict_method(method) {
+        if !al_runtime::interpreter::records::supports_dict_method(&method) {
             promote(
                 decision,
                 reasons,
@@ -1194,11 +1190,11 @@ fn classify_call(
 fn split_type_reference(raw: &str) -> (String, Option<String>) {
     let raw = raw.trim().trim_end_matches(';').trim();
     let split = raw.find(char::is_whitespace).unwrap_or(raw.len());
-    let kind = raw[..split].trim_matches('"').to_string();
-    let mut subtype = raw[split..].trim().trim_matches('"').trim().to_string();
+    let kind = raw[..split].unquote_identifier().into_owned();
+    let mut subtype = raw[split..].unquote_identifier().into_owned();
     if subtype.to_ascii_lowercase().ends_with(" temporary") {
         subtype.truncate(subtype.len() - " temporary".len());
-        subtype = subtype.trim_end().trim_matches('"').to_string();
+        subtype = subtype.trim_end().unquote_identifier().into_owned();
     }
     (kind, (!subtype.is_empty()).then_some(subtype))
 }
@@ -1249,7 +1245,7 @@ fn find_callable_node<'a>(
             if node
                 .child_by_field_name("name")
                 .and_then(|n| n.utf8_text(source).ok())
-                .is_some_and(|n| n.trim().trim_matches('"').eq_ignore_ascii_case(name))
+                .is_some_and(|n| n.unquote_identifier().eq_ignore_ascii_case(name))
             {
                 return Some(node);
             }
@@ -1356,7 +1352,7 @@ fn record_subtypes(body: &str) -> Vec<String> {
                         .is_some_and(|part| part.eq_ignore_ascii_case("record"))
                 })
             {
-                let subtype = text["record".len()..].trim().trim_matches('"').to_string();
+                let subtype = text["record".len()..].unquote_identifier().into_owned();
                 if !subtype.is_empty()
                     && !out
                         .iter()

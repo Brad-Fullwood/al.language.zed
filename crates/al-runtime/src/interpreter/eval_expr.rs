@@ -5,6 +5,7 @@
 //! comparisons, string concatenation, parenthesised groups, member
 //! lookups, and procedure-call expressions (delegated to `dispatch`).
 
+use al_syntax::IdentifierText;
 use tree_sitter::Node;
 
 use super::error_info;
@@ -546,13 +547,13 @@ fn eval_scope_access(
         n.child_by_field_name("member")
             .or_else(|| n.named_child(0))
             .and_then(|m| m.utf8_text(source).ok())
-            .map(|t| t.trim_matches('"').to_string())
+            .map(|t| t.unquote_identifier().into_owned())
     };
 
     let primary_text = node
         .named_child(0)
         .and_then(|p| p.utf8_text(source).ok())
-        .map(|t| t.trim_matches('"').to_string())
+        .map(|t| t.unquote_identifier().into_owned())
         .unwrap_or_default();
 
     let (type_name, member) = if primary_text.eq_ignore_ascii_case("enum") {
@@ -596,7 +597,7 @@ fn resolve_workspace_enum_ordinal(ctx: &DispatchCtx, type_name: &str, member: &s
             let name = node
                 .child_by_field_name("name")
                 .and_then(|name| name.utf8_text(bytes).ok())
-                .map(|name| name.trim().trim_matches('"'));
+                .map(|name| name.unquote_identifier());
             if name.is_some_and(|name| name.eq_ignore_ascii_case(member)) {
                 return node
                     .child_by_field_name("id")
@@ -824,7 +825,7 @@ fn eval_expression_node(
                 lhs_node
                     .utf8_text(source)
                     .ok()
-                    .map(|s| s.trim_matches('"').to_ascii_lowercase())
+                    .map(|s| s.unquote_identifier().to_ascii_lowercase())
             })
             .unwrap_or_default();
 
@@ -1158,7 +1159,7 @@ fn extract_identifier_name(node: Node<'_>, source: &[u8]) -> Option<String> {
                 return child
                     .utf8_text(source)
                     .ok()
-                    .map(|s| s.trim_matches('"').to_ascii_lowercase());
+                    .map(|s| s.unquote_identifier().to_ascii_lowercase());
             }
             "unary_expression" | "postfix_expression" | "primary_expression" => {
                 if let Some(name) = extract_identifier_name(child, source) {
