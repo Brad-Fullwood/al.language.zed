@@ -110,7 +110,7 @@ pub fn impact(workspace: &Workspace, symbol: &str) -> Result<Vec<ImpactEntry>, I
 
     // Bounded: only extensions of the named object via the by_extends index.
     for entry in workspace.symbols.get_extensions_of(&object_part) {
-        check_extends(&entry, &object_part, &mut results);
+        check_extends(&entry, &object_part, None, &mut results);
     }
 
     // Bounded: only kinds that can carry a SourceTable property.
@@ -130,7 +130,7 @@ pub fn impact(workspace: &Workspace, symbol: &str) -> Result<Vec<ImpactEntry>, I
     // Member-scoped scan (full pass — no reverse index available).
     if let Some(member) = &member_part {
         for entry in workspace.symbols.all_entries() {
-            check_member_consumers(&entry, &object_part, member, &mut results);
+            check_member_consumers(&entry, &object_part, None, member, &mut results);
         }
     } else {
         // Object-scoped scan: parameter-type and TableRelation references to the
@@ -143,9 +143,15 @@ pub fn impact(workspace: &Workspace, symbol: &str) -> Result<Vec<ImpactEntry>, I
     }
 
     if let Some(member) = &member_part {
-        search_workspace_files_for_member(&workspace_sources, &object_part, member, &mut results);
+        search_workspace_files_for_member(
+            &workspace_sources,
+            &object_part,
+            None,
+            member,
+            &mut results,
+        );
     } else {
-        search_workspace_files(&workspace_sources, &object_part, &mut results);
+        search_workspace_files(&workspace_sources, &object_part, None, &mut results);
     }
 
     Ok(results)
@@ -185,7 +191,11 @@ impl WorkspaceImpactIndex {
     /// [`impact`]'s row shape. For a member, only the code that uses that
     /// member counts; an extension of the object or a page built on it is a
     /// use of the object.
-    pub fn consumers(&self, symbol: &str) -> Vec<ImpactEntry> {
+    ///
+    /// With `kind`, a use has to be able to name an object of that kind: page
+    /// "Payment Terms" and table "Payment Terms" share a name, and a
+    /// `Record "Payment Terms"` variable does not use the page.
+    pub fn consumers(&self, symbol: &str, kind: Option<ObjectKind>) -> Vec<ImpactEntry> {
         const SOURCE_TABLE_KINDS: &[ObjectKind] = &[
             ObjectKind::Page,
             ObjectKind::PageExtension,
@@ -197,25 +207,35 @@ impl WorkspaceImpactIndex {
         let mut results = Vec::new();
         for entry in &self.entries {
             match &member_part {
-                Some(member) => check_member_consumers(entry, &object_part, member, &mut results),
+                Some(member) => {
+                    check_member_consumers(entry, &object_part, kind, member, &mut results)
+                }
                 // Extending an object, or showing it as a page's source
                 // table, is a use of the object. It is not a use of each of
                 // its members: listing every table extension of Customer
                 // against each removed Customer field buried the real uses.
                 None => {
-                    check_extends(entry, &object_part, &mut results);
-                    if SOURCE_TABLE_KINDS.contains(&entry.kind) {
-                        check_source_table(entry, &object_part, &mut results);
+                    check_extends(entry, &object_part, kind, &mut results);
+                    // A source table, a `Record` parameter and a
+                    // `TableRelation` all name a table.
+                    if kind_allows(kind, ObjectKind::Table) {
+                        if SOURCE_TABLE_KINDS.contains(&entry.kind) {
+                            check_source_table(entry, &object_part, &mut results);
+                        }
+                        check_object_consumers(entry, &object_part, &mut results);
                     }
-                    check_object_consumers(entry, &object_part, &mut results);
                 }
             }
         }
         match &member_part {
-            Some(member) => {
-                search_workspace_files_for_member(&self.sources, &object_part, member, &mut results)
-            }
-            None => search_workspace_files(&self.sources, &object_part, &mut results),
+            Some(member) => search_workspace_files_for_member(
+                &self.sources,
+                &object_part,
+                kind,
+                member,
+                &mut results,
+            ),
+            None => search_workspace_files(&self.sources, &object_part, kind, &mut results),
         }
         results
     }
@@ -249,12 +269,54 @@ fn find_unquoted_dot(s: &str) -> Option<usize> {
     None
 }
 
+/// Whether a use that names an object of `candidate` kind counts under the
+/// `kind` filter. No filter keeps everything.
+fn kind_allows(kind: Option<ObjectKind>, candidate: ObjectKind) -> bool {
+    kind.is_none_or(|kind| kind == candidate)
+}
+
+/// Whether a reference written with `keyword` (`Record`, `Page`, `Codeunit`,
+/// `Database`, ...) can name an object of `kind`. A keyword that names no
+/// object kind (`TestPage`, a variable name) cannot rule the reference out.
+fn keyword_allows(keyword: &str, kind: Option<ObjectKind>) -> bool {
+    let Some(kind) = kind else {
+        return true;
+    };
+    let keyword = keyword.trim();
+    if keyword.eq_ignore_ascii_case("record") || keyword.eq_ignore_ascii_case("database") {
+        return kind == ObjectKind::Table;
+    }
+    keyword
+        .parse::<ObjectKind>()
+        .map_or(true, |named| named == kind)
+}
+
+/// The word written just before `offset`, skipping `::` and whitespace:
+/// `Record` in `Record "Payment Terms"`, `Page` in `Page::"Payment Terms"`.
+fn keyword_before(text: &str, offset: usize) -> Option<&str> {
+    let before = text.get(..offset)?.trim_end();
+    let before = before.strip_suffix("::").unwrap_or(before).trim_end();
+    let start = before
+        .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .map_or(0, |index| index + 1);
+    let word = &before[start..];
+    (!word.is_empty()).then_some(word)
+}
+
 /// Push an Extends impact for an entry already known to extend `target_object`.
 ///
 /// `entry` comes from `get_extensions_of(target_object)`, so the by_extends index
 /// has already done a case-insensitive name match. The double-check below is
 /// retained as a defence against stale index state.
-fn check_extends(entry: &Arc<SymbolEntry>, target_object: &str, results: &mut Vec<ImpactEntry>) {
+fn check_extends(
+    entry: &Arc<SymbolEntry>,
+    target_object: &str,
+    kind: Option<ObjectKind>,
+    results: &mut Vec<ImpactEntry>,
+) {
+    if kind.is_some() && entry.kind.base_kind() != kind {
+        return;
+    }
     let target_lower = target_object.to_lowercase();
     if let Some(ref extends_name) = entry.extends {
         if extends_name.to_lowercase() == target_lower {
@@ -312,6 +374,7 @@ fn check_source_table(
 fn check_member_consumers(
     entry: &Arc<SymbolEntry>,
     target_object: &str,
+    kind: Option<ObjectKind>,
     member: &str,
     results: &mut Vec<ImpactEntry>,
 ) {
@@ -332,15 +395,21 @@ fn check_member_consumers(
             {
                 continue;
             }
-            let target_obj_arg = attr.arguments.get(1).map(|s| {
+            let target_obj_arg = attr.arguments.get(1).and_then(|s| {
                 let s = s.trim();
                 if let Some(pos) = s.find("::") {
-                    s[pos + 2..]
-                        .trim_matches('"')
-                        .trim_matches('\'')
-                        .to_lowercase()
+                    // `Codeunit::"Sales-Post"`, `Database::Customer`.
+                    if !keyword_allows(&s[..pos], kind) {
+                        return None;
+                    }
+                    Some(
+                        s[pos + 2..]
+                            .trim_matches('"')
+                            .trim_matches('\'')
+                            .to_lowercase(),
+                    )
                 } else {
-                    s.trim_matches('"').trim_matches('\'').to_lowercase()
+                    Some(s.trim_matches('"').trim_matches('\'').to_lowercase())
                 }
             });
             let target_event_arg = attr
@@ -445,6 +514,7 @@ fn check_object_consumers(
 fn search_workspace_files(
     workspace_sources: &[WorkspaceSource],
     search_name: &str,
+    kind: Option<ObjectKind>,
     results: &mut Vec<ImpactEntry>,
 ) {
     for source in workspace_sources {
@@ -452,7 +522,12 @@ fn search_workspace_files(
         // objects, and a hit anywhere in it was reported as the first one.
         for (object, node) in source.object_nodes() {
             let refs = al_syntax::find_variable_references_under(node, &source.text, search_name);
-            if refs.is_empty() {
+            // `Record "Payment Terms"` does not name page "Payment Terms".
+            let names_kind = refs.iter().any(|reference| {
+                keyword_before(&source.text, reference.start_byte)
+                    .is_none_or(|keyword| keyword_allows(keyword, kind))
+            });
+            if !names_kind {
                 continue;
             }
             results.push(ImpactEntry {
@@ -482,6 +557,7 @@ fn search_workspace_files(
 fn search_workspace_files_for_member(
     workspace_sources: &[WorkspaceSource],
     object_name: &str,
+    kind: Option<ObjectKind>,
     member: &str,
     results: &mut Vec<ImpactEntry>,
 ) {
@@ -497,14 +573,32 @@ fn search_workspace_files_for_member(
             }
 
             let object_text = object.text(&source.text);
-            let receivers = receiver_bindings(node, &source.text, &object_lower);
-            let declares_target = object.info.name.to_lowercase() == object_lower
-                || extends_target(object_text, &object_lower);
+            let receivers = declared_receivers(node, &source.text, |type_text| {
+                type_target_matches(type_text, object_lower.as_str(), kind)
+            });
+            // A receiver this object declares as something else is a known
+            // non-use: `Cust.Picture` with `Cust: Record Customer` does not
+            // read Vendor.Picture, and `Terms: Record "Payment Terms"` is not
+            // page "Payment Terms".
+            let mut other_receivers = declared_receivers(node, &source.text, |_| true);
+            other_receivers.retain(|name| !receivers.contains(name));
+            let rules_out = |reference: &tree_sitter::Range| {
+                receiver_before(&source.text, reference.start_byte)
+                    .is_some_and(|receiver| other_receivers.contains(&receiver.to_lowercase()))
+            };
+            if refs.iter().all(rules_out) {
+                continue;
+            }
+            let declares_target = (object.info.name.to_lowercase() == object_lower
+                && kind_allows(kind, object.kind))
+                || (extends_target(object_text, &object_lower)
+                    && (kind.is_none() || object.kind.base_kind() == kind));
             // A page/report/query bound to the table through `SourceTable` is the
             // ordinary consumer of a field, and `Rec` inside it is that table. The
             // survey saw every such page reported as `confidence: low`.
-            let source_table_target = source_table_of(object_text)
-                .is_some_and(|table| table.to_lowercase() == object_lower);
+            let source_table_target = kind_allows(kind, ObjectKind::Table)
+                && source_table_of(object_text)
+                    .is_some_and(|table| table.to_lowercase() == object_lower);
 
             let bound = refs.iter().any(|reference| {
                 match receiver_before(&source.text, reference.start_byte) {
@@ -599,12 +693,13 @@ fn extends_target(text: &str, object_lower: &str) -> bool {
     name.to_lowercase() == object_lower
 }
 
-/// Lower-cased names of variables/parameters in `text` whose declared type
-/// targets `object_lower` (e.g. `Cust: Record Customer` for `customer`).
-fn receiver_bindings(
+/// Lower-cased names of the variables and parameters declared under `root`
+/// whose type text satisfies `accepts` (e.g. `Cust` for `Cust: Record
+/// Customer` when it accepts `Record Customer`).
+fn declared_receivers(
     root: tree_sitter::Node<'_>,
     text: &str,
-    object_lower: &str,
+    accepts: impl Fn(&str) -> bool,
 ) -> std::collections::HashSet<String> {
     let source = text.as_bytes();
     let mut names = std::collections::HashSet::new();
@@ -614,7 +709,7 @@ fn receiver_bindings(
             let targets = node
                 .child_by_field_name("type")
                 .and_then(|type_node| type_node.utf8_text(source).ok())
-                .map(|type_text| type_target_matches(type_text, object_lower))
+                .map(&accepts)
                 .unwrap_or(false);
             if targets {
                 let mut cursor = node.walk();
@@ -633,11 +728,14 @@ fn receiver_bindings(
 
 /// Whether an AL type string such as `Record "Sales Header"` or `Codeunit Foo`
 /// targets `object_lower`.
-fn type_target_matches(type_text: &str, object_lower: &str) -> bool {
+fn type_target_matches(type_text: &str, object_lower: &str, kind: Option<ObjectKind>) -> bool {
     let trimmed = type_text.trim();
-    let Some((_kind, rest)) = trimmed.split_once(char::is_whitespace) else {
+    let Some((keyword, rest)) = trimmed.split_once(char::is_whitespace) else {
         return false;
     };
+    if !keyword_allows(keyword, kind) {
+        return false;
+    }
     let target = rest.trim();
     let target = target
         .strip_prefix('"')

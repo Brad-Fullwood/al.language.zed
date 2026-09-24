@@ -38,10 +38,12 @@ Params: `from` and `to` (paths to the two `.app` files, inside the project or it
 folders; relative paths resolve against the project root), `all` (boolean, default false: also
 return the changes nothing in the workspace uses). The result names both packages and carries
 `totalChanges`, `breakingChanges`, `affectingWorkspace`, `possiblyAffecting` and `changes`, where
-each change has the `kind`, `object`, `member`, `description` and `isBreaking` of `breaking` plus
-`uses`, the workspace consumers whose receiver resolves to the changed object in `impact`'s row
-shape, and `possibleUses`, name matches whose receiver did not resolve. A change to a member
-counts only code that uses the member; extending the object is not a use of each of its members.
+each change has the `kind`, `object`, `objectKind`, `member`, `description` and `isBreaking` of
+`breaking` plus `uses`, the workspace consumers whose receiver resolves to the changed object in
+`impact`'s row shape, and `possibleUses`, name matches whose receiver did not resolve. A change to
+a member counts only code that uses the member; extending the object is not a use of each of its
+members. A use has to name the changed kind: `Record "Payment Terms"` is not a use of page
+"Payment Terms".
 
 `freeIds` allocates inside the `idRanges` declared in `app.json`. Params: `kind` (object kind
 keyword, omit for a per-kind summary), `object` (a table, tableextension, enum or enumextension

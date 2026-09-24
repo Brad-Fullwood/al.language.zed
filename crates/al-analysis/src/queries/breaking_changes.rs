@@ -7,7 +7,7 @@ use al_syntax::IdentifierText;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
-use al_symbols::{MethodSymbol, SymbolEntry};
+use al_symbols::{MethodSymbol, ObjectKind, SymbolEntry};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,6 +48,8 @@ pub enum BreakingChangeKind {
 pub struct BreakingChange {
     pub kind: BreakingChangeKind,
     pub object: String,
+    /// The changed object's kind: a page and a table can share a name.
+    pub object_kind: ObjectKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub member: Option<String>,
     pub description: String,
@@ -87,6 +89,7 @@ pub fn analyze_breaking_changes(
                 changes.push(BreakingChange {
                     kind: BreakingChangeKind::NamespaceChanged,
                     object: old_entry.name.clone(),
+                    object_kind: old_entry.kind,
                     member: None,
                     description: format!(
                         "Object '{}' moved from namespace '{}' to '{}'",
@@ -101,6 +104,7 @@ pub fn analyze_breaking_changes(
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::ObjectRemoved,
                 object: old_entry.name.clone(),
+                object_kind: old_entry.kind,
                 member: None,
                 description: format!(
                     "Object '{}' ({}) was removed",
@@ -274,6 +278,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
         changes.push(BreakingChange {
             kind: BreakingChangeKind::ObjectIdChanged,
             object: old.name.clone(),
+            object_kind: old.kind,
             member: None,
             description: format!(
                 "Object '{}' ID changed from {} to {}",
@@ -288,6 +293,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
         changes.push(BreakingChange {
             kind: BreakingChangeKind::BaseObjectChanged,
             object: old.name.clone(),
+            object_kind: old.kind,
             member: None,
             description: format!(
                 "Base object of '{}' changed from '{}' to '{}'",
@@ -308,6 +314,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::InterfaceRemoved,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(interface.clone()),
                 description: format!(
                     "Object '{}' no longer implements interface '{}'",
@@ -321,6 +328,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
         changes.push(BreakingChange {
             kind: BreakingChangeKind::AccessReduced,
             object: old.name.clone(),
+            object_kind: old.kind,
             member: None,
             description: format!("Object '{}' access changed to Internal", old.name),
             is_breaking: true,
@@ -343,11 +351,12 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             .copied()
             .find(|method| parameter_contract_matches(old_method, method));
         if let Some(new_method) = exact {
-            check_matching_signature(&old.name, old_method, new_method, changes);
+            check_matching_signature(old, old_method, new_method, changes);
         } else if same_name.is_empty() {
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::ProcedureRemoved,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_method.name.clone()),
                 description: format!(
                     "Public procedure '{}' was removed from '{}'",
@@ -357,11 +366,12 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
                 is_breaking: true,
             });
         } else if same_name.len() == 1 {
-            check_incompatible_signature(&old.name, old_method, same_name[0], changes);
+            check_incompatible_signature(old, old_method, same_name[0], changes);
         } else {
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::SignatureChanged,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_method.name.clone()),
                 description: format!(
                     "No current overload of '{}' preserves baseline signature {}",
@@ -390,6 +400,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
                 changes.push(BreakingChange {
                     kind: BreakingChangeKind::FieldRenamed,
                     object: old.name.clone(),
+                    object_kind: old.kind,
                     member: Some(old_field.name.clone()),
                     description: format!(
                         "Field '{}' (ID {}) in '{}' was renamed to '{}'",
@@ -402,6 +413,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::FieldRemoved,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_field.name.clone()),
                 description: format!("Field '{}' was removed from '{}'", old_field.name, old.name),
                 is_breaking: true,
@@ -412,6 +424,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::FieldIdChanged,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_field.name.clone()),
                 description: format!(
                     "Field '{}' in '{}' changed ID from {} to {}",
@@ -424,6 +437,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::FieldTypeChanged,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_field.name.clone()),
                 description: format!(
                     "Field '{}' in '{}' changed type from '{}' to '{}'",
@@ -438,6 +452,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::AccessReduced,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_field.name.clone()),
                 description: format!(
                     "Field '{}' in '{}' access changed to Internal",
@@ -457,6 +472,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::EnumValueRemoved,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_val.name.clone()),
                 description: format!(
                     "Enum value '{}' was removed from '{}'",
@@ -470,6 +486,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::EnumValueOrdinalChanged,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_val.name.clone()),
                 description: format!(
                     "Enum value '{}' in '{}' changed ordinal from {} to {}",
@@ -494,6 +511,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::PermissionReduced,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(format!(
                     "{}:{}",
                     old_permission.permission_object, old_permission.object_id
@@ -526,6 +544,7 @@ fn diff_keys(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingCha
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::KeyRemoved,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_key.name.clone()),
                 description: format!(
                     "Key '{}' ({}) was removed from '{}'",
@@ -551,6 +570,7 @@ fn diff_keys(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingCha
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::KeyFieldsChanged,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_key.name.clone()),
                 description: format!(
                     "Key '{}' in '{}' changed fields from ({}) to ({})",
@@ -579,6 +599,7 @@ fn diff_controls(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<Breakin
         changes.push(BreakingChange {
             kind: BreakingChangeKind::ControlRemoved,
             object: old.name.clone(),
+            object_kind: old.kind,
             member: Some(name.clone()),
             description: format!("Control '{name}' was removed from '{}'", old.name),
             is_breaking: true,
@@ -600,7 +621,7 @@ fn control_names(controls: &[al_symbols::ControlSymbol]) -> BTreeMap<String, Str
 }
 
 fn check_incompatible_signature(
-    object_name: &str,
+    object: &SymbolEntry,
     old: &MethodSymbol,
     new: &MethodSymbol,
     changes: &mut Vec<BreakingChange>,
@@ -608,7 +629,8 @@ fn check_incompatible_signature(
     if old.parameters.len() != new.parameters.len() {
         changes.push(BreakingChange {
             kind: BreakingChangeKind::SignatureChanged,
-            object: object_name.to_string(),
+            object: object.name.clone(),
+            object_kind: object.kind,
             member: Some(old.name.clone()),
             description: format!(
                 "Procedure '{}' parameter count changed from {} to {}",
@@ -626,7 +648,8 @@ fn check_incompatible_signature(
         if normalize_name(&old_parameter.type_name) != normalize_name(&new_parameter.type_name) {
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::SignatureChanged,
-                object: object_name.to_string(),
+                object: object.name.clone(),
+                object_kind: object.kind,
                 member: Some(old.name.clone()),
                 description: format!(
                     "Parameter {} type changed from '{}' to '{}' in '{}'",
@@ -641,7 +664,8 @@ fn check_incompatible_signature(
         if old_parameter.is_var != new_parameter.is_var {
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::SignatureChanged,
-                object: object_name.to_string(),
+                object: object.name.clone(),
+                object_kind: object.kind,
                 member: Some(old.name.clone()),
                 description: format!(
                     "Parameter {} '{}' modifier changed from {} to {} in '{}'",
@@ -666,7 +690,7 @@ fn check_incompatible_signature(
 }
 
 fn check_matching_signature(
-    object_name: &str,
+    object: &SymbolEntry,
     old: &MethodSymbol,
     new: &MethodSymbol,
     changes: &mut Vec<BreakingChange>,
@@ -678,7 +702,8 @@ fn check_matching_signature(
     if old_ret.map(str::to_lowercase) != new_ret.map(str::to_lowercase) {
         changes.push(BreakingChange {
             kind: BreakingChangeKind::ReturnTypeChanged,
-            object: object_name.to_string(),
+            object: object.name.clone(),
+            object_kind: object.kind,
             member: Some(old.name.clone()),
             description: format!(
                 "Return type of '{}' changed from '{}' to '{}'",
@@ -700,7 +725,8 @@ fn check_matching_signature(
             // name.
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::ParameterRenamed,
-                object: object_name.to_string(),
+                object: object.name.clone(),
+                object_kind: object.kind,
                 member: Some(old.name.clone()),
                 description: format!(
                     "Parameter {} in '{}' was renamed from '{}' to '{}'",

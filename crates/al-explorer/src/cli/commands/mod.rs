@@ -706,6 +706,7 @@ fn validate_run_command_result(method: &str, result: &serde_json::Value) -> Resu
             &[
                 ("kind", JsonFieldKind::String),
                 ("object", JsonFieldKind::String),
+                ("objectKind", JsonFieldKind::String),
                 ("description", JsonFieldKind::String),
                 ("isBreaking", JsonFieldKind::Boolean),
             ],

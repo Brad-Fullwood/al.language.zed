@@ -134,6 +134,11 @@ pub fn cmd_package_diff(from: &str, to: &str, all: bool, json: bool) -> ExitCode
                     Some(member) => format!("{object}.{member}"),
                     None => object.to_string(),
                 };
+                // Table and page "Payment Terms" share a name.
+                let target = match change["objectKind"].as_str() {
+                    Some(kind) => format!("{kind} {target}"),
+                    None => target,
+                };
                 let severity = if change["isBreaking"].as_bool().unwrap_or(false) {
                     "breaking"
                 } else {

@@ -108,7 +108,7 @@ pub fn package_diff(
     let mut kept = Vec::new();
     for change in changes {
         let (uses, possible_uses): (Vec<_>, Vec<_>) = index
-            .consumers(&symbol_for(&change))
+            .consumers(&symbol_for(&change), Some(change.object_kind))
             .into_iter()
             .partition(|consumer| consumer.confidence != ImpactConfidence::Low);
         if !uses.is_empty() {
@@ -290,6 +290,80 @@ mod tests {
         let report = package_diff(&workspace, &from, &to, false).unwrap();
 
         assert_eq!(report.affecting_workspace, 0, "{report:#?}");
+        assert!(report.changes.is_empty());
+    }
+
+    /// Base Application has table and page "Payment Terms"; a change to the
+    /// page is not a use by code that reads the table.
+    #[test]
+    fn a_page_change_is_not_a_use_of_the_table_of_the_same_name() {
+        let workspace = workspace_using(
+            r#"codeunit 50100 Uses
+{
+    procedure Run()
+    var
+        Terms: Record "Payment Terms";
+    begin
+        Terms.Code := '';
+        Terms.Validate(Code);
+    end;
+}
+"#,
+        );
+        let terms_table = SymbolEntry {
+            name: "Payment Terms".to_string(),
+            id: 3,
+            ..table(&[(1, "Code")])
+        };
+        let terms_page = |methods: &[&str]| SymbolEntry {
+            kind: ObjectKind::Page,
+            id: 4,
+            name: "Payment Terms".to_string(),
+            ..codeunit(methods)
+        };
+        let from = package("25.0.0.0", vec![terms_table.clone(), terms_page(&["Code"])]);
+        let to = package("26.0.0.0", vec![terms_table, terms_page(&[])]);
+
+        let report = package_diff(&workspace, &from, &to, true).unwrap();
+
+        let page_change = report
+            .changes
+            .iter()
+            .find(|change| change.change.object_kind == ObjectKind::Page)
+            .expect("the page method removal is reported");
+        assert!(page_change.uses.is_empty(), "{page_change:#?}");
+        assert!(page_change.possible_uses.is_empty(), "{page_change:#?}");
+        assert_eq!(report.affecting_workspace, 0, "{report:#?}");
+    }
+
+    /// `Cust.Picture` with `Cust: Record Customer` reads Customer.Picture only;
+    /// Base Application 26 dropped `Picture` from eight tables, and each one
+    /// listed it as a possible use.
+    #[test]
+    fn a_receiver_declared_as_another_object_is_not_a_possible_use() {
+        let workspace = workspace_using(
+            r#"codeunit 50100 Uses
+{
+    procedure Run()
+    var
+        Cust: Record Customer;
+    begin
+        if Cust.Picture.HasValue() then;
+    end;
+}
+"#,
+        );
+        let vendor = |fields: &[(i32, &str)]| SymbolEntry {
+            name: "Vendor".to_string(),
+            id: 23,
+            ..table(fields)
+        };
+        let from = package("25.0.0.0", vec![vendor(&[(1, "No."), (30, "Picture")])]);
+        let to = package("26.0.0.0", vec![vendor(&[(1, "No.")])]);
+
+        let report = package_diff(&workspace, &from, &to, false).unwrap();
+
+        assert_eq!(report.possibly_affecting, 0, "{report:#?}");
         assert!(report.changes.is_empty());
     }
 
