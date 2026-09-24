@@ -14,6 +14,7 @@
 //! kernel. A socket planted at the endpoint path captured a Business Central
 //! password in cleartext before these existed.
 
+#[cfg(unix)]
 use std::path::Path;
 
 /// Refuse a directory anyone but this user, or root, could replace.

@@ -902,6 +902,14 @@ impl DaemonClient {
 
     fn start_daemon(project_root: &Path) -> Result<std::process::Child, String> {
         let al_lsp = find_al_lsp_binary()?;
+        // Windows hands every inheritable handle to a child, and this
+        // process's own standard handles are inheritable when a caller
+        // captures them through pipes. The daemon outlives this process, so it
+        // held the caller's pipe open and `al-explorer diag` run with captured
+        // output did not finish until the daemon exited, up to 30 minutes
+        // later.
+        #[cfg(windows)]
+        let _std_handles = windows_std_handles::NotInherited::new();
         std::process::Command::new(&al_lsp)
             .arg("daemon")
             .arg("--project")
@@ -1189,6 +1197,60 @@ fn connect_stream(endpoint: &Path) -> std::io::Result<Stream> {
         .name(name)
         .wait_mode(interprocess::ConnectWaitMode::Timeout(Duration::ZERO))
         .connect_sync()
+}
+
+/// Clear the inherit flag on this process's standard handles for the length
+/// of one spawn, and put back what was there afterwards.
+#[cfg(windows)]
+mod windows_std_handles {
+    use windows_sys::Win32::Foundation::{
+        GetHandleInformation, SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT,
+        INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+
+    pub(super) struct NotInherited {
+        restore: Vec<HANDLE>,
+    }
+
+    impl NotInherited {
+        pub(super) fn new() -> Self {
+            let mut restore = Vec::new();
+            for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+                // Safety: these read and set flags on this process's own
+                // standard handles, which stay open for its lifetime.
+                unsafe {
+                    let handle = GetStdHandle(which);
+                    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+                        continue;
+                    }
+                    let mut flags = 0u32;
+                    if GetHandleInformation(handle, &mut flags) == 0
+                        || flags & HANDLE_FLAG_INHERIT == 0
+                    {
+                        continue;
+                    }
+                    if SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) != 0 {
+                        restore.push(handle);
+                    }
+                }
+            }
+            Self { restore }
+        }
+    }
+
+    impl Drop for NotInherited {
+        fn drop(&mut self) {
+            for handle in &self.restore {
+                // Safety: see `new`; this restores the flag it cleared.
+                unsafe {
+                    SetHandleInformation(*handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+                }
+            }
+        }
+    }
 }
 
 /// The message in one line of the daemon's tracing output.

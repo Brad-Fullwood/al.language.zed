@@ -2113,7 +2113,11 @@ mod runtime_dir_tests {
     /// Ownership of `/tmp` itself is fine, because it is root-owned and sticky.
     #[test]
     fn a_root_owned_world_writable_parent_is_only_accepted_when_sticky() {
-        let shared = std::path::Path::new("/tmp");
+        // macOS `/tmp` is a root-owned link to `/private/tmp`. The owner check
+        // is for a directory, and a link at that position is refused on
+        // purpose, so ask about the directory the link names.
+        let shared = std::fs::canonicalize("/tmp").unwrap();
+        let shared = shared.as_path();
         let metadata = std::fs::metadata(shared).unwrap();
         use std::os::unix::fs::MetadataExt;
         assert_eq!(metadata.uid(), 0, "/tmp is expected to be root-owned");
