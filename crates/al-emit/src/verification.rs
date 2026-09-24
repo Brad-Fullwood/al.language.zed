@@ -248,6 +248,50 @@ fn is_al_version(value: &str) -> bool {
     }) && components.next().is_none()
 }
 
+/// A report layout file that is not in the project, reported on the
+/// report's `LayoutFile` line. It used to surface only when the package was
+/// assembled, as one ALN0000 on `app.json` naming no report.
+pub(crate) fn verify_layout_files(
+    project_dir: &std::path::Path,
+    objects: &[EmitObject],
+    diagnostics: &mut Vec<VerificationDiagnostic>,
+) {
+    for object in objects {
+        for layout in &object.report_layouts {
+            let Some(file) = layout
+                .properties
+                .iter()
+                .find(|p| p.name.eq_ignore_ascii_case("LayoutFile"))
+            else {
+                continue;
+            };
+            // A path that leaves the project is refused when the package is
+            // assembled; only look inside it here.
+            let Ok(relative) =
+                super::assemble::project_relative_resource_path(&file.value, "report layout")
+            else {
+                continue;
+            };
+            if project_dir.join(relative).is_file() {
+                continue;
+            }
+            let offset = object
+                .source_text
+                .find(&file.value)
+                .unwrap_or(object.source_text.len());
+            diagnostics.push(VerificationDiagnostic::error_at_source_offset(
+                object,
+                offset,
+                "ALN2501",
+                format!(
+                    "layout '{}' names file '{}', which is not in the project",
+                    layout.name, file.value
+                ),
+            ));
+        }
+    }
+}
+
 pub(crate) fn verify_project_objects(
     app_json: &serde_json::Value,
     objects: &[EmitObject],

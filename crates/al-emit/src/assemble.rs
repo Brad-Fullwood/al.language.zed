@@ -870,7 +870,7 @@ fn control_addin_bundle(
 }
 
 /// Read report layout files relative to the project root.
-fn project_relative_resource_path(
+pub(crate) fn project_relative_resource_path(
     value: &str,
     kind: &str,
 ) -> Result<std::path::PathBuf, EmitError> {

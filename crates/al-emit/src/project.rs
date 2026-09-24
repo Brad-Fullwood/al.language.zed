@@ -487,6 +487,7 @@ pub fn build_verified_app_from_project_with_packages(
         &objects,
         external.as_ref(),
     ));
+    super::verification::verify_layout_files(project_dir, &objects, &mut diagnostics);
     timings.semantic_verification_ns = timings
         .semantic_verification_ns
         .saturating_add(elapsed_ns(verification_started));

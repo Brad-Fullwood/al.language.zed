@@ -538,3 +538,25 @@ fn an_error_in_a_multi_object_file_is_reported_once() {
     assert_eq!(undeclared.len(), 1, "{:?}", built.diagnostics);
     assert_eq!(undeclared[0].line, 5);
 }
+
+#[test]
+fn aln2501_a_missing_layout_file_is_reported_on_the_report() {
+    let dir = tempfile::tempdir().unwrap();
+    write_project(
+        dir.path(),
+        APP_JSON,
+        &[(
+            "R.Report.al",
+            "report 50100 R\n{\n    DefaultRenderingLayout = L;\n    dataset { }\n    rendering\n    {\n        layout(L)\n        {\n            Type = Excel;\n            LayoutFile = 'Missing.xlsx';\n        }\n    }\n}\n",
+        )],
+    );
+    let built = build_verified_app_from_project(dir.path(), "13.0.0.0", "2026-01-01T00:00:00Z")
+        .expect("a missing layout is a diagnostic, not a build failure");
+    let missing = built
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "ALN2501")
+        .unwrap_or_else(|| panic!("{:?}", built.diagnostics));
+    assert!(missing.file.ends_with("R.Report.al"), "{missing:?}");
+    assert_eq!(missing.line, 10);
+}
