@@ -65,15 +65,23 @@ pub fn collect_permissions(
         .map_err(|error| PermissionCollectionError::Workspace(error.to_string()))?;
 
     let mut entries = Vec::new();
-    for source in sources {
-        let info = source.object.info;
-        if let Some((perm_type, perm_value)) = permission_for_kind(&info.kind) {
-            entries.push(PermissionEntry {
-                object_type: perm_type.to_string(),
-                object_name: info.name,
-                object_id: info.id,
-                permissions: perm_value.to_string(),
-            });
+    // Every object of the file, not just its first.
+    for source in &sources {
+        for object in &source.objects {
+            // A test codeunit or test runner is not part of what the app
+            // ships to users; it had been added to the assignable set.
+            if is_test_codeunit(&object.info.kind, object.text(&source.text)) {
+                continue;
+            }
+            let info = &object.info;
+            if let Some((perm_type, perm_value)) = permission_for_kind(&info.kind) {
+                entries.push(PermissionEntry {
+                    object_type: perm_type.to_string(),
+                    object_name: info.name.clone(),
+                    object_id: info.id,
+                    permissions: perm_value.to_string(),
+                });
+            }
         }
     }
 
@@ -91,6 +99,27 @@ pub fn collect_permissions(
     skipped.sort_by(|a, b| a.path.cmp(&b.path));
 
     Ok(PermissionCollection { entries, skipped })
+}
+
+/// Whether an object is a codeunit with `Subtype = Test` or `TestRunner`.
+fn is_test_codeunit(kind: &str, object_text: &str) -> bool {
+    kind.eq_ignore_ascii_case("codeunit")
+        && object_text.lines().any(|line| {
+            let line = line.trim();
+            let Some((key, value)) = line.split_once('=') else {
+                return false;
+            };
+            key.trim().eq_ignore_ascii_case("Subtype")
+                && matches!(
+                    value
+                        .trim()
+                        .trim_end_matches(';')
+                        .trim()
+                        .to_ascii_lowercase()
+                        .as_str(),
+                    "test" | "testrunner"
+                )
+        })
 }
 
 /// Render a permission set as AL source.
@@ -222,6 +251,27 @@ fn xml_permission_flags(perms: &str) -> (u8, u8, u8, u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test codeunits are not part of the shipped app, and a file's second
+    /// object counts as much as its first.
+    #[test]
+    fn test_codeunits_are_left_out_and_every_object_counts() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/ws/Objects.al"),
+            "codeunit 50101 \"Loyalty Mgt\"\n{\n}\n\ncodeunit 50103 \"Loyalty Test\"\n{\n    Subtype = Test;\n}\n\ntable 50100 Tier\n{\n    fields { field(1; Code; Code[10]) { } }\n}\n"
+                .to_string(),
+        );
+        let names: Vec<String> = collect_permissions(&workspace)
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|entry| entry.object_name)
+            .collect();
+        assert!(names.contains(&"Loyalty Mgt".to_string()), "{names:?}");
+        assert!(names.contains(&"Tier".to_string()), "{names:?}");
+        assert!(!names.contains(&"Loyalty Test".to_string()), "{names:?}");
+    }
     use std::path::PathBuf;
 
     #[test]
