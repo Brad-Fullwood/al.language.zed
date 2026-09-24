@@ -26,9 +26,7 @@ Queued:
 - Remaining file splits from the slop-splits-2 list: `session.rs`, `xliff.rs`, `calls.rs`, `router.rs`.
 - Rebuild `target/release` before measuring for articles (it predates `publish` and `free-ids`).
 - `dispatch_generate` cannot warn on IDs outside the project `idRanges` until the dispatcher is async.
-
-
-
+- Daemon requests read the file index while another connection's request may be refreshing it (`findings/r4-session-review.md` RACE-DAEMON-REFRESH). A request-wide read guard would let one long request hold off every new one; give daemon requests a snapshot instead.
 - al-dap and al-publish post to different BC dev endpoints (needs a live server to settle). The duplicated response validation framework in al-explorer (about 300 lines to move).
 - desloppify fix batches (`findings/desloppify.md` section 4), file splits after the owning fix branch merges.
 - Workstream E (tests): coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis. Start when a build slot frees.
