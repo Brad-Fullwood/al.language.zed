@@ -182,3 +182,12 @@ Append-only. Newest entry last.
 - The two that changed the most behaviour: `test-affected` now reaches tests through the records a changed table or table extension defines, and a plain `Insert()`/`Modify()`/`Delete()` raises the table's OnBefore/OnAfter events in the call graph (only `RunTrigger = true` did). `suggest-event` no longer prints "still being analyzed" on every run: it says whether the trace was cut at depth 10 or reached package code without source, and a cut trace exits 0, not 75.
 - Also: `graph --scope workspace` exports the workspace slice (10 nodes on the bench, where the whole graph was 117k and over the cap), `impact` reports call/write/read and stops repeating rows, completions/hints/symbols/folding page and print readable text with LSP-shaped JSON, signature help works inside a string argument, lint findings point at the call.
 - A guard test caught a node kind (`field_declaration`) the grammar does not have in the impact change after it was pushed; fixed in the next commit.
+
+## 2026-09-24 12:30 BST: r6 session review closed, splits, rustdoc gate
+
+- A review agent read this session's commits (`findings/r6-session-review.md`): 14 findings, 5 medium, all fixed. The mediums: test-affected missed temporary records, record arrays and triggers; `impact` read `Validate("Field", X)` as a low-confidence read (now a bound write, SetRange/SetFilter a filter); `--fields` refused optional keys rows leave out when empty (now `absentFields`); package obsolete procedures were given caller counts by bare name (now omitted); `xlf refresh` never carried a developer Comment into existing units.
+- The file-index re-index race from R4 is closed without a lock: each name's owners are swapped under one entry lock and stale names pruned after. A concurrency test saw the object missing on the old code.
+- Bulk fix planning has a typed error, so scan limits and bad values come back as INVALID_PARAMS instead of CODE_ANALYSIS_ERROR.
+- Test modules moved out of six large files (`tests_dispatch.rs` 4182, `lsp.rs` 4043, `daemon/mod.rs` 3645, `workspace.rs`, `mcp.rs`, `client.rs`); code unchanged, test counts unchanged.
+- All 46 rustdoc warnings fixed; CI now runs `cargo doc` with `-D warnings`.
+- Gates: full suite 93 suites, 5026 passed, 1 failed (root-only) before the r6 fixes; CI green on every push since.

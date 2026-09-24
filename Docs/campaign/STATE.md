@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-24 11:30 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-24 12:30 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -45,7 +45,7 @@ whichever ones pay off most. Record progress per workstream below so gaps are vi
 |---|------------|----------|-----------|
 | A | Correctness: review rounds, triage, fixes with a failing test first | R1 reviews running | Triage each `findings/r1-*.md` as it completes, dispatch fix agents per crate group |
 | B | Old audit: mark each of the 227 `AUDIT-BACKLOG.md` findings fixed or open | R1 reviewers report still-open ones | Collect `[STILL-OPEN]` tags, queue them under A |
-| C | Slop and simplification: desloppify plan, per-crate simplify pass | Batch 3 (four file splits) and the 112 item review queue merged. Strict 79.9 | Fresh `desloppify review` to re-score, then the 63 deferred items (typed RPC boundary is the largest), batches 10 (async locking) and 11 (docs and API hygiene), remaining file splits (`resolution.rs` 2754 lines, `dispatch.rs` 3243, `tests_dispatch.rs` 4216, `lsp.rs` 3415, `native_dap.rs` 3636) |
+| C | Slop and simplification: desloppify plan, per-crate simplify pass | Batch 3 (four file splits) and the 112 item review queue merged. Strict 79.9. 2026-09-24: test modules split out of six large files, rustdoc warnings 46 to 0 (CI gated), bulk-fix errors typed | Fresh `desloppify review` to re-score, then the 63 deferred items (typed RPC boundary is the largest), batches 10 (async locking) and 11 (docs and API hygiene), remaining file splits (`resolution.rs` 2754 lines, `dispatch.rs` 3243, `tests_dispatch.rs` 4216, `lsp.rs` 3415, `native_dap.rs` 3636) |
 | D | Security: credentials, archive parsing, MCP and daemon input, extension binary download, supply chain | Three review rounds (8, 19, 10 findings), all fixed and merged. Project trust, dispatcher capability registry, peer-checked endpoint | Windows named pipe owner check. A fourth round late in the week over the final diff |
 | E | Tests: coverage by crate, property tests, `cargo mutants` | First pass merged: 4 bugs found by property tests, coverage table, CI job proposal | Nightly property job added (`property-nightly.yml`, 8192 cases; the per-PR run already covers 128). Next: `cargo mutants` on the 10 file shortlist in `findings/test-depth.md`, make `al-test/backends/snapshot.rs` testable |
 | F | Grammar: corpus tests, query drift between `languages/al` and `tree-sitter-al/queries` | R1 review running | From R1 findings |
@@ -78,6 +78,7 @@ round on the areas with the most findings.
 
 ## Done
 
+- 2026-09-24 r6 session review: 14 of 14 fixed (`findings/r6-session-review.md`). File-index re-index race closed, typed bulk-fix errors, six large files lost their test modules to `tests.rs`, rustdoc at zero warnings and gated in CI.
 - 2026-09-24 r5 dogfood closed: 31 of 32 findings fixed, 1 partly (`findings/r5-dogfood.md`). Table and table-extension changes reach their tests, plain Insert/Modify/Delete raise table events in the call graph, `graph --scope workspace`, `impact` call/write/read, LSP-shaped JSON and readable text for completions/hints/symbols/folding, suggest-event says why a trace is partial.
 - 2026-09-24 features and CI: all six CI jobs green on PR 30 (first time this campaign; ubuntu ShellCheck, Windows data directory and output-pipe inheritance, macOS `/var` and `/tmp` symlinks). `package-diff <old.app> <new.app>` (Base Application 25 to 26: 1,137 changes, 7 s, only the ones the workspace uses), `obsolete --used`, a `.al` file watcher in the LSP server, a text outline for `symbols`, and the `bc-upgrade-impact` skill rewritten around them (it had told agents `obsolete` lists workspace uses and `breaking` diffs dependencies; neither did).
 - 2026-09-24 dogfood pass: a project scaffolded with `al-explorer new` against Base Application 26 symbols from the public NuGet feed (`Docs/campaign/LOG.md`). Fixed: `download-symbols` never returned after a successful download (the daemon waited on its own project read guard), the client failed a request on EINTR, the daemon never saw files written after it started (now an incremental scan per request), native compile rejected fields a table extension adds (ALN2404), go-to-definition on such a field opened the package outline, `free-ids` gave dependency tables field numbers outside `idRanges` and listed workspace extensions twice, `--fields` printed `?` columns in text mode, `al-explorer new` failed outside an AL project and wrote the nil GUID as app id, the daemon startup error lost the file it named. CI: ShellCheck SC2015, Windows data directory, macOS `/var` symlink refusal.
