@@ -581,6 +581,70 @@ mod tests {
         }
     }
 
+    /// A field a workspace table extension adds to a package table: the
+    /// composed package members carry no location, so this landed on the
+    /// package outline of the base table.
+    #[test]
+    fn a_field_from_a_workspace_table_extension_resolves_to_the_extension() {
+        let ws = Workspace::new();
+        ws.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Table,
+            id: 18,
+            name: "Customer".to_string(),
+            package: "Base Application".to_string(),
+            fields: vec![al_symbols::FieldSymbol {
+                id: 1,
+                name: "No.".to_string(),
+                type_name: "Code[20]".to_string(),
+                properties: Vec::new(),
+            }],
+            ..Default::default()
+        }]);
+        let extension = std::path::PathBuf::from("/ws/CustExt.TableExt.al");
+        ws.file_index.add_file(
+            extension.clone(),
+            r#"tableextension 50100 "Cust Ext" extends Customer
+{
+    fields
+    {
+        field(50100; "Loyalty Tier"; Code[10]) { }
+    }
+}
+"#
+            .to_string(),
+        );
+        let uri = Url::parse("file:///ws/Loyalty.Codeunit.al").unwrap();
+        open_doc(
+            &ws,
+            &uri,
+            r#"codeunit 50101 Loyalty
+{
+    procedure SetTier(var Cust: Record Customer)
+    begin
+        Cust."Loyalty Tier" := 'GOLD';
+    end;
+}
+"#,
+        );
+
+        // Line 4 is `        Cust."Loyalty Tier" := 'GOLD';`.
+        let locs = definition(
+            &ws,
+            &uri,
+            Position {
+                line: 4,
+                character: 16,
+            },
+        )
+        .expect("the extension field must resolve");
+        assert_eq!(
+            locs[0].uri,
+            Url::from_file_path(&extension).unwrap(),
+            "{locs:?}"
+        );
+        assert_eq!(locs[0].range.start.line, 4, "{locs:?}");
+    }
+
     /// A bare field name inside the table's own procedure is an implicit `Rec`
     /// access, so it resolves to the field declaration. A local of the same
     /// name shadows the field, and the subtype of a `Record` type reference is

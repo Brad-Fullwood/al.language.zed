@@ -5,6 +5,7 @@
 //! type keyword when the caller has one and scans `object_info`, which is keyed
 //! by path, for the entry whose kind matches.
 
+use al_syntax::IdentifierText;
 use std::path::{Path, PathBuf};
 
 use url::Url;
@@ -162,6 +163,51 @@ pub(super) fn workspace_object_name(workspace: &Workspace, path: &Path) -> Optio
         .object_info
         .get(path)
         .map(|info| info.name.clone())
+}
+
+/// A member that an extension object in the workspace adds to `base`: a
+/// field of a table extension, a procedure, an enum extension's value.
+///
+/// The composed members of a package table include the fields a workspace
+/// extension adds, but carry no location, so go-to-definition on
+/// `Cust."Loyalty Tier"` opened the Base Application outline of `Customer`
+/// instead of the extension that declares the field.
+pub(super) fn workspace_extension_member(
+    workspace: &Workspace,
+    base: &str,
+    member_name: &str,
+) -> Option<ResolvedMember> {
+    let base = base.unquote_identifier();
+    let mut paths: Vec<std::path::PathBuf> = workspace
+        .file_index
+        .object_infos
+        .iter()
+        .filter(|entry| {
+            entry
+                .value()
+                .iter()
+                .any(|info| info.kind.to_ascii_lowercase().ends_with("extension"))
+        })
+        .map(|entry| entry.key().clone())
+        .collect();
+    paths.sort();
+    for path in paths {
+        let Some((content, tree)) = workspace.file_index.get_cached_parse(&path) else {
+            continue;
+        };
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        let extends_base = root.children(&mut cursor).any(|object| {
+            al_syntax::object_extends_target(object, content.as_bytes())
+                .is_some_and(|target| target.eq_ignore_ascii_case(&base))
+        });
+        if extends_base {
+            if let Some(member) = workspace_member(workspace, &path, member_name) {
+                return Some(member);
+            }
+        }
+    }
+    None
 }
 
 pub(super) fn workspace_member(

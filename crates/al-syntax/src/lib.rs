@@ -180,6 +180,49 @@ pub fn node_name_or(node: tree_sitter::Node, source: &[u8], fallback: &str) -> S
         .unwrap_or_else(|| fallback.to_string())
 }
 
+/// The object an extension object extends (`extends` / `customizes`), cleaned
+/// of quotes, or `None` for an object with no such clause.
+///
+/// The grammar emits the clause either as `object_modifier` (`modifier` and
+/// `target` fields) or, for the headers real code has, as
+/// `implements_clause` (a positional `metadata_keyword` and `name`, shared
+/// with `implements`); the leading keyword tells them apart. Only the object
+/// header is searched.
+pub fn object_extends_target(object: tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
+    let mut stack = vec![object];
+    while let Some(node) = stack.pop() {
+        if matches!(node.kind(), "object_modifier" | "implements_clause") {
+            let mut keyword_cursor = node.walk();
+            let keyword = node
+                .child_by_field_name("modifier")
+                .or_else(|| {
+                    node.children(&mut keyword_cursor)
+                        .find(|child| child.kind() == "metadata_keyword")
+                })
+                .and_then(|keyword| keyword.utf8_text(source).ok())
+                .unwrap_or("")
+                .trim();
+            if keyword.eq_ignore_ascii_case("extends") || keyword.eq_ignore_ascii_case("customizes")
+            {
+                let mut target_cursor = node.walk();
+                return node
+                    .child_by_field_name("target")
+                    .or_else(|| {
+                        node.children(&mut target_cursor)
+                            .find(|child| matches!(child.kind(), "name" | "name_or_keyword"))
+                    })
+                    .and_then(|target| target.utf8_text(source).ok())
+                    .map(|text| text.unquote_identifier().into_owned());
+            }
+        }
+        if node.kind() != "object_body" {
+            let mut cursor = node.walk();
+            stack.extend(node.children(&mut cursor));
+        }
+    }
+    None
+}
+
 /// Extract the object name from an `object_declaration` node.
 ///
 /// The name is on the `name:` field as

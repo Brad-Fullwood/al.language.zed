@@ -693,7 +693,7 @@ fn workspace_objects(workspace: &Workspace) -> Vec<ObjectRecord> {
                 Err(_) => continue,
             };
             let node = object_node_at(&tree, info.range.start_byte);
-            let extends = node.and_then(|node| extension_target(node, source));
+            let extends = node.and_then(|node| al_syntax::object_extends_target(node, source));
             let members = node
                 .map(|node| member_numbers(node, source, kind))
                 .unwrap_or_default();
@@ -721,43 +721,6 @@ fn object_node_at(tree: &tree_sitter::Tree, start_byte: usize) -> Option<tree_si
         }
     }
     Some(root)
-}
-
-/// The `extends` / `customizes` target inside one object's subtree.
-fn extension_target(object: tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
-    let mut stack = vec![object];
-    while let Some(node) = stack.pop() {
-        if matches!(node.kind(), "object_modifier" | "implements_clause") {
-            let mut keyword_cursor = node.walk();
-            let keyword = node
-                .child_by_field_name("modifier")
-                .or_else(|| {
-                    node.children(&mut keyword_cursor)
-                        .find(|child| child.kind() == "metadata_keyword")
-                })
-                .and_then(|node| node.utf8_text(source).ok())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if keyword.eq_ignore_ascii_case("extends") || keyword.eq_ignore_ascii_case("customizes")
-            {
-                let mut target_cursor = node.walk();
-                return node
-                    .child_by_field_name("target")
-                    .or_else(|| {
-                        node.children(&mut target_cursor)
-                            .find(|child| matches!(child.kind(), "name" | "name_or_keyword"))
-                    })
-                    .and_then(|node| node.utf8_text(source).ok())
-                    .map(|text| text.unquote_identifier().into_owned());
-            }
-        }
-        if node.kind() != "object_body" {
-            let mut cursor = node.walk();
-            stack.extend(node.children(&mut cursor));
-        }
-    }
-    None
 }
 
 /// `(number, name)` for one object's table fields or enum values.

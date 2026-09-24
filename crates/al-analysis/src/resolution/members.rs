@@ -16,7 +16,9 @@ use crate::queries::Position;
 use super::type_text::{
     format_builtin_signature, format_method_signature, parse_type_expr, split_last, strip_length,
 };
-use super::workspace_objects::{resolve_object_path, workspace_member, workspace_object_type};
+use super::workspace_objects::{
+    resolve_object_path, workspace_extension_member, workspace_member, workspace_object_type,
+};
 use super::xml_doc::format_xml_doc;
 use super::{ResolvedMember, ResolvedMemberKind, ResolvedType};
 
@@ -270,6 +272,16 @@ pub(crate) fn resolve_member(
                     );
                     return Some(member);
                 }
+            }
+
+            if let Some(member) = workspace_extension_member(workspace, subtype, &target_name) {
+                tracing::debug!(
+                    member = %target_name,
+                    result = "workspace_extension_member",
+                    found = %member.name,
+                    "resolve_member: found in a workspace extension"
+                );
+                return Some(member);
             }
 
             for members in composed_members_for(workspace, subtype) {
