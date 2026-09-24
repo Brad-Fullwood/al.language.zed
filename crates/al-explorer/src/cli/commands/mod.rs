@@ -527,8 +527,16 @@ fn with_projection(params: Option<serde_json::Value>) -> Option<serde_json::Valu
 /// prints the whole envelope, because `total` and `truncated` are the part an
 /// agent needs.
 pub fn list_rows(result: &serde_json::Value) -> &serde_json::Value {
+    // Two envelopes wrap a list: projection (`--limit`/`--offset`) adds
+    // `total`, and `--scope` adds `scope`. Unwrapping only the first made
+    // `--scope workspace entrypoints` fail its own response check.
     match result.get("items") {
-        Some(items) if items.is_array() && result.get("total").is_some() => items,
+        Some(items)
+            if items.is_array()
+                && (result.get("total").is_some() || result.get("scope").is_some()) =>
+        {
+            items
+        }
         _ => result,
     }
 }
@@ -803,6 +811,19 @@ mod path_tests {
         let resolved = absolutize_path("nonexistent.alcpuprofile").unwrap();
         assert!(std::path::Path::new(&resolved).is_absolute());
         assert!(!std::path::Path::new(&resolved).exists());
+    }
+
+    #[test]
+    fn list_rows_unwraps_both_the_projection_and_the_scope_envelope() {
+        let rows = serde_json::json!([{ "name": "A" }]);
+        for envelope in [
+            serde_json::json!({ "items": rows, "total": 1 }),
+            serde_json::json!({ "items": rows, "scope": "workspace", "outOfScopeCount": 3 }),
+        ] {
+            assert_eq!(super::list_rows(&envelope), &rows, "{envelope}");
+        }
+        let object = serde_json::json!({ "items": 4, "scope": "x" });
+        assert_eq!(super::list_rows(&object), &object);
     }
 
     #[test]
