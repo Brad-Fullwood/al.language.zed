@@ -4,16 +4,12 @@ use std::process::ExitCode;
 
 use crate::cli::commands::*;
 
-pub fn cmd_lint(file: Option<&str>, all: bool, analyzers: Option<&str>, json: bool) -> ExitCode {
+pub fn cmd_lint(file: Option<&str>, all: bool, json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
     let mut params = serde_json::json!({ "all": all });
-    if let Some(a) = analyzers {
-        let analyzer_list: Vec<&str> = a.split(',').map(|s| s.trim()).collect();
-        params["analyzers"] = serde_json::json!(analyzer_list);
-    }
     if let Some(f) = file {
         let uri = match file_to_uri(f) {
             Ok(uri) => uri,

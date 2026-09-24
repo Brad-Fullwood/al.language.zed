@@ -100,7 +100,7 @@ they are confined to: the daemon changes files only inside the project it has lo
 | `compile` | `--project <dir>` | Compile (native default; `al.useOfficialCompiler` → `alc`) |
 | `package` | — | Package compiled app into `.app` |
 | `publish` | `--config <name> [--incremental]` | Compile and publish the `.app` to the BC dev endpoint named in `.vscode/launch.json` or `.zed/debug.json`; `--incremental` uses the RAD API |
-| `pack-native` | `--project <dir> --out <path> [--validate]` | Verified pure-Rust `.app` build; rejects syntax/manifest/project/binding/artifact errors and writes nothing on failure; global `--json` returns exact native ranges; `--validate` adds `alc` after native checks |
+| `pack-native` | `--project <dir> --out <path> [--validate [--analyzers <list>]]` | Verified pure-Rust `.app` build; rejects syntax/manifest/project/binding/artifact errors and writes nothing on failure; global `--json` returns exact native ranges; `--validate` adds `alc` after native checks, with the project's `al.codeAnalyzers` or the `--analyzers` list (a custom analyzer from an untrusted repository's own folders is refused) |
 | `download-symbols` | `--project <dir> --source server\|nuget` | Download dependency symbols |
 | `authenticate [login\|status\|clear]` | `--tenant <tenant>` | BC / Entra authentication and cached-session management |
 
@@ -109,7 +109,7 @@ they are confined to: the daemon changes files only inside the project it has lo
 | Command | Flags | Purpose |
 | --- | --- | --- |
 | `format [file]` | `--check --stdin --all` | Format (check exits non-zero if changes needed) |
-| `lint [file]` | `--all --analyzers <list>` | Lint via native + Microsoft analyzers |
+| `lint [file]` | `--all` | Lint with the native rules (Microsoft's cops run under alc: `pack-native --validate --analyzers`) |
 | `fix [file]` | `--dry-run --rule <code>` | Apply registered safe diagnostic fixes to one file or the loaded project; report unfixable findings separately |
 | `permissions` | `--format al\|xml --name <n> --id <N> --role-id <id>` | Generate permission set |
 | `new <dir>` | `--name --publisher --template <t> --runtime <major.minor>` | New project from a built-in or configured user template; application minimum derives from runtime |

@@ -219,7 +219,6 @@ Examples:
 Examples:
   al lint src/Customer.al
   al lint --all
-  al lint --all --analyzers CodeCop,AppSourceCop
   al lint src/Sales.al --json")]
     Lint {
         /// File or directory to lint (default: current dir with --all).
@@ -230,8 +229,9 @@ Examples:
         /// Lint all .al files in the project directory
         #[arg(long)]
         all: bool,
-        /// Analyzers to run (comma-separated: CodeCop,AppSourceCop,UICop,PerTenantCop)
-        #[arg(long)]
+        /// Refused: lint never ran Microsoft's analyzers. Kept so old scripts
+        /// get an explanation instead of a parse error.
+        #[arg(long, hide = true)]
         analyzers: Option<String>,
     },
     /// Format AL code

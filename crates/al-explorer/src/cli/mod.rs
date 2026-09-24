@@ -142,16 +142,25 @@ pub fn run(cli: Cli) -> ExitCode {
             all,
             analyzers,
         } => {
+            if analyzers.is_some() {
+                return commands::report_error(
+                    "lint runs the native rules only and cannot run Microsoft's analyzers \
+                     (earlier versions accepted --analyzers and ignored it). Microsoft's cops \
+                     run under alc: use `al-explorer pack-native --validate --analyzers <list>`, \
+                     or set al.codeAnalyzers and `al-explorer compile` with al.useOfficialCompiler.",
+                    cli.json,
+                );
+            }
             let targets = commands::resolve_lint_targets(&file);
             match targets.as_slice() {
-                [] => lsp::cmd_lint(None, all, analyzers.as_deref(), cli.json),
-                [only] => lsp::cmd_lint(Some(only), all, analyzers.as_deref(), cli.json),
+                [] => lsp::cmd_lint(None, all, cli.json),
+                [only] => lsp::cmd_lint(Some(only), all, cli.json),
                 many => {
                     // Multiple distinct files: lint each in turn and fail the
                     // whole invocation if any file reports findings or errors.
                     let mut overall = ExitCode::SUCCESS;
                     for target in many {
-                        let code = lsp::cmd_lint(Some(target), all, analyzers.as_deref(), cli.json);
+                        let code = lsp::cmd_lint(Some(target), all, cli.json);
                         if code != ExitCode::SUCCESS {
                             overall = ExitCode::FAILURE;
                         }
