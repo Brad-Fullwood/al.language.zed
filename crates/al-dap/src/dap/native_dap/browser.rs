@@ -64,44 +64,16 @@ pub fn build_debug_browser_url(
     Ok(url.to_string())
 }
 
+/// Open the BC web client for a debug session. See [`al_types::browser`] for
+/// why Windows does not go through `cmd /c start`.
 pub(super) fn open_browser(url: &str) -> bool {
-    let ok = {
-        #[cfg(target_os = "linux")]
-        {
-            try_spawn("xdg-open", &[url])
-        }
-        #[cfg(target_os = "macos")]
-        {
-            try_spawn("open", &[url])
-        }
-        #[cfg(target_os = "windows")]
-        {
-            // The empty argument is `start`'s window title. Without it a
-            // quoted URL is consumed as the title and no browser opens.
-            // `oauth::open_browser` already passes it.
-            try_spawn("cmd", &["/c", "start", "", url])
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-        {
+    match al_types::open_in_browser(url) {
+        Ok(()) => true,
+        Err(error) => {
+            warn!("open_browser: {error}");
             false
         }
-    };
-
-    if !ok {
-        warn!("open_browser: platform opener failed for URL: {url}");
     }
-
-    ok
-}
-
-fn try_spawn(cmd: &str, args: &[&str]) -> bool {
-    std::process::Command::new(cmd)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .is_ok()
 }
 
 #[cfg(test)]
@@ -250,43 +222,8 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // bc_stack_to_dap — additional coverage for camelCase variants, frame
-    // indexing, and field-default fallbacks. These exercise the real BC payload
-    // shapes (newer BC versions serialise camelCase; some frames omit fields).
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn try_spawn_returns_true_for_spawnable_command() {
-        #[cfg(not(target_os = "windows"))]
-        let spawned = try_spawn("true", &[]);
-        #[cfg(target_os = "windows")]
-        let spawned = try_spawn("cmd", &["/c", "exit"]);
-        assert!(
-            spawned,
-            "spawning an existing no-op binary must report success"
-        );
-    }
-
-    #[test]
-    fn try_spawn_returns_false_for_missing_command() {
-        // A binary name that cannot exist on PATH must make spawn() fail, and
-        // try_spawn must surface that as `false` rather than panicking. This is
-        // the branch open_browser relies on to know the opener was unavailable.
-        let spawned = try_spawn("al-no-such-binary-xyzzy-1234567890", &["irrelevant"]);
-        assert!(
-            !spawned,
-            "spawning a nonexistent binary must report failure, not panic"
-        );
-    }
-
-    #[test]
-    fn open_browser_does_not_panic_and_returns_bool() {
-        // open_browser dispatches to the platform opener via try_spawn. Whether
-        // the opener exists is environment-dependent (headless CI may lack
-        // xdg-open), so we only assert it completes without panicking and yields
-        // a concrete bool. The important invariant — that a failed spawn maps to
-        // `false` — is pinned by try_spawn_returns_false_for_missing_command.
-        let _: bool = open_browser("https://example.invalid/path?x=1");
+    fn open_browser_refuses_a_non_web_url() {
+        assert!(!open_browser("file:///etc/passwd"));
     }
 }

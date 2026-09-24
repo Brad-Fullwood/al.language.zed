@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod bc;
+pub mod browser;
 pub mod filename;
 pub mod jsonc;
 pub mod procedure;
@@ -10,6 +11,7 @@ pub mod test_result;
 
 pub use app::AppDependency;
 pub use bc::{AuthMethod, EnvironmentType};
+pub use browser::{open_in_browser, OpenUrlError};
 pub use filename::{app_package_filename, sanitize_filename_component};
 pub use jsonc::{strip_json_comments, strip_trailing_commas};
 pub use procedure::ProcedureSource;
