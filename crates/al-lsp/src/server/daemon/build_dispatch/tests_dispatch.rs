@@ -126,6 +126,20 @@ fn resolve_mutation_file_allowlist(
     Ok(resolved)
 }
 
+/// The first reason a test was sent to live Business Central, skipping the
+/// "calls supported ..." notes the router records beside the reason that
+/// disqualified it.
+fn live_reason(classifications: &[al_test::router::ClassifyResult]) -> Option<String> {
+    let live = classifications
+        .iter()
+        .find(|c| c.decision == al_test::router::RoutingDecision::LiveBc)?;
+    live.reasons
+        .iter()
+        .find(|reason| !reason.message.contains("calls supported"))
+        .or_else(|| live.reasons.first())
+        .map(|reason| reason.message.clone())
+}
+
 fn test_routing_details(
     classifications: &[al_test::router::ClassifyResult],
     requested: &[al_test::session::TestId],
@@ -832,6 +846,11 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
                 .await
         }));
     }
+    let live_codeunits = live_tests
+        .iter()
+        .map(|test| test.codeunit_id)
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
     if !live_tests.is_empty() {
         // Routing guarantees server_config is Some when live tests exist.
         let Some(cfg) = server_config else {
@@ -881,11 +900,22 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         })
         .collect::<Vec<_>>();
     if !backend_errors.is_empty() {
+        // "Missing credentials" alone left the caller to guess why tests it
+        // expected to run locally needed a server at all.
+        let live_note = live_reason(&classifications)
+            .map(|reason| {
+                format!(
+                    ". The tests in {live_codeunits} codeunit(s) were routed to live Business \
+                     Central because the code {reason}; `al-explorer test-classify` shows the \
+                     route of each test"
+                )
+            })
+            .unwrap_or_default();
         return rpc_error(
             id,
             error_codes::INTERNAL_ERROR,
             &format!(
-                "test backends reported errors: {}",
+                "test backends reported errors: {}{live_note}",
                 backend_errors.join("; ")
             ),
         );
@@ -2506,6 +2536,31 @@ mod tests {
     use super::*;
     use al_protocol::jsonrpc::error_codes;
     use al_workspace::Workspace;
+
+    #[test]
+    fn live_reason_names_the_disqualifying_reason_not_a_supported_call() {
+        use al_test::router::{ClassifyResult, RoutingDecision, RoutingReason};
+        let reason = |message: &str| RoutingReason {
+            message: message.to_string(),
+            file: None,
+            line: None,
+        };
+        let classifications = vec![ClassifyResult {
+            codeunit_id: 50110,
+            codeunit_name: "Loyalty Test".to_string(),
+            method_name: "SetTier".to_string(),
+            decision: RoutingDecision::LiveBc,
+            reasons: vec![
+                reason("calls supported Record.Get"),
+                reason("uses record table 'Customer' without a workspace table definition"),
+            ],
+        }];
+        assert_eq!(
+            super::live_reason(&classifications).as_deref(),
+            Some("uses record table 'Customer' without a workspace table definition")
+        );
+        assert_eq!(super::live_reason(&[]), None);
+    }
 
     fn empty_ws() -> Workspace {
         Workspace::new()
