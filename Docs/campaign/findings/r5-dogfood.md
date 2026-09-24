@@ -482,7 +482,7 @@ Notation: `X` is the `al-explorer` binary, run with the project directory as cwd
   `LoyaltyMgt.SetLoyaltyTier(Cust, 'GOLD');`.
 - expected: `activeParameter: 1`, as at columns 42-43 and 49.
 - actual: `No results`. While typing a text argument, the signature popup disappears.
-- status: open
+- status: fixed (the call context is read up to the unclosed quote; `activeParameter: 1` at 14:45)
 
 ### [GRAPH-EXPORT-CAP] `graph` can never succeed on a project with Base Application
 - severity: low

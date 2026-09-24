@@ -145,6 +145,10 @@ pub fn extract_last_identifier(s: &str) -> &str {
 
 /// Returns (function_name, active_parameter_index).
 pub fn find_call_context(prefix: &str) -> Option<(&str, u32)> {
+    // A cursor inside a string argument (`Call(X, 'GO|`) leaves an unclosed
+    // quote, which the backward scan below would take for a closing one.
+    // Everything from that quote on is part of the argument being typed.
+    let prefix = &prefix[..unclosed_quote_start(prefix).unwrap_or(prefix.len())];
     let bytes = prefix.as_bytes();
     let mut paren_depth = 0i32;
     let mut comma_count = 0u32;
@@ -214,6 +218,21 @@ pub fn find_call_context(prefix: &str) -> Option<(&str, u32)> {
     None
 }
 
+/// The byte offset of the quote that opens a literal or quoted identifier
+/// still open at the end of `line`. A doubled quote closes and reopens,
+/// which is exactly the escape.
+fn unclosed_quote_start(line: &str) -> Option<usize> {
+    let mut open: Option<(u8, usize)> = None;
+    for (index, byte) in line.bytes().enumerate() {
+        match (open, byte) {
+            (None, b'\'' | b'"') => open = Some((byte, index)),
+            (Some((quote, _)), _) if byte == quote => open = None,
+            _ => {}
+        }
+    }
+    open.map(|(_, index)| index)
+}
+
 fn extract_trailing_identifier(s: &str) -> Option<&str> {
     let result = extract_last_identifier(s);
     if result.is_empty() {
@@ -226,6 +245,22 @@ fn extract_trailing_identifier(s: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cursor_inside_a_string_argument_is_still_in_the_call() {
+        let line = "        LoyaltyMgt.SetLoyaltyTier(Cust, 'GOLD');";
+        for column in 42..=46 {
+            assert_eq!(
+                find_call_context(&line[..column]),
+                Some(("SetLoyaltyTier", 1)),
+                "column {column}"
+            );
+        }
+        // Commas and parentheses inside the open string do not count.
+        assert_eq!(find_call_context("Message('a, (b"), Some(("Message", 0)));
+        assert_eq!(find_call_context("Message('it''s, "), Some(("Message", 0)));
+        assert_eq!(find_call_context("F(\"Sales, "), Some(("F", 0)));
+    }
 
     #[test]
     fn test_detect_context_member_access() {
