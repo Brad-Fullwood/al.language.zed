@@ -113,8 +113,15 @@ pub fn completions_native(
                         &receiver_expr,
                         position,
                     )? {
-                        let lsp_items =
+                        let mut lsp_items =
                             resolution::completion_items_for_receiver(workspace, &receiver)?;
+                        // `Cust."Lo`: the user already opened the quote, so
+                        // the member goes in bare.
+                        if typed_open_quote(&text, position) {
+                            for item in &mut lsp_items {
+                                item.insert_text = None;
+                            }
+                        }
                         items.extend(lsp_items.into_iter().map(from_lsp_completion));
                     }
                 }
@@ -464,8 +471,21 @@ fn typed_type_prefix(text: &str, position: Position) -> String {
     prefix.into_iter().collect()
 }
 
+/// Whether the member being typed at `position` already has its opening
+/// quote: an odd number of `"` after the last `.` on the line.
+fn typed_open_quote(text: &str, position: Position) -> bool {
+    let Some(line) = text.lines().nth(position.line as usize) else {
+        return false;
+    };
+    let before: String = line.chars().take(position.character as usize).collect();
+    let member = before
+        .rsplit_once('.')
+        .map_or(before.as_str(), |(_, member)| member);
+    member.matches('"').count() % 2 == 1
+}
+
 /// True when AL requires the name to be written in quotes.
-fn needs_quoting(name: &str) -> bool {
+pub(crate) fn needs_quoting(name: &str) -> bool {
     name.is_empty()
         || name.chars().next().is_some_and(|c| c.is_ascii_digit())
         || !name.chars().all(|c| c.is_alphanumeric() || c == '_')
