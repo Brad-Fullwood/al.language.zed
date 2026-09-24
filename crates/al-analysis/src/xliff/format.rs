@@ -11,6 +11,10 @@ pub fn generate_xliff(
     target_language: &str,
     units: &[TranslationUnit],
 ) -> String {
+    // The generated `.g.xlf` is written in the source language and carries
+    // no `<target>`; a language file has one per unit, empty until
+    // translated.
+    let generated = source_language.eq_ignore_ascii_case(target_language);
     let mut xml = String::new();
     xml.push_str("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
     xml.push_str("<xliff version=\"1.2\" xmlns=\"urn:oasis:names:tc:xliff:document:1.2\" ");
@@ -41,14 +45,29 @@ pub fn generate_xliff(
                 unit.state.as_xliff_state(),
                 xml_escape(target)
             ));
-        } else {
+        } else if !generated {
             xml.push_str(&format!(
                 "          <target state=\"{}\" xml:space=\"preserve\"/>\n",
                 unit.state.as_xliff_state()
             ));
         }
-        if let Some(note) = &unit.note {
-            xml.push_str(&format!("          <note>{}</note>\n", xml_escape(note)));
+        // alc's two notes, which translation tools key on: the developer's
+        // `Comment`, then the generator's object path.
+        if let Some(note) = &unit.developer_note {
+            xml.push_str(&format!(
+                "          <note from=\"Developer\" annotates=\"general\" priority=\"2\">{}</note>\n",
+                xml_escape(note)
+            ));
+        }
+        if let Some(note) = unit
+            .note
+            .as_ref()
+            .filter(|note| unit.developer_note.as_ref() != Some(*note))
+        {
+            xml.push_str(&format!(
+                "          <note from=\"Xliff Generator\" annotates=\"general\" priority=\"3\">{}</note>\n",
+                xml_escape(note)
+            ));
         }
         xml.push_str("        </trans-unit>\n");
     }
@@ -83,6 +102,7 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
     let mut current_target: Option<String> = None;
     let mut current_state = TranslationState::New;
     let mut current_note: Option<String> = None;
+    let mut current_developer_note: Option<String> = None;
 
     /// Per-tag state for multi-line accumulation. When `accumulator` is
     /// `Some(buf)` the next line(s) are body content of the named tag and
@@ -161,6 +181,7 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
             current_target = None;
             current_state = TranslationState::New;
             current_note = None;
+            current_developer_note = None;
         } else if trimmed.starts_with("<source") {
             if let Some(body) = extract_single_line(trimmed, "source") {
                 current_source = Some(body);
@@ -185,14 +206,24 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
             // `extract_open_only` already skip past the attributes by anchoring
             // on the first `>` of the open tag.
             if let Some(body) = extract_single_line(trimmed, "note") {
-                current_note = Some(body);
+                // The developer's `Comment` travels as its own note; the
+                // generator's note is the object path.
+                if trimmed.contains("from=\"Developer\"") {
+                    current_developer_note = Some(body);
+                } else {
+                    current_note = Some(body);
+                }
             } else if let Some(partial) = extract_open_only(trimmed) {
                 multi.target_tag = Some("note");
                 multi.accumulator = partial;
             }
         } else if trimmed.starts_with("</trans-unit>") {
             if let (Some(id), Some(source)) = (current_id.take(), current_source.take()) {
-                let note = current_note.take();
+                // Files that carry only a Developer note (older generators
+                // put the object path there) keep it as the unit's note too.
+                let note = current_note
+                    .take()
+                    .or_else(|| current_developer_note.clone());
                 let unit = TranslationUnit {
                     object_type: object_type_from_id(&id),
                     object_id: 0,
@@ -202,6 +233,7 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
                     target: current_target.take(),
                     state: current_state.clone(),
                     note,
+                    developer_note: current_developer_note.take(),
                 };
                 // Duplicate ids are malformed input. Keep the *first*
                 // occurrence (deterministic and document-order) rather than

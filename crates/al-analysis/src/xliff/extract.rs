@@ -220,14 +220,10 @@ pub(super) fn emit_statement_units(
                 format!("{obj_type} {obj_name} - Property {property}"),
             ),
         };
-        units.push(make_translation_unit(
-            id,
-            obj_type,
-            object.header.id,
-            obj_name,
-            value,
-            Some(note),
-        ));
+        let mut unit =
+            make_translation_unit(id, obj_type, object.header.id, obj_name, value, Some(note));
+        unit.developer_note = statement_comment(statement);
+        units.push(unit);
     }
 
     // `MyLabel: Label 'text';` — alc keys labels by the NamedType name.
@@ -236,15 +232,56 @@ pub(super) fn emit_statement_units(
             "{obj_type} {object_hash} - NamedType {}",
             name_hash(&label_name)
         );
-        units.push(make_translation_unit(
+        let mut unit = make_translation_unit(
             id,
             obj_type,
             object.header.id,
             obj_name,
             label_text,
             Some(format!("{obj_type} {obj_name} - NamedType {label_name}")),
-        ));
+        );
+        unit.developer_note = statement_comment(statement);
+        units.push(unit);
     }
+}
+
+/// The `Comment = '...'` that follows the translatable literal of a
+/// property or label statement.
+pub(super) fn statement_comment(statement: &str) -> Option<String> {
+    // Skip the first literal: the text itself may contain "Comment".
+    let first = statement.find('\'')?;
+    let mut end = None;
+    let bytes = statement.as_bytes();
+    let mut index = first + 1;
+    while index < bytes.len() {
+        if bytes[index] == b'\'' {
+            if bytes.get(index + 1) == Some(&b'\'') {
+                index += 2;
+                continue;
+            }
+            end = Some(index);
+            break;
+        }
+        index += 1;
+    }
+    let rest = &statement[end? + 1..];
+    let lower = rest.to_ascii_lowercase();
+    let mut from = 0;
+    while let Some(found) = lower[from..].find("comment") {
+        let at = from + found;
+        let after = rest[at + "comment".len()..].trim_start();
+        if let Some(value) = after.strip_prefix('=') {
+            let preceded_by_word = rest[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_');
+            if !preceded_by_word {
+                return extract_single_quoted(value).filter(|text| !text.is_empty());
+            }
+        }
+        from = at + "comment".len();
+    }
+    None
 }
 
 /// A named member block (`field(…)`, `action(…)`, `group(…)`, …) whose
@@ -461,6 +498,7 @@ pub(super) fn make_translation_unit(
         target: None,
         state: TranslationState::New,
         note,
+        developer_note: None,
     }
 }
 

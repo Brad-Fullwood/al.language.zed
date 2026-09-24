@@ -76,6 +76,7 @@ fn test_generate_xliff_roundtrip() {
             target: None,
             state: TranslationState::New,
             note: None,
+            developer_note: None,
         },
         TranslationUnit {
             id: "Table 50100 MyTable - ToolTip 10 Name".to_string(),
@@ -86,6 +87,7 @@ fn test_generate_xliff_roundtrip() {
             target: Some("Gibt den Namen an".to_string()),
             state: TranslationState::Translated,
             note: Some("ToolTip for Name".to_string()),
+            developer_note: None,
         },
     ];
 
@@ -130,6 +132,7 @@ fn test_generate_xliff_roundtrip_escaped_chars() {
             target: Some((*source).to_string()),
             state: TranslationState::Translated,
             note: Some((*source).to_string()),
+            developer_note: None,
         }];
 
         let xml = generate_xliff("MyApp", "en-US", "de-DE", &units);
@@ -170,6 +173,7 @@ fn test_generate_xliff_roundtrip_quoted_id_attribute() {
         target: Some("Hallo".to_string()),
         state: TranslationState::Translated,
         note: None,
+        developer_note: None,
     }];
 
     let xml = generate_xliff("MyApp", "en-US", "de-DE", &units);
@@ -199,6 +203,7 @@ fn test_refresh_xliff_adds_new_removes_old() {
             target: None,
             state: TranslationState::New,
             note: None,
+            developer_note: None,
         },
         TranslationUnit {
             id: "T2".to_string(),
@@ -209,6 +214,7 @@ fn test_refresh_xliff_adds_new_removes_old() {
             target: None,
             state: TranslationState::New,
             note: None,
+            developer_note: None,
         },
     ];
 
@@ -224,6 +230,7 @@ fn test_refresh_xliff_adds_new_removes_old() {
             target: Some("Welt".to_string()),
             state: TranslationState::Translated,
             note: None,
+            developer_note: None,
         },
     );
     existing.insert(
@@ -237,6 +244,7 @@ fn test_refresh_xliff_adds_new_removes_old() {
             target: Some("Veraltet".to_string()),
             state: TranslationState::Translated,
             note: None,
+            developer_note: None,
         },
     );
 
@@ -262,6 +270,7 @@ fn test_find_untranslated() {
             object_id: 1,
             object_name: "T".to_string(),
             note: None,
+            developer_note: None,
         },
         TranslationUnit {
             id: "T2".to_string(),
@@ -272,6 +281,7 @@ fn test_find_untranslated() {
             object_id: 1,
             object_name: "T".to_string(),
             note: None,
+            developer_note: None,
         },
         TranslationUnit {
             id: "T3".to_string(),
@@ -282,6 +292,7 @@ fn test_find_untranslated() {
             object_id: 1,
             object_name: "T".to_string(),
             note: None,
+            developer_note: None,
         },
     ];
 
@@ -620,6 +631,7 @@ fn make_test_unit(source: &str) -> TranslationUnit {
         target: None,
         state: TranslationState::New,
         note: None,
+        developer_note: None,
     }
 }
 
@@ -669,6 +681,7 @@ fn translated_unit(source: &str, target: &str) -> TranslationUnit {
         target: Some(target.to_string()),
         state: TranslationState::Translated,
         note: None,
+        developer_note: None,
     }
 }
 
@@ -1193,6 +1206,7 @@ fn untranslated_units_come_back_in_id_order() {
         target: None,
         state: TranslationState::New,
         note: None,
+        developer_note: None,
     };
     let units = vec![unit("Table 3 - Property 1"), unit("Table 1 - Property 1")];
     let ids: Vec<&str> = find_untranslated(&units)
@@ -1288,6 +1302,7 @@ fn refresh_appends_obsolete_units_in_a_stable_order() {
                 target: Some("x".to_string()),
                 state: TranslationState::Translated,
                 note: None,
+                developer_note: None,
             },
         );
     }
@@ -1295,4 +1310,38 @@ fn refresh_appends_obsolete_units_in_a_stable_order() {
     let ids: Vec<&str> = units.iter().map(|u| u.id.as_str()).collect();
     assert_eq!(ids, vec!["A-unit", "M-unit", "Z-unit"]);
     assert_eq!(result.removed, vec!["A-unit", "M-unit", "Z-unit"]);
+}
+
+/// A label's `Comment` is the translator's context; alc writes it as its own
+/// note beside the generator's object path, and the generated file carries
+/// no `<target>`.
+#[test]
+fn a_label_comment_becomes_the_developer_note() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        PathBuf::from("/proj/Hello.Codeunit.al"),
+        "codeunit 50100 Hello\n{\n    var\n        GreetingMsg: Label 'Hello %1', Comment = '%1 is the customer name';\n}\n"
+            .to_string(),
+    );
+    let units = extract_translation_units(&workspace);
+    assert_eq!(
+        units[0].developer_note.as_deref(),
+        Some("%1 is the customer name")
+    );
+
+    let xml = generate_xliff("Bench", "en-US", "en-US", &units);
+    assert!(
+        xml.contains(r#"<note from="Developer" annotates="general" priority="2">%1 is the customer name</note>"#),
+        "{xml}"
+    );
+    assert!(xml.contains(r#"<note from="Xliff Generator""#), "{xml}");
+    assert!(!xml.contains("<target"), "{xml}");
+
+    let parsed = parse_xliff(&xml);
+    let unit = parsed.values().next().unwrap();
+    assert_eq!(
+        unit.developer_note.as_deref(),
+        Some("%1 is the customer name")
+    );
+    assert_eq!(unit.object_name, "Hello");
 }

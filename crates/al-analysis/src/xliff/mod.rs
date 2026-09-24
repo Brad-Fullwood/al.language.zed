@@ -75,6 +75,10 @@ pub struct TranslationUnit {
     pub state: TranslationState,
     /// Note (context from AL property name and field)
     pub note: Option<String>,
+    /// The `Comment` the developer wrote beside the text, for translators:
+    /// `Label 'Hello %1', Comment = '%1 is the customer name'`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub developer_note: Option<String>,
 }
 
 /// Translation state following XLIFF 1.2 conventions.
