@@ -45,7 +45,7 @@ published input schema, including `minItems`/`maxItems` on array arguments.
 | `al_debug` | `debug` | `cmd` (required) plus command-specific debug parameters | Drive a persistent BC debug session: start, breakpoint, state, stack, locals/globals/expansion, evaluate, continue, step, history, and stop. |
 | `al_build` | `compile` | — | Compile the project (native emitter by default); returns success, diagnostics, `.app` path. |
 | `al_downloadsymbols` | `downloadSymbols` | — | Download dependency symbol packages into `.alpackages`. |
-| `al_symbolsearch` | `search` | `query` (string), `limit` (number, default 20) | Fuzzy-search symbols across workspace and packages. |
+| `al_symbolsearch` | `search` | `query` (string), `limit` (number, default 20), `summary` (default true: name, kind, id and package only; false adds every member) | Fuzzy-search symbols across workspace and packages. |
 | `al_getdiagnostics` | `lint` | `file` (path, required) | Run diagnostics for an AL file. |
 | `al_runtests` | `tests.run_auto` | — | Discover and run tests; returns per-method classified/actual routing and reasons. Pure-logic and supported workspace-record tests run locally, while unsupported/platform-dependent tests need a launch config + live BC. |
 | `al_deadcode` | `deadCode` | — | Find unused procedures, fields, and orphaned subscribers. |
@@ -77,6 +77,10 @@ structured agent diagnostics with stable codes, reasons, and recovery actions fo
 symbols, missing live-BC configuration, unavailable semantic-bridge enrichment, and package
 navigation where the original AL source was not shipped. `al_call` intentionally retains a generic
 result schema because it forwards heterogeneous methods across the complete daemon catalog.
+
+Tool results are compact JSON. A `search` sent through MCP, by `al_symbolsearch` or `al_call`,
+returns summaries unless it passes `summary: false`: three Base Application results take about
+500 bytes instead of about 210 KB.
 
 ## Microsoft comparison
 

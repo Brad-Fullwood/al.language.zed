@@ -794,11 +794,15 @@ fn tools() -> &'static [ToolDef] {
             name: "al_symbolsearch",
             method: "search",
             description: "Fuzzy-search AL objects across loaded packages AND workspace \
-                          source. Args: query (string), limit (integer, default 20, maximum 500000).",
+                          source. Returns each object's kind, id, name and package; \
+                          fetch its members with al_call object or byId. Args: query \
+                          (string), limit (integer, default 20, maximum 500000), summary \
+                          (boolean, default true; false includes every member).",
             schema: || {
                 obj_schema(
                     serde_json::json!({
                         "query": {"type": "string"},
+                        "summary": {"type": "boolean", "default": true},
                         "limit": {
                             "type": "integer",
                             "minimum": 1,
@@ -1293,6 +1297,12 @@ fn apply_agent_defaults(method: &str, mut params: serde_json::Value) -> serde_js
     if super::daemon::accepts_scope(method) && !object.contains_key("scope") {
         object.insert("scope".into(), serde_json::json!(MCP_DEFAULT_SCOPE));
     }
+    // A search result names objects; their members are one `object` or
+    // `byId` call away. With members, three hits for "Customer" were 212 KB,
+    // 120 KB of them the Customer table's methods and fields.
+    if method == "search" && !object.contains_key("summary") {
+        object.insert("summary".into(), serde_json::json!(true));
+    }
     params
 }
 
@@ -1460,8 +1470,9 @@ pub(crate) async fn handle_mcp_message(
                 (result, None) => {
                     let result = result.unwrap_or(serde_json::Value::Null);
                     (
-                        serde_json::to_string_pretty(&result)
-                            .unwrap_or_else(|_| result.to_string()),
+                        // Compact: indentation was over 40% of every answer,
+                        // and an agent pays for it in tokens.
+                        result.to_string(),
                         false,
                         serde_json::json!({
                             "success": true,
@@ -1744,6 +1755,19 @@ pub async fn run_mcp(project_root: PathBuf) -> Result<(), Box<dyn std::error::Er
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_search_from_an_agent_returns_summaries_unless_it_asks_for_members() {
+        let defaulted = apply_agent_defaults("search", serde_json::json!({ "query": "Customer" }));
+        assert_eq!(defaulted["summary"], true);
+        let explicit = apply_agent_defaults(
+            "search",
+            serde_json::json!({ "query": "Customer", "summary": false }),
+        );
+        assert_eq!(explicit["summary"], false);
+        let other = apply_agent_defaults("object", serde_json::json!({ "name": "Customer" }));
+        assert!(other.get("summary").is_none());
+    }
 
     fn ws() -> Arc<Workspace> {
         Arc::new(Workspace::new())
