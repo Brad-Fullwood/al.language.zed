@@ -130,7 +130,7 @@ they are confined to: the daemon changes files only inside the project it has lo
 | `graph` | `--format json\|dot` | Insight graph export |
 | `insight-stats` | — | Node/edge counts |
 | `impact <symbol>` | `--table` | Who consumes this symbol/table |
-| `suggest-event` | `--object/--procedure/--table/--field/--event <x>` | Integration-point discovery |
+| `suggest-event` | `--object <x> [--procedure/--event <x>]`, or `--table <x> [--field <x>]` | Integration-point discovery (`--event` needs `--object`) |
 | `metrics [file]` | `--all --threshold-cyclomatic N --threshold-cognitive N` | Complexity |
 | `dead-code` | — | Unused procedures/fields/subscribers (with confidence) |
 | `sql-scan` | — | SQL anti-patterns |
