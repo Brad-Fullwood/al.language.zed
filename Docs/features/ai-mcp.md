@@ -1,6 +1,6 @@
 # MCP Server
 
-**Module:** `crates/al-lsp/src/server/mcp.rs` · **Status:** ✅ shipped
+**Module:** `crates/al-lsp/src/server/mcp/` · **Status:** ✅ shipped
 
 The extension registers a Zed context server named **AL Tools** that launches `al-lsp mcp` from the
 extension's resolved cache or downloads the current release when that cache is empty. An
@@ -16,7 +16,7 @@ discoverable shortcuts for common workflows.
 
 Standard MCP handshake: `initialize` (returns capabilities + serverInfo), `ping`, `tools/list`
 (returns each tool's name, description, input schema, and result-specific output schema), and
-`tools/call` (returns `{ content, structuredContent, isError }`). On a tool call, `mcp.rs` looks up the tool, selects either
+`tools/call` (returns `{ content, structuredContent, isError }`). On a tool call, `mcp/mod.rs` looks up the tool, selects either
 the alias's mapped method or `al_call`'s requested method, builds a daemon `Request`, calls
 `dispatch_request()`, and serializes the result.
 

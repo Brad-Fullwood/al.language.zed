@@ -41,7 +41,7 @@ MCP client ── al_debug ─────► debug_dispatch.rs
 | JSONC helpers | `dap/json_util.rs` | strip comments/trailing commas from `launch.json` |
 | High-level session | `native_debug.rs` | wrap session, breakpoint registry, 10k-entry hit history |
 | MCP control plane | `server/daemon/debug_dispatch.rs` | stateful structured commands shared by CLI and MCP |
-| MCP tool | `server/mcp.rs` (`al_debug`) | schema mapped to daemon method `debug` |
+| MCP tool | `server/mcp/mod.rs` (`al_debug`) | schema mapped to daemon method `debug` |
 | BC REST | `bc_client.rs` | publish `.app`, RAD delta, status (size caps + secret redaction) |
 | TLS helper | `http_auth.rs` | client builder; warns loudly when cert validation is disabled |
 | Profiling | `profiling.rs` | start/stop CPU profiling, parse `.alcpuprofile` hotspots |
