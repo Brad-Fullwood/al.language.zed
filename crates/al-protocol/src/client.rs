@@ -865,10 +865,10 @@ impl DaemonClient {
                 std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
             ) {
                 format!(
-                    "Daemon did not respond within {}s — the operation may still be \
+                    "Daemon did not respond within {} — the operation may still be \
                          running. Raise AL_REQUEST_TIMEOUT_MS or pass --timeout-ms, or \
                          check the daemon log at ~/.local/share/al-lsp/logs/al-lsp.log",
-                    timeout.as_secs()
+                    describe_timeout(timeout)
                 )
             } else {
                 format!("Failed to read response: {}", e)
@@ -887,10 +887,10 @@ impl DaemonClient {
                 std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
             ) {
                 format!(
-                    "Daemon did not respond within {}s — the operation may still be \
+                    "Daemon did not respond within {} — the operation may still be \
                          running. Raise AL_REQUEST_TIMEOUT_MS or pass --timeout-ms, or \
                          check the daemon log at ~/.local/share/al-lsp/logs/al-lsp.log",
-                    timeout.as_secs()
+                    describe_timeout(timeout)
                 )
             } else {
                 format!("Failed to read response: {}", e)
@@ -1262,6 +1262,17 @@ mod windows_std_handles {
                 }
             }
         }
+    }
+}
+
+/// A request deadline for a message: `--timeout-ms 100` printed "within 0s".
+fn describe_timeout(timeout: std::time::Duration) -> String {
+    if timeout.as_millis() < 1000 {
+        format!("{} ms", timeout.as_millis())
+    } else if timeout.subsec_millis() == 0 {
+        format!("{}s", timeout.as_secs())
+    } else {
+        format!("{:.1}s", timeout.as_secs_f64())
     }
 }
 
@@ -2682,6 +2693,17 @@ mod cross_platform_tests {
 
     /// The old message told the caller to "retry with a longer timeout" and
     /// there was no way to set one.
+    #[test]
+    fn a_sub_second_timeout_is_not_reported_as_zero_seconds() {
+        use std::time::Duration;
+        assert_eq!(
+            super::describe_timeout(Duration::from_millis(100)),
+            "100 ms"
+        );
+        assert_eq!(super::describe_timeout(Duration::from_secs(30)), "30s");
+        assert_eq!(super::describe_timeout(Duration::from_millis(2500)), "2.5s");
+    }
+
     #[test]
     fn timeout_message_names_a_control_that_exists() {
         use super::is_timeout_message;
