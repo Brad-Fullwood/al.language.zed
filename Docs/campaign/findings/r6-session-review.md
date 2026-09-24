@@ -67,14 +67,14 @@ reads the old snake_case names).
 - severity: medium
 - scenario: many row types drop optional keys when they are empty (`skip_serializing_if`). Impact rows omit `proc`, `field`, `package` and `note`. SymbolEntry omits `methods`, `fields`, `extends`, `implements`, `properties` and others. `--fields n,type,proc impact X` fails with INVALID_PARAMS when no row has a procedure. `--scope workspace --fields n,package impact X` always fails, because workspace impact rows never carry `package`. `--fields kind,name,extends search Foo` fails when no hit extends anything. Through MCP (default scope workspace, default limit) an agent that names a documented field gets an error instead of rows. Before this commit those calls returned rows without the key.
 - fix: validate against the row type's declared field names, not the keys present in this result. Failing that, refuse only when the name is absent from every row and is not a known optional key.
-- status: open
+- status: fixed (refused only when no row has any requested name; a name only some results carry comes back in `absentFields`, and the CLI notes it on stderr)
 
 ### [R6-PROJ-2] MCP `al_call` for completions, documentSymbols, foldingRanges and inlayHints now returns an envelope capped at 50
 - where: crates/al-lsp/src/server/daemon/projection.rs:58-61, crates/al-lsp/src/server/mcp.rs:1301-1307 (`apply_agent_defaults`, now mcp/mod.rs in the working tree)
 - severity: low
 - scenario: `apply_agent_defaults` adds `limit: 50` to every method that has a list target. Adding the four LSP methods to `LIST_TARGETS` changes their MCP result from a bare array to `{items,total,returned,offset,truncated}`, and cuts completions to 50 items. inlayHints still returns bare `null` when there are none, so its shape now varies. For `documentSymbols` the root array is the file's objects (usually one), so `--limit` and `--offset` do not page procedures in either the CLI or MCP, although the commit says symbols are now paged.
 - fix: note the envelope in the MCP docs, or leave these methods out of the MCP default limit. For documentSymbols, page the flattened symbol list or leave it out of `LIST_TARGETS`.
-- status: open
+- status: fixed (`documentSymbols` is off the list targets: its root is the objects, so a page would not page procedures; completions, inlayHints and foldingRanges keep the envelope and MCP's default limit, now listed in daemon-methods.md)
 
 ### [R6-SIG-1] signature help still reads the receiver from the untruncated prefix
 - where: crates/al-analysis/src/queries/signature.rs:191 and :268 (`has_receiver`), :415 (`resolve_receiver_signature`)

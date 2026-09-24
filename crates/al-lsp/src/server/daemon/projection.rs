@@ -29,7 +29,9 @@ pub(crate) enum ListTarget {
 /// Adding a list-returning method means adding one line here. `lint` and
 /// `metrics` are absent because they return an array under `--all` and an
 /// object for one file, so there is no single place to project; `deps`,
-/// `deps.graph` and `diag` are small enough to read whole.
+/// `deps.graph` and `diag` are small enough to read whole. `documentSymbols`
+/// is a tree whose root is the file's objects (usually one), so a page of it
+/// would page objects, not their members.
 pub(crate) const LIST_TARGETS: &[(&str, ListTarget)] = &[
     // Methods whose result is the array itself.
     ("search", ListTarget::Root),
@@ -57,7 +59,6 @@ pub(crate) const LIST_TARGETS: &[(&str, ListTarget)] = &[
     ("upgrade", ListTarget::Root),
     ("completions", ListTarget::Root),
     ("inlayHints", ListTarget::Root),
-    ("documentSymbols", ListTarget::Root),
     ("foldingRanges", ListTarget::Root),
     // Methods whose result keeps other fields around one array.
     ("impact", ListTarget::Field("impacted")),
@@ -139,8 +140,8 @@ impl Projection {
     fn take_rows(
         &self,
         rows: Vec<serde_json::Value>,
-    ) -> Result<(Vec<serde_json::Value>, usize, bool), String> {
-        self.check_fields(&rows)?;
+    ) -> Result<(Vec<serde_json::Value>, usize, bool, Vec<String>), String> {
+        let absent = self.check_fields(&rows)?;
         let total = rows.len();
         let mut kept: Vec<serde_json::Value> = rows.into_iter().skip(self.offset).collect();
         if let Some(limit) = self.limit {
@@ -151,15 +152,19 @@ impl Projection {
             kept.into_iter().map(|row| self.project_row(row)).collect(),
             total,
             truncated,
+            absent,
         ))
     }
 
-    /// Refuse a `fields` name no row has. It used to give rows with the key
-    /// missing, or empty rows (`--fields bogus` returned `[{}, {}]`), which
-    /// reads as data with nothing in it.
-    fn check_fields(&self, rows: &[serde_json::Value]) -> Result<(), String> {
+    /// Refuse `fields` when no row has any of the names: that gave empty
+    /// rows (`--fields bogus` returned `[{}, {}]`), which read as data with
+    /// nothing in it. A name only some results carry is not refused: rows
+    /// leave optional keys out when they are empty (an impact row without a
+    /// `proc`, every workspace row without a `package`), so such a name is
+    /// returned in `absentFields` instead.
+    fn check_fields(&self, rows: &[serde_json::Value]) -> Result<Vec<String>, String> {
         if self.fields.is_empty() || rows.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let mut present = std::collections::BTreeSet::new();
         for row in rows {
@@ -168,20 +173,20 @@ impl Projection {
             }
         }
         if present.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
-        let unknown: Vec<&str> = self
+        let absent: Vec<String> = self
             .fields
             .iter()
-            .map(String::as_str)
-            .filter(|name| !present.contains(name))
+            .filter(|name| !present.contains(name.as_str()))
+            .cloned()
             .collect();
-        if unknown.is_empty() {
-            return Ok(());
+        if absent.len() < self.fields.len() {
+            return Ok(absent);
         }
         Err(format!(
             "'fields' names {} that no row has; the rows have: {}",
-            unknown.join(", "),
+            absent.join(", "),
             present.into_iter().collect::<Vec<_>>().join(", ")
         ))
     }
@@ -221,14 +226,18 @@ pub(crate) fn project(
             let serde_json::Value::Array(rows) = result else {
                 return Ok(result);
             };
-            let (items, total, truncated) = projection.take_rows(rows)?;
-            serde_json::json!({
+            let (items, total, truncated, absent) = projection.take_rows(rows)?;
+            let mut envelope = serde_json::json!({
                 "items": items,
                 "total": total,
                 "returned": items.len(),
                 "offset": projection.offset,
                 "truncated": truncated,
-            })
+            });
+            if !absent.is_empty() {
+                envelope["absentFields"] = serde_json::json!(absent);
+            }
+            envelope
         }
         ListTarget::Field(field) => {
             let serde_json::Value::Object(mut object) = result else {
@@ -240,7 +249,10 @@ pub(crate) fn project(
                 // was taken and leave the result alone.
                 return Ok(serde_json::Value::Object(object));
             };
-            let (items, total, truncated) = projection.take_rows(rows)?;
+            let (items, total, truncated, absent) = projection.take_rows(rows)?;
+            if !absent.is_empty() {
+                object.insert("absentFields".into(), serde_json::json!(absent));
+            }
             let returned = items.len();
             object.insert(field.to_string(), serde_json::Value::Array(items));
             object.insert("total".into(), serde_json::json!(total));
@@ -399,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn a_field_no_row_has_is_refused_with_the_ones_they_do() {
+    fn fields_no_row_has_are_refused_with_the_ones_they_do() {
         let response = Response {
             id: 1,
             result: Some(serde_json::json!([{ "name": "A", "version": "1" }])),
@@ -408,12 +420,34 @@ mod tests {
         };
         let projected = apply(
             "search",
-            &serde_json::json!({ "fields": ["name", "bogus"] }),
+            &serde_json::json!({ "fields": ["bogus", "other"] }),
             response,
         );
-        let error = projected.error.expect("an unknown field is refused");
-        assert!(error.message.contains("bogus"), "{}", error.message);
+        let error = projected.error.expect("unknown fields are refused");
+        assert!(error.message.contains("bogus, other"), "{}", error.message);
         assert!(error.message.contains("name, version"), "{}", error.message);
+    }
+
+    /// Rows leave optional keys out when they are empty: a workspace impact
+    /// row has no `package`. Naming one beside a key the rows do have used to
+    /// fail the whole request.
+    #[test]
+    fn an_optional_field_no_row_carries_is_named_in_absent_fields() {
+        let response = Response {
+            id: 1,
+            result: Some(serde_json::json!([{ "n": "A", "type": "read" }])),
+            error: None,
+            ..Default::default()
+        };
+        let projected = apply(
+            "search",
+            &serde_json::json!({ "fields": ["n", "package"] }),
+            response,
+        )
+        .result
+        .expect("rows come back");
+        assert_eq!(projected["items"], serde_json::json!([{ "n": "A" }]));
+        assert_eq!(projected["absentFields"], serde_json::json!(["package"]));
     }
 
     #[test]

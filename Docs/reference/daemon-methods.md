@@ -96,19 +96,25 @@ the page, so a full page is never mistaken for a complete answer.
 Root-array methods: `search`, `object`, `byId`, `events`, `subscribers`, `entrypoints`, `deadCode`,
 `nativeCheck`, `trace`, `packages`, `sqlPatterns`, `obsolete`, `obsoleteUsages`, `rules`, `errorCodes`,
 `builtinTypes`, `duplicates`, `arch.lint`, `audit.dataClassification`, `tests.discover`,
-`profiler.hints`, `breaking`, `upgrade`.
+`profiler.hints`, `breaking`, `upgrade`, `completions`, `inlayHints`, `foldingRanges`.
 
 Object-with-array methods, with the field projected: `impact` (`impacted`), `tableImpact`
 (`objects`), `eventMap` (`events`), `suggestEvent` (`integrationPoints`), `traceChain` (`chains`),
 `composed` (`extensions`), `tests.affected` (`affected`), `permissions.audit` (`coverage`),
 `packageDiff` (`changes`).
 
+`fields` is refused when no row has any of the names. A name that only some results carry is not
+refused, because rows leave optional keys out when they are empty (a workspace `impact` row has no
+`package`); the result names it in `absentFields` instead.
+
 MCP callers get `limit: 50` when they do not pass one, because a tool result goes straight into a
 context window. An explicit `limit` always wins, including `limit: 0` for a count.
 
 ## Scope: `workspace`, `packages`, `all`
 
-`impact`, `tableImpact`, `entrypoints` and `eventMap` accept `scope`. `workspace` keeps the rows
+`impact`, `tableImpact`, `entrypoints`, `eventMap` and `graphExport` accept `scope`. For
+`graphExport`, `workspace` keeps the nodes of the project's objects and the nodes one edge away from
+them. `workspace` keeps the rows
 from the open project, `packages` keeps the rows from loaded `.app` files, and `all` keeps
 everything. The result reports the `scope` it used and `outOfScopeCount`, so a short answer is not
 read as a small workspace.

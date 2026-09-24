@@ -667,6 +667,13 @@ pub fn request_checked(
                     response_contract::validate(method, sent.as_ref(), &checked)?;
                 }
                 warn_if_not_projected(method, sent.as_ref(), &result);
+                if let Some(absent) = result.get("absentFields").and_then(|v| v.as_array()) {
+                    let names: Vec<&str> = absent.iter().filter_map(|v| v.as_str()).collect();
+                    eprintln!(
+                        "note: no row has {}; those fields are left out",
+                        names.join(", ")
+                    );
+                }
                 return Ok(result);
             }
             Err(error) => error,
