@@ -403,6 +403,41 @@ fn a_running_daemon_sees_files_written_after_it_started() {
     );
 }
 
+/// The daemon opens every file it scanned at startup as a document, and the
+/// per-file commands read that document. The refresh updated the index only,
+/// so `symbols` on an edited file kept listing the procedures it had when the
+/// daemon started.
+#[test]
+fn a_per_file_command_sees_an_edit_made_after_the_daemon_started() {
+    let project = isolated_test_project();
+    let path = project.path().join("src").join("Edited.Codeunit.al");
+    let write = |procedure: &str| {
+        std::fs::write(
+            &path,
+            format!(
+                "codeunit 50191 Edited\n{{\n    procedure {procedure}()\n    begin\n    end;\n}}\n"
+            ),
+        )
+        .expect("write");
+    };
+    let symbols = || {
+        let output = run_al_in(project.path(), &["symbols", "src/Edited.Codeunit.al"]);
+        assert!(output.status.success(), "symbols failed: {output:?}");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    write("First");
+    let before = symbols();
+    write("Second");
+    let after = symbols();
+    let _ = run_al_in(project.path(), &["daemon-shutdown"]);
+
+    assert!(before.contains("First"), "{before}");
+    assert!(
+        after.contains("Second") && !after.contains("First"),
+        "{after}"
+    );
+}
+
 /// `test-run <id>` without `--name` left the daemon filling `codeunitName`
 /// with the ID as a string, and the interpreter then used "50145" as the
 /// current object, so an unqualified call to a sibling procedure failed with

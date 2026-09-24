@@ -1284,6 +1284,8 @@ impl LanguageServer for AlServer {
             Ok(generation) => drop(generation),
             Err(_) => return,
         }
+        // The root the startup scan indexed: the project, or without one the
+        // editor's workspace folder.
         let project_root = self
             .workspace
             .project
@@ -1291,53 +1293,67 @@ impl LanguageServer for AlServer {
             .await
             .as_ref()
             .map(|project| project.root.clone());
-        let mut changes = Vec::new();
-        for event in params.changes {
-            if self.workspace.documents.contains(&event.uri) {
-                continue;
-            }
-            let Ok(path) = event.uri.to_file_path() else {
-                continue;
-            };
-            if !path
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("al"))
-                || project_root
-                    .as_ref()
-                    .is_some_and(|root| !path.starts_with(root))
-            {
-                continue;
-            }
-            let text = if event.typ == FileChangeType::DELETED {
-                None
-            } else {
-                let read_path = path.clone();
-                match tokio::task::spawn_blocking(move || {
-                    al_source::file_index::read_source_file(&read_path)
-                })
+        let scan_root = match project_root {
+            Some(root) => root,
+            None => match self
+                .root_uri
+                .read()
                 .await
-                {
-                    Ok(Ok(text)) => text,
-                    Ok(Err(error)) => {
-                        tracing::warn!(path = %path.display(), %error, "watched file could not be read");
-                        continue;
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "watched file read worker failed");
-                        continue;
-                    }
-                }
-            };
-            changes.push((path, text));
+                .as_ref()
+                .and_then(|uri| uri.to_file_path().ok())
+            {
+                Some(root) => root,
+                None => return,
+            },
+        };
+        let mut events: Vec<(std::path::PathBuf, bool)> = params
+            .changes
+            .into_iter()
+            .filter_map(|event| {
+                let path = event.uri.to_file_path().ok()?;
+                al_source::file_index::is_scanned_path(&scan_root, &path)
+                    .then_some((path, event.typ == FileChangeType::DELETED))
+            })
+            .collect();
+        if events.is_empty() {
+            return;
         }
+        // Read under the write guard, so two notifications for one file apply
+        // in order: a read taken before the guard could lose to an older one.
+        let generation = self.workspace.generation_lock.write().await;
+        // Open documents belong to the editor, which may have opened one
+        // while this waited for the guard.
+        events.retain(|(path, _)| {
+            Url::from_file_path(path).map_or(true, |uri| !self.workspace.documents.contains(&uri))
+        });
+        let changes = match tokio::task::spawn_blocking(move || {
+            events
+                .into_iter()
+                .filter_map(|(path, deleted)| {
+                    if deleted {
+                        return Some((path, None));
+                    }
+                    match al_source::file_index::read_source_file(&path) {
+                        Ok(text) => Some((path, text)),
+                        Err(error) => {
+                            tracing::warn!(path = %path.display(), %error, "watched file could not be read");
+                            None
+                        }
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        {
+            Ok(changes) => changes,
+            Err(error) => {
+                tracing::warn!(%error, "watched file read worker failed");
+                return;
+            }
+        };
         if changes.is_empty() {
             return;
         }
-        let generation = self.workspace.generation_lock.write().await;
-        // The editor may have opened one of these while it was being read.
-        changes.retain(|(path, _)| {
-            Url::from_file_path(path).map_or(true, |uri| !self.workspace.documents.contains(&uri))
-        });
         tracing::info!(files = changes.len(), "files changed on disk");
         al_workspace::apply_disk_changes(&self.workspace, changes);
         let scope = self.workspace.config.read().await.diagnostics_scope;

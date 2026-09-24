@@ -200,6 +200,11 @@ pub struct FileIndex {
     /// File path → (mtime, size) snapshot taken at last index time.
     /// Used by `incremental_scan` to detect changed files.
     pub(crate) file_metadata: DashMap<PathBuf, FileMetadata>,
+    /// Files whose recorded mtime was within [`RACY_WINDOW`] of the moment
+    /// they were read. A rewrite of the same length inside the same timestamp
+    /// tick leaves `(mtime, size)` unchanged, so `incremental_scan` re-reads
+    /// these instead of trusting the metadata (git's "racy clean" rule).
+    racy: dashmap::DashSet<PathBuf>,
     /// File path → cached metadata of the *first* object declaration
     /// (avoids re-parsing for workspace/symbol).
     /// Public — al-lsp's DAP path needs object_id ↔ file_path lookups.
@@ -243,6 +248,7 @@ impl FileIndex {
             objects: DashMap::new(),
             path_to_object: DashMap::new(),
             file_metadata: DashMap::new(),
+            racy: dashmap::DashSet::new(),
             object_info: DashMap::new(),
             object_infos: DashMap::new(),
             file_trees: DashMap::new(),
@@ -265,6 +271,7 @@ impl FileIndex {
         self.objects.clear();
         self.path_to_object.clear();
         self.file_metadata.clear();
+        self.racy.clear();
         self.object_info.clear();
         self.object_infos.clear();
         self.file_trees.clear();
@@ -285,6 +292,9 @@ impl FileIndex {
         }
         for (key, value) in replacement.file_metadata {
             self.file_metadata.insert(key, value);
+        }
+        for key in replacement.racy {
+            self.racy.insert(key);
         }
         for (key, value) in replacement.object_info {
             self.object_info.insert(key, value);
@@ -482,14 +492,27 @@ impl FileIndex {
         let mut staged = Vec::new();
 
         for (path, current_meta) in &metadata {
-            let needs_index = match self.file_metadata.get(path) {
-                Some(prev) => *prev != *current_meta,
-                None => true, // new file
-            };
-            if needs_index {
-                let content = read_stable_file(path, current_meta)?;
-                staged.push((path.clone(), content, current_meta.clone()));
+            let unchanged = self
+                .file_metadata
+                .get(path)
+                .is_some_and(|prev| *prev == *current_meta);
+            if unchanged && !self.racy.contains(path) {
+                continue;
             }
+            let content = read_stable_file(path, current_meta)?;
+            if unchanged
+                && self
+                    .files
+                    .get(path)
+                    .is_some_and(|indexed| *indexed.value() == content)
+            {
+                // Racy but the same text: settled once the tick has passed.
+                if !is_racy(current_meta, SystemTime::now()) {
+                    self.racy.remove(path);
+                }
+                continue;
+            }
+            staged.push((path.clone(), content, current_meta.clone()));
         }
 
         // Discovery and every changed-file read completed successfully. Only
@@ -532,6 +555,11 @@ impl FileIndex {
     fn add_file_with_meta(&self, path: PathBuf, content: String, meta: Option<FileMetadata>) {
         let meta = meta.or_else(|| FileMetadata::read(&path));
         if let Some(m) = meta {
+            if is_racy(&m, SystemTime::now()) {
+                self.racy.insert(path.clone());
+            } else {
+                self.racy.remove(&path);
+            }
             self.file_metadata.insert(path.clone(), m);
         }
         // Remove the old object-name mappings for this path (if any), so
@@ -692,6 +720,7 @@ impl FileIndex {
     pub fn remove_file(&self, path: &Path) {
         self.files.remove(path);
         self.file_metadata.remove(path);
+        self.racy.remove(path);
         self.file_trees.remove(path);
         self.file_symbols.remove(path);
         self.object_info.remove(path);
@@ -974,6 +1003,66 @@ impl Default for FileIndex {
     }
 }
 
+/// How close to the moment a file is read its mtime has to be for a later
+/// same-length rewrite to be able to share it. Covers coarse filesystem clocks
+/// (HFS+, exFAT, SMB: one to two seconds).
+const RACY_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether a file read at `read_at` with this metadata could be rewritten
+/// without its `(mtime, size)` changing.
+fn is_racy(metadata: &FileMetadata, read_at: SystemTime) -> bool {
+    read_at
+        .duration_since(metadata.modified)
+        .map_or(true, |age| age < RACY_WINDOW)
+}
+
+/// A directory [`collect_al_files`] does not descend into.
+fn is_skipped_directory(name: &str) -> bool {
+    name.starts_with('.')
+        || name.eq_ignore_ascii_case("node_modules")
+        || name.eq_ignore_ascii_case(".alpackages")
+}
+
+/// Whether a scan of `root` would index `path`: an `.al` file under `root`,
+/// reached without a skipped directory or a symlinked one.
+///
+/// For a single changed path, such as a file-watcher event, which must not
+/// index a file the scan leaves out. The file itself is checked when it is
+/// read: [`read_source_file`] refuses anything but a regular file.
+pub fn is_scanned_path(root: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return false;
+    };
+    if !path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("al"))
+    {
+        return false;
+    }
+    let mut directory = root.to_path_buf();
+    let mut components = relative.components().peekable();
+    while let Some(component) = components.next() {
+        if components.peek().is_none() {
+            // The file name.
+            return matches!(component, std::path::Component::Normal(_));
+        }
+        let std::path::Component::Normal(name) = component else {
+            return false;
+        };
+        if is_skipped_directory(&name.to_string_lossy()) {
+            return false;
+        }
+        directory.push(name);
+        match std::fs::symlink_metadata(&directory) {
+            Ok(metadata) if metadata.file_type().is_symlink() => return false,
+            // A deleted file's directory may be gone too; the path is still
+            // one the scan could have indexed.
+            Ok(_) | Err(_) => {}
+        }
+    }
+    false
+}
+
 /// Discover the exact AL source set used by [`FileIndex::scan`].
 ///
 /// Returned paths preserve the caller's root identity instead of
@@ -1012,12 +1101,7 @@ pub fn collect_al_files(root: &Path) -> Result<Vec<PathBuf>, ScanError> {
                 continue;
             }
             if file_type.is_dir() {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if name.starts_with('.')
-                    || name.eq_ignore_ascii_case("node_modules")
-                    || name.eq_ignore_ascii_case(".alpackages")
-                {
+                if is_skipped_directory(&entry.file_name().to_string_lossy()) {
                     continue;
                 }
                 child_directories.push(path);
@@ -1116,6 +1200,99 @@ fn stage_files(paths: &[PathBuf]) -> Result<Vec<(PathBuf, String, FileMetadata)>
 mod tests {
     use super::*;
     use std::fs;
+
+    /// A same-length rewrite that keeps the mtime (a coarse filesystem clock,
+    /// or two writes inside one tick) must still be picked up.
+    #[test]
+    fn a_same_size_rewrite_within_the_same_mtime_is_picked_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Racy.Codeunit.al");
+        let write = |text: &str, modified: SystemTime| {
+            fs::write(&path, text).unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+        };
+        let tick = SystemTime::now();
+        let index = FileIndex::new();
+        write("codeunit 50100 \"Written Later\" { }", tick);
+        index.incremental_scan(dir.path()).unwrap();
+
+        write("codeunit 50100 \"Renamed Later\" { }", tick);
+        let delta = index.incremental_scan(dir.path()).unwrap();
+
+        assert_eq!(delta.changed, vec![path.clone()]);
+        assert!(index.files.get(&path).unwrap().contains("Renamed Later"));
+    }
+
+    /// An old file is trusted on its metadata and not re-read every scan.
+    #[test]
+    fn a_file_older_than_the_racy_window_is_not_reread() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Settled.Codeunit.al");
+        fs::write(&path, "codeunit 50100 Settled { }").unwrap();
+        let old = SystemTime::now() - std::time::Duration::from_secs(60);
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let index = FileIndex::new();
+        index.incremental_scan(dir.path()).unwrap();
+
+        assert!(!index.racy.contains(&path));
+        assert!(index.incremental_scan(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_single_path_is_scanned_exactly_when_the_walk_would_index_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for relative in [
+            "src/Kept.al",
+            ".hidden/Skipped.al",
+            "node_modules/pkg/Skipped.al",
+            ".alpackages/Skipped.al",
+            "src/Notes.txt",
+        ] {
+            let path = root.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "codeunit 50100 X { }").unwrap();
+        }
+        let walked = collect_al_files(root).unwrap();
+        assert_eq!(walked, vec![root.join("src/Kept.al")]);
+
+        assert!(is_scanned_path(root, &root.join("src/Kept.al")));
+        assert!(is_scanned_path(root, &root.join("src/Deleted.al")));
+        assert!(!is_scanned_path(root, &root.join(".hidden/Skipped.al")));
+        assert!(!is_scanned_path(
+            root,
+            &root.join("node_modules/pkg/Skipped.al")
+        ));
+        assert!(!is_scanned_path(root, &root.join(".alpackages/Skipped.al")));
+        assert!(!is_scanned_path(root, &root.join("src/Notes.txt")));
+        assert!(!is_scanned_path(root, &root.join("../Outside.al")));
+        assert!(!is_scanned_path(&root.join("src"), &root.join("Other.al")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_path_through_a_symlinked_directory_is_not_scanned() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("Linked.al"), "codeunit 50100 X { }").unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("linked")).unwrap();
+
+        assert!(collect_al_files(dir.path()).unwrap().is_empty());
+        assert!(!is_scanned_path(
+            dir.path(),
+            &dir.path().join("linked/Linked.al")
+        ));
+    }
 
     fn setup_test_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();

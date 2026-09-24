@@ -59,6 +59,10 @@ fn now_activity_ms() -> u64 {
 #[cfg(unix)]
 static SOCKET_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
+/// The directory this daemon was started for, which the per-request refresh
+/// scans when the workspace has no app.json project.
+static SCAN_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
 #[cfg(unix)]
 pub(crate) fn cleanup_socket() {
     if let Some(path) = SOCKET_PATH.get() {
@@ -205,6 +209,7 @@ pub async fn run_daemon(
     }));
 
     initialize_daemon_workspace(&workspace, &project_root).await?;
+    let _ = SCAN_ROOT.set(project_root.clone());
 
     // Warm the dependency AL source index and the graphs built on it now,
     // rather than inside whichever query needs them first. The build takes
@@ -807,18 +812,22 @@ async fn refresh_trust(workspace: &Workspace) {
 async fn refresh_workspace_files(workspace: &std::sync::Arc<Workspace>) {
     static REFRESH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-    let Some(project_root) = workspace
+    // The root the startup scan indexed: the project, or the directory the
+    // daemon was started for when it has no app.json.
+    let project_root = workspace
         .project
         .try_read()
         .ok()
-        .and_then(|guard| guard.as_ref().map(|project| project.root.clone()))
-    else {
+        .and_then(|guard| guard.as_ref().map(|project| project.root.clone()));
+    let Some(scan_root) = project_root.or_else(|| SCAN_ROOT.get().cloned()) else {
         return;
     };
     let _serialized = REFRESH.lock().await;
     let scan_workspace = std::sync::Arc::clone(workspace);
     let scanned = tokio::task::spawn_blocking(move || {
-        al_workspace::refresh_workspace_files(&scan_workspace, &project_root)
+        let delta = al_workspace::refresh_workspace_files(&scan_workspace, &scan_root)?;
+        sync_disk_documents(&scan_workspace, &delta);
+        Ok::<_, al_source::file_index::ScanError>(delta)
     })
     .await;
     match scanned {
@@ -833,6 +842,36 @@ async fn refresh_workspace_files(workspace: &std::sync::Arc<Workspace>) {
             tracing::warn!(%error, "daemon: could not refresh workspace files from disk")
         }
         Err(error) => tracing::warn!(%error, "daemon: workspace refresh worker failed"),
+    }
+}
+
+/// Carry a disk refresh into the daemon's document store.
+///
+/// The daemon opens every scanned file as a document at startup, and the
+/// per-file queries (`symbols`, `hover`, `lint`) read the document. Refreshing
+/// only the file index left them answering from the text the file had when
+/// the daemon started.
+fn sync_disk_documents(workspace: &Workspace, delta: &al_source::file_index::ScanDelta) {
+    for path in &delta.changed {
+        let Ok(uri) = url::Url::from_file_path(path) else {
+            continue;
+        };
+        let Some(text) = workspace
+            .file_index
+            .files
+            .get(path)
+            .map(|entry| entry.value().clone())
+        else {
+            continue;
+        };
+        if let Err(error) = workspace.documents.replace_or_open(uri, text) {
+            tracing::warn!(path = %path.display(), %error, "daemon: changed file rejected by the document store");
+        }
+    }
+    for path in &delta.removed {
+        if let Ok(uri) = url::Url::from_file_path(path) {
+            workspace.documents.close(&uri);
+        }
     }
 }
 
