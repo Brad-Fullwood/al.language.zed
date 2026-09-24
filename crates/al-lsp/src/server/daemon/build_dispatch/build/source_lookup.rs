@@ -210,11 +210,40 @@ pub(in crate::server::daemon) fn dispatch_location(
         ..Default::default()
     }
 }
+/// The parameters `source` reads, and those any request may carry.
+const SOURCE_PARAMS: &[&str] = &[
+    "name",
+    "kind",
+    "package",
+    "listProcedures",
+    "proc",
+    "procedure",
+    "trigger",
+];
+const PROJECTION_PARAMS: &[&str] = &["limit", "offset", "fields", "scope"];
+
 pub(in crate::server::daemon) fn dispatch_source(
     workspace: &Workspace,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
+    // An unknown key was ignored, so `procedure` (the CLI's flag name)
+    // through `al_call` returned the whole 173 KB codeunit instead of one
+    // procedure. `procedure` is accepted now, and other names are refused.
+    if let Some(unknown) = params.as_object().and_then(|object| {
+        object.keys().find(|key| {
+            !SOURCE_PARAMS.contains(&key.as_str()) && !PROJECTION_PARAMS.contains(&key.as_str())
+        })
+    }) {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            &format!(
+                "source does not take '{unknown}'; it takes name, kind, package, listProcedures, \
+                 proc (or procedure) and trigger"
+            ),
+        );
+    }
     let name = match optional_non_empty_string(params, "name") {
         Ok(Some(name)) => name,
         Ok(None) => return invalid_params(id),
@@ -275,7 +304,10 @@ pub(in crate::server::daemon) fn dispatch_source(
         };
     }
 
-    let proc_filter = match optional_non_empty_string(params, "proc") {
+    let proc_filter = match optional_non_empty_string(params, "proc").and_then(|proc| match proc {
+        Some(proc) => Ok(Some(proc)),
+        None => optional_non_empty_string(params, "procedure"),
+    }) {
         Ok(procedure) => procedure,
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
@@ -532,5 +564,30 @@ mod tests {
         assert!(result["code"]
             .as_str()
             .is_some_and(|code| code.contains("procedure DoWork")));
+    }
+
+    /// `al_call source` with `procedure` (the CLI flag's name) returned the
+    /// whole codeunit: the key was ignored.
+    #[test]
+    fn source_refuses_a_parameter_it_does_not_take() {
+        let ws = al_workspace::Workspace::new();
+        let response = dispatch_source(
+            &ws,
+            1,
+            &serde_json::json!({ "name": "Sales-Post", "procedre": "PostItemLine" }),
+        );
+        let error = response.error.expect("unknown key refused");
+        assert_eq!(error.code, error_codes::INVALID_PARAMS);
+        assert!(error.message.contains("'procedre'"), "{}", error.message);
+
+        // `procedure` is accepted as `proc`: the lookup gets as far as the
+        // missing object.
+        let response = dispatch_source(
+            &ws,
+            2,
+            &serde_json::json!({ "name": "Sales-Post", "procedure": "PostItemLine" }),
+        );
+        let message = response.error.expect("no such object here").message;
+        assert!(!message.contains("does not take"), "{message}");
     }
 }

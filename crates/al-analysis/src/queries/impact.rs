@@ -793,6 +793,18 @@ fn is_field_declaration_name(text: &str, offset: usize) -> bool {
 /// with the procedure, and again from the source scan; `Cust Ext` was both
 /// `extends` and `read` because its header names the table.
 fn dedupe(results: &mut Vec<ImpactEntry>) {
+    // Workspace rows omit `package`: the source scan never set it, and rows
+    // from the workspace's symbol entries said "workspace", so the same kind
+    // of row came back in two shapes and did not dedupe against each other.
+    for entry in results.iter_mut() {
+        if entry
+            .package
+            .as_deref()
+            .is_some_and(al_symbols::source_availability::is_workspace_package)
+        {
+            entry.package = None;
+        }
+    }
     let key = |entry: &ImpactEntry| (entry.kind, entry.name.to_lowercase(), entry.impact_type);
     let object_level = |entry: &ImpactEntry| entry.proc.is_none() && entry.field.is_none();
     let specific: std::collections::HashSet<_> = results
