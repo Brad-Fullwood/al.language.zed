@@ -148,6 +148,10 @@ impl Default for ScaffoldConfig {
     }
 }
 
+/// The newest AL runtime major this build knows (17 is Business Central 28),
+/// and the default for new projects.
+const NEWEST_KNOWN_RUNTIME_MAJOR: u32 = 17;
+
 /// Map an AL runtime version to the Business Central application version that
 /// introduced it. Runtime 1.0 shipped with BC 12.0, and subsequent major
 /// runtime lines retain the `+ 11` relationship; runtime minors map directly
@@ -167,6 +171,16 @@ pub fn application_version_for_runtime(runtime: &str) -> Result<String, String> 
     if parts.next().is_some() {
         return Err(format!(
             "Invalid AL runtime '{runtime}': expected major.minor, for example 17.0"
+        ));
+    }
+    // `--runtime 99.0` wrote `"application": "110.0.0.0"`, a Business
+    // Central that does not exist. Allow a little past the newest runtime
+    // this build knows, for toolchains released after it.
+    if major > NEWEST_KNOWN_RUNTIME_MAJOR + 2 {
+        return Err(format!(
+            "Invalid AL runtime '{runtime}': the newest AL runtime this version knows is \
+             {NEWEST_KNOWN_RUNTIME_MAJOR}.0 (Business Central {})",
+            NEWEST_KNOWN_RUNTIME_MAJOR + 11
         ));
     }
     let application_major = major
@@ -214,6 +228,14 @@ pub fn create_project(dir: &Path, config: &ScaffoldConfig) -> Result<ScaffoldRes
         ),
     ];
     planned.extend(generate_template_files(config)?);
+    // Workspace settings the folder already has are the user's; the
+    // analyzer choice is only a default.
+    if !dir.join(".vscode/settings.json").exists() {
+        planned.push((
+            ".vscode/settings.json".to_string(),
+            generate_vscode_settings(config)?.into_bytes(),
+        ));
+    }
     refuse_existing_destinations(dir, planned.iter().map(|(name, _)| name.as_str()))?;
 
     let mut files = Vec::with_capacity(planned.len());
@@ -746,21 +768,15 @@ fn splitmix64(seed: u64) -> u64 {
 
 fn generate_app_json(config: &ScaffoldConfig) -> Result<String, String> {
     let application = application_version_for_runtime(&config.runtime)?;
-    let (target, features, analyzers) = match &config.template {
+    let (target, features) = match &config.template {
         ProjectTemplate::AppSourceApp => (
             "Cloud",
             serde_json::json!(["NoImplicitWith", "GenerateCaptions"]),
-            serde_json::json!(["AppSourceCop", "PerTenantExtensionCop", "UICop"]),
         ),
-        ProjectTemplate::Api => (
-            "Cloud",
-            serde_json::json!(["NoImplicitWith"]),
-            serde_json::json!(["PerTenantExtensionCop"]),
-        ),
+        ProjectTemplate::Api => ("Cloud", serde_json::json!(["NoImplicitWith"])),
         _ => (
             config.target.as_str(),
             serde_json::json!(["NoImplicitWith"]),
-            serde_json::json!(["PerTenantExtensionCop"]),
         ),
     };
 
@@ -788,8 +804,7 @@ fn generate_app_json(config: &ScaffoldConfig) -> Result<String, String> {
         },
         "runtime": config.runtime,
         "target": target,
-        "features": features,
-        "codeAnalyzers": analyzers
+        "features": features
     });
 
     if matches!(
@@ -801,6 +816,29 @@ fn generate_app_json(config: &ScaffoldConfig) -> Result<String, String> {
 
     serde_json::to_string_pretty(&manifest)
         .map_err(|e| format!("Failed to serialize app.json: {e}"))
+}
+
+/// The analyzers a template's projects are checked with.
+fn template_code_analyzers(template: &ProjectTemplate) -> &'static [&'static str] {
+    match template {
+        ProjectTemplate::AppSourceApp => &["AppSourceCop", "PerTenantExtensionCop", "UICop"],
+        _ => &["PerTenantExtensionCop"],
+    }
+}
+
+/// `.vscode/settings.json` choosing the template's analyzers.
+///
+/// They used to go into `app.json` as `codeAnalyzers`, which is not an
+/// app.json property: the compiler ignores it, and Microsoft's AL extension
+/// and this one read `al.codeAnalyzers` from settings.
+fn generate_vscode_settings(config: &ScaffoldConfig) -> Result<String, String> {
+    let analyzers: Vec<String> = template_code_analyzers(&config.template)
+        .iter()
+        .map(|analyzer| format!("${{{analyzer}}}"))
+        .collect();
+    serde_json::to_string_pretty(&serde_json::json!({ "al.codeAnalyzers": analyzers }))
+        .map(|text| text + "\n")
+        .map_err(|error| format!("rendering .vscode/settings.json: {error}"))
 }
 
 fn generate_gitignore() -> String {
@@ -1156,11 +1194,49 @@ mod tests {
         let config = ScaffoldConfig::default();
         let result = create_project(dir.path(), &config).unwrap();
 
-        assert_eq!(result.files_created.len(), 4);
+        assert_eq!(result.files_created.len(), 5);
         assert!(dir.path().join("app.json").exists());
         assert!(dir.path().join(".gitignore").exists());
         assert!(dir.path().join(".zed/debug.json").exists());
         assert!(dir.path().join("src/HelloWorld.Codeunit.al").exists());
+        assert!(dir.path().join(".vscode/settings.json").exists());
+    }
+
+    /// `codeAnalyzers` is not an app.json property; the analyzers go to the
+    /// `al.codeAnalyzers` setting, and a folder's own settings are kept.
+    #[test]
+    fn analyzers_go_to_settings_not_app_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ScaffoldConfig {
+            template: ProjectTemplate::AppSourceApp,
+            ..ScaffoldConfig::default()
+        };
+        create_project(dir.path(), &config).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("app.json")).unwrap())
+                .unwrap();
+        assert!(manifest.get("codeAnalyzers").is_none(), "{manifest}");
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join(".vscode/settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            settings["al.codeAnalyzers"],
+            serde_json::json!(["${AppSourceCop}", "${PerTenantExtensionCop}", "${UICop}"])
+        );
+
+        let existing = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(existing.path().join(".vscode")).unwrap();
+        std::fs::write(
+            existing.path().join(".vscode/settings.json"),
+            "{\"mine\": 1}",
+        )
+        .unwrap();
+        create_project(existing.path(), &ScaffoldConfig::default()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(existing.path().join(".vscode/settings.json")).unwrap(),
+            "{\"mine\": 1}"
+        );
     }
 
     #[test]
@@ -1369,7 +1445,7 @@ mod tests {
 
     #[test]
     fn scaffold_rejects_invalid_runtime_instead_of_emitting_stale_application() {
-        for runtime in ["", "latest", "0.0", "17.0.1"] {
+        for runtime in ["", "latest", "0.0", "17.0.1", "99.0"] {
             let config = ScaffoldConfig {
                 runtime: runtime.to_string(),
                 ..Default::default()
