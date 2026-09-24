@@ -877,3 +877,81 @@ end;
         result.reasons
     );
 }
+
+/// `[EventSubscriber(ObjectType::Table, Database::Customer, ...)]` gave
+/// "uses enum 'Database'" and "uses enum 'ObjectType'" as reasons: the
+/// attribute's arguments were walked as if they ran.
+#[test]
+fn subscriber_attribute_arguments_are_not_enum_uses() {
+    let workspace = Workspace::new();
+    workspace.symbols.add_entries(&[al_symbols::SymbolEntry {
+        kind: al_symbols::ObjectKind::Table,
+        id: 18,
+        name: "Customer".to_string(),
+        package: "Base Application".to_string(),
+        ..Default::default()
+    }]);
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Subs.Codeunit.al"),
+        r#"codeunit 50160 Subs
+{
+[EventSubscriber(ObjectType::Table, Database::Customer, 'OnAfterModifyEvent', '', false, false)]
+local procedure OnModify(var Rec: Record Customer)
+begin
+    Rec.Init();
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/SubsTests.Codeunit.al"),
+        r#"codeunit 50161 "Subs Tests"
+{
+Subtype = Test;
+[Test]
+procedure ModifiesACustomer()
+var Cust: Record Customer;
+begin
+    Cust.Modify(true);
+end;
+}"#
+        .to_string(),
+    );
+
+    let results = classify_all(&workspace).unwrap();
+    assert!(
+        results.iter().any(|result| result
+            .reasons
+            .iter()
+            .any(|reason| reason.message.contains("reachable procedure"))),
+        "the subscriber must be reached for this test to mean anything: {results:?}"
+    );
+    for result in results {
+        assert!(
+            !result
+                .reasons
+                .iter()
+                .any(|reason| reason.message.contains("'ObjectType'")
+                    || reason.message.contains("'Database'")),
+            "attribute arguments are not code: {:?}",
+            result.reasons
+        );
+    }
+}
+
+#[test]
+fn the_same_reason_in_one_file_is_given_once() {
+    let mut reasons = Vec::new();
+    for line in [3, 9] {
+        push_reason(
+            &mut reasons,
+            RoutingReason {
+                message: "uses record table 'Customer' without a workspace table definition".into(),
+                file: Some("/tmp/T.al".into()),
+                line: Some(line),
+            },
+        );
+    }
+    assert_eq!(reasons.len(), 1);
+    assert_eq!(reasons[0].line, Some(3));
+}

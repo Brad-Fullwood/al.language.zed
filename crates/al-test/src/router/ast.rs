@@ -111,6 +111,10 @@ pub(super) fn classify_procedure_ast(
                     reachable,
                 );
             }
+            // An attribute's arguments are not executed: `ObjectType::Table`
+            // and `Database::Customer` in an `[EventSubscriber]` were read as
+            // enum uses that need live BC.
+            continue;
         }
         let mut cursor = node.walk();
         stack.extend(node.named_children(&mut cursor));
@@ -600,8 +604,13 @@ pub(super) fn promote(
     );
 }
 
+/// Add a reason unless the same one is already given for the same file: two
+/// `Cust: Record Customer` declarations are one reason, not two.
 pub(super) fn push_reason(reasons: &mut Vec<RoutingReason>, reason: RoutingReason) {
-    if !reasons.contains(&reason) {
+    if !reasons
+        .iter()
+        .any(|given| given.message == reason.message && given.file == reason.file)
+    {
         reasons.push(reason);
     }
 }
