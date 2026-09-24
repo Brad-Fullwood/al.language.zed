@@ -60,7 +60,7 @@ if [ -z "$bin_dir" ]; then
 	# is `.`, so the loop below never ended and the MCP server never started.
 	# An unset directory leaves `search` empty, which skips the loop.
 	search="${CLAUDE_PLUGIN_ROOT:-$(dirname -- "$0")/..}"
-	search="$(CDPATH='' cd -- "$search" 2>/dev/null && pwd || true)"
+	search="$(CDPATH='' cd -- "$search" 2>/dev/null && pwd)" || search=""
 	while [ -n "$search" ] && [ "$search" != "/" ]; do
 		for profile in release debug; do
 			if has_pair "$search/target/$profile"; then

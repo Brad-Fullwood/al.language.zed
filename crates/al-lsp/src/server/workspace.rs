@@ -1426,14 +1426,7 @@ fn mark_settings_prompt_shown() {
 
 /// Path to the sentinel file that records the popup was shown.
 fn sentinel_path() -> Option<PathBuf> {
-    let data_dir = std::env::var("XDG_DATA_HOME")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|h| PathBuf::from(h).join(".local/share"))
-        })?;
+    let data_dir = al_project::project::user_data_dir()?;
     Some(data_dir.join("al-lsp").join(".settings-prompt-shown"))
 }
 
