@@ -145,14 +145,32 @@ fn write_atomically(path: &std::path::Path, contents: &str) -> std::io::Result<(
     Ok(())
 }
 
-fn xlf_target_language(xlf_path: &std::path::Path) -> String {
+/// The culture a language file translates into. The file's own
+/// `target-language` wins; failing that, the last dotted part of its name,
+/// since AL tooling names them `<App>.<culture>.xlf` (`Bench.fr-FR.xlf`).
+/// Taking the whole stem wrote `target-language="Bench.fr-FR"`, which is no
+/// culture, and Business Central ignored the translation.
+fn xlf_target_language(xlf_path: &std::path::Path, content: &str) -> String {
+    if let Some(declared) = declared_target_language(content) {
+        return declared;
+    }
     xlf_path
         .file_name()
         .and_then(|s| s.to_str())
         .and_then(|s| s.strip_suffix(".xlf"))
         .filter(|s| !s.is_empty() && !s.ends_with(".g"))
+        .map(|stem| stem.rsplit('.').next().unwrap_or(stem))
         .unwrap_or("en-US")
         .to_string()
+}
+
+/// The `target-language` attribute of the first `<file>` element.
+fn declared_target_language(content: &str) -> Option<String> {
+    let file = &content[content.find("<file")?..];
+    let file = &file[..file.find('>')?];
+    let value = file.split_once("target-language=\"")?.1;
+    let value = value.split_once('"')?.0.trim();
+    (!value.is_empty()).then(|| value.to_string())
 }
 pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
     workspace: &Workspace,
@@ -252,7 +270,7 @@ pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
     // Derive the target language from the language-specific filename
     // (e.g. `de-DE.xlf` -> `de-DE`). The generated `.g.xlf` is always en-US,
     // so the language file's target-language must reflect its own locale.
-    let target_lang = xlf_target_language(&xlf_path);
+    let target_lang = xlf_target_language(&xlf_path, &lang_content);
     let new_xlf =
         al_analysis::xliff::generate_xliff(&app_name, "en-US", &target_lang, &updated_units);
     // Atomic replace: the user's hand-maintained translation file must survive a
@@ -426,12 +444,27 @@ mod tests {
         // A language-specific file carries its locale in the filename; the
         // refreshed XLIFF's target-language must reflect it, not a hardcode.
         assert_eq!(
-            xlf_target_language(std::path::Path::new("/p/Translations/de-DE.xlf")),
+            xlf_target_language(std::path::Path::new("/p/Translations/de-DE.xlf"), ""),
             "de-DE"
         );
         assert_eq!(
-            xlf_target_language(std::path::Path::new("fr-FR.xlf")),
+            xlf_target_language(std::path::Path::new("fr-FR.xlf"), ""),
             "fr-FR"
+        );
+    }
+
+    /// `<App>.<culture>.xlf` is how AL tooling names language files, and the
+    /// file says its culture itself.
+    #[test]
+    fn xlf_target_language_reads_the_file_then_the_last_name_part() {
+        assert_eq!(
+            xlf_target_language(std::path::Path::new("Bench.fr-FR.xlf"), ""),
+            "fr-FR"
+        );
+        let declared = "<?xml version=\"1.0\"?>\n<xliff>\n  <file datatype=\"xml\" source-language=\"en-US\" target-language=\"da-DK\" original=\"Bench\">";
+        assert_eq!(
+            xlf_target_language(std::path::Path::new("Bench.Danish.xlf"), declared),
+            "da-DK"
         );
     }
 
@@ -440,11 +473,11 @@ mod tests {
         // The generated base file (*.g.xlf) and anything we can't parse fall
         // back to en-US rather than emitting a bogus target-language.
         assert_eq!(
-            xlf_target_language(std::path::Path::new("MyApp.g.xlf")),
+            xlf_target_language(std::path::Path::new("MyApp.g.xlf"), ""),
             "en-US"
         );
         assert_eq!(
-            xlf_target_language(std::path::Path::new("notxlf.txt")),
+            xlf_target_language(std::path::Path::new("notxlf.txt"), ""),
             "en-US"
         );
     }
