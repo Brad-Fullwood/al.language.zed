@@ -326,6 +326,16 @@ fn affected_via_call_graph(
             seeds.extend(indices.iter().map(|idx| NodeId::from(*idx)));
         }
     }
+    // A table or table extension has few graph members of its own, but its
+    // fields are read and written by every procedure holding its records.
+    for table in changed_tables(workspace, &want) {
+        for (kind, object, procedure) in
+            al_insight::analysis::workspace_procedures_using_table(&workspace.file_index, &table)
+        {
+            let key = NodeKey::Procedure(kind, object.to_lowercase(), procedure.to_lowercase());
+            seeds.extend(CallGraph::node_id_for(&insight, &key));
+        }
+    }
     if seeds.is_empty() {
         // Changed object(s) exist but contribute no graph members (e.g. an
         // empty table). Don't claim a precise empty answer — let the caller
@@ -363,6 +373,27 @@ fn affected_via_call_graph(
         }
     }
     Ok(Some(affected))
+}
+
+/// The tables whose records a change to `objects` affects: a changed table
+/// itself, and the table a changed table extension extends.
+fn changed_tables(workspace: &Workspace, objects: &HashSet<(ObjectKind, String)>) -> Vec<String> {
+    let mut tables: Vec<String> = objects
+        .iter()
+        .filter_map(|(kind, name)| match kind {
+            ObjectKind::Table => Some(name.clone()),
+            ObjectKind::TableExtension => workspace
+                .symbols
+                .get_by_name(name)
+                .iter()
+                .find(|entry| entry.kind == ObjectKind::TableExtension)
+                .and_then(|entry| entry.extends.clone()),
+            _ => None,
+        })
+        .collect();
+    tables.sort_by_key(|table| table.to_lowercase());
+    tables.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    tables
 }
 
 /// Resolve the `(ObjectKind, lowercased name)` of the AL object declared in
@@ -1097,6 +1128,74 @@ mod affected_call_graph {
         let ws = build_ws();
         let result = affected_tests_detailed(&ws, &[]).unwrap();
         assert!(result.tests.is_empty());
+    }
+
+    /// A table extension has no procedures, so call edges alone found no
+    /// test; its fields are used by every procedure holding a Customer.
+    #[test]
+    fn changing_a_table_extension_marks_tests_holding_its_records() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/ws/custext.al"),
+            r#"tableextension 50100 "Cust Ext" extends Customer
+{
+    fields
+    {
+        field(50100; "Loyalty Tier"; Code[10]) { }
+    }
+}
+"#
+            .to_string(),
+        );
+        ws.file_index.add_file(
+            PathBuf::from("/ws/mgt.al"),
+            r#"codeunit 50101 "Loyalty Mgt"
+{
+    procedure SetTier(var Cust: Record Customer; Tier: Code[10])
+    begin
+        Cust."Loyalty Tier" := Tier;
+    end;
+}
+"#
+            .to_string(),
+        );
+        ws.file_index.add_file(
+            PathBuf::from("/ws/tests.al"),
+            r#"codeunit 50110 "Loyalty Test"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure ThroughMgt()
+    var
+        Mgt: Codeunit "Loyalty Mgt";
+        C: Record Integer;
+    begin
+        Mgt.SetTier(C, 'GOLD');
+    end;
+
+    [Test]
+    procedure Direct()
+    var
+        Cust: Record Customer;
+    begin
+        Cust."Loyalty Tier" := '';
+    end;
+
+    [Test]
+    procedure Unrelated()
+    var
+        V: Record Vendor;
+    begin
+        V.Init();
+    end;
+}
+"#
+            .to_string(),
+        );
+        let (mode, names) = affected_names(&ws, &["/ws/custext.al"]);
+        assert_eq!(mode, AffectedMode::CallGraph);
+        assert_eq!(names, vec!["Direct".to_string(), "ThroughMgt".to_string()]);
     }
 
     #[test]

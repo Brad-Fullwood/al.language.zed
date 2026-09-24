@@ -7,7 +7,7 @@
 //! Used by `al impact <TableName>` queries.
 
 use al_syntax::IdentifierText;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 
@@ -317,6 +317,111 @@ pub fn add_workspace_local_record_variables(
             .map(u8::to_ascii_lowercase)
             .cmp(b.object_name.as_bytes().iter().map(u8::to_ascii_lowercase))
     });
+}
+
+/// The workspace procedures that hold a `Record <table>`: as a parameter,
+/// a local variable, or through an object-level global, which makes every
+/// procedure of that object a user.
+///
+/// Returned as `(object kind, object name, procedure name)`, in the file
+/// index's path order.
+pub fn workspace_procedures_using_table(
+    files: &al_source::file_index::FileIndex,
+    table_name: &str,
+) -> Vec<(ObjectKind, String, String)> {
+    let mut paths: Vec<std::path::PathBuf> = files
+        .files
+        .iter()
+        .map(|entry| entry.key().clone())
+        .collect();
+    paths.sort();
+    let mut users = Vec::new();
+    for path in paths {
+        let Some((text, tree)) = files.get_cached_parse(&path) else {
+            continue;
+        };
+        let objects = files
+            .object_infos
+            .get(&path)
+            .map(|infos| infos.value().clone())
+            .unwrap_or_default();
+        let source = text.as_bytes();
+        let holds_record = |node: tree_sitter::Node| {
+            node.child_by_field_name("type")
+                .and_then(|ty| ty.utf8_text(source).ok())
+                .is_some_and(|ty| is_record_of(ty, table_name))
+        };
+        // Procedures per object, and whether the object has a global record.
+        let mut procedures: Vec<(usize, tree_sitter::Node)> = Vec::new();
+        let mut global_users: HashSet<usize> = HashSet::new();
+        let mut stack = vec![tree.root_node()];
+        while let Some(node) = stack.pop() {
+            let mut cursor = node.walk();
+            stack.extend(node.children(&mut cursor));
+            let object_of = |node: tree_sitter::Node| {
+                objects.iter().position(|object| {
+                    object.range.start_byte <= node.start_byte()
+                        && node.end_byte() <= object.range.end_byte
+                })
+            };
+            match node.kind() {
+                "procedure_declaration" => {
+                    if let Some(object) = object_of(node) {
+                        procedures.push((object, node));
+                    }
+                }
+                "regular_variable_declaration" if holds_record(node) => {
+                    let in_body = std::iter::successors(node.parent(), |n| n.parent()).any(|n| {
+                        matches!(
+                            n.kind(),
+                            "procedure_declaration"
+                                | "trigger_declaration"
+                                | "event_procedure_declaration"
+                        )
+                    });
+                    if !in_body {
+                        global_users.extend(object_of(node));
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (object, procedure) in procedures {
+            let uses = global_users.contains(&object) || {
+                let mut stack = vec![procedure];
+                let mut found = false;
+                while let Some(node) = stack.pop() {
+                    if matches!(node.kind(), "parameter" | "regular_variable_declaration")
+                        && holds_record(node)
+                    {
+                        found = true;
+                        break;
+                    }
+                    let mut cursor = node.walk();
+                    stack.extend(node.children(&mut cursor));
+                }
+                found
+            };
+            if !uses {
+                continue;
+            }
+            let info = &objects[object];
+            let (Ok(kind), Some(name)) = (
+                info.kind.parse::<ObjectKind>(),
+                procedure
+                    .child_by_field_name("name")
+                    .and_then(|name| name.utf8_text(source).ok()),
+            ) else {
+                continue;
+            };
+            users.push((
+                kind,
+                info.name.clone(),
+                name.unquote_identifier().into_owned(),
+            ));
+        }
+    }
+    users
 }
 
 /// Every table referenced by a `TableRelation` value, in declaration order.

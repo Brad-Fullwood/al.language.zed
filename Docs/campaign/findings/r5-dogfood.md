@@ -398,7 +398,7 @@ Notation: `X` is the `al-explorer` binary, run with the project directory as cwd
   `X test-affected src/LoyaltyMgt.Codeunit.al` finds only `SetTierStoresTheTier`.
 - likely cause: affected-test detection walks call edges only. Field and table-extension dependencies
   are not edges in the call graph (`crates/al-insight/src/calls/edges.rs`).
-- status: open
+- status: fixed (a changed table or table extension seeds every procedure holding its records; both tests found)
 
 ### [GEN-PAGE-OBSOLETE] `generate page` emits a removed field and accepts any page type
 - severity: low
