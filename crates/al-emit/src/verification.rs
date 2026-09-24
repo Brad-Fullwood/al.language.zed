@@ -683,7 +683,20 @@ fn verify_local_procedure_semantics(
             }
 
             let exits = exit_expressions(body);
+            // A named return value (`procedure P() Result: Text`) is returned
+            // by assigning it; `exit;` and no exit at all are both fine.
+            let named_return = procedure_headers(&object.source_text)
+                .into_iter()
+                .find(|header| {
+                    header
+                        .get("procedure ".len()..)
+                        .and_then(|rest| rest.trim_start().get(..method.name.len()))
+                        .is_some_and(|name| name.eq_ignore_ascii_case(&method.name))
+                })
+                .and_then(|header| procedure_signature(header).1)
+                .is_some();
             match &method.return_type {
+                Some(_) if named_return => {}
                 Some(return_type) => {
                     if exits.is_empty() {
                         out.push(VerificationDiagnostic::error_for_object(
@@ -898,6 +911,9 @@ fn procedure_body<'a>(source: &'a str, name: &str) -> Option<(usize, &'a str)> {
     Some((start + begin + 5, &body[..end]))
 }
 
+/// The receiver of a method called on an expression's result.
+const CHAINED_RECEIVER: &str = "(expression)";
+
 #[derive(Debug)]
 struct CallSite {
     name: String,
@@ -950,6 +966,12 @@ fn call_sites(source: &str) -> Vec<CallSite> {
                 .trim_end()
                 .strip_suffix('.')
                 .and_then(|prefix| {
+                    // A method on a call's result (`Token.AsValue().AsText()`)
+                    // has an expression for a receiver, not a variable; it
+                    // was taken for an unknown local procedure.
+                    if prefix.trim_end().ends_with([')', ']']) {
+                        return Some(CHAINED_RECEIVER.to_string());
+                    }
                     let receiver = prefix
                         .rsplit(|c: char| !c.is_ascii_alphanumeric() && c != '_')
                         .next()
@@ -992,8 +1014,101 @@ fn split_call_arguments(source: &str) -> Vec<String> {
     arguments
 }
 
+/// A declared name and its type text.
+type Declaration = (String, String);
+
+/// A procedure's parameters and its named return value, from its header
+/// (`procedure Name(var A: T; B: U) Result: V;`).
+fn procedure_signature(header: &str) -> (Vec<Declaration>, Option<Declaration>) {
+    let Some(open) = header.find('(') else {
+        return (Vec::new(), None);
+    };
+    let mut depth = 0usize;
+    let mut close = None;
+    for (index, byte) in header.bytes().enumerate().skip(open) {
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(index);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(close) = close else {
+        return (Vec::new(), None);
+    };
+    let declaration = |text: &str| -> Option<Declaration> {
+        let (name, ty) = text.split_once(':')?;
+        let name = name.trim();
+        let name = name
+            .strip_prefix("var ")
+            .or_else(|| name.strip_prefix("VAR "))
+            .or_else(|| name.strip_prefix("Var "))
+            .unwrap_or(name)
+            .trim()
+            .trim_matches('"');
+        let ty = ty.trim().trim_end_matches(';').trim();
+        (!name.is_empty() && !ty.is_empty()).then(|| (name.to_string(), ty.to_string()))
+    };
+    let parameters = header[open + 1..close]
+        .split(';')
+        .filter_map(declaration)
+        .collect();
+    let after = header[close + 1..].split(';').next().unwrap_or("");
+    let named_return = declaration(after).filter(|(name, _)| {
+        name.bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b' ')
+    });
+    (parameters, named_return)
+}
+
+/// Every procedure header in `source`, from `procedure` to the `;` after
+/// its parameter list.
+fn procedure_headers(source: &str) -> Vec<&str> {
+    let lower = source.to_ascii_lowercase();
+    let mut headers = Vec::new();
+    let mut offset = 0;
+    while let Some(index) = lower[offset..].find("procedure ") {
+        let start = offset + index;
+        offset = start + "procedure ".len();
+        if start > 0 && lower.as_bytes()[start - 1].is_ascii_alphanumeric() {
+            continue;
+        }
+        let rest = &source[start..];
+        // The header ends at the first `;` outside the parameter list.
+        let mut depth = 0usize;
+        let mut end = rest.len();
+        for (index, byte) in rest.bytes().enumerate() {
+            match byte {
+                b'(' => depth += 1,
+                b')' => depth = depth.saturating_sub(1),
+                b';' if depth == 0 => {
+                    end = index;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        headers.push(&rest[..end]);
+    }
+    headers
+}
+
 fn variable_types(source: &str) -> HashMap<String, String> {
     let mut vars = HashMap::new();
+    // Parameters and named return values are declared in the header, which
+    // the line scan below cannot read: `Result := ...` in
+    // `procedure Describe() Result: Text` was an undeclared identifier.
+    for header in procedure_headers(source) {
+        let (parameters, named_return) = procedure_signature(header);
+        for (name, ty) in parameters.into_iter().chain(named_return) {
+            vars.insert(name.to_ascii_lowercase(), ty);
+        }
+    }
     for line in source.lines() {
         let trimmed = line.trim();
         let Some((name, ty)) = trimmed.split_once(':') else {

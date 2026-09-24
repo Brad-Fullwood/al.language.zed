@@ -478,3 +478,26 @@ fn verification_is_deterministic() {
     ];
     assert_eq!(codes_for(sources), codes_for(sources));
 }
+
+/// A named return value is returned by assigning it: `Result := ...` was an
+/// undeclared identifier and the missing `exit(...)` an error.
+#[test]
+fn a_named_return_value_is_declared_and_needs_no_exit() {
+    let codes = codes_for(&[(
+        "C.Codeunit.al",
+        "codeunit 50100 C\n{\n    procedure Describe(Value: Integer) Result: Text\n    begin\n        Result := Format(Value);\n        Value := 2;\n    end;\n}\n",
+    )]);
+    assert_silent(&codes, "ALN2402");
+    assert_silent(&codes, "ALN2203");
+}
+
+/// `Token.AsValue().AsText()` calls AsText on the value AsValue returns,
+/// not a local procedure named AsText.
+#[test]
+fn a_method_on_a_call_result_is_not_an_unknown_local_procedure() {
+    let codes = codes_for(&[(
+        "C.Codeunit.al",
+        "codeunit 50100 C\n{\n    procedure Name(): Text\n    var\n        Token: JsonToken;\n    begin\n        exit(Token.AsValue().AsText());\n    end;\n}\n",
+    )]);
+    assert_silent(&codes, "ALN2209");
+}
