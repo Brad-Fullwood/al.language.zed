@@ -30,9 +30,10 @@ pub fn run(cli: Cli) -> ExitCode {
     commands::set_compact_json(cli.compact);
     commands::set_projection_override(cli.limit, cli.offset, &cli.fields, cli.scope.as_deref());
     // `--compact` is about how JSON is rendered, so asking for it is asking
-    // for JSON.
+    // for JSON. `--fields` too: the text tables have a column for every field
+    // and printed `?` in each one the projection had dropped.
     let cli = Cli {
-        json: cli.json || cli.compact,
+        json: cli.json || cli.compact || !cli.fields.is_empty(),
         ..cli
     };
     match cli.command {

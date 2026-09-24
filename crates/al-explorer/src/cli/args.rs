@@ -67,7 +67,7 @@ pub struct Cli {
     pub offset: Option<usize>,
 
     /// Keep only these fields on each row, comma separated
-    /// (for example --fields kind,id,name).
+    /// (for example --fields kind,id,name). Implies --json.
     #[arg(long, global = true, value_name = "NAMES", value_delimiter = ',')]
     pub fields: Vec<String>,
 
