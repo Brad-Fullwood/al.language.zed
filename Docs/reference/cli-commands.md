@@ -113,7 +113,7 @@ they are confined to: the daemon changes files only inside the project it has lo
 | `fix [file]` | `--dry-run --rule <code>` | Apply registered safe diagnostic fixes to one file or the loaded project; report unfixable findings separately |
 | `permissions` | `--format al\|xml --name <n> --id <N> --role-id <id>` | Generate permission set |
 | `new <dir>` | `--name --publisher --template <t> --runtime <major.minor>` | New project from a built-in or configured user template; application minimum derives from runtime |
-| `generate <kind>` | `--id --name --table --page-type --subject` | Generate page/report/test (`test` requires `--subject`) |
+| `generate <kind>` | `--id --name --table --page-type --subject` | Generate page/report/test (`test` requires `--subject`). Without `--id` the object takes the first free ID of its kind in the app.json `idRanges`; an `--id` outside them prints a warning |
 | `sort-members [file]` | `--all --dry-run` | Canonical member order |
 | `organize-files` | `--dry-run` | Rename `.al` files to `<Type><Id>.<Name>.al` |
 | `add-application-area` | `--value <v> --dry-run` | Add `ApplicationArea` workspace-wide |

@@ -657,9 +657,10 @@ Examples:
     Generate {
         /// Object kind: page, report, test
         kind: String,
-        /// Object ID
-        #[arg(long, default_value = "50100")]
-        id: i64,
+        /// Object ID. Default: the first free ID of this kind in the
+        /// project's app.json idRanges
+        #[arg(long)]
+        id: Option<i64>,
         /// Object name
         #[arg(long, default_value = "NewObject")]
         name: String,

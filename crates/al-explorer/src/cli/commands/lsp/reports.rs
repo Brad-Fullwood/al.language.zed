@@ -6,7 +6,7 @@ use crate::cli::commands::*;
 
 pub fn cmd_generate(
     kind: &str,
-    id: i64,
+    id: Option<i64>,
     name: &str,
     table: Option<&str>,
     page_type: Option<&str>,
@@ -17,7 +17,10 @@ pub fn cmd_generate(
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    let mut params = serde_json::json!({ "kind": kind, "id": id, "name": name });
+    let mut params = serde_json::json!({ "kind": kind, "name": name });
+    if let Some(id) = id {
+        params["id"] = serde_json::json!(id);
+    }
     if let Some(t) = table {
         params["table"] = serde_json::Value::String(t.to_string());
     }
@@ -34,6 +37,11 @@ pub fn cmd_generate(
             } else {
                 let code = result.get("code").and_then(|v| v.as_str()).unwrap_or("");
                 print!("{code}");
+                for warning in result["warnings"].as_array().into_iter().flatten() {
+                    if let Some(warning) = warning.as_str() {
+                        eprintln!("warning: {warning}");
+                    }
+                }
             }
             ExitCode::SUCCESS
         }

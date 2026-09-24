@@ -308,6 +308,65 @@ pub(in crate::server::daemon) fn dispatch_setup(workspace: &Workspace, id: u64) 
 /// <https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/devenv-object-ranges>
 const MICROSOFT_ID_RANGE_END: i32 = 49_999;
 
+/// The ID to generate with when the caller gave none: the first one free in
+/// the project's `idRanges` for this kind. 50100 when the project has no
+/// ranges or the kind has no object ID space, with a warning saying why.
+fn default_object_id(
+    workspace: &Workspace,
+    project_root: Option<&std::path::Path>,
+    kind: Option<al_symbols::ObjectKind>,
+    warnings: &mut Vec<String>,
+) -> i32 {
+    const FALLBACK: i32 = 50100;
+    let (Some(root), Some(kind)) = (project_root, kind) else {
+        return FALLBACK;
+    };
+    let query = al_analysis::queries::free_ids::FreeIdsQuery {
+        kind: Some(kind),
+        count: 1,
+        ..Default::default()
+    };
+    match al_analysis::queries::free_ids::free_ids(workspace, Some(root), &query) {
+        Ok(report) => match report.next_free.or_else(|| report.free.first().copied()) {
+            Some(free) => i32::try_from(free).unwrap_or(FALLBACK),
+            None => {
+                warnings.extend(report.warnings);
+                FALLBACK
+            }
+        },
+        Err(error) => {
+            warnings.push(format!("used ID {FALLBACK}: {error}"));
+            FALLBACK
+        }
+    }
+}
+
+/// A warning when `object_id` lies outside the `idRanges` app.json declares:
+/// the compiler rejects such an object.
+fn out_of_range_warning(project_root: &std::path::Path, object_id: i32) -> Option<String> {
+    let ranges = al_analysis::queries::native_check::id_ranges_from_app_json(project_root).ok()?;
+    let id = i64::from(object_id);
+    if ranges.is_empty() || ranges.iter().any(|(from, to)| (*from..=*to).contains(&id)) {
+        return None;
+    }
+    let declared = ranges
+        .iter()
+        .map(|(from, to)| format!("{from}-{to}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "Object ID {object_id} is outside the idRanges in app.json ({declared}); the compiler \
+         will reject it. Omit `id` to take the next free one."
+    ))
+}
+
+fn with_warnings(mut result: serde_json::Value, warnings: &[String]) -> serde_json::Value {
+    if !warnings.is_empty() {
+        result["warnings"] = serde_json::json!(warnings);
+    }
+    result
+}
+
 pub(in crate::server::daemon) fn dispatch_generate(
     workspace: &Workspace,
     id: u64,
@@ -321,8 +380,23 @@ pub(in crate::server::daemon) fn dispatch_generate(
     // out-of-range wire value (e.g. i32::MAX + 1 → i32::MIN), which would then
     // bypass the object-ID conflict check below against a different ID than the
     // caller intended. Reject out-of-range IDs with INVALID_PARAMS instead.
+    let target_kind = match kind {
+        "page" => Some(al_symbols::ObjectKind::Page),
+        "report" => Some(al_symbols::ObjectKind::Report),
+        "test" => Some(al_symbols::ObjectKind::Codeunit),
+        _ => None,
+    };
+    let project_root = super::super::project_root_with_wait(workspace)
+        .ok()
+        .flatten();
+    let mut warnings = Vec::new();
     let object_id = match params.get("id") {
-        None => 50100,
+        None => default_object_id(
+            workspace,
+            project_root.as_deref(),
+            target_kind,
+            &mut warnings,
+        ),
         Some(_) => match extract_i32(params, "id") {
             Some(n) => n,
             None => return invalid_params(id),
@@ -347,6 +421,12 @@ pub(in crate::server::daemon) fn dispatch_generate(
             ),
         );
     }
+    if let Some(warning) = project_root
+        .as_deref()
+        .and_then(|root| out_of_range_warning(root, object_id))
+    {
+        warnings.push(warning);
+    }
     let table_name = params.get("table").and_then(|v| v.as_str()).unwrap_or("");
 
     // Object-ID conflict check. The default of 50100 makes it
@@ -355,12 +435,6 @@ pub(in crate::server::daemon) fn dispatch_generate(
     // ID surfaces at generate time instead of at compile time. The check
     // is scoped to the same object kind — a Page 50100 and Table 50100 can
     // legitimately coexist in BC's ID space.
-    let target_kind = match kind {
-        "page" => Some(al_symbols::ObjectKind::Page),
-        "report" => Some(al_symbols::ObjectKind::Report),
-        "test" => Some(al_symbols::ObjectKind::Codeunit),
-        _ => None,
-    };
     if let Some(target_kind) = target_kind {
         let collisions = workspace.symbols.get_by_id(target_kind, object_id);
         if let Some(existing) = collisions.first() {
@@ -428,7 +502,10 @@ pub(in crate::server::daemon) fn dispatch_generate(
             let code = al_analysis::generators::generate_page(&config);
             Response {
                 id,
-                result: Some(serde_json::json!({ "code": code, "kind": "page" })),
+                result: Some(with_warnings(
+                    serde_json::json!({ "code": code, "kind": "page" }),
+                    &warnings,
+                )),
                 error: None,
                 ..Default::default()
             }
@@ -454,7 +531,10 @@ pub(in crate::server::daemon) fn dispatch_generate(
             let code = al_analysis::generators::generate_report(&config);
             Response {
                 id,
-                result: Some(serde_json::json!({ "code": code, "kind": "report" })),
+                result: Some(with_warnings(
+                    serde_json::json!({ "code": code, "kind": "report" }),
+                    &warnings,
+                )),
                 error: None,
                 ..Default::default()
             }
@@ -507,7 +587,10 @@ pub(in crate::server::daemon) fn dispatch_generate(
             let code = al_analysis::generators::generate_test(&config);
             Response {
                 id,
-                result: Some(serde_json::json!({ "code": code, "kind": "test" })),
+                result: Some(with_warnings(
+                    serde_json::json!({ "code": code, "kind": "test" }),
+                    &warnings,
+                )),
                 error: None,
                 ..Default::default()
             }
@@ -779,6 +862,72 @@ mod tests {
             err.message.contains("50100") && err.message.contains("Default Page"),
             "default id 50100 must be used for the conflict check: {}",
             err.message
+        );
+    }
+
+    /// A project whose idRanges start at 60000, with page 60000 taken and a
+    /// package Customer table to build pages on.
+    fn project_in_the_60000_range() -> (tempfile::TempDir, Workspace) {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("app.json"),
+            r#"{"id":"11111111-2222-3333-4444-555555555555","name":"Ranged","publisher":"Test","version":"1.0.0.0","idRanges":[{"from":60000,"to":60049}]}"#,
+        )
+        .unwrap();
+        let ws = ws_rooted_at(root.path());
+        ws.file_index.add_file(
+            root.path().join("Taken.Page.al"),
+            "page 60000 Taken\n{\n}\n".to_string(),
+        );
+        ws.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Table,
+            id: 18,
+            name: "Customer".to_string(),
+            package: "Base Application".to_string(),
+            fields: vec![al_symbols::FieldSymbol {
+                id: 1,
+                name: "No.".to_string(),
+                type_name: "Code[20]".to_string(),
+                properties: Vec::new(),
+            }],
+            ..Default::default()
+        }]);
+        (root, ws)
+    }
+
+    /// Without an `id`, the page takes the first free ID in the project's own
+    /// range, not a hard-coded 50100 the compiler would reject.
+    #[test]
+    fn dispatch_generate_takes_the_next_free_id_in_the_project_range() {
+        let (_root, ws) = project_in_the_60000_range();
+
+        let resp = dispatch_generate(
+            &ws,
+            46,
+            &serde_json::json!({ "kind": "page", "name": "Demo", "table": "Customer" }),
+        );
+
+        let result = resp.result.unwrap_or_else(|| panic!("{:?}", resp.error));
+        let code = result["code"].as_str().unwrap();
+        assert!(code.contains("page 60001"), "{code}");
+        assert!(result.get("warnings").is_none(), "{result}");
+    }
+
+    #[test]
+    fn dispatch_generate_warns_on_an_id_outside_the_project_range() {
+        let (_root, ws) = project_in_the_60000_range();
+
+        let resp = dispatch_generate(
+            &ws,
+            47,
+            &serde_json::json!({ "kind": "page", "id": 50100, "name": "Demo", "table": "Customer" }),
+        );
+
+        let result = resp.result.unwrap_or_else(|| panic!("{:?}", resp.error));
+        let warning = result["warnings"][0].as_str().unwrap_or_default();
+        assert!(
+            warning.contains("outside the idRanges") && warning.contains("60000-60049"),
+            "{result}"
         );
     }
 
