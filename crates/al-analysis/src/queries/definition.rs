@@ -333,7 +333,7 @@ fn type_reference_subtype_keyword(node: tree_sitter::Node, source: &[u8]) -> Opt
     Some(kw)
 }
 
-fn find_same_file_procedure_decl(
+pub(super) fn find_same_file_procedure_decl(
     tree: &tree_sitter::Tree,
     source: &[u8],
     target: &str,

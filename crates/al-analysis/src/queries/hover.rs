@@ -249,6 +249,27 @@ pub fn hover_native(
         }
     }
 
+    // An unqualified call to another procedure of the same object:
+    // `SetLoyaltyTier(Cust, 'GOLD');`. Only the enclosing procedure was
+    // compared, so the call showed nothing while `definition` found it.
+    if let Some(decl) = super::definition::find_same_file_procedure_decl(&tree, source, clean_name)
+    {
+        let at: Position = al_syntax::ts_range_to_syntax(&decl, source).start.into();
+        if let Some(proc_info) = al_syntax::find_procedure_at(&tree, &text, at.into()) {
+            let mut content = format_procedure_hover(&proc_info);
+            if let Some(doc) =
+                resolution::extract_doc_comment(&text, proc_info.range.start_point.row)
+            {
+                content.push_str("\n\n");
+                content.push_str(&resolution::format_xml_doc(&doc));
+            }
+            return Ok(Some(HoverResult {
+                contents: content,
+                range: Some(node_range),
+            }));
+        }
+    }
+
     if let Some(entry) = workspace.symbols.find_by_name(clean_name) {
         let content = format_symbol_hover(&entry);
         return Ok(Some(HoverResult {
@@ -501,6 +522,29 @@ mod tests {
     }
 
     const PARAM_FIXTURE: &str = "codeunit 50150 \"Test\"\n{\n    procedure Add(A: Integer; B: Integer): Integer\n    begin\n        exit(A + B);\n    end;\n}\n";
+
+    /// `definition` found an unqualified call to a sibling procedure, hover
+    /// showed nothing.
+    #[test]
+    fn hover_on_an_unqualified_call_to_a_sibling_procedure_shows_its_signature() {
+        let ws = Workspace::new();
+        let uri = open_doc(
+            &ws,
+            "codeunit 50101 \"Loyalty Mgt\"\n{\n    procedure SetLoyaltyTier(Tier: Code[10])\n    begin\n    end;\n\n    procedure Run()\n    begin\n        SetLoyaltyTier('GOLD');\n    end;\n}\n",
+        );
+        // Line 8 is `        SetLoyaltyTier('GOLD');`.
+        let r = hover(
+            &ws,
+            &uri,
+            Position {
+                line: 8,
+                character: 12,
+            },
+        )
+        .expect("hover on a sibling call");
+        assert!(r.contents.contains("SetLoyaltyTier"), "{}", r.contents);
+        assert!(r.contents.contains("Tier: Code[10]"), "{}", r.contents);
+    }
 
     #[test]
     fn hover_on_parameter_name_returns_parameter_info() {
