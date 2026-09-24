@@ -192,6 +192,17 @@ fn parse_external_symbols(package_paths: &[PathBuf]) -> Result<ExternalSymbols, 
                         .or_insert_with(|| f.type_name.clone());
                 }
             }
+            // A dependency's table extension adds its fields to the table it
+            // extends, and this app may read and write them too.
+            if obj.kind == ObjectKind::TableExtension {
+                if let Some(extended) = obj.extends.as_deref() {
+                    for f in &obj.fields {
+                        ext.field_types
+                            .entry((extended.to_lowercase(), f.name.to_lowercase()))
+                            .or_insert_with(|| f.type_name.clone());
+                    }
+                }
+            }
         }
     }
 

@@ -199,6 +199,39 @@ fn aln2404_unknown_field_on_a_known_record() {
     assert_silent(&clean, "ALN2404");
 }
 
+/// A field a table extension adds belongs to the table it extends. The
+/// verifier only read fields from `table` objects, so every per-tenant
+/// extension that wrote to its own field on a base table failed to build.
+#[test]
+fn aln2404_accepts_a_field_added_by_a_table_extension() {
+    let codes = codes_for(&[
+        CUSTOMER_TABLE,
+        (
+            "Ext.TableExt.al",
+            "tableextension 50102 \"Prop Customer Ext\" extends \"Prop Customer\"\n\
+             {\n\
+             \x20   fields\n\
+             \x20   {\n\
+             \x20       field(50100; \"Loyalty Tier\"; Code[10]) { DataClassification = CustomerContent; }\n\
+             \x20   }\n\
+             }\n",
+        ),
+        (
+            "C.Codeunit.al",
+            "codeunit 50101 C\n\
+             {\n\
+             \x20   procedure P()\n\
+             \x20   var\n\
+             \x20       Customer: Record \"Prop Customer\";\n\
+             \x20   begin\n\
+             \x20       Customer.\"Loyalty Tier\" := '';\n\
+             \x20   end;\n\
+             }\n",
+        ),
+    ]);
+    assert_silent(&codes, "ALN2404");
+}
+
 #[test]
 fn aln2209_unknown_method_on_a_record_and_unknown_local_call() {
     let on_record = codes_for(&[

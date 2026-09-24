@@ -326,17 +326,28 @@ fn verify_provable_body_bindings(
         .collect();
     let mut fields = external.field_types.clone();
     for object in objects {
-        if object.entry.kind == ObjectKind::Table {
-            tables.insert(object.entry.name.to_ascii_lowercase());
-            for field in &object.entry.fields {
-                fields.insert(
-                    (
-                        object.entry.name.to_ascii_lowercase(),
-                        field.name.to_ascii_lowercase(),
-                    ),
-                    field.type_name.clone(),
-                );
+        // A table extension's fields belong to the table it extends, as they
+        // do in `symbol_reference`; reading only `table` objects rejected
+        // every write to a field an extension adds to a base table.
+        let table = match object.entry.kind {
+            ObjectKind::Table => {
+                tables.insert(object.entry.name.to_ascii_lowercase());
+                &object.entry.name
             }
+            ObjectKind::TableExtension => match object.entry.extends.as_deref() {
+                Some(extended) => extended,
+                None => continue,
+            },
+            _ => continue,
+        };
+        for field in &object.entry.fields {
+            fields.insert(
+                (
+                    table.unquote_identifier().to_ascii_lowercase(),
+                    field.name.to_ascii_lowercase(),
+                ),
+                field.type_name.clone(),
+            );
         }
     }
     for object in objects {
