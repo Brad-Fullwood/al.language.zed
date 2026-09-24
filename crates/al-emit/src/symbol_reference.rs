@@ -1306,16 +1306,29 @@ fn permission_object_code(t: &str) -> i32 {
     }
 }
 
-/// Permission flags bitmask: R=1, I=2, M=4, D=8, X=16.
+/// Permission flags bitmask. An uppercase letter is a direct grant, R=1, I=2,
+/// M=4, D=8, X=16; a lowercase one is the indirect grant, the same bit shifted
+/// left by 5 (r=32 ... x=512).
+///
+/// The shift is read off Microsoft's own packages: Base Application 26's
+/// 16,816 permission-set grants use 55 distinct values, none sets a letter
+/// both directly and indirectly, and the common ones decode to the familiar
+/// `RIMD`, `Rimd` (449) and `Rm` (129). Folding case wrote `Rimd` as `RIMD`,
+/// a direct grant the source never gave.
 fn permission_value(perm: &str) -> i32 {
     perm.chars().fold(0, |acc, c| {
-        acc | match c.to_ascii_uppercase() {
+        let direct = match c.to_ascii_uppercase() {
             'R' => 1,
             'I' => 2,
             'M' => 4,
             'D' => 8,
             'X' => 16,
             _ => 0,
+        };
+        acc | if c.is_ascii_lowercase() {
+            direct << 5
+        } else {
+            direct
         }
     })
 }

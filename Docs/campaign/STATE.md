@@ -20,7 +20,6 @@ Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, 
 
 Queued:
 
-- The emitter writes a permission's lowercase (indirect) letters as the direct bits (`permission_value` in `al-emit/src/symbol_reference.rs`). Microsoft's packages carry indirect bits above the direct five (Base Application 25 has 32, 129, 257), so the encoding is probably direct << 5; confirm against an alc build of a permission set with `rimd` before changing it.
 - Persisted symbol and source index on disk (cold start 54 s and 2.9 GB RSS), keyed by app id, version and content hash.
 - Remaining file splits from the slop-splits-2 list: `session.rs`, `xliff.rs`, `calls.rs`, `router.rs`.
 - Rebuild `target/release` before measuring for articles (it predates `publish` and `free-ids`).
