@@ -100,8 +100,30 @@ pub(crate) fn timeline_from_sources(
         );
     }
 
+    // Package objects. The workspace's own objects are scanned from source
+    // above; their symbol-index copies would list them twice.
     let symbols = workspace.symbols.all_entries();
-    for sym in symbols.iter().filter(|s| !s.methods.is_empty()) {
+    let caller_count = |name: &str| {
+        call_counts
+            .as_ref()
+            .and_then(|counts| counts.get(&name.to_ascii_lowercase()).copied())
+            .unwrap_or(0)
+    };
+    for sym in symbols.iter().filter(|s| {
+        !s.synthetic && !al_symbols::source_availability::is_workspace_package(&s.package)
+    }) {
+        // Objects and fields say it with properties. Only procedures were
+        // read, so Base Application's 62 obsolete tables and 125 obsolete
+        // fields never appeared.
+        if let Some(entry) = property_entry(&sym.properties, &sym.name, &sym.name, "object") {
+            results.push(entry);
+        }
+        for field in &sym.fields {
+            if let Some(entry) = property_entry(&field.properties, &sym.name, &field.name, "field")
+            {
+                results.push(entry);
+            }
+        }
         for method in &sym.methods {
             for attr in &method.attributes {
                 if attr.name.eq_ignore_ascii_case("Obsolete") {
@@ -124,7 +146,8 @@ pub(crate) fn timeline_from_sources(
                         tag,
                         file: None,
                         line: None,
-                        caller_count: 0,
+                        // By name, as for the workspace's own procedures.
+                        caller_count: caller_count(&method.name),
                     });
                 }
             }
@@ -335,6 +358,35 @@ fn property_value_text(node: tree_sitter::Node, source: &[u8]) -> Option<String>
         return Some(text[1..text.len() - 1].replace("''", "'"));
     }
     Some(text.to_string())
+}
+
+/// A package object's or field's obsolescence from its `ObsoleteState`,
+/// `ObsoleteReason` and `ObsoleteTag` properties; `None` when it is not
+/// obsolete.
+fn property_entry(
+    properties: &[al_symbols::PropertyValue],
+    object: &str,
+    symbol: &str,
+    kind: &str,
+) -> Option<ObsoleteEntry> {
+    let property = |name: &str| {
+        properties
+            .iter()
+            .find(|property| property.name.eq_ignore_ascii_case(name))
+            .map(|property| property.value.trim().to_string())
+    };
+    let state = parse_obsolete_state(&property("ObsoleteState")?)?;
+    Some(ObsoleteEntry {
+        object: object.to_string(),
+        symbol: symbol.to_string(),
+        kind: kind.to_string(),
+        state,
+        reason: property("ObsoleteReason"),
+        tag: property("ObsoleteTag"),
+        file: None,
+        line: None,
+        caller_count: 0,
+    })
 }
 
 /// The `ObsoleteState` values Microsoft Learn documents. `No` is the default
@@ -640,6 +692,52 @@ mod tests {
     }
 
     /// `No` is the default, so it must not produce an entry.
+    /// Package objects and fields mark obsolescence with properties, and a
+    /// package procedure's callers are counted like the workspace's own.
+    #[test]
+    fn package_objects_and_fields_with_obsolete_state_are_listed() {
+        let workspace = Workspace::new();
+        let property = |name: &str, value: &str| al_symbols::PropertyValue {
+            name: name.to_string(),
+            value: value.to_string(),
+        };
+        workspace.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Table,
+            id: 5050,
+            name: "Old Setup".to_string(),
+            package: "Base Application".to_string(),
+            properties: vec![
+                property("ObsoleteState", "Removed"),
+                property("ObsoleteTag", "22.0"),
+            ],
+            fields: vec![al_symbols::FieldSymbol {
+                id: 2,
+                name: "Home Page".to_string(),
+                type_name: "Text[80]".to_string(),
+                properties: vec![
+                    property("ObsoleteState", "Pending"),
+                    property("ObsoleteReason", "Field length will be increased to 255."),
+                ],
+            }],
+            ..Default::default()
+        }]);
+
+        let entries = obsolescence_timeline(&workspace).unwrap();
+
+        let object = entries
+            .iter()
+            .find(|e| e.kind == "object")
+            .expect("object row");
+        assert_eq!(object.state, ObsoleteState::Removed);
+        assert_eq!(object.tag.as_deref(), Some("22.0"));
+        let field = entries
+            .iter()
+            .find(|e| e.kind == "field")
+            .expect("field row");
+        assert_eq!(field.symbol, "Home Page");
+        assert_eq!(field.state, ObsoleteState::Pending);
+    }
+
     #[test]
     fn obsolete_state_no_is_not_obsolete() {
         let ws = workspace_with(vec![(
