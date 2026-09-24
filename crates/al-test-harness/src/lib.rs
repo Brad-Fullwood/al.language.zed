@@ -16,7 +16,7 @@
 //! Nothing in this manifest depends on `al-lsp` or `al-explorer`, so cargo
 //! will not rebuild them for a plain `cargo test -p al-test-harness`: the
 //! suite measures whichever binaries are sitting in `target/`. Build the
-//! workspace first, as the `Makefile` targets do. [`find_binary`] refuses a
+//! workspace first, as the `Makefile` targets do. `find_binary` refuses a
 //! binary older than the crate sources rather than reporting a result for the
 //! previous build.
 //!
@@ -1213,8 +1213,8 @@ async fn send_message(
 
 /// Read JSON-RPC messages from the transport and dispatch them.
 ///
-/// Generic over the reader type so both stdio (BufReader<ChildStdout>) and
-/// socket (BufReader<OwnedReadHalf>) use the same code with zero dynamic dispatch.
+/// Generic over the reader type so both stdio (`BufReader<ChildStdout>`) and
+/// socket (`BufReader<OwnedReadHalf>`) use the same code with zero dynamic dispatch.
 ///
 /// Exposed as `pub` so `transport.rs` tests can drive it directly without a
 /// copy-paste duplicate.

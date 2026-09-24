@@ -102,7 +102,7 @@ impl TestRunnerClient {
         })
     }
 
-    /// Run all [Test] procedures in the specified codeunit.
+    /// Run all `[Test]` procedures in the specified codeunit.
     ///
     /// Calls `POST /dev/tests/{codeunit}/run`.
     /// Returns results per test method (pass/fail/skip).

@@ -274,7 +274,7 @@ fn dispatch_stub_with_context(
 /// implements natively — the single source of truth shared with the al-test
 /// router: bare global calls to any *other* name have no local implementation
 /// and must route to live BC. Every name listed here has a matching arm in
-/// [`dispatch_call_scoped`] (or the niladic identifier fallback in
+/// `dispatch_call_scoped` (or the niladic identifier fallback in
 /// `eval_expr`); a unit test pins the agreement.
 pub fn supports_global_builtin(name: &str) -> bool {
     matches!(

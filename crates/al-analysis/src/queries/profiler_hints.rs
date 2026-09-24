@@ -179,7 +179,7 @@ fn aggregate_total_time_ms(
 /// Parse a `.alcpuprofile` JSON document into a list of hotspot nodes.
 ///
 /// Self time is the sum of each node's sampled `timeDeltas` (see
-/// [`aggregate_self_time_us`]); profiles lacking `samples`/`timeDeltas` fall
+/// `aggregate_self_time_us`); profiles lacking `samples`/`timeDeltas` fall
 /// back to a 1 ms-per-hit estimate. Nodes with no self time and no hits are
 /// skipped, as are internal nodes (`(root)`, `(idle)`, `(garbage collector)`,
 /// `(program)`).

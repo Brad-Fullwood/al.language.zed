@@ -51,7 +51,7 @@ pub enum ProjectTemplate {
 }
 
 /// A resolved user-defined template: its name, the directory it lives in, and
-/// its parsed `template.json` descriptor. Produced by [`resolve_custom_template`]
+/// its parsed `template.json` descriptor. Produced by `resolve_custom_template`
 /// (and by [`ProjectTemplate::from_str`] when a name is not a built-in).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CustomTemplate {

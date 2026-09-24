@@ -2,7 +2,7 @@
 //!
 //! Produces a `serde_json::Value` matching what `alc` writes: object-type
 //! groupings, `TypeDefinition` objects, generated method `Id`s (via the cracked
-//! [`super::method_id`]), property/attribute value normalisation, etc. Verified
+//! [`super::method_id()`]), property/attribute value normalisation, etc. Verified
 //! by differential testing against the local `alc` (see the project's emit
 //! example + the spike doc).
 

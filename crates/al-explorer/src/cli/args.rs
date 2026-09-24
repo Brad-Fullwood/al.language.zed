@@ -155,7 +155,7 @@ Examples:
     Events { name: String },
     /// Find event subscribers matching a name
     Subscribers { event: String },
-    /// Resolve the publisher behind the [EventSubscriber] at FILE:LINE
+    /// Resolve the publisher behind the EventSubscriber attribute at FILE:LINE
     EventSource {
         /// File containing the subscriber
         #[arg(long)]
@@ -199,7 +199,7 @@ Examples:
         /// Project directory (default: current dir)
         #[arg(short, long)]
         project: Option<String>,
-        /// Output .app path (default: <project>/output/<publisher>_<name>_<version>.app)
+        /// Output .app path (default: output/PUBLISHER_NAME_VERSION.app in the project)
         #[arg(short, long)]
         out: Option<String>,
         /// Add an authoritative Microsoft AL compiler (alc) compatibility check
@@ -805,7 +805,7 @@ Examples:
         #[arg(long)]
         dry_run: bool,
     },
-    /// Rename .al files to match <Type><Id>.<Name>.al convention
+    /// Rename .al files to the TypeId.Name.al convention (Codeunit50100.MyCodeunit.al)
     #[command(name = "organize-files")]
     OrganizeFiles {
         /// Preview renames without applying

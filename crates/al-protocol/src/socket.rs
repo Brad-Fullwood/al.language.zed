@@ -17,7 +17,7 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
 /// The project path is canonicalized before hashing so that symlinks and
 /// relative paths resolve to the same endpoint. On Unix the result is
 /// `$XDG_RUNTIME_DIR/al-lsp/<hash>.sock` (with the platform fallbacks described
-/// by [`runtime_dir`]); on Windows it is a named-pipe path of the form
+/// by `runtime_dir`); on Windows it is a named-pipe path of the form
 /// `\\.\pipe\al-lsp-<user-scope-hash>-<project-hash>`.
 ///
 /// If `XDG_RUNTIME_DIR` is unset, falls back (in order) to `/run/user/<uid>`

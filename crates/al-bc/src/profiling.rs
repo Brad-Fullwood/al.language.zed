@@ -336,7 +336,7 @@ fn aggregate_total_time_ms(
 /// Each node has `{ "id": N, "callFrame": { "functionName": ..., "url": ... }, "hitCount": N, "children": [...] }`.
 ///
 /// Self time is computed by aggregating `timeDeltas` per node (see
-/// [`aggregate_self_time_us`]); profiles that omit `samples`/`timeDeltas` fall
+/// `aggregate_self_time_us`); profiles that omit `samples`/`timeDeltas` fall
 /// back to the legacy 1 ms-per-hit approximation. `hit_count` is always retained.
 pub fn analyze_profile(
     profile_data: &[u8],

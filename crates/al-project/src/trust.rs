@@ -74,7 +74,7 @@ const ONE_LINE_LIMIT: usize = 120;
 /// Repository text made safe to put in a message a person or an agent reads.
 ///
 /// Control characters become their escaped spelling, so nothing the repository
-/// wrote can start a line, and the result is capped at [`ONE_LINE_LIMIT`]
+/// wrote can start a line, and the result is capped at `ONE_LINE_LIMIT`
 /// characters with an ellipsis. Every message that quotes a settings value, a
 /// server a launch file names, or a name a dependency chose goes through this.
 #[must_use]

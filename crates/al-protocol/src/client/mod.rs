@@ -677,8 +677,8 @@ impl DaemonClient {
     /// Send a JSON-RPC request and receive the response.
     ///
     /// While the daemon reports "Workspace is initializing, try again",
-    /// retries every [`Self::init_retry_delay`] up to a total of
-    /// [`Self::init_wait_total`] — cold daemon startup on a real project
+    /// retries every `init_retry_delay` up to a total of
+    /// `init_wait_total` — cold daemon startup on a real project
     /// takes seconds, and the first command after boot should wait for it
     /// rather than fail. Each retry sends a new request (new ID) and
     /// validates that the response ID matches.

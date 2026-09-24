@@ -42,7 +42,7 @@ impl LaunchConfigError {
 pub struct BcServerConfig {
     pub name: String,
     pub environment_type: EnvironmentType,
-    /// On-prem server URL (e.g., "https://erp.example.com")
+    /// On-prem server URL (e.g., `https://erp.example.com`)
     pub server: Option<String>,
     /// On-prem server instance name (e.g., "BC")
     pub server_instance: Option<String>,

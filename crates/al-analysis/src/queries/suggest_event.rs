@@ -148,7 +148,7 @@ pub struct SuggestEventResult {
     pub max_depth: usize,
     /// Procedures on the trace whose calls are not known, because their
     /// source is not loaded (package code): the events they raise are not
-    /// followed. The first [`MAX_LISTED_WITHOUT_SOURCE`], sorted.
+    /// followed. The first 20, sorted.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub without_source: Vec<String>,
     /// How many such procedures there were in all.

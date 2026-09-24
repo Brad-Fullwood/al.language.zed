@@ -86,6 +86,12 @@ jobs:
       - name: Formatting check
         run: cargo fmt --all -- --check
 
+      - name: Rustdoc (broken and private intra-doc links)
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --exclude zed-al --no-deps
+
       - name: Benchmark harness contract tests
         if: matrix.os == 'ubuntu-latest'
         run: python3 -m unittest discover -s benchmarks/scripts -p 'test_*_bench.py'

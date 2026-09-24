@@ -6,7 +6,7 @@
 //! at publish). So a `.app` can be assembled natively; the one non-trivial file
 //! is `SymbolReference.json`, whose method `Id`s are a generated hash of the
 //! method signature. This module reproduces that hash exactly (see
-//! [`method_id`]); the package writer and full symbol emitter build on it.
+//! [`method_id()`]); the package writer and full symbol emitter build on it.
 //!
 //! Reverse-engineered against alc 17.0.34.
 

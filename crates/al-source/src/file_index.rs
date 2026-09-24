@@ -476,7 +476,7 @@ impl FileIndex {
 
     /// Incrementally scan a directory tree for changed `.al` files.
     ///
-    /// Compared to [`scan`], this method:
+    /// Compared to [`Self::scan`], this method:
     /// - Skips files whose mtime and size have not changed since the last scan.
     /// - Re-parses and re-indexes only changed or new files.
     /// - Removes files that were deleted from disk.

@@ -10,7 +10,7 @@ use crate::dap::{DapError, Result};
 /// For cloud sessions the tenant and environment name are percent-encoded so
 /// values containing special characters (spaces, ampersands, slashes) produce
 /// valid URLs — matching the encoding already applied in
-/// [`bc_debug::BcDebugConfig::base_url`] and `debug_hub_url`.
+/// `BcDebugConfig::base_url` and `debug_hub_url`.
 pub fn build_debug_browser_url(
     config: &BcDebugConfig,
     conn_id: &str,

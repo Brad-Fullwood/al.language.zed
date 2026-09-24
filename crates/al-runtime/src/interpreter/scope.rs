@@ -19,7 +19,7 @@ pub struct CallFrame {
     pub object: String,
     /// Locally-bound variables (parameters + `var` section).
     pub locals: HashMap<String, Value>,
-    /// Declared capacities for Text[N]/Code[N] variables. Runtime string
+    /// Declared capacities for `Text[N]`/`Code[N]` variables. Runtime string
     /// values intentionally remain plain strings; MaxStrLen consults this
     /// parallel type metadata through the scope stack.
     pub declared_text_lengths: HashMap<String, usize>,

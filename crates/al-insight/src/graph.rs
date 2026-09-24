@@ -136,7 +136,7 @@ pub enum NodeKey {
 /// crates from building on a transient internal layout.
 pub struct InsightGraph {
     pub graph: DiGraph<InsightNode, InsightEdge>,
-    /// Lookup table: NodeKey -> Vec<NodeIndex>.
+    /// Lookup table: `NodeKey` -> `Vec<NodeIndex>`.
     ///
     /// Multiple packages can define objects with the same (kind, name), so each
     /// key maps to a list of node indices rather than a single one.  This avoids

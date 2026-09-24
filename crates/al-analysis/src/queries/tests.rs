@@ -1,6 +1,6 @@
 //! Test discovery query — `al tests`.
 //!
-//! Uses tree-sitter static analysis to find [Test] codeunits and [Test] procedures
+//! Uses tree-sitter static analysis to find `[Test]` codeunits and `[Test]` procedures
 //! in AL source files. No runtime connection to BC required.
 
 use std::collections::HashSet;
@@ -60,7 +60,7 @@ pub struct TestCodeunit {
     pub test_cleanups: Vec<TestProcedure>,
 }
 
-/// Discover all [Test] codeunits and procedures in workspace .al files.
+/// Discover all `[Test]` codeunits and procedures in workspace .al files.
 pub fn discover_tests(workspace: &Workspace) -> Result<Vec<TestCodeunit>, TestQueryError> {
     let mut results = Vec::new();
 
