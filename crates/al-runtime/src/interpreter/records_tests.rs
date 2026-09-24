@@ -2573,3 +2573,87 @@ fn modifyall_sets_the_field_on_filtered_rows_only() {
     let refused = error_message(run(&files, "Point Reset", "ModifyKey", vec![]));
     assert!(refused.contains("part of the primary key"), "{refused}");
 }
+
+const CHAIN_PROBE: &str = r#"codeunit 50190 Chain
+{
+    procedure SplitCount(): Integer
+    var
+        S: Text;
+    begin
+        S := 'a,b';
+        exit(S.Split(',').Count());
+    end;
+
+    procedure TrimThenUpper(): Text
+    var
+        S: Text;
+    begin
+        S := ' a,b ';
+        exit(S.Trim().ToUpper());
+    end;
+
+    procedure FormatThenPad(): Text
+    begin
+        exit(Format(12).PadLeft(4, '0') + '|' + 'ab'.PadRight(3) + '|');
+    end;
+
+    procedure FieldThenUpper(): Text
+    var
+        Item: Record Item;
+    begin
+        Item."No." := 'X1';
+        Item.Description := 'hello';
+        exit(Item.Description.ToUpper());
+    end;
+
+    procedure SplitElementTrimmed(): Text
+    var
+        S: Text;
+        Parts: List of [Text];
+    begin
+        S := 'a, b ,c';
+        Parts := S.Split(',');
+        exit(Parts.Get(2).Trim() + S.Remove(2, 1).Split(' ').Get(1));
+    end;
+
+    procedure ElementCharacter(): Text
+    var
+        S: Text;
+    begin
+        S := 'ab,cd';
+        exit(Format(S.Split(',').Get(2)[2]));
+    end;
+
+    procedure UnsupportedStep(): Text
+    var
+        S: Text;
+    begin
+        exit(S.Split(',').Reverse());
+    end;
+}
+"#;
+
+/// Only the last call of a chain ran, on the first receiver: `S.Trim().ToUpper()`
+/// answered ' A,B ' and `S.Split(',').Count()` failed to find an object 'S'.
+#[test]
+fn chained_calls_apply_every_step_in_order() {
+    let chain = |proc: &str| {
+        run(
+            &[("/ws/Chain.al", CHAIN_PROBE), ("/ws/Item.al", ITEM_TABLE)],
+            "Chain",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(ok(chain("SplitCount")), Value::Integer(2));
+    assert_eq!(ok(chain("TrimThenUpper")), Value::Text("A,B".into()));
+    assert_eq!(ok(chain("FormatThenPad")), Value::Text("0012|ab |".into()));
+    assert_eq!(ok(chain("FieldThenUpper")), Value::Text("HELLO".into()));
+    assert_eq!(ok(chain("SplitElementTrimmed")), Value::Text("ba".into()));
+    assert_eq!(ok(chain("ElementCharacter")), Value::Text("d".into()));
+    let unsupported = error_message(chain("UnsupportedStep"));
+    assert!(
+        unsupported.contains("List.Reverse in a chained call is not supported"),
+        "{unsupported}"
+    );
+}

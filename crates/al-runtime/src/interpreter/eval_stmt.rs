@@ -34,6 +34,7 @@ use al_syntax::IdentifierText;
 use tree_sitter::Node;
 
 use super::error_info;
+use crate::interpreter::chain;
 use crate::interpreter::dispatch::{dispatch_call_scoped, DispatchCtx, MAX_AST_DEPTH};
 use crate::interpreter::eval_expr::eval_expr;
 use crate::interpreter::records;
@@ -797,7 +798,32 @@ pub(crate) fn eval_call(
     //   - `member_access . identifier ( args )` → receiver.proc
     //
     // We handle both by inspecting child kinds.
+    if let Some(result) = chain::eval_chained_call(node, source, stack, ctx) {
+        return result;
+    }
     let (receiver, proc_name, args_node) = extract_call_parts(node, source);
+    eval_call_parts(
+        receiver.as_deref(),
+        &proc_name,
+        args_node,
+        source,
+        stack,
+        ctx,
+    )
+}
+
+/// Run `receiver.proc_name(args)` (or the bare `proc_name(args)`), routing a
+/// method call by the receiver variable's value kind.
+pub(crate) fn eval_call_parts(
+    receiver: Option<&str>,
+    proc_name: &str,
+    args_node: Option<Node<'_>>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    let receiver = receiver.map(str::to_string);
+    let proc_name = proc_name.to_string();
     // Argument evaluation clears the statement marker; builtins whose failure
     // differs by position (a statement `Evaluate(...)` raises) need it back.
     let statement = ctx.stmt_position;
@@ -1089,7 +1115,7 @@ fn extract_call_parts<'a>(
     }
 }
 
-fn find_argument_list(node: Node<'_>) -> Option<Node<'_>> {
+pub(crate) fn find_argument_list(node: Node<'_>) -> Option<Node<'_>> {
     // First try field "call" (as defined in the grammar for call_suffix).
     if let Some(n) = node.child_by_field_name("call") {
         return Some(n);

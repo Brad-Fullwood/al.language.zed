@@ -1,5 +1,6 @@
 //! Tree-walking AL interpreter with no .NET runtime dependency.
 
+mod chain;
 pub mod coverage;
 pub mod dispatch;
 pub mod eval_expr;

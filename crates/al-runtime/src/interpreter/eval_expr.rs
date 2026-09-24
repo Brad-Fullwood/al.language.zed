@@ -9,6 +9,7 @@ use al_syntax::IdentifierText;
 use tree_sitter::Node;
 
 use super::error_info;
+use crate::interpreter::chain;
 use crate::interpreter::dispatch::DispatchCtx;
 use crate::interpreter::indexing;
 use crate::interpreter::records;
@@ -530,6 +531,15 @@ fn eval_postfix(
 
     if let Some((name, suffix)) = indexing::indexed_variable(node, source) {
         return indexing::read_element(&name, suffix, source, stack, ctx);
+    }
+    if let Some(result) = chain::eval_chained_value(node, source, stack, ctx) {
+        return result;
+    }
+    if node.named_child_count() > 1 {
+        return Eval::Error(error_info(format!(
+            "'{}' is not an expression the local runtime can evaluate",
+            utf8_text(node, source).unwrap_or_default().trim()
+        )));
     }
 
     // Plain wrapper — evaluate the primary expression.

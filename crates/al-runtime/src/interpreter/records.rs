@@ -1675,6 +1675,9 @@ pub fn supports_text_method(method: &str) -> bool {
             | "tolower"
             | "toupper"
             | "substring"
+            | "padleft"
+            | "padright"
+            | "remove"
     )
 }
 
@@ -1830,15 +1833,71 @@ pub(crate) fn dispatch_text_method(
                 }
             }
         }
+        // `PadLeft(count[, char])`: pad to `count` characters; a longer
+        // text is returned unchanged.
+        "padleft" | "padright" => {
+            let (count, pad) = match args.as_slice() {
+                [Value::Integer(count)] => (*count, ' '),
+                [Value::Integer(count), pad] => match text_arg(pad).as_deref().map(str::chars) {
+                    Some(mut chars) => match (chars.next(), chars.next()) {
+                        (Some(pad), None) => (*count, pad),
+                        _ => {
+                            return eval_error(format!(
+                                "Text.{method}: the pad must be one character"
+                            ))
+                        }
+                    },
+                    None => return eval_error(format!("Text.{method} expects (Integer[, Char])")),
+                },
+                _ => return eval_error(format!("Text.{method} expects (Integer[, Char])")),
+            };
+            let missing = usize::try_from(count)
+                .unwrap_or(0)
+                .saturating_sub(s.chars().count());
+            let padding: String = std::iter::repeat_n(pad, missing).collect();
+            Eval::Normal(Value::Text(if lower == "padleft" {
+                padding + &s
+            } else {
+                s + &padding
+            }))
+        }
+        // `Remove(start[, count])`: 1-based, to the end without `count`.
+        "remove" => {
+            let chars: Vec<char> = s.chars().collect();
+            let (start, count) = match args.as_slice() {
+                [Value::Integer(start)] => (*start, None),
+                [Value::Integer(start), Value::Integer(count)] => (*start, Some(*count)),
+                _ => return eval_error("Text.Remove expects (Integer[, Integer])"),
+            };
+            if start < 1 || start as usize > chars.len() {
+                return eval_error(format!(
+                    "Text.Remove: start position {start} is out of range for a {}-character string",
+                    chars.len()
+                ));
+            }
+            let zero = start as usize - 1;
+            let end = match count {
+                None => chars.len(),
+                Some(count) if count >= 0 && zero + count as usize <= chars.len() => {
+                    zero + count as usize
+                }
+                Some(count) => {
+                    return eval_error(format!(
+                        "Text.Remove: {count} characters from position {start} exceed the string length {}",
+                        chars.len()
+                    ))
+                }
+            };
+            Eval::Normal(Value::Text(
+                chars[..zero].iter().chain(&chars[end..]).collect(),
+            ))
+        }
         other => eval_error(format!("unsupported Text method: {other}")),
     }
 }
 
 /// True if `method` is a `Dictionary of [K, V]` method implemented by the
-/// local runtime. `Get` is intentionally absent: its common two-argument
-/// `var`-out form needs by-reference write-back the builtin path does not
-/// have, so Dictionary reads route to live BC (the one-argument returning
-/// form still executes if a body reaches the interpreter).
+/// local runtime.
 pub fn supports_dict_method(method: &str) -> bool {
     matches!(
         method.to_ascii_lowercase().as_str(),

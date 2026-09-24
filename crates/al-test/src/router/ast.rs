@@ -303,6 +303,34 @@ pub(super) fn classify_call(
         return;
     }
 
+    if super::chain::is_chain(primary, &children[1..]) {
+        let head_type = resolver
+            .resolve_type(&receiver, syntax_position(primary, source))
+            .map(|decl| decl.type_name.to_ascii_lowercase());
+        match super::chain::route(primary, &children[1..], head_type.as_deref(), source) {
+            Ok(super::chain::ChainRoute::Local) => {}
+            Ok(super::chain::ChainRoute::Records) => promote(
+                decision,
+                reasons,
+                RoutingDecision::InterpRecord,
+                "calls supported Record methods in a chained call",
+                file,
+                suffix,
+                reachable,
+            ),
+            Err(reason) => promote(
+                decision,
+                reasons,
+                RoutingDecision::LiveBc,
+                &reason,
+                file,
+                suffix,
+                reachable,
+            ),
+        }
+        return;
+    }
+
     if suffix.kind() == "call_suffix" {
         if matches!(
             receiver.to_ascii_lowercase().as_str(),
@@ -421,16 +449,7 @@ pub(super) fn classify_call(
         return;
     }
 
-    let point = primary.start_position();
-    let line = std::str::from_utf8(source)
-        .ok()
-        .and_then(|text| text.lines().nth(point.row))
-        .unwrap_or("");
-    let position = al_syntax::SyntaxPosition {
-        line: point.row as u32,
-        character: al_syntax::byte_col_to_utf16_col(line, point.column),
-    };
-    let Some(decl) = resolver.resolve_type(&receiver, position) else {
+    let Some(decl) = resolver.resolve_type(&receiver, syntax_position(primary, source)) else {
         promote(
             decision,
             reasons,
@@ -584,6 +603,19 @@ pub(super) fn split_type_reference(raw: &str) -> (String, Option<String>) {
         subtype = subtype.trim_end().unquote_identifier().into_owned();
     }
     (kind, (!subtype.is_empty()).then_some(subtype))
+}
+
+/// The resolver position of `node`'s start.
+fn syntax_position(node: tree_sitter::Node<'_>, source: &[u8]) -> al_syntax::SyntaxPosition {
+    let point = node.start_position();
+    let line = std::str::from_utf8(source)
+        .ok()
+        .and_then(|text| text.lines().nth(point.row))
+        .unwrap_or("");
+    al_syntax::SyntaxPosition {
+        line: point.row as u32,
+        character: al_syntax::byte_col_to_utf16_col(line, point.column),
+    }
 }
 
 pub(super) fn promote(

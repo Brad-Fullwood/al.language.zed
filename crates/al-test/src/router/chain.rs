@@ -1,0 +1,215 @@
+//! Routing for chained calls such as `S.Trim().ToUpper()`,
+//! `S.Split(',').Count()` and `Rec.Name.ToUpper()`.
+//!
+//! Each step is checked against the type the previous step produced, not
+//! against the chain's first receiver. A step whose result type cannot be
+//! told routes the test to live BC.
+
+use al_runtime::interpreter::dispatch::supports_global_builtin;
+use al_runtime::interpreter::records::{
+    supports_dict_method, supports_list_method, supports_record_method, supports_text_method,
+};
+use al_syntax::IdentifierText;
+
+/// What a chain step yields, as far as routing needs to know.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Text,
+    List,
+    Dictionary,
+    Record,
+    /// A value with no methods the chain can call (Integer, Boolean, ...).
+    Scalar,
+    /// A value of a type routing cannot tell.
+    Unknown,
+}
+
+/// How a chain routes: it touches records, or it is local without them.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ChainRoute {
+    Local,
+    Records,
+}
+
+/// Methods that exist only on Text and Code, so a compiled call to one
+/// proves its receiver is text even when routing could not type it.
+const TEXT_ONLY_METHODS: &[&str] = &[
+    "trim",
+    "trimstart",
+    "trimend",
+    "toupper",
+    "tolower",
+    "substring",
+    "split",
+    "startswith",
+    "endswith",
+    "padleft",
+    "padright",
+    "replace",
+    "lastindexof",
+];
+
+/// Globals the interpreter implements that return Text.
+const TEXT_BUILTINS: &[&str] = &[
+    "format",
+    "copystr",
+    "delchr",
+    "delstr",
+    "lowercase",
+    "uppercase",
+    "padstr",
+    "selectstr",
+    "incstr",
+    "convertstr",
+    "strsubstno",
+];
+
+/// Whether the postfix children `primary` + `suffixes` form a chain the
+/// interpreter evaluates step by step (mirrors its own test): at least two
+/// suffixes, or a call on a literal, and no `::` step.
+pub(super) fn is_chain(primary: tree_sitter::Node<'_>, suffixes: &[tree_sitter::Node<'_>]) -> bool {
+    let value_receiver = primary
+        .named_child(0)
+        .is_some_and(|inner| !matches!(inner.kind(), "name" | "object_keyword" | "type_keyword"));
+    (suffixes.len() >= 2 || (value_receiver && !suffixes.is_empty()))
+        && suffixes.iter().all(|suffix| {
+            matches!(
+                suffix.kind(),
+                "member_call_suffix" | "call_suffix" | "member_suffix" | "index_suffix"
+            )
+        })
+}
+
+/// Route a chain whose head variable (if any) has the declared type
+/// `head_type` (lowercase keyword, e.g. `text`, `record`). `Err` carries the
+/// reason it must run on live BC.
+pub(super) fn route(
+    primary: tree_sitter::Node<'_>,
+    suffixes: &[tree_sitter::Node<'_>],
+    head_type: Option<&str>,
+    source: &[u8],
+) -> Result<ChainRoute, String> {
+    let head = primary_text(primary, source);
+    let mut records = false;
+    let mut steps = suffixes.iter().peekable();
+    let mut current = match (primary.named_child(0).map(|n| n.kind()), steps.peek()) {
+        (Some("string" | "verbatim_string"), _) => Step::Text,
+        (Some("name"), Some(first)) if first.kind() == "call_suffix" => {
+            steps.next();
+            let lower = head.to_ascii_lowercase();
+            if TEXT_BUILTINS.contains(&lower.as_str()) && supports_global_builtin(&lower) {
+                Step::Text
+            } else {
+                return Err(format!(
+                    "calls a method on the result of '{head}', whose type the router cannot tell"
+                ));
+            }
+        }
+        (Some("name"), _) => match head_type {
+            Some(kind) => declared_step(kind),
+            None => {
+                return Err(format!(
+                    "cannot resolve receiver '{head}' of a chained call; routing conservatively"
+                ))
+            }
+        },
+        _ => Step::Unknown,
+    };
+    for suffix in steps {
+        match suffix.kind() {
+            "member_call_suffix" => {
+                let method = member_name(*suffix, source);
+                let lower = method.to_ascii_lowercase();
+                let receiver = match current {
+                    Step::Unknown if TEXT_ONLY_METHODS.contains(&lower.as_str()) => Step::Text,
+                    other => other,
+                };
+                let supported = match receiver {
+                    Step::Text => supports_text_method(&lower),
+                    Step::List => supports_list_method(&lower),
+                    Step::Dictionary => supports_dict_method(&lower),
+                    Step::Record => supports_record_method(&lower),
+                    Step::Scalar | Step::Unknown => false,
+                };
+                if !supported {
+                    return Err(format!(
+                        "calls {method} in a chain on a {} the local interpreter cannot call it on",
+                        step_name(receiver)
+                    ));
+                }
+                records |= receiver == Step::Record;
+                current = method_result(receiver, &lower);
+            }
+            // A field of a record is a scalar; the next call's method name
+            // tells whether it is text.
+            "member_suffix" if current == Step::Record => current = Step::Unknown,
+            "index_suffix" if matches!(current, Step::Text) => current = Step::Scalar,
+            _ => {
+                return Err(format!(
+                    "uses '{}' in a chain the router cannot type",
+                    suffix.utf8_text(source).unwrap_or_default().trim()
+                ))
+            }
+        }
+    }
+    Ok(if records {
+        ChainRoute::Records
+    } else {
+        ChainRoute::Local
+    })
+}
+
+fn declared_step(type_name: &str) -> Step {
+    match type_name {
+        "text" | "code" => Step::Text,
+        "list" => Step::List,
+        "dictionary" => Step::Dictionary,
+        "record" => Step::Record,
+        _ => Step::Unknown,
+    }
+}
+
+/// The type `receiver.method(...)` returns.
+fn method_result(receiver: Step, method: &str) -> Step {
+    match (receiver, method) {
+        (Step::Text, "split") => Step::List,
+        (Step::Text, "contains" | "startswith" | "endswith" | "indexof" | "lastindexof") => {
+            Step::Scalar
+        }
+        (Step::Text, _) => Step::Text,
+        (Step::List | Step::Dictionary, "count" | "contains" | "containskey" | "indexof") => {
+            Step::Scalar
+        }
+        (Step::Dictionary, "keys" | "values") => Step::List,
+        // Element types are not tracked; a text-only method after this still
+        // types the element.
+        _ => Step::Unknown,
+    }
+}
+
+fn step_name(step: Step) -> &'static str {
+    match step {
+        Step::Text => "Text",
+        Step::List => "List",
+        Step::Dictionary => "Dictionary",
+        Step::Record => "Record",
+        Step::Scalar => "value without methods",
+        Step::Unknown => "value of unknown type",
+    }
+}
+
+fn member_name(suffix: tree_sitter::Node<'_>, source: &[u8]) -> String {
+    suffix
+        .child_by_field_name("member")
+        .and_then(|member| member.utf8_text(source).ok())
+        .map(|text| text.unquote_identifier().into_owned())
+        .unwrap_or_default()
+}
+
+fn primary_text(primary: tree_sitter::Node<'_>, source: &[u8]) -> String {
+    primary
+        .utf8_text(source)
+        .unwrap_or_default()
+        .unquote_identifier()
+        .into_owned()
+}

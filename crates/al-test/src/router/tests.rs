@@ -748,9 +748,10 @@ Subtype = Test;
 procedure UnsupportedTextMethod()
 var
     s: Text;
+    n: Integer;
 begin
     s := 'abc';
-    s := s.PadLeft(10);
+    n := s.IndexOfAny('xb');
 end;
 }"#
         .to_string(),
@@ -775,7 +776,7 @@ end;
         unsupported
             .reasons
             .iter()
-            .any(|reason| reason.message.contains("unsupported Text.PadLeft")),
+            .any(|reason| reason.message.contains("unsupported Text.IndexOfAny")),
         "unexpected reasons: {:?}",
         unsupported.reasons
     );
@@ -948,4 +949,73 @@ fn the_same_reason_in_one_file_is_given_once() {
     }
     assert_eq!(reasons.len(), 1);
     assert_eq!(reasons[0].line, Some(3));
+}
+
+/// Only the last call of a chain was checked, against the first receiver's
+/// type: `S.Split(',').Count()` was read as an unsupported `Text.Count` and
+/// sent the whole codeunit to live BC.
+#[test]
+fn chained_calls_are_typed_step_by_step() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/ChainRouting.Codeunit.al"),
+        r#"codeunit 50180 "Chain Routing"
+{
+Subtype = Test;
+
+[Test]
+procedure LocalChains()
+var
+    s: Text;
+    parts: List of [Text];
+    n: Integer;
+begin
+    n := s.Split(',').Count();
+    s := s.Trim().ToUpper();
+    s := Format(n).PadLeft(4, '0');
+    s := parts.Get(1).Trim();
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/ChainRouting2.Codeunit.al"),
+        r#"codeunit 50181 "Chain Routing 2"
+{
+Subtype = Test;
+
+[Test]
+procedure UntypedChain()
+var
+    parts: List of [Text];
+begin
+    if parts.Get(1).Contains('x') then;
+end;
+}"#
+        .to_string(),
+    );
+    let results = classify_all(&workspace).unwrap();
+    let local = results
+        .iter()
+        .find(|result| result.method_name == "LocalChains")
+        .expect("local chain classification");
+    assert_eq!(
+        local.decision,
+        RoutingDecision::Interp,
+        "chains of supported steps run locally: {:?}",
+        local.reasons
+    );
+    let untyped = results
+        .iter()
+        .find(|result| result.method_name == "UntypedChain")
+        .expect("untyped chain classification");
+    assert_eq!(untyped.decision, RoutingDecision::LiveBc);
+    assert!(
+        untyped
+            .reasons
+            .iter()
+            .any(|reason| reason.message.contains("calls Contains in a chain")),
+        "unexpected reasons: {:?}",
+        untyped.reasons
+    );
 }

@@ -668,6 +668,7 @@ fn has_object_global_declarations(root: tree_sitter::Node<'_>) -> bool {
 }
 
 mod ast;
+mod chain;
 #[cfg(test)]
 mod tests;
 
