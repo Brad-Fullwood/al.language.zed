@@ -592,6 +592,11 @@ target nor a per-tenant one. The project's own `al.codeAnalyzers` never reaches 
 to `validate_with_alc`, and add `--analyzers` to `pack-native`. The article names it as something
 I found while writing.
 
+Fixed a19e89f4: `--validate` reads the project's settings through `trust::evaluate` and passes
+`al.codeAnalyzers` and the compilation settings to alc; `--analyzers` overrides, and an empty value
+runs none. The default `al.codeAnalyzers` is still all four cops, so the medium project without a
+settings file gives the same 29 errors until it sets the list. Re-measure before publishing.
+
 ### Items for the final fact pass
 
 1. The timings were taken with another cargo build occupying the machine (load average about 12

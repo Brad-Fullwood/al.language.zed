@@ -265,7 +265,8 @@ Multi-object open item:
   test assertions. It is public API that returns the alphabetically first branch of a conditional
   `TableRelation`, which is the answer the finding called wrong, and nothing calls it.
 - fix: delete it and its tests, or state at the declaration what it is kept for.
-- status: open
+- status: fixed 2c182d47 — deleted; its eight tests now assert the same shapes through
+  `extract_table_relation_tables`.
 
 ### [GAP] The multi-object open item names nine queries; three of them do not have the problem
 - where: Docs/campaign/findings/r1c-analysis-insight.md:300-305 against
@@ -299,7 +300,8 @@ Multi-object open item:
   a commit reference or an agent's name was edited out of the front of it — and it describes the
   struct as a changelog entry rather than saying what the four fields are.
 - fix: one sentence naming the four sections; the change history belongs in the git log.
-- status: open
+- status: fixed 2c182d47 — one sentence naming coverage, over-broad grants, over-granted rights
+  and parse issues.
 
 ### [SIMPLIFY] `build_reference_counts` is a 364-line function with five nested helpers
 - where: crates/al-analysis/src/queries/code_lens.rs:387-750
@@ -331,7 +333,11 @@ Multi-object open item:
   `verification_uri` straight from the server's JSON).
 - fix: call `ShellExecuteW` on Windows, or quote the URL for `cmd` (`start "" "<url>"`) and refuse
   a URL that is not `https://` with no `"` in it.
-- status: open
+- status: fixed fa979c45 — `al_types::browser::open_in_browser` replaces both copies (al-symbols
+  OAuth and al-dap's web client, which had the same body). Windows runs
+  `rundll32 url.dll,FileProtocolHandler <url>`, and every platform refuses a URL that is not
+  http(s) or that carries whitespace, quotes or control characters. Tests pin the command per
+  platform.
 
 ## Verified fixes
 
