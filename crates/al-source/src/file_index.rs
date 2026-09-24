@@ -502,13 +502,19 @@ impl FileIndex {
             delta.changed.push(path);
         }
 
-        let indexed_paths: Vec<PathBuf> = self.files.iter().map(|e| e.key().clone()).collect();
-        for path in indexed_paths {
-            if !on_disk.contains(&path) {
-                self.remove_file(&path);
-                delta.topology_changed = true;
-                delta.removed.push(path);
-            }
+        // Only a file this index read from disk (it has recorded metadata) and
+        // that is gone now is a deletion. An entry added in memory never had
+        // a file, and one outside `root` was not this scan's to find.
+        let deleted: Vec<PathBuf> = self
+            .file_metadata
+            .iter()
+            .map(|entry| entry.key().clone())
+            .filter(|path| path.starts_with(root) && !on_disk.contains(path))
+            .collect();
+        for path in deleted {
+            self.remove_file(&path);
+            delta.topology_changed = true;
+            delta.removed.push(path);
         }
         Ok(delta)
     }
@@ -1917,6 +1923,23 @@ codeunit 50101 "Second Codeunit"
         let delta = index.incremental_scan(dir.path()).unwrap();
         assert_eq!(delta.removed, vec![path]);
         assert!(delta.topology_changed, "a removed file changes it");
+    }
+
+    /// The daemon runs this scan before every request. An entry added in
+    /// memory has no file to find, and dropping it emptied the workspace a
+    /// caller had just described.
+    #[test]
+    fn incremental_scan_keeps_an_entry_that_never_came_from_disk() {
+        let dir = setup_test_dir();
+        let index = FileIndex::new();
+        index.incremental_scan(dir.path()).unwrap();
+        let in_memory = dir.path().join("InMemory.Codeunit.al");
+        index.add_file(in_memory.clone(), "codeunit 50150 InMemory { }".to_string());
+
+        let delta = index.incremental_scan(dir.path()).unwrap();
+
+        assert!(delta.removed.is_empty(), "{:?}", delta.removed);
+        assert!(index.files.contains_key(&in_memory));
     }
 
     #[test]
