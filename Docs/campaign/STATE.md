@@ -20,7 +20,6 @@ Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, 
 
 Queued:
 
-- Review A: `build_reference_counts` is 364 lines with five nested helpers (`code_lens.rs`). Split into `code_lens/` with the call-site predicates tested directly.
 - Persisted symbol and source index on disk (cold start 54 s and 2.9 GB RSS), keyed by app id, version and content hash.
 - Remaining file splits from the slop-splits-2 list: `session.rs`, `xliff.rs`, `calls.rs`, `router.rs`.
 - Rebuild `target/release` before measuring for articles (it predates `publish` and `free-ids`).

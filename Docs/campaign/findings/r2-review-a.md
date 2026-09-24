@@ -315,7 +315,8 @@ Multi-object open item:
   (93c0f49d) had to be found by reading rather than by a unit test.
 - fix: move the file to `code_lens/` with the three node predicates in their own module and a
   direct test each.
-- status: open
+- status: fixed b67a4302 — `code_lens/references.rs` and `code_lens/call_site.rs`; the predicates have
+  direct tests.
 
 ### [BUG][pre-existing] `open_browser` hands a URL full of `&` to `cmd /c start` on Windows
 - where: crates/al-symbols/src/oauth/redirect.rs:177-180, called from
