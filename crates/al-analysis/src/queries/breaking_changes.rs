@@ -3,6 +3,7 @@
 //! Compare two symbol sets (baseline vs current) to identify breaking changes.
 //! Breaking changes are API surface removals or signature changes.
 
+use al_syntax::IdentifierText;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -740,7 +741,7 @@ fn method_label(method: &MethodSymbol) -> String {
 }
 
 fn normalize_name(value: &str) -> String {
-    value.trim().trim_matches('"').to_ascii_lowercase()
+    value.unquote_identifier().to_ascii_lowercase()
 }
 
 fn normalize_optional_name(value: Option<&str>) -> Option<String> {

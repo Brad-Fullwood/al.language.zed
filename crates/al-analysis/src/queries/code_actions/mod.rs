@@ -4,6 +4,7 @@
 //! The core logic for quick-fix edits lives here; al-lsp wraps these with
 //! the full LSP CodeAction/Diagnostic types.
 
+use al_syntax::IdentifierText;
 use url::Url;
 
 use super::parse_detail_params;
@@ -557,7 +558,7 @@ fn code_actions_enabled(workspace: &Workspace) -> bool {
 /// containing spaces/punctuation or colliding with a keyword; emitting those
 /// unquoted produces source the compiler rejects.
 pub(super) fn quote_al_identifier(name: &str) -> String {
-    let trimmed = name.trim().trim_matches('"');
+    let trimmed = name.unquote_identifier();
     let is_bare = !trimmed.is_empty()
         && trimmed
             .chars()
@@ -566,7 +567,7 @@ pub(super) fn quote_al_identifier(name: &str) -> String {
         && trimmed
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && !al_syntax::language_data::is_keyword(trimmed);
+        && !al_syntax::language_data::is_keyword(&trimmed);
     if is_bare {
         trimmed.to_string()
     } else {

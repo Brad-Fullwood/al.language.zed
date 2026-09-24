@@ -6,6 +6,7 @@
 //! Also provides return type hints for procedure declarations when
 //! `al.inlayhints.returnTypes` is enabled.
 
+use al_syntax::IdentifierText;
 use url::Url;
 
 use crate::queries::{AlInlayHint, AlInlayHintKind, AlInlayHintLabel, Position, Range};
@@ -177,7 +178,7 @@ fn infer_argument_type(
     let expr = expr.trim();
 
     if let Some(idx) = expr.find("::") {
-        let base = expr[..idx].trim().trim_matches('"');
+        let base = expr[..idx].unquote_identifier();
         if !base.is_empty() {
             return Some(InferredType {
                 base: base.to_string(),
@@ -219,8 +220,8 @@ fn infer_argument_type(
             subtype: None,
         });
     }
-    let var_name = expr.trim_matches('"');
-    if let Some(decl) = resolver.resolve_type(var_name, position.into()) {
+    let var_name = expr.unquote_identifier();
+    if let Some(decl) = resolver.resolve_type(&var_name, position.into()) {
         return Some(InferredType {
             base: decl.type_name,
             subtype: decl.type_subtype,
@@ -311,7 +312,7 @@ fn extract_call_info(
             // Invalid UTF-8 (or an empty name after trimming quotes) is not a
             // usable function name — bail out instead of running the whole
             // lookup pipeline with "".
-            let method_name = member.utf8_text(source).ok()?.trim_matches('"');
+            let method_name = member.utf8_text(source).ok()?.unquote_identifier();
             if method_name.is_empty() {
                 return None;
             }
@@ -320,7 +321,7 @@ fn extract_call_info(
         }
         "call_suffix" => {
             let prev = node.prev_sibling()?;
-            let name = prev.utf8_text(source).ok()?.trim_matches('"');
+            let name = prev.utf8_text(source).ok()?.unquote_identifier();
             if name.is_empty() {
                 return None;
             }
@@ -331,7 +332,7 @@ fn extract_call_info(
             for child in node.children(&mut cursor) {
                 let kind = child.kind();
                 if kind == "identifier" || kind == "quoted_identifier" || kind == "name" {
-                    let t = child.utf8_text(source).ok()?.trim_matches('"');
+                    let t = child.utf8_text(source).ok()?.unquote_identifier();
                     if t.is_empty() {
                         return None;
                     }
@@ -349,7 +350,7 @@ fn extract_receiver_before(suffix_node: tree_sitter::Node<'_>, source: &[u8]) ->
         "primary_expression" => Some(
             prev.utf8_text(source)
                 .unwrap_or("")
-                .trim_matches('"')
+                .unquote_identifier()
                 .to_string(),
         ),
         "member_suffix" | "member_call_suffix" => {
@@ -358,7 +359,7 @@ fn extract_receiver_before(suffix_node: tree_sitter::Node<'_>, source: &[u8]) ->
                 member
                     .utf8_text(source)
                     .unwrap_or("")
-                    .trim_matches('"')
+                    .unquote_identifier()
                     .to_string(),
             )
         }

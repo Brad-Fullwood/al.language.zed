@@ -13,6 +13,7 @@
 //! package gating, the explicit `al-explorer native-check` command, and the
 //! `nativeCheck` daemon RPC.
 
+use al_syntax::IdentifierText;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -439,7 +440,7 @@ fn extract_extends(object: Node<'_>, source: &[u8]) -> Option<String> {
                 });
                 return target_node
                     .and_then(|t| t.utf8_text(source).ok())
-                    .map(|t| t.trim().trim_matches('"').to_string());
+                    .map(|t| t.unquote_identifier().into_owned());
             }
         }
         // The clause lives in the object header — procedure code can't contain
@@ -533,7 +534,7 @@ fn member_from_paren(section: Node, source: &[u8]) -> Option<(i64, String)> {
                 if past_semicolon && name.is_none() =>
             {
                 if let Ok(t) = child.utf8_text(source) {
-                    let trimmed = t.trim().trim_matches('"').trim().to_string();
+                    let trimmed = t.unquote_identifier().into_owned();
                     if !trimmed.is_empty() {
                         name = Some(trimmed);
                     }
@@ -554,7 +555,7 @@ fn enum_value_member(node: Node, source: &[u8]) -> Option<(i64, String)> {
     let name = node
         .child_by_field_name("name")
         .and_then(|n| n.utf8_text(source).ok())
-        .map(|t| t.trim().trim_matches('"').to_string())
+        .map(|t| t.unquote_identifier().into_owned())
         .filter(|name| !name.is_empty())?;
     Some((id, name))
 }

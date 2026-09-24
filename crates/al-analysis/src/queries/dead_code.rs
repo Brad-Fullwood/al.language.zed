@@ -4,6 +4,7 @@
 //! and orphaned event subscribers. Returns a list of `UnusedSymbol` entries
 //! with the reason each symbol is considered dead.
 
+use al_syntax::IdentifierText;
 use serde::Serialize;
 
 use al_workspace::Workspace;
@@ -517,7 +518,7 @@ fn collect_declared_event_names(
                     .child_by_field_name("name")
                     .and_then(|n| n.utf8_text(source).ok())
                 {
-                    names.insert(name.trim().trim_matches('"').to_lowercase());
+                    names.insert(name.unquote_identifier().to_lowercase());
                 }
             }
             continue;

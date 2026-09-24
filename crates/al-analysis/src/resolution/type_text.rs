@@ -2,6 +2,7 @@
 //! completion and signature help display.
 
 use super::ResolvedType;
+use al_syntax::IdentifierText;
 
 pub(crate) fn format_type_detail(type_name: &str, subtype: Option<&str>) -> String {
     match subtype {
@@ -47,7 +48,7 @@ pub(super) fn parse_type_expr(value: &str) -> ResolvedType {
         }
     }
     ResolvedType {
-        type_name: trimmed.trim_matches('"').to_string(),
+        type_name: trimmed.unquote_identifier().into_owned(),
         type_subtype: None,
     }
 }

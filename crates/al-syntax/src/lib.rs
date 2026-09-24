@@ -141,6 +141,33 @@ pub fn clean_identifier(text: &str) -> String {
     clean_identifier_text(text).unwrap_or_default()
 }
 
+/// Identifier cleanup for text that did not come straight from a syntax node.
+pub trait IdentifierText {
+    /// Trim whitespace, drop one leading and one trailing `"`, and unescape
+    /// `""` to `"`.
+    ///
+    /// Replaces `trim_matches('"')`, which strips quote *runs*: it left the
+    /// doubled quote inside `"Cust ""Main"" Rec"` and over-stripped
+    /// `"Name"""` to `Name`, so those names never matched the ones al-syntax
+    /// reports. Each end is handled on its own, so text cut off mid-name while
+    /// the user types (`"Sales Hea`) still loses its opening quote. Borrows
+    /// when there is nothing to unescape.
+    fn unquote_identifier(&self) -> std::borrow::Cow<'_, str>;
+}
+
+impl IdentifierText for str {
+    fn unquote_identifier(&self) -> std::borrow::Cow<'_, str> {
+        let text = self.trim();
+        let text = text.strip_prefix('"').unwrap_or(text);
+        let text = text.strip_suffix('"').unwrap_or(text);
+        if text.contains("\"\"") {
+            std::borrow::Cow::Owned(text.replace("\"\"", "\""))
+        } else {
+            std::borrow::Cow::Borrowed(text)
+        }
+    }
+}
+
 pub fn node_text_or(node: tree_sitter::Node, source: &[u8], fallback: &str) -> String {
     node_text_clean(node, source).unwrap_or_else(|| fallback.to_string())
 }
@@ -395,6 +422,36 @@ mod clean_identifier_tests {
         assert_eq!(clean_identifier_text(""), None);
         assert_eq!(clean_identifier_text(r#""""#), None);
         assert_eq!(clean_identifier_text("   "), None);
+    }
+}
+
+#[cfg(test)]
+mod unquote_identifier_tests {
+    use super::IdentifierText;
+
+    #[test]
+    fn strips_one_quote_at_each_end_and_unescapes() {
+        assert_eq!(
+            "\"Cust \"\"Main\"\" Rec\"".unquote_identifier(),
+            "Cust \"Main\" Rec"
+        );
+        assert_eq!("\"Name\"\"\"".unquote_identifier(), "Name\"");
+        assert_eq!("  \"Sales Header\" ".unquote_identifier(), "Sales Header");
+        assert_eq!("Customer".unquote_identifier(), "Customer");
+    }
+
+    #[test]
+    fn an_unbalanced_quote_is_still_dropped() {
+        assert_eq!("\"Sales Hea".unquote_identifier(), "Sales Hea");
+        assert_eq!("\"\"".unquote_identifier(), "");
+    }
+
+    #[test]
+    fn borrows_when_nothing_is_unescaped() {
+        assert!(matches!(
+            "\"Sales Header\"".unquote_identifier(),
+            std::borrow::Cow::Borrowed("Sales Header")
+        ));
     }
 }
 

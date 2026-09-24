@@ -6,6 +6,7 @@
 //! obsolete. Ambiguous names with any active candidate are left to the exact
 //! Microsoft semantic bridge.
 
+use al_syntax::IdentifierText;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -46,7 +47,7 @@ pub fn obsolete_usages(
                 )
             }) {
                 definitions
-                    .entry(procedure.name.trim_matches('"').to_ascii_lowercase())
+                    .entry(procedure.name.unquote_identifier().to_ascii_lowercase())
                     .or_default()
                     .total += 1;
             }

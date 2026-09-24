@@ -5,6 +5,7 @@
 //! edit such as `Cust.` leaves behind, and is guarded against comments and
 //! string literals by [`position_is_in_comment_or_literal`].
 
+use al_syntax::IdentifierText;
 use tree_sitter::Tree;
 
 use crate::queries::Position;
@@ -63,7 +64,7 @@ pub(crate) fn access_path_at(tree: &Tree, text: &str, position: Position) -> Opt
                     let member = member_node
                         .utf8_text(text.as_bytes())
                         .unwrap_or("")
-                        .trim_matches('"')
+                        .unquote_identifier()
                         .to_string();
                     let kind = if current.kind().starts_with("scope") {
                         AccessKind::Scope
@@ -304,7 +305,7 @@ fn is_identifier_char(ch: u8) -> bool {
 }
 
 fn clean_access_text(value: &str) -> String {
-    value.trim().trim_matches('"').to_string()
+    value.unquote_identifier().into_owned()
 }
 
 /// Whether `position` sits inside a comment or a string literal.

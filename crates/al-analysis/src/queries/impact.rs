@@ -3,6 +3,7 @@
 //! "If I change this symbol, what breaks?" Searches the symbol index and workspace
 //! files for all consumers of a named symbol (table field, procedure, object, etc.).
 
+use al_syntax::IdentifierText;
 use std::sync::Arc;
 
 use al_symbols::{ObjectKind, SymbolEntry};
@@ -158,11 +159,11 @@ pub fn impact(workspace: &Workspace, symbol: &str) -> Result<Vec<ImpactEntry>, I
 /// - `"Sales-Post.PostDocument"` → `("Sales-Post", Some("PostDocument"))`
 fn parse_symbol(symbol: &str) -> (String, Option<String>) {
     if let Some(dot_pos) = find_unquoted_dot(symbol) {
-        let object = symbol[..dot_pos].trim().trim_matches('"').to_string();
-        let member = symbol[dot_pos + 1..].trim().trim_matches('"').to_string();
+        let object = symbol[..dot_pos].unquote_identifier().into_owned();
+        let member = symbol[dot_pos + 1..].unquote_identifier().into_owned();
         (object, Some(member))
     } else {
-        (symbol.trim().trim_matches('"').to_string(), None)
+        (symbol.unquote_identifier().into_owned(), None)
     }
 }
 
@@ -213,7 +214,7 @@ fn check_source_table(
         if prop.name.eq_ignore_ascii_case("SourceTable")
             && prop
                 .value
-                .trim_matches('"')
+                .unquote_identifier()
                 .eq_ignore_ascii_case(&target_lower)
         {
             results.push(ImpactEntry {
@@ -549,7 +550,7 @@ fn receiver_bindings(
                 let mut cursor = node.walk();
                 for name in node.children_by_field_name("name", &mut cursor) {
                     if let Ok(text) = name.utf8_text(source) {
-                        names.insert(text.trim().trim_matches('"').to_lowercase());
+                        names.insert(text.unquote_identifier().to_lowercase());
                     }
                 }
             }
@@ -603,6 +604,14 @@ mod tests {
     use al_symbols::*;
     use al_workspace::Workspace;
     use std::path::PathBuf;
+
+    #[test]
+    fn parse_symbol_unescapes_a_doubled_quote_in_either_part() {
+        assert_eq!(
+            parse_symbol(r#""Cust ""Main"" Rec"."Name""""#),
+            ("Cust \"Main\" Rec".to_string(), Some("Name\"".to_string()))
+        );
+    }
 
     fn workspace_with_files(files: Vec<(&str, &str)>) -> Workspace {
         let ws = Workspace::new();

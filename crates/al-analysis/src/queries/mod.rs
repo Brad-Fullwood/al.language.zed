@@ -44,6 +44,7 @@ pub mod transaction_lint;
 pub mod upgrade;
 
 use al_symbols::SymbolEntry;
+use al_syntax::IdentifierText;
 use url::Url;
 
 #[derive(Debug, thiserror::Error)]
@@ -120,13 +121,13 @@ pub fn parse_detail_params(detail: &str) -> Vec<(String, String, String)> {
             }
             let param_no_var = raw.strip_prefix("var ").unwrap_or(raw).trim();
             if let Some(colon_pos) = param_no_var.find(':') {
-                let name = param_no_var[..colon_pos].trim().trim_matches('"');
+                let name = param_no_var[..colon_pos].unquote_identifier();
                 let type_name = param_no_var[colon_pos + 1..].trim();
                 if !name.is_empty() {
                     return Some((raw.to_string(), name.to_string(), type_name.to_string()));
                 }
             }
-            let name = param_no_var.trim().trim_matches('"');
+            let name = param_no_var.unquote_identifier();
             if !name.is_empty() {
                 Some((raw.to_string(), name.to_string(), String::new()))
             } else {

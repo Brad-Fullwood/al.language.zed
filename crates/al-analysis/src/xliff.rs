@@ -30,6 +30,7 @@
 //! which is what `alc` also does for the dominant case of extending a
 //! base-application object.
 
+use al_syntax::IdentifierText;
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -702,7 +703,7 @@ fn parse_property_value(statement: &str, property: &str) -> Option<String> {
 fn parse_label_declaration(line: &str) -> Option<(String, String)> {
     // Pattern: <name>: Label '<text>' [, ...];
     let colon = line.find(':')?;
-    let name = line[..colon].trim().trim_matches('"').trim();
+    let name = line[..colon].unquote_identifier();
     if name.is_empty() {
         return None;
     }

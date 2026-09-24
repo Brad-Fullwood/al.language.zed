@@ -1,5 +1,6 @@
 //! CodeLens query — reference count lenses on procedure/method/event declarations.
 
+use al_syntax::IdentifierText;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -94,12 +95,12 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Result<Vec<CodeLensEntry>,
         if let Some(children) = &sym.children {
             for child in children {
                 if super::is_procedure_symbol(child.kind.into()) {
-                    proc_names.push(child.name.trim_matches('"').to_lowercase());
+                    proc_names.push(child.name.unquote_identifier().to_lowercase());
                 }
             }
         }
         if super::is_procedure_symbol(sym.kind.into()) {
-            proc_names.push(sym.name.trim_matches('"').to_lowercase());
+            proc_names.push(sym.name.unquote_identifier().to_lowercase());
         }
     }
 
@@ -120,7 +121,7 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Result<Vec<CodeLensEntry>,
         if let Some(children) = &sym.children {
             for child in children {
                 if super::is_procedure_symbol(child.kind.into()) {
-                    let name_raw = child.name.trim_matches('"');
+                    let name_raw = child.name.unquote_identifier();
                     let count = reference_count_for_declaration(
                         workspace,
                         uri,
@@ -134,7 +135,7 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Result<Vec<CodeLensEntry>,
                         test_target: None,
                     });
                     if let Some(ref ctx) = test_lens_ctx {
-                        if let Some(status) = ctx.status_for(name_raw) {
+                        if let Some(status) = ctx.status_for(&name_raw) {
                             let title = test_lens_title(&status);
                             lenses.push(CodeLensEntry {
                                 range: child.selection_range.into(),
@@ -151,7 +152,7 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Result<Vec<CodeLensEntry>,
             }
         }
         if super::is_procedure_symbol(sym.kind.into()) {
-            let name_raw = sym.name.trim_matches('"');
+            let name_raw = sym.name.unquote_identifier();
             let count = reference_count_for_declaration(
                 workspace,
                 uri,
@@ -165,7 +166,7 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Result<Vec<CodeLensEntry>,
                 test_target: None,
             });
             if let Some(ref ctx) = test_lens_ctx {
-                if let Some(status) = ctx.status_for(name_raw) {
+                if let Some(status) = ctx.status_for(&name_raw) {
                     let title = test_lens_title(&status);
                     lenses.push(CodeLensEntry {
                         range: sym.selection_range.into(),

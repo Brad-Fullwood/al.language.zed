@@ -21,6 +21,7 @@
 //! Output is deliberately small. The used set is summarised as counts; the
 //! caller asks for the full list with `include_used`.
 
+use al_syntax::IdentifierText;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -748,7 +749,7 @@ fn extension_target(object: tree_sitter::Node<'_>, source: &[u8]) -> Option<Stri
                             .find(|child| matches!(child.kind(), "name" | "name_or_keyword"))
                     })
                     .and_then(|node| node.utf8_text(source).ok())
-                    .map(|text| text.trim().trim_matches('"').to_string());
+                    .map(|text| text.unquote_identifier().into_owned());
             }
         }
         if node.kind() != "object_body" {
@@ -845,7 +846,7 @@ fn member_from_parens(section: tree_sitter::Node<'_>, source: &[u8]) -> Option<(
                 if past_semicolon && name.is_none() =>
             {
                 if let Ok(text) = child.utf8_text(source) {
-                    let trimmed = text.trim().trim_matches('"').trim().to_string();
+                    let trimmed = text.unquote_identifier().into_owned();
                     if !trimmed.is_empty() {
                         name = Some(trimmed);
                     }
@@ -865,7 +866,7 @@ fn enum_value_member(node: tree_sitter::Node<'_>, source: &[u8]) -> Option<(i64,
     let name = node
         .child_by_field_name("name")
         .and_then(|node| node.utf8_text(source).ok())
-        .map(|text| text.trim().trim_matches('"').to_string())
+        .map(|text| text.unquote_identifier().into_owned())
         .filter(|name| !name.is_empty())?;
     Some((ordinal, name))
 }

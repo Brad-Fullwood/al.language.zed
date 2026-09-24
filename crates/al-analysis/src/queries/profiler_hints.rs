@@ -33,6 +33,7 @@
 //! - Must not persist after clearing (clearing is handled by al-lsp, not here)
 //! - Hints on a procedure's signature line, not body line
 
+use al_syntax::IdentifierText;
 use url::Url;
 
 use crate::queries::code_lens::CodeLensEntry;
@@ -538,7 +539,7 @@ fn collect_profiler_lenses(
         if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
             if let Some(name_node) = node.child_by_field_name("name") {
                 if let Ok(name_text) = name_node.utf8_text(source) {
-                    let name_clean = name_text.trim_matches('"').trim();
+                    let name_clean = name_text.unquote_identifier();
                     let name_lc = name_clean.to_lowercase();
                     if let Some(hint) = by_proc.get(&name_lc) {
                         let start_row = name_node.start_position().row as u32;

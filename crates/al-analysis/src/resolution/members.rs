@@ -5,6 +5,7 @@
 //! every `Record` carries, or from the CodeAnalysis builtin catalog. The order
 //! below is the order those sources are consulted.
 
+use al_syntax::IdentifierText;
 use tree_sitter::Tree;
 use url::Url;
 
@@ -247,7 +248,7 @@ pub(crate) fn resolve_member(
         .map_err(|_| WorkspaceStateError::Poisoned {
             component: "semantic_cache",
         })?;
-    let target_name = member_name.trim_matches('"');
+    let target_name = member_name.unquote_identifier();
     let result = (|| {
         tracing::debug!(
             receiver = %receiver.type_name,
@@ -260,7 +261,7 @@ pub(crate) fn resolve_member(
             if let Some(path) =
                 resolve_object_path(workspace, Some(uri), subtype, Some(&receiver.type_name))
             {
-                if let Some(member) = workspace_member(workspace, &path, target_name) {
+                if let Some(member) = workspace_member(workspace, &path, &target_name) {
                     tracing::debug!(
                         member = %target_name,
                         result = "workspace_member",
@@ -279,7 +280,7 @@ pub(crate) fn resolve_member(
                     enum_values,
                 } = &members;
                 for method in methods {
-                    if method.name.eq_ignore_ascii_case(target_name) {
+                    if method.name.eq_ignore_ascii_case(&target_name) {
                         tracing::debug!(
                             member = %target_name,
                             result = "Procedure",
@@ -306,7 +307,7 @@ pub(crate) fn resolve_member(
                 }
 
                 for field in fields {
-                    if field.name.eq_ignore_ascii_case(target_name) {
+                    if field.name.eq_ignore_ascii_case(&target_name) {
                         tracing::debug!(
                             member = %target_name,
                             result = "Field",
@@ -325,7 +326,7 @@ pub(crate) fn resolve_member(
                 }
 
                 for value in enum_values {
-                    if value.name.eq_ignore_ascii_case(target_name) {
+                    if value.name.eq_ignore_ascii_case(&target_name) {
                         tracing::debug!(
                             member = %target_name,
                             result = "EnumValue",
@@ -348,7 +349,7 @@ pub(crate) fn resolve_member(
             }
         }
 
-        if let Some(field) = record_system_field(receiver, target_name) {
+        if let Some(field) = record_system_field(receiver, &target_name) {
             tracing::debug!(
                 member = %target_name,
                 result = "Field",
@@ -360,7 +361,7 @@ pub(crate) fn resolve_member(
 
         if let Some(builtin) = builtin_for(&cache, receiver) {
             for method in &builtin.methods {
-                if method.name.eq_ignore_ascii_case(target_name) {
+                if method.name.eq_ignore_ascii_case(&target_name) {
                     tracing::debug!(
                         member = %target_name,
                         result = "BuiltinMethod",
