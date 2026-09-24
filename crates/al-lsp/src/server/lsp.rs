@@ -895,22 +895,25 @@ impl AlServer {
                     return;
                 }
             };
-            let still_current = workspace
-                .documents
-                .get_text_and_client_version(&uri)
-                .is_some_and(|(current_text, current_version)| {
-                    current_version == document_version
-                        && Arc::ptr_eq(&current_text, &document_text)
-                });
+            if session.is_cancelled() {
+                return;
+            }
+            // Hold the generation read lock from the currency check through the
+            // publish so a didClose on another worker cannot clear the document
+            // in between; see `diagnostics::publish_if_current`.
+            let generation = workspace.generation_lock.read().await;
+            let still_current = crate::server::diagnostics::snapshot_is_current(
+                &workspace,
+                &uri,
+                &document_text,
+                document_version,
+            );
             if !still_current {
                 tracing::debug!(
                     uri = %uri,
                     document_version,
                     "debounced diagnostics: document changed during analysis, skipping stale publish"
                 );
-                return;
-            }
-            if session.is_cancelled() {
                 return;
             }
             if project_scope {
@@ -927,6 +930,7 @@ impl AlServer {
             client
                 .publish_diagnostics(uri, lsp_diags, Some(document_version))
                 .await;
+            drop(generation);
         });
 
         guard.insert(uri_key, handle);

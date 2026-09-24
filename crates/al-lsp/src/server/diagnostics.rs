@@ -408,7 +408,20 @@ pub(crate) async fn publish_diagnostics(
     }
 
     let phase1_count = diagnostics.len();
-    if !document_snapshot_is_current(server, uri, &text, expected_client_version) {
+    if server.session.is_cancelled() {
+        return;
+    }
+    tracing::debug!(uri = %uri, phase1_count, "publish_diagnostics: publishing phase 1");
+    if !publish_if_current(
+        &server.workspace,
+        &server.client,
+        uri,
+        &text,
+        expected_client_version,
+        diagnostics.clone(),
+    )
+    .await
+    {
         tracing::debug!(
             uri = %uri,
             expected_client_version,
@@ -416,15 +429,6 @@ pub(crate) async fn publish_diagnostics(
         );
         return;
     }
-    let document_version = Some(expected_client_version);
-    tracing::debug!(uri = %uri, phase1_count, "publish_diagnostics: publishing phase 1");
-    if server.session.is_cancelled() {
-        return;
-    }
-    server
-        .client
-        .publish_diagnostics(uri.clone(), diagnostics.clone(), document_version)
-        .await;
 
     let semantic_diags = run_semantic_analysis(server, uri, &text).await;
     if server.session.is_cancelled() {
@@ -450,11 +454,51 @@ pub(crate) async fn publish_diagnostics(
         diagnostics.extend(semantic_diags);
         let total_count = diagnostics.len();
         tracing::debug!(uri = %uri, total_count, "publish_diagnostics: publishing phase 2");
-        server
-            .client
-            .publish_diagnostics(uri.clone(), diagnostics, document_version)
-            .await;
+        if !publish_if_current(
+            &server.workspace,
+            &server.client,
+            uri,
+            &text,
+            expected_client_version,
+            diagnostics,
+        )
+        .await
+        {
+            tracing::debug!(
+                uri = %uri,
+                expected_client_version,
+                "publish_diagnostics: document changed before phase 2 was published; skipping"
+            );
+        }
     }
+}
+
+/// Publish `diagnostics` for `uri` only while the document still holds `text`
+/// at `client_version`.
+///
+/// The generation read lock spans the check and the publish. `did_close`
+/// closes the document and sends its clearing publish under the write lock,
+/// so a publish that passes the check here reaches the client before that
+/// clear and can never land after it as a ghost on a closed document. The
+/// check alone left a window in which a close on another worker thread ran
+/// between the check and the send.
+pub(crate) async fn publish_if_current(
+    workspace: &al_workspace::Workspace,
+    client: &tower_lsp::Client,
+    uri: &Url,
+    text: &Arc<String>,
+    client_version: i32,
+    diagnostics: Vec<Diagnostic>,
+) -> bool {
+    let generation = workspace.generation_lock.read().await;
+    if !snapshot_is_current(workspace, uri, text, client_version) {
+        return false;
+    }
+    client
+        .publish_diagnostics(uri.clone(), diagnostics, Some(client_version))
+        .await;
+    drop(generation);
+    true
 }
 
 fn document_snapshot_is_current(
@@ -463,8 +507,23 @@ fn document_snapshot_is_current(
     expected_text: &Arc<String>,
     expected_client_version: i32,
 ) -> bool {
-    server
-        .workspace
+    snapshot_is_current(
+        &server.workspace,
+        uri,
+        expected_text,
+        expected_client_version,
+    )
+}
+
+/// Whether the open document at `uri` is still `expected_text` at
+/// `expected_client_version`.
+pub(crate) fn snapshot_is_current(
+    workspace: &al_workspace::Workspace,
+    uri: &Url,
+    expected_text: &Arc<String>,
+    expected_client_version: i32,
+) -> bool {
+    workspace
         .documents
         .get_text_and_client_version(uri)
         .is_some_and(|(current_text, current_version)| {
