@@ -199,9 +199,11 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             && !label_code.ends_with("::")
             // The colon must directly follow the last non-space character —
             // no `;` or `=` etc. before it (outside string literals).
+            // A comma is allowed: `Level::Silver, Level::None:` lists
+            // several values for one branch.
             && !contains_char_outside_strings(
                 label_code.trim_end_matches(':'),
-                &[';', '=', '(', ')', ','],
+                &[';', '=', '(', ')'],
             );
         if is_case_label && in_case_label_body {
             // Drain any single-stmt from within the previous label body
@@ -646,6 +648,38 @@ end;
                 Message('one');
             2:
                 Message('two');
+        end;
+    end;
+}
+"#;
+        assert_eq!(fmt(input), expected);
+    }
+
+    /// A branch listing several values was indented as a continuation of
+    /// the previous branch's statement.
+    #[test]
+    fn a_case_label_with_several_values_is_a_label() {
+        let input = r#"codeunit 50100 Test
+{
+procedure DoSomething()
+begin
+case Level of
+Level::Gold:
+Names.Add('gold');
+Level::Silver, Level::None:
+Names.Add('other');
+end;
+end;
+}"#;
+        let expected = r#"codeunit 50100 Test
+{
+    procedure DoSomething()
+    begin
+        case Level of
+            Level::Gold:
+                Names.Add('gold');
+            Level::Silver, Level::None:
+                Names.Add('other');
         end;
     end;
 }
