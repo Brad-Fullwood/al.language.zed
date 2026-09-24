@@ -1135,15 +1135,22 @@ fn variable_types(source: &str) -> HashMap<String, String> {
 }
 
 fn record_subtype(type_name: &str) -> Option<&str> {
-    let (prefix, subtype) = type_name.split_at(type_name.find(|c: char| !c.is_ascii_whitespace())?);
-    let _ = prefix;
-    let type_name = subtype;
-    type_name
+    let type_name = type_name.trim_start();
+    let subtype = type_name
         .get(..6)
         .filter(|prefix| prefix.eq_ignore_ascii_case("record"))
         .and_then(|_| type_name.get(6..))
         .filter(|suffix| suffix.starts_with(char::is_whitespace))
-        .map(str::trim)
+        .map(str::trim)?;
+    // `Record "Loyalty Entry" temporary`: the keyword is not the table's name.
+    Some(
+        subtype
+            .len()
+            .checked_sub(" temporary".len())
+            .filter(|split| subtype.is_char_boundary(*split))
+            .filter(|split| subtype[*split..].eq_ignore_ascii_case(" temporary"))
+            .map_or(subtype, |split| subtype[..split].trim_end()),
+    )
 }
 
 fn exit_expressions(source: &str) -> Vec<&str> {

@@ -501,3 +501,40 @@ fn a_method_on_a_call_result_is_not_an_unknown_local_procedure() {
     )]);
     assert_silent(&codes, "ALN2209");
 }
+
+/// `Record "X" temporary` names table X.
+#[test]
+fn a_temporary_record_of_a_known_table_is_known() {
+    let codes = codes_for(&[
+        CUSTOMER_TABLE,
+        (
+            "C.Codeunit.al",
+            "codeunit 50100 C\n{\n    procedure P()\n    var\n        TempCust: Record \"Prop Customer\" temporary;\n    begin\n        TempCust.Init();\n    end;\n}\n",
+        ),
+    ]);
+    assert_silent(&codes, "ALN2401");
+}
+
+/// Every object in a file was checked against the whole file, so one
+/// error came back once per object, attributed to each.
+#[test]
+fn an_error_in_a_multi_object_file_is_reported_once() {
+    let dir = tempfile::tempdir().unwrap();
+    write_project(
+        dir.path(),
+        APP_JSON,
+        &[(
+            "Two.al",
+            "codeunit 50100 A\n{\n    procedure P()\n    begin\n        Nowhere := 1;\n    end;\n}\n\ncodeunit 50101 B\n{\n    procedure Q()\n    begin\n    end;\n}\n",
+        )],
+    );
+    let built = build_verified_app_from_project(dir.path(), "13.0.0.0", "2026-01-01T00:00:00Z")
+        .expect("verification runs");
+    let undeclared: Vec<_> = built
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == "ALN2402")
+        .collect();
+    assert_eq!(undeclared.len(), 1, "{:?}", built.diagnostics);
+    assert_eq!(undeclared[0].line, 5);
+}
