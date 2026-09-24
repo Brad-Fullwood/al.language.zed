@@ -17,6 +17,7 @@ below is available through MCP's `al_call`, whether or not it also has a named M
 `parse`, `metrics`, `sqlPatterns`, `sortMembers`, `organizeFiles`, `source`, `eventSource`,
 `location`, `permissions`, `compile`, `package`, `publish`, `newProject`, `errorCodes`, `builtinTypes`, `setup`,
 `clearCache`, `authenticate`, `downloadSymbols`, `snapshot`, `profiling`, `generate`, `obsolete`,
+`obsoleteUsages`,
 `audit.dataClassification`, `permissions.audit`, `deps.graph`, `breaking`, `arch.lint`, `duplicates`,
 `upgrade`, `profiler.hints`, `nativeCheck`, `freeIds`, `diag`.
 
@@ -26,6 +27,11 @@ XLIFF: `xlf.generate`, `xlf.refresh`, `xlf.untranslated`, `xlf.suggest`.
 launch configuration in the project. Params: `config` (launch configuration name, optional),
 `incremental` (boolean, default false). The target server comes only from the project's own
 launch configuration.
+
+`obsoleteUsages` lists the calls in the workspace to procedures that are obsolete, each with
+`file`, `range` and a `message` naming the reason and tag. A name with any active definition is
+left out rather than guessed at. `obsolete` lists every pending obsoletion in the loaded packages
+instead.
 
 `freeIds` allocates inside the `idRanges` declared in `app.json`. Params: `kind` (object kind
 keyword, omit for a per-kind summary), `object` (a table, tableextension, enum or enumextension
@@ -74,7 +80,7 @@ beside them. `total` counts the rows before the window, and `truncated` is true 
 the page, so a full page is never mistaken for a complete answer.
 
 Root-array methods: `search`, `object`, `byId`, `events`, `subscribers`, `entrypoints`, `deadCode`,
-`nativeCheck`, `trace`, `packages`, `sqlPatterns`, `obsolete`, `rules`, `errorCodes`,
+`nativeCheck`, `trace`, `packages`, `sqlPatterns`, `obsolete`, `obsoleteUsages`, `rules`, `errorCodes`,
 `builtinTypes`, `duplicates`, `arch.lint`, `audit.dataClassification`, `tests.discover`,
 `profiler.hints`, `breaking`, `upgrade`.
 

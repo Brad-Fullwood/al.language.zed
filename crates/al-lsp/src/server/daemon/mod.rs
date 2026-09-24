@@ -1197,6 +1197,7 @@ dispatch_table! {
         "tests.mutate" [] => build_dispatch::dispatch_tests_mutate(workspace, id, &params).await,
         "generate" [] => build_dispatch::dispatch_generate(workspace, id, &params),
         "obsolete" [] => build_dispatch::dispatch_obsolete(workspace, id),
+        "obsoleteUsages" [] => build_dispatch::dispatch_obsolete_usages(workspace, id),
         "audit.dataClassification" [] => {
             build_dispatch::dispatch_audit_data_classification(workspace, id)
         },

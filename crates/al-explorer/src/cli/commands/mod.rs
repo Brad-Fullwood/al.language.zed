@@ -667,6 +667,14 @@ fn validate_run_command_result(method: &str, result: &serde_json::Value) -> Resu
                 ("callerCount", JsonFieldKind::Unsigned),
             ],
         )?,
+        "obsoleteUsages" => validate_array_object_fields(
+            result,
+            method,
+            &[
+                ("file", JsonFieldKind::String),
+                ("message", JsonFieldKind::String),
+            ],
+        )?,
         "audit.dataClassification" => validate_array_object_fields(
             result,
             method,
@@ -1305,6 +1313,7 @@ mod path_tests {
             let probe = match method.as_str() {
                 "entrypoints"
                 | "obsolete"
+                | "obsoleteUsages"
                 | "audit.dataClassification"
                 | "breaking"
                 | "arch.lint"

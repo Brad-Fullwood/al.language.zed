@@ -44,6 +44,7 @@ pub(crate) const LIST_TARGETS: &[(&str, ListTarget)] = &[
     ("packages", ListTarget::Root),
     ("sqlPatterns", ListTarget::Root),
     ("obsolete", ListTarget::Root),
+    ("obsoleteUsages", ListTarget::Root),
     ("rules", ListTarget::Root),
     ("errorCodes", ListTarget::Root),
     ("builtinTypes", ListTarget::Root),

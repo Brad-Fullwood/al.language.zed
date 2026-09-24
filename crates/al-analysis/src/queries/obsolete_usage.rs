@@ -16,7 +16,7 @@ use super::Range;
 
 pub const OBSOLETE_USAGE: &str = "AL-NL008";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ObsoleteUsageFinding {
     pub file: PathBuf,
     pub range: Range,

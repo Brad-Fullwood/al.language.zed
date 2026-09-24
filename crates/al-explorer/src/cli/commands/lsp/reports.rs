@@ -66,6 +66,37 @@ pub fn cmd_obsolete(json: bool) -> ExitCode {
     )
 }
 
+pub fn cmd_obsolete_usages(json: bool) -> ExitCode {
+    run_command(
+        "obsoleteUsages",
+        Some(serde_json::json!({})),
+        json,
+        None,
+        |result| {
+            let findings = list_rows(result).as_array().cloned().unwrap_or_default();
+            if findings.is_empty() {
+                println!("No calls to obsolete procedures found.");
+                return;
+            }
+            for finding in &findings {
+                let file = finding.get("file").and_then(|v| v.as_str()).unwrap_or("?");
+                let line = finding["range"]["start"]["line"]
+                    .as_u64()
+                    .map_or(0, |l| l + 1);
+                let column = finding["range"]["start"]["character"]
+                    .as_u64()
+                    .map_or(0, |c| c + 1);
+                let message = finding
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                println!("{file}:{line}:{column}: {message}");
+            }
+            eprintln!("\n{} call(s) to obsolete procedures", findings.len());
+        },
+    )
+}
+
 pub fn cmd_audit_data_classification(json: bool) -> ExitCode {
     run_command_with_exit(
         "audit.dataClassification",

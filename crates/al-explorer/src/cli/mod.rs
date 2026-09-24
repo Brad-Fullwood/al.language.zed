@@ -328,7 +328,13 @@ pub fn run(cli: Cli) -> ExitCode {
             subject.as_deref(),
             cli.json,
         ),
-        Commands::Obsolete => lsp::cmd_obsolete(cli.json),
+        Commands::Obsolete { used } => {
+            if used {
+                lsp::cmd_obsolete_usages(cli.json)
+            } else {
+                lsp::cmd_obsolete(cli.json)
+            }
+        }
         Commands::AuditData => lsp::cmd_audit_data_classification(cli.json),
         Commands::PermissionAudit => lsp::cmd_permission_audit(cli.json),
         Commands::DepsGraph { format } => lsp::cmd_deps_graph(&format, cli.json),

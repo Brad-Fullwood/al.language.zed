@@ -85,23 +85,28 @@ replacement, as in the `bc-event-map` skill.
 ## Deprecation timeline
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json obsolete
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json obsolete --used
 ```
 
 ```json
-[]
+[{"file": "/work/src/Ai.Codeunit.al",
+  "range": {"start": {"line": 6, "character": 17}, "end": {"line": 6, "character": 36}},
+  "message": "Call to obsolete procedure `GetFunctionResponse`. Reason: ... Obsolete tag: 25.0."}]
 ```
 
-Lists the workspace's uses of symbols marked `ObsoleteState = Pending` or
-`Removed`, with the tag and reason, so pending removals get fixed before they
-become errors.
+Lists the calls in the workspace to obsolete procedures, with the reason and
+tag, so pending removals get fixed before they become errors. A name with an
+active overload anywhere is left out rather than guessed at, so this errs
+towards silence. Plain `obsolete` without `--used` lists every pending
+obsoletion in every loaded package (over 1,500 on Base Application); use it
+with `--limit` only when the question is about the packages themselves.
 
 ## Order of work
 
 1. `packages` and `deps-graph`: what is loaded and what conflicts.
 2. `breaking --baseline-app`: what the new version removed or changed.
 3. `dead-code` filtered to orphaned subscribers: what stopped firing.
-4. `obsolete`: what is about to break next.
+4. `obsolete --used`: what is about to break next.
 5. `bc-test-locally`'s `test-affected` on the touched files.
 
 ## Do not

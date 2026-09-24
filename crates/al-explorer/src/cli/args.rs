@@ -674,7 +674,12 @@ Examples:
         subject: Option<String>,
     },
     /// Show obsolescence timeline (deprecated symbols)
-    Obsolete,
+    Obsolete {
+        /// Instead of every pending obsoletion in the loaded packages, list
+        /// the calls in this workspace to procedures that are obsolete
+        #[arg(long)]
+        used: bool,
+    },
     /// Audit DataClassification on table fields
     #[command(name = "audit-data")]
     AuditData,

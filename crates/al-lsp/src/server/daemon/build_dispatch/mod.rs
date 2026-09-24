@@ -52,6 +52,16 @@ pub(super) fn dispatch_obsolete(workspace: &Workspace, id: u64) -> Response {
     }
 }
 
+/// Calls in the workspace to procedures that are obsolete: the question a
+/// developer asks before an upgrade, where `obsolete` lists every pending
+/// obsoletion in every loaded package (1,553 for Base Application 26).
+pub(super) fn dispatch_obsolete_usages(workspace: &Workspace, id: u64) -> Response {
+    match al_analysis::queries::obsolete_usage::obsolete_usages(workspace) {
+        Ok(findings) => serialized_response(id, &findings, "obsolete usages"),
+        Err(error) => rpc_error(id, error_codes::INTERNAL_ERROR, &error.to_string()),
+    }
+}
+
 pub(super) fn dispatch_audit_data_classification(workspace: &Workspace, id: u64) -> Response {
     match al_analysis::queries::audit::data_classification_audit(workspace) {
         Ok(entries) => serialized_response(id, &entries, "data-classification audit"),
