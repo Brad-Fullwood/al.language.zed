@@ -680,6 +680,8 @@ fn every_top_level_command_has_a_structured_black_box_path() {
             "Customer",
         ],
         &["obsolete"],
+        // No .app files in the fixture: the structured "could not read" path.
+        &["package-diff", "old.app", "new.app"],
         &["audit-data"],
         &["permission-audit"],
         &["deps-graph"],

@@ -140,7 +140,8 @@ they are confined to: the daemon changes files only inside the project it has lo
 | `free-ids` | `--kind K --object NAME --count N --include-used` | Next free object ID, table field number or enum ordinal inside the `app.json` idRanges |
 | `breaking` | `--baseline-app <old.app>` | Breaking API changes; reports unevaluated when omitted |
 | `upgrade` | `--baseline-app <old.app>` | Upgrade impact report; reports unevaluated when omitted |
-| `obsolete` | — | `[Obsolete]` timeline |
+| `obsolete` | `--used` | `[Obsolete]` timeline of the loaded packages; with `--used`, the workspace's calls to obsolete procedures |
+| `package-diff <old.app> <new.app>` | `--all` | Changes between two versions of a dependency that the workspace's code uses (`--all`: every change) |
 | `audit-data` | — | Data-classification audit |
 | `permission-audit` | — | Permission-set coverage audit |
 | `profiler-hints [hotspots…]` | — | Optimization hints for named hotspot procedures |
