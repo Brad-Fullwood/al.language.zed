@@ -12,6 +12,7 @@
 //! The backend mirrors the LiveBcMode pattern: parallel JoinSet dispatch,
 //! per-test timeout, and channel-closed detection.
 
+use al_syntax::IdentifierText;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -193,6 +194,18 @@ impl TestSession for InterpMode {
             }
         }
 
+        // A filter that selects nothing is a typo in the pattern far more often
+        // than it is an empty suite, so it must not print a green summary over
+        // zero tests.
+        if let Some(pattern) = opts.filter.as_deref() {
+            if !tests.is_empty() && grouped.is_empty() {
+                return Err(TestRunnerError::FilterMatchedNothing {
+                    pattern: pattern.to_string(),
+                    requested: tests.len(),
+                });
+            }
+        }
+
         let mut all_summaries: Vec<TestCodeunitResult> = Vec::new();
 
         let work: Vec<(i32, String, Vec<Option<String>>)> = grouped
@@ -302,6 +315,10 @@ fn worker_join_error(error: tokio::task::JoinError) -> TestRunnerError {
     })
 }
 
+// Workspace, codeunit list and codeunit identity come from the caller loop;
+// timeout, dispatch mode, coverage flag and coverage sink are run options the
+// caller already unpacked from RunOptions. Regrouping them here would put the
+// options back together only to take them apart again.
 #[allow(clippy::too_many_arguments)]
 fn run_codeunit_interp(
     workspace: &Workspace,
@@ -318,6 +335,12 @@ fn run_codeunit_interp(
     let mut method_results: Vec<TestMethodResult> = Vec::new();
 
     let cu = codeunits.iter().find(|c| c.id == codeunit_id);
+
+    // `tests/run` substitutes the ID as a string when the caller named only an
+    // ID, and the interpreter uses this name as the current object of the call
+    // frame, so an unqualified call to a sibling procedure would look up an
+    // object called "50144". The discovered codeunit carries the real name.
+    let codeunit_name = cu.map_or(codeunit_name, |c| c.name.as_str());
 
     let proc_list: Vec<String> = if methods.iter().any(|m| m.is_some()) {
         methods.iter().filter_map(|m| m.clone()).collect()
@@ -351,15 +374,35 @@ fn run_codeunit_interp(
         al_runtime::stubs::reset_thread_local_state();
 
         let start = Instant::now();
-        let (result, test_coverage) = run_procedure_interp(
-            workspace,
-            cu,
-            codeunit_name,
-            proc_name,
-            timeout_dur,
-            dispatch_mode,
-            collect_coverage,
-        );
+        // spawn_blocking hands out tokio's 2 MiB worker stacks, which is what
+        // held the interpreter's call depth to 48 frames. Give the AL body a
+        // thread whose stack the depth caps are actually sized against.
+        let (result, test_coverage) = std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .stack_size(al_runtime::interpreter::dispatch::INTERP_STACK_BYTES)
+                .spawn_scoped(scope, || {
+                    run_procedure_interp(
+                        workspace,
+                        cu,
+                        codeunit_name,
+                        proc_name,
+                        timeout_dur,
+                        dispatch_mode,
+                        collect_coverage,
+                    )
+                })
+                .map_err(|error| {
+                    TestRunnerError::WorkerFailed(format!(
+                        "could not start the interpreter thread: {error}"
+                    ))
+                })?
+                .join()
+                .map_err(|_| {
+                    TestRunnerError::WorkerFailed(format!(
+                        "the interpreter thread panicked running '{codeunit_name}.{proc_name}'"
+                    ))
+                })
+        })?;
         let duration_ms = start.elapsed().as_millis() as u64;
 
         // Merge this test's dynamic coverage into the run-wide aggregate (gap
@@ -390,6 +433,8 @@ fn run_codeunit_interp(
                 _ => None,
             },
             duration_ms: Some(duration_ms),
+            // The interpreter ran the body, so a failure is the AL code's.
+            failure_kind: None,
         };
         method_results.push(method_result.clone());
         events.push(TestEvent::CaseResult {
@@ -669,7 +714,10 @@ fn find_procedure_node<'a>(root: Node<'a>, source: &[u8], proc_name: &str) -> Op
     while let Some(current) = stack_nodes.pop() {
         if current.kind() == "procedure_declaration" {
             if let Some(name_node) = current.child_by_field_name("name") {
-                let name = name_node.utf8_text(source).unwrap_or("").trim_matches('"');
+                let name = name_node
+                    .utf8_text(source)
+                    .unwrap_or("")
+                    .unquote_identifier();
                 if name.eq_ignore_ascii_case(proc_name) {
                     return Some(current);
                 }
@@ -677,7 +725,7 @@ fn find_procedure_node<'a>(root: Node<'a>, source: &[u8], proc_name: &str) -> Op
             let mut cursor = current.walk();
             for child in current.named_children(&mut cursor) {
                 if matches!(child.kind(), "identifier" | "quoted_identifier") {
-                    let name = child.utf8_text(source).unwrap_or("").trim_matches('"');
+                    let name = child.utf8_text(source).unwrap_or("").unquote_identifier();
                     if name.eq_ignore_ascii_case(proc_name) {
                         return Some(current);
                     }
@@ -993,6 +1041,71 @@ mod tests {
         assert!(
             session.coverage_report().unwrap().is_empty(),
             "static mode must not produce dynamic coverage"
+        );
+    }
+
+    /// `al-explorer test-run <id>` sends no `codeunitName`, so the daemon fills
+    /// the field with the ID as a string. The interpreter used that string as
+    /// the current object of the call frame, and an unqualified call to a
+    /// sibling procedure then failed with `object '50144' not found in
+    /// workspace`. The discovered codeunit carries the real name.
+    #[tokio::test]
+    async fn numeric_codeunit_name_still_resolves_sibling_calls() {
+        let source = r#"codeunit 50144 "Sibling Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestCallsSibling()
+    var
+        Total: Integer;
+    begin
+        Total := AddOne(1);
+        if Total <> 2 then
+            Error('sibling call returned %1', Total);
+    end;
+
+    local procedure AddOne(Input: Integer): Integer
+    begin
+        exit(Input + 1);
+    end;
+}
+"#;
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/SiblingTests.Codeunit.al"),
+            source.to_string(),
+        );
+        let events = collect_events(
+            &InterpMode::new(Arc::new(workspace)),
+            vec![TestId {
+                codeunit_id: 50144,
+                // What `tests/run` substitutes when the caller gave only an ID.
+                codeunit_name: "50144".to_string(),
+                method_name: Some("TestCallsSibling".to_string()),
+            }],
+            RunOptions::default(),
+        )
+        .await;
+        let result = events
+            .iter()
+            .find_map(|event| match event {
+                TestEvent::CaseResult { result, .. } => Some(result),
+                _ => None,
+            })
+            .expect("a case result");
+        assert_eq!(
+            result.status,
+            TestStatus::Pass,
+            "sibling call must resolve through the indexed object name: {:?}",
+            result.error
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                TestEvent::SuiteComplete { summary, .. } if summary.name == "Sibling Tests"
+            )),
+            "the summary must report the indexed name, not the ID: {events:?}"
         );
     }
 

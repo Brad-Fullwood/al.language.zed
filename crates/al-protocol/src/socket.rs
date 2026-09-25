@@ -17,7 +17,7 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
 /// The project path is canonicalized before hashing so that symlinks and
 /// relative paths resolve to the same endpoint. On Unix the result is
 /// `$XDG_RUNTIME_DIR/al-lsp/<hash>.sock` (with the platform fallbacks described
-/// by [`runtime_dir`]); on Windows it is a named-pipe path of the form
+/// by `runtime_dir`); on Windows it is a named-pipe path of the form
 /// `\\.\pipe\al-lsp-<user-scope-hash>-<project-hash>`.
 ///
 /// If `XDG_RUNTIME_DIR` is unset, falls back (in order) to `/run/user/<uid>`
@@ -82,6 +82,17 @@ fn unix_socket_path_fits(path: &Path) -> bool {
     // macOS has `sun_path[104]` and requires room for the trailing NUL.
     const MAX_PATH_BYTES: usize = 103;
     path.as_os_str().as_encoded_bytes().len() <= MAX_PATH_BYTES
+}
+
+/// The per-user directory the daemon endpoints and the handshake secret live
+/// in, or `None` when no runtime directory can be determined.
+///
+/// The secret is per user rather than per project, so both sides agree on it
+/// even when an overlong runtime path pushed one project's socket into the
+/// compacted fallback.
+#[must_use]
+pub fn runtime_al_lsp_dir() -> Option<PathBuf> {
+    Some(PathBuf::from(runtime_dir()?).join("al-lsp"))
 }
 
 /// Filesystem lock used to serialize daemon auto-start for one project.

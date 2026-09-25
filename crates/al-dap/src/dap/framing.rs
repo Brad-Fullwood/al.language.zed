@@ -13,7 +13,7 @@ const MAX_DAP_BODY_SIZE: usize = 20 * 1024 * 1024;
 /// Maximum DAP header line length (8 KiB).
 const MAX_DAP_HEADER_LINE: usize = 8192;
 
-/// Returns `InvalidData` if `Content-Length` exceeds [`MAX_DAP_BODY_SIZE`].
+/// Returns `InvalidData` if `Content-Length` exceeds `MAX_DAP_BODY_SIZE`.
 pub async fn read_dap_body<R: tokio::io::AsyncRead + Unpin>(
     reader: &mut BufReader<R>,
 ) -> Result<Vec<u8>, std::io::Error> {

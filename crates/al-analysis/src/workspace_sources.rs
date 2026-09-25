@@ -29,7 +29,68 @@ pub(crate) struct WorkspaceSource {
     pub path: PathBuf,
     pub text: String,
     pub tree: tree_sitter::Tree,
+    /// The file's first object declaration.
+    ///
+    /// AL allows several objects per file — a setup table followed by its card
+    /// page is routine — so a query that cares which object a position or a
+    /// property belongs to must use [`Self::objects`] or
+    /// [`Self::object_at_byte`] instead.
     pub object: WorkspaceObjectDeclaration,
+    /// Every object declared in the file, in document order. `object` is the
+    /// first entry.
+    pub objects: Vec<WorkspaceObjectDeclaration>,
+}
+
+impl WorkspaceObjectDeclaration {
+    /// The `object_declaration` node this was read from.
+    ///
+    /// Falls back to the root, which is the whole-file walk every caller did
+    /// before it could scope one, when the range no longer names a node.
+    pub fn node<'t>(&self, tree: &'t tree_sitter::Tree) -> tree_sitter::Node<'t> {
+        let root = tree.root_node();
+        root.descendant_for_byte_range(self.info.range.start_byte, self.info.range.end_byte)
+            .unwrap_or(root)
+    }
+
+    /// This object's own source, for a check that reads text rather than nodes.
+    pub fn text<'a>(&self, file_text: &'a str) -> &'a str {
+        file_text
+            .get(self.info.range.start_byte..self.info.range.end_byte)
+            .unwrap_or(file_text)
+    }
+
+    /// Zero-based line the declaration starts on, to turn a line number
+    /// counted inside [`Self::text`] back into a line in the file.
+    pub fn first_line(&self) -> u32 {
+        self.info.range.start_point.row as u32
+    }
+}
+
+impl WorkspaceSource {
+    /// Every validated object declaration of this file with its syntax node.
+    ///
+    /// A query that names the object a finding belongs to walks this instead
+    /// of the tree root, so the second object in a file is not reported under
+    /// the first one's name.
+    pub fn object_nodes(
+        &self,
+    ) -> impl Iterator<Item = (&WorkspaceObjectDeclaration, tree_sitter::Node<'_>)> {
+        self.objects
+            .iter()
+            .map(|object| (object, object.node(&self.tree)))
+    }
+
+    /// The object declaration whose source range covers `byte_offset`, or the
+    /// file's first object when the offset sits outside every declaration.
+    pub fn object_at_byte(&self, byte_offset: usize) -> &WorkspaceObjectDeclaration {
+        self.objects
+            .iter()
+            .find(|object| {
+                byte_offset >= object.info.range.start_byte
+                    && byte_offset < object.info.range.end_byte
+            })
+            .unwrap_or(&self.object)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -178,29 +239,56 @@ fn validate_object_source(
         });
     }
 
-    let info = al_syntax::find_object_declaration(&tree, &text)
+    let mut declarations = al_syntax::find_object_declarations(&tree, &text).into_iter();
+    let info = declarations
+        .next()
         .ok_or_else(|| WorkspaceSourceError::MissingObjectDeclaration { path: path.clone() })?;
-    let kind = info.kind.parse::<ObjectKind>().map_err(|reason| {
-        WorkspaceSourceError::InvalidObjectKind {
-            path: path.clone(),
-            reason,
+    let object = validate_declaration(&path, info)?;
+
+    // A later declaration that does not validate is dropped rather than
+    // failing the file: the objects before it are still usable, and the file
+    // is not skipped wholesale over a scratch object at the bottom.
+    let mut objects = vec![object.clone()];
+    for info in declarations {
+        match validate_declaration(&path, info) {
+            Ok(declaration) => objects.push(declaration),
+            Err(error) => tracing::warn!(
+                path = %path.display(),
+                reason = %error,
+                "workspace snapshot: skipping one object declaration in a multi-object file"
+            ),
         }
-    })?;
-    let normalized_id = kind.normalize_declaration_id(info.id).map_err(|error| {
-        WorkspaceSourceError::InvalidObjectId {
-            path: path.clone(),
-            reason: error.to_string(),
-        }
-    })?;
+    }
+
     Ok(WorkspaceSource {
         path,
         text,
         tree,
-        object: WorkspaceObjectDeclaration {
-            info,
-            kind,
-            normalized_id,
-        },
+        object,
+        objects,
+    })
+}
+
+fn validate_declaration(
+    path: &std::path::Path,
+    info: al_syntax::ObjectInfo,
+) -> Result<WorkspaceObjectDeclaration, WorkspaceSourceError> {
+    let kind = info.kind.parse::<ObjectKind>().map_err(|reason| {
+        WorkspaceSourceError::InvalidObjectKind {
+            path: path.to_path_buf(),
+            reason: reason.to_string(),
+        }
+    })?;
+    let normalized_id = kind.normalize_declaration_id(info.id).map_err(|error| {
+        WorkspaceSourceError::InvalidObjectId {
+            path: path.to_path_buf(),
+            reason: error.to_string(),
+        }
+    })?;
+    Ok(WorkspaceObjectDeclaration {
+        info,
+        kind,
+        normalized_id,
     })
 }
 
@@ -279,6 +367,33 @@ mod tests {
         let sources = coherent_snapshot(&workspace).unwrap();
         assert_eq!(sources.len(), 1);
         assert!(sources[0].tree.root_node().has_error());
+    }
+
+    #[test]
+    fn snapshot_carries_every_object_declared_in_a_file() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            PathBuf::from("/project/Setup.al"),
+            "table 50100 \"Ship Setup\" { fields { field(1; Key1; Code[10]) { } } }\n\
+             page 50101 \"Ship Setup Card\" { PageType = Card; }\n"
+                .to_string(),
+        );
+
+        let sources = snapshot(&workspace).unwrap();
+        assert_eq!(sources.len(), 1, "still one source per file");
+        let names: Vec<&str> = sources[0]
+            .objects
+            .iter()
+            .map(|object| object.info.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["Ship Setup", "Ship Setup Card"]);
+        assert_eq!(sources[0].object.info.name, "Ship Setup");
+
+        let page_start = sources[0].objects[1].info.range.start_byte;
+        assert_eq!(
+            sources[0].object_at_byte(page_start).info.name,
+            "Ship Setup Card"
+        );
     }
 
     #[test]

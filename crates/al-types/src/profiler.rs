@@ -2,6 +2,13 @@
 
 use serde::Serialize;
 
+/// Upper bound on a `.alcpuprofile` file read into memory, matching every
+/// other BC input cap in this workspace. It lives here because two readers
+/// enforce it — `al_bc::profiling::analyze_profile_file` and the explorer's
+/// profiler pane — and a pane that reads without the cap freezes the TUI's
+/// single thread on a stray multi-gigabyte file, then OOMs.
+pub const MAX_PROFILE_FILE_BYTES: u64 = 500 * 1024 * 1024;
+
 /// A single procedure hotspot extracted from a profile.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -12,7 +19,13 @@ pub struct ProfilerHint {
     pub object: String,
     pub self_time_ms: f64,
     pub total_time_ms: f64,
-    /// Number of samples / call count.
+    /// Number of *samples* whose top frame was this node, read straight from
+    /// the profile's `hitCount`.
+    ///
+    /// Not an invocation count: a Chrome-format CPU profile samples the stack
+    /// on a timer, so a procedure called once that runs for 300 ms has a high
+    /// hit count and a procedure called a million times that never lands on a
+    /// sample has none.
     pub hit_count: u64,
     /// Source file path, if mapped. May be workspace-relative or absolute.
     pub file: Option<String>,

@@ -6,7 +6,7 @@ use crate::cli::commands::*;
 
 pub fn cmd_rules(json: bool) -> ExitCode {
     run_command("rules", None, json, None, |result| {
-        let rules = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+        let rules = list_rows(result).as_array().map(|v| &v[..]).unwrap_or(&[]);
         if rules.is_empty() {
             eprintln!(
                 "No native lint rules are registered. Semantic AL diagnostics \
@@ -51,6 +51,25 @@ pub fn cmd_permissions(format: &str, name: &str, id: i64, role_id: &str, json: b
                     .unwrap_or(0);
                 print!("{content}");
                 eprintln!("\n{count} objects included");
+                // A file the collector could not read contributes no
+                // permissions. Saying nothing hands back a set that silently
+                // omits that object.
+                let skipped = result
+                    .get("skipped")
+                    .and_then(|value| value.as_array())
+                    .map(|entries| &entries[..])
+                    .unwrap_or_default();
+                for entry in skipped {
+                    let path = entry.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+                    let reason = entry.get("reason").and_then(|v| v.as_str()).unwrap_or("?");
+                    eprintln!("skipped {path}: {reason}");
+                }
+                if !skipped.is_empty() {
+                    eprintln!(
+                        "{} file(s) contributed no permissions; the set does not cover them",
+                        skipped.len()
+                    );
+                }
             }
             ExitCode::SUCCESS
         }
@@ -60,7 +79,7 @@ pub fn cmd_permissions(format: &str, name: &str, id: i64, role_id: &str, json: b
 
 pub fn cmd_error_codes(json: bool) -> ExitCode {
     run_command("errorCodes", None, json, None, |result| {
-        let codes = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+        let codes = list_rows(result).as_array().map(|v| &v[..]).unwrap_or(&[]);
         if codes.is_empty() {
             eprintln!("No error codes loaded (requires ALTool)");
         } else {
@@ -76,7 +95,7 @@ pub fn cmd_error_codes(json: bool) -> ExitCode {
 
 pub fn cmd_builtins(json: bool) -> ExitCode {
     run_command("builtinTypes", None, json, None, |result| {
-        let types = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+        let types = list_rows(result).as_array().map(|v| &v[..]).unwrap_or(&[]);
         if types.is_empty() {
             eprintln!("No builtin types loaded (requires ALTool)");
         } else {
@@ -176,14 +195,19 @@ pub fn cmd_hints(
             if json {
                 print_json(&result);
             } else {
-                let hints = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+                let hints = list_rows(&result).as_array().map(|v| &v[..]).unwrap_or(&[]);
                 if hints.is_empty() {
                     eprintln!("No inlay hints");
                 } else {
-                    for h in hints {
-                        print_json(h);
+                    // `line:col label`, 1-based like the command's input.
+                    for hint in hints {
+                        let line = hint["position"]["line"].as_u64().map_or(0, |l| l + 1);
+                        let col = hint["position"]["character"].as_u64().map_or(0, |c| c + 1);
+                        let label = hint["label"].as_str().unwrap_or("?");
+                        println!("{line}:{col}  {label}");
                     }
                     eprintln!("\n{} hints", hints.len());
+                    print_page_footer(&result);
                 }
             }
             ExitCode::SUCCESS
@@ -251,6 +275,7 @@ pub fn cmd_authenticate(cmd: &str, tenant: Option<&str>, json: bool) -> ExitCode
 
     match request_checked(&mut client, "authenticate", Some(params)) {
         Ok(result) => {
+            let usable = cmd != "status" || any_tenant_authenticated(&result);
             if json {
                 print_json(&result);
             } else {
@@ -301,10 +326,37 @@ pub fn cmd_authenticate(cmd: &str, tenant: Option<&str>, json: bool) -> ExitCode
                     }
                 }
             }
-            ExitCode::SUCCESS
+            if usable {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
         }
         Err(e) => report_error(&e, json),
     }
+}
+
+/// Whether at least one tenant has a token that is present and unexpired.
+///
+/// `authenticate status` printed `not authenticated` for every tenant and
+/// still exited 0, so `al authenticate status && al download-symbols --source
+/// server` went on to run unauthenticated.
+pub(crate) fn any_tenant_authenticated(result: &serde_json::Value) -> bool {
+    result
+        .get("tenants")
+        .and_then(|value| value.as_array())
+        .is_some_and(|tenants| {
+            tenants.iter().any(|tenant| {
+                tenant
+                    .get("authenticated")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false)
+                    && !tenant
+                        .get("expired")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(true)
+            })
+        })
 }
 
 pub fn cmd_init_debug(project_root: &std::path::Path, json: bool) -> ExitCode {
@@ -427,6 +479,12 @@ pub fn cmd_init_debug(project_root: &std::path::Path, json: bool) -> ExitCode {
     }
 }
 
+/// Scaffold a project in `dir`, in this process.
+///
+/// Creating a project is the one command that runs where no project exists
+/// yet. It used to go through the daemon, whose path containment refuses every
+/// path while no project is loaded, so `al-explorer new` failed everywhere
+/// except inside another AL project.
 pub fn cmd_new(
     dir: &str,
     name: &str,
@@ -435,24 +493,28 @@ pub fn cmd_new(
     runtime: &str,
     json: bool,
 ) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
+    use al_project::scaffold;
 
     let directory = match absolutize_path(dir) {
         Ok(directory) => directory,
         Err(error) => return report_error(&error, json),
     };
-    let params = serde_json::json!({
-        "dir": directory,
-        "name": name,
-        "publisher": publisher,
-        "template": template,
-        "runtime": runtime,
-    });
+    let template = match template.parse::<scaffold::ProjectTemplate>() {
+        Ok(template) => template,
+        Err(error) => return report_error(&error, json),
+    };
+    if let Err(error) = scaffold::application_version_for_runtime(runtime) {
+        return report_error(&error, json);
+    }
+    let config = scaffold::ScaffoldConfig {
+        name: name.to_string(),
+        publisher: publisher.to_string(),
+        runtime: runtime.to_string(),
+        template,
+        ..scaffold::ScaffoldConfig::default()
+    };
 
-    match request_checked(&mut client, "newProject", Some(params)) {
+    match scaffold::create_project(std::path::Path::new(&directory), &config) {
         Ok(result) => {
             if json {
                 println!(
@@ -460,28 +522,212 @@ pub fn cmd_new(
                     serde_json::to_string_pretty(&result).unwrap_or_default()
                 );
             } else {
-                let project_dir = result
-                    .get("projectDir")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(dir);
-                println!("Created AL project: {project_dir}");
-                if let Some(files) = result.get("filesCreated").and_then(|v| v.as_array()) {
-                    for f in files {
-                        if let Some(name) = f.as_str() {
-                            println!("  {name}");
-                        }
-                    }
+                println!("Created AL project: {}", result.project_dir);
+                for file in &result.files_created {
+                    println!("  {file}");
                 }
             }
             ExitCode::SUCCESS
         }
-        Err(e) => report_error(&e, json),
+        Err(error) => report_error(&error, json),
+    }
+}
+
+pub fn cmd_free_ids(
+    kind: Option<&str>,
+    object: Option<&str>,
+    count: u32,
+    include_used: bool,
+    json: bool,
+) -> ExitCode {
+    let mut params = serde_json::Map::new();
+    if let Some(kind) = kind {
+        params.insert("kind".to_string(), serde_json::json!(kind));
+    }
+    if let Some(object) = object {
+        params.insert("object".to_string(), serde_json::json!(object));
+    }
+    params.insert("count".to_string(), serde_json::json!(count));
+    if include_used {
+        params.insert("includeUsed".to_string(), serde_json::json!(true));
+    }
+    run_command(
+        "freeIds",
+        Some(serde_json::Value::Object(params)),
+        json,
+        None,
+        print_free_ids,
+    )
+}
+
+/// Human-readable form of a `freeIds` report. The JSON path prints the result
+/// unchanged; this is the only place that reshapes it.
+fn print_free_ids(result: &serde_json::Value) {
+    let number_list = |value: &serde_json::Value| {
+        value
+            .as_array()
+            .map(|numbers| {
+                numbers
+                    .iter()
+                    .filter_map(serde_json::Value::as_i64)
+                    .map(|number| number.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default()
+    };
+
+    match result.get("mode").and_then(|value| value.as_str()) {
+        Some("summary") => {
+            println!("Declared idRanges:");
+            for range in result["ranges"].as_array().unwrap_or(&Vec::new()) {
+                println!(
+                    "  {}-{} ({} IDs per kind)",
+                    range["from"].as_i64().unwrap_or(0),
+                    range["to"].as_i64().unwrap_or(0),
+                    range["free"].as_i64().unwrap_or(0)
+                );
+            }
+            let kinds = result["kinds"].as_array().cloned().unwrap_or_default();
+            if kinds.is_empty() {
+                println!("No object in the workspace uses a declared range yet.");
+            } else {
+                println!(
+                    "\n{:<24} {:>6} {:>6} {:>10}",
+                    "kind", "used", "free", "next free"
+                );
+                for row in &kinds {
+                    println!(
+                        "{:<24} {:>6} {:>6} {:>10}",
+                        row["kind"].as_str().unwrap_or("?"),
+                        row["used"].as_i64().unwrap_or(0),
+                        row["free"].as_i64().unwrap_or(0),
+                        row["nextFree"]
+                            .as_i64()
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                    );
+                }
+            }
+        }
+        Some(mode) => {
+            let what = match mode {
+                "field" => "field number",
+                "value" => "enum value ordinal",
+                _ => "object ID",
+            };
+            let subject = result["object"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| result["kind"].as_str().map(str::to_string))
+                .unwrap_or_else(|| "?".to_string());
+            println!(
+                "Next free {what} for {subject}: {}",
+                result["nextFree"]
+                    .as_i64()
+                    .map(|number| number.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            );
+            let free = number_list(&result["free"]);
+            if result["free"].as_array().is_some_and(|list| list.len() > 1) {
+                println!("Free: {free}");
+            }
+            if let Some(base) = result["baseObject"].as_str() {
+                println!("Shares numbering with base object: {base}");
+            }
+            for range in result["ranges"].as_array().unwrap_or(&Vec::new()) {
+                println!(
+                    "Range {}-{}: {} used, {} free",
+                    range["from"].as_i64().unwrap_or(0),
+                    range["to"].as_i64().unwrap_or(0),
+                    range["used"].as_i64().unwrap_or(0),
+                    range["free"].as_i64().unwrap_or(0),
+                );
+            }
+            if result["ranges"]
+                .as_array()
+                .is_none_or(|ranges| ranges.is_empty())
+            {
+                println!("Used: {}", result["usedCount"].as_i64().unwrap_or(0));
+            }
+            let sources = result["sources"].as_array().cloned().unwrap_or_default();
+            if sources.len() > 1 {
+                let names: Vec<&str> = sources
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect();
+                println!("Counted from: {}", names.join(", "));
+            }
+            if !result["used"].as_array().unwrap_or(&Vec::new()).is_empty() {
+                println!("Used numbers: {}", number_list(&result["used"]));
+            }
+            if result["truncated"].as_bool().unwrap_or(false) {
+                eprintln!("Fewer numbers are left than were requested.");
+            }
+        }
+        None => println!("The daemon returned no free-ID mode."),
+    }
+
+    for warning in result["warnings"].as_array().unwrap_or(&Vec::new()) {
+        if let Some(warning) = warning.as_str() {
+            eprintln!("warning: {warning}");
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The human formatter must not panic on any shape the daemon can send,
+    /// including the modes that carry no `ranges` and the summary that carries
+    /// no `nextFree`.
+    #[test]
+    fn free_ids_formatter_handles_every_report_shape() {
+        for report in [
+            serde_json::json!({"mode": "summary", "usedCount": 0, "ranges": []}),
+            serde_json::json!({
+                "mode": "summary",
+                "usedCount": 2,
+                "ranges": [{"from": 50100, "to": 50199, "used": 0, "free": 100}],
+                "kinds": [{"kind": "table", "used": 2, "free": 98, "nextFree": 50101}],
+            }),
+            serde_json::json!({
+                "mode": "object",
+                "kind": "table",
+                "ranges": [{"from": 50100, "to": 50199, "used": 2, "free": 98}],
+                "nextFree": 50101,
+                "free": [50101, 50102],
+                "usedCount": 2,
+                "freeCount": 98,
+                "truncated": true,
+            }),
+            serde_json::json!({
+                "mode": "field",
+                "kind": "tableextension",
+                "object": "Customer Ext",
+                "baseObject": "Customer",
+                "ranges": [{"from": 50100, "to": 50199, "used": 1, "free": 99}],
+                "nextFree": 50101,
+                "free": [50101],
+                "usedCount": 1,
+                "sources": ["Customer (Base Application)", "Customer Ext"],
+                "used": [50100],
+            }),
+            serde_json::json!({
+                "mode": "value",
+                "kind": "enum",
+                "object": "Work Order Status",
+                "nextFree": 2,
+                "free": [2],
+                "usedCount": 2,
+                "warnings": ["app.json declares no idRanges"],
+            }),
+            serde_json::json!({}),
+        ] {
+            print_free_ids(&report);
+        }
+    }
 
     #[test]
     fn parse_error_count_preserves_failure_information_for_json_mode() {

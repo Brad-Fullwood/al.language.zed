@@ -1,7 +1,7 @@
-//! Interpreter performance benchmarks for al-core.
+//! Interpreter performance benchmarks for the al-runtime interpreter.
 //!
 //! Run with:
-//!   cargo bench -p al-core
+//!   cargo bench -p al-test
 //!
 //! Each benchmark sets up all state **outside** the measurement loop so that
 //! only the hot path is timed.

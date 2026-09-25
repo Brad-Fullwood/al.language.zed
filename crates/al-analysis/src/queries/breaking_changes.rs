@@ -3,10 +3,11 @@
 //! Compare two symbol sets (baseline vs current) to identify breaking changes.
 //! Breaking changes are API surface removals or signature changes.
 
+use al_syntax::IdentifierText;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
-use al_symbols::{MethodSymbol, SymbolEntry};
+use al_symbols::{MethodSymbol, ObjectKind, SymbolEntry};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,6 +21,9 @@ pub enum BreakingChangeKind {
     ProcedureRemoved,
     /// Procedure signature changed (parameter added/removed/reordered).
     SignatureChanged,
+    /// A parameter was renamed but the signature is unchanged. AL calls are
+    /// positional, so no caller has to change.
+    ParameterRenamed,
     ReturnTypeChanged,
     /// Field was removed from a table/page.
     FieldRemoved,
@@ -29,6 +33,14 @@ pub enum BreakingChangeKind {
     EnumValueRemoved,
     EnumValueOrdinalChanged,
     PermissionReduced,
+    /// A table key was removed.
+    KeyRemoved,
+    /// A table key's field list changed. On the primary key this changes every
+    /// stored record's identity and breaks every `Get()` in a dependent app.
+    KeyFieldsChanged,
+    /// A named page control was removed, which breaks any pageextension that
+    /// does `addafter(Name)` or `modify(Name)`.
+    ControlRemoved,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -36,10 +48,17 @@ pub enum BreakingChangeKind {
 pub struct BreakingChange {
     pub kind: BreakingChangeKind,
     pub object: String,
+    /// The changed object's kind: a page and a table can share a name.
+    pub object_kind: ObjectKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub member: Option<String>,
     pub description: String,
-    /// Whether this is definitely breaking (vs potentially non-breaking).
+    /// Whether a dependent extension has to change to keep compiling.
+    ///
+    /// False for a change that alters the published surface without breaking a
+    /// caller, which `upgrade_report` reports as a warning rather than an
+    /// error. Renaming a parameter is the case that matters in practice: AL
+    /// calls are positional, so the name is not part of the call contract.
     pub is_breaking: bool,
 }
 
@@ -70,6 +89,7 @@ pub fn analyze_breaking_changes(
                 changes.push(BreakingChange {
                     kind: BreakingChangeKind::NamespaceChanged,
                     object: old_entry.name.clone(),
+                    object_kind: old_entry.kind,
                     member: None,
                     description: format!(
                         "Object '{}' moved from namespace '{}' to '{}'",
@@ -84,6 +104,7 @@ pub fn analyze_breaking_changes(
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::ObjectRemoved,
                 object: old_entry.name.clone(),
+                object_kind: old_entry.kind,
                 member: None,
                 description: format!(
                     "Object '{}' ({}) was removed",
@@ -207,7 +228,10 @@ fn validate_entry_surface(label: &str, entry: &SymbolEntry) -> Result<(), String
                 permission.permission_object
             ));
         }
-        if !(0..=31).contains(&permission.value) {
+        // Five direct R/I/M/D/X bits and, above them, the same five for
+        // indirect permissions: Base Application 25 carries masks such as 32,
+        // 129 and 257, and allowing only 0..=31 refused every real package.
+        if !(0..=1023).contains(&permission.value) {
             return Err(format!(
                 "{label} {object} contains invalid permission mask {}",
                 permission.value
@@ -254,6 +278,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
         changes.push(BreakingChange {
             kind: BreakingChangeKind::ObjectIdChanged,
             object: old.name.clone(),
+            object_kind: old.kind,
             member: None,
             description: format!(
                 "Object '{}' ID changed from {} to {}",
@@ -268,6 +293,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
         changes.push(BreakingChange {
             kind: BreakingChangeKind::BaseObjectChanged,
             object: old.name.clone(),
+            object_kind: old.kind,
             member: None,
             description: format!(
                 "Base object of '{}' changed from '{}' to '{}'",
@@ -288,6 +314,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::InterfaceRemoved,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(interface.clone()),
                 description: format!(
                     "Object '{}' no longer implements interface '{}'",
@@ -301,6 +328,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
         changes.push(BreakingChange {
             kind: BreakingChangeKind::AccessReduced,
             object: old.name.clone(),
+            object_kind: old.kind,
             member: None,
             description: format!("Object '{}' access changed to Internal", old.name),
             is_breaking: true,
@@ -323,11 +351,12 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             .copied()
             .find(|method| parameter_contract_matches(old_method, method));
         if let Some(new_method) = exact {
-            check_matching_signature(&old.name, old_method, new_method, changes);
+            check_matching_signature(old, old_method, new_method, changes);
         } else if same_name.is_empty() {
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::ProcedureRemoved,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_method.name.clone()),
                 description: format!(
                     "Public procedure '{}' was removed from '{}'",
@@ -337,11 +366,12 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
                 is_breaking: true,
             });
         } else if same_name.len() == 1 {
-            check_incompatible_signature(&old.name, old_method, same_name[0], changes);
+            check_incompatible_signature(old, old_method, same_name[0], changes);
         } else {
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::SignatureChanged,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_method.name.clone()),
                 description: format!(
                     "No current overload of '{}' preserves baseline signature {}",
@@ -370,6 +400,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
                 changes.push(BreakingChange {
                     kind: BreakingChangeKind::FieldRenamed,
                     object: old.name.clone(),
+                    object_kind: old.kind,
                     member: Some(old_field.name.clone()),
                     description: format!(
                         "Field '{}' (ID {}) in '{}' was renamed to '{}'",
@@ -382,6 +413,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::FieldRemoved,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_field.name.clone()),
                 description: format!("Field '{}' was removed from '{}'", old_field.name, old.name),
                 is_breaking: true,
@@ -392,6 +424,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::FieldIdChanged,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_field.name.clone()),
                 description: format!(
                     "Field '{}' in '{}' changed ID from {} to {}",
@@ -404,6 +437,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::FieldTypeChanged,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_field.name.clone()),
                 description: format!(
                     "Field '{}' in '{}' changed type from '{}' to '{}'",
@@ -418,6 +452,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::AccessReduced,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_field.name.clone()),
                 description: format!(
                     "Field '{}' in '{}' access changed to Internal",
@@ -437,6 +472,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::EnumValueRemoved,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_val.name.clone()),
                 description: format!(
                     "Enum value '{}' was removed from '{}'",
@@ -450,6 +486,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::EnumValueOrdinalChanged,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_val.name.clone()),
                 description: format!(
                     "Enum value '{}' in '{}' changed ordinal from {} to {}",
@@ -459,6 +496,9 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             });
         }
     }
+
+    diff_keys(old, new, changes);
+    diff_controls(old, new, changes);
 
     for old_permission in &old.permissions {
         let current = new.permissions.iter().find(|permission| {
@@ -471,6 +511,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::PermissionReduced,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(format!(
                     "{}:{}",
                     old_permission.permission_object, old_permission.object_id
@@ -488,8 +529,99 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
     }
 }
 
+/// Diff a table's keys by name and field list.
+///
+/// A key's field list is its identity in SQL: changing the primary key changes
+/// every stored record's identity and breaks every `Get()` a dependent app
+/// makes against the table.
+fn diff_keys(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingChange>) {
+    for old_key in &old.keys {
+        let Some(new_key) = new
+            .keys
+            .iter()
+            .find(|key| key.name.eq_ignore_ascii_case(&old_key.name))
+        else {
+            changes.push(BreakingChange {
+                kind: BreakingChangeKind::KeyRemoved,
+                object: old.name.clone(),
+                object_kind: old.kind,
+                member: Some(old_key.name.clone()),
+                description: format!(
+                    "Key '{}' ({}) was removed from '{}'",
+                    old_key.name,
+                    key_fields(old_key),
+                    old.name
+                ),
+                is_breaking: true,
+            });
+            continue;
+        };
+        let old_fields: Vec<String> = old_key
+            .field_names
+            .iter()
+            .map(|f| normalize_name(f))
+            .collect();
+        let new_fields: Vec<String> = new_key
+            .field_names
+            .iter()
+            .map(|f| normalize_name(f))
+            .collect();
+        if old_fields != new_fields {
+            changes.push(BreakingChange {
+                kind: BreakingChangeKind::KeyFieldsChanged,
+                object: old.name.clone(),
+                object_kind: old.kind,
+                member: Some(old_key.name.clone()),
+                description: format!(
+                    "Key '{}' in '{}' changed fields from ({}) to ({})",
+                    old_key.name,
+                    key_fields(old_key),
+                    old.name,
+                    key_fields(new_key)
+                ),
+                is_breaking: true,
+            });
+        }
+    }
+}
+
+fn key_fields(key: &al_symbols::KeySymbol) -> String {
+    key.field_names.join(", ")
+}
+
+/// Diff a page's named controls, including nested ones.
+fn diff_controls(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingChange>) {
+    let current = control_names(&new.controls);
+    for (normalized, name) in control_names(&old.controls) {
+        if current.contains_key(&normalized) {
+            continue;
+        }
+        changes.push(BreakingChange {
+            kind: BreakingChangeKind::ControlRemoved,
+            object: old.name.clone(),
+            object_kind: old.kind,
+            member: Some(name.clone()),
+            description: format!("Control '{name}' was removed from '{}'", old.name),
+            is_breaking: true,
+        });
+    }
+}
+
+/// Every named control in the tree, as `normalized -> name as written`.
+fn control_names(controls: &[al_symbols::ControlSymbol]) -> BTreeMap<String, String> {
+    let mut names = BTreeMap::new();
+    let mut stack: Vec<&al_symbols::ControlSymbol> = controls.iter().collect();
+    while let Some(control) = stack.pop() {
+        if !control.name.trim().is_empty() {
+            names.insert(normalize_name(&control.name), control.name.clone());
+        }
+        stack.extend(control.children.iter());
+    }
+    names
+}
+
 fn check_incompatible_signature(
-    object_name: &str,
+    object: &SymbolEntry,
     old: &MethodSymbol,
     new: &MethodSymbol,
     changes: &mut Vec<BreakingChange>,
@@ -497,7 +629,8 @@ fn check_incompatible_signature(
     if old.parameters.len() != new.parameters.len() {
         changes.push(BreakingChange {
             kind: BreakingChangeKind::SignatureChanged,
-            object: object_name.to_string(),
+            object: object.name.clone(),
+            object_kind: object.kind,
             member: Some(old.name.clone()),
             description: format!(
                 "Procedure '{}' parameter count changed from {} to {}",
@@ -515,7 +648,8 @@ fn check_incompatible_signature(
         if normalize_name(&old_parameter.type_name) != normalize_name(&new_parameter.type_name) {
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::SignatureChanged,
-                object: object_name.to_string(),
+                object: object.name.clone(),
+                object_kind: object.kind,
                 member: Some(old.name.clone()),
                 description: format!(
                     "Parameter {} type changed from '{}' to '{}' in '{}'",
@@ -530,7 +664,8 @@ fn check_incompatible_signature(
         if old_parameter.is_var != new_parameter.is_var {
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::SignatureChanged,
-                object: object_name.to_string(),
+                object: object.name.clone(),
+                object_kind: object.kind,
                 member: Some(old.name.clone()),
                 description: format!(
                     "Parameter {} '{}' modifier changed from {} to {} in '{}'",
@@ -555,7 +690,7 @@ fn check_incompatible_signature(
 }
 
 fn check_matching_signature(
-    object_name: &str,
+    object: &SymbolEntry,
     old: &MethodSymbol,
     new: &MethodSymbol,
     changes: &mut Vec<BreakingChange>,
@@ -567,7 +702,8 @@ fn check_matching_signature(
     if old_ret.map(str::to_lowercase) != new_ret.map(str::to_lowercase) {
         changes.push(BreakingChange {
             kind: BreakingChangeKind::ReturnTypeChanged,
-            object: object_name.to_string(),
+            object: object.name.clone(),
+            object_kind: object.kind,
             member: Some(old.name.clone()),
             description: format!(
                 "Return type of '{}' changed from '{}' to '{}'",
@@ -583,9 +719,14 @@ fn check_matching_signature(
         old.parameters.iter().zip(&new.parameters).enumerate()
     {
         if !old_parameter.name.eq_ignore_ascii_case(&new_parameter.name) {
+            // Not breaking: AL has no named arguments, so a call site names
+            // nothing but the procedure. Reporting this as an error failed the
+            // breaking-change gate on any release that tidied up a parameter
+            // name.
             changes.push(BreakingChange {
-                kind: BreakingChangeKind::SignatureChanged,
-                object: object_name.to_string(),
+                kind: BreakingChangeKind::ParameterRenamed,
+                object: object.name.clone(),
+                object_kind: object.kind,
                 member: Some(old.name.clone()),
                 description: format!(
                     "Parameter {} in '{}' was renamed from '{}' to '{}'",
@@ -594,7 +735,7 @@ fn check_matching_signature(
                     old_parameter.name,
                     new_parameter.name
                 ),
-                is_breaking: true,
+                is_breaking: false,
             });
         }
     }
@@ -629,7 +770,7 @@ fn method_label(method: &MethodSymbol) -> String {
 }
 
 fn normalize_name(value: &str) -> String {
-    value.trim().trim_matches('"').to_ascii_lowercase()
+    value.unquote_identifier().to_ascii_lowercase()
 }
 
 fn normalize_optional_name(value: Option<&str>) -> Option<String> {
@@ -654,22 +795,12 @@ mod tests {
 
     fn make_codeunit(name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Codeunit,
             id: 50100,
             name: name.to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Test".to_string(),
             methods,
-            fields: Vec::new(),
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -789,15 +920,10 @@ mod tests {
     #[test]
     fn detects_removed_field() {
         let old_table = SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Table,
             id: 18,
             name: "Customer".to_string(),
-            extends: None,
-            implements: Vec::new(),
             package: "Base".to_string(),
-            namespace: String::new(),
-            methods: Vec::new(),
             fields: vec![
                 FieldSymbol {
                     id: 1,
@@ -812,12 +938,7 @@ mod tests {
                     properties: vec![],
                 },
             ],
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         };
 
         let new_table = SymbolEntry {
@@ -889,17 +1010,10 @@ mod tests {
     fn detects_enum_value_removed() {
         use al_symbols::EnumValueSymbol;
         let make_enum = |values: Vec<&str>| SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Enum,
             id: 50100,
             name: "Status".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Test".to_string(),
-            methods: Vec::new(),
-            fields: Vec::new(),
-            controls: Vec::new(),
             enum_values: values
                 .into_iter()
                 .enumerate()
@@ -908,10 +1022,7 @@ mod tests {
                     name: n.to_string(),
                 })
                 .collect(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         };
         let baseline = vec![make_enum(vec!["Open", "Pending", "Closed"])];
         let current = vec![make_enum(vec!["Open", "Closed"])];
@@ -1201,10 +1312,142 @@ mod tests {
         );
 
         let changes = analyze_breaking_changes(&[baseline], &[current]);
-        assert!(changes.iter().any(|change| {
-            change.kind == BreakingChangeKind::SignatureChanged
-                && change.description.contains("renamed")
-        }));
+        let rename = changes
+            .iter()
+            .find(|change| change.kind == BreakingChangeKind::ParameterRenamed)
+            .unwrap_or_else(|| panic!("no parameter rename reported: {changes:?}"));
+        assert!(rename.description.contains("renamed"));
+        // AL calls are positional, so no caller has to change.
+        assert!(!rename.is_breaking);
+    }
+
+    /// Removing a public procedure and changing a signature do break callers,
+    /// so both stay breaking while a parameter rename does not.
+    #[test]
+    fn removal_and_signature_change_stay_breaking() {
+        let baseline = make_codeunit(
+            "Published API",
+            vec![
+                make_method("Post", vec![make_param("Header", "Record")], None),
+                make_method("Gone", Vec::new(), None),
+            ],
+        );
+        let current = make_codeunit(
+            "Published API",
+            vec![make_method(
+                "Post",
+                vec![make_param("Header", "Record"), make_param("Line", "Record")],
+                None,
+            )],
+        );
+
+        let changes = analyze_breaking_changes(&[baseline], &[current]);
+        let removed = changes
+            .iter()
+            .find(|change| change.kind == BreakingChangeKind::ProcedureRemoved)
+            .unwrap_or_else(|| panic!("no removal reported: {changes:?}"));
+        assert!(removed.is_breaking);
+        let signature = changes
+            .iter()
+            .find(|change| change.kind == BreakingChangeKind::SignatureChanged)
+            .unwrap_or_else(|| panic!("no signature change reported: {changes:?}"));
+        assert!(signature.is_breaking);
+    }
+
+    fn make_table(name: &str, keys: Vec<al_symbols::KeySymbol>) -> SymbolEntry {
+        SymbolEntry {
+            kind: ObjectKind::Table,
+            id: 50100,
+            name: name.to_string(),
+            package: "Test".to_string(),
+            keys,
+            ..SymbolEntry::default()
+        }
+    }
+
+    fn key(name: &str, fields: &[&str]) -> al_symbols::KeySymbol {
+        al_symbols::KeySymbol {
+            name: name.to_string(),
+            field_names: fields.iter().map(|f| f.to_string()).collect(),
+            properties: Vec::new(),
+        }
+    }
+
+    /// Changing a primary key changes every stored record's identity and
+    /// breaks every Get() a dependent app makes.
+    #[test]
+    fn a_changed_key_field_list_is_breaking() {
+        let baseline = make_table("Shipment Log", vec![key("PK", &["Entry No."])]);
+        let current = make_table(
+            "Shipment Log",
+            vec![key("PK", &["Document No.", "Line No."])],
+        );
+
+        let changes = analyze_breaking_changes(&[baseline], &[current]);
+        let change = changes
+            .iter()
+            .find(|change| change.kind == BreakingChangeKind::KeyFieldsChanged)
+            .unwrap_or_else(|| panic!("no key change reported: {changes:?}"));
+        assert!(change.is_breaking);
+        assert!(change.description.contains("Entry No."));
+        assert!(change.description.contains("Document No., Line No."));
+    }
+
+    #[test]
+    fn a_removed_key_is_breaking() {
+        let baseline = make_table(
+            "Shipment Log",
+            vec![key("PK", &["Entry No."]), key("ByDate", &["Posting Date"])],
+        );
+        let current = make_table("Shipment Log", vec![key("PK", &["Entry No."])]);
+
+        let changes = analyze_breaking_changes(&[baseline], &[current]);
+        assert!(
+            changes
+                .iter()
+                .any(|change| change.kind == BreakingChangeKind::KeyRemoved
+                    && change.member.as_deref() == Some("ByDate")),
+            "{changes:?}"
+        );
+    }
+
+    /// A pageextension targets a control by name with addafter or modify, so
+    /// removing one breaks it.
+    #[test]
+    fn a_removed_page_control_is_breaking() {
+        let control =
+            |name: &str, children: Vec<al_symbols::ControlSymbol>| al_symbols::ControlSymbol {
+                name: name.to_string(),
+                kind: "field".to_string(),
+                children,
+            };
+        let page = |controls: Vec<al_symbols::ControlSymbol>| SymbolEntry {
+            kind: ObjectKind::Page,
+            id: 50100,
+            name: "Shipment Card".to_string(),
+            package: "Test".to_string(),
+            controls,
+            ..SymbolEntry::default()
+        };
+        let baseline = page(vec![control(
+            "General",
+            vec![
+                control("Discount", Vec::new()),
+                control("Amount", Vec::new()),
+            ],
+        )]);
+        let current = page(vec![control(
+            "General",
+            vec![control("Amount", Vec::new())],
+        )]);
+
+        let changes = analyze_breaking_changes(&[baseline], &[current]);
+        let change = changes
+            .iter()
+            .find(|change| change.kind == BreakingChangeKind::ControlRemoved)
+            .unwrap_or_else(|| panic!("no control removal reported: {changes:?}"));
+        assert_eq!(change.member.as_deref(), Some("Discount"));
+        assert!(change.is_breaking);
     }
 
     #[test]
@@ -1245,12 +1488,28 @@ mod tests {
             permissions: vec![PermissionSymbol {
                 permission_object: 5,
                 object_id: 80,
-                value: 32,
+                value: 1024,
             }],
             ..Default::default()
         };
         let error = analyze_breaking_changes_checked(&[invalid_permissions], &[])
             .expect_err("unknown permission bits must fail");
         assert!(error.contains("invalid permission mask"), "{error}");
+
+        // Indirect bits sit above the direct ones; Microsoft's own packages
+        // use them, so they are a valid surface.
+        let indirect = SymbolEntry {
+            kind: ObjectKind::PermissionSet,
+            id: 50102,
+            name: "Indirect Permissions".to_string(),
+            permissions: vec![PermissionSymbol {
+                permission_object: 0,
+                object_id: 18,
+                value: 129,
+            }],
+            ..Default::default()
+        };
+        analyze_breaking_changes_checked(&[indirect], &[])
+            .expect("an indirect permission bit is a valid mask");
     }
 }

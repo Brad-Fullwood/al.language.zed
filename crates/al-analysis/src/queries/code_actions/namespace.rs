@@ -1,5 +1,6 @@
 //! Namespace and using-directive code actions.
 
+use al_syntax::IdentifierText;
 use url::Url;
 
 use super::single_edit_ws;
@@ -118,7 +119,7 @@ fn extract_word_at_position(text: &str, range: Range) -> String {
     }
 
     if start_byte < end_byte && end_byte <= line.len() {
-        return line[start_byte..end_byte].trim_matches('"').to_string();
+        return line[start_byte..end_byte].unquote_identifier().into_owned();
     }
 
     // Non-ASCII bytes (>= 0x80) are not alphanumeric, so they act as word boundaries.
@@ -278,22 +279,12 @@ mod tests {
 
     fn make_entry_with_namespace(kind: ObjectKind, id: i32, name: &str, ns: &str) -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind,
             id,
             name: name.to_string(),
-            extends: None,
-            implements: Vec::new(),
             package: "TestPkg".to_string(),
             namespace: ns.to_string(),
-            methods: Vec::new(),
-            fields: Vec::new(),
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -342,9 +333,15 @@ codeunit 50100 "My Codeunit"
         assert!(!using_actions.is_empty(), "Should offer 'Add using' action");
         assert!(using_actions[0].title.contains("Microsoft.Sales"));
 
-        let edit = using_actions[0].edit.as_ref().expect("should have edit");
-        let (_, edits) = &edit.changes[0];
-        assert!(edits[0].new_text.contains("using Microsoft.Sales;"));
+        let updated = super::super::test_support::assert_action_applies_cleanly(
+            al_code,
+            using_actions[0],
+            "add using",
+        );
+        assert!(
+            updated.contains("using Microsoft.Sales;"),
+            "the directive must land in the file: {updated}"
+        );
     }
 
     #[test]

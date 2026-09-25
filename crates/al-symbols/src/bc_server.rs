@@ -4,7 +4,7 @@
 //! The BC server exposes a `/dev/packages` endpoint that returns `.app` files
 //! when authenticated with appropriate credentials.
 //!
-//! The caller (al-core) is responsible for constructing per-package download URLs
+//! The caller (al-lsp) is responsible for constructing per-package download URLs
 //! using its own `BcServerConfig`. This client handles only HTTP transport and
 //! authentication.
 
@@ -50,8 +50,8 @@ pub type MessageSink = Arc<dyn Fn(&str) + Send + Sync>;
 /// Client for downloading symbol packages from a BC instance's Dev API.
 ///
 /// The caller is responsible for constructing the per-dependency download URL
-/// (e.g., using `BcServerConfig::dev_packages_url` in al-core) and passing it
-/// to [`download_one`].
+/// (e.g. using `al_bc::launch::BcServerConfig::dev_packages_url`) and passing it
+/// to [`BcServerClient::download_one`].
 pub struct BcServerClient {
     client: reqwest::Client,
     auth: AuthMethod,
@@ -141,7 +141,7 @@ impl BcServerClient {
     /// Download a single dependency from the BC Dev API.
     ///
     /// `url` is the fully-constructed `/dev/packages` URL for this dependency.
-    /// The caller (al-core) constructs this URL using `BcServerConfig::dev_packages_url`.
+    /// The caller constructs this URL using `al_bc::launch::BcServerConfig::dev_packages_url`.
     ///
     /// Returns the path to the saved `.app` file.
     pub async fn download_one(
@@ -269,18 +269,9 @@ impl BcServerClient {
             match request.send().await {
                 Ok(response) => {
                     let status = response.status().as_u16();
-                    let transient = matches!(status, 429 | 502 | 503 | 504);
-                    if transient && attempt + 1 < MAX_ATTEMPTS {
-                        let retry_after = response
-                            .headers()
-                            .get(reqwest::header::RETRY_AFTER)
-                            .and_then(|value| value.to_str().ok())
-                            .and_then(|value| value.parse::<u64>().ok())
-                            .map(std::time::Duration::from_secs)
-                            .unwrap_or_else(|| {
-                                std::time::Duration::from_millis(200 * (1u64 << attempt))
-                            })
-                            .min(std::time::Duration::from_secs(30));
+                    if crate::retry::is_retryable_status(status) && attempt + 1 < MAX_ATTEMPTS {
+                        let retry_after =
+                            crate::retry::retry_delay(response.headers(), attempt as u32);
                         warn!(
                             package = %dep.name,
                             status,
@@ -313,7 +304,7 @@ impl BcServerClient {
 
     /// Download all dependencies concurrently, given pre-computed URLs for each.
     ///
-    /// `url_deps` is a slice of `(url, dep)` pairs. The caller (al-core) is
+    /// `url_deps` is a slice of `(url, dep)` pairs. The caller is
     /// responsible for pairing each dependency with its corresponding download URL.
     /// Downloads run concurrently behind a bounded semaphore.
     /// Returns one result per entry in the same order as the input slice.
@@ -365,16 +356,28 @@ impl BcServerClient {
     ) -> Result<reqwest::RequestBuilder, BcServerError> {
         match self.auth {
             AuthMethod::UserPassword => {
-                let username =
-                    std::env::var("BC_USERNAME").map_err(|_| BcServerError::CredentialsRequired)?;
-                let password =
-                    std::env::var("BC_PASSWORD").map_err(|_| BcServerError::CredentialsRequired)?;
+                let (username, password) = al_bc::http_auth::basic_auth_from_env()
+                    .ok_or(BcServerError::CredentialsRequired)?;
                 Ok(request.basic_auth(username, Some(password)))
             }
             AuthMethod::Windows => {
-                // Windows auth (NTLM/Negotiate) — works on Windows, limited on Linux
-                warn!("Windows authentication may not work from Linux; set BC_USERNAME/BC_PASSWORD for UserPassword auth");
-                Ok(request)
+                // Same as al_bc::bc_client: no NTLM or Negotiate handshake
+                // exists here, so BC_USERNAME/BC_PASSWORD go as HTTP Basic when
+                // both are set. Sending nothing, which this arm used to do,
+                // made symbol download 401 against a server the publish path
+                // authenticated to with the same configuration.
+                match al_bc::http_auth::basic_auth_from_env() {
+                    Some((username, password)) => Ok(request.basic_auth(username, Some(password))),
+                    None => {
+                        warn!(
+                            "AuthMethod::Windows has no BC_USERNAME/BC_PASSWORD set — this client \
+                             does not implement NTLM/Negotiate, so the request carries no \
+                             Authorization header and a Windows-auth-only BC server will reject it \
+                             with 401. Set BC_USERNAME/BC_PASSWORD (sent as HTTP Basic, not NTLM)."
+                        );
+                        Ok(request)
+                    }
+                }
             }
             AuthMethod::AAD => {
                 // Check for explicit env var first (manual override). Skip it
@@ -703,9 +706,10 @@ mod tests {
         data
     }
 
-    /// A client that never authenticates (Windows auth adds no headers), so
+    /// A `Windows`-auth client, which sends HTTP Basic only when
+    /// BC_USERNAME/BC_PASSWORD are set and no Authorization header otherwise, so
     /// `download_one` can be driven against a mock server without touching the
-    /// OAuth flow or env vars.
+    /// OAuth flow. The mocks below do not check credentials.
     fn no_auth_client() -> BcServerClient {
         BcServerClient::new(AuthMethod::Windows, None, Arc::new(|_| {}), false)
             .expect("client builds")
@@ -994,6 +998,65 @@ mod tests {
             results[1]
         );
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// `AuthMethod::Windows` used to send nothing here while al-bc's client
+    /// sent Basic from the same two variables, so symbol download 401'd against
+    /// a server that publish authenticated to with one configuration. Neither
+    /// client implements an NTLM handshake, so Basic is what both send.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn add_auth_windows_sends_basic_when_credentials_are_set() {
+        std::env::set_var("BC_USERNAME", "alice");
+        std::env::set_var("BC_PASSWORD", "secret");
+        let client = BcServerClient::new(AuthMethod::Windows, None, Arc::new(|_| {}), false)
+            .expect("client builds");
+
+        let request = client
+            .add_auth(client.client.get("http://example.invalid/dev/packages"))
+            .await
+            .expect("windows auth with credentials must not error")
+            .build()
+            .expect("request builds");
+
+        std::env::remove_var("BC_USERNAME");
+        std::env::remove_var("BC_PASSWORD");
+
+        let header = request
+            .headers()
+            .get(reqwest::header::AUTHORIZATION)
+            .expect("Authorization header must be present");
+        assert!(
+            header
+                .to_str()
+                .expect("header is ASCII")
+                .starts_with("Basic "),
+            "Windows auth must send HTTP Basic, got {header:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn add_auth_windows_without_credentials_sends_no_authorization() {
+        std::env::remove_var("BC_USERNAME");
+        std::env::remove_var("BC_PASSWORD");
+        let client = BcServerClient::new(AuthMethod::Windows, None, Arc::new(|_| {}), false)
+            .expect("client builds");
+
+        let request = client
+            .add_auth(client.client.get("http://example.invalid/dev/packages"))
+            .await
+            .expect("windows auth without credentials must not error")
+            .build()
+            .expect("request builds");
+
+        assert!(
+            request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .is_none(),
+            "no credentials means no Authorization header"
+        );
     }
 
     #[tokio::test]

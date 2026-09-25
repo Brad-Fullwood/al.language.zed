@@ -174,30 +174,6 @@ pub fn extract_semantic_tokens(tree: &Tree, text: &str) -> Vec<SemanticToken> {
     tokens
 }
 
-/// Build a table of byte offsets for the start of each line in `source`.
-/// `line_starts[i]` is the byte offset of the first byte on line `i`.
-fn build_line_starts(source: &[u8]) -> Vec<usize> {
-    std::iter::once(0)
-        .chain(
-            source
-                .iter()
-                .enumerate()
-                .filter(|(_, &b)| b == b'\n')
-                .map(|(i, _)| i + 1),
-        )
-        .collect()
-}
-
-/// Return the content of a single line from `source` using the precomputed
-/// `line_starts` table.  Returns an empty slice if `row` is out of range.
-fn get_line<'a>(source: &'a [u8], line_starts: &[usize], row: usize) -> &'a [u8] {
-    let Some(&start) = line_starts.get(row) else {
-        return &[];
-    };
-    let end = line_starts.get(row + 1).copied().unwrap_or(source.len());
-    &source[start..end]
-}
-
 fn collect_tokens(
     node: Node,
     source: &[u8],
@@ -205,7 +181,7 @@ fn collect_tokens(
     tokens: &mut Vec<(u32, u32, u32, u32)>,
 ) {
     // Pre-build line offsets once so every per-token line lookup is O(1).
-    let line_starts = build_line_starts(source);
+    let line_index = crate::SourceLines::new(source);
 
     let mut stack = Vec::new();
     stack.push(node);
@@ -217,7 +193,7 @@ fn collect_tokens(
             let end = current.end_position();
 
             if start.row == end.row {
-                let line_bytes = get_line(source, &line_starts, start.row);
+                let line_bytes = line_index.line_bytes(start.row);
                 let line_str = std::str::from_utf8(line_bytes).unwrap_or("");
                 let utf16_col = super::byte_col_to_utf16_col(line_str, start.column);
                 let utf16_end = super::byte_col_to_utf16_col(line_str, end.column);
@@ -240,7 +216,7 @@ fn collect_tokens(
                     for (i, line) in text.lines().enumerate() {
                         let row = start.row + i;
                         let byte_col = if i == 0 { start.column } else { 0 };
-                        let line_bytes = get_line(source, &line_starts, row);
+                        let line_bytes = line_index.line_bytes(row);
                         let source_line = std::str::from_utf8(line_bytes).unwrap_or(line);
                         let utf16_col = super::byte_col_to_utf16_col(source_line, byte_col);
                         let utf16_len = line.encode_utf16().count() as u32;
@@ -537,7 +513,7 @@ fn is_builtin_record_member(
     let Ok(member_name) = member.utf8_text(source) else {
         return false;
     };
-    if !is_record_builtin_method(member_name.trim_matches('"')) {
+    if !is_record_builtin_method(&crate::clean_identifier(member_name)) {
         return false;
     }
 
@@ -556,7 +532,7 @@ fn is_builtin_record_member(
     let Ok(receiver) = primary.utf8_text(source) else {
         return false;
     };
-    let receiver = receiver.trim().trim_matches('"');
+    let receiver = crate::clean_identifier(receiver);
     if receiver.is_empty()
         || !receiver
             .chars()
@@ -575,7 +551,7 @@ fn is_builtin_record_member(
         character: super::byte_col_to_utf16_col(line, member.start_position().column),
     };
     type_resolver
-        .resolve_type(receiver, position)
+        .resolve_type(&receiver, position)
         .is_some_and(|declaration| declaration.type_name.eq_ignore_ascii_case("Record"))
 }
 

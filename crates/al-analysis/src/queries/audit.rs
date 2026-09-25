@@ -21,7 +21,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
-use al_insight::calls::{extract_call_sites, extract_procedure_var_types, CallSite, RecordOp};
+use al_insight::calls::{CallSite, RecordOp};
 
 use serde::Serialize;
 
@@ -77,14 +77,19 @@ pub fn data_classification_audit(
     let mut results = Vec::new();
 
     for source in sources {
-        if !matches!(
-            source.object.kind,
-            al_symbols::ObjectKind::Table | al_symbols::ObjectKind::TableExtension
-        ) {
-            continue;
-        }
+        // Every table in the file, not only the first object: a file declaring
+        // a setup table then its card page, or two tables, used to be skipped
+        // or audited under the wrong table's name.
+        for object in &source.objects {
+            if !matches!(
+                object.kind,
+                al_symbols::ObjectKind::Table | al_symbols::ObjectKind::TableExtension
+            ) {
+                continue;
+            }
 
-        scan_table_fields(&source, &mut results)?;
+            scan_table_fields(&source, object, &mut results)?;
+        }
     }
 
     Ok(results)
@@ -92,9 +97,16 @@ pub fn data_classification_audit(
 
 fn scan_table_fields(
     source: &WorkspaceSource,
+    object: &crate::workspace_sources::WorkspaceObjectDeclaration,
     results: &mut Vec<DataClassificationEntry>,
 ) -> Result<(), AuditError> {
-    let sections = super::bulk_fix::collect_ast_sections(&source.tree, &source.text, &["field"])
+    let range = object.info.range;
+    let object_node = source
+        .tree
+        .root_node()
+        .descendant_for_byte_range(range.start_byte, range.end_byte)
+        .unwrap_or_else(|| source.tree.root_node());
+    let sections = super::bulk_fix::collect_ast_sections_in(object_node, &source.text, &["field"])
         .map_err(|reason| AuditError::InvalidSource {
             path: source.path.clone(),
             reason,
@@ -137,7 +149,7 @@ fn scan_table_fields(
         };
         let risk = classify_gdpr_risk(&classification);
         results.push(DataClassificationEntry {
-            table: source.object.info.name.clone(),
+            table: object.info.name.clone(),
             field,
             classification,
             risk,
@@ -204,9 +216,10 @@ pub struct OverBroadGrantEntry {
 /// **Precision: write-site over-approximation in the safe direction.** A right
 /// (I/M/D) is reported as over-granted only when **no** matching write site is
 /// found anywhere in the workspace — `Insert` for `I`; `Modify`/`ModifyAll`/
-/// `Rename` for `M`; `Delete`/`DeleteAll` for `D`. Writes via `RecordRef`,
-/// dynamically-dispatched code, base-app/other-extension code, or
-/// repeated-named triggers the per-procedure scan does not revisit are **not**
+/// `Rename` for `M`; `Delete`/`DeleteAll` for `D`. Every trigger and procedure
+/// declaration is scanned, including repeated names such as a per-field
+/// `OnValidate` or a per-action `OnAction`. Writes via `RecordRef`,
+/// dynamically-dispatched code, or base-app/other-extension code are **not**
 /// detected, so the over-grant set is a lower bound (false negatives possible,
 /// false positives avoided). Read (`R`) is never flagged: a read cannot be
 /// disproven statically, and the table is referenced by construction.
@@ -231,9 +244,9 @@ pub struct OverGrantedRightsEntry {
     pub reason: String,
 }
 
-/// Full result of the permission-set audit: per-object coverage plus over-broad
-/// (unused) grants. added the `over_broad` (object-level) and
-/// `over_granted_rights` (right-level / RIMDX) sections; `coverage` is unchanged.
+/// Full result of the permission-set audit: which objects a permission set
+/// covers, grants for objects nothing uses, `tabledata` rights beyond the
+/// observed writes, and the grant clauses that could not be read.
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionAuditReport {
@@ -244,6 +257,29 @@ pub struct PermissionAuditReport {
     /// `tabledata` grants whose Insert/Modify/Delete rights exceed observed
     /// write access, for tables that are referenced (right-level / RIMDX check).
     pub over_granted_rights: Vec<OverGrantedRightsEntry>,
+    /// Grant clauses the audit could not read. The rest of the workspace is
+    /// still audited; a clause listed here took no part in any check.
+    pub parse_issues: Vec<PermissionParseIssue>,
+}
+
+/// A grant clause the audit could not parse.
+///
+/// One unreadable clause used to abort the whole audit, so a single `system`
+/// grant took down coverage, over-broad and over-granted-rights for the entire
+/// workspace. Clauses degrade one at a time instead, and the clause is
+/// reported rather than silently dropped.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionParseIssue {
+    /// Name of the permission set holding the clause.
+    pub permission_set: String,
+    /// File declaring that permission set.
+    pub file: String,
+    /// 1-based position of the clause within the `Permissions` property.
+    pub clause: usize,
+    /// The clause as written.
+    pub text: String,
+    pub reason: String,
 }
 
 /// A single permission clause parsed from a permission set body.
@@ -266,19 +302,26 @@ pub fn permission_set_audit(workspace: &Workspace) -> Result<PermissionAuditRepo
     // Names of objects declared in the workspace (non-permissionset). Used as a
     // reference baseline: an object's own declaration counts as one reference.
     let mut declared_names: HashSet<String> = HashSet::new();
+    let mut parse_issues: Vec<PermissionParseIssue> = Vec::new();
 
     for source in &sources {
-        if matches!(
-            source.object.kind,
-            al_symbols::ObjectKind::PermissionSet | al_symbols::ObjectKind::PermissionSetExtension
-        ) {
-            perm_sets.push((
-                source.object.info.name.clone(),
-                extract_permission_grants(source)?,
-            ));
-            perm_set_paths.insert(source.path.clone());
-        } else {
-            declared_names.insert(source.object.info.name.to_lowercase());
+        // Per object declaration, not per file: a `permissionset` declared
+        // after a codeunit in the same file used to be classified as that
+        // codeunit, so its Permissions property was never read and its own
+        // grant clauses counted as *usage* of the objects they grant.
+        for object in &source.objects {
+            if matches!(
+                object.kind,
+                al_symbols::ObjectKind::PermissionSet
+                    | al_symbols::ObjectKind::PermissionSetExtension
+            ) {
+                let (grants, issues) = extract_permission_grants(source, object)?;
+                parse_issues.extend(issues);
+                perm_sets.push((object.info.name.clone(), grants));
+                perm_set_paths.insert(source.path.clone());
+            } else {
+                declared_names.insert(object.info.name.to_lowercase());
+            }
         }
     }
 
@@ -292,16 +335,25 @@ pub fn permission_set_audit(workspace: &Workspace) -> Result<PermissionAuditRepo
         .map(|source| (source.text.clone(), source.tree.clone()))
         .collect();
 
-    let over_broad = compute_over_broad(&scan_files, &perm_sets, &declared_names);
+    // One pass over the snapshot answers both checks' reference counts.
+    let reference_counts = workspace_reference_counts(&scan_files);
+    let over_broad = compute_over_broad(&reference_counts, &perm_sets, &declared_names);
 
     let observed_writes = collect_observed_writes(&scan_files);
-    let over_granted_rights =
-        compute_over_granted_rights(&scan_files, &perm_sets, &declared_names, &observed_writes);
+    let over_granted_rights = compute_over_granted_rights(
+        &reference_counts,
+        &perm_sets,
+        &declared_names,
+        &observed_writes,
+    );
+
+    parse_issues.sort_by(|left, right| (&left.file, left.clause).cmp(&(&right.file, right.clause)));
 
     Ok(PermissionAuditReport {
         coverage,
         over_broad,
         over_granted_rights,
+        parse_issues,
     })
 }
 
@@ -312,34 +364,31 @@ fn compute_coverage(
     let mut results = Vec::new();
 
     for source in sources {
-        let kind = source.object.info.kind.to_lowercase();
-        // Only audit tables, pages, codeunits, reports (primary access objects)
-        if !matches!(kind.as_str(), "table" | "page" | "codeunit" | "report") {
-            continue;
-        }
+        for object in &source.objects {
+            let kind = object.info.kind.to_lowercase();
+            // Only audit tables, pages, codeunits, reports (primary access objects)
+            if !matches!(kind.as_str(), "table" | "page" | "codeunit" | "report") {
+                continue;
+            }
 
-        let covered_by: Vec<String> = perm_sets
-            .iter()
-            .filter(|(_, grants)| {
-                grants.iter().any(|grant| {
-                    grant_covers_object(
-                        grant,
-                        &kind,
-                        source.object.normalized_id,
-                        &source.object.info.name,
-                    )
+            let covered_by: Vec<String> = perm_sets
+                .iter()
+                .filter(|(_, grants)| {
+                    grants.iter().any(|grant| {
+                        grant_covers_object(grant, &kind, object.normalized_id, &object.info.name)
+                    })
                 })
-            })
-            .map(|(n, _)| n.clone())
-            .collect();
+                .map(|(n, _)| n.clone())
+                .collect();
 
-        results.push(PermissionCoverageEntry {
-            kind: source.object.info.kind.clone(),
-            id: source.object.normalized_id,
-            name: source.object.info.name.clone(),
-            covered: !covered_by.is_empty(),
-            covered_by,
-        });
+            results.push(PermissionCoverageEntry {
+                kind: object.info.kind.clone(),
+                id: object.normalized_id,
+                name: object.info.name.clone(),
+                covered: !covered_by.is_empty(),
+                covered_by,
+            });
+        }
     }
 
     results
@@ -373,7 +422,7 @@ fn grant_covers_object(
 /// base-app objects the workspace merely references. A grant with no references
 /// above that baseline is flagged as unused.
 fn compute_over_broad(
-    scan_files: &[(String, tree_sitter::Tree)],
+    reference_counts: &HashMap<String, usize>,
     perm_sets: &[(String, Vec<PermissionGrant>)],
     declared_names: &HashSet<String>,
 ) -> Vec<OverBroadGrantEntry> {
@@ -387,6 +436,13 @@ fn compute_over_broad(
                 grant.object.to_lowercase(),
             );
             if !seen.insert(key) {
+                continue;
+            }
+
+            // A `system` grant names a platform capability, not a workspace
+            // object, so there is nothing for the reference scan to find and
+            // "never referenced" would always be true.
+            if grant.object_type.eq_ignore_ascii_case("system") {
                 continue;
             }
 
@@ -420,7 +476,7 @@ fn compute_over_broad(
                 });
                 continue;
             }
-            let total_refs = count_object_refs(scan_files, &grant.object);
+            let total_refs = count_object_refs(reference_counts, &grant.object);
 
             let baseline = usize::from(declared_names.contains(&grant.object.to_lowercase()));
             if total_refs <= baseline {
@@ -441,13 +497,30 @@ fn compute_over_broad(
     out
 }
 
-/// Total identifier references to `object` across the (non-permissionset)
-/// snapshot. Shared by the object-level and right-level checks.
-fn count_object_refs(scan_files: &[(String, tree_sitter::Tree)], object: &str) -> usize {
-    scan_files
-        .iter()
-        .map(|(text, tree)| al_syntax::find_variable_references(tree, text, object).len())
-        .sum()
+/// Identifier occurrence counts across the (non-permissionset) snapshot, by
+/// lowercased name.
+///
+/// Built once and shared by the object-level and right-level checks. Asking
+/// `find_variable_references` per grant per file walked every tree once per
+/// grant, and the right-level check then recomputed the same numbers.
+fn workspace_reference_counts(
+    scan_files: &[(String, tree_sitter::Tree)],
+) -> HashMap<String, usize> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for (text, tree) in scan_files {
+        for (name, count) in al_syntax::count_identifier_occurrences(tree, text) {
+            *counts.entry(name).or_default() += count;
+        }
+    }
+    counts
+}
+
+/// Total identifier references to `object` across the snapshot.
+fn count_object_refs(reference_counts: &HashMap<String, usize>, object: &str) -> usize {
+    reference_counts
+        .get(&object.to_lowercase())
+        .copied()
+        .unwrap_or(0)
 }
 
 /// Right-level / RIMDX over-grant detection.
@@ -461,10 +534,10 @@ fn count_object_refs(scan_files: &[(String, tree_sitter::Tree)], object: &str) -
 /// Tables that are *not* referenced are skipped here — they are surfaced by
 /// `compute_over_broad` instead, so the two checks never double-report a grant.
 fn compute_over_granted_rights(
-    scan_files: &[(String, tree_sitter::Tree)],
+    reference_counts: &HashMap<String, usize>,
     perm_sets: &[(String, Vec<PermissionGrant>)],
     declared_names: &HashSet<String>,
-    observed_writes: &HashMap<String, BTreeSet<char>>,
+    observed_writes: &ObservedWrites,
 ) -> Vec<OverGrantedRightsEntry> {
     let mut out = Vec::new();
     for (set_name, grants) in perm_sets {
@@ -503,17 +576,25 @@ fn compute_over_granted_rights(
 
             // Skip tables that aren't referenced at all — object-level handles
             // those, and "only R observed" presumes the table is read.
-            let total_refs = count_object_refs(scan_files, &grant.object);
+            let total_refs = count_object_refs(reference_counts, &grant.object);
             let baseline = usize::from(declared_names.contains(&object_lower));
             if total_refs <= baseline {
                 continue;
             }
 
             let observed = observed_writes
+                .by_table
                 .get(&object_lower)
                 .cloned()
                 .unwrap_or_default();
-            let over: BTreeSet<char> = granted_imd.difference(&observed).copied().collect();
+            // A right exercised through an unresolvable receiver might be
+            // exercised on this table. Keep it rather than recommend its
+            // removal.
+            let over: BTreeSet<char> = granted_imd
+                .difference(&observed)
+                .filter(|right| !observed_writes.unresolved.contains(right))
+                .copied()
+                .collect();
             if over.is_empty() {
                 continue;
             }
@@ -567,18 +648,32 @@ fn compute_over_granted_rights(
 /// `Rename` variants (not in `al_insight`'s `RecordOp`) arrive as
 /// `CallSite::MemberCall` and are classified here. `Validate` and read ops
 /// (`Get`/`Find*`) are not persistence writes and are ignored.
-fn collect_observed_writes(
-    scan_files: &[(String, tree_sitter::Tree)],
-) -> HashMap<String, BTreeSet<char>> {
-    let mut writes: HashMap<String, BTreeSet<char>> = HashMap::new();
+///
+/// A write whose receiver has no resolvable `Record "T"` type — a `RecordRef`,
+/// or a variable declared in a form the type scan does not read — names an
+/// unknown table. Its right goes into [`ObservedWrites::unresolved`] and is
+/// then never reported as removable for *any* table: the audit must not tell a
+/// developer to drop a permission the code might be using.
+#[derive(Debug, Default)]
+struct ObservedWrites {
+    /// Lowercase table name -> rights with a write site resolved to that table.
+    by_table: HashMap<String, BTreeSet<char>>,
+    /// Rights exercised through a receiver whose table could not be resolved.
+    unresolved: BTreeSet<char>,
+}
+
+fn collect_observed_writes(scan_files: &[(String, tree_sitter::Tree)]) -> ObservedWrites {
+    let mut writes = ObservedWrites::default();
 
     for (text, tree) in scan_files {
-        for proc_name in collect_procedure_names(tree, text) {
-            let var_types = extract_procedure_var_types(tree, text, &proc_name);
-            if var_types.is_empty() {
-                continue;
-            }
-            for site in extract_call_sites(tree, text, &proc_name) {
+        // Every declaration node, not every distinct declaration *name*. AL
+        // repeats trigger names constantly (one `OnValidate` per field, one
+        // `OnAction` per action), and a name-keyed lookup answers for the first
+        // one only, so a write in any later one was invisible and its right was
+        // then reported as removable.
+        for proc_node in al_insight::calls::collect_declaration_nodes(tree) {
+            let var_types = al_insight::calls::procedure_var_types_in_node(proc_node, text);
+            for site in al_insight::calls::call_sites_in_node(proc_node, text) {
                 let (variable, right) = match &site {
                     CallSite::RecordOp { variable, op, .. } => match op {
                         RecordOp::Insert => (variable, 'I'),
@@ -597,11 +692,17 @@ fn collect_observed_writes(
                     _ => continue,
                 };
 
-                if let Some(table) = var_types.get(&variable.to_lowercase()) {
-                    writes
-                        .entry(table.to_lowercase())
-                        .or_default()
-                        .insert(right);
+                match var_types.get(&variable.to_lowercase()) {
+                    Some(table) => {
+                        writes
+                            .by_table
+                            .entry(table.to_lowercase())
+                            .or_default()
+                            .insert(right);
+                    }
+                    None => {
+                        writes.unresolved.insert(right);
+                    }
                 }
             }
         }
@@ -623,42 +724,26 @@ fn write_right_for_method(method: &str) -> Option<char> {
     }
 }
 
-/// Collect the names of all procedure/trigger declarations in a parse tree.
+/// Read the `Permissions` property of a permission-set object.
 ///
-/// Names feed the per-procedure `al_insight::calls` extractors. Duplicate names
-/// (e.g. repeated `OnValidate` / `OnAction` triggers) are de-duplicated; the
-/// name-keyed extractors only revisit the first occurrence, which is the
-/// documented precision limit of the right-level check.
-fn collect_procedure_names(tree: &tree_sitter::Tree, text: &str) -> Vec<String> {
-    let bytes = text.as_bytes();
-    let mut names = Vec::new();
-    let mut seen = HashSet::new();
-    let mut stack = vec![tree.root_node()];
-    while let Some(node) = stack.pop() {
-        match node.kind() {
-            "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration" => {
-                if let Some(name_node) = node.child_by_field_name("name") {
-                    if let Ok(t) = name_node.utf8_text(bytes) {
-                        let clean = t.trim_matches('"').trim().to_string();
-                        if !clean.is_empty() && seen.insert(clean.to_lowercase()) {
-                            names.push(clean);
-                        }
-                    }
-                }
-                // Do not descend into the body — no nested procedures in AL.
-            }
-            _ => {
-                let mut cursor = node.walk();
-                stack.extend(node.children(&mut cursor));
-            }
-        }
-    }
-    names
-}
-
-fn extract_permission_grants(source: &WorkspaceSource) -> Result<Vec<PermissionGrant>, AuditError> {
+/// Returns the clauses that parsed plus one [`PermissionParseIssue`] per clause
+/// that did not. Only a property-level problem (no assignment operator, two
+/// `Permissions` properties) is an `AuditError`: those leave the audit unable
+/// to say what the set grants at all, where a single bad clause leaves the rest
+/// of the set readable.
+#[allow(clippy::type_complexity)]
+fn extract_permission_grants(
+    source: &WorkspaceSource,
+    object: &crate::workspace_sources::WorkspaceObjectDeclaration,
+) -> Result<(Vec<PermissionGrant>, Vec<PermissionParseIssue>), AuditError> {
+    let object_range = object.info.range;
+    let object_node = source
+        .tree
+        .root_node()
+        .descendant_for_byte_range(object_range.start_byte, object_range.end_byte)
+        .unwrap_or_else(|| source.tree.root_node());
     let mut permission_properties = Vec::new();
-    let mut stack = vec![source.tree.root_node()];
+    let mut stack = vec![object_node];
     while let Some(node) = stack.pop() {
         if node.kind() == "property_assignment" {
             let name = node
@@ -673,7 +758,7 @@ fn extract_permission_grants(source: &WorkspaceSource) -> Result<Vec<PermissionG
         stack.extend(node.named_children(&mut cursor));
     }
     let property = match permission_properties.as_slice() {
-        [] => return Ok(Vec::new()),
+        [] => return Ok((Vec::new(), Vec::new())),
         [property] => *property,
         _ => {
             return Err(AuditError::InvalidSource {
@@ -706,19 +791,13 @@ fn extract_permission_grants(source: &WorkspaceSource) -> Result<Vec<PermissionG
             }
             continue;
         }
-        if matches!(child.kind(), "comment" | "line_comment" | "block_comment") {
+        if child.kind() == "comment" {
             continue;
         }
         if child.kind() == "semicolon" || token == ";" {
             break;
         }
         if child.kind() == "comma" || token == "," {
-            if clauses.last().is_some_and(Vec::is_empty) {
-                return Err(AuditError::InvalidSource {
-                    path: source.path.clone(),
-                    reason: "Permissions property contains an empty grant clause".to_string(),
-                });
-            }
             clauses.push(Vec::new());
             continue;
         }
@@ -737,28 +816,41 @@ fn extract_permission_grants(source: &WorkspaceSource) -> Result<Vec<PermissionG
         });
     }
     if clauses.len() == 1 && clauses[0].is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
+    // A trailing comma before the `;` is idiomatic AL formatting, not a clause.
     if clauses.last().is_some_and(Vec::is_empty) {
-        return Err(AuditError::InvalidSource {
-            path: source.path.clone(),
-            reason: "Permissions property ends with an empty grant clause".to_string(),
-        });
+        clauses.pop();
     }
 
-    clauses
-        .into_iter()
-        .enumerate()
-        .map(|(index, clause)| {
-            parse_permission_clause(&clause).map_err(|reason| AuditError::InvalidSource {
-                path: source.path.clone(),
-                reason: format!("Permissions clause {} is invalid: {reason}", index + 1),
-            })
-        })
-        .collect()
+    let mut grants = Vec::new();
+    let mut issues = Vec::new();
+    for (index, clause) in clauses.into_iter().enumerate() {
+        match parse_permission_clause(&clause) {
+            Ok(grant) => grants.push(grant),
+            Err(reason) => issues.push(PermissionParseIssue {
+                permission_set: object.info.name.clone(),
+                file: source.path.display().to_string(),
+                clause: index + 1,
+                text: clause.join(" "),
+                reason,
+            }),
+        }
+    }
+    Ok((grants, issues))
 }
 
+/// Parse one `ObjectType ObjectIdentifier = Rights` clause.
+///
+/// The object types are those the security system defines for a permission:
+/// TableData, Table, Report, Codeunit, XmlPort, Page, Query and System. Only
+/// TableData carries RIMD rights; everything else carries execute (`X`/`x`).
+/// `System` names a platform capability (`system "Tools, Debugger" = X`) rather
+/// than a workspace object, so it is excluded from the usage scans.
 fn parse_permission_clause(tokens: &[String]) -> Result<PermissionGrant, String> {
+    if tokens.is_empty() {
+        return Err("empty grant clause".to_string());
+    }
     if tokens.len() != 4 || tokens[2] != "=" {
         return Err(format!(
             "expected ObjectType ObjectIdentifier = Rights, got '{}'",
@@ -773,6 +865,7 @@ fn parse_permission_clause(tokens: &[String]) -> Result<PermissionGrant, String>
         "xmlport" => "XmlPort",
         "page" => "Page",
         "query" => "Query",
+        "system" => "System",
         other => return Err(format!("unsupported permission object type '{other}'")),
     };
     let object = if tokens[1] == "*" {
@@ -1069,18 +1162,153 @@ mod tests {
     }
 
     #[test]
-    fn malformed_permission_clause_is_an_explicit_audit_error() {
+    fn a_malformed_clause_is_reported_without_failing_the_audit() {
         let ws = workspace_with(vec![(
             "/src/Perms.al",
             r#"permissionset 50100 Perms
 {
-    Permissions = TableData Customer = RX;
+    Permissions = TableData Customer = RX, TableData Vendor = R;
 }"#,
         )]);
 
-        let error = permission_set_audit(&ws).unwrap_err();
-        assert!(matches!(error, AuditError::InvalidSource { .. }));
-        assert!(error.to_string().contains("rights 'RX' are invalid"));
+        let report = permission_set_audit(&ws).expect("one bad clause must not abort the audit");
+        assert_eq!(report.parse_issues.len(), 1);
+        let issue = &report.parse_issues[0];
+        assert_eq!(issue.permission_set, "Perms");
+        assert_eq!(issue.clause, 1);
+        assert!(issue.reason.contains("rights 'RX' are invalid"));
+        assert!(issue.text.contains("Customer"));
+    }
+
+    #[test]
+    fn a_system_grant_is_accepted_and_leaves_the_audit_intact() {
+        let ws = workspace_with(vec![
+            (
+                "/src/MyTable.al",
+                r#"table 50100 "My Table" { fields { field(1; Name; Text[10]) { } } }"#,
+            ),
+            (
+                "/src/Unused.al",
+                r#"table 50101 "Unused Table" { fields { field(1; Name; Text[10]) { } } }"#,
+            ),
+            (
+                "/src/Perms.al",
+                r#"permissionset 50102 Perms
+{
+    Permissions = tabledata "My Table" = R,
+                  system "Tools, Debugger" = X,
+                  tabledata "Unused Table" = R;
+}"#,
+            ),
+        ]);
+
+        let report = permission_set_audit(&ws).expect("`system` is a legal permission object type");
+        assert!(
+            report.parse_issues.is_empty(),
+            "`system` must parse: {:?}",
+            report.parse_issues
+        );
+        assert!(
+            report
+                .over_broad
+                .iter()
+                .any(|entry| entry.object == "Unused Table"),
+            "the checks after the system grant must still run: {:?}",
+            report.over_broad
+        );
+        assert!(
+            !report
+                .over_broad
+                .iter()
+                .any(|entry| entry.object_type.eq_ignore_ascii_case("system")),
+            "a system grant names a platform capability, not a workspace object"
+        );
+    }
+
+    /// A permission set declared after a codeunit in the same file used to be
+    /// classified as that codeunit: its Permissions property was never read,
+    /// and the file took part in the usage scan, so its own grant clauses
+    /// counted as references to the objects they grant.
+    #[test]
+    fn a_permission_set_declared_second_in_a_file_is_still_audited() {
+        let ws = workspace_with(vec![
+            (
+                "/src/Unused.al",
+                r#"table 50100 "Unused Table" { fields { field(1; Name; Text[10]) { } } }"#,
+            ),
+            (
+                "/src/Ship.al",
+                r#"codeunit 50101 "Ship Mgt"
+{
+    procedure Run()
+    begin
+    end;
+}
+
+permissionset 50102 "Ship Perms"
+{
+    Permissions = tabledata "Unused Table" = RIMD;
+}"#,
+            ),
+        ]);
+
+        let report = permission_set_audit(&ws).unwrap();
+        assert!(
+            report
+                .over_broad
+                .iter()
+                .any(|entry| entry.object == "Unused Table"
+                    && entry.permission_set == "Ship Perms"),
+            "the second object's Permissions property must be read: {:?}",
+            report.over_broad
+        );
+    }
+
+    /// The same shape for the data-classification audit: a table declared
+    /// after another object was skipped because only the file's first object
+    /// was inspected.
+    #[test]
+    fn a_table_declared_second_in_a_file_is_still_classified() {
+        let ws = workspace_with(vec![(
+            "/src/Setup.al",
+            r#"codeunit 50100 "Ship Mgt"
+{
+    procedure Run()
+    begin
+    end;
+}
+
+table 50101 "Ship Setup"
+{
+    fields
+    {
+        field(1; "Primary Key"; Code[10]) { }
+    }
+}"#,
+        )]);
+
+        let entries = data_classification_audit(&ws).unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (entry.table.as_str(), entry.field.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("Ship Setup", "Primary Key")]
+        );
+    }
+
+    #[test]
+    fn a_trailing_comma_is_not_an_empty_clause() {
+        let ws = workspace_with(vec![(
+            "/src/Perms.al",
+            r#"permissionset 50100 Perms
+{
+    Permissions = TableData Customer = R,;
+}"#,
+        )]);
+
+        let report = permission_set_audit(&ws).expect("a trailing comma is idiomatic AL");
+        assert!(report.parse_issues.is_empty(), "{:?}", report.parse_issues);
     }
 
     #[test]
@@ -1264,6 +1492,188 @@ mod tests {
     }
 
     // ---- right-level (RIMDX) over-grant ----------------------
+
+    /// AL repeats trigger names: every page action declares its own
+    /// `OnAction`. A write in any of them must count, or the audit tells the
+    /// developer to drop a permission the page needs and the action fails at
+    /// runtime.
+    #[test]
+    fn a_write_in_a_repeated_trigger_name_is_observed() {
+        let ws = workspace_with(vec![
+            (
+                "/src/ShipLog.al",
+                r#"table 50100 "Ship Log"
+{
+    fields { field(1; "Entry No."; Integer) { } }
+}"#,
+            ),
+            (
+                "/src/ShipCard.al",
+                r#"page 50101 "Ship Card"
+{
+    PageType = Card;
+
+    actions
+    {
+        area(Processing)
+        {
+            action(Preview)
+            {
+                trigger OnAction()
+                var
+                    L: Record "Ship Log";
+                begin
+                    if L.FindFirst() then
+                        Message('x');
+                end;
+            }
+            action(Post)
+            {
+                trigger OnAction()
+                var
+                    L: Record "Ship Log";
+                begin
+                    L.Insert();
+                end;
+            }
+        }
+    }
+}"#,
+            ),
+            (
+                "/src/Perms.al",
+                r#"permissionset 50102 "Ship Perms"
+{
+    Permissions = tabledata "Ship Log" = RIMD;
+}"#,
+            ),
+        ]);
+
+        let report = permission_set_audit(&ws).unwrap();
+        let entry = report
+            .over_granted_rights
+            .iter()
+            .find(|entry| entry.object == "Ship Log")
+            .expect("M and D are genuinely unused, so the table is still reported");
+        assert!(
+            !entry.over_granted.contains('I'),
+            "the Insert in the second OnAction is a write site: {entry:?}"
+        );
+        assert!(entry.observed_rights.contains('I'));
+    }
+
+    #[test]
+    fn a_write_in_a_repeated_field_trigger_is_observed() {
+        let ws = workspace_with(vec![
+            (
+                "/src/Audit.al",
+                r#"table 50100 "Change Audit"
+{
+    fields { field(1; "Entry No."; Integer) { } }
+}"#,
+            ),
+            (
+                "/src/Doc.al",
+                r#"table 50101 "Ship Doc"
+{
+    fields
+    {
+        field(1; "No."; Code[20])
+        {
+            trigger OnValidate()
+            var
+                A: Record "Change Audit";
+            begin
+                if A.FindLast() then
+                    Message('x');
+            end;
+        }
+        field(2; Status; Integer)
+        {
+            trigger OnValidate()
+            var
+                A: Record "Change Audit";
+            begin
+                A.DeleteAll();
+            end;
+        }
+    }
+}"#,
+            ),
+            (
+                "/src/Perms.al",
+                r#"permissionset 50102 "Doc Perms"
+{
+    Permissions = tabledata "Change Audit" = RD;
+}"#,
+            ),
+        ]);
+
+        let report = permission_set_audit(&ws).unwrap();
+        assert!(
+            report
+                .over_granted_rights
+                .iter()
+                .all(|entry| entry.object != "Change Audit"),
+            "the DeleteAll in the second OnValidate covers D: {:?}",
+            report.over_granted_rights
+        );
+    }
+
+    /// A `RecordRef` write names a table the scan cannot resolve, so the right
+    /// it exercises must not be recommended for removal anywhere.
+    #[test]
+    fn a_write_through_an_unresolvable_receiver_keeps_the_right() {
+        let ws = workspace_with(vec![
+            (
+                "/src/SalesDoc.al",
+                r#"table 50100 "Sales Doc"
+{
+    fields { field(1; "No."; Code[20]) { } }
+}"#,
+            ),
+            (
+                "/src/Writer.al",
+                r#"codeunit 50101 "Doc Writer"
+{
+    procedure ReadIt()
+    var
+        Rec: Record "Sales Doc";
+    begin
+        if Rec.Get('X') then
+            Message(Rec."No.");
+    end;
+
+    procedure WriteBlind()
+    var
+        RRef: RecordRef;
+    begin
+        RRef.Open(50100);
+        RRef.Insert();
+    end;
+}"#,
+            ),
+            (
+                "/src/Perms.al",
+                r#"permissionset 50102 "Doc Perms"
+{
+    Permissions = TableData "Sales Doc" = RIMD;
+}"#,
+            ),
+        ]);
+
+        let report = permission_set_audit(&ws).unwrap();
+        let entry = report
+            .over_granted_rights
+            .iter()
+            .find(|entry| entry.object == "Sales Doc")
+            .expect("M and D have no write site at all, so the table is still reported");
+        assert!(
+            !entry.over_granted.contains('I'),
+            "the RecordRef Insert could be this table: {entry:?}"
+        );
+        assert_eq!(entry.over_granted, "MD");
+    }
 
     /// A table granted `RIMD` that the workspace only *reads* (via `Get`) must
     /// have its Insert/Modify/Delete rights flagged as over-granted — and `R`

@@ -1,6 +1,6 @@
 # AL Language for Zed
 
-AL Language for Zed is a native Business Central AL toolchain for Zed. It is not a syntax-highlighting package with a thin language-server wrapper. The repository contains a Rust language server, debug adapter, CLI/TUI, MCP server, symbol engine, query engine, test runner, and generated Zed language package for Microsoft Dynamics 365 Business Central AL development.
+AL Language for Zed is a native Business Central AL toolchain for Zed. The repository contains a Rust language server, debug adapter, CLI/TUI, MCP server, symbol engine, query engine, test runner, and generated Zed language package for Microsoft Dynamics 365 Business Central AL development.
 
 The toolchain is available from Zed, the terminal, CI, and MCP clients. Microsoft tooling remains available where exact compiler semantics or Business Central runtime behavior is required.
 
@@ -11,9 +11,9 @@ The toolchain is available from Zed, the terminal, CI, and MCP clients. Microsof
 > explicit Microsoft backend. [Current limitations](./Docs/current-limitations.md)
 > distinguish deliberate compatibility boundaries from regressions.
 
-## What Makes This Different
+## Why this exists
 
-The standard Microsoft AL tooling is powerful, but most of it is coupled to the VS Code extension, the official language server, Business Central service assumptions, and opaque editor commands. That makes it hard to build deep Zed integration, hard to run narrow analysis from CI, hard to expose AL-aware tools to agents, and hard to test behavior outside the Microsoft extension boundary.
+Most Microsoft AL tooling is coupled to the VS Code extension, the official language server, Business Central service assumptions, and opaque editor commands. That makes it hard to build deep Zed integration, hard to run narrow analysis from CI, hard to expose AL-aware tools to agents, and hard to test behavior outside the Microsoft extension boundary.
 
 This project rewrites a large part of that experience in native Rust:
 
@@ -133,6 +133,7 @@ Current MCP tools:
 - `al_testsnapshot` - capture breakpoint-sampled variables while one exact test method runs on live BC.
 - `al_testsnapshotreplay` - re-run the exact test recorded by a baseline snapshot on live BC and return field-level divergences.
 - `al_depgraph` - build a GUID-keyed graph from the current `app.json` and loaded `.app` manifests, including implicit/transitive dependencies, missing packages, and real minimum-version conflicts, as JSON or Graphviz `dot`.
+- `al_freeids` - pick the next free object ID, table field number or enum value ordinal inside the `app.json` idRanges, counting every object in the workspace and every dependency package object in the same range. A table extension's fields are checked against the base table and the other extensions of it.
 
 The named tools intentionally mirror Microsoft's AL agent tool surface where possible, while adding analysis tools the official surface does not expose. They are ergonomic aliases, not an availability boundary: `al_call` forwards any method and parameter object to the same daemon JSON-RPC dispatcher used by the CLI and contributor tasks. Native LSP requests and execute commands use LSP server handlers, while sharing lower-level workspace, query, build, symbol, and test code.
 
@@ -140,6 +141,70 @@ Every named tool advertises a result-specific MCP output schema. Tool results al
 agent diagnostics when work is incomplete because package symbols, live-BC configuration, semantic
 bridge enrichment, or original package source are unavailable. `al_call` keeps the generic result
 shape required to forward the complete heterogeneous daemon catalog.
+
+## Claude Code Plugin
+
+`plugin/` is a Claude Code plugin that points Claude Code at these tools. Without
+it, an agent asked where a Business Central object is defined greps the workspace
+and cannot see inside a `.app` package at all. With it, the same question is a
+symbol-index lookup that also covers Base Application and every other dependency.
+
+### Install
+
+```bash
+/plugin marketplace add Brad-Fullwood/al.language.zed
+/plugin install al-bc@al-language-zed
+```
+
+The plugin drives `al-lsp` and `al-explorer` and does not ship them.
+`plugin/scripts/al-bin.sh` looks for both, in this order: `$AL_BIN_DIR`, a
+`target/release` or `target/debug` directory in an enclosing checkout of this
+repository, `PATH`, then `$CLAUDE_PLUGIN_DATA/bin`. If it finds neither, it
+prints the `cargo install` commands and the release-download URL. The two
+binaries have to sit in the same directory, because `al-explorer` starts the
+daemon by looking next to itself first.
+
+To try it without installing:
+
+```bash
+claude --plugin-dir /path/to/al.language.zed/plugin
+```
+
+### What it adds
+
+An MCP server, wired to the project the session opened, exposing the tools listed
+under [MCP Automation](#mcp-automation). Eight skills, which Claude Code loads by
+itself when a question matches one:
+
+| Skill | Answers |
+| --- | --- |
+| `bc-symbol-lookup` | Where an object, table, field, codeunit or enum is defined, which app defines object N, what fields a table has, what an enum accepts |
+| `bc-base-app-source` | The source of a procedure or trigger, including code that only exists inside a `.app` package |
+| `bc-event-map` | Who subscribes to an event, who publishes it, its parameters, which integration event to subscribe to |
+| `bc-impact-check` | Who calls or uses a symbol, what a change to a field or a signature breaks |
+| `bc-object-id-allocator` | The next free object ID inside `app.json`'s `idRanges`, and the next free field number |
+| `bc-test-locally` | Running AL tests on the built-in interpreter, coverage, which tests a change affects, which tests need a live tenant |
+| `bc-upgrade-impact` | What a dependency version bump breaks: removed symbols, changed signatures, subscribers pointing at events that no longer exist |
+| `bc-workspace-health` | Pre-build and pre-deploy audit: duplicate or out-of-range IDs, SQL anti-patterns, dead code, missing annotations, permission coverage |
+
+Two subagents. `bc-symbol-scout` runs the lookups on a cheap model and returns
+the answer instead of the payload, which matters because several of these calls
+return hundreds of kilobytes today. `bc-cop-fixer` drives lint diagnostics to
+zero on a named set of files.
+
+One `SessionStart` hook. It emits a short routing note when the working
+directory holds an AL `app.json`, and nothing at all anywhere else.
+
+### Notes
+
+The skills are written for what the tools return today. Each one names the
+compact call: `--limit`, `--offset` and `--fields` on every list, `--scope` on
+the package-wide reports, `source --list-procedures` for signatures without
+bodies, and `--compact` for one-line JSON. `plugin/ROADMAP.md` records the
+workarounds the skills used to carry and the change that removed each one, and
+`plugin/TESTING.md` records the agent runs behind the current wording.
+
+Validate a change with `make plugin-validate`.
 
 ## Native AL Test Runtime
 
@@ -214,14 +279,18 @@ The extension manifest registers:
 
 The Zed extension resolves `al-lsp` in this order:
 
-1. `lsp.al-lsp.binary.path` from user settings (or the equivalent DAP/MCP-specific
-   override) — always scoped to the surface that configured it, never shared
-   with the others.
-2. An in-memory cache from an earlier resolution in the same Zed session.
-3. `al-lsp` on `PATH`.
-4. A previously downloaded extension binary already on disk, reused without any
+1. An in-memory cache from an earlier resolution in the same Zed session.
+2. `al-lsp` on `PATH`.
+3. A previously downloaded extension binary already on disk, reused without any
    network access — this is what lets a cached install start fully offline.
-5. The latest GitHub release asset for the current platform (requires network).
+4. The latest GitHub release asset for the current platform (requires network).
+
+`lsp.al-lsp.binary.path`, `lsp.al-lsp.binary.arguments` and the debug adapter path
+are not in that list. Zed hands the extension one value with a worktree's
+`.zed/settings.json` merged into the user's own, and those keys name a program
+and its command line, so a clone could choose what runs on open. `PATH` is how
+you point at a specific build. See
+[current limitations](Docs/current-limitations.md#zed-worktree-settings-and-executable-paths).
 
 ### LSP Features
 
@@ -250,17 +319,19 @@ CodeLens currently emits lenses with these command IDs:
 
 Those CodeLens IDs are separate from the native execute-command dispatcher above.
 
-### Gallery-safe commands
+### Commands that need no `PATH` install
 
-The installed language package does not ship static shell tasks. Stable Zed task definitions cannot
-address binaries downloaded into an extension work directory, so a task such as
-`command = "al-explorer"` would work only for developers who separately added the CLI to `PATH`.
+The installed language package ships 55 static tasks in `languages/al/tasks.json` plus the inline
+runnables in `languages/al/runnables.scm`. Every one of them runs `command = "al-explorer"`, so they
+work once `al-explorer` is on `PATH` — stable Zed task definitions cannot address a binary the
+extension downloaded into its own work directory. See
+[Language assets](Docs/features/language-assets.md#al-explorer-must-be-on-path) for the install step.
 
-Editor actions use the resolved `al-lsp` process instead: LSP execute commands cover compilation,
-formatting, linting, cache management, and test CodeLens actions, while the registered **AL Tools**
-MCP server exposes named tools such as `al_build`, `al_symbolsearch`, and `al_deadcode`. Its generic
-`al_call` tool reaches the complete shared daemon command catalog. `al-explorer` remains the
-standalone terminal interface for users who deliberately install or invoke it themselves.
+Two surfaces cover the same operations with no `PATH` install, because both run the `al-lsp` process
+the extension resolves for itself: LSP execute commands cover compilation, formatting, linting,
+cache management, and test CodeLens actions, and the registered **AL Tools** MCP server exposes named
+tools such as `al_build`, `al_symbolsearch`, and `al_deadcode`. Its generic `al_call` tool reaches the
+complete shared daemon command catalog.
 
 ### `al-explorer` CLI/TUI
 
@@ -268,12 +339,12 @@ standalone terminal interface for users who deliberately install or invoke it th
 
 The CLI command surface includes:
 
-- Project/setup: `setup`, `doctor`, `diag`, `new`, `packages`, `deps`, `deps-graph`, `clear-cache`, `daemon-shutdown`, `init-debug`.
-- Build/toolchain: `compile`, `pack-native`, `package`, `download-symbols`, `authenticate`.
+- Project/setup: `setup`, `doctor`, `diag`, `new`, `packages`, `deps`, `deps-graph`, `clear-cache`, `daemon-shutdown`, `init-debug`, `trust`.
+- Build/toolchain: `compile`, `pack-native`, `package`, `publish`, `download-symbols`, `authenticate`.
 - LSP-style queries: `hover`, `definition`, `references`, `signature`, `completions`, `symbols`, `folding`, `tokens`, `parse`, `rename`, `hints`.
-- Symbols and objects: `search`, `object`, `by-id`, `source`, `composed`, `builtins`, `rules`, `error-codes`, `generate-completions`, `version`.
+- Symbols and objects: `search`, `object`, `by-id`, `source`, `location`, `composed`, `builtins`, `rules`, `error-codes`, `generate-completions`, `version`.
 - Events and insight: `events`, `subscribers`, `event-source`, `trace`, `intercept`, `entrypoints`, `graph`, `impact`, `suggest-event`, `insight-stats`.
-- Analysis: `metrics`, `dead-code`, `sql-scan`, `duplicates`, `arch-lint`, `native-check`, `breaking`, `upgrade`, `obsolete`, `audit-data`, `permission-audit`, `profiler-hints`.
+- Analysis: `metrics`, `dead-code`, `sql-scan`, `duplicates`, `arch-lint`, `native-check`, `free-ids`, `breaking`, `upgrade`, `obsolete`, `audit-data`, `permission-audit`, `profiler-hints`.
 - Formatting/refactoring/codegen: `format`, `lint`, `fix`, `permissions`, `generate`, `add-application-area`, `add-tooltips`, `add-data-classification`, `sort-members`, `organize-files`.
 - Debug/profiling: `debug`, `snapshot`, `profile`.
 - Tests: `tests`, `test-run`, `test-run-all`, `test-coverage`, `test-mutate`, `test-affected`, `test-classify`, `test-snapshot`, `test-results`.
@@ -362,10 +433,19 @@ GitHub release assets are binary/update artifacts:
 - `extension.wasm`
 - `extension.toml`
 - `checksums.txt`
+- `binary-checksums.txt`
 
 The Zed extension archive also includes tracked repository assets such as `languages/al`, `snippets/*.json`, and `themes/bc-themes.json`. These are not separate GitHub release assets; Zed packages them as part of the extension install archive.
 
 Every native archive includes `al-lsp`, `al-explorer`, and the semantic bridge files (`.exe` binaries on Windows). Daemon IPC uses Unix-domain sockets on Linux/macOS and named pipes on Windows.
+
+The two checksum assets cover different things. `checksums.txt` lists a SHA-256 per released asset
+and is what `sha256sum -c` verifies after a manual download. `binary-checksums.txt` lists a SHA-256
+per executable inside each archive, keyed `<archive>/<binary>`, and is what the extension checks on
+the automatic download path: it extracts `al-lsp` and `al-explorer`, compares both against that
+listing, and only then makes them executable. A mismatch deletes the directory and reports the
+expected and actual digests. See [Current limitations](./Docs/current-limitations.md#releases) for
+why the archive itself cannot be checked there.
 
 Zed auto-resolves or downloads `al-lsp` for LSP, DAP, and the MCP context server. Release archives
 also ship `al-explorer`, but stable Zed cannot address an extension-private sidecar from static task
@@ -376,19 +456,8 @@ expectation. LSP commands and the **AL Tools** MCP server cover the same operati
 
 ## Zed Settings
 
-Minimal manual binary override:
-
-```json
-{
-  "lsp": {
-    "al-lsp": {
-      "binary": {
-        "path": "/path/to/al-lsp"
-      }
-    }
-  }
-}
-```
+To run a build of your own, put it on `PATH`. The extension ignores
+`lsp.al-lsp.binary.path` and `lsp.al-lsp.binary.arguments`.
 
 Common AL settings:
 
@@ -410,14 +479,24 @@ Common AL settings:
 default path is this project's native `al-lsp`. Set `AL_DOTNET_PATH` to select a specific executable
 for Microsoft .NET-hosted AL tools; otherwise the toolchain resolves `dotnet` from `PATH`.
 
-**Every setting—with types, defaults, and descriptions—is documented in the
+Every setting, with its type, default, and description, is documented in the
 [settings reference](Docs/reference/settings.md), and a ready-to-copy template is available at
-[examples/zed-settings.jsonc](examples/zed-settings.jsonc).** `al.enableNativeLint` and
+[examples/zed-settings.jsonc](examples/zed-settings.jsonc). `al.enableNativeLint` and
 `al.nativeLintRules` control the native file, project-semantic, transaction, obsolete, and
 architecture rules (`AL-NL*`/`AL-NC*`); for example, set `"AL-NL005": false` to disable the
 SetLoadFields rule. Microsoft's CodeAnalysis bridge is optional and additive.
 
 On Zed Dev/Nightly (extension API >= 0.8) the `lsp.al-lsp.settings` keys autocomplete and validate as you type; on Stable Zed the settings still apply, just without in-editor autocomplete (use the template above). This lights up on Stable automatically once the 0.8 extension API reaches the registry.
+
+### Settings that need project trust
+
+Settings a repository carries in its own `.vscode/settings.json`, `.zed/settings.json` or
+`.vscode/launch.json` apply on a clone, which makes a few of them a way to choose what runs on
+your machine: analyzer assemblies, raw `alc` switches, assembly probing paths, package feeds, and
+the Business Central server a cached token is sent to. Those apply only after
+`al-explorer trust`. Everything else applies as before. See
+[project trust](Docs/features/project-trust.md) for the full list, the message you get when
+something is ignored, and how agents are treated.
 
 ### Project-file schemas (app.json, rulesets)
 
@@ -517,6 +596,18 @@ Before tagging:
 9. Require green CI on the exact commit being tagged; the tag workflow enforces this before building artifacts.
 10. Push the superproject commit only after the referenced grammar commit is available remotely.
 11. Tag from the exact commit you want users to install.
+
+Every asset listed in `checksums.txt` also gets a Sigstore build-provenance attestation, signed
+against the release workflow's own identity. Check a downloaded asset with:
+
+```bash
+gh attestation verify al-linux-x86_64.tar.gz --repo Brad-Fullwood/al.language.zed
+```
+
+The checksums that ship beside the archives show a download arrived intact. They are not a
+signature, and the extension holds no key, so it does not verify one. See
+[current limitations](Docs/current-limitations.md#releases) for what each check does and does not
+cover.
 
 ## License
 

@@ -475,6 +475,7 @@ mod tests {
             packages_dir: root.join(".alpackages"),
             packages: Vec::new(),
             server_configs: Vec::new(),
+            launch_config_error: None,
         }
     }
 

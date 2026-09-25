@@ -5,7 +5,7 @@
 //!
 //! Public API:
 //! - [`parse`] — parse a filter expression string into a [`FilterExpr`] AST.
-//! - [`matches`] — test whether a [`Value`] satisfies a [`FilterExpr`].
+//! - [`matches()`] — test whether a [`Value`] satisfies a [`FilterExpr`].
 
 use crate::interpreter::value::{Decimal, Value};
 use std::fmt;
@@ -58,7 +58,7 @@ pub struct Pattern {
     /// Whether this is a case-sensitive match. BC filter matching on `Text`
     /// values is case-sensitive by default; the `@` prefix makes the pattern
     /// case-INsensitive. (`Code` cells are caseless regardless — see
-    /// [`pattern_matches`].)
+    /// `pattern_matches`.)
     pub case_sensitive: bool,
 }
 
@@ -347,6 +347,16 @@ fn pattern_matches(pat: &Pattern, value: &Value) -> bool {
             return number == Decimal::ZERO;
         }
     }
+    // An option or enum cell answers to its member name and to its ordinal:
+    // BC accepts either spelling in a filter, and SetFilter's `%1` placeholder
+    // for an option value is rendered as the ordinal.
+    if let Value::Option {
+        member, ordinal, ..
+    } = value
+    {
+        return wildcard_match(&pat.text, member, true)
+            || wildcard_match(&pat.text, &ordinal.to_string(), true);
+    }
     let text_repr = value_to_filter_string(value);
     // `Code` (and Guid/Option) cells are caseless in BC regardless of the
     // pattern's `@` prefix; only `Text` honours the case-sensitive default.
@@ -425,13 +435,15 @@ fn cmp_value(value: &Value, ov: &OrderableValue) -> Option<std::cmp::Ordering> {
         (Value::Decimal(a), OrderableValue::Decimal(b)) => Some(a.cmp(b)),
         (Value::Decimal(a), OrderableValue::Integer(b)) => Some(a.cmp(&Decimal::from(*b))),
         // A `Code` field compares caselessly (BC), a `Text` field case-sensitively.
-        (Value::Code(a), OrderableValue::Text(b)) => {
-            Some(a.to_ascii_uppercase().cmp(&b.to_ascii_uppercase()))
-        }
+        // Full Unicode folding, matching the caseless primary-key index in
+        // `mock::record::normalize_key_value`.
+        (Value::Code(a), OrderableValue::Text(b)) => Some(a.to_uppercase().cmp(&b.to_uppercase())),
         (Value::Text(a), OrderableValue::Text(b)) => Some(a.cmp(b)),
         (Value::Date(a) | Value::Time(a) | Value::DateTime(a), OrderableValue::Integer(b)) => {
             Some(a.cmp(b))
         }
+        // BC filters an option or enum field by ordinal.
+        (Value::Option { ordinal, .. }, OrderableValue::Integer(b)) => Some(ordinal.cmp(b)),
         // A never-assigned field reads back as `Empty`; BC treats it as the
         // field's typed zero value, so compare it as 0 / "" against the bound.
         (Value::Empty, OrderableValue::Integer(b)) => Some(0i64.cmp(b)),

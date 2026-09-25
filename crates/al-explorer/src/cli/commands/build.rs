@@ -4,7 +4,10 @@ use serde_json::Value;
 
 use super::super::XlfCommands;
 
-use super::{connect, print_json, project_root, report_error, request_checked, run_command};
+use super::{
+    connect, print_json, project_root, report_error, request_checked, run_command,
+    run_command_with_exit,
+};
 
 /// Print a build/package result in human-readable form and return the exit code.
 ///
@@ -86,6 +89,84 @@ pub fn cmd_compile(project_dir: Option<&str>, json: bool) -> ExitCode {
     }
 }
 
+/// Publish can compile a whole project and then upload it, so it needs both
+/// the build deadline and the upload's.
+const PUBLISH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1200);
+
+/// Compile the project and publish the `.app` to the BC dev API.
+///
+/// The daemon's `publish` method is the only publish path: it calls
+/// `al_publish::publish`, which resolves the launch configuration, compiles,
+/// and uploads (or RAD-deploys with `--incremental`).
+pub fn cmd_publish(config: Option<&str>, incremental: bool, json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(client) => client,
+        Err(error) => return report_error(&error, json),
+    };
+    client.set_request_timeout(PUBLISH_TIMEOUT);
+    let mut params = serde_json::json!({ "incremental": incremental });
+    if let Some(config) = config {
+        params["config"] = serde_json::json!(config);
+    }
+    match request_checked(&mut client, "publish", Some(params)) {
+        Ok(result) => {
+            let success = result
+                .get("success")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            if json {
+                print_json(&result);
+            } else {
+                let server = result.get("server").and_then(|v| v.as_str()).unwrap_or("?");
+                let method = result.get("method").and_then(|v| v.as_str()).unwrap_or("?");
+                println!("Publish to {server} ({method}):");
+                for step in result
+                    .get("steps")
+                    .and_then(|value| value.as_array())
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[])
+                {
+                    let phase = step.get("phase").and_then(|v| v.as_str()).unwrap_or("?");
+                    let ok = step
+                        .get("success")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let message = step.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                    let mark = if ok { "[OK]" } else { "[!!]" };
+                    println!("  {mark} {phase}: {message}");
+                }
+                for diagnostic in result
+                    .get("diagnostics")
+                    .and_then(|value| value.as_array())
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[])
+                {
+                    let file = diagnostic
+                        .get("file")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let line = diagnostic.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let code = diagnostic
+                        .get("code")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let message = diagnostic
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    eprintln!("{file}:{line}: {code}: {message}");
+                }
+            }
+            if success {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(error) => report_error(&error, json),
+    }
+}
+
 pub fn cmd_package(json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
@@ -105,10 +186,9 @@ pub fn cmd_pack_native(
     project_dir: Option<&str>,
     out: Option<&str>,
     validate: bool,
+    analyzers: Option<&str>,
     json: bool,
 ) -> ExitCode {
-    use std::io::Write;
-
     let dir = match project_dir {
         Some(d) => std::path::PathBuf::from(d),
         None => match std::env::current_dir() {
@@ -125,8 +205,13 @@ pub fn cmd_pack_native(
     // Our native compiler identifies itself in the manifest's <Build>.
     let compiler_version = concat!("al-explorer/", env!("CARGO_PKG_VERSION"));
     let timestamp = al_emit::now_timestamp();
-    let config = match al_project::config::AlConfig::load_effective(&dir) {
-        Ok(config) => config,
+    let config = match al_project::trust::evaluate(&dir) {
+        Ok(evaluated) => {
+            if let Some(advisory) = evaluated.decision.advisory() {
+                eprintln!("{advisory}");
+            }
+            evaluated.config
+        }
         Err(error) => {
             return report_error(&format!("cannot load AL project settings: {error}"), json);
         }
@@ -192,7 +277,7 @@ pub fn cmd_pack_native(
     // This keeps syntax/project failures fast and makes `--validate` an
     // explicit compatibility oracle rather than the primary verifier.
     if validate {
-        if let Some(code) = validate_with_alc(&dir, json) {
+        if let Some(code) = validate_with_alc(&dir, analyzers, json) {
             return code;
         }
     }
@@ -209,13 +294,7 @@ pub fn cmd_pack_native(
         return report_error(&format!("creating {}: {e}", parent.display()), json);
     }
     let write_started = std::time::Instant::now();
-    let write_result = tempfile::NamedTempFile::new_in(parent).and_then(|mut temp| {
-        temp.write_all(&built.bytes)?;
-        temp.as_file_mut().sync_all()?;
-        temp.persist(&out_path)
-            .map(|_| ())
-            .map_err(|error| error.error)
-    });
+    let write_result = al_emit::package::write_artifact_atomically(&out_path, &built.bytes);
     timings.output_write_ns = u64::try_from(write_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
     timings.total_ns = timings.total_ns.saturating_add(timings.output_write_ns);
     if let Err(e) = write_result {
@@ -269,11 +348,6 @@ fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()>
     Ok(())
 }
 
-/// Compile `dir` with the Microsoft AL compiler (alc) and,
-/// if it reports errors (or no toolchain is available), return an exit code so
-/// the caller refuses to emit. Returns `None` when validation passes and the
-/// native emit should proceed. Runs in a temp copy of the project so alc's
-/// output never pollutes the user's tree.
 /// Create a private, per-invocation temp dir for `--validate`'s alc copy.
 ///
 /// `tempfile::tempdir()` creates the directory with owner-only permissions and
@@ -288,7 +362,82 @@ fn create_validation_tempdir() -> std::io::Result<tempfile::TempDir> {
     tempfile::tempdir()
 }
 
-fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
+/// The analyzers `--validate` asks alc to run: the `--analyzers` list when one
+/// was given (empty entries dropped, so an empty value means none), otherwise
+/// the project's `al.codeAnalyzers` as the trust gate left it.
+fn validation_analyzers(requested: Option<&str>, project_setting: &[String]) -> Vec<String> {
+    match requested {
+        Some(list) => list
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .collect(),
+        None => project_setting.to_vec(),
+    }
+}
+
+/// The requested analyzers that resolve through the project's own folders: a
+/// custom name is looked up in `packages/` and `.netpackages/` before the
+/// NuGet cache, and a relative path is joined to the project root. Built-in
+/// cops come from the toolchain and an absolute path is the caller's choice.
+fn project_local_analyzers(requested: &[String]) -> Vec<&str> {
+    requested
+        .iter()
+        .map(|entry| entry.trim())
+        .filter(|entry| {
+            !entry.is_empty()
+                && !al_project::analyzers::is_builtin_analyzer(entry)
+                && !std::path::Path::new(entry).is_absolute()
+        })
+        .collect()
+}
+
+/// Compile `dir` with the Microsoft AL compiler (alc) and, if it reports
+/// errors (or no toolchain is available), return an exit code so the caller
+/// refuses to emit. Returns `None` when validation passes and the native emit
+/// should proceed. Runs in a temp copy of the project so alc's output never
+/// pollutes the user's tree.
+///
+/// alc runs with the project's own analyzers and compilation settings. It used
+/// to get no analyzer list, which the build service reads as every installed
+/// analyzer, so a project that plain alc compiles failed on cop errors from
+/// analyzers it never enabled.
+fn validate_with_alc(
+    dir: &std::path::Path,
+    analyzers: Option<&str>,
+    json: bool,
+) -> Option<ExitCode> {
+    let settings = match al_project::trust::evaluate(dir) {
+        Ok(settings) => settings,
+        Err(error) => {
+            return Some(report_error(
+                &format!("reading the project's AL settings for --validate: {error}"),
+                json,
+            ));
+        }
+    };
+    if !json {
+        if let Some(advisory) = settings.decision.advisory() {
+            eprintln!("{advisory}");
+        }
+    }
+    let analyzers = validation_analyzers(analyzers, &settings.config.code_analyzers);
+    if !settings.decision.is_trusted() {
+        let project_local = project_local_analyzers(&analyzers);
+        if !project_local.is_empty() {
+            return Some(report_error(
+                &format!(
+                    "--analyzers {} would load an analyzer from this untrusted repository's own \
+                     folders into alc. Run `{}` in the project to allow it, or pass the \
+                     analyzer's absolute path.",
+                    project_local.join(","),
+                    al_project::trust::TRUST_COMMAND
+                ),
+                json,
+            ));
+        }
+    }
     let toolchain = match al_project::toolchain::find_toolchain() {
         Ok(t) => t,
         Err(e) => {
@@ -353,8 +502,8 @@ fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
         toolchain: Some(&toolchain),
         dependency_packages: None,
         package_cache: Some(&pkg_cache),
-        analyzers: None,
-        config: al_compile::CompilationConfigOptions::default(),
+        analyzers: Some(&analyzers),
+        config: al_compile::CompilationConfigOptions::from(&settings.config),
     }));
     // `tmp` (the `TempDir` guard) is dropped — and the directory removed —
     // when this function returns, on every path below.
@@ -424,6 +573,15 @@ fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
     }
 }
 
+/// The `.g.xlf` path an `xlf.generate` response reports, if it wrote one.
+pub(crate) fn xlf_generated_path(result: &serde_json::Value) -> Option<&str> {
+    result
+        .get("path")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+}
+
 pub fn cmd_xlf(subcmd: &XlfCommands, json: bool) -> ExitCode {
     match subcmd {
         XlfCommands::Generate { project } => {
@@ -432,20 +590,29 @@ pub fn cmd_xlf(subcmd: &XlfCommands, json: bool) -> ExitCode {
                 Err(error) => return report_error(&error, json),
             };
             let params = serde_json::json!({ "project": proj_root.to_string_lossy().as_ref() });
-            run_command(
+            // Writing no `.g.xlf` is a failed gate, not a success: the project
+            // asked for a translation file and did not get one. `path` is null
+            // when the daemon found nothing translatable.
+            run_command_with_exit(
                 "xlf.generate",
                 Some(params),
                 json,
                 project.as_deref(),
                 |result| {
-                    let path = result.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                    let path = xlf_generated_path(result);
                     let units = result.get("units").and_then(|v| v.as_u64()).unwrap_or(0);
-                    if path.is_empty() || path == "null" {
-                        eprintln!(
+                    match path {
+                        Some(path) => println!("Generated: {path}  ({units} units)"),
+                        None => eprintln!(
                             "No translatable texts found (check features.TranslationFile in app.json)"
-                        );
+                        ),
+                    }
+                },
+                |result| {
+                    if xlf_generated_path(result).is_some() {
+                        ExitCode::SUCCESS
                     } else {
-                        println!("Generated: {path}  ({units} units)");
+                        ExitCode::FAILURE
                     }
                 },
             )
@@ -566,5 +733,57 @@ mod validation_tempdir_tests {
             Some(pid_name.as_str()),
             "must not reproduce the old predictable pid-based directory name"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{project_local_analyzers, validation_analyzers};
+
+    fn project_setting() -> Vec<String> {
+        vec!["CodeCop".to_string(), "UICop".to_string()]
+    }
+
+    #[test]
+    fn validation_uses_the_project_setting_without_a_flag() {
+        assert_eq!(
+            validation_analyzers(None, &project_setting()),
+            project_setting()
+        );
+    }
+
+    #[test]
+    fn an_explicit_list_replaces_the_project_setting() {
+        assert_eq!(
+            validation_analyzers(Some(" AppSourceCop , PerTenantCop,"), &project_setting()),
+            vec!["AppSourceCop".to_string(), "PerTenantCop".to_string()]
+        );
+    }
+
+    /// An untrusted repository could ship `packages/LinterCop.dll`; only the
+    /// toolchain's own cops and absolute paths skip the project's folders.
+    #[test]
+    fn custom_names_and_relative_paths_resolve_through_the_project() {
+        let absolute = std::env::temp_dir()
+            .join("Custom.dll")
+            .to_string_lossy()
+            .into_owned();
+        let requested = vec![
+            "CodeCop".to_string(),
+            "UICop.dll".to_string(),
+            "LinterCop".to_string(),
+            "tools/Mine.dll".to_string(),
+            absolute,
+        ];
+        assert_eq!(
+            project_local_analyzers(&requested),
+            vec!["LinterCop", "tools/Mine.dll"]
+        );
+    }
+
+    #[test]
+    fn an_empty_value_runs_no_analyzer() {
+        assert!(validation_analyzers(Some(""), &project_setting()).is_empty());
+        assert!(validation_analyzers(Some(" , "), &project_setting()).is_empty());
     }
 }

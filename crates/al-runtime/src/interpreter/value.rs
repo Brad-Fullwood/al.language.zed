@@ -163,6 +163,9 @@ pub struct RecordValue {
     /// Opaque handle into the mock table store. `None` means "no current
     /// record" (e.g. after `Reset` and before `FindFirst`).
     pub handle: Option<u64>,
+    /// Declared `Record "X" temporary`. The rows then live in this variable
+    /// rather than in the table, so the runtime keys its store per variable.
+    pub temporary: bool,
 }
 
 // Variants are ordered by their declaration index, then within each variant
@@ -277,6 +280,23 @@ impl PartialOrd for Value {
     }
 }
 
+/// Reject a string that does not fit a declared `Text[N]`/`Code[N]` capacity.
+/// BC traps this at the assignment rather than truncating, and counts
+/// characters, not bytes. The message mirrors the server's.
+pub(crate) fn check_string_capacity(value: &str, capacity: Option<usize>) -> Result<(), String> {
+    let Some(capacity) = capacity else {
+        return Ok(());
+    };
+    let length = value.chars().count();
+    if length <= capacity {
+        return Ok(());
+    }
+    Err(format!(
+        "The length of the string is {length}, but it must be less than or equal to {capacity} \
+         characters. Value: {value}"
+    ))
+}
+
 /// Captured `Error()` / `asserterror` payload.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ErrorInfo {
@@ -327,11 +347,29 @@ impl Value {
     /// * a `Decimal` slot promotes an integer RHS to `Decimal`, so later
     ///   `div`/`mod` correctly reject the slot as Decimal.
     ///
+    /// `capacity` is the slot's declared `Text[N]`/`Code[N]` length. A string
+    /// longer than it is a runtime error, the way BC traps an assignment whose
+    /// converted value overflows the target.
+    ///
     /// Any other combination overwrites as-is. Shared by both assignment paths
     /// (`eval_assignment` and the expression-form handler in `eval_expr`).
-    pub(crate) fn coerce_into_slot(slot: &Value, incoming: Value) -> Result<Value, String> {
+    pub(crate) fn coerce_into_slot(
+        slot: &Value,
+        incoming: Value,
+        capacity: Option<usize>,
+    ) -> Result<Value, String> {
         Ok(match (slot, &incoming) {
-            (Value::Code(_), Value::Text(s) | Value::Code(s)) => Value::Code(s.to_uppercase()),
+            // A Code value is uppercased and carries no leading or trailing
+            // spaces, so its length is measured after trimming.
+            (Value::Code(_), Value::Text(s) | Value::Code(s)) => {
+                let trimmed = s.trim();
+                check_string_capacity(trimmed, capacity)?;
+                Value::Code(trimmed.to_uppercase())
+            }
+            (Value::Text(_), Value::Text(s) | Value::Code(s)) => {
+                check_string_capacity(s, capacity)?;
+                Value::Text(s.clone())
+            }
             (Value::BigInteger(_), Value::Integer(n) | Value::BigInteger(n)) => {
                 Value::BigInteger(*n)
             }
@@ -557,11 +595,13 @@ mod tests {
                 table_name: String::new(),
                 table_id: 0,
                 handle: None,
+                temporary: false,
             }),
             Value::RecordRef(RecordValue {
                 table_name: String::new(),
                 table_id: 0,
                 handle: None,
+                temporary: false,
             }),
             Value::Variant(Box::new(Value::Null)),
             Value::Array(vec![]),
@@ -619,6 +659,7 @@ mod tests {
                 table_name: name.into(),
                 table_id: id,
                 handle,
+                temporary: false,
             })
         };
         assert!(rec(18, "Zebra", Some(99)) < rec(27, "Aardvark", Some(1)));
@@ -630,6 +671,7 @@ mod tests {
                 table_name: "T".into(),
                 table_id: id,
                 handle: None,
+                temporary: false,
             })
         };
         assert!(rref(1) < rref(2));
@@ -709,6 +751,7 @@ mod tests {
                 table_name: String::new(),
                 table_id: 0,
                 handle: None,
+                temporary: false,
             })
             .type_name(),
             "Record"
@@ -718,6 +761,7 @@ mod tests {
                 table_name: String::new(),
                 table_id: 0,
                 handle: None,
+                temporary: false,
             })
             .type_name(),
             "RecordRef"

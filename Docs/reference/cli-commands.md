@@ -4,6 +4,21 @@ Every `al-explorer` subcommand. The global `--json` flag works on all of them (s
 errors as `{ "error": "…" }`). Run with no subcommand to open the TUI. See
 [cli-and-tui](../features/cli-and-tui.md) for behavior and the TUI; this is the lookup table.
 
+Other global flags, which work on every subcommand:
+
+| Flag | Purpose |
+| --- | --- |
+| `--compact` | Print JSON on one line. Implies `--json`. Indentation was 43% of the bytes of the largest measured answer |
+| `--limit N` | Return at most N rows from a list-returning command. The JSON result reports `total` and `truncated` |
+| `--offset N` | Skip the first N rows, for reading past a truncated page |
+| `--fields a,b,c` | Keep only these fields on each row |
+| `--scope workspace\|packages\|all` | Which code `impact`, `entrypoints` and the event map report on. The result reports `outOfScopeCount` |
+| `--timeout-ms N` | Per-request deadline, overriding `AL_REQUEST_TIMEOUT_MS`. A request blocked on the dependency source index keeps waiting while that index makes progress, whatever this is set to |
+
+The projection flags are the daemon's `limit`, `offset`, `fields` and `scope` parameters, described
+in the [daemon method reference](./daemon-methods.md). A command that sets one of them itself keeps
+its own value.
+
 > `al-explorer` runs on Linux, macOS, and Windows. Most commands auto-start the daemon for the
 > current project using the platform's local IPC transport.
 
@@ -21,6 +36,13 @@ MCP, call the corresponding daemon method through `al_call` with the same parame
 frequently used workflows also have named aliases documented in the
 [MCP tool reference](./mcp-tools.md).
 
+A file argument outside the current project is read by the CLI and sent to the daemon as text, so
+commands that only read a file (`parse`, `lint`, `metrics`, `symbols`, `hover`, `folding`,
+`tokens`, `definition`, `references`) answer for any file you can read. Commands that rewrite a
+file (`format`, `fix`, `sort-members`, `organize-files`, `rename`) refuse it and name the project
+they are confined to: the daemon changes files only inside the project it has loaded. See
+[daemon-methods](./daemon-methods.md#paths-and-the-project-boundary).
+
 ## Setup & diagnostics
 
 | Command | Flags | Purpose |
@@ -28,19 +50,21 @@ frequently used workflows also have named aliases documented in the
 | `version` | — | Print version |
 | `setup` | — | Check ALTool + .NET SDK; print toolchain locations |
 | `doctor` | — | Green/red setup checklist + symbol/file counts |
-| `diag` | — | Workspace diagnostics (memory, object counts) |
+| `diag` | — | Workspace diagnostics (object counts, per-structure bytes, and the process's resident and peak memory) |
 | `clear-cache` | — | Delete the symbol index cache |
-| `daemon-shutdown` | — | Stop the existing daemon for this project without spawning one; `--json` reports whether one was running |
+| `daemon-shutdown` | — | Stop the existing daemon for this project without spawning one, returning only once its endpoint has stopped accepting (up to 20s); `--json` reports whether one was running |
 | `init-debug` | — | Scaffold `.zed/debug.json` |
+| `trust` | `[PROJECT] --show --revoke` | Let this project's own files supply settings that load code, run programs or receive Business Central credentials. See [project trust](../features/project-trust.md) |
 
 ## Symbols & objects
 
 | Command | Args / flags | Purpose |
 | --- | --- | --- |
-| `search <query>` | `--limit N` (20) | Fuzzy symbol search across packages + workspace |
-| `object <type> <name>` | — | Look up object by kind + name (with members) |
-| `by-id <type> <id>` | — | Look up object by kind + numeric id |
-| `source <name>` | `--kind <type>`, `--package <name>`, `--procedure <name>` or `--trigger <name>` | Return the strongest actual source representation; ambiguous names require kind/package selection |
+| `search <query>` | global `--limit N` (20) | Fuzzy symbol search across packages + workspace |
+| `object <type> <name>` | — | Look up object by kind + name, with members for workspace and package objects alike |
+| `by-id <type> <id>` | — | Look up object by kind + numeric id, with members |
+| `source <name>` | `--kind <type>`, `--package <name>`, `--procedure <name>` or `--trigger <name>`, `--list-procedures` | Return the strongest actual source representation; ambiguous names require kind/package selection. `--list-procedures` returns signatures and line ranges without bodies, and a wrong `--procedure` name lists the ones that exist |
+| `location <name>` | `--kind <type>`, `--package <name>` | Print `path:line` for an object's declaration. A package object is materialised as a virtual `.al` file |
 | `composed [<kind>] <name>` | — | Base object + all extensions merged |
 | `packages` | — | List loaded packages with version, publisher, object count, and embedded/outline/metadata-only source counts |
 | `deps` | — | Explicit + transitive dependencies |
@@ -75,7 +99,8 @@ frequently used workflows also have named aliases documented in the
 | --- | --- | --- |
 | `compile` | `--project <dir>` | Compile (native default; `al.useOfficialCompiler` → `alc`) |
 | `package` | — | Package compiled app into `.app` |
-| `pack-native` | `--project <dir> --out <path> [--validate]` | Verified pure-Rust `.app` build; rejects syntax/manifest/project/binding/artifact errors and writes nothing on failure; global `--json` returns exact native ranges; `--validate` adds `alc` after native checks |
+| `publish` | `--config <name> [--incremental]` | Compile and publish the `.app` to the BC dev endpoint named in `.vscode/launch.json` or `.zed/debug.json`; `--incremental` uses the RAD API |
+| `pack-native` | `--project <dir> --out <path> [--validate [--analyzers <list>]]` | Verified pure-Rust `.app` build; rejects syntax/manifest/project/binding/artifact errors and writes nothing on failure; global `--json` returns exact native ranges; `--validate` adds `alc` after native checks, with the project's `al.codeAnalyzers` or the `--analyzers` list (a custom analyzer from an untrusted repository's own folders is refused) |
 | `download-symbols` | `--project <dir> --source server\|nuget` | Download dependency symbols |
 | `authenticate [login\|status\|clear]` | `--tenant <tenant>` | BC / Entra authentication and cached-session management |
 
@@ -84,11 +109,11 @@ frequently used workflows also have named aliases documented in the
 | Command | Flags | Purpose |
 | --- | --- | --- |
 | `format [file]` | `--check --stdin --all` | Format (check exits non-zero if changes needed) |
-| `lint [file]` | `--all --analyzers <list>` | Lint via native + Microsoft analyzers |
+| `lint [file]` | `--all` | Lint with the native rules (Microsoft's cops run under alc: `pack-native --validate --analyzers`) |
 | `fix [file]` | `--dry-run --rule <code>` | Apply registered safe diagnostic fixes to one file or the loaded project; report unfixable findings separately |
 | `permissions` | `--format al\|xml --name <n> --id <N> --role-id <id>` | Generate permission set |
 | `new <dir>` | `--name --publisher --template <t> --runtime <major.minor>` | New project from a built-in or configured user template; application minimum derives from runtime |
-| `generate <kind>` | `--id --name --table --page-type --subject` | Generate page/report/test (`test` requires `--subject`) |
+| `generate <kind>` | `--id --name --table --page-type --subject` | Generate page/report/test (`test` requires `--subject`). Without `--id` the object takes the first free ID of its kind in the app.json `idRanges`; an `--id` outside them prints a warning |
 | `sort-members [file]` | `--all --dry-run` | Canonical member order |
 | `organize-files` | `--dry-run` | Rename `.al` files to `<Type><Id>.<Name>.al` |
 | `add-application-area` | `--value <v> --dry-run` | Add `ApplicationArea` workspace-wide |
@@ -102,19 +127,21 @@ frequently used workflows also have named aliases documented in the
 | `trace <event>` | `--depth N (10) --tree` | Event propagation chain (`--tree` = full multi-hop) |
 | `intercept` | — | Full event interception map + orphans |
 | `entrypoints` | — | Procedures with no incoming calls |
-| `graph` | `--format json\|dot` | Insight graph export |
+| `graph` | `--format json\|dot`, global `--scope workspace\|packages\|all` | Insight graph export; `--scope workspace` keeps the workspace's objects and the nodes one edge away |
 | `insight-stats` | — | Node/edge counts |
 | `impact <symbol>` | `--table` | Who consumes this symbol/table |
-| `suggest-event` | `--object/--procedure/--table/--field/--event <x>` | Integration-point discovery |
+| `suggest-event` | `--object <x> [--procedure/--event <x>]`, or `--table <x> [--field <x>]` | Integration-point discovery (`--event` needs `--object`) |
 | `metrics [file]` | `--all --threshold-cyclomatic N --threshold-cognitive N` | Complexity |
 | `dead-code` | — | Unused procedures/fields/subscribers (with confidence) |
 | `sql-scan` | — | SQL anti-patterns |
 | `duplicates` | `--min-tokens N --min-similarity R` | Duplicate code blocks |
 | `arch-lint` | — | `.alarch.json` architecture rules |
 | `native-check` | — | Native object/member/range and project semantic checks |
+| `free-ids` | `--kind K --object NAME --count N --include-used` | Next free object ID, table field number or enum ordinal inside the `app.json` idRanges |
 | `breaking` | `--baseline-app <old.app>` | Breaking API changes; reports unevaluated when omitted |
 | `upgrade` | `--baseline-app <old.app>` | Upgrade impact report; reports unevaluated when omitted |
-| `obsolete` | — | `[Obsolete]` timeline |
+| `obsolete` | `--used` | `[Obsolete]` timeline of the loaded packages; with `--used`, the workspace's calls to obsolete procedures |
+| `package-diff <old.app> <new.app>` | `--all` | Changes between two versions of a dependency that the workspace's code uses (`--all`: every change) |
 | `audit-data` | — | Data-classification audit |
 | `permission-audit` | — | Permission-set coverage audit |
 | `profiler-hints [hotspots…]` | — | Optimization hints for named hotspot procedures |

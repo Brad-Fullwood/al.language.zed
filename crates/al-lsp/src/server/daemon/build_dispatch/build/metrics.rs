@@ -4,8 +4,8 @@ use al_protocol::jsonrpc::{error_codes, Response};
 use al_workspace::Workspace;
 
 use crate::server::daemon::{
-    ensure_document, file_not_found, file_uri_from_params, invalid_params, optional_bool_param,
-    optional_bounded_usize_param, rpc_error,
+    file_not_found, optional_bool_param, optional_bounded_usize_param, read_document_from_params,
+    rpc_error,
 };
 
 pub(in crate::server::daemon) fn dispatch_metrics(
@@ -55,14 +55,10 @@ pub(in crate::server::daemon) fn dispatch_metrics(
         };
     }
 
-    let uri = match file_uri_from_params(params) {
-        Ok(Some(uri)) => uri,
-        Ok(None) => return invalid_params(id),
-        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
 
     let Some(text) = workspace.documents.get_text(&uri) else {
         return file_not_found(id);
@@ -160,6 +156,14 @@ mod tests {
         Workspace::new()
     }
 
+    /// A workspace rooted at `tmp`, so the `file`/`uri` parameters below fall
+    /// inside the project boundary the dispatchers enforce.
+    fn ws_at(tmp: &tempfile::TempDir) -> Workspace {
+        let workspace = Workspace::new();
+        crate::server::daemon::set_test_project_root(&workspace, tmp.path());
+        workspace
+    }
+
     fn write_al(tmp: &tempfile::TempDir, name: &str, content: &str) -> String {
         let path = tmp.path().join(name);
         std::fs::write(&path, content).unwrap();
@@ -175,8 +179,8 @@ mod tests {
 
     #[test]
     fn metrics_single_file_returns_thresholds_and_procedures() {
-        let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_at(&tmp);
         let file = write_al(
             &tmp,
             "M.al",
@@ -192,8 +196,8 @@ mod tests {
 
     #[test]
     fn metrics_rejects_out_of_range_or_wrong_typed_options() {
-        let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_at(&tmp);
         let file = write_al(
             &tmp,
             "M.al",
@@ -226,8 +230,8 @@ mod tests {
 
     #[test]
     fn metrics_rejects_malformed_source_in_single_and_workspace_modes() {
-        let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_at(&tmp);
         let file = write_al(
             &tmp,
             "Broken.al",
@@ -253,8 +257,8 @@ mod tests {
 
     #[test]
     fn metrics_output_includes_procedure_nesting_depth() {
-        let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_at(&tmp);
         let file = write_al(
             &tmp,
             "Nested.al",

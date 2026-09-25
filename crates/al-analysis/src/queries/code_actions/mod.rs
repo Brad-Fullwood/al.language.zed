@@ -4,6 +4,7 @@
 //! The core logic for quick-fix edits lives here; al-lsp wraps these with
 //! the full LSP CodeAction/Diagnostic types.
 
+use al_syntax::IdentifierText;
 use url::Url;
 
 use super::parse_detail_params;
@@ -500,6 +501,44 @@ fn unquoted_brace(line: &str) -> Option<(usize, char)> {
     None
 }
 
+/// `line` with the parts that must not be read as structure neutralised: the
+/// interior of a single-quoted literal becomes spaces, a `{` or `}` inside a
+/// double-quoted identifier becomes a space, and a line comment is dropped.
+///
+/// AL text is full of braces that are not structure — `Caption = 'Open }'`,
+/// `action("Value { old }")`, `// rework the { } layout` — and counting them
+/// walks a depth counter off the real block, which lands a block's last line
+/// on the wrong row.
+///
+/// Double-quoted text keeps its characters (only its braces go) because
+/// callers read quoted identifiers out of the result, for example the field
+/// name in `field(1; "No."; Code[20])`.
+pub(super) fn strip_literals_and_comment(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.char_indices().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+    while let Some((_, ch)) = chars.next() {
+        if !in_single && !in_double && ch == '/' && chars.peek().is_some_and(|(_, n)| *n == '/') {
+            break;
+        }
+        match ch {
+            '\'' if !in_double => {
+                in_single = !in_single;
+                out.push(ch);
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                out.push(ch);
+            }
+            _ if in_single => out.push(' '),
+            '{' | '}' if in_double => out.push(' '),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 /// Whether code actions are enabled in the workspace config
 /// (`enableCodeActions`, default true). Checked at the query level so the
 /// LSP and daemon transports both honor the setting.
@@ -519,7 +558,7 @@ fn code_actions_enabled(workspace: &Workspace) -> bool {
 /// containing spaces/punctuation or colliding with a keyword; emitting those
 /// unquoted produces source the compiler rejects.
 pub(super) fn quote_al_identifier(name: &str) -> String {
-    let trimmed = name.trim().trim_matches('"');
+    let trimmed = name.unquote_identifier();
     let is_bare = !trimmed.is_empty()
         && trimmed
             .chars()
@@ -528,7 +567,7 @@ pub(super) fn quote_al_identifier(name: &str) -> String {
         && trimmed
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && !al_syntax::language_data::is_keyword(trimmed);
+        && !al_syntax::language_data::is_keyword(&trimmed);
     if is_bare {
         trimmed.to_string()
     } else {

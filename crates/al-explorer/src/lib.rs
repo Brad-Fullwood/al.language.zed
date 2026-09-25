@@ -1,3 +1,11 @@
+//! `al-explorer`: the AL command-line tool and terminal UI.
+//!
+//! `cli` holds the argument parser and the subcommand implementations, `views`
+//! the TUI's per-mode state and drawing, `types` the mirror structs the daemon's
+//! JSON responses deserialize into. Most commands connect to the `al-lsp`
+//! daemon over the local socket (`al_protocol::DaemonClient`) and format what
+//! it returns; the build commands run in-process.
+
 // `collapsible_match` would force `Event::Mouse(mouse_event)` arms in the TUI
 // event dispatcher (see `tui::run_app`) into `Event::Mouse(mouse_event) if
 // app.view_mode == ViewMode::X` style guards, which makes the per-mode dispatch

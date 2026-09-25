@@ -24,7 +24,8 @@ pub(crate) async fn handle_completion(
     let core_pos = position.into();
     let entries =
         al_analysis::queries::completions::completions_full(&server.workspace, uri, core_pos)
-            .await?;
+            .await
+            .map_err(|error| error.to_string())?;
     if entries.is_empty() {
         return Ok(None);
     }

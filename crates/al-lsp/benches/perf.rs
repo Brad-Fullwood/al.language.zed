@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
-use al_analysis::queries::{completions::completions, Position};
+use al_analysis::queries::{completions::completions_native, Position};
 use al_insight::analysis::table_impact;
 use al_insight::graph::InsightGraph;
 use al_insight::index::CallGraph;
@@ -311,6 +311,7 @@ fn report_stats_once() {
         .write()
         .expect("package lock")
         .push(PackageInfo {
+            app_id: String::new(),
             name: "BenchPkg".to_string(),
             publisher: "Benchmark".to_string(),
             version: "1.0.0.0".to_string(),
@@ -419,7 +420,7 @@ fn bench_insight(c: &mut Criterion) {
     // Trace + impact + call-graph run against a pre-built graph/index.
     let graph = build_graph(&symbols);
     c.bench_function("insight/trace_event", |b| {
-        b.iter(|| black_box(trace_event(black_box(&graph), HOT_EVENT, 10)));
+        b.iter(|| black_box(trace_event(black_box(&graph), None, HOT_EVENT, 10)));
     });
     c.bench_function("insight/table_impact", |b| {
         b.iter(|| black_box(table_impact(black_box(&symbols), HOT_TABLE)));
@@ -463,10 +464,22 @@ fn bench_completion(c: &mut Criterion) {
     };
 
     c.bench_function("completion/type_position", |b| {
-        b.iter(|| black_box(completions(black_box(&ws), black_box(&uri), type_pos)));
+        b.iter(|| {
+            black_box(completions_native(
+                black_box(&ws),
+                black_box(&uri),
+                type_pos,
+            ))
+        });
     });
     c.bench_function("completion/default", |b| {
-        b.iter(|| black_box(completions(black_box(&ws), black_box(&uri), default_pos)));
+        b.iter(|| {
+            black_box(completions_native(
+                black_box(&ws),
+                black_box(&uri),
+                default_pos,
+            ))
+        });
     });
 }
 

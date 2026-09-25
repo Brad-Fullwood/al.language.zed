@@ -14,9 +14,9 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 reqwest = { workspace = true }
-url = "2"
+url = { workspace = true }
 # rustls-tls-native-roots keeps the SignalR websocket client off system-OpenSSL
-# (cross-compiles to aarch64); matches al-core's prior pin.
+# (cross-compiles to aarch64).
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 futures-util = "0.3"
@@ -25,6 +25,6 @@ futures-util = "0.3"
 # al-syntax is referenced only by a #[cfg(test)] assertion in native_dap.rs
 # (language_data::object_type_by_keyword); keep it out of the prod graph.
 al-syntax = { path = "../al-syntax", version = "0.1.0" }
-tempfile = "3"
+tempfile = { workspace = true }
 wiremock = "0.6"
 tokio = { workspace = true, features = ["full"] }

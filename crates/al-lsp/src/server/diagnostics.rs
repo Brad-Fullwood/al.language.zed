@@ -267,7 +267,16 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
     // retry if a newer generation won the race between computation and
     // publication. This keeps the snapshot atomic without holding edits behind
     // potentially slow client I/O.
-    loop {
+    //
+    // The retry is bounded. `on_document_change` bumps the revision on every
+    // keystroke, so on a project where the pass takes longer than the typing
+    // gaps an unbounded loop recomputed forever and published nothing: with
+    // `diagnosticsScope: "project"` the user saw no diagnostics at all while
+    // typing. After MAX_STAGING_ATTEMPTS the newest computed result is
+    // published against the versions it was computed from, and the debounced
+    // pass that the last keystroke armed corrects it.
+    const MAX_STAGING_ATTEMPTS: u32 = 3;
+    for attempt in 1..=MAX_STAGING_ATTEMPTS {
         if session.is_cancelled() {
             return false;
         }
@@ -301,7 +310,7 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
             return false;
         }
         let generation = workspace.generation_lock.read().await;
-        if workspace.generation_revision() != revision {
+        if workspace.generation_revision() != revision && attempt < MAX_STAGING_ATTEMPTS {
             drop(generation);
             tokio::task::yield_now().await;
             continue;
@@ -343,6 +352,7 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
         drop(generation);
         return true;
     }
+    false
 }
 
 pub(crate) async fn publish_diagnostics(
@@ -398,7 +408,20 @@ pub(crate) async fn publish_diagnostics(
     }
 
     let phase1_count = diagnostics.len();
-    if !document_snapshot_is_current(server, uri, &text, expected_client_version) {
+    if server.session.is_cancelled() {
+        return;
+    }
+    tracing::debug!(uri = %uri, phase1_count, "publish_diagnostics: publishing phase 1");
+    if !publish_if_current(
+        &server.workspace,
+        &server.client,
+        uri,
+        &text,
+        expected_client_version,
+        diagnostics.clone(),
+    )
+    .await
+    {
         tracing::debug!(
             uri = %uri,
             expected_client_version,
@@ -406,15 +429,6 @@ pub(crate) async fn publish_diagnostics(
         );
         return;
     }
-    let document_version = Some(expected_client_version);
-    tracing::debug!(uri = %uri, phase1_count, "publish_diagnostics: publishing phase 1");
-    if server.session.is_cancelled() {
-        return;
-    }
-    server
-        .client
-        .publish_diagnostics(uri.clone(), diagnostics.clone(), document_version)
-        .await;
 
     let semantic_diags = run_semantic_analysis(server, uri, &text).await;
     if server.session.is_cancelled() {
@@ -440,11 +454,51 @@ pub(crate) async fn publish_diagnostics(
         diagnostics.extend(semantic_diags);
         let total_count = diagnostics.len();
         tracing::debug!(uri = %uri, total_count, "publish_diagnostics: publishing phase 2");
-        server
-            .client
-            .publish_diagnostics(uri.clone(), diagnostics, document_version)
-            .await;
+        if !publish_if_current(
+            &server.workspace,
+            &server.client,
+            uri,
+            &text,
+            expected_client_version,
+            diagnostics,
+        )
+        .await
+        {
+            tracing::debug!(
+                uri = %uri,
+                expected_client_version,
+                "publish_diagnostics: document changed before phase 2 was published; skipping"
+            );
+        }
     }
+}
+
+/// Publish `diagnostics` for `uri` only while the document still holds `text`
+/// at `client_version`.
+///
+/// The generation read lock spans the check and the publish. `did_close`
+/// closes the document and sends its clearing publish under the write lock,
+/// so a publish that passes the check here reaches the client before that
+/// clear and can never land after it as a ghost on a closed document. The
+/// check alone left a window in which a close on another worker thread ran
+/// between the check and the send.
+pub(crate) async fn publish_if_current(
+    workspace: &al_workspace::Workspace,
+    client: &tower_lsp::Client,
+    uri: &Url,
+    text: &Arc<String>,
+    client_version: i32,
+    diagnostics: Vec<Diagnostic>,
+) -> bool {
+    let generation = workspace.generation_lock.read().await;
+    if !snapshot_is_current(workspace, uri, text, client_version) {
+        return false;
+    }
+    client
+        .publish_diagnostics(uri.clone(), diagnostics, Some(client_version))
+        .await;
+    drop(generation);
+    true
 }
 
 fn document_snapshot_is_current(
@@ -453,8 +507,23 @@ fn document_snapshot_is_current(
     expected_text: &Arc<String>,
     expected_client_version: i32,
 ) -> bool {
-    server
-        .workspace
+    snapshot_is_current(
+        &server.workspace,
+        uri,
+        expected_text,
+        expected_client_version,
+    )
+}
+
+/// Whether the open document at `uri` is still `expected_text` at
+/// `expected_client_version`.
+pub(crate) fn snapshot_is_current(
+    workspace: &al_workspace::Workspace,
+    uri: &Url,
+    expected_text: &Arc<String>,
+    expected_client_version: i32,
+) -> bool {
+    workspace
         .documents
         .get_text_and_client_version(uri)
         .is_some_and(|(current_text, current_version)| {
@@ -736,7 +805,14 @@ pub fn lint_to_diagnostic(lint: &al_syntax::LintDiagnostic, source: &[u8]) -> Di
 /// Convert a `TestDiagnostic` from the test runner to an LSP `Diagnostic`.
 ///
 /// Lines in `TestDiagnostic` are 1-based; LSP positions are 0-based.
-pub fn test_diag_to_lsp(td: &al_analysis::queries::test_diagnostics::TestDiagnostic) -> Diagnostic {
+///
+/// `None` for a diagnostic with no line: the run results named a test the
+/// static discovery did not see, so there is nowhere to put the squiggle.
+/// Anchoring it at line 0 drew a red mark on the `codeunit` header, which
+/// reads as a fault in the declaration.
+pub fn test_diag_to_lsp(
+    td: &al_analysis::queries::test_diagnostics::TestDiagnostic,
+) -> Option<Diagnostic> {
     use al_analysis::queries::test_diagnostics::DiagnosticSeverity as TDSev;
 
     let severity = match td.severity {
@@ -746,8 +822,8 @@ pub fn test_diag_to_lsp(td: &al_analysis::queries::test_diagnostics::TestDiagnos
         TDSev::Hint => DiagnosticSeverity::HINT,
     };
 
-    let line = td.line.saturating_sub(1); // 1-based → 0-based
-    Diagnostic {
+    let line = td.line?.saturating_sub(1); // 1-based → 0-based
+    Some(Diagnostic {
         range: Range {
             start: Position { line, character: 0 },
             end: Position { line, character: 0 },
@@ -757,13 +833,24 @@ pub fn test_diag_to_lsp(td: &al_analysis::queries::test_diagnostics::TestDiagnos
         source: Some("al-test-runner".to_string()),
         message: format!("[{}] {}", td.test_name, td.message),
         ..Default::default()
-    }
+    })
 }
+
+/// Files the previous [`publish_test_diagnostics`] call published to.
+///
+/// LSP clears diagnostics by publishing an empty list to a URI, so a caller
+/// that only wants to clear has no file list to work from. Remembering the
+/// previous set is what makes "pass an empty slice to clear" actually clear;
+/// without it an empty slice grouped to an empty map and the publish loop
+/// never ran.
+static LAST_TEST_DIAGNOSTIC_FILES: std::sync::Mutex<Vec<Url>> = std::sync::Mutex::new(Vec::new());
 
 /// Publish test-result diagnostics for all affected files.
 ///
 /// Groups the flat list by file and calls `publishDiagnostics` once per file.
-/// Pass an empty `diagnostics` slice to clear test diagnostics.
+/// A file that had diagnostics on the previous call and has none now is
+/// published an empty list, so passing an empty `diagnostics` slice clears
+/// every file the last call touched.
 pub async fn publish_test_diagnostics(
     client: &tower_lsp::Client,
     diagnostics: &[al_analysis::queries::test_diagnostics::TestDiagnostic],
@@ -772,6 +859,7 @@ pub async fn publish_test_diagnostics(
 
     let grouped = group_by_file(diagnostics.to_vec());
 
+    let mut published: Vec<Url> = Vec::new();
     for (file, tds) in grouped {
         let uri = match Url::from_file_path(&file) {
             Ok(u) => u,
@@ -780,8 +868,27 @@ pub async fn publish_test_diagnostics(
                 continue;
             }
         };
-        let lsp_diags: Vec<Diagnostic> = tds.iter().map(test_diag_to_lsp).collect();
-        client.publish_diagnostics(uri, lsp_diags, None).await;
+        let lsp_diags: Vec<Diagnostic> = tds.iter().filter_map(test_diag_to_lsp).collect();
+        client
+            .publish_diagnostics(uri.clone(), lsp_diags, None)
+            .await;
+        published.push(uri);
+    }
+
+    let stale: Vec<Url> = match LAST_TEST_DIAGNOSTIC_FILES.lock() {
+        Ok(mut last) => {
+            let stale = last
+                .iter()
+                .filter(|uri| !published.contains(uri))
+                .cloned()
+                .collect();
+            *last = published;
+            stale
+        }
+        Err(_) => Vec::new(),
+    };
+    for uri in stale {
+        client.publish_diagnostics(uri, Vec::new(), None).await;
     }
 }
 
@@ -1001,13 +1108,13 @@ mod tests {
         use al_analysis::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
         let td = TestDiagnostic {
             file: "/src/Tests.al".to_string(),
-            line: 10,
+            line: Some(10),
             severity: TDSev::Error,
             message: "Assert.AreEqual failed".to_string(),
             test_name: "TestSomething".to_string(),
             codeunit: "MyTests".to_string(),
         };
-        let diag = test_diag_to_lsp(&td);
+        let diag = test_diag_to_lsp(&td).expect("a located diagnostic");
         assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
         assert_eq!(diag.range.start.line, 9); // 1-based → 0-based
         assert_eq!(diag.source, Some("al-test-runner".to_string()));
@@ -1020,30 +1127,32 @@ mod tests {
         use al_analysis::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
         let td = TestDiagnostic {
             file: "/src/Tests.al".to_string(),
-            line: 5,
+            line: Some(5),
             severity: TDSev::Warning,
             message: "Test was skipped".to_string(),
             test_name: "TestSkipped".to_string(),
             codeunit: "MyTests".to_string(),
         };
-        let diag = test_diag_to_lsp(&td);
+        let diag = test_diag_to_lsp(&td).expect("a located diagnostic");
         assert_eq!(diag.severity, Some(DiagnosticSeverity::WARNING));
         assert_eq!(diag.range.start.line, 4);
     }
 
+    /// A diagnostic with no line is not published. Line 0 used to render as
+    /// a red squiggle on the `codeunit` header, which reads as a fault in the
+    /// declaration rather than a test whose source could not be located.
     #[test]
-    fn test_diag_line_zero_stays_zero() {
+    fn a_diagnostic_without_a_line_is_not_published() {
         use al_analysis::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
         let td = TestDiagnostic {
-            file: "".to_string(),
-            line: 0,
+            file: "/src/Tests.al".to_string(),
+            line: None,
             severity: TDSev::Error,
             message: "fail".to_string(),
             test_name: "T".to_string(),
             codeunit: "CU".to_string(),
         };
-        let diag = test_diag_to_lsp(&td);
-        assert_eq!(diag.range.start.line, 0); // saturating_sub(1) on 0 stays 0
+        assert!(test_diag_to_lsp(&td).is_none());
     }
 
     fn sample_diag(msg: &str) -> Diagnostic {
@@ -1279,18 +1388,22 @@ mod tests {
         use al_analysis::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
         let mk = |sev: TDSev| TestDiagnostic {
             file: "/src/Tests.al".to_string(),
-            line: 3,
+            line: Some(3),
             severity: sev,
             message: "m".to_string(),
             test_name: "T".to_string(),
             codeunit: "CU".to_string(),
         };
         assert_eq!(
-            test_diag_to_lsp(&mk(TDSev::Information)).severity,
+            test_diag_to_lsp(&mk(TDSev::Information))
+                .expect("a located diagnostic")
+                .severity,
             Some(DiagnosticSeverity::INFORMATION)
         );
         assert_eq!(
-            test_diag_to_lsp(&mk(TDSev::Hint)).severity,
+            test_diag_to_lsp(&mk(TDSev::Hint))
+                .expect("a located diagnostic")
+                .severity,
             Some(DiagnosticSeverity::HINT)
         );
     }
@@ -1300,13 +1413,13 @@ mod tests {
         use al_analysis::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
         let td = TestDiagnostic {
             file: "/src/Tests.al".to_string(),
-            line: 7,
+            line: Some(7),
             severity: TDSev::Error,
             message: "expected 1 got 2".to_string(),
             test_name: "MyTest".to_string(),
             codeunit: "MyTests".to_string(),
         };
-        let diag = test_diag_to_lsp(&td);
+        let diag = test_diag_to_lsp(&td).expect("a located diagnostic");
         assert_eq!(diag.message, "[MyTest] expected 1 got 2");
         assert_eq!(
             diag.code,

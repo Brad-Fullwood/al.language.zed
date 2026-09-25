@@ -12,6 +12,7 @@ al-bc = { path = "../al-bc", version = "0.1.0", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+url = "2"
 tracing = { workspace = true }
 dashmap = { workspace = true }
 zip = { workspace = true }
@@ -19,9 +20,9 @@ quick-xml = { workspace = true }
 futures = { workspace = true }
 getrandom = { workspace = true }
 tokio = { workspace = true }
-dirs = "6"
-rayon = "1"
-sha2 = "0.10"
+dirs = { workspace = true }
+rayon = { workspace = true }
+sha2 = { workspace = true }
 reqwest = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 # OS secret store for OAuth token persistence; crypto-rust keeps the pure-Rust /
@@ -44,7 +45,8 @@ default = ["nuget"]
 nuget = ["dep:al-bc", "dep:keyring", "dep:zeroize", "dep:reqwest"]
 
 [dev-dependencies]
-tempfile = "3"
+proptest = "1"
+tempfile = { workspace = true }
 serial_test = "3"
 wiremock = "0.6"
 tokio = { workspace = true, features = ["full"] }

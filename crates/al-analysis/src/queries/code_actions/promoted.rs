@@ -1,8 +1,9 @@
 //! Promoted-actions conversion, ApplicationArea, and report-layout source actions.
 
+use al_syntax::IdentifierText;
 use url::Url;
 
-use super::{detect_indent, detect_object_kind, single_edit_ws};
+use super::{detect_indent, detect_object_kind, single_edit_ws, strip_literals_and_comment};
 use super::{AlObjectKind, CodeActionEntry, CodeActionKind, Range, TextEdit};
 
 /// Detect page actions that use old-style `Promoted = true` / `PromotedCategory` properties
@@ -153,7 +154,7 @@ fn extract_action_name(line: &str) -> Option<String> {
     if inner.is_empty() {
         return None;
     }
-    Some(inner.trim_matches('"').to_string())
+    Some(inner.unquote_identifier().into_owned())
 }
 
 fn find_block_extent(lines: &[&str], start: usize) -> (usize, Vec<usize>) {
@@ -162,7 +163,7 @@ fn find_block_extent(lines: &[&str], start: usize) -> (usize, Vec<usize>) {
     let mut block_started = false;
 
     for (i, line) in lines.iter().enumerate().skip(start) {
-        for ch in line.chars() {
+        for ch in strip_literals_and_comment(line).chars() {
             match ch {
                 '{' => {
                     depth += 1;
@@ -212,7 +213,10 @@ fn find_block_in(
     predicate: impl Fn(&str) -> bool,
 ) -> Option<BlockSpan> {
     for i in from..to.min(lines.len()) {
-        let normalized = lines[i].trim().to_lowercase().replace(' ', "");
+        let normalized = strip_literals_and_comment(lines[i])
+            .trim()
+            .to_lowercase()
+            .replace(' ', "");
         if predicate(&normalized) {
             let (close, _) = find_block_extent(lines, i);
             return Some(BlockSpan { header: i, close });
@@ -598,19 +602,39 @@ fn build_report_layout_conversion(
         });
     }
 
-    let insert_line = find_rendering_insert_line(text);
+    let lines: Vec<&str> = text.lines().collect();
+    // A report may already declare a `rendering` section. A second one is a
+    // duplicate section that alc rejects, so the new `layout(…)` entries go
+    // inside the existing block.
+    let existing = find_block_in(&lines, 0, lines.len(), |t| {
+        t == "rendering" || t.starts_with("rendering{")
+    });
 
-    let indent = detect_indent(text, insert_line.saturating_sub(1));
+    let (insert_line, indent) = match &existing {
+        Some(block) => (block.close as u32, indent_of(lines[block.header])),
+        None => {
+            let line = find_rendering_insert_line(text);
+            (line, detect_indent(text, line.saturating_sub(1)))
+        }
+    };
 
-    let mut rendering_text = format!("{}rendering\n{}{{\n", indent, indent);
+    let mut taken = existing
+        .as_ref()
+        .map(|block| existing_layout_names(&lines, block))
+        .unwrap_or_default();
+
+    let mut rendering_text = String::new();
+    if existing.is_none() {
+        rendering_text.push_str(&format!("{}rendering\n{}{{\n", indent, indent));
+    }
     for (idx, lp) in legacy.iter().enumerate() {
-        let layout_name = if legacy.len() == 1 {
+        let preferred = if legacy.len() == 1 {
             format!("{}Layout", lp.layout_type)
         } else {
             format!("{}Layout{}", lp.layout_type, idx + 1)
         };
+        let layout_name = unique_layout_name(&preferred, &mut taken);
         let mime = match lp.layout_type.as_str() {
-            "RDLC" => "RDLC",
             "Word" => "Word",
             _ => "RDLC",
         };
@@ -623,7 +647,9 @@ fn build_report_layout_conversion(
             indent
         ));
     }
-    rendering_text.push_str(&format!("{}}}\n", indent));
+    if existing.is_none() {
+        rendering_text.push_str(&format!("{}}}\n", indent));
+    }
 
     edits.push(TextEdit {
         range: Range {
@@ -649,7 +675,37 @@ fn build_report_layout_conversion(
     })
 }
 
-/// Find the line where the `rendering { }` section should be inserted.
+/// Lower-cased names already declared by `layout(...)` inside `block`.
+fn existing_layout_names(lines: &[&str], block: &BlockSpan) -> Vec<String> {
+    lines[block.header..=block.close.min(lines.len().saturating_sub(1))]
+        .iter()
+        .filter_map(|line| {
+            let normalized = strip_literals_and_comment(line).trim().to_lowercase();
+            let rest = normalized.strip_prefix("layout(")?;
+            let name = rest.split(')').next()?.unquote_identifier();
+            (!name.is_empty()).then(|| name.to_string())
+        })
+        .collect()
+}
+
+/// `preferred`, or the first `preferred2`, `preferred3`, … not already in
+/// `taken`. The chosen name is recorded so two converted properties cannot
+/// collide with each other either.
+fn unique_layout_name(preferred: &str, taken: &mut Vec<String>) -> String {
+    let is_free = |candidate: &str, taken: &[String]| {
+        !taken.iter().any(|name| name == &candidate.to_lowercase())
+    };
+    let mut candidate = preferred.to_string();
+    let mut suffix = 1u32;
+    while !is_free(&candidate, taken) {
+        suffix += 1;
+        candidate = format!("{preferred}{suffix}");
+    }
+    taken.push(candidate.to_lowercase());
+    candidate
+}
+
+/// Find the line where a new `rendering { }` section should be inserted.
 /// Prefers inserting before `requestpage`, otherwise before the last `}` of the report.
 fn find_rendering_insert_line(text: &str) -> u32 {
     let lines: Vec<&str> = text.lines().collect();
@@ -1334,6 +1390,71 @@ mod tests {
         );
     }
 
+    /// A report may already have a `rendering` section alongside one legacy
+    /// property. Emitting a second block makes alc reject the file for a
+    /// duplicate section.
+    #[test]
+    fn report_layout_conversion_merges_into_an_existing_rendering_section() {
+        let al_code = r#"report 50100 "My Report"
+{
+    WordLayout = './layouts/Legacy.docx';
+
+    rendering
+    {
+        layout(RDLCLayout)
+        {
+            Type = RDLC;
+            LayoutFile = './layouts/Existing.rdl';
+        }
+    }
+}
+"#;
+        let uri = Url::parse("file:///test/MyReportMerge.al").unwrap();
+        let action = source_action_fix_report_layout(
+            &uri,
+            al_code,
+            Range {
+                start: super::super::Position {
+                    line: 2,
+                    character: 4,
+                },
+                end: super::super::Position {
+                    line: 2,
+                    character: 4,
+                },
+            },
+        )
+        .expect("conversion should be offered");
+        let updated = super::super::test_support::assert_action_applies_cleanly(
+            al_code,
+            &action,
+            "report layout merge",
+        );
+
+        assert_eq!(
+            updated.matches("rendering").count(),
+            1,
+            "must not add a second rendering section:\n{updated}"
+        );
+        assert!(
+            !updated.contains("WordLayout = "),
+            "the legacy property must be removed:\n{updated}"
+        );
+        assert!(
+            updated.contains("./layouts/Existing.rdl"),
+            "the existing layout must survive:\n{updated}"
+        );
+        assert!(
+            updated.contains("LayoutFile = './layouts/Legacy.docx';"),
+            "the converted layout must land inside the section:\n{updated}"
+        );
+        assert_eq!(
+            updated.matches("layout(RDLCLayout)").count(),
+            1,
+            "the generated name must not collide with the existing one:\n{updated}"
+        );
+    }
+
     fn promoted_cursor(line: u32) -> Range {
         Range {
             start: super::super::Position {
@@ -1493,6 +1614,40 @@ mod tests {
         );
         assert!(
             updated.contains("actionref(Second_Promoted; Second)"),
+            "{updated}"
+        );
+    }
+
+    /// A brace inside a caption, a quoted identifier or a line comment used to
+    /// move the depth counter, so the action body ended on the wrong line and
+    /// the `Promoted = true` below it was never seen.
+    #[test]
+    fn promoted_conversion_ignores_braces_in_captions_comments_and_quoted_names() {
+        let al_code = r#"page 50100 "My Page"
+{
+    actions
+    {
+        area(processing)
+        {
+            action("Open { Braces }")
+            {
+                ApplicationArea = All;
+                Caption = 'Open }';
+                // TODO: rework the { } layout
+                Promoted = true;
+                PromotedCategory = Process;
+            }
+        }
+    }
+}
+"#;
+        let (_, updated) = convert_promoted(al_code, "file:///test/PromotedBraces.al", 11);
+        assert!(!updated.contains("Promoted = true"), "{updated}");
+        assert!(!updated.contains("PromotedCategory"), "{updated}");
+        assert!(updated.contains("area(Promoted)"), "{updated}");
+        assert!(updated.contains("Caption = 'Open }';"), "{updated}");
+        assert!(
+            updated.contains("// TODO: rework the { } layout"),
             "{updated}"
         );
     }

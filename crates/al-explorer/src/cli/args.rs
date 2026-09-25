@@ -3,12 +3,36 @@
 //! Split out of `cli/mod.rs`; the command routing that consumes these lives in
 //! `cli::run`. Re-exported from `cli` (`pub use args::*;`).
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
 use super::subcommands::{
     DebugCommands, ProfileCommands, SnapshotCommands, TestSnapshotCommands, XlfCommands,
 };
+
+/// `al-explorer authenticate <cmd>`.
+///
+/// A free-form `String` here meant `al authenticate clera` fell through the
+/// daemon's dispatch to the login branch and started a real browser or
+/// device-code flow, then failed the response contract after the login had
+/// already happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AuthenticateCommand {
+    Login,
+    Status,
+    Clear,
+}
+
+impl AuthenticateCommand {
+    /// The wire value the daemon dispatches on.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AuthenticateCommand::Login => "login",
+            AuthenticateCommand::Status => "status",
+            AuthenticateCommand::Clear => "clear",
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -22,6 +46,36 @@ pub struct Cli {
     /// Output as JSON
     #[arg(long, global = true)]
     pub json: bool,
+
+    /// Per-request deadline in milliseconds. Overrides AL_REQUEST_TIMEOUT_MS.
+    /// A request blocked on the dependency source index keeps waiting while
+    /// that index makes progress, whatever this is set to.
+    #[arg(long, global = true, value_name = "MS")]
+    pub timeout_ms: Option<u64>,
+
+    /// Print JSON on one line instead of indented. Implies --json.
+    #[arg(long, global = true)]
+    pub compact: bool,
+
+    /// Return at most N rows from a list-returning command. The response
+    /// reports `total` and `truncated`.
+    #[arg(long, global = true, value_name = "N")]
+    pub limit: Option<usize>,
+
+    /// Skip the first N rows, for paging with --limit.
+    #[arg(long, global = true, value_name = "N")]
+    pub offset: Option<usize>,
+
+    /// Keep only these fields on each row, comma separated
+    /// (for example --fields kind,id,name). Implies --json.
+    #[arg(long, global = true, value_name = "NAMES", value_delimiter = ',')]
+    pub fields: Vec<String>,
+
+    /// Which part of the loaded symbol space to report on: workspace,
+    /// packages or all. Applies to impact (and impact --table), entrypoints,
+    /// intercept and graph.
+    #[arg(long, global = true, value_name = "SCOPE")]
+    pub scope: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -45,11 +99,7 @@ Examples:
   al search Customer
   al search \"Sales Post\" --limit 5
   al search Customer --json")]
-    Search {
-        query: String,
-        #[arg(short, long, default_value = "20")]
-        limit: usize,
-    },
+    Search { query: String },
     /// Look up object by type and name
     #[command(after_help = "\
 Examples:
@@ -82,12 +132,30 @@ Examples:
         /// Return one trigger declaration/body
         #[arg(long, conflicts_with = "procedure")]
         trigger: Option<String>,
+        /// List the object's procedures and triggers with signatures and line
+        /// ranges, without their bodies
+        #[arg(long, conflicts_with_all = ["procedure", "trigger"])]
+        list_procedures: bool,
+    },
+    /// Show the file and line where an object is declared
+    #[command(after_help = "\
+Examples:
+  al-explorer location \"Sales-Post\"
+  al-explorer location \"Customer Card\" --kind page --json")]
+    Location {
+        name: String,
+        /// Narrow the lookup to one AL object kind
+        #[arg(long)]
+        kind: Option<String>,
+        /// Narrow the lookup to one symbol package (or "workspace")
+        #[arg(long)]
+        package: Option<String>,
     },
     /// Find event publishers matching a name
     Events { name: String },
     /// Find event subscribers matching a name
     Subscribers { event: String },
-    /// Resolve the publisher behind the [EventSubscriber] at FILE:LINE
+    /// Resolve the publisher behind the EventSubscriber attribute at FILE:LINE
     EventSource {
         /// File containing the subscriber
         #[arg(long)]
@@ -99,9 +167,16 @@ Examples:
     /// Show base + all extensions merged
     Composed {
         /// Object kind (table, page, …) or — with one argument — the name
-        #[arg(value_name = "TYPE_OR_NAME")]
-        kind: String,
+        #[arg(value_name = "TYPE_OR_NAME", required_unless_present = "name")]
+        kind: Option<String>,
         /// Object name (omit to resolve the kind by name automatically)
+        #[arg(value_name = "NAME", conflicts_with = "name")]
+        name_positional: Option<String>,
+        /// Object name, spelled out. One positional means the name and two mean
+        /// kind then name, so a name that could pass for a kind is ambiguous.
+        /// This flag settles it: `composed --name 'Item'`, or with a kind,
+        /// `composed table --name 'Item'`
+        #[arg(long = "name", value_name = "VALUE")]
         name: Option<String>,
     },
     /// List loaded packages with stats
@@ -124,7 +199,7 @@ Examples:
         /// Project directory (default: current dir)
         #[arg(short, long)]
         project: Option<String>,
-        /// Output .app path (default: <project>/output/<publisher>_<name>_<version>.app)
+        /// Output .app path (default: output/PUBLISHER_NAME_VERSION.app in the project)
         #[arg(short, long)]
         out: Option<String>,
         /// Add an authoritative Microsoft AL compiler (alc) compatibility check
@@ -132,13 +207,18 @@ Examples:
         /// Requires a discovered toolchain (AL_TOOL_PATH or an installed ALTool).
         #[arg(long)]
         validate: bool,
+        /// Code analyzers alc runs during --validate (comma-separated, e.g.
+        /// CodeCop,UICop). Default: the project's `al.codeAnalyzers`, with any
+        /// custom analyzer an untrusted project names left out. An empty value
+        /// runs none.
+        #[arg(long, requires = "validate")]
+        analyzers: Option<String>,
     },
     /// Run native lint rules on AL file(s)
     #[command(after_help = "\
 Examples:
   al lint src/Customer.al
   al lint --all
-  al lint --all --analyzers CodeCop,AppSourceCop
   al lint src/Sales.al --json")]
     Lint {
         /// File or directory to lint (default: current dir with --all).
@@ -149,8 +229,9 @@ Examples:
         /// Lint all .al files in the project directory
         #[arg(long)]
         all: bool,
-        /// Analyzers to run (comma-separated: CodeCop,AppSourceCop,UICop,PerTenantCop)
-        #[arg(long)]
+        /// Refused: lint never ran Microsoft's analyzers. Kept so old scripts
+        /// get an explanation instead of a parse error.
+        #[arg(long, hide = true)]
         analyzers: Option<String>,
     },
     /// Format AL code
@@ -329,6 +410,19 @@ Examples:
     },
     /// Compile AL project into .app file
     Package,
+    /// Compile the project and publish the .app to the Business Central dev API
+    ///
+    /// Reads the server from `.vscode/launch.json` or `.zed/debug.json`.
+    /// Credentials come from `BC_ACCESS_TOKEN` (AAD) or
+    /// `BC_USERNAME`/`BC_PASSWORD` (UserPassword, Windows).
+    Publish {
+        /// Launch configuration name (the first AL configuration if omitted)
+        #[arg(long)]
+        config: Option<String>,
+        /// Deploy incrementally through the RAD API instead of a full upload
+        #[arg(long)]
+        incremental: bool,
+    },
     /// Create a new AL project
     New {
         /// Directory for the new project
@@ -355,12 +449,12 @@ Examples:
     /// For non-interactive environments (CI, scripting) consider using
     /// `--password` on snapshot/profile commands instead. Note that passwords
     /// supplied via `--password` are visible in shell history and
-    /// `/proc/<pid>/cmdline`. Prefer reading credentials from a file or
-    /// environment variable when possible.
+    /// `/proc/<pid>/cmdline`. `BC_USERNAME` and `BC_PASSWORD` are read as a
+    /// fallback and keep the credential out of both.
     Authenticate {
         /// Subcommand: login (default), status, clear
-        #[arg(default_value = "login")]
-        cmd: String,
+        #[arg(value_enum, default_value_t = AuthenticateCommand::Login)]
+        cmd: AuthenticateCommand,
         /// Tenant ID or domain (auto-detected from project if omitted)
         #[arg(short, long)]
         tenant: Option<String>,
@@ -422,7 +516,7 @@ Examples:
         #[arg(long)]
         field: Option<String>,
         /// Event name to trace downstream (requires --object)
-        #[arg(long)]
+        #[arg(long, requires = "object")]
         event: Option<String>,
     },
     /// AL debug session commands
@@ -563,14 +657,15 @@ Examples:
     Generate {
         /// Object kind: page, report, test
         kind: String,
-        /// Object ID
-        #[arg(long, default_value = "50100")]
-        id: i64,
+        /// Object ID. Default: the first free ID of this kind in the
+        /// project's app.json idRanges
+        #[arg(long)]
+        id: Option<i64>,
         /// Object name
         #[arg(long, default_value = "NewObject")]
         name: String,
         /// Source table name (required for page/report)
-        #[arg(long)]
+        #[arg(long, required_if_eq_any = [("kind", "page"), ("kind", "report")])]
         table: Option<String>,
         /// Page type: List, Card, Document (for page kind)
         #[arg(long)]
@@ -580,7 +675,12 @@ Examples:
         subject: Option<String>,
     },
     /// Show obsolescence timeline (deprecated symbols)
-    Obsolete,
+    Obsolete {
+        /// Instead of every pending obsoletion in the loaded packages, list
+        /// the calls in this workspace to procedures that are obsolete
+        #[arg(long)]
+        used: bool,
+    },
     /// Audit DataClassification on table fields
     #[command(name = "audit-data")]
     AuditData,
@@ -602,6 +702,24 @@ Examples:
         #[arg(long)]
         baseline_app: Option<String>,
     },
+    /// Compare two versions of a dependency and list the changes this
+    /// workspace's code uses
+    #[command(
+        name = "package-diff",
+        after_help = "\
+Examples:
+  al-explorer package-diff \".alpackages/old/Microsoft_Base Application_25.0.app\" \".alpackages/Microsoft_Base Application_26.0.app\"
+  al-explorer package-diff old.app new.app --all --json"
+    )]
+    PackageDiff {
+        /// The version the workspace was written against (.app path)
+        from: String,
+        /// The version to move to (.app path)
+        to: String,
+        /// Also list the changes nothing in the workspace uses
+        #[arg(long)]
+        all: bool,
+    },
     /// Run architecture lint rules
     #[command(name = "arch-lint")]
     ArchLint,
@@ -617,6 +735,40 @@ Examples:
   al native-check --json"
     )]
     NativeCheck,
+    /// Report the next free object ID, table field number or enum value
+    /// ordinal inside the idRanges declared in app.json. Counts every object
+    /// in the workspace, including the second and later objects in a
+    /// multi-object file, and the dependency package objects inside the same
+    /// range. An exhausted range is an error naming the range.
+    #[command(
+        name = "free-ids",
+        after_help = "\
+Examples:
+  al free-ids
+  al free-ids --kind table
+  al free-ids --kind codeunit --count 5
+  al free-ids --object \"Customer Ext\"
+  al free-ids --json --kind page"
+    )]
+    FreeIds {
+        /// Object kind to allocate an ID for (table, page, codeunit, report,
+        /// query, xmlport, enum, tableextension, pageextension, permissionset,
+        /// ...). Omit for a summary of every kind in use.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Table, table extension, enum or enum extension whose next free
+        /// field number or enum ordinal is wanted. Takes precedence over
+        /// --kind, which then only disambiguates a shared name.
+        #[arg(long)]
+        object: Option<String>,
+        /// How many free numbers to return, in ascending order (1 to 100).
+        #[arg(long, default_value = "1")]
+        count: u32,
+        /// Add the full used-number list. Off by default so the answer stays
+        /// a few hundred bytes.
+        #[arg(long)]
+        include_used: bool,
+    },
     /// Find duplicate code blocks
     Duplicates {
         /// Minimum token count to consider a block
@@ -653,12 +805,46 @@ Examples:
         #[arg(long)]
         dry_run: bool,
     },
-    /// Rename .al files to match <Type><Id>.<Name>.al convention
+    /// Rename .al files to the TypeId.Name.al convention (Codeunit50100.MyCodeunit.al)
     #[command(name = "organize-files")]
     OrganizeFiles {
         /// Preview renames without applying
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Let this project's own files supply settings that load code, run
+    /// programs or receive Business Central credentials
+    #[command(after_help = "\
+Settings in .vscode/settings.json, .zed/settings.json and .vscode/launch.json ship
+inside the repository. Analyzer assemblies, raw alc switches, probing paths, package
+feeds and Business Central servers are ignored until the project is trusted.
+
+Run this yourself, in a terminal. It asks before it writes, and it reads the answer
+from the terminal rather than from stdin, so a task, a hook, a skill or an agent's
+shell cannot answer for you.
+
+Examples:
+  al-explorer trust --show
+  al-explorer trust
+  al-explorer trust --revoke ~/src/SomeApp
+  al-explorer trust --yes --root ~/src/SomeApp   # scripted install, no terminal
+
+See Docs/features/project-trust.md.")]
+    Trust {
+        /// Project directory (default: current dir)
+        project: Option<String>,
+        /// List the settings that need trust and the current state
+        #[arg(long, conflicts_with = "revoke")]
+        show: bool,
+        /// Remove this project from the trusted list
+        #[arg(long)]
+        revoke: bool,
+        /// Answer the confirmation. Needs --root naming the same project
+        #[arg(long, requires = "root", conflicts_with_all = ["show", "revoke"])]
+        yes: bool,
+        /// The project --yes applies to, spelled out
+        #[arg(long, value_name = "PATH")]
+        root: Option<String>,
     },
 }
 
@@ -675,6 +861,45 @@ mod clap_wiring_tests {
         let mut full = vec!["al-explorer"];
         full.extend_from_slice(args);
         Cli::try_parse_from(full)
+    }
+
+    /// Object names come from a dependency `.app`, so an agent puts arbitrary
+    /// text here. `--` keeps a name that starts with `-` a name.
+    #[test]
+    fn a_name_after_the_separator_is_a_name() {
+        let cli = parse(&["search", "--", "-x"]).expect("-- must end option parsing");
+        assert!(matches!(cli.command, Commands::Search { query } if query == "-x"));
+
+        let cli = parse(&["source", "--list-procedures", "--", "--weird"])
+            .expect("flags before --, name after");
+        assert!(
+            matches!(cli.command, Commands::Source { name, list_procedures, .. }
+            if name == "--weird" && list_procedures)
+        );
+    }
+
+    /// `composed` takes one argument as a name and two as kind then name, so a
+    /// name that could pass for a kind is ambiguous. `--name` settles it.
+    #[test]
+    fn composed_takes_a_name_through_a_flag() {
+        let cli = parse(&["composed", "--name", "table"]).expect("--name alone is a name");
+        assert!(matches!(
+            cli.command,
+            Commands::Composed { kind: None, name: Some(name), .. } if name == "table"
+        ));
+
+        let cli = parse(&["composed", "table", "--name", "Item"]).expect("kind plus --name");
+        assert!(matches!(
+            cli.command,
+            Commands::Composed { kind: Some(kind), name: Some(name), .. }
+                if kind == "table" && name == "Item"
+        ));
+
+        assert!(
+            parse(&["composed", "table", "Item", "--name", "Item"]).is_err(),
+            "the positional name and --name must not both be given"
+        );
+        assert!(parse(&["composed"]).is_err(), "a name is required");
     }
 
     #[test]

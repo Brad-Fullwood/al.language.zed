@@ -21,7 +21,7 @@ fn run_al_in_with_runtime(
 ) -> std::process::Output {
     let capture_id = CAPTURE_ID.fetch_add(1, Ordering::Relaxed);
     let capture_root = std::env::temp_dir().join(format!(
-        "al-cli-smoke-{}-{capture_id}-{}",
+        "al-explorer-smoke-{}-{capture_id}-{}",
         std::process::id(),
         args.first().copied().unwrap_or("command")
     ));
@@ -176,6 +176,52 @@ fn cli_commands_use_the_real_project_daemon() {
             "\"proc_name\": \"DoSomething\"",
             true,
         ),
+        (
+            &[
+                "source",
+                "Hello World",
+                "--kind",
+                "codeunit",
+                "--list-procedures",
+                "--json",
+            ],
+            "\"signature\"",
+            true,
+        ),
+        // A wrong member name must offer the ones that exist rather than
+        // dead-ending, so the agent's next call can be the right one.
+        (
+            &[
+                "source",
+                "Hello World",
+                "--kind",
+                "codeunit",
+                "--procedure",
+                "DoSomethin",
+                "--json",
+            ],
+            "DoSomething",
+            false,
+        ),
+        (
+            &["location", "Hello World", "--kind", "codeunit", "--json"],
+            "\"path\"",
+            true,
+        ),
+        // The projection envelope: `total` and `truncated` travel with a
+        // limited list so a page is not read as a complete answer.
+        (
+            &[
+                "--json", "--limit", "1", "--fields", "name", "search", "Hello",
+            ],
+            "\"truncated\"",
+            true,
+        ),
+        (
+            &["--compact", "--limit", "1", "search", "Hello"],
+            "{\"items\":",
+            true,
+        ),
         (&["tests"], "test codeunit", true),
         (&["dead-code"], "DEAD CODE", false),
         (&["sql-scan"], "anti-pattern", false),
@@ -207,7 +253,7 @@ fn cli_commands_use_the_real_project_daemon() {
         ),
         (
             &["folding", "src/HelloWorld.al", "--json"][..],
-            "\"start_line\":",
+            "\"startLine\":",
         ),
         (
             &["tokens", "src/HelloWorld.al", "--json"][..],
@@ -237,6 +283,53 @@ fn cli_source_rejects_an_unknown_kind() {
     assert!(
         output.contains("Unknown AL object kind 'codeunitt'"),
         "invalid-kind error was not actionable:\n{output}"
+    );
+}
+
+/// The daemon refuses a path outside the project it loaded, because the same
+/// dispatchers answer MCP callers. A person running the CLI can read their own
+/// files, so a read-only command sends the text it read and gets its answer.
+#[test]
+fn a_read_only_command_answers_for_a_file_outside_the_project() {
+    let outside = tempfile::tempdir().expect("create a directory outside the project");
+    let file = outside.path().join("ErrorCases.al");
+    std::fs::write(&file, "codeunit 50123 Broken\n{\n    procedure\n}\n").expect("write fixture");
+
+    let (ok, output) = al(&["parse", file.to_str().expect("UTF-8 path"), "--json"]);
+    assert!(
+        !ok,
+        "a file with syntax errors must exit non-zero:\n{output}"
+    );
+    assert!(
+        output.contains("\"errors\":") && !output.contains("outside the project"),
+        "parse outside the project must answer from the text the CLI read:\n{output}"
+    );
+}
+
+/// The other half of the same rule: a command that rewrites the file it names
+/// stays refused outside the project, and says which project it is confined to.
+#[test]
+fn formatting_a_file_outside_the_project_is_refused() {
+    let outside = tempfile::tempdir().expect("create a directory outside the project");
+    let file = outside.path().join("Unformatted.al");
+    let source = "codeunit 50124 Ugly\n{\n        procedure X()\n    begin\n    end;\n}\n";
+    std::fs::write(&file, source).expect("write fixture");
+
+    let (ok, output) = al(&["format", file.to_str().expect("UTF-8 path")]);
+    assert!(!ok, "formatting outside the project must fail:\n{output}");
+    assert!(
+        output.contains("outside the project")
+            && output.contains(
+                test_project_dir()
+                    .to_str()
+                    .expect("fixture project path is UTF-8")
+            ),
+        "the refusal must name the project the daemon is confined to:\n{output}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).expect("read fixture back"),
+        source,
+        "a refused format must not have rewritten the file"
     );
 }
 
@@ -272,6 +365,191 @@ fn isolated_test_project() -> tempfile::TempDir {
     .expect("copy app.json");
     copy_tree(&test_project_dir().join("src"), &project.path().join("src"));
     project
+}
+
+/// The daemon read the workspace once at startup, so a file written or edited
+/// after its first request was invisible until it exited: an agent that
+/// created an object and then looked it up was told it did not exist.
+#[test]
+fn a_running_daemon_sees_files_written_after_it_started() {
+    let project = isolated_test_project();
+    let search = |name: &str| {
+        let output = run_al_in(project.path(), &["--json", "search", name]);
+        assert!(output.status.success(), "search {name} failed: {output:?}");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    // The first request starts the daemon and indexes the fixture.
+    assert!(!search("Written Later").contains("Written Later"));
+
+    let path = project.path().join("src").join("WrittenLater.Codeunit.al");
+    std::fs::write(&path, "codeunit 50190 \"Written Later\"\n{\n}\n").expect("write");
+    let found = search("Written Later");
+
+    std::fs::write(&path, "codeunit 50190 \"Renamed Later\"\n{\n}\n").expect("rewrite");
+    let renamed = search("Later");
+
+    std::fs::remove_file(&path).expect("delete");
+    let deleted = search("Later");
+    let _ = run_al_in(project.path(), &["daemon-shutdown"]);
+
+    assert!(found.contains("Written Later"), "a new file: {found}");
+    assert!(
+        renamed.contains("Renamed Later") && !renamed.contains("Written Later"),
+        "an edited file: {renamed}"
+    );
+    assert!(
+        !deleted.contains("Renamed Later"),
+        "a deleted file: {deleted}"
+    );
+}
+
+/// The daemon opens every file it scanned at startup as a document, and the
+/// per-file commands read that document. The refresh updated the index only,
+/// so `symbols` on an edited file kept listing the procedures it had when the
+/// daemon started.
+#[test]
+fn a_per_file_command_sees_an_edit_made_after_the_daemon_started() {
+    let project = isolated_test_project();
+    let path = project.path().join("src").join("Edited.Codeunit.al");
+    let write = |procedure: &str| {
+        std::fs::write(
+            &path,
+            format!(
+                "codeunit 50191 Edited\n{{\n    procedure {procedure}()\n    begin\n    end;\n}}\n"
+            ),
+        )
+        .expect("write");
+    };
+    let symbols = || {
+        let output = run_al_in(project.path(), &["symbols", "src/Edited.Codeunit.al"]);
+        assert!(output.status.success(), "symbols failed: {output:?}");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    write("First");
+    let before = symbols();
+    write("Second");
+    let after = symbols();
+    let _ = run_al_in(project.path(), &["daemon-shutdown"]);
+
+    assert!(before.contains("First"), "{before}");
+    assert!(
+        after.contains("Second") && !after.contains("First"),
+        "{after}"
+    );
+}
+
+/// `test-run <id>` without `--name` left the daemon filling `codeunitName`
+/// with the ID as a string, and the interpreter then used "50145" as the
+/// current object, so an unqualified call to a sibling procedure failed with
+/// `object '50145' not found in workspace`.
+#[test]
+fn test_run_by_id_alone_resolves_a_sibling_call() {
+    let project = isolated_test_project();
+    std::fs::write(
+        project.path().join("src").join("SiblingTest.Codeunit.al"),
+        r#"codeunit 50145 "Sibling Call Test"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestCallsSibling()
+    var
+        Total: Integer;
+    begin
+        Total := AddOne(1);
+        if Total <> 2 then
+            Error('sibling call returned %1', Total);
+    end;
+
+    local procedure AddOne(Input: Integer): Integer
+    begin
+        exit(Input + 1);
+    end;
+}
+"#,
+    )
+    .expect("write the sibling-call fixture");
+
+    let output = run_al_in(project.path(), &["test-run", "50145"]);
+    let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
+    combined.push_str(&String::from_utf8_lossy(&output.stderr));
+    let _ = run_al_in(project.path(), &["daemon-shutdown"]);
+
+    assert!(
+        !combined.contains("not found in workspace"),
+        "the ID must not be used as an object name:\n{combined}"
+    );
+    assert!(
+        output.status.success(),
+        "`test-run 50145` failed:\n{combined}"
+    );
+}
+
+/// `collect_permissions` stopped failing on the first unparseable `.al` and
+/// started skipping it, but the CLI read only `content` and `objectCount`, so
+/// a project with one work-in-progress file got a permission set that omits
+/// that object and says nothing about it.
+#[test]
+fn permissions_names_the_files_it_could_not_read() {
+    let project = isolated_test_project();
+    std::fs::write(
+        project.path().join("src").join("Unfinished.Codeunit.al"),
+        "codeunit 50199 Unfinished { procedure Incomplete(\n",
+    )
+    .expect("write the unparsable fixture");
+
+    let output = run_al_in(project.path(), &["permissions", "--name", "Smoke Perms"]);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let json = run_al_in(
+        project.path(),
+        &["--json", "permissions", "--name", "Smoke Perms"],
+    );
+    let json_out = String::from_utf8_lossy(&json.stdout).into_owned();
+    let _ = run_al_in(project.path(), &["daemon-shutdown"]);
+
+    assert!(
+        stderr.contains("Unfinished.Codeunit.al"),
+        "the skipped file must be named:\n{stderr}"
+    );
+    assert!(
+        json_out.contains("\"skipped\""),
+        "the JSON result must carry the skips:\n{json_out}"
+    );
+}
+
+/// The audit stopped failing on a grant clause it could not read and started
+/// recording it in `parseIssues`, but `cmd_permission_audit` read only
+/// coverage and the two over-grant lists, so a permission set whose clause was
+/// dropped was reported as clean.
+#[test]
+fn permission_audit_names_the_clauses_it_could_not_read() {
+    let project = isolated_test_project();
+    std::fs::write(
+        project.path().join("src").join("BadPerms.PermissionSet.al"),
+        r#"permissionset 50198 "Bad Perms"
+{
+    Assignable = true;
+    Permissions = notakind "Whatever" = X;
+}
+"#,
+    )
+    .expect("write the unreadable clause fixture");
+
+    let output = run_al_in(project.path(), &["permission-audit"]);
+    let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
+    combined.push_str(&String::from_utf8_lossy(&output.stderr));
+    let json = run_al_in(project.path(), &["--json", "permission-audit"]);
+    let json_out = String::from_utf8_lossy(&json.stdout).into_owned();
+    let _ = run_al_in(project.path(), &["daemon-shutdown"]);
+
+    assert!(
+        combined.contains("could not read") && combined.contains("Bad Perms"),
+        "the unreadable clause must be named:\n{combined}"
+    );
+    assert!(
+        json_out.contains("\"parseIssues\""),
+        "the JSON result must carry the parse issues:\n{json_out}"
+    );
 }
 
 fn help_commands() -> BTreeSet<String> {
@@ -325,6 +603,7 @@ fn every_top_level_command_has_a_structured_black_box_path() {
         &["object", "codeunit", "Hello World"],
         &["by-id", "codeunit", "50100"],
         &["source", "Hello World", "--kind", "codeunit"],
+        &["location", "Hello World", "--kind", "codeunit"],
         &["events", "On"],
         &["subscribers", "OnSomething"],
         &[
@@ -390,7 +669,14 @@ fn every_top_level_command_has_a_structured_black_box_path() {
         &["impact", "Hello World"],
         &["suggest-event", "--object", "Hello World"],
         &["debug", "stop"],
-        &["snapshot", "list", "--server", "http://127.0.0.1:1/BC"],
+        &[
+            "snapshot",
+            "list",
+            "--server",
+            "http://127.0.0.1:1/BC",
+            "--company",
+            "CRONUS",
+        ],
         &["profile", "analyze", "missing.alcpuprofile"],
         &["xlf", "generate"],
         &["add-application-area", "--dry-run"],
@@ -429,17 +715,26 @@ fn every_top_level_command_has_a_structured_black_box_path() {
             "Customer",
         ],
         &["obsolete"],
+        // No .app files in the fixture: the structured "could not read" path.
+        &["package-diff", "old.app", "new.app"],
         &["audit-data"],
         &["permission-audit"],
         &["deps-graph"],
         &["breaking"],
         &["arch-lint"],
         &["native-check"],
+        &["free-ids", "--kind", "table"],
+        // The temporary project has no launch configuration, so this exercises
+        // the structured failure path without contacting a server.
+        &["publish"],
         &["duplicates"],
         &["upgrade"],
         &["profiler-hints", "Hello World.DoSomething"],
         &["sort-members", "src/HelloWorld.al", "--dry-run"],
         &["organize-files", "--dry-run"],
+        // `--show` reports the trust state without recording anything, so the
+        // catalog is covered without writing to the user's config directory.
+        &["trust", "--show"],
         // Keep shutdown last: subsequent commands would otherwise spawn a new
         // daemon and leave it alive while the temporary project is removed.
         &["daemon-shutdown"],

@@ -48,8 +48,8 @@ position, through explicit object receivers and `Codeunit <Subtype>` variables, 
 parameter write-back. The global builtin catalog covers `Error`/`Message`-class dialogs,
 `StrSubstNo`/`Format` (default and XML format 9, with the length argument), string functions
 (`StrLen`, `CopyStr`, `StrPos`, `DelChr`, `ConvertStr`, `PadStr`, `SelectStr`, `IncStr`,
-`LowerCase`/`UpperCase`, `IndexOf`, `MaxStrLen`), math (`Abs`, `Round` with banker's-rounding
-default and the `'='`/`'<'`/`'>'` directions, `Power`), date/time (`Today`, `Time`,
+`LowerCase`/`UpperCase`, `IndexOf`, `MaxStrLen`), math (`Abs`, `Round` with the `'='`/`'<'`/`'>'`
+directions, where `'='` takes a midpoint away from zero as BC does, `Power`), date/time (`Today`, `Time`,
 `CurrentDateTime`, `CreateDateTime`, `Date2DMY`, `DMY2Date`, `DT2Date`, `DT2Time`, `WorkDate`
 with the session default of today), deterministic `Random`/`Randomize`, and
 `GetLastErrorText`/`ClearLastError` wired to `asserterror` capture.

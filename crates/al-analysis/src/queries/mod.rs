@@ -19,6 +19,7 @@ pub mod diagnostics;
 pub mod duplicates;
 pub mod folding;
 pub mod format;
+pub mod free_ids;
 pub mod hover;
 pub mod impact;
 pub mod implementation;
@@ -26,6 +27,7 @@ pub mod inlay_hints;
 pub mod native_check;
 pub mod obsolescence;
 pub mod obsolete_usage;
+pub mod package_diff;
 pub mod profiler_hints;
 pub mod references;
 pub mod rename;
@@ -43,6 +45,7 @@ pub mod transaction_lint;
 pub mod upgrade;
 
 use al_symbols::SymbolEntry;
+use al_syntax::IdentifierText;
 use url::Url;
 
 #[derive(Debug, thiserror::Error)]
@@ -62,17 +65,15 @@ impl From<crate::workspace_sources::WorkspaceSourceError> for WorkspaceQueryErro
 /// Extract the clean (unquoted) name from a tree-sitter node.
 ///
 /// Returns `None` when the node's text is invalid UTF-8 or empty after stripping
-/// surrounding double-quotes. Callers typically early-return on `None` — this
+/// the surrounding double-quotes. Callers typically early-return on `None` — this
 /// bundles the three-line pattern repeated across hover, definition, references,
 /// rename, and implementation.
-pub fn node_clean_name<'a>(node: tree_sitter::Node<'_>, source: &'a [u8]) -> Option<&'a str> {
-    let text = node.utf8_text(source).ok()?;
-    let clean = text.trim_matches('"');
-    if clean.is_empty() {
-        None
-    } else {
-        Some(clean)
-    }
+///
+/// Delegates to `al_syntax::node_text_clean`, so a name that escapes an embedded
+/// quote by doubling it (`"Cust ""Main"" Rec"`) yields the same key the syntax
+/// layer stores it under. Unescaping allocates, hence the owned `String`.
+pub fn node_clean_name(node: tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
+    al_syntax::node_text_clean(node, source)
 }
 
 /// Parse a procedure detail string such as `"(var SalesHeader: Record; Preview: Boolean): Boolean"`
@@ -121,13 +122,13 @@ pub fn parse_detail_params(detail: &str) -> Vec<(String, String, String)> {
             }
             let param_no_var = raw.strip_prefix("var ").unwrap_or(raw).trim();
             if let Some(colon_pos) = param_no_var.find(':') {
-                let name = param_no_var[..colon_pos].trim().trim_matches('"');
+                let name = param_no_var[..colon_pos].unquote_identifier();
                 let type_name = param_no_var[colon_pos + 1..].trim();
                 if !name.is_empty() {
                     return Some((raw.to_string(), name.to_string(), type_name.to_string()));
                 }
             }
-            let name = param_no_var.trim().trim_matches('"');
+            let name = param_no_var.unquote_identifier();
             if !name.is_empty() {
                 Some((raw.to_string(), name.to_string(), String::new()))
             } else {
@@ -143,6 +144,19 @@ pub fn parse_detail_params(detail: &str) -> Vec<(String, String, String)> {
 ///
 /// Shared by definition, implementation, and any other query that needs to
 /// navigate into a symbol from a `.app` package.
+/// The extracted source file for `entry`, without locating a range inside it.
+///
+/// [`get_or_create_virtual_file`] reads the whole extracted source back to find
+/// the object's declaration line. A caller that only wants the file itself
+/// skips that read, which for a base-app object is several thousand lines.
+pub fn virtual_file_path(
+    workspace: &al_workspace::Workspace,
+    entry: &SymbolEntry,
+) -> Option<std::path::PathBuf> {
+    let app_path = workspace.symbols.app_path(&entry.package);
+    al_symbols::virtual_file::get_or_create(entry, app_path.as_deref()).ok()
+}
+
 pub fn get_or_create_virtual_file(
     workspace: &al_workspace::Workspace,
     entry: &SymbolEntry,
@@ -223,6 +237,7 @@ pub enum AlSymbolKind {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AlDocumentSymbol {
     pub name: std::string::String,
     pub detail: Option<std::string::String>,
@@ -233,6 +248,7 @@ pub struct AlDocumentSymbol {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AlFoldingRangeKind {
     Comment,
     Imports,
@@ -240,6 +256,7 @@ pub enum AlFoldingRangeKind {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AlFoldingRange {
     pub start_line: u32,
     pub start_character: Option<u32>,
@@ -254,17 +271,22 @@ pub enum AlInlayHintKind {
     Parameter,
 }
 
+/// Serialised as the bare string, as LSP writes a string label.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
 pub enum AlInlayHintLabel {
     String(std::string::String),
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AlInlayHint {
     pub position: Position,
     pub label: AlInlayHintLabel,
     pub kind: Option<AlInlayHintKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub padding_left: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub padding_right: Option<bool>,
 }
 
@@ -367,6 +389,60 @@ impl From<Range> for al_syntax::types::SyntaxRange {
 mod query_types_tests {
     use super::*;
 
+    /// The daemon's wire shape is LSP's: camelCase keys and a string label,
+    /// not the Rust field names and enum tagging.
+    #[test]
+    fn hints_folding_and_symbols_serialise_as_lsp_does() {
+        let hint = AlInlayHint {
+            position: Position {
+                line: 1,
+                character: 2,
+            },
+            label: AlInlayHintLabel::String("Cust:".into()),
+            kind: Some(AlInlayHintKind::Parameter),
+            padding_left: None,
+            padding_right: Some(true),
+        };
+        assert_eq!(
+            serde_json::to_value(&hint).unwrap(),
+            serde_json::json!({
+                "position": {"line": 1, "character": 2},
+                "label": "Cust:",
+                "kind": "Parameter",
+                "paddingRight": true,
+            })
+        );
+        let folding = AlFoldingRange {
+            start_line: 1,
+            start_character: None,
+            end_line: 4,
+            end_character: None,
+            kind: Some(AlFoldingRangeKind::Region),
+        };
+        let folding = serde_json::to_value(&folding).unwrap();
+        assert_eq!(folding["startLine"], 1);
+        assert_eq!(folding["kind"], "region");
+        let range = Range {
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 0,
+                character: 1,
+            },
+        };
+        let symbol = AlDocumentSymbol {
+            name: "X".into(),
+            detail: None,
+            kind: AlSymbolKind::Class,
+            range,
+            selection_range: range,
+            children: None,
+        };
+        assert!(serde_json::to_value(&symbol).unwrap()["selectionRange"].is_object());
+    }
+
     #[test]
     fn workspace_edit_serializes_to_lsp_map_format() {
         let edit = WorkspaceEdit {
@@ -426,7 +502,23 @@ mod query_types_tests {
         let result = parser.parse(source);
         let bytes = source.as_bytes();
         let node = first_node_with_text(&result.tree, bytes, "\"My Codeunit\"");
-        assert_eq!(node_clean_name(node, bytes), Some("My Codeunit"));
+        assert_eq!(node_clean_name(node, bytes).as_deref(), Some("My Codeunit"));
+    }
+
+    /// AL doubles an embedded `"` inside a quoted identifier. The lookup key
+    /// has to match the name the syntax layer stores, which is the unescaped
+    /// one, or hover, definition and rename all miss the declaration.
+    #[test]
+    fn node_clean_name_unescapes_doubled_quotes() {
+        let source = "codeunit 50000 \"My \"\"Big\"\" Codeunit\"\n{\n}\n";
+        let mut parser = al_syntax::AlParser::new();
+        let result = parser.parse(source);
+        let bytes = source.as_bytes();
+        let node = first_node_with_text(&result.tree, bytes, "\"My \"\"Big\"\" Codeunit\"");
+        assert_eq!(
+            node_clean_name(node, bytes).as_deref(),
+            Some(r#"My "Big" Codeunit"#)
+        );
     }
 
     #[test]
@@ -436,7 +528,7 @@ mod query_types_tests {
         let result = parser.parse(source);
         let bytes = source.as_bytes();
         let node = first_node_with_text(&result.tree, bytes, "MyCodeunit");
-        assert_eq!(node_clean_name(node, bytes), Some("MyCodeunit"));
+        assert_eq!(node_clean_name(node, bytes).as_deref(), Some("MyCodeunit"));
     }
 
     #[test]

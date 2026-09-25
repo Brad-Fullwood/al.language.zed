@@ -30,6 +30,9 @@ crate-type = ["cdylib"]
 # Dev/Nightly; use scripts/use-api.sh for local API experiments.
 zed_extension_api = "0.7.0"
 serde_json = "1.0"
+# SHA-256 for the release-asset integrity check in find_or_download_binary.
+# no_std, no C, so it cross-compiles to wasm32-wasip2 like the rest.
+sha2 = { version = "0.10", default-features = false }
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive", "rc"] }
@@ -42,7 +45,12 @@ tokio = { version = "1", features = ["full"] }
 interprocess = { version = "2.4.2", features = ["tokio"] }
 tower-lsp = "0.20"
 dashmap = "6"
-ropey = "1"
+# `unicode_lines` (a ropey default) counts VT, FF, NEL, U+2028 and U+2029 as line
+# breaks. LSP counts only `\n`, `\r\n` and a lone `\r`, so with the default feature set
+# a document containing any of those five characters gets different line numbers in the
+# server than in the client, and every position after it maps to the wrong offset.
+# `cr_lines` alone is exactly the LSP definition.
+ropey = { version = "1", default-features = false, features = ["cr_lines", "simd"] }
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 # rustls (not the default native-tls) so the dep tree has no system-OpenSSL
@@ -56,7 +64,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 memmap2 = "0.9"
 petgraph = "0.7"
 futures = "0.3"
-getrandom = "0.2"
+getrandom = "0.4"
 zeroize = { version = "1", features = ["derive"] }
 # Exact 96-bit decimal matching BC's System.Decimal. Pure-Rust, no NaN /
 # no binary-float drift; `maths` adds pow/round helpers used by the interpreter.
@@ -65,3 +73,11 @@ regex = "1"
 libc = "0.2"
 # `dec!(…)` literal macro — dev/test ergonomics only.
 rust_decimal_macros = "1"
+tree-sitter = "0.25"
+# `serde` is needed by al-analysis and unions across the graph anyway.
+url = { version = "2", features = ["serde"] }
+urlencoding = "2"
+tempfile = "3"
+dirs = "6"
+sha2 = "0.10"
+rayon = "1"

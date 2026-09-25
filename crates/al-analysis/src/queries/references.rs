@@ -21,6 +21,7 @@ pub fn references(
     let Some(clean_name) = super::node_clean_name(node, text.as_bytes()) else {
         return Ok(Vec::new());
     };
+    let clean_name = clean_name.as_str();
 
     // The canonical declaration the cursor binds to. Every *identifier*
     // reference we keep must bind to this same declaration — otherwise "find

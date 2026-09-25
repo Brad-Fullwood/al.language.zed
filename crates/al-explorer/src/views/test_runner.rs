@@ -1,3 +1,6 @@
+//! Test runner view: AL test codeunits, their run state and the last result
+//! for each, driven through the daemon's test methods.
+
 use al_protocol::DaemonClient;
 use crossterm::event::KeyCode;
 use ratatui::{
@@ -38,7 +41,18 @@ pub(crate) struct TestRunnerView {
     status: String,
     client: Option<DaemonClient>,
     project_root: std::path::PathBuf,
+    /// Result of a run started on a background thread, if one is in flight.
+    run_rx: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
 }
+
+/// Deadline for a test run started from the TUI.
+///
+/// `DEFAULT_REQUEST_TIMEOUT` is 30 s, and its own doc comment names test runs
+/// as a case that must override it. The CLI path already does; the TUI did
+/// not, so `R` on any suite slower than 30 s froze the UI for 30 s, reported
+/// a timeout, dropped the client, and left the daemon still running the
+/// tests.
+const TEST_RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
 
 impl TestRunnerView {
     pub(crate) fn new(project_root: std::path::PathBuf) -> Self {
@@ -48,7 +62,60 @@ impl TestRunnerView {
             status: String::from("Press 'r' to run selected, 'R' to run all"),
             client: None,
             project_root,
+            run_rx: None,
         }
+    }
+
+    /// Pick up a finished background run. Called once per frame.
+    pub(crate) fn poll_run(&mut self) {
+        let Some(rx) = self.run_rx.as_ref() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(outcome) => {
+                self.run_rx = None;
+                match outcome {
+                    Ok(()) => {
+                        self.status = "Run complete. Refreshing…".to_string();
+                        self.refresh_discovery();
+                    }
+                    Err(error) => {
+                        self.client = None;
+                        self.status = error;
+                    }
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.run_rx = None;
+                self.status = "Test run thread stopped without a result".to_string();
+            }
+        }
+    }
+
+    /// Start a run on its own thread with its own daemon connection, so the
+    /// event loop keeps redrawing and Ctrl+C keeps working while it runs.
+    fn start_run(&mut self, label: &str, method: &'static str, params: Option<serde_json::Value>) {
+        if self.run_rx.is_some() {
+            self.status = "A test run is already in flight".to_string();
+            return;
+        }
+        let root = self.project_root.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.run_rx = Some(rx);
+        self.status = format!("{label}…");
+        std::thread::spawn(move || {
+            let outcome = match DaemonClient::connect(&root) {
+                Ok(mut client) => {
+                    client.set_request_timeout(TEST_RUN_TIMEOUT);
+                    request_checked(&mut client, method, params)
+                        .map(|_| ())
+                        .map_err(|error| format!("Daemon error ({method}): {error}"))
+                }
+                Err(error) => Err(format!("Cannot connect to al-lsp daemon: {error}")),
+            };
+            let _ = tx.send(outcome);
+        });
     }
 
     fn ensure_client(&mut self) {
@@ -106,40 +173,15 @@ impl TestRunnerView {
                 return;
             }
         };
-        self.ensure_client();
-        let Some(client) = self.client.as_mut() else {
-            return;
-        };
-        let params = serde_json::json!({ "codeunitIds": [codeunit_id] });
-        match request_checked(client, "tests.run_batch", Some(params)) {
-            Ok(_) => {
-                self.status = format!("Run complete for codeunit {codeunit_id}. Refreshing…");
-            }
-            Err(e) => {
-                self.client = None;
-                self.status = format!("Daemon error (run_batch): {e}");
-                return;
-            }
-        }
-        self.refresh_discovery();
+        self.start_run(
+            &format!("Running codeunit {codeunit_id}"),
+            "tests.run_batch",
+            Some(serde_json::json!({ "codeunitIds": [codeunit_id] })),
+        );
     }
 
     fn run_all(&mut self) {
-        self.ensure_client();
-        let Some(client) = self.client.as_mut() else {
-            return;
-        };
-        match request_checked(client, "tests.run_auto", None) {
-            Ok(_) => {
-                self.status = "Run all complete. Refreshing…".to_string();
-            }
-            Err(e) => {
-                self.client = None;
-                self.status = format!("Daemon error (run_auto): {e}");
-                return;
-            }
-        }
-        self.refresh_discovery();
+        self.start_run("Running every test codeunit", "tests.run_auto", None);
     }
 
     fn next_row(&mut self) {

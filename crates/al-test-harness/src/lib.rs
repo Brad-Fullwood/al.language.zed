@@ -11,6 +11,15 @@
 //! single client. Tests that need to exercise the daemon should drive
 //! `DaemonClient` directly.
 //!
+//! # This crate does not build what it runs
+//!
+//! Nothing in this manifest depends on `al-lsp` or `al-explorer`, so cargo
+//! will not rebuild them for a plain `cargo test -p al-test-harness`: the
+//! suite measures whichever binaries are sitting in `target/`. Build the
+//! workspace first, as the `Makefile` targets do. `find_binary` refuses a
+//! binary older than the crate sources rather than reporting a result for the
+//! previous build.
+//!
 //! # Usage
 //! ```no_run
 //! use al_test_harness::LspClient;
@@ -25,7 +34,10 @@
 //! }
 //! ```
 
+mod daemon_reaper;
 mod protocol;
+
+pub use daemon_reaper::{reap_tracked_daemons, track_project_daemon};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -33,8 +45,21 @@ use std::path::{Path, PathBuf};
 /// Return the path to the bundled test AL project.
 ///
 /// Used in every e2e test file — centralised here to avoid copy-paste drift.
+///
+/// The two directories are joined separately because `join` does not rewrite
+/// separators: `join("data/test_al_project")` kept the forward slash on
+/// Windows, and a test comparing this path against one the daemon reported
+/// (all backslashes, because the daemon canonicalises its root) never matched.
+///
+/// Asking for the fixture registers its daemon for cleanup: a test that uses
+/// the fixture is the reason a daemon for it exists, and that daemon used to
+/// outlive the whole run.
 pub fn test_project_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/test_al_project")
+    let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("data")
+        .join("test_al_project");
+    track_project_daemon(&project);
+    project
 }
 
 use std::process::Stdio;
@@ -47,6 +72,145 @@ use tokio::process::Child;
 use tokio::sync::{mpsc, Mutex};
 
 pub use protocol::*;
+
+/// Crates no spawned binary links, so editing them cannot make one stale:
+/// this harness itself, and the Zed extension, which builds to wasm.
+const NOT_LINKED_BY_ANY_BINARY: [&str; 2] = ["al-test-harness", "zed-al"];
+
+/// The workspace crates the binary built from `crate_name` links: the crate
+/// itself plus every crate reached through `path = "../<crate>"` entries in a
+/// `[dependencies]` or `[target.*.dependencies]` section, transitively.
+/// Dev-dependencies never reach a binary. `None` when `crate_name` is not a
+/// workspace crate.
+///
+/// Without this, editing al-explorer marked al-lsp stale even though cargo
+/// rightly left al-lsp alone, and every harness test refused to run until
+/// something relinked al-lsp.
+fn linked_crates(
+    workspace_root: &Path,
+    crate_name: &str,
+) -> Option<std::collections::HashSet<String>> {
+    let crates = workspace_root.join("crates");
+    if !crates.join(crate_name).join("Cargo.toml").is_file() {
+        return None;
+    }
+    let mut linked = std::collections::HashSet::new();
+    let mut pending = vec![crate_name.to_string()];
+    while let Some(name) = pending.pop() {
+        if !linked.insert(name.clone()) {
+            continue;
+        }
+        let Ok(manifest) = std::fs::read_to_string(crates.join(&name).join("Cargo.toml")) else {
+            continue;
+        };
+        let mut in_dependencies = false;
+        for line in manifest.lines().map(str::trim) {
+            if line.starts_with('[') {
+                in_dependencies = line == "[dependencies]"
+                    || (line.starts_with("[target.") && line.ends_with(".dependencies]"));
+                continue;
+            }
+            if !in_dependencies {
+                continue;
+            }
+            if let Some(rest) = line.split("path = \"../").nth(1) {
+                if let Some(dependency) = rest.split('"').next() {
+                    pending.push(dependency.to_string());
+                }
+            }
+        }
+    }
+    Some(linked)
+}
+
+/// Newest modification time under the `src/` or `Cargo.toml` of a crate the
+/// spawned binary links: the crates in `linked` when known, otherwise any
+/// crate a spawned binary could link.
+fn newest_source_mtime(
+    workspace_root: &Path,
+    linked: Option<&std::collections::HashSet<String>>,
+) -> Option<std::time::SystemTime> {
+    fn walk(dir: &Path, newest: &mut Option<std::time::SystemTime>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.is_dir() {
+                walk(&path, newest);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                if let Ok(modified) = metadata.modified() {
+                    if newest.is_none_or(|current| modified > current) {
+                        *newest = Some(modified);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut newest = None;
+    let crates = workspace_root.join("crates");
+    let Ok(entries) = std::fs::read_dir(&crates) else {
+        return None;
+    };
+    for entry in entries.flatten() {
+        let skip = entry.file_name().to_str().is_some_and(|name| match linked {
+            Some(linked) => !linked.contains(name),
+            None => NOT_LINKED_BY_ANY_BINARY.contains(&name),
+        });
+        if skip {
+            continue;
+        }
+        let src = entry.path().join("src");
+        if src.is_dir() {
+            walk(&src, &mut newest);
+        }
+        if let Ok(metadata) = std::fs::metadata(entry.path().join("Cargo.toml")) {
+            if let Ok(modified) = metadata.modified() {
+                if newest.is_none_or(|current| modified > current) {
+                    newest = Some(modified);
+                }
+            }
+        }
+    }
+    newest
+}
+
+/// Refuse a binary older than the crate sources.
+///
+/// The harness spawns whatever is in `target/`, and nothing makes cargo
+/// rebuild it for a `cargo test -p al-test-harness`, so a stale binary would
+/// silently make the suite describe the previous build. Set
+/// `AL_HARNESS_ALLOW_STALE_BINARY=1` to run against a binary on purpose.
+fn assert_binary_is_current(binary: &Path, workspace_root: &Path) {
+    if std::env::var_os("AL_HARNESS_ALLOW_STALE_BINARY").is_some() {
+        return;
+    }
+    // Binaries are named after the crate that builds them (al-lsp, al-explorer).
+    let linked = binary
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .and_then(|crate_name| linked_crates(workspace_root, crate_name));
+    let (Ok(metadata), Some(newest_source)) = (
+        std::fs::metadata(binary),
+        newest_source_mtime(workspace_root, linked.as_ref()),
+    ) else {
+        return;
+    };
+    let Ok(built) = metadata.modified() else {
+        return;
+    };
+    assert!(
+        built >= newest_source,
+        "{} is older than the crate sources, so this run would describe the \
+         previous build. Run `cargo build --workspace` first, or set \
+         AL_HARNESS_ALLOW_STALE_BINARY=1 to use it anyway.",
+        binary.display()
+    );
+}
 
 fn find_binary() -> PathBuf {
     // Explicit override wins. The harness starts al-lsp as a subprocess, so a
@@ -65,14 +229,15 @@ fn find_binary() -> PathBuf {
         .to_path_buf();
 
     let binary_name = format!("al-lsp{}", std::env::consts::EXE_SUFFIX);
-    let debug_bin = workspace_root.join("target/debug").join(&binary_name);
-    if debug_bin.exists() {
-        return debug_bin;
-    }
-
-    let release_bin = workspace_root.join("target/release").join(&binary_name);
-    if release_bin.exists() {
-        return release_bin;
+    for profile in ["debug", "release"] {
+        let candidate = workspace_root
+            .join("target")
+            .join(profile)
+            .join(&binary_name);
+        if candidate.exists() {
+            assert_binary_is_current(&candidate, &workspace_root);
+            return candidate;
+        }
     }
 
     PathBuf::from(binary_name)
@@ -95,6 +260,7 @@ pub fn workspace_binary(name: &str) -> PathBuf {
             .join(profile)
             .join(&binary_name);
         if candidate.exists() {
+            assert_binary_is_current(&candidate, &workspace_root);
             return candidate;
         }
     }
@@ -121,7 +287,11 @@ pub fn al_explorer_binary() -> PathBuf {
 /// earlier run happened to leave resident, so the same command passes or fails
 /// depending on working-tree history. Returns whether the shutdown command
 /// succeeded; "no daemon was running" is a success.
+///
+/// The project is also registered for cleanup, so the daemon this call clears
+/// the way for is stopped when the test binary ends.
 pub fn stop_project_daemon(project_dir: &Path) -> bool {
+    track_project_daemon(project_dir);
     std::process::Command::new(al_explorer_binary())
         .arg("daemon-shutdown")
         .current_dir(project_dir)
@@ -129,13 +299,6 @@ pub fn stop_project_daemon(project_dir: &Path) -> bool {
         .map(|output| output.status.success())
         .unwrap_or(false)
 }
-
-/// Stdio mode owns the language-server child process.
-enum Lifecycle {
-    Stdio(Child),
-}
-
-type Writer = Box<dyn tokio::io::AsyncWrite + Unpin + Send>;
 
 fn response_array(method: &str, result: Value) -> Vec<Value> {
     if result.is_null() {
@@ -148,8 +311,11 @@ fn response_array(method: &str, result: Value) -> Vec<Value> {
 }
 
 pub struct LspClient {
-    writer: Option<Writer>,
-    lifecycle: Lifecycle,
+    /// `None` after `shutdown` drops it to signal EOF to the server.
+    writer: Option<tokio::process::ChildStdin>,
+    /// The language server this client speaks to. Transport is stdio only,
+    /// so there is exactly one kind of child to wait on.
+    child: Child,
     next_id: AtomicI64,
     pending: Arc<Mutex<HashMap<i64, tokio::sync::oneshot::Sender<Value>>>>,
     notifications: mpsc::Receiver<(String, Value)>,
@@ -190,26 +356,20 @@ impl LspClient {
             .take()
             .ok_or("al-lsp child stdout not available")?;
 
-        let mut client = Self::from_transport(
-            Box::new(stdin),
-            BufReader::new(stdout),
-            Lifecycle::Stdio(child),
-            root_path,
-        );
+        let mut client = Self::from_transport(stdin, BufReader::new(stdout), child, root_path);
 
         client.initialize().await?;
         Ok(client)
     }
 
-    /// Construct an LspClient from transport halves.
+    /// Construct an LspClient from the child's stdio halves.
     ///
-    /// This is the shared constructor used by both `spawn` and `connect`.
-    /// The reader is consumed by a background task; the writer is stored
-    /// for sending requests and notifications.
+    /// The reader is consumed by a background task; the writer is stored for
+    /// sending requests and notifications.
     fn from_transport(
-        writer: Writer,
-        reader: impl tokio::io::AsyncBufRead + Unpin + Send + 'static,
-        lifecycle: Lifecycle,
+        writer: tokio::process::ChildStdin,
+        reader: BufReader<tokio::process::ChildStdout>,
+        child: Child,
         root_path: PathBuf,
     ) -> Self {
         let pending: Arc<Mutex<HashMap<i64, tokio::sync::oneshot::Sender<Value>>>> =
@@ -229,7 +389,7 @@ impl LspClient {
 
         LspClient {
             writer: Some(writer),
-            lifecycle,
+            child,
             next_id: AtomicI64::new(1),
             pending,
             notifications: notif_rx,
@@ -791,6 +951,23 @@ impl LspClient {
         }
     }
 
+    /// Send `workspace/didChangeWatchedFiles` for paths relative to the
+    /// project, each with its LSP change type (1 created, 2 changed, 3 deleted).
+    pub async fn files_changed_on_disk(&mut self, changes: &[(&str, u32)]) {
+        let changes: Vec<Value> = changes
+            .iter()
+            .map(|(relative_path, change_type)| {
+                serde_json::json!({ "uri": self.file_uri(relative_path), "type": change_type })
+            })
+            .collect();
+        self.notify(
+            "workspace/didChangeWatchedFiles",
+            serde_json::json!({ "changes": changes }),
+        )
+        .await
+        .expect("workspace/didChangeWatchedFiles notify failed");
+    }
+
     pub async fn workspace_symbol(&mut self, query: &str) -> Vec<Value> {
         let params = serde_json::json!({ "query": query });
 
@@ -810,8 +987,23 @@ impl LspClient {
         result
     }
 
+    /// The latest `publishDiagnostics` payload per URI.
+    ///
+    /// Earlier publishes for the same URI in the same batch are dropped. Use
+    /// [`drain_diagnostic_publishes`](Self::drain_diagnostic_publishes) when the
+    /// order and the count of publishes are what the test is about.
     pub fn drain_diagnostics(&mut self) -> HashMap<String, Vec<Value>> {
         let mut result: HashMap<String, Vec<Value>> = HashMap::new();
+        for (uri, diags) in self.drain_diagnostic_publishes() {
+            result.insert(uri, diags);
+        }
+        result
+    }
+
+    /// Every buffered `publishDiagnostics` as `(uri, diagnostics)`, in arrival
+    /// order, keeping repeated publishes for the same URI.
+    pub fn drain_diagnostic_publishes(&mut self) -> Vec<(String, Vec<Value>)> {
+        let mut result = Vec::new();
         for (method, params) in self.drain_notifications() {
             if method == "textDocument/publishDiagnostics" {
                 let uri = params["uri"]
@@ -822,7 +1014,7 @@ impl LspClient {
                     .as_array()
                     .cloned()
                     .expect("publishDiagnostics missing diagnostics array");
-                result.insert(uri, diags);
+                result.push((uri, diags));
             }
         }
         result
@@ -843,7 +1035,7 @@ impl LspClient {
         // Drop writer to signal EOF
         self.writer.take();
 
-        let Lifecycle::Stdio(child) = &mut self.lifecycle;
+        let child = &mut self.child;
         // A timeout is a failed lifecycle contract, not successful cleanup.
         let status =
             match tokio::time::timeout(tokio::time::Duration::from_secs(3), child.wait()).await {
@@ -869,7 +1061,7 @@ impl LspClient {
 /// Terminates the child when a test exits without calling `shutdown()`.
 impl Drop for LspClient {
     fn drop(&mut self) {
-        let Lifecycle::Stdio(child) = &mut self.lifecycle;
+        let child = &mut self.child;
         if let Err(e) = child.start_kill() {
             tracing::warn!(error = %e, "LspClient::drop: start_kill failed; child may be a zombie");
         }
@@ -1021,8 +1213,8 @@ async fn send_message(
 
 /// Read JSON-RPC messages from the transport and dispatch them.
 ///
-/// Generic over the reader type so both stdio (BufReader<ChildStdout>) and
-/// socket (BufReader<OwnedReadHalf>) use the same code with zero dynamic dispatch.
+/// Generic over the reader type so both stdio (`BufReader<ChildStdout>`) and
+/// socket (`BufReader<OwnedReadHalf>`) use the same code with zero dynamic dispatch.
 ///
 /// Exposed as `pub` so `transport.rs` tests can drive it directly without a
 /// copy-paste duplicate.
@@ -1179,4 +1371,41 @@ fn scopeguard_remove(
         }
     }
     Guard { pending, id }
+}
+
+#[cfg(test)]
+mod staleness_tests {
+    use super::linked_crates;
+    use std::path::PathBuf;
+
+    fn workspace_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|crates| crates.parent())
+            .expect("workspace root")
+            .to_path_buf()
+    }
+
+    #[test]
+    fn al_lsp_links_its_dependencies_transitively_but_not_al_explorer() {
+        let linked = linked_crates(&workspace_root(), "al-lsp").expect("al-lsp is a crate");
+        assert!(linked.contains("al-lsp"));
+        assert!(linked.contains("al-analysis"), "direct dependency");
+        assert!(linked.contains("al-syntax"), "reached through al-analysis");
+        assert!(!linked.contains("al-explorer"), "{linked:?}");
+        assert!(!linked.contains("al-test-harness"), "{linked:?}");
+    }
+
+    #[test]
+    fn al_explorer_does_not_link_al_lsp() {
+        let linked =
+            linked_crates(&workspace_root(), "al-explorer").expect("al-explorer is a crate");
+        assert!(linked.contains("al-compile"));
+        assert!(!linked.contains("al-lsp"), "{linked:?}");
+    }
+
+    #[test]
+    fn an_unknown_binary_falls_back_to_every_crate() {
+        assert!(linked_crates(&workspace_root(), "no-such-crate").is_none());
+    }
 }

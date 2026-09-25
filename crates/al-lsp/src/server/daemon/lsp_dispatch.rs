@@ -5,50 +5,22 @@ use al_workspace::Workspace;
 use serde::Serialize;
 
 use super::{
-    ensure_document, extract_position, extract_uri, invalid_params, optional_bool_param,
-    optional_bounded_usize_param, rpc_error,
+    extract_position, invalid_params, optional_bool_param, optional_bounded_usize_param,
+    read_document_from_params, rpc_error, serialized_response,
 };
 
 /// Sentinel package name for workspace-local objects (not from .app packages).
 const WORKSPACE_PACKAGE: &str = "(workspace)";
 
-/// Build a `Response` whose `result` is `value` serialised to JSON. On
-/// serialisation failure log the error and return an `RpcError` so the
-/// client surfaces the problem instead of silently receiving `null`.
-fn ok_response<T: Serialize>(id: u64, value: &T, method: &str) -> Response {
-    match serde_json::to_value(value) {
-        Ok(v) => Response {
-            id,
-            result: Some(v),
-            error: None,
-            ..Default::default()
-        },
-        Err(e) => {
-            tracing::error!(method, error = %e, "serialization failed for LSP result");
-            Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INTERNAL_ERROR,
-                    message: format!("serialization failed for {method}: {e}"),
-                }),
-                ..Default::default()
-            }
-        }
-    }
-}
-
-/// `ok_response` variant for `Option<T>` results. `None` is encoded as a
-/// JSON-RPC `null` result (no error). `Some(v)` defers to `ok_response`.
+/// [`serialized_response`] for `Option<T>` results. `None` is encoded as an
+/// explicit `result: null`, not as an absent `result`: both `result` and
+/// `error` carry `skip_serializing_if`, so `Response { result: None, error:
+/// None }` serialises to `{"jsonrpc":"2.0","id":7}`, which JSON-RPC 2.0 §5
+/// forbids.
 fn ok_response_opt<T: Serialize>(id: u64, value: Option<T>, method: &str) -> Response {
     match value {
-        Some(v) => ok_response(id, &v, method),
-        None => Response {
-            id,
-            result: None,
-            error: None,
-            ..Default::default()
-        },
+        Some(v) => serialized_response(id, &v, method),
+        None => Response::null(id),
     }
 }
 
@@ -57,15 +29,13 @@ pub(super) async fn dispatch_hover(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let result = match al_analysis::queries::hover::hover_full(workspace, &uri, position).await {
         Ok(result) => result,
         Err(error) => {
@@ -84,24 +54,17 @@ pub(super) fn dispatch_definition(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let result = al_analysis::queries::definition::definition(workspace, &uri, position);
     match result {
-        Ok(Some(locations)) => ok_response(id, &locations, "textDocument/definition"),
-        Ok(None) => Response {
-            id,
-            result: None,
-            error: None,
-            ..Default::default()
-        },
+        Ok(Some(locations)) => serialized_response(id, &locations, "textDocument/definition"),
+        Ok(None) => Response::null(id),
         Err(error) => rpc_error(
             id,
             error_codes::INTERNAL_ERROR,
@@ -115,9 +78,6 @@ pub(super) fn dispatch_references(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
@@ -125,9 +85,10 @@ pub(super) fn dispatch_references(
         Ok(value) => value,
         Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let locations = match al_analysis::queries::references::references(
         workspace,
         &uri,
@@ -143,7 +104,7 @@ pub(super) fn dispatch_references(
             );
         }
     };
-    ok_response(id, &locations, "textDocument/references")
+    serialized_response(id, &locations, "textDocument/references")
 }
 
 pub(super) fn dispatch_implementations(
@@ -151,18 +112,18 @@ pub(super) fn dispatch_implementations(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
+    // `None` (document not loaded) and an empty list are both an empty array
+    // on the wire: the daemon already rejected an unknown document above.
     let locations =
         al_analysis::queries::implementation::find_implementations(workspace, &uri, position);
-    ok_response(id, &locations, "textDocument/implementation")
+    ok_response_opt(id, locations, "textDocument/implementation")
 }
 
 pub(super) async fn dispatch_completions(
@@ -170,15 +131,13 @@ pub(super) async fn dispatch_completions(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let entries = match al_analysis::queries::completions::completions_full(
         workspace, &uri, position,
     )
@@ -193,7 +152,7 @@ pub(super) async fn dispatch_completions(
             );
         }
     };
-    ok_response(id, &entries, "textDocument/completion")
+    serialized_response(id, &entries, "textDocument/completion")
 }
 
 pub(super) fn dispatch_signature_help(
@@ -201,15 +160,13 @@ pub(super) fn dispatch_signature_help(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let result = al_analysis::queries::signature::signature_help(workspace, &uri, position);
     match result {
         Ok(result) => ok_response_opt(id, result, "textDocument/signatureHelp"),
@@ -226,27 +183,23 @@ pub(super) fn dispatch_rename(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
     let Some(new_name) = params.get("newName").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let result = al_analysis::queries::rename::rename(workspace, &uri, position, new_name);
     match result {
-        Ok(Some(we)) => ok_response(id, &we, "textDocument/rename"),
-        Ok(None) => Response {
-            id,
-            result: None,
-            error: None,
-            ..Default::default()
-        },
+        Ok(Some(we)) => serialized_response(id, &we, "textDocument/rename"),
+        Ok(None) => Response::null(id),
+        Err(error @ al_analysis::queries::rename::RenameError::Collision { .. }) => {
+            rpc_error(id, error_codes::INVALID_PARAMS, &error.to_string())
+        }
         Err(error) => rpc_error(
             id,
             error_codes::INTERNAL_ERROR,
@@ -260,12 +213,10 @@ pub(super) fn dispatch_document_symbols(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
     // Serialize the transport-agnostic AlDocumentSymbol vec directly. The daemon
     // returns JSON, so there is no need to round-trip through tower_lsp types.
     let result = al_analysis::queries::symbols::document_symbols(workspace, &uri);
@@ -277,12 +228,10 @@ pub(super) fn dispatch_folding_ranges(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
     let result = al_analysis::queries::folding::folding_ranges(workspace, &uri);
     ok_response_opt(id, result, "textDocument/foldingRange")
 }
@@ -292,14 +241,12 @@ pub(super) fn dispatch_semantic_tokens(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
     let tokens = al_analysis::queries::semantic_tokens::semantic_tokens_full(workspace, &uri);
-    ok_response(id, &tokens, "textDocument/semanticTokens/full")
+    ok_response_opt(id, tokens, "textDocument/semanticTokens/full")
 }
 
 pub(super) fn dispatch_inlay_hints(
@@ -307,9 +254,6 @@ pub(super) fn dispatch_inlay_hints(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     // Cap to u32::MAX to prevent silent truncation of attacker-controlled
     // line values (matches extract_position in mod.rs). An out-of-range
     // startLine/endLine is rejected with INVALID_PARAMS rather than wrapping
@@ -328,9 +272,10 @@ pub(super) fn dispatch_inlay_hints(
             None => return invalid_params(id),
         },
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let range = al_analysis::queries::Range {
         start: al_analysis::queries::Position {
             line: start_line,
@@ -352,26 +297,7 @@ pub(super) fn dispatch_inlay_hints(
             );
         }
     };
-    match serde_json::to_value(&hints) {
-        Ok(v) => Response {
-            id,
-            result: Some(v),
-            error: None,
-            ..Default::default()
-        },
-        Err(e) => {
-            tracing::error!(method = "textDocument/inlayHint", error = %e, "serialization failed");
-            Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INTERNAL_ERROR,
-                    message: format!("serialization failed for textDocument/inlayHint: {e}"),
-                }),
-                ..Default::default()
-            }
-        }
-    }
+    serialized_response(id, &hints, "textDocument/inlayHint")
 }
 
 pub(super) fn dispatch_code_actions(
@@ -379,21 +305,19 @@ pub(super) fn dispatch_code_actions(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(uri) = extract_uri(params) else {
-        return invalid_params(id);
-    };
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
+    };
     let range = al_analysis::queries::Range {
         start: position,
         end: position,
     };
     let actions = al_analysis::queries::code_actions::source_actions(workspace, &uri, range);
-    ok_response(id, &actions, "textDocument/codeAction")
+    serialized_response(id, &actions, "textDocument/codeAction")
 }
 
 pub(super) fn dispatch_search(
@@ -418,10 +342,33 @@ pub(super) fn dispatch_search(
         Ok(summary) => summary,
         Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
     };
+    // `limit` and `offset` also page the result (projection.rs), which
+    // needs every match to report `total` and `truncated`: capping the
+    // search at `limit` told a caller asking for 3 of 8 matches that 3 was
+    // all there was, and `offset 3` returned nothing. So a paged search
+    // collects every match, and serializes in full only the rows that can
+    // land in the page (with a margin for de-duplication below); the rest
+    // are summaries the projection drops.
+    const MAX_PAGED_MATCHES: usize = 10_000;
+    let paged = params.get("limit").is_some() || params.get("offset").is_some();
+    let offset = params
+        .get("offset")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|offset| usize::try_from(offset).ok())
+        .unwrap_or(0);
+    let (limit, full_rows) = if paged {
+        (
+            MAX_PAGED_MATCHES.max(limit),
+            offset.saturating_add(limit).saturating_add(64),
+        )
+    } else {
+        (limit, usize::MAX)
+    };
     let results = workspace.symbols.search(query, limit);
     let mut value: Vec<serde_json::Value> = match results
         .iter()
-        .map(|entry| symbol_entry_to_json(workspace, entry, summary))
+        .enumerate()
+        .map(|(row, entry)| symbol_entry_to_json(workspace, entry, summary || row >= full_rows))
         .collect::<Result<Vec<_>, _>>()
     {
         Ok(value) => value,
@@ -568,6 +515,25 @@ fn resolve_unique_kind_by_name(
     }
 }
 
+/// Run the call-graph enrichment pass so workspace objects carry their fields
+/// and methods, and carry on if it cannot.
+///
+/// `object` and `byId` answered a workspace object with kind, id, name and
+/// nothing else, because members only enter the symbol index through this
+/// pass. A Haiku run asked `by-id codeunit 50130` for `.methods[0].name` and
+/// got null. The pass is an enrichment here rather than a requirement: a file
+/// the index cannot parse must still not stop the lookup from answering with
+/// the object's identity.
+fn enrich_workspace_members(workspace: &Workspace, method: &str) {
+    if let Err(error) = workspace.get_or_build_call_graph() {
+        tracing::warn!(
+            method,
+            %error,
+            "workspace members are unavailable for this lookup; answering with object identity"
+        );
+    }
+}
+
 pub(super) fn dispatch_object(
     workspace: &Workspace,
     id: u64,
@@ -575,6 +541,10 @@ pub(super) fn dispatch_object(
 ) -> Response {
     let Some(name) = params.get("name").and_then(|v| v.as_str()) else {
         return invalid_params(id);
+    };
+    let signatures = match optional_bool_param(params, "signatures", false) {
+        Ok(signatures) => signatures,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
     // `kind` is optional: editor tasks only have the
     // symbol under the cursor. When omitted, resolve by name — unambiguous
@@ -593,6 +563,7 @@ pub(super) fn dispatch_object(
             None => return invalid_params(id),
         },
     };
+    enrich_workspace_members(workspace, "object");
     let candidates = workspace.symbols.get_by_name(name);
     let mut matches: Vec<serde_json::Value> = match candidates
         .iter()
@@ -635,6 +606,9 @@ pub(super) fn dispatch_object(
             &format!("object lookup produced invalid metadata: {error}"),
         );
     }
+    if signatures {
+        matches.iter_mut().for_each(member_signatures);
+    }
     if matches.is_empty() {
         Response {
             id,
@@ -651,6 +625,129 @@ pub(super) fn dispatch_object(
             result: Some(serde_json::json!(matches)),
             error: None,
             ..Default::default()
+        }
+    }
+}
+
+/// Render an object's members as one line each, for `signatures: true`.
+///
+/// Base Application's Customer table was 113 KB as JSON, 110 KB of it
+/// fields with every property (tooltips included) and methods with their
+/// parameters as objects. An agent asking what Customer has needs the
+/// names and types: `1 "No.": Code[20]`,
+/// `AssistEdit(OldCust: Record "Customer"): Boolean`.
+fn member_signatures(object: &mut serde_json::Value) {
+    fn text<'a>(value: &'a serde_json::Value, key: &str) -> &'a str {
+        value.get(key).and_then(|v| v.as_str()).unwrap_or("")
+    }
+    fn quoted(name: &str) -> String {
+        if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            name.to_string()
+        } else {
+            format!("\"{name}\"")
+        }
+    }
+    fn property<'a>(member: &'a serde_json::Value, name: &str) -> Option<&'a str> {
+        member
+            .get("properties")?
+            .as_array()?
+            .iter()
+            .find(|p| text(p, "name").eq_ignore_ascii_case(name))
+            .map(|p| text(p, "value"))
+    }
+    let Some(object) = object.as_object_mut() else {
+        return;
+    };
+    if let Some(serde_json::Value::Array(fields)) = object.get_mut("fields") {
+        for field in fields.iter_mut() {
+            let mut line = format!(
+                "{} {}: {}",
+                field.get("id").map(|id| id.to_string()).unwrap_or_default(),
+                quoted(text(field, "name")),
+                text(field, "type_name")
+            );
+            if let Some(class) =
+                property(field, "FieldClass").filter(|c| !c.eq_ignore_ascii_case("Normal"))
+            {
+                line.push_str(&format!(" ({class})"));
+            }
+            if let Some(state) =
+                property(field, "ObsoleteState").filter(|s| !s.eq_ignore_ascii_case("No"))
+            {
+                line.push_str(&format!(" (obsolete: {state})"));
+            }
+            *field = serde_json::Value::String(line);
+        }
+    }
+    if let Some(serde_json::Value::Array(methods)) = object.get_mut("methods") {
+        for method in methods.iter_mut() {
+            let mut line = String::new();
+            for attribute in method
+                .get("attributes")
+                .and_then(|a| a.as_array())
+                .into_iter()
+                .flatten()
+            {
+                // Arguments kept: an Obsolete attribute's reason names the
+                // replacement.
+                let arguments: Vec<String> = attribute
+                    .get("arguments")
+                    .and_then(|a| a.as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|a| a.as_str())
+                    .map(|a| format!("'{a}'"))
+                    .collect();
+                if arguments.is_empty() {
+                    line.push_str(&format!("[{}] ", text(attribute, "name")));
+                } else {
+                    line.push_str(&format!(
+                        "[{}({})] ",
+                        text(attribute, "name"),
+                        arguments.join(", ")
+                    ));
+                }
+            }
+            if method.get("is_local").and_then(|v| v.as_bool()) == Some(true) {
+                line.push_str("local ");
+            }
+            let parameters: Vec<String> = method
+                .get("parameters")
+                .and_then(|p| p.as_array())
+                .into_iter()
+                .flatten()
+                .map(|parameter| {
+                    let var = if parameter.get("is_var").and_then(|v| v.as_bool()) == Some(true) {
+                        "var "
+                    } else {
+                        ""
+                    };
+                    format!(
+                        "{var}{}: {}",
+                        text(parameter, "name"),
+                        text(parameter, "type_name")
+                    )
+                })
+                .collect();
+            line.push_str(&format!(
+                "{}({})",
+                text(method, "name"),
+                parameters.join("; ")
+            ));
+            if let Some(ret) = method.get("return_type").and_then(|v| v.as_str()) {
+                line.push_str(&format!(": {ret}"));
+            }
+            *method = serde_json::Value::String(line);
+        }
+    }
+    if let Some(serde_json::Value::Array(variables)) = object.get_mut("variables") {
+        for variable in variables.iter_mut() {
+            let line = format!(
+                "{}: {}",
+                text(variable, "name"),
+                text(variable, "type_name")
+            );
+            *variable = serde_json::Value::String(line);
         }
     }
 }
@@ -695,7 +792,7 @@ fn dedup_objects_by_identity(objects: &mut Vec<serde_json::Value>) -> Result<(),
 /// `info.kind` is the tree-sitter node kind (lowercase, e.g. "table"). The wire
 /// schema for SymbolEntry uses the al_symbols ObjectKind enum, whose serde
 /// representation is PascalCase. Normalize via `ObjectKind::from_str` so the
-/// payload deserializes cleanly on al-cli / al-explorer.
+/// payload deserializes cleanly on al-explorer.
 fn workspace_object_identity(
     info: &al_source::file_index::CachedObjectInfo,
 ) -> Result<(al_symbols::ObjectKind, i32), String> {
@@ -736,10 +833,15 @@ pub(super) fn dispatch_by_id(
     let Some(obj_id) = super::extract_i32(params, "id") else {
         return invalid_params(id);
     };
+    let signatures = match optional_bool_param(params, "signatures", false) {
+        Ok(signatures) => signatures,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
     let kind = match super::parse_object_kind(id, kind_str) {
         Ok(k) => k,
         Err(e) => return e,
     };
+    enrich_workspace_members(workspace, "byId");
     let results = workspace.symbols.get_by_id(kind, obj_id);
     let mut value: Vec<serde_json::Value> = match results
         .iter()
@@ -787,6 +889,9 @@ pub(super) fn dispatch_by_id(
             error_codes::INTERNAL_ERROR,
             &format!("object ID lookup produced invalid metadata: {error}"),
         );
+    }
+    if signatures {
+        value.iter_mut().for_each(member_signatures);
     }
     if value.is_empty() {
         Response {
@@ -864,34 +969,107 @@ pub(super) fn dispatch_subscribers(
     };
     // see dispatch_events — workspace subscribers need the
     // enrichment pass too.
-    if let Err(error) = workspace.get_or_build_call_graph() {
-        return rpc_error(
-            id,
-            error_codes::INTERNAL_ERROR,
-            &format!("subscriber query could not build a complete workspace graph: {error}"),
-        );
-    }
+    let (graph, _cg_guard) = match workspace.get_or_build_call_graph() {
+        Ok(graph) => graph,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("subscriber query could not build a complete workspace graph: {error}"),
+            );
+        }
+    };
     let results = workspace.symbols.get_events(event);
-    let subscribers: Vec<serde_json::Value> = results
+    let mut subscribers: Vec<serde_json::Value> = results
         .subscribers
         .iter()
         .map(|s| {
             serde_json::json!({
+                "objectKind": s.object.kind.to_string(),
                 "objectName": s.object.name,
                 "methodName": s.method.name,
                 "targetObjectType": s.target_object_type,
                 "targetObjectName": s.target_object_name,
                 "targetEventName": s.target_event_name,
+                "package": s.object.package,
+                "resolved": true,
                 "source_availability": workspace.symbols.source_availability(&s.object),
             })
         })
         .collect();
+
+    // Microsoft symbol packages carry no EventSubscriber attribute, so the
+    // symbol index sees workspace subscribers only. The insight graph also
+    // holds the subscribers parsed out of each package's extracted AL source,
+    // which is the set `trace` was reporting while this method returned [].
+    for matched in al_insight::discovery::subscribers_of(&graph, event) {
+        subscribers.push(serde_json::json!({
+            "objectKind": matched.object_kind,
+            "objectName": matched.object_name,
+            "methodName": matched.method_name,
+            "targetObjectType": "",
+            "targetObjectName": matched.target_object,
+            "targetEventName": matched.target_event,
+            "package": package_of_object(workspace, &matched.object_name),
+            "resolved": matched.resolved,
+        }));
+    }
+    dedup_subscribers(&mut subscribers);
+
     Response {
         id,
         result: Some(serde_json::json!(subscribers)),
         error: None,
         ..Default::default()
     }
+}
+
+/// The package that owns an object name, for rows whose source carries no
+/// package of its own (insight-graph nodes). Workspace objects win over a
+/// same-named package object because the workspace copy is the one a developer
+/// can change.
+fn package_of_object(workspace: &Workspace, object_name: &str) -> String {
+    if workspace
+        .file_index
+        .object_info
+        .iter()
+        .any(|entry| entry.value().name.eq_ignore_ascii_case(object_name))
+    {
+        return WORKSPACE_PACKAGE.to_string();
+    }
+    workspace
+        .symbols
+        .get_by_name(object_name)
+        .first()
+        .map(|entry| entry.package.clone())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Collapse rows that name the same handler. The symbol index and the insight
+/// graph both see a workspace subscriber, so the merge above lists it twice.
+fn dedup_subscribers(subscribers: &mut Vec<serde_json::Value>) {
+    let mut seen = std::collections::HashSet::new();
+    let mut unique = Vec::with_capacity(subscribers.len());
+    for row in subscribers.drain(..) {
+        let key = (
+            row.get("objectName")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_lowercase(),
+            row.get("methodName")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_lowercase(),
+            row.get("targetEventName")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_lowercase(),
+        );
+        if seen.insert(key) {
+            unique.push(row);
+        }
+    }
+    *subscribers = unique;
 }
 
 pub(super) fn dispatch_composed(
@@ -1043,13 +1221,14 @@ pub(super) fn dispatch_packages(workspace: &Workspace, id: u64) -> Response {
             let object = value
                 .as_object_mut()
                 .ok_or_else(|| format!("serialized package {index} is not an object"))?;
-            let availability =
-                serde_json::to_value(workspace.symbols.package_source_availability(&package.name))
-                    .map_err(|error| {
-                        format!(
-                            "package {index} source availability is not JSON serializable: {error}"
-                        )
-                    })?;
+            let availability = serde_json::to_value(
+                workspace
+                    .symbols
+                    .package_source_availability_for(&package.app_id, &package.name),
+            )
+            .map_err(|error| {
+                format!("package {index} source availability is not JSON serializable: {error}")
+            })?;
             object.insert("source_availability".into(), availability);
             Ok::<_, String>(value)
         })
@@ -1146,6 +1325,80 @@ mod tests {
     use super::*;
 
     #[test]
+    fn member_signatures_render_one_line_per_member() {
+        let mut object = serde_json::json!({
+            "kind": "Table",
+            "name": "Customer",
+            "fields": [
+                {"id": 1, "name": "No.", "type_name": "Code[20]",
+                 "properties": [{"name": "ToolTip", "value": "long text"}]},
+                {"id": 59, "name": "Balance", "type_name": "Decimal",
+                 "properties": [{"name": "FieldClass", "value": "FlowField"}]},
+                {"id": 7, "name": "Old", "type_name": "Text[30]",
+                 "properties": [{"name": "ObsoleteState", "value": "Removed"}]}
+            ],
+            "methods": [
+                {"name": "LookupCustomer",
+                 "parameters": [{"name": "Customer", "type_name": "Record \"Customer\"", "is_var": true}],
+                 "return_type": "Boolean",
+                 "attributes": [{"name": "Obsolete", "arguments": ["Use SelectCustomer instead.", "24.0"]}],
+                 "is_local": false}
+            ],
+            "variables": [{"name": "SalesSetup", "type_name": "Record \"Sales & Receivables Setup\""}]
+        });
+        member_signatures(&mut object);
+        assert_eq!(
+            object["fields"],
+            serde_json::json!([
+                "1 \"No.\": Code[20]",
+                "59 Balance: Decimal (FlowField)",
+                "7 Old: Text[30] (obsolete: Removed)"
+            ])
+        );
+        assert_eq!(
+            object["methods"][0],
+            "[Obsolete('Use SelectCustomer instead.', '24.0')] LookupCustomer(var Customer: Record \"Customer\"): Boolean"
+        );
+        assert_eq!(
+            object["variables"][0],
+            "SalesSetup: Record \"Sales & Receivables Setup\""
+        );
+    }
+
+    /// JSON-RPC 2.0 §5: every response carries exactly one of `result` or
+    /// `error`. `Response { result: None, error: None }` serialises to
+    /// `{"jsonrpc":"2.0","id":7}` because both fields skip when absent, which
+    /// a conforming third-party client rejects.
+    #[tokio::test]
+    async fn empty_results_serialise_as_an_explicit_null_result() {
+        let workspace = Workspace::new();
+        let uri = url::Url::parse("file:///proj/Foo.Codeunit.al").unwrap();
+        workspace
+            .documents
+            .open(uri.clone(), "codeunit 50100 Foo\n{\n}\n".to_string())
+            .unwrap();
+        let position = serde_json::json!({
+            "uri": uri.as_str(),
+            "line": 1,
+            "character": 0,
+        });
+
+        let mut rename = position.clone();
+        rename["newName"] = serde_json::json!("Bar");
+        for response in [
+            dispatch_definition(&workspace, 7, &position),
+            dispatch_rename(&workspace, 8, &rename),
+            dispatch_hover(&workspace, 9, &position).await,
+        ] {
+            let frame = serde_json::to_value(&response).expect("response serialises");
+            assert!(
+                frame.get("result").is_some() != frame.get("error").is_some(),
+                "exactly one of result/error must be present: {frame}"
+            );
+        }
+    }
+
+    #[test]
     fn dedup_objects_by_identity_drops_same_object_from_two_indices() {
         // Regression: workspace objects appear in both the
         // symbol index (package "workspace") and the file index (package
@@ -1165,8 +1418,8 @@ mod tests {
     }
 
     #[test]
-    fn ok_response_serializes_value() {
-        let resp = ok_response(7, &vec!["a", "b"], "test/method");
+    fn serialized_response_serializes_value() {
+        let resp = serialized_response(7, &vec!["a", "b"], "test/method");
         assert_eq!(resp.id, 7);
         assert!(resp.error.is_none());
         assert_eq!(
@@ -1188,8 +1441,8 @@ mod tests {
     }
 
     #[test]
-    fn ok_response_returns_rpc_error_on_serialization_failure() {
-        let resp = ok_response(11, &AlwaysFails, "test/method");
+    fn serialized_response_returns_rpc_error_on_serialization_failure() {
+        let resp = serialized_response(11, &AlwaysFails, "test/method");
         assert_eq!(resp.id, 11);
         assert!(
             resp.result.is_none(),
@@ -1503,10 +1756,14 @@ mod tests {
     }
 
     #[test]
-    fn ok_response_opt_none_yields_null_result_no_error() {
+    fn ok_response_opt_none_yields_an_explicit_null_result_no_error() {
         let resp = ok_response_opt::<Vec<u8>>(3, None, "test/method");
         assert_eq!(resp.id, 3);
-        assert!(resp.result.is_none(), "None must map to absent result");
+        assert_eq!(
+            resp.result,
+            Some(serde_json::Value::Null),
+            "an absent result would serialise to a frame with neither result nor error"
+        );
         assert!(resp.error.is_none(), "None is not an error");
     }
 
@@ -1588,6 +1845,39 @@ mod tests {
             &serde_json::json!({ "uri": "file:///tmp/x.al", "line": 0, "character": 0 }),
         );
         assert_invalid_params(&resp, 10);
+    }
+
+    /// `limit` pages the result, so the search itself must not stop at it:
+    /// the page is cut, and `total` counted, from every match.
+    #[test]
+    fn a_paged_search_returns_every_match_for_the_projection_to_page() {
+        let ws = al_workspace::Workspace::new();
+        let entries: Vec<al_symbols::SymbolEntry> = (0..5)
+            .map(|index| al_symbols::SymbolEntry {
+                kind: al_symbols::ObjectKind::Codeunit,
+                id: 80 + index,
+                name: format!("Sales-Post {index}"),
+                package: "Base Application".to_string(),
+                ..Default::default()
+            })
+            .collect();
+        ws.symbols.add_entries(&entries);
+
+        let params = serde_json::json!({ "query": "Sales-Post", "limit": 2, "offset": 2 });
+        let resp = dispatch_search(&ws, 13, &params);
+        let rows = resp
+            .result
+            .as_ref()
+            .and_then(|r| r.as_array())
+            .unwrap()
+            .len();
+        assert_eq!(rows, 5);
+
+        let paged = super::super::projection::apply("search", &params, resp);
+        let page = paged.result.unwrap();
+        assert_eq!(page["total"], 5, "{page}");
+        assert_eq!(page["returned"], 2, "{page}");
+        assert_eq!(page["truncated"], true, "{page}");
     }
 
     #[test]
@@ -1799,6 +2089,64 @@ mod tests {
         assert_eq!(resp.result, Some(serde_json::json!([])));
     }
 
+    /// `subscribers` read the symbol index only, and Microsoft symbol packages
+    /// carry no `EventSubscriber` attribute, so it answered `[]` for events
+    /// `trace` could follow to three handlers. Both now read the same graph.
+    #[test]
+    fn dispatch_subscribers_agrees_with_trace() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/Publisher.Codeunit.al"),
+            r#"codeunit 50100 "Test Event Publisher"
+{
+    [IntegrationEvent(false, false)]
+    procedure OnAfterProcess()
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/Handler.Codeunit.al"),
+            r#"codeunit 50101 "Work Order Subscribers"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Test Event Publisher", 'OnAfterProcess', '', false, false)]
+    local procedure OnAfterProcessLogResult()
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+
+        let subscribers =
+            dispatch_subscribers(&ws, 25, &serde_json::json!({ "event": "OnAfterProcess" }))
+                .result
+                .expect("subscribers must carry a result");
+        let rows = subscribers.as_array().expect("an array of subscribers");
+        assert!(
+            rows.iter()
+                .any(|row| row.get("objectName").and_then(|v| v.as_str())
+                    == Some("Work Order Subscribers")),
+            "the handler must be listed: {subscribers}"
+        );
+        assert_eq!(
+            rows.len(),
+            1,
+            "the symbol-index and graph views must be merged, not doubled: {subscribers}"
+        );
+        let package = rows[0]
+            .get("package")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            package.eq_ignore_ascii_case("workspace")
+                || package.eq_ignore_ascii_case(WORKSPACE_PACKAGE),
+            "a workspace handler must be labelled as such, got '{package}'"
+        );
+    }
+
     #[test]
     fn dispatch_packages_empty_returns_empty_array() {
         let ws = al_workspace::Workspace::new();
@@ -1853,6 +2201,7 @@ mod tests {
             .write()
             .unwrap()
             .push(al_workspace::PackageInfo {
+                app_id: String::new(),
                 name: "Base Application".to_string(),
                 publisher: "Microsoft".to_string(),
                 version: "1.0.0.0".to_string(),

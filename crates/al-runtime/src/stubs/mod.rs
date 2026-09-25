@@ -24,6 +24,11 @@ pub struct StubCatalog {
     pub codeunit_name: &'static str,
     pub codeunit_ids: &'static [i32],
     pub resolve: ResolveFn,
+    /// Members implemented against the interpreter context rather than as a
+    /// context-free [`StubFn`], so the dispatcher runs them itself. Listed
+    /// here, lowercased, so callers that only ask "does the local runtime
+    /// implement this?" — the test router — get the right answer.
+    pub context_members: &'static [&'static str],
 }
 
 pub const CATALOGS: &[StubCatalog] = &[
@@ -31,22 +36,26 @@ pub const CATALOGS: &[StubCatalog] = &[
         codeunit_name: "Library Assert",
         codeunit_ids: &[130, 130002],
         resolve: library_assert::resolve,
+        context_members: &["expectederror"],
     },
     StubCatalog {
         codeunit_name: "Library - Variable Storage",
         codeunit_ids: &[131004],
         resolve: library_variable_storage::resolve,
+        context_members: &[],
     },
     StubCatalog {
         codeunit_name: "Library Random",
         // 130440 is the standard ID in Microsoft_Test Libraries.
         codeunit_ids: &[130440],
         resolve: library_random::resolve,
+        context_members: &[],
     },
     StubCatalog {
         codeunit_name: "Any",
         codeunit_ids: &[130500],
         resolve: any::resolve,
+        context_members: &[],
     },
 ];
 
@@ -60,6 +69,18 @@ pub const CATALOGS: &[StubCatalog] = &[
 pub fn reset_thread_local_state() {
     library_variable_storage::reset_queue();
     library_random::reset_lcg();
+}
+
+/// The catalog a receiver names, by codeunit name or by any of its IDs.
+pub fn catalog_for(receiver: &str) -> Option<&'static StubCatalog> {
+    CATALOGS.iter().find(|cat| {
+        receiver.eq_ignore_ascii_case(cat.codeunit_name)
+            || receiver
+                .parse::<i32>()
+                .ok()
+                .map(|id| cat.codeunit_ids.contains(&id))
+                .unwrap_or(false)
+    })
 }
 
 /// Look up a `(codeunit_name_or_id, procedure_name)` pair across all
@@ -79,6 +100,20 @@ pub fn resolve(receiver: &str, procedure: &str) -> Option<StubFn> {
         }
     }
     None
+}
+
+/// Whether the member is one the dispatcher runs against the interpreter
+/// context instead of through a [`StubFn`].
+pub fn is_context_member(receiver: &str, procedure: &str) -> bool {
+    let lower = procedure.to_ascii_lowercase();
+    catalog_for(receiver).is_some_and(|cat| cat.context_members.contains(&lower.as_str()))
+}
+
+/// Whether the local runtime implements `receiver.procedure` at all. Use this
+/// rather than `resolve(..).is_some()` when the question is routing: a member
+/// listed in `context_members` has no [`StubFn`] but does run locally.
+pub fn is_supported(receiver: &str, procedure: &str) -> bool {
+    resolve(receiver, procedure).is_some() || is_context_member(receiver, procedure)
 }
 
 #[cfg(test)]

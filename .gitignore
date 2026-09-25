@@ -17,7 +17,7 @@ crates/*/bridge/bin/
 !.claude/skills/
 !.claude/skills/**
 .agentic/
-.mcp.json
+/.mcp.json
 
 # Supervisor / runtime state
 /tmp/al-*
@@ -34,3 +34,13 @@ crates/*/bridge/bin/
 # AL build artifacts (compiled .app packages)
 *.app
 !crates/al-lsp/benches/fixtures/representative.app
+
+# Improvement campaign runtime state
+/.campaign/
+/scorecard.png
+
+# desloppify: track config, plan and state only
+/.desloppify/*
+!/.desloppify/config.json
+!/.desloppify/plan.json
+!/.desloppify/state-rust.json

@@ -13,7 +13,7 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
-dirs = "6"
+dirs = { workspace = true }
 # In-process .NET hosting. Without this feature, bridge initialization returns
 # `SemanticError::NotInitialized`.
 netcorehost = { version = "0.17", optional = true }
@@ -23,7 +23,7 @@ default = []
 semantic = ["dep:netcorehost"]
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 serial_test = "3"
 
 # The exporter's toolchain-version discovery decides whether

@@ -11,7 +11,7 @@ etc.) are in [analysis-and-insight](./analysis-and-insight.md), and refactorings
 
 ## Advertised capabilities
 
-From `server/lsp.rs` `initialize`, the server advertises: **incremental** text sync, save (no text),
+From `server/lsp/mod.rs` `initialize`, the server advertises: **incremental** text sync, save (no text),
 hover, completion (trigger chars `.` `:`), definition, **implementation**, references, document
 symbols, document & range formatting, folding ranges, rename (with prepare), semantic tokens
 (full + legend), CodeLens, inlay hints, signature help (trigger chars `(` `,`), workspace symbols,
@@ -30,7 +30,7 @@ The server adapts its responses to the client (negotiated at `initialize`):
 - `textDocument.definition.linkSupport` → returns `LocationLink[]` vs `Location[]`.
 - `textDocument.documentSymbol.hierarchicalDocumentSymbolSupport` → nested `DocumentSymbol[]` vs flat
   `SymbolInformation[]` (flattened by `al_analysis::lsp::flatten_document_symbols`, called from
-  `server/lsp.rs`).
+  `server/lsp/mod.rs`).
 
 ## Feature reference
 

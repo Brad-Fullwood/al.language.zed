@@ -153,6 +153,15 @@ fn main() {
 }
 
 async fn run() {
+    // Before the log file, the tracing registry and everything else: a client
+    // runs this to decide whether an `al-lsp` it found on PATH matches it, and
+    // that check must be cheap and must not touch the user's log directory.
+    if env::args().any(|arg| arg == "--version" || arg == "-V") {
+        let identity = al_protocol::identity::current_identity();
+        println!("al-lsp {} ({})", identity.version, identity.build);
+        return;
+    }
+
     let log_dir = log_dir();
 
     let log_path = log_dir.join("al-lsp.log");
@@ -207,7 +216,7 @@ async fn run() {
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
     // File log level: INFO by default; override with AL_LOG_FILE_LEVEL (e.g.
-    // `debug`, or `al_core=trace`) to capture detail for a hard-to-reproduce
+    // `debug`, or `al_lsp=trace`) to capture detail for a hard-to-reproduce
     // issue without recompiling. Empty/unset falls back to INFO.
     let file_filter = std::env::var("AL_LOG_FILE_LEVEL")
         .ok()
@@ -399,6 +408,17 @@ async fn run() {
                         return Err(format!("cannot read AL_DAP_SETTINGS_JSON: {error}"));
                     }
                 }
+                // The extension reads Zed's merged settings, so a value the
+                // worktree's own `.zed/settings.json` supplied arrives here
+                // looking exactly like one the user wrote.
+                let decision = al_project::trust::gate(&project_root, &mut config)
+                    .map_err(|error| error.to_string())?;
+                if let Some(advisory) = decision.advisory() {
+                    tracing::warn!("{advisory}");
+                }
+                if let Some(advisory) = al_project::trust::enforce_dotnet_path(&project_root) {
+                    tracing::warn!("{advisory}");
+                }
                 let mut project = al_project::project::find_project(&project_root)
                     .map_err(|error| error.to_string())?;
                 project
@@ -495,8 +515,20 @@ async fn run() {
                 std::process::exit(1);
             }
         };
+        let idle_timeout = match args.iter().position(|a| a == "--idle-timeout-secs") {
+            None => None,
+            Some(flag) => match args.get(flag + 1).and_then(|raw| raw.parse::<u64>().ok()) {
+                Some(secs) => Some(std::time::Duration::from_secs(secs)),
+                None => {
+                    tracing::error!(
+                        "--idle-timeout-secs needs a number of seconds (0 to never exit)"
+                    );
+                    std::process::exit(2);
+                }
+            },
+        };
         tracing::info!(project = %project_root.display(), "Starting daemon mode");
-        if let Err(e) = al_lsp::server::daemon::run_daemon(project_root).await {
+        if let Err(e) = al_lsp::server::daemon::run_daemon(project_root, idle_timeout).await {
             tracing::error!(error = %e, "Daemon failed");
             std::process::exit(1);
         }

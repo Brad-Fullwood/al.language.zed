@@ -1,7 +1,15 @@
 //! Obsolescence timeline query.
 //!
-//! Finds all symbols marked with ObsoleteState attribute and reports their
-//! projected removal timeline and caller count.
+//! Reports everything an extension has marked obsolete, with its projected
+//! removal timeline and caller count.
+//!
+//! AL spells obsolescence two ways, and both are read here. Objects and their
+//! named elements carry the `ObsoleteState`, `ObsoleteReason` and `ObsoleteTag`
+//! *properties*; procedures, variables and other symbols carry the
+//! `[Obsolete]` *attribute*. See "Obsolete objects, methods, and symbols in AL"
+//! on Microsoft Learn.
+
+use std::collections::HashMap;
 
 use serde::Serialize;
 
@@ -12,6 +20,9 @@ use al_workspace::Workspace;
 pub enum ObsoleteState {
     Pending,
     Removed,
+    /// Set while a table or field moves to another extension.
+    Moved,
+    PendingMove,
     Unknown,
 }
 
@@ -20,7 +31,9 @@ pub enum ObsoleteState {
 pub struct ObsoleteEntry {
     pub object: String,
     pub symbol: String,
-    /// "object", "procedure", or "field"
+    /// `"object"`, `"procedure"`, or the AL keyword of the element that
+    /// carries the properties: `"field"`, `"key"`, `"value"` (an enum value),
+    /// `"action"`, `"group"`, `"part"` and the rest of the page controls.
     pub kind: String,
     pub state: ObsoleteState,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -32,37 +45,84 @@ pub struct ObsoleteEntry {
     /// 1-based line number
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
-    pub caller_count: u32,
+    /// Call sites in the workspace, for a workspace declaration. Absent for
+    /// a package declaration: calls are counted by name, and a package
+    /// overload or a same-named procedure elsewhere would be counted too
+    /// (`obsoleteUsages` resolves the receiver for that question).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_count: Option<u32>,
+}
+
+/// Whether the timeline counts callers.
+///
+/// Counting walks every workspace tree, which a caller that discards
+/// `caller_count` should not pay for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallerCounts {
+    Count,
+    Skip,
 }
 
 pub fn obsolescence_timeline(
     workspace: &Workspace,
 ) -> Result<Vec<ObsoleteEntry>, super::WorkspaceQueryError> {
     let sources = crate::workspace_sources::snapshot(workspace)?;
+    Ok(timeline_from_sources(
+        workspace,
+        &sources,
+        CallerCounts::Count,
+    ))
+}
+
+/// The timeline over a snapshot the caller already holds.
+///
+/// `obsolete_usages` runs inside `workspace_diagnostics`, which is scheduled on
+/// every debounced change. It has its own snapshot and reads none of the
+/// caller counts, so taking a second snapshot and walking every tree once per
+/// obsolete symbol was work whose result it threw away.
+pub(crate) fn timeline_from_sources(
+    workspace: &Workspace,
+    sources: &[crate::workspace_sources::WorkspaceSource],
+    counts: CallerCounts,
+) -> Vec<ObsoleteEntry> {
     let mut results = Vec::new();
 
-    let parsed: Vec<(String, String, tree_sitter::Tree)> = sources
-        .into_iter()
-        .map(|source| {
-            (
-                source.path.to_string_lossy().to_string(),
-                source.text,
-                source.tree,
-            )
-        })
-        .collect();
+    // One pass over each tree, rather than one pass per obsolete symbol: a
+    // project with 2000 files and 50 obsolete procedures did 100,000 full tree
+    // walks for a single query.
+    let call_counts = match counts {
+        CallerCounts::Count => Some(call_site_counts(sources)),
+        CallerCounts::Skip => None,
+    };
 
-    let all: Vec<(&str, &str, &tree_sitter::Tree)> = parsed
-        .iter()
-        .map(|(p, t, tree)| (p.as_str(), t.as_str(), tree))
-        .collect();
-
-    for (file_path, file_text, file_tree) in &all {
-        scan_file_for_obsolete(file_path, file_text, file_tree, &all, &mut results);
+    for source in sources {
+        scan_file_for_obsolete(
+            &source.path.to_string_lossy(),
+            &source.text,
+            &source.tree,
+            call_counts.as_ref(),
+            &mut results,
+        );
     }
 
+    // Package objects. The workspace's own objects are scanned from source
+    // above; their symbol-index copies would list them twice.
     let symbols = workspace.symbols.all_entries();
-    for sym in symbols.iter().filter(|s| !s.methods.is_empty()) {
+    for sym in symbols.iter().filter(|s| {
+        !s.synthetic && !al_symbols::source_availability::is_workspace_package(&s.package)
+    }) {
+        // Objects and fields say it with properties. Only procedures were
+        // read, so Base Application's 62 obsolete tables and 125 obsolete
+        // fields never appeared.
+        if let Some(entry) = property_entry(&sym.properties, &sym.name, &sym.name, "object") {
+            results.push(entry);
+        }
+        for field in &sym.fields {
+            if let Some(entry) = property_entry(&field.properties, &sym.name, &field.name, "field")
+            {
+                results.push(entry);
+            }
+        }
         for method in &sym.methods {
             for attr in &method.attributes {
                 if attr.name.eq_ignore_ascii_case("Obsolete") {
@@ -85,105 +145,269 @@ pub fn obsolescence_timeline(
                         tag,
                         file: None,
                         line: None,
-                        caller_count: 0,
+                        caller_count: None,
                     });
                 }
             }
         }
     }
 
-    Ok(results)
+    results
+}
+
+/// Call-site name (lowercased) to the number of calls across every file.
+fn call_site_counts(sources: &[crate::workspace_sources::WorkspaceSource]) -> HashMap<String, u32> {
+    let mut counts: HashMap<String, u32> = HashMap::new();
+    for source in sources {
+        for (name, _) in al_syntax::collect_call_sites(&source.tree, &source.text) {
+            *counts.entry(name).or_default() += 1;
+        }
+    }
+    counts
+}
+
+fn caller_count(counts: Option<&HashMap<String, u32>>, name: &str) -> u32 {
+    counts
+        .and_then(|counts| counts.get(&name.to_ascii_lowercase()))
+        .copied()
+        .unwrap_or(0)
 }
 
 fn scan_file_for_obsolete(
     file_path: &str,
     file_text: &str,
     file_tree: &tree_sitter::Tree,
-    all_files: &[(&str, &str, &tree_sitter::Tree)],
+    counts: Option<&HashMap<String, u32>>,
     results: &mut Vec<ObsoleteEntry>,
 ) {
-    let Some(obj_info) = al_syntax::find_object_declaration(file_tree, file_text) else {
-        return;
-    };
-
-    let root = file_tree.root_node();
-    let source = file_text.as_bytes();
-
-    let obj_obsolete = extract_obsolete_from_preceding_attr(root, source);
-    if let Some((state, reason, tag)) = obj_obsolete {
-        let caller_count = count_references_in_files(all_files, &obj_info.name);
-        results.push(ObsoleteEntry {
-            object: obj_info.name.clone(),
-            symbol: obj_info.name.clone(),
-            kind: "object".to_string(),
-            state,
-            reason,
-            tag,
-            file: Some(file_path.to_string()),
-            line: Some(1),
-            caller_count,
-        });
-    }
-
-    scan_procedures_for_obsolete(
+    scan_node(
+        file_tree.root_node(),
+        file_text.as_bytes(),
         file_path,
-        file_text,
-        root,
-        source,
-        &obj_info.name,
-        all_files,
+        "",
+        counts,
         results,
     );
 }
 
-fn scan_procedures_for_obsolete(
-    file_path: &str,
-    _file_text: &str,
-    root: tree_sitter::Node,
+/// Walk one file, reporting every declaration that carries an obsoletion.
+///
+/// `object_name` is the object enclosing `node`, tracked as the walk descends
+/// so a file holding several objects attributes each element to its own.
+fn scan_node(
+    node: tree_sitter::Node,
     source: &[u8],
+    file_path: &str,
     object_name: &str,
-    all_files: &[(&str, &str, &tree_sitter::Tree)],
+    counts: Option<&HashMap<String, u32>>,
     results: &mut Vec<ObsoleteEntry>,
 ) {
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
-        if matches!(
-            node.kind(),
-            "procedure_declaration" | "event_procedure_declaration"
-        ) {
-            if let Some(obs) = extract_obsolete_from_preceding_attr(node, source) {
-                let name = al_syntax::node_name_or(node, source, "(unknown)");
+    let mut object_name = object_name;
+    let owned_object_name;
+    if node.kind() == "object_declaration" {
+        owned_object_name = node
+            .child_by_field_name("name")
+            .and_then(|name| al_syntax::node_text_clean(name, source))
+            .unwrap_or_default();
+        object_name = &owned_object_name;
+    }
 
-                let line = node.start_position().row as u32 + 1;
-                let caller_count = count_references_in_files(all_files, &name);
+    if let Some((kind, symbol, obsoletion)) = declared_obsoletion(node, source, object_name) {
+        results.push(ObsoleteEntry {
+            object: object_name.to_string(),
+            caller_count: Some(caller_count(counts, &symbol)),
+            symbol,
+            kind,
+            state: obsoletion.state,
+            reason: obsoletion.reason,
+            tag: obsoletion.tag,
+            file: Some(file_path.to_string()),
+            line: Some(node.start_position().row as u32 + 1),
+        });
+    }
 
-                results.push(ObsoleteEntry {
-                    object: object_name.to_string(),
-                    symbol: name,
-                    kind: "procedure".to_string(),
-                    state: obs.0,
-                    reason: obs.1,
-                    tag: obs.2,
-                    file: Some(file_path.to_string()),
-                    line: Some(line),
-                    caller_count,
-                });
-            }
-            continue;
-        }
-
-        let mut cursor = node.walk();
-        stack.extend(node.children(&mut cursor));
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        scan_node(child, source, file_path, object_name, counts, results);
     }
 }
 
-fn extract_obsolete_from_preceding_attr(
+/// What a declaration marks obsolete: `(kind, symbol name, obsoletion)`.
+fn declared_obsoletion(
     node: tree_sitter::Node,
     source: &[u8],
-) -> Option<(ObsoleteState, Option<String>, Option<String>)> {
+    object_name: &str,
+) -> Option<(String, String, Obsoletion)> {
+    match node.kind() {
+        "procedure_declaration" | "event_procedure_declaration" => {
+            let obsoletion = obsoletion_from_attribute(node, source)?;
+            let name = al_syntax::node_name_or(node, source, "(unknown)");
+            Some(("procedure".to_string(), name, obsoletion))
+        }
+        "object_declaration" => {
+            let obsoletion = obsoletion_from_properties(node, source)?;
+            Some(("object".to_string(), object_name.to_string(), obsoletion))
+        }
+        "key_declaration" => {
+            let obsoletion = obsoletion_from_properties(node, source)?;
+            let name = al_syntax::node_name_or(node, source, "(unknown)");
+            Some(("key".to_string(), name, obsoletion))
+        }
+        "enum_value_declaration" => {
+            let obsoletion = obsoletion_from_properties(node, source)?;
+            let name = al_syntax::node_name_or(node, source, "(unknown)");
+            Some(("value".to_string(), name, obsoletion))
+        }
+        // A table field, enum value, page control or action: the AL keyword
+        // that opens the section is the element kind.
+        "object_section" => {
+            let obsoletion = obsoletion_from_properties(node, source)?;
+            let keyword = node
+                .child_by_field_name("keyword")?
+                .utf8_text(source)
+                .ok()?
+                .to_ascii_lowercase();
+            let name = al_syntax::node_text_clean(section_header_name(node)?, source)?;
+            Some((keyword, name, obsoletion))
+        }
+        _ => None,
+    }
+}
+
+/// The name token in an `object_section`'s parenthesized header, skipping a
+/// leading id (`field(2; "Posting Date"; Date)`, `value(0; Open)`).
+fn section_header_name(section: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    let mut cursor = section.walk();
+    let header = section
+        .children(&mut cursor)
+        .find(|child| child.kind() == "parenthesized_block")?;
+    let mut header_cursor = header.walk();
+    let mut seen_id = false;
+    for child in header.named_children(&mut header_cursor) {
+        match child.kind() {
+            "integer" if !seen_id => seen_id = true,
+            "semicolon" | "comma" if seen_id => {}
+            "identifier" | "quoted_identifier" | "name" | "name_or_keyword" => return Some(child),
+            _ => return None,
+        }
+    }
+    None
+}
+
+struct Obsoletion {
+    state: ObsoleteState,
+    reason: Option<String>,
+    tag: Option<String>,
+}
+
+/// Read `ObsoleteState`, `ObsoleteReason` and `ObsoleteTag` from a
+/// declaration's own property block.
+///
+/// Only the block's direct children are read, so a table's properties are not
+/// mistaken for its fields' and an enclosing object's obsoletion is not
+/// reported again for every element inside it.
+fn obsoletion_from_properties(node: tree_sitter::Node, source: &[u8]) -> Option<Obsoletion> {
+    // `enum_value_declaration` carries its block as a plain child rather than
+    // on a `body` field.
+    let body = node.child_by_field_name("body").or_else(|| {
+        let mut cursor = node.walk();
+        let found = node
+            .children(&mut cursor)
+            .find(|c| c.kind() == "object_body");
+        found
+    })?;
+    let mut state = None;
+    let mut reason = None;
+    let mut tag = None;
+    let mut cursor = body.walk();
+    for property in body.children(&mut cursor) {
+        if property.kind() != "property_assignment" {
+            continue;
+        }
+        let Some(name) = property
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(source).ok())
+        else {
+            continue;
+        };
+        let value = property
+            .child_by_field_name("value")
+            .and_then(|n| property_value_text(n, source));
+        match name.trim().to_ascii_lowercase().as_str() {
+            "obsoletestate" => state = value.as_deref().map(parse_obsolete_state),
+            "obsoletereason" => reason = value.filter(|value| !value.is_empty()),
+            "obsoletetag" => tag = value.filter(|value| !value.is_empty()),
+            _ => {}
+        }
+    }
+    // `ObsoleteState = No` is the default: the declaration is not obsolete.
+    state?.map(|state| Obsoletion { state, reason, tag })
+}
+
+/// A property value as the developer wrote it: an AL string literal with its
+/// `'` delimiters removed and `''` unescaped, or a bare word as-is.
+///
+/// Trimming quote characters off both ends instead would cut the closing `"`
+/// off a reason such as `'Replaced by "Line Discount Amount"'`.
+fn property_value_text(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let text = node.utf8_text(source).ok()?.trim();
+    if node.kind() == "string" && text.len() >= 2 && text.starts_with('\'') && text.ends_with('\'')
+    {
+        return Some(text[1..text.len() - 1].replace("''", "'"));
+    }
+    Some(text.to_string())
+}
+
+/// A package object's or field's obsolescence from its `ObsoleteState`,
+/// `ObsoleteReason` and `ObsoleteTag` properties; `None` when it is not
+/// obsolete.
+fn property_entry(
+    properties: &[al_symbols::PropertyValue],
+    object: &str,
+    symbol: &str,
+    kind: &str,
+) -> Option<ObsoleteEntry> {
+    let property = |name: &str| {
+        properties
+            .iter()
+            .find(|property| property.name.eq_ignore_ascii_case(name))
+            .map(|property| property.value.trim().to_string())
+    };
+    let state = parse_obsolete_state(&property("ObsoleteState")?)?;
+    Some(ObsoleteEntry {
+        object: object.to_string(),
+        symbol: symbol.to_string(),
+        kind: kind.to_string(),
+        state,
+        reason: property("ObsoleteReason"),
+        tag: property("ObsoleteTag"),
+        file: None,
+        line: None,
+        caller_count: None,
+    })
+}
+
+/// The `ObsoleteState` values Microsoft Learn documents. `No` is the default
+/// and means the declaration is not obsolete, hence the nested `Option`.
+fn parse_obsolete_state(value: &str) -> Option<ObsoleteState> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "no" => None,
+        "pending" => Some(ObsoleteState::Pending),
+        "removed" => Some(ObsoleteState::Removed),
+        "moved" => Some(ObsoleteState::Moved),
+        "pendingmove" => Some(ObsoleteState::PendingMove),
+        _ => Some(ObsoleteState::Unknown),
+    }
+}
+
+/// The `[Obsolete('<reason>', '<tag>')]` attribute on a procedure.
+///
+/// A procedure carries no `ObsoleteState`, so the attribute alone marks it
+/// pending removal.
+fn obsoletion_from_attribute(node: tree_sitter::Node, source: &[u8]) -> Option<Obsoletion> {
     let mut sibling = node.prev_sibling();
     while let Some(s) = sibling {
-        if s.kind() == "attribute" || s.kind() == "attribute_list" {
+        if s.kind() == "attribute" {
             if let Ok(text) = s.utf8_text(source) {
                 if let Some(result) = parse_obsolete_attr(text) {
                     return Some(result);
@@ -197,7 +421,7 @@ fn extract_obsolete_from_preceding_attr(
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "attribute" || child.kind() == "attribute_list" {
+        if child.kind() == "attribute" {
             if let Ok(text) = child.utf8_text(source) {
                 if let Some(result) = parse_obsolete_attr(text) {
                     return Some(result);
@@ -208,48 +432,16 @@ fn extract_obsolete_from_preceding_attr(
     None
 }
 
-fn parse_obsolete_attr(text: &str) -> Option<(ObsoleteState, Option<String>, Option<String>)> {
+fn parse_obsolete_attr(text: &str) -> Option<Obsoletion> {
     let lower = text.to_lowercase();
-
-    if lower.contains("obsoletestate") {
-        let state = if lower.contains("pending") {
-            ObsoleteState::Pending
-        } else if lower.contains("removed") {
-            ObsoleteState::Removed
-        } else {
-            ObsoleteState::Unknown
-        };
-
-        let reason = extract_property_value(text, "ObsoleteReason");
-        let tag = extract_property_value(text, "ObsoleteTag");
-        return Some((state, reason, tag));
+    if !lower.trim_start().starts_with("[obsolete") && !lower.contains("obsolete(") {
+        return None;
     }
-
-    if lower.trim_start().starts_with("[obsolete") || lower.contains("obsolete(") {
-        let reason = extract_attr_arg(text, 0);
-        let tag = extract_attr_arg(text, 1);
-        return Some((ObsoleteState::Pending, reason, tag));
-    }
-
-    None
-}
-
-fn extract_property_value(text: &str, prop_name: &str) -> Option<String> {
-    let lower = text.to_lowercase();
-    let prop_lower = prop_name.to_lowercase();
-    if let Some(pos) = lower.find(&prop_lower) {
-        let after = &text[pos + prop_lower.len()..];
-        let after = after.trim_start_matches([' ', '=', ':']);
-        let after = after.trim_start_matches('\'').trim_start_matches('"');
-        let end = after
-            .find(['\'', '"', ';', '\n'])
-            .unwrap_or(after.len().min(200));
-        let val = after[..end].trim().to_string();
-        if !val.is_empty() {
-            return Some(val);
-        }
-    }
-    None
+    Some(Obsoletion {
+        state: ObsoleteState::Pending,
+        reason: extract_attr_arg(text, 0),
+        tag: extract_attr_arg(text, 1),
+    })
 }
 
 fn extract_attr_arg(text: &str, idx: usize) -> Option<String> {
@@ -287,13 +479,6 @@ fn extract_attr_arg(text: &str, idx: usize) -> Option<String> {
     args.get(idx)
         .map(|s| s.trim_matches('\'').trim_matches('"').to_string())
         .filter(|s| !s.is_empty())
-}
-
-fn count_references_in_files(all_files: &[(&str, &str, &tree_sitter::Tree)], name: &str) -> u32 {
-    all_files
-        .iter()
-        .map(|(_, text, tree)| al_syntax::find_call_references(tree, text, name) as u32)
-        .sum()
 }
 
 #[cfg(test)]
@@ -336,6 +521,276 @@ mod tests {
         );
     }
 
+    /// AL marks an object obsolete with properties in its body, not with an
+    /// attribute. The scan only read attributes, so no real AL object was ever
+    /// reported.
+    #[test]
+    fn finds_obsolete_object_properties() {
+        let ws = workspace_with(vec![(
+            "/src/OldBuffer.al",
+            r#"table 50100 "Old Shipment Buffer"
+{
+    ObsoleteState = Pending;
+    ObsoleteReason = 'Use table 50101 instead';
+    ObsoleteTag = '24.0';
+
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+}"#,
+        )]);
+
+        let entries = obsolescence_timeline(&ws).unwrap();
+        let entry = entries
+            .iter()
+            .find(|e| e.kind == "object")
+            .unwrap_or_else(|| panic!("no object entry: {entries:?}"));
+        assert_eq!(entry.symbol, "Old Shipment Buffer");
+        assert_eq!(entry.state, ObsoleteState::Pending);
+        assert_eq!(entry.reason.as_deref(), Some("Use table 50101 instead"));
+        assert_eq!(entry.tag.as_deref(), Some("24.0"));
+    }
+
+    /// An obsolete field is the most common obsolescence in Business Central,
+    /// because it is the one that forces data migration.
+    #[test]
+    fn finds_obsolete_field_key_and_enum_value() {
+        let ws = workspace_with(vec![
+            (
+                "/src/Shipment.al",
+                r#"table 50100 "Shipment"
+{
+    fields
+    {
+        field(5; "Discount Amount"; Decimal)
+        {
+            ObsoleteState = Removed;
+            ObsoleteReason = 'Replaced by "Line Discount Amount"';
+            ObsoleteTag = '23.0';
+        }
+        field(6; "Line Discount Amount"; Decimal) { }
+    }
+    keys
+    {
+        key(Discount; "Discount Amount")
+        {
+            ObsoleteState = Pending;
+            ObsoleteTag = '23.0';
+        }
+    }
+}"#,
+            ),
+            (
+                "/src/Status.al",
+                r#"enum 50100 "Shipment Status"
+{
+    value(0; Open) { }
+    value(1; Held)
+    {
+        ObsoleteState = Pending;
+        ObsoleteReason = 'Use Blocked';
+    }
+}"#,
+            ),
+        ]);
+
+        let entries = obsolescence_timeline(&ws).unwrap();
+        let field = entries
+            .iter()
+            .find(|e| e.kind == "field")
+            .unwrap_or_else(|| panic!("no field entry: {entries:?}"));
+        assert_eq!(field.symbol, "Discount Amount");
+        assert_eq!(field.state, ObsoleteState::Removed);
+        assert_eq!(field.object, "Shipment");
+        assert_eq!(field.tag.as_deref(), Some("23.0"));
+
+        let key = entries
+            .iter()
+            .find(|e| e.kind == "key")
+            .unwrap_or_else(|| panic!("no key entry: {entries:?}"));
+        assert_eq!(key.symbol, "Discount");
+        assert_eq!(key.state, ObsoleteState::Pending);
+
+        let value = entries
+            .iter()
+            .find(|e| e.kind == "value")
+            .unwrap_or_else(|| panic!("no enum value entry: {entries:?}"));
+        assert_eq!(value.symbol, "Held");
+        assert_eq!(value.object, "Shipment Status");
+    }
+
+    /// Page controls and actions carry the same properties.
+    #[test]
+    fn finds_obsolete_page_control_and_action() {
+        let ws = workspace_with(vec![(
+            "/src/ShipmentCard.al",
+            r#"page 50100 "Shipment Card"
+{
+    layout
+    {
+        area(Content)
+        {
+            field(Discount; Rec."Discount Amount")
+            {
+                ObsoleteState = Pending;
+                ObsoleteReason = 'The field is going away';
+            }
+        }
+    }
+    actions
+    {
+        area(Processing)
+        {
+            group(Posting)
+            {
+                action(Post)
+                {
+                    ObsoleteState = Pending;
+                    ObsoleteTag = '24.0';
+                }
+            }
+        }
+    }
+}"#,
+        )]);
+
+        let entries = obsolescence_timeline(&ws).unwrap();
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.kind == "field" && e.symbol == "Discount"),
+            "no page control entry: {entries:?}"
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.kind == "action" && e.symbol == "Post"),
+            "no action entry: {entries:?}"
+        );
+    }
+
+    /// `ObsoleteState = Removed` used to be classified Pending whenever the
+    /// word "pending" appeared anywhere in the declaration's text.
+    #[test]
+    fn removed_is_not_read_as_pending() {
+        let ws = workspace_with(vec![(
+            "/src/Gone.al",
+            r#"table 50100 "Gone"
+{
+    ObsoleteState = Removed;
+    ObsoleteReason = 'Pending removal was announced in 24.0';
+    ObsoleteTag = '25.0';
+}"#,
+        )]);
+
+        let entries = obsolescence_timeline(&ws).unwrap();
+        let entry = entries.iter().find(|e| e.kind == "object").expect("object");
+        assert_eq!(entry.state, ObsoleteState::Removed);
+    }
+
+    /// `No` is the default, so it must not produce an entry.
+    /// Package objects and fields mark obsolescence with properties, and a
+    /// package procedure's callers are counted like the workspace's own.
+    #[test]
+    fn package_objects_and_fields_with_obsolete_state_are_listed() {
+        let workspace = Workspace::new();
+        let property = |name: &str, value: &str| al_symbols::PropertyValue {
+            name: name.to_string(),
+            value: value.to_string(),
+        };
+        workspace.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Table,
+            id: 5050,
+            name: "Old Setup".to_string(),
+            package: "Base Application".to_string(),
+            properties: vec![
+                property("ObsoleteState", "Removed"),
+                property("ObsoleteTag", "22.0"),
+            ],
+            fields: vec![al_symbols::FieldSymbol {
+                id: 2,
+                name: "Home Page".to_string(),
+                type_name: "Text[80]".to_string(),
+                properties: vec![
+                    property("ObsoleteState", "Pending"),
+                    property("ObsoleteReason", "Field length will be increased to 255."),
+                ],
+            }],
+            ..Default::default()
+        }]);
+
+        let entries = obsolescence_timeline(&workspace).unwrap();
+
+        let object = entries
+            .iter()
+            .find(|e| e.kind == "object")
+            .expect("object row");
+        assert_eq!(object.state, ObsoleteState::Removed);
+        assert_eq!(object.tag.as_deref(), Some("22.0"));
+        let field = entries
+            .iter()
+            .find(|e| e.kind == "field")
+            .expect("field row");
+        assert_eq!(field.symbol, "Home Page");
+        assert_eq!(field.state, ObsoleteState::Pending);
+    }
+
+    #[test]
+    fn obsolete_state_no_is_not_obsolete() {
+        let ws = workspace_with(vec![(
+            "/src/Active.al",
+            r#"table 50100 "Active"
+{
+    ObsoleteState = No;
+
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+}"#,
+        )]);
+
+        assert!(obsolescence_timeline(&ws).unwrap().is_empty());
+    }
+
+    /// The counts are the ones the per-symbol tree walks produced.
+    #[test]
+    fn caller_counts_come_from_one_pass_per_file() {
+        let ws = workspace_with(vec![
+            (
+                "/src/Legacy.al",
+                r#"codeunit 50100 "Legacy"
+{
+    [Obsolete('Use NewProc instead', '24.0')]
+    procedure OldProc()
+    begin
+    end;
+}"#,
+            ),
+            (
+                "/src/Caller.al",
+                r#"codeunit 50101 "Caller"
+{
+    trigger OnRun()
+    var
+        Legacy: Codeunit "Legacy";
+    begin
+        Legacy.OldProc();
+        Legacy.OldProc();
+    end;
+}"#,
+            ),
+        ]);
+
+        let entry = obsolescence_timeline(&ws)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.symbol == "OldProc")
+            .expect("OldProc");
+        assert_eq!(entry.caller_count, Some(2));
+    }
+
     #[test]
     fn non_obsolete_not_reported() {
         let ws = workspace_with(vec![(
@@ -372,13 +827,9 @@ mod tests {
         use al_symbols::{AttributeSymbol, MethodSymbol, ObjectKind, ParameterSymbol, SymbolEntry};
         let ws = Workspace::new();
         let entries = vec![SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Codeunit,
             id: 50100,
             name: "Legacy CU".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "TestPkg".to_string(),
             methods: vec![MethodSymbol {
                 name: "OldHelper".to_string(),
@@ -397,13 +848,7 @@ mod tests {
                 }],
                 is_local: false,
             }],
-            fields: Vec::new(),
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }];
         ws.symbols.add_entries(&entries);
 

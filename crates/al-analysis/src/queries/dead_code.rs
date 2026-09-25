@@ -4,6 +4,7 @@
 //! and orphaned event subscribers. Returns a list of `UnusedSymbol` entries
 //! with the reason each symbol is considered dead.
 
+use al_syntax::IdentifierText;
 use serde::Serialize;
 
 use al_workspace::Workspace;
@@ -74,32 +75,23 @@ pub fn dead_code(workspace: &Workspace) -> Result<Vec<UnusedSymbol>, super::Work
     let mut results = Vec::new();
 
     // The owned, sorted collection keeps borrows stable and output deterministic.
-    let mut parsed_files: Vec<(String, String, tree_sitter::Tree, al_syntax::ObjectInfo)> = sources
-        .into_iter()
-        .map(|source| {
-            (
-                source.path.to_string_lossy().to_string(),
-                source.text,
-                source.tree,
-                source.object.info,
-            )
-        })
-        .collect();
-    parsed_files.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let all_files: Vec<(&str, &str, &tree_sitter::Tree)> = parsed_files
-        .iter()
-        .map(|(p, t, tree, _)| (p.as_str(), t.as_str(), tree))
-        .collect();
+    let mut parsed_files: Vec<crate::workspace_sources::WorkspaceSource> = sources;
+    parsed_files.sort_by(|a, b| a.path.cmp(&b.path));
 
     let mut all_call_names: std::collections::HashSet<String> =
         std::collections::HashSet::with_capacity(parsed_files.len() * 32);
     // Build member-access names once for constant-time field lookups.
     let mut all_member_access_names: std::collections::HashSet<String> =
         std::collections::HashSet::with_capacity(parsed_files.len() * 16);
-    for (_, text, tree) in &all_files {
-        all_call_names.extend(al_syntax::collect_call_site_names(tree, text));
-        all_member_access_names.extend(al_syntax::collect_member_access_names(tree, text));
+    for source in &parsed_files {
+        all_call_names.extend(al_syntax::collect_call_site_names(
+            &source.tree,
+            &source.text,
+        ));
+        all_member_access_names.extend(al_syntax::collect_member_access_names(
+            &source.tree,
+            &source.text,
+        ));
     }
 
     // Keep the query on the daemon dispatch thread. Rayon worker startup made
@@ -108,41 +100,49 @@ pub fn dead_code(workspace: &Workspace) -> Result<Vec<UnusedSymbol>, super::Work
     // path-sorted input still makes output deterministic.
     let per_file_results: Vec<Vec<UnusedSymbol>> = parsed_files
         .iter()
-        .map(|(file_path, file_text, file_tree, obj_info)| {
+        .map(|source| {
+            let file_path = source.path.to_string_lossy();
+            let file_text = source.text.as_str();
             let mut local = Vec::new();
 
-            find_unused_procedures(
-                file_path,
-                file_text,
-                file_tree,
-                &obj_info.name,
-                &all_call_names,
-                &mut local,
-            );
-
-            let obj_kind_lower = obj_info.kind.to_lowercase();
-            let is_table = al_syntax::language_data::object_type_by_keyword(&obj_kind_lower)
-                .map(|ot| ot.node_kind == "kw_table")
-                .unwrap_or(false);
-            if is_table {
-                find_unused_fields(
-                    file_path,
+            // Per object declaration, not per file: a file may hold several
+            // objects, and walking from the root reported every one of their
+            // unused members under the first object's name.
+            for (object, node) in source.object_nodes() {
+                let obj_info = &object.info;
+                find_unused_procedures(
+                    &file_path,
                     file_text,
-                    file_tree,
+                    node,
                     &obj_info.name,
-                    &all_member_access_names,
+                    &all_call_names,
+                    &mut local,
+                );
+
+                let obj_kind_lower = obj_info.kind.to_lowercase();
+                let is_table = al_syntax::language_data::object_type_by_keyword(&obj_kind_lower)
+                    .map(|ot| ot.node_kind == "kw_table")
+                    .unwrap_or(false);
+                if is_table {
+                    find_unused_fields(
+                        &file_path,
+                        file_text,
+                        node,
+                        &obj_info.name,
+                        &all_member_access_names,
+                        &mut local,
+                    );
+                }
+
+                find_orphaned_subscribers(
+                    &file_path,
+                    file_text,
+                    node,
+                    &obj_info.name,
+                    workspace,
                     &mut local,
                 );
             }
-
-            find_orphaned_subscribers(
-                file_path,
-                file_text,
-                file_tree,
-                &obj_info.name,
-                workspace,
-                &mut local,
-            );
             local
         })
         .collect();
@@ -159,16 +159,15 @@ pub fn dead_code(workspace: &Workspace) -> Result<Vec<UnusedSymbol>, super::Work
 fn find_unused_procedures(
     file_path: &str,
     file_text: &str,
-    file_tree: &tree_sitter::Tree,
+    object: tree_sitter::Node<'_>,
     object_name: &str,
     all_call_names: &std::collections::HashSet<String>,
     results: &mut Vec<UnusedSymbol>,
 ) {
-    let root = file_tree.root_node();
     let source = file_text.as_bytes();
     let mut procs = Vec::new();
 
-    collect_procedures(root, source, &mut procs);
+    collect_procedures(object, source, &mut procs);
 
     for (proc_name, is_event, line, is_local) in &procs {
         // Skip event publishers — they're entry points
@@ -222,8 +221,11 @@ fn collect_procedures(
         ) {
             if let Some(name_node) = node.child_by_field_name("name") {
                 if let Ok(name) = name_node.utf8_text(source) {
-                    let name = name.trim_matches('"').to_string();
-                    let line = node.start_position().row as u32 + 1;
+                    let name = al_syntax::clean_identifier(name);
+                    let line = al_syntax::procedure_keyword_row(node)
+                        .unwrap_or_else(|| node.start_position().row)
+                        as u32
+                        + 1;
 
                     let is_event = is_framework_invoked_procedure(node, source);
 
@@ -293,7 +295,7 @@ fn is_framework_invoked_procedure(node: tree_sitter::Node, source: &[u8]) -> boo
 
     let mut sibling = node.prev_sibling();
     while let Some(s) = sibling {
-        if s.kind() == "attribute" || s.kind() == "attribute_list" {
+        if s.kind() == "attribute" {
             if let Ok(text) = s.utf8_text(source) {
                 if attr_is_framework(text) {
                     return true;
@@ -308,7 +310,7 @@ fn is_framework_invoked_procedure(node: tree_sitter::Node, source: &[u8]) -> boo
     // Also check children (some grammars nest attributes inside the procedure node)
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "attribute" || child.kind() == "attribute_list" {
+        if child.kind() == "attribute" {
             if let Ok(text) = child.utf8_text(source) {
                 if attr_is_framework(text) {
                     return true;
@@ -323,13 +325,13 @@ fn is_framework_invoked_procedure(node: tree_sitter::Node, source: &[u8]) -> boo
 fn find_unused_fields(
     file_path: &str,
     file_text: &str,
-    file_tree: &tree_sitter::Tree,
+    object: tree_sitter::Node<'_>,
     object_name: &str,
     all_member_access_names: &std::collections::HashSet<String>,
     results: &mut Vec<UnusedSymbol>,
 ) {
-    let fields = collect_table_fields(file_tree, file_text);
-    let local_primary_names = al_syntax::collect_primary_expression_names(file_tree, file_text);
+    let fields = collect_table_fields(object, file_text);
+    let local_primary_names = al_syntax::collect_primary_expression_names_under(object, file_text);
 
     for (field_name, line) in &fields {
         let field_key = field_name.to_ascii_lowercase();
@@ -358,7 +360,7 @@ fn find_unused_fields(
     }
 }
 
-fn collect_table_fields(tree: &tree_sitter::Tree, text: &str) -> Vec<(String, u32)> {
+fn collect_table_fields(object: tree_sitter::Node<'_>, text: &str) -> Vec<(String, u32)> {
     fn collect(symbols: &[al_syntax::SyntaxDocumentSymbol], fields: &mut Vec<(String, u32)>) {
         for symbol in symbols {
             if symbol.kind == al_syntax::SyntaxSymbolKind::Field
@@ -372,7 +374,7 @@ fn collect_table_fields(tree: &tree_sitter::Tree, text: &str) -> Vec<(String, u3
         }
     }
 
-    let symbols = al_syntax::extract_document_symbols(tree, text);
+    let symbols = al_syntax::extract_document_symbols_under(object, text);
     let mut fields = Vec::new();
     collect(&symbols, &mut fields);
     fields
@@ -381,23 +383,32 @@ fn collect_table_fields(tree: &tree_sitter::Tree, text: &str) -> Vec<(String, u3
 fn find_orphaned_subscribers(
     file_path: &str,
     file_text: &str,
-    file_tree: &tree_sitter::Tree,
+    object: tree_sitter::Node<'_>,
     object_name: &str,
     workspace: &Workspace,
     results: &mut Vec<UnusedSymbol>,
 ) {
-    let root = file_tree.root_node();
     let source = file_text.as_bytes();
     let mut subscribers = Vec::new();
 
-    collect_event_subscribers(root, source, &mut subscribers);
+    collect_event_subscribers(object, source, &mut subscribers);
 
-    for (proc_name, target_object, target_event, line) in &subscribers {
+    for (proc_name, target_kind, target_object, target_event, line) in &subscribers {
         // Skip entries where attribute parsing failed to extract a target object name.
         // An empty target would cause false positives (nothing in the index matches "").
         if target_object.is_empty() {
             continue;
         }
+
+        // `ObjectType::Codeunit, 80` names the publisher by ID: find the
+        // object with that ID before asking whether it exists by name.
+        let target_object = match target_object.trim().parse::<i32>() {
+            Ok(id) => match publisher_by_id(workspace, target_kind.as_deref(), id) {
+                Some(name) => name,
+                None => target_object.clone(),
+            },
+            Err(_) => target_object.clone(),
+        };
 
         // Check if the target object exists in the symbol index OR in workspace files.
         // Use get_by_name (exact, case-insensitive) rather than search (fuzzy substring)
@@ -517,7 +528,7 @@ fn collect_declared_event_names(
                     .child_by_field_name("name")
                     .and_then(|n| n.utf8_text(source).ok())
                 {
-                    names.insert(name.trim().trim_matches('"').to_lowercase());
+                    names.insert(name.unquote_identifier().to_lowercase());
                 }
             }
             continue;
@@ -529,10 +540,43 @@ fn collect_declared_event_names(
 }
 
 /// Collect event subscriber procedures iteratively: (proc_name, target_object, target_event, line_1based).
+/// A subscriber procedure: its name, the publisher kind and object named by
+/// the attribute, the event, and the procedure's line.
+type Subscription = (String, Option<String>, String, String, u32);
+
+/// The object of `kind` (any publisher kind when unknown) whose ID is `id`.
+fn publisher_by_id(workspace: &Workspace, kind: Option<&str>, id: i32) -> Option<String> {
+    let kind = kind.and_then(|kind| kind.parse::<al_symbols::ObjectKind>().ok());
+    let matches_kind = |candidate: al_symbols::ObjectKind| {
+        kind.map_or(!candidate.is_extension(), |kind| kind == candidate)
+    };
+    for entry in workspace.symbols.all_entries() {
+        if entry.id == id && matches_kind(entry.kind) {
+            return Some(entry.name.clone());
+        }
+    }
+    workspace.file_index.object_infos.iter().find_map(|infos| {
+        infos.value().iter().find_map(|info| {
+            let candidate = info.kind.parse::<al_symbols::ObjectKind>().ok()?;
+            (info.id == Some(i64::from(id)) && matches_kind(candidate)).then(|| info.name.clone())
+        })
+    })
+}
+
+/// The publisher kind in the attribute's first argument: `Codeunit` for
+/// `ObjectType::Codeunit`.
+fn parse_subscriber_kind(attr_text: &str) -> Option<String> {
+    let inner = attr_text.split_once('(')?.1;
+    let first = split_args(inner).into_iter().next()?;
+    let first = first.trim();
+    let kind = first.rsplit_once("::").map_or(first, |(_, kind)| kind);
+    Some(kind.trim().to_string()).filter(|kind| !kind.is_empty())
+}
+
 fn collect_event_subscribers(
     root: tree_sitter::Node,
     source: &[u8],
-    subscribers: &mut Vec<(String, String, String, u32)>,
+    subscribers: &mut Vec<Subscription>,
 ) {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -545,10 +589,20 @@ fn collect_event_subscribers(
                 if text.to_lowercase().contains("eventsubscriber") {
                     if let Some(name_node) = node.child_by_field_name("name") {
                         if let Ok(proc_name) = name_node.utf8_text(source) {
-                            let proc_name = proc_name.trim_matches('"').to_string();
+                            let proc_name = al_syntax::clean_identifier(proc_name);
                             let (target_object, target_event) = parse_subscriber_args(text);
-                            let line = node.start_position().row as u32 + 1;
-                            subscribers.push((proc_name, target_object, target_event, line));
+                            let target_kind = parse_subscriber_kind(text);
+                            let line = al_syntax::procedure_keyword_row(node)
+                                .unwrap_or_else(|| node.start_position().row)
+                                as u32
+                                + 1;
+                            subscribers.push((
+                                proc_name,
+                                target_kind,
+                                target_object,
+                                target_event,
+                                line,
+                            ));
                         }
                     }
                 }
@@ -565,7 +619,7 @@ fn collect_event_subscribers(
 fn get_preceding_attribute(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
     let mut sibling = node.prev_sibling();
     while let Some(s) = sibling {
-        if s.kind() == "attribute" || s.kind() == "attribute_list" {
+        if s.kind() == "attribute" {
             return s.utf8_text(source).ok().map(|s| s.to_string());
         }
         if s.kind() != "comment" {
@@ -576,7 +630,7 @@ fn get_preceding_attribute(node: tree_sitter::Node, source: &[u8]) -> Option<Str
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "attribute" || child.kind() == "attribute_list" {
+        if child.kind() == "attribute" {
             return child.utf8_text(source).ok().map(|s| s.to_string());
         }
     }
@@ -662,6 +716,42 @@ mod tests {
                 .add_file(PathBuf::from(name), content.to_string());
         }
         ws
+    }
+
+    /// A file may declare several objects. An unused member belongs to the
+    /// object that declares it, not to the file's first object.
+    #[test]
+    fn an_unused_member_of_the_second_object_in_a_file_names_that_object() {
+        let ws = workspace_with_files(vec![(
+            "/src/Pair.al",
+            r#"table 50100 "Ship Setup"
+{
+    fields
+    {
+        field(1; "Primary Key"; Code[10]) { }
+    }
+}
+
+codeunit 50101 "Ship Helper"
+{
+    local procedure UnusedHelper()
+    begin
+    end;
+}"#,
+        )]);
+
+        let unused = dead_code(&ws).unwrap();
+        let finding = unused
+            .iter()
+            .find(|symbol| symbol.name == "UnusedHelper")
+            .unwrap_or_else(|| panic!("expected the unused helper: {unused:?}"));
+        assert_eq!(finding.object, "Ship Helper", "{unused:?}");
+        // The table's own key field belongs to the table, not to the codeunit.
+        let field = unused
+            .iter()
+            .find(|symbol| symbol.kind == UnusedKind::Field)
+            .unwrap_or_else(|| panic!("expected the unreferenced field: {unused:?}"));
+        assert_eq!(field.object, "Ship Setup", "{unused:?}");
     }
 
     #[test]
@@ -843,7 +933,7 @@ mod tests {
         let mut parser = al_syntax::AlParser::new();
         let parsed = parser.parse(text);
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        let fields = collect_table_fields(&parsed.tree, text);
+        let fields = collect_table_fields(parsed.tree.root_node(), text);
         let names: Vec<_> = fields.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, vec!["Real", "AlsoReal"]);
     }
@@ -1182,6 +1272,52 @@ mod tests {
         let (obj, _) =
             parse_subscriber_args("[EventSubscriber(ObjectType::Table, Table::\"Item\", 'OnX')]");
         assert_eq!(obj, "Item");
+    }
+
+    /// `ObjectType::Codeunit, 50100` names the publisher by ID, as AL allows
+    /// and every package subscriber does. Looking `50100` up as a name called
+    /// the subscriber orphaned, with high confidence, and told the user to
+    /// delete live code.
+    #[test]
+    fn a_subscriber_naming_its_publisher_by_id_is_not_orphaned() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/src/Publisher.al"),
+            r#"codeunit 50100 "Sales Publisher"
+{
+    [IntegrationEvent(false, false)]
+    local procedure OnAfterPost()
+    begin
+    end;
+}"#
+            .to_string(),
+        );
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/src/Subscriber.al"),
+            r#"codeunit 50101 "Sales Subscriber"
+{
+    [EventSubscriber(ObjectType::Codeunit, 50100, 'OnAfterPost', '', false, false)]
+    local procedure ByNumericId()
+    begin
+    end;
+
+    [EventSubscriber(ObjectType::Codeunit, 50199, 'OnAfterPost', '', false, false)]
+    local procedure ToAMissingId()
+    begin
+    end;
+}"#
+            .to_string(),
+        );
+
+        let results = dead_code(&ws).unwrap();
+        let orphans: Vec<_> = results
+            .iter()
+            .filter(|r| r.kind == UnusedKind::Subscriber)
+            .map(|r| r.name.as_str())
+            .collect();
+
+        assert!(!orphans.contains(&"ByNumericId"), "{orphans:?}");
+        assert!(orphans.contains(&"ToAMissingId"), "{orphans:?}");
     }
 
     /// `_target_event` was bound but never used, so a subscriber to a removed

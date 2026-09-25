@@ -22,90 +22,66 @@ pub struct PermissionEntry {
     pub permissions: String,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum PermissionCollectionError {
-    #[error("cannot generate permissions because '{}' contains AL syntax errors: {details}", path.display())]
-    ParseSource { path: PathBuf, details: String },
-    #[error(
-        "cannot generate permissions because '{}' has no AL object declaration",
-        path.display()
-    )]
-    MissingObjectDeclaration { path: PathBuf },
-    #[error(
-        "cannot generate permissions because numbered {kind} object '{name}' in '{}' has no numeric ID",
-        path.display()
-    )]
-    MissingObjectId {
-        path: PathBuf,
-        kind: String,
-        name: String,
-    },
+/// A workspace file that contributed no permission entry, and why.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SkippedFile {
+    pub path: PathBuf,
+    pub reason: String,
 }
 
-/// Extension objects (tableextension, pageextension, etc.) are skipped — they extend existing objects.
+/// The permission entries, plus the files that could not contribute one.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct PermissionCollection {
+    pub entries: Vec<PermissionEntry>,
+    pub skipped: Vec<SkippedFile>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PermissionCollectionError {
+    /// The workspace could not be snapshotted coherently: an indexed path has
+    /// no cached parse, or the workspace changed mid-collection. A partial
+    /// permission set is indistinguishable from a complete one, so this still
+    /// fails the whole query.
+    #[error("cannot generate permissions: {0}")]
+    Workspace(String),
+}
+
+/// Collect a permission entry for every workspace object that has one.
+///
+/// Extension objects (tableextension, pageextension, …) contribute nothing —
+/// they extend objects that carry their own permissions.
+///
+/// A file with a syntax error, no object declaration or a missing object ID is
+/// reported in `skipped` rather than failing the call. Real projects contain
+/// scratch and work-in-progress sources, and one of those used to make
+/// permission generation unavailable for the entire project. This is the same
+/// skip-and-report policy `workspace_sources::snapshot_with_skipped` applies to
+/// the other whole-project queries, and it runs through that function so the
+/// two cannot drift.
 pub fn collect_permissions(
     workspace: &Workspace,
-) -> Result<Vec<PermissionEntry>, PermissionCollectionError> {
+) -> Result<PermissionCollection, PermissionCollectionError> {
+    let (sources, skipped) = crate::workspace_sources::snapshot_with_skipped(workspace)
+        .map_err(|error| PermissionCollectionError::Workspace(error.to_string()))?;
+
     let mut entries = Vec::new();
-
-    // Snapshot the paths first: holding a DashMap shard entry across a parse
-    // blocked every concurrent writer for the duration of that parse.
-    let mut paths: Vec<PathBuf> = workspace
-        .file_index
-        .files
-        .iter()
-        .map(|item| item.key().clone())
-        .collect();
-    paths.sort_unstable();
-
-    for path in paths {
-        // Reuse the FileIndex's cached tree instead of re-parsing every file
-        // from scratch on each invocation.
-        let Some((content, tree)) = workspace.file_index.get_cached_parse(&path) else {
-            continue;
-        };
-        if tree.root_node().has_error() {
-            let result = al_syntax::AlParser::parse_quick(&content);
-            let details = result
-                .errors
-                .iter()
-                .take(3)
-                .map(|error| {
-                    format!(
-                        "{} at {}:{}",
-                        error.message,
-                        error.range.start_point.row + 1,
-                        error.range.start_point.column + 1
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("; ");
-            return Err(PermissionCollectionError::ParseSource {
-                path,
-                details: if details.is_empty() {
-                    "tree-sitter reported an error node".to_string()
-                } else {
-                    details
-                },
-            });
-        }
-        let obj = al_syntax::find_object_declaration(&tree, &content).ok_or_else(|| {
-            PermissionCollectionError::MissingObjectDeclaration { path: path.clone() }
-        })?;
-        if let Some((perm_type, perm_value)) = permission_for_kind(&obj.kind) {
-            if obj.id.is_none() {
-                return Err(PermissionCollectionError::MissingObjectId {
-                    path,
-                    kind: obj.kind,
-                    name: obj.name,
+    // Every object of the file, not just its first.
+    for source in &sources {
+        for object in &source.objects {
+            // A test codeunit or test runner is not part of what the app
+            // ships to users; it had been added to the assignable set.
+            if is_test_codeunit(&object.info.kind, object.text(&source.text)) {
+                continue;
+            }
+            let info = &object.info;
+            if let Some((perm_type, perm_value)) = permission_for_kind(&info.kind) {
+                entries.push(PermissionEntry {
+                    object_type: perm_type.to_string(),
+                    object_name: info.name.clone(),
+                    object_id: info.id,
+                    permissions: perm_value.to_string(),
                 });
             }
-            entries.push(PermissionEntry {
-                object_type: perm_type.to_string(),
-                object_name: obj.name,
-                object_id: obj.id,
-                permissions: perm_value.to_string(),
-            });
         }
     }
 
@@ -116,10 +92,40 @@ pub fn collect_permissions(
             .then(a.object_name.cmp(&b.object_name))
     });
 
-    Ok(entries)
+    let mut skipped: Vec<SkippedFile> = skipped
+        .into_iter()
+        .map(|(path, reason)| SkippedFile { path, reason })
+        .collect();
+    skipped.sort_by(|a, b| a.path.cmp(&b.path));
+
+    Ok(PermissionCollection { entries, skipped })
 }
 
-pub fn render_al(entries: &[PermissionEntry], name: &str, id: i64) -> String {
+/// Whether an object is a codeunit with `Subtype = Test` or `TestRunner`.
+fn is_test_codeunit(kind: &str, object_text: &str) -> bool {
+    kind.eq_ignore_ascii_case("codeunit")
+        && object_text.lines().any(|line| {
+            let line = line.trim();
+            let Some((key, value)) = line.split_once('=') else {
+                return false;
+            };
+            key.trim().eq_ignore_ascii_case("Subtype")
+                && matches!(
+                    value
+                        .trim()
+                        .trim_end_matches(';')
+                        .trim()
+                        .to_ascii_lowercase()
+                        .as_str(),
+                    "test" | "testrunner"
+                )
+        })
+}
+
+/// Render a permission set as AL source.
+///
+/// Takes (entries, id, name) to match [`render_xml`].
+pub fn render_al(entries: &[PermissionEntry], id: i64, name: &str) -> String {
     let mut out = String::new();
     writeln!(out, "permissionset {id} \"{}\"", al_escape_name(name)).unwrap();
     writeln!(out, "{{").unwrap();
@@ -144,16 +150,12 @@ pub fn render_al(entries: &[PermissionEntry], name: &str, id: i64) -> String {
     out
 }
 
-/// Escape a name for use inside AL double-quoted identifiers.
-///
-/// AL uses `""` to represent a literal double-quote inside a quoted identifier.
-/// Made `pub(crate)` so generators / scaffolders in sibling modules can share
-/// the same convention — duplicating it would risk one site forgetting to
-/// escape and emitting unparseable AL.
-pub(crate) fn al_escape_name(name: &str) -> String {
-    name.replace('"', "\"\"")
-}
+/// AL writes a literal `"` inside a quoted identifier as `""`.
+pub(crate) use al_project::scaffold::al_escape_name;
 
+/// Render a permission set as the XML the BC dev tools import.
+///
+/// Takes (entries, id, name) to match [`render_al`].
 pub fn render_xml(entries: &[PermissionEntry], role_id: &str, role_name: &str) -> String {
     let mut out = String::new();
     writeln!(out, r#"<?xml version="1.0" encoding="utf-8"?>"#).unwrap();
@@ -249,6 +251,27 @@ fn xml_permission_flags(perms: &str) -> (u8, u8, u8, u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test codeunits are not part of the shipped app, and a file's second
+    /// object counts as much as its first.
+    #[test]
+    fn test_codeunits_are_left_out_and_every_object_counts() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/ws/Objects.al"),
+            "codeunit 50101 \"Loyalty Mgt\"\n{\n}\n\ncodeunit 50103 \"Loyalty Test\"\n{\n    Subtype = Test;\n}\n\ntable 50100 Tier\n{\n    fields { field(1; Code; Code[10]) { } }\n}\n"
+                .to_string(),
+        );
+        let names: Vec<String> = collect_permissions(&workspace)
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|entry| entry.object_name)
+            .collect();
+        assert!(names.contains(&"Loyalty Mgt".to_string()), "{names:?}");
+        assert!(names.contains(&"Tier".to_string()), "{names:?}");
+        assert!(!names.contains(&"Loyalty Test".to_string()), "{names:?}");
+    }
     use std::path::PathBuf;
 
     #[test]
@@ -360,7 +383,7 @@ mod tests {
             r#"enum 50100 "My Enum" { value(0; None) { } }"#.to_string(),
         );
 
-        let mut entries = collect_permissions(&workspace).unwrap();
+        let mut entries = collect_permissions(&workspace).unwrap().entries;
         entries.sort_by(|a, b| {
             a.object_type
                 .cmp(&b.object_type)
@@ -421,7 +444,7 @@ mod tests {
             },
         ];
 
-        let output = render_al(&entries, "My Extension Permissions", 50100);
+        let output = render_al(&entries, 50100, "My Extension Permissions");
 
         assert!(output.contains(r#"permissionset 50100 "My Extension Permissions""#));
         assert!(output.contains("Assignable = true;"));
@@ -432,7 +455,7 @@ mod tests {
 
     #[test]
     fn render_al_empty_entries() {
-        let output = render_al(&[], "Empty Perms", 50100);
+        let output = render_al(&[], 50100, "Empty Perms");
         assert!(output.contains(r#"permissionset 50100 "Empty Perms""#));
         assert!(output.contains("Assignable = true;"));
     }
@@ -510,7 +533,7 @@ mod tests {
             object_id: Some(50200),
             permissions: "X".into(),
         }];
-        let output = render_al(&entries, "My \"Perms\"", 50100);
+        let output = render_al(&entries, 50100, "My \"Perms\"");
         assert!(output.contains(r#"permissionset 50100 "My ""Perms"""#));
         assert!(output.contains(r#"codeunit "Say ""Hello"""#));
     }
@@ -518,22 +541,47 @@ mod tests {
     #[test]
     fn collect_permissions_empty_workspace() {
         let workspace = Workspace::new();
-        let entries = collect_permissions(&workspace).unwrap();
+        let entries = collect_permissions(&workspace).unwrap().entries;
         assert!(entries.is_empty());
     }
 
+    /// One scratch or work-in-progress file must not take permission
+    /// generation down for the whole project.
     #[test]
-    fn collect_permissions_rejects_unparseable_file() {
+    fn collect_permissions_skips_an_unparseable_file_and_reports_it() {
         let workspace = Workspace::new();
         workspace.file_index.add_file(
             std::path::PathBuf::from("/project/bad.al"),
             "codeunit 50100 Broken { procedure Incomplete(".to_string(),
         );
-        let error = collect_permissions(&workspace).unwrap_err();
-        assert!(matches!(
-            error,
-            PermissionCollectionError::ParseSource { .. }
-        ));
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/project/good.al"),
+            r#"codeunit 50101 "Good Codeunit" { procedure Run() begin end; }"#.to_string(),
+        );
+
+        let collection = collect_permissions(&workspace).unwrap();
+        assert_eq!(
+            collection
+                .entries
+                .iter()
+                .map(|entry| entry.object_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Good Codeunit"],
+            "the parseable object must still get a permission entry"
+        );
+        assert_eq!(
+            collection
+                .skipped
+                .iter()
+                .map(|skip| skip.path.clone())
+                .collect::<Vec<_>>(),
+            vec![std::path::PathBuf::from("/project/bad.al")]
+        );
+        assert!(
+            collection.skipped[0].reason.contains("syntax error"),
+            "the report must say why: {}",
+            collection.skipped[0].reason
+        );
     }
 
     #[test]
@@ -544,7 +592,7 @@ mod tests {
             std::path::PathBuf::from("/project/IMyInterface.al"),
             r#"interface "IMyInterface" { procedure Run(); }"#.to_string(),
         );
-        let entries = collect_permissions(&workspace).unwrap();
+        let entries = collect_permissions(&workspace).unwrap().entries;
         assert!(entries.is_empty());
     }
 }

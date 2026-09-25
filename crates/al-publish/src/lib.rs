@@ -95,6 +95,8 @@ pub enum PublishError {
     Build(String),
     #[error("Invalid app.json: {0}")]
     InvalidManifest(String),
+    #[error("{0}")]
+    Unauthorized(String),
 }
 
 /// Run the publish pipeline for the project.
@@ -330,7 +332,7 @@ fn resolve_server_config(
 ) -> Result<BcServerConfig, PublishError> {
     let debug_config = find_launch_config(project_root)?.ok_or(PublishError::NoLaunchConfig)?;
 
-    match config_name {
+    let chosen = match config_name {
         Some(name) => debug_config
             .configs
             .into_iter()
@@ -343,7 +345,21 @@ fn resolve_server_config(
             .into_iter()
             .next()
             .ok_or(PublishError::NoLaunchConfig),
-    }
+    }?;
+
+    // Publishing sends the user's Business Central credential to the server
+    // this repository's launch file names. The credential comes from the
+    // environment (`BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`), so
+    // it is the target the repository chose that needs authorising, not a
+    // cached token: nothing in publish reads the OAuth cache.
+    al_project::trust::authorize_cached_credential(
+        project_root,
+        &al_project::trust::BcTarget::from_launch(&chosen),
+        al_project::trust::CredentialKind::Environment,
+        al_project::trust::TargetSource::Repository,
+    )
+    .map_err(PublishError::Unauthorized)?;
+    Ok(chosen)
 }
 
 /// Extract the app GUID from app.json (needed for RAD).
@@ -355,11 +371,19 @@ fn extract_app_id_from_manifest(project_root: &Path) -> Result<String, PublishEr
     let json: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
         PublishError::InvalidManifest(format!("cannot parse {}: {e}", path.display()))
     })?;
-    json.get("id")
+    let id = json
+        .get("id")
         .and_then(|value| value.as_str())
-        .filter(|id| !id.trim().is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| PublishError::InvalidManifest("`id` must be a non-empty string".to_string()))
+        .map(str::trim)
+        .unwrap_or_default();
+    // BC requires a GUID here, and the value is interpolated into the RAD
+    // request path, so a repository must not be able to choose that path.
+    if !al_bc::bc_client::is_guid(id) {
+        return Err(PublishError::InvalidManifest(format!(
+            "`id` must be a GUID, got {id:?}"
+        )));
+    }
+    Ok(id.to_owned())
 }
 
 #[cfg(test)]
@@ -408,11 +432,40 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("app.json"),
-            r#"{"id":"test-guid-123","name":"Test","publisher":"Me","version":"1.0.0"}"#,
+            r#"{"id":"33333333-4444-5555-6666-777777777773","name":"Test","publisher":"Me","version":"1.0.0"}"#,
         )
         .unwrap();
         let id = extract_app_id_from_manifest(dir.path()).unwrap();
-        assert_eq!(id, "test-guid-123");
+        assert_eq!(id, "33333333-4444-5555-6666-777777777773");
+    }
+
+    #[test]
+    fn extract_app_id_rejects_an_id_that_steers_the_request_path() {
+        // The id is interpolated into `PATCH {base}/dev/applications/{id}`.
+        // `Url::parse` normalises `..` segments away, so a cloned repository
+        // could aim an authenticated PATCH carrying the whole .app body at a
+        // path of its choosing, and a `?` or `#` truncates the path instead.
+        for id in [
+            "../../../admin/SomeEndpoint",
+            "33333333-4444-5555-6666-777777777773/../admin",
+            "33333333-4444-5555-6666-777777777773?x=1",
+            "",
+            "   ",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(
+                dir.path().join("app.json"),
+                serde_json::json!({ "id": id, "name": "Test" }).to_string(),
+            )
+            .unwrap();
+            assert!(
+                matches!(
+                    extract_app_id_from_manifest(dir.path()),
+                    Err(PublishError::InvalidManifest(_))
+                ),
+                "{id:?} must be refused"
+            );
+        }
     }
 
     #[test]
@@ -463,6 +516,51 @@ mod tests {
         std::fs::write(zed.join("debug.json"), body).unwrap();
     }
 
+    /// `XDG_CONFIG_HOME` is process-wide, so the tests that redirect the trust
+    /// store hold this rather than running beside each other.
+    static TRUST_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A scratch trust store for one test. Dropping it restores the previous
+    /// `XDG_CONFIG_HOME` and releases the lock.
+    struct ScratchTrustStore {
+        _dir: tempfile::TempDir,
+        previous: Option<std::ffi::OsString>,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl ScratchTrustStore {
+        fn new() -> Self {
+            let guard = TRUST_STORE_LOCK
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let dir = tempfile::tempdir().unwrap();
+            let previous = std::env::var_os("XDG_CONFIG_HOME");
+            std::env::set_var("XDG_CONFIG_HOME", dir.path());
+            Self {
+                _dir: dir,
+                previous,
+                _guard: guard,
+            }
+        }
+    }
+
+    impl Drop for ScratchTrustStore {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+    }
+
+    /// Record `project_root` the way `al-explorer trust` does, against a
+    /// scratch store the test owns.
+    fn trust_for_test(project_root: &Path) -> ScratchTrustStore {
+        let store = ScratchTrustStore::new();
+        al_project::trust::grant(project_root).unwrap();
+        store
+    }
+
     #[test]
     fn resolve_config_named_match_returns_that_config() {
         let dir = tempfile::tempdir().unwrap();
@@ -470,17 +568,46 @@ mod tests {
             dir.path(),
             r#"[
                 {"label":"First","adapter":"al","environmentType":"OnPrem",
-                 "server":"http://first.example.com","serverInstance":"BC"},
+                 "server":"https://first.example.com","serverInstance":"BC"},
                 {"label":"Second","adapter":"al","environmentType":"OnPrem",
-                 "server":"http://second.example.com","serverInstance":"NAV"}
+                 "server":"https://second.example.com","serverInstance":"NAV"}
             ]"#,
         );
+        let _config = trust_for_test(dir.path());
 
         let cfg = resolve_server_config(dir.path(), Some("Second")).unwrap();
         assert_eq!(cfg.name, "Second");
-        assert_eq!(cfg.server.as_deref(), Some("http://second.example.com"));
+        assert_eq!(cfg.server.as_deref(), Some("https://second.example.com"));
         // display_name should reflect the matched (second) config.
-        assert_eq!(cfg.display_name(), "http://second.example.com/NAV");
+        assert_eq!(cfg.display_name(), "https://second.example.com/NAV");
+    }
+
+    #[test]
+    fn resolve_config_refuses_an_untrusted_on_premises_server() {
+        let dir = tempfile::tempdir().unwrap();
+        write_zed_debug(
+            dir.path(),
+            r#"[
+                {"label":"Only","adapter":"al","environmentType":"OnPrem",
+                 "server":"https://erp.example.com","serverInstance":"BC"}
+            ]"#,
+        );
+        let _store = ScratchTrustStore::new();
+
+        match resolve_server_config(dir.path(), None) {
+            Err(PublishError::Unauthorized(message)) => {
+                assert!(message.contains("not trusted"), "{message}");
+                // Publish reads `BC_ACCESS_TOKEN` or `BC_USERNAME`/`BC_PASSWORD`
+                // from the environment and never touches the OAuth cache, so a
+                // refusal that names a cached token describes the wrong thing.
+                assert!(
+                    message.contains("Business Central credentials"),
+                    "{message}"
+                );
+                assert!(!message.contains("cached"), "{message}");
+            }
+            other => panic!("expected Unauthorized, got {other:?}"),
+        }
     }
 
     #[test]
@@ -781,9 +908,11 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
-            .and(path("/BC/dev/applications/app-guid-1"))
+            .and(path(
+                "/BC/dev/applications/33333333-4444-5555-6666-777777777701",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "appId": "app-guid-1",
+                "appId": "33333333-4444-5555-6666-777777777701",
                 "version": "2.1.0.0",
                 "status": "Completed"
             })))
@@ -796,11 +925,19 @@ mod tests {
         let client = BcClient::new(&mock_config(&server.uri()));
         let mut steps = Vec::new();
 
-        let (app_id, version, success) =
-            do_rad_publish(&client, "app-guid-1", &app, &mut steps).await;
+        let (app_id, version, success) = do_rad_publish(
+            &client,
+            "33333333-4444-5555-6666-777777777701",
+            &app,
+            &mut steps,
+        )
+        .await;
 
         assert!(success);
-        assert_eq!(app_id.as_deref(), Some("app-guid-1"));
+        assert_eq!(
+            app_id.as_deref(),
+            Some("33333333-4444-5555-6666-777777777701")
+        );
         assert_eq!(version.as_deref(), Some("2.1.0.0"));
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].phase, PublishPhase::Rad);
@@ -815,9 +952,11 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
-            .and(path("/BC/dev/applications/app-guid-2"))
+            .and(path(
+                "/BC/dev/applications/33333333-4444-5555-6666-777777777702",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "appId": "app-guid-2",
+                "appId": "33333333-4444-5555-6666-777777777702",
                 "status": "InProgress"
             })))
             .mount(&server)
@@ -828,7 +967,13 @@ mod tests {
         let client = BcClient::new(&mock_config(&server.uri()));
         let mut steps = Vec::new();
 
-        let (_, _, success) = do_rad_publish(&client, "app-guid-2", &app, &mut steps).await;
+        let (_, _, success) = do_rad_publish(
+            &client,
+            "33333333-4444-5555-6666-777777777702",
+            &app,
+            &mut steps,
+        )
+        .await;
 
         assert!(!success);
         assert_eq!(steps[0].phase, PublishPhase::Rad);
@@ -845,7 +990,9 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
-            .and(path("/BC/dev/applications/app-guid-3"))
+            .and(path(
+                "/BC/dev/applications/33333333-4444-5555-6666-777777777703",
+            ))
             .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
             .mount(&server)
             .await;
@@ -855,8 +1002,13 @@ mod tests {
         let client = BcClient::new(&mock_config(&server.uri()));
         let mut steps = Vec::new();
 
-        let (app_id, version, success) =
-            do_rad_publish(&client, "app-guid-3", &app, &mut steps).await;
+        let (app_id, version, success) = do_rad_publish(
+            &client,
+            "33333333-4444-5555-6666-777777777703",
+            &app,
+            &mut steps,
+        )
+        .await;
 
         assert!(!success);
         assert!(app_id.is_none());

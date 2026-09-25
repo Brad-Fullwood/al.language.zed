@@ -58,6 +58,7 @@ graph TD
   al_source --> al_syntax
   al_source --> al_types
   al_runtime --> al_types
+  al_runtime --> al_syntax
   al_symbols --> al_types
   al_symbols --> al_syntax
   al_symbols -.->|nuget| al_bc
@@ -70,10 +71,9 @@ graph TD
   al_insight --> al_symbols
   al_insight --> al_source
   al_insight --> al_syntax
+  al_emit --> al_types
   al_emit --> al_symbols
   al_emit --> al_syntax
-  al_snapshot --> al_dap
-  al_snapshot --> al_syntax
 
   al_compile --> al_types
   al_compile --> al_project
@@ -99,14 +99,17 @@ graph TD
   al_publish --> al_compile
   al_publish --> al_project
   al_publish --> al_workspace
-  al_publish --> al_types
 
   al_test --> al_types
   al_test --> al_syntax
   al_test --> al_bc
+  al_test --> al_dap
+  al_test --> al_snapshot
   al_test --> al_runtime
   al_test --> al_workspace
   al_test --> al_analysis
+  al_test --> al_insight
+  al_test --> al_symbols
 ```
 
 Notes on edges that are **not** plain production dependencies (so they are
@@ -120,17 +123,23 @@ omitted above or drawn dashed):
   dependencies on the grammar submodule, which has its own release cadence and
   is excluded from the workspace.
 - Dev-only `al-*` edges are intentionally **not** drawn: `al-dap` and
-  `al-runtime` reference `al-syntax` only under `[dev-dependencies]` (test
-  fixtures), so they are not production edges.
+  `al-source` reference `al-syntax` under `[dev-dependencies]` (test fixtures).
+  `al-source` and `al-runtime` also depend on it in production, so those arrows
+  are drawn; `al-dap → al-syntax` is dev-only and is not.
+- `al-snapshot` has no `al-*` dependency at all. It is drawn as a node with no
+  outgoing arrow, which is what its manifest says.
 
 ## Product and transport crates
 
 The crates users actually run, and the library layers each one links. `al-lsp`
 is the single binary that re-exports the whole engine (LSP server + daemon + MCP
 + native DAP), so it depends on every library crate directly. `zed-al` (the WASM
-extension) and `al-test-harness` have **no** Cargo dependency on the engine —
-they interact with it by spawning/driving the compiled binaries at runtime
-(dashed).
+extension) has **no** Cargo dependency on the engine and drives the compiled
+binaries at runtime (dashed). `al-test-harness` drives the binaries the same
+way. Its one production dependency is `al-protocol`, the client it uses to
+identify and stop the daemons it starts. It also dev-depends on eight engine crates (`al-analysis`, `al-bc`, `al-compile`,
+`al-emit`, `al-project`, `al-publish`, `al-test`, `al-workspace`) for
+in-process assertions, so those edges are dev-only and are not drawn.
 
 ```mermaid
 graph TD
@@ -183,12 +192,14 @@ graph TD
   al_lsp -.-> ts_al
 
   al_explorer --> al_protocol
+  al_explorer --> al_types
   al_explorer --> al_emit
   al_explorer --> al_project
   al_explorer --> al_compile
   al_explorer --> al_symbols
 
   zed_al -.->|spawns al-lsp at runtime| al_lsp
+  al_test_harness --> al_protocol
   al_test_harness -.->|drives binaries in tests| al_lsp
   al_test_harness -.->|drives binaries in tests| al_explorer
 ```

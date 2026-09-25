@@ -234,14 +234,13 @@ mod tests {
         });
     }
 
-    #[tokio::test]
-    async fn spawn_echo_and_kill() {
-        let result = DapClient::spawn(&PathBuf::from("/usr/bin/cat"), &[]);
-        if let Ok(mut client) = result {
-            client.kill().await.unwrap();
-        }
-        // If cat doesn't exist (unlikely), that's ok — skip
-    }
+    // `spawn_echo_and_kill` used to live here. Its body was
+    // `if let Ok(mut client) = result { client.kill().await.unwrap(); }`
+    // against a hard-coded /usr/bin/cat, so on a host where cat is /bin/cat it
+    // asserted nothing and reported green, and where it did run it only
+    // checked that `kill` returned Ok, which it does unconditionally. The
+    // `spawn_fake` tests below drive the same spawn seam with a script the
+    // test writes itself.
 
     // ----------------------------------------------------------------------
     // Mock DAP adapter harness.

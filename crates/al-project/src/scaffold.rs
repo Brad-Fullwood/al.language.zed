@@ -1,0 +1,2077 @@
+//! AL project scaffolding.
+//!
+//! Creates new AL projects from templates with standard file structure:
+//! - `app.json` — project manifest
+//! - `.gitignore` — AL-specific ignores
+//! - `.zed/debug.json` — debug/launch configuration
+//! - `src/` — source directory
+
+use std::path::{Component, Path, PathBuf};
+use std::str::FromStr;
+
+use serde::{Deserialize, Serialize};
+
+/// Escape a name for a quoted AL identifier: AL writes a literal `"` inside
+/// one as `""`. Shared with al-analysis's generators and permission-set
+/// rendering so no generator forgets it and emits AL that does not parse.
+pub fn al_escape_name(name: &str) -> String {
+    name.replace('"', "\"\"")
+}
+
+/// The single placeholder `[Test]` procedure emitted when there is nothing to
+/// derive stubs from. Shared with al-analysis's test generator.
+pub fn default_test_stub() -> String {
+    "    [Test]\n    procedure TestSomething()\n    begin\n        Error('Placeholder test: implementation required');\n    end;\n".to_string()
+}
+
+/// Comma-separated list of the built-in template names, for error messages.
+const BUILTIN_TEMPLATE_NAMES: &str = "default, pte, appsource, library, test, copilot, agent, api";
+
+/// Project template type for scaffolding.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum ProjectTemplate {
+    #[default]
+    Default,
+    PerTenantExtension,
+    AppSourceApp,
+    /// Library/dependency with no UI
+    Library,
+    TestApp,
+    /// Copilot AI extension (chat participant + completions)
+    Copilot,
+    /// Agent extension (background job + AI orchestration)
+    Agent,
+    /// API-only extension (REST API pages)
+    Api,
+    /// A user-defined template resolved from the templates directory
+    /// (`$AL_TEMPLATES_DIR` or `~/.config/al/templates/<name>/`). Carries the
+    /// resolved on-disk location + parsed descriptor so [`create_project`] can
+    /// materialize it without re-reading the descriptor.
+    Custom(CustomTemplate),
+}
+
+/// A resolved user-defined template: its name, the directory it lives in, and
+/// its parsed `template.json` descriptor. Produced by `resolve_custom_template`
+/// (and by [`ProjectTemplate::from_str`] when a name is not a built-in).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CustomTemplate {
+    /// The template name as requested (a single, validated path component).
+    pub name: String,
+    /// Absolute path to the template directory (`<templates_root>/<name>`).
+    pub dir: PathBuf,
+    /// Parsed `template.json` descriptor.
+    pub descriptor: TemplateDescriptor,
+}
+
+/// The `template.json` descriptor for a user-defined template.
+///
+/// All fields are optional. Schema (camelCase JSON):
+/// - `description`: free-text, informational only.
+/// - `generateId` (bool, default `false`): when `true`, the `{{id}}` placeholder
+///   is replaced with a freshly generated v4 GUID instead of the config id.
+/// - `idFrom` / `idTo` (u32): drive the `{{id_from}}` / `{{id_to}}` placeholders.
+///   `idFrom` defaults to 50100; `idTo` defaults to `idFrom + 49`.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TemplateDescriptor {
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub generate_id: bool,
+    #[serde(default)]
+    pub id_from: Option<u32>,
+    #[serde(default)]
+    pub id_to: Option<u32>,
+}
+
+impl FromStr for ProjectTemplate {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "default" | "extension" => Ok(Self::Default),
+            "pte" | "pertenantextension" => Ok(Self::PerTenantExtension),
+            "appsource" | "appsourceapp" => Ok(Self::AppSourceApp),
+            "library" | "lib" => Ok(Self::Library),
+            "test" | "testapp" => Ok(Self::TestApp),
+            "copilot" => Ok(Self::Copilot),
+            "agent" => Ok(Self::Agent),
+            "api" => Ok(Self::Api),
+            // Not a built-in: fall back to resolving a user-defined template of
+            // this name from the templates directory. A bad name (path
+            // traversal) or a malformed descriptor is a hard error; a name that
+            // simply has no matching directory is reported as "unknown".
+            _ => match resolve_custom_template(s)? {
+                Some(custom) => Ok(Self::Custom(custom)),
+                None => {
+                    let root = templates_root()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "<no templates directory>".to_string());
+                    Err(format!(
+                        "Unknown template '{s}'. Built-ins: {BUILTIN_TEMPLATE_NAMES}. \
+                         No custom template named '{s}' was found in {root}."
+                    ))
+                }
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ScaffoldConfig {
+    pub name: String,
+    pub publisher: String,
+    pub id: String,
+    pub version: String,
+    pub runtime: String,
+    pub target: String,
+    pub template: ProjectTemplate,
+}
+
+impl Default for ScaffoldConfig {
+    fn default() -> Self {
+        Self {
+            name: "MyApp".to_string(),
+            publisher: "Default Publisher".to_string(),
+            // Every new project gets its own app id. The nil GUID made every
+            // scaffolded app the same app to Business Central, so publishing a
+            // second one replaced the first.
+            id: fresh_guid(),
+            version: "1.0.0.0".to_string(),
+            // Runtime 17.0 is the stable AL runtime shipped with BC 28. The
+            // generated application minimum is derived from this value rather
+            // than carrying a second, independently stale release constant.
+            runtime: "17.0".to_string(),
+            target: "Cloud".to_string(),
+            template: ProjectTemplate::Default,
+        }
+    }
+}
+
+/// The newest AL runtime major this build knows (17 is Business Central 28),
+/// and the default for new projects.
+const NEWEST_KNOWN_RUNTIME_MAJOR: u32 = 17;
+
+/// Map an AL runtime version to the Business Central application version that
+/// introduced it. Runtime 1.0 shipped with BC 12.0, and subsequent major
+/// runtime lines retain the `+ 11` relationship; runtime minors map directly
+/// (for example 6.3 -> 17.3).
+pub fn application_version_for_runtime(runtime: &str) -> Result<String, String> {
+    let mut parts = runtime.trim().split('.');
+    let major = parts
+        .next()
+        .and_then(|part| part.parse::<u32>().ok())
+        .filter(|major| *major > 0)
+        .ok_or_else(|| {
+            format!("Invalid AL runtime '{runtime}': expected a positive major.minor version")
+        })?;
+    let minor = parts.next().unwrap_or("0").parse::<u32>().map_err(|_| {
+        format!("Invalid AL runtime '{runtime}': expected a positive major.minor version")
+    })?;
+    if parts.next().is_some() {
+        return Err(format!(
+            "Invalid AL runtime '{runtime}': expected major.minor, for example 17.0"
+        ));
+    }
+    // `--runtime 99.0` wrote `"application": "110.0.0.0"`, a Business
+    // Central that does not exist. Allow a little past the newest runtime
+    // this build knows, for toolchains released after it.
+    if major > NEWEST_KNOWN_RUNTIME_MAJOR + 2 {
+        return Err(format!(
+            "Invalid AL runtime '{runtime}': the newest AL runtime this version knows is \
+             {NEWEST_KNOWN_RUNTIME_MAJOR}.0 (Business Central {})",
+            NEWEST_KNOWN_RUNTIME_MAJOR + 11
+        ));
+    }
+    let application_major = major
+        .checked_add(11)
+        .ok_or_else(|| format!("Invalid AL runtime '{runtime}': major version is too large"))?;
+    Ok(format!("{application_major}.{minor}.0.0"))
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScaffoldResult {
+    pub project_dir: String,
+    pub files_created: Vec<String>,
+}
+
+pub fn create_project(dir: &Path, config: &ScaffoldConfig) -> Result<ScaffoldResult, String> {
+    if dir.join("app.json").exists() {
+        return Err(format!(
+            "Directory already contains an AL project: {}",
+            dir.display()
+        ));
+    }
+    check_derived_object_names(config)?;
+
+    // User-defined templates own their entire file tree (including app.json),
+    // so they are materialized directly rather than going through the built-in
+    // app.json/.gitignore/debug.json/starter flow below.
+    if let ProjectTemplate::Custom(custom) = &config.template {
+        return materialize_custom_template(dir, custom, config);
+    }
+
+    // Everything is rendered before anything is written, so the destinations
+    // can be checked as a set. `app.json` used to be the only check, and
+    // scaffolding into a directory that already had a `.gitignore` or a
+    // `src/HelloWorld.Codeunit.al` replaced it silently.
+    let mut planned: Vec<(String, Vec<u8>)> = vec![
+        (
+            "app.json".to_string(),
+            generate_app_json(config)?.into_bytes(),
+        ),
+        (".gitignore".to_string(), generate_gitignore().into_bytes()),
+        (
+            ".zed/debug.json".to_string(),
+            generate_debug_json()?.into_bytes(),
+        ),
+    ];
+    planned.extend(generate_template_files(config)?);
+    // Workspace settings the folder already has are the user's; the
+    // analyzer choice is only a default.
+    if !dir.join(".vscode/settings.json").exists() {
+        planned.push((
+            ".vscode/settings.json".to_string(),
+            generate_vscode_settings(config)?.into_bytes(),
+        ));
+    }
+    refuse_existing_destinations(dir, planned.iter().map(|(name, _)| name.as_str()))?;
+
+    let mut files = Vec::with_capacity(planned.len());
+    for (name, content) in planned {
+        let path = dir.join(&name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directory {}: {e}", parent.display()))?;
+        }
+        atomic_write(&path, &content, &name)?;
+        files.push(name);
+    }
+
+    Ok(ScaffoldResult {
+        project_dir: dir.display().to_string(),
+        files_created: files,
+    })
+}
+
+/// Replace every `{{token}}` in `input` with its value from `values`, in one
+/// pass over the input.
+///
+/// One pass is what makes the result independent of the substitution order.
+/// Applying the pairs in sequence meant a value could itself be substituted:
+/// `--name "{{publisher}}"` put `{{publisher}}` into the output and the next
+/// pair replaced it with the publisher. An unknown token is left as written.
+fn substitute_placeholders(
+    input: &str,
+    values: &std::collections::HashMap<&str, String>,
+) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(open) = rest.find("{{") {
+        out.push_str(&rest[..open]);
+        let after_open = &rest[open + 2..];
+        let Some(close) = after_open.find("}}") else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let token = &after_open[..close];
+        match values.get(token) {
+            Some(value) => out.push_str(value),
+            None => out.push_str(&rest[open..open + 2 + close + 2]),
+        }
+        rest = &after_open[close + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// AL rejects an object name longer than this (compiler error AL0305).
+const AL_OBJECT_NAME_LIMIT: usize = 30;
+
+/// Suffixes each built-in template appends to the project name when it derives
+/// an AL object name.
+///
+/// `declared_suffixes_match_the_names_the_templates_emit` pins this against
+/// what the templates actually render, so a template cannot grow a longer
+/// suffix without the limit check learning about it.
+fn derived_object_suffixes(template: &ProjectTemplate) -> &'static [&'static str] {
+    match template {
+        ProjectTemplate::Library => &[" Library"],
+        ProjectTemplate::TestApp => &[" Test"],
+        ProjectTemplate::Copilot => &[
+            " Copilot Participant",
+            " Azure OpenAI Helper",
+            " Copilot Capability",
+            " Capability",
+        ],
+        ProjectTemplate::Agent => &[" Agent", " Agent Job Handler"],
+        ProjectTemplate::Api => &[" API"],
+        // These templates name their objects without the project name.
+        ProjectTemplate::Default
+        | ProjectTemplate::PerTenantExtension
+        | ProjectTemplate::AppSourceApp
+        | ProjectTemplate::Custom(_) => &[],
+    }
+}
+
+/// Fail when the template's longest derived object name would exceed AL's
+/// 30-character limit, before any file is written.
+fn check_derived_object_names(config: &ScaffoldConfig) -> Result<(), String> {
+    let name_length = config.name.chars().count();
+    let Some(longest) = derived_object_suffixes(&config.template)
+        .iter()
+        .max_by_key(|suffix| suffix.chars().count())
+    else {
+        return Ok(());
+    };
+    let suffix_length = longest.chars().count();
+    let total = name_length + suffix_length;
+    if total <= AL_OBJECT_NAME_LIMIT {
+        return Ok(());
+    }
+    Err(format!(
+        "Project name '{}' is too long for this template: it derives the object name '{}{longest}' \
+         ({total} characters), and AL object names are limited to {AL_OBJECT_NAME_LIMIT}. \
+         Use a name of at most {} characters.",
+        config.name,
+        config.name,
+        AL_OBJECT_NAME_LIMIT - suffix_length
+    ))
+}
+
+/// Fail when any planned destination already exists, naming all of them.
+///
+/// Scaffolding is not a merge: replacing a file the user already has loses
+/// their work with no undo, so the whole operation is refused before the first
+/// write rather than part-way through.
+fn refuse_existing_destinations<'a>(
+    dir: &Path,
+    names: impl Iterator<Item = &'a str>,
+) -> Result<(), String> {
+    let existing: Vec<&str> = names.filter(|name| dir.join(name).exists()).collect();
+    if existing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "Refusing to scaffold into {}: these files already exist and would be replaced: {}",
+        dir.display(),
+        existing.join(", ")
+    ))
+}
+
+/// Write `content` to `path` atomically.
+///
+/// Writes to a sibling `<file>.<pid>.tmp` then `rename(2)`s into place. On
+/// POSIX, rename is atomic when source and destination are on the same
+/// filesystem (always the case here — the temp is in the same directory).
+/// Replaces `std::fs::write(path, content)` calls that would otherwise
+/// leave a half-written `.al` file on disk after a crash / signal.
+fn atomic_write(path: &Path, content: &[u8], label: &str) -> Result<(), String> {
+    use std::io::Write;
+
+    let pid = std::process::id();
+    let tmp_path = match path.file_name() {
+        Some(n) => path.with_file_name(format!("{}.{pid}.tmp", n.to_string_lossy())),
+        None => return Err(format!("Failed to derive tempfile name for {label}")),
+    };
+
+    let mut file = std::fs::File::create(&tmp_path)
+        .map_err(|e| format!("Failed to open tempfile for {label}: {e}"))?;
+    if let Err(e) = file.write_all(content) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("Failed to write {label}: {e}"));
+    }
+    if let Err(e) = file.sync_all() {
+        // sync_all failing is non-fatal for correctness — rename is still
+        // atomic, durability after a power loss is the only loss. Log via
+        // tracing so an op can see it, but don't fail the scaffold.
+        tracing::warn!(label, error = %e, "scaffold: sync_all on tempfile failed");
+    }
+    drop(file);
+
+    std::fs::rename(&tmp_path, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        format!("Failed to rename tempfile for {label}: {e}")
+    })
+}
+
+/// The template-specific files as `(relative path, contents)`.
+///
+/// Rendering and writing are separate so `create_project` can check every
+/// destination before it touches the disk.
+fn generate_template_files(config: &ScaffoldConfig) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let file = |name: &str, content: String| (name.to_string(), content.into_bytes());
+    Ok(match &config.template {
+        ProjectTemplate::Default | ProjectTemplate::PerTenantExtension => vec![file(
+            "src/HelloWorld.Codeunit.al",
+            generate_starter_codeunit(config),
+        )],
+        ProjectTemplate::AppSourceApp => vec![
+            file(
+                "src/HelloWorld.Codeunit.al",
+                generate_starter_codeunit(config),
+            ),
+            file("AppSourceCop.json", generate_app_source_cop_json()?),
+        ],
+        ProjectTemplate::Library => vec![file(
+            "src/Library.Codeunit.al",
+            generate_library_codeunit(config),
+        )],
+        ProjectTemplate::TestApp => {
+            vec![file("src/Test.Codeunit.al", generate_test_codeunit(config))]
+        }
+        ProjectTemplate::Copilot => vec![
+            file(
+                "src/CopilotCapability.EnumExt.al",
+                generate_copilot_capability_enum(config),
+            ),
+            file(
+                "src/CopilotParticipant.Codeunit.al",
+                generate_copilot_codeunit(config),
+            ),
+            file(
+                "src/AzureOpenAI.Codeunit.al",
+                generate_azure_openai_codeunit(config),
+            ),
+        ],
+        ProjectTemplate::Agent => vec![
+            file("src/Agent.Codeunit.al", generate_agent_codeunit(config)),
+            file(
+                "src/AgentJobHandler.Codeunit.al",
+                generate_agent_job_handler(config),
+            ),
+        ],
+        ProjectTemplate::Api => vec![file("src/Api.Page.al", generate_api_page(config))],
+        ProjectTemplate::Custom(_) => {
+            return Err(
+                "internal error: custom template reached generate_template_files".to_string(),
+            )
+        }
+    })
+}
+
+/// Resolve the custom-template directory from `AL_TEMPLATES_DIR`,
+/// `XDG_CONFIG_HOME/al/templates`, or `HOME/.config/al/templates`.
+fn templates_root() -> Option<PathBuf> {
+    let non_empty = |v: std::ffi::OsString| (!v.is_empty()).then_some(v);
+    if let Some(dir) = std::env::var_os("AL_TEMPLATES_DIR").and_then(non_empty) {
+        return Some(PathBuf::from(dir));
+    }
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").and_then(non_empty) {
+        return Some(PathBuf::from(xdg).join("al").join("templates"));
+    }
+    if let Some(home) = std::env::var_os("HOME").and_then(non_empty) {
+        return Some(
+            PathBuf::from(home)
+                .join(".config")
+                .join("al")
+                .join("templates"),
+        );
+    }
+    None
+}
+
+/// A template name must be a single, normal path component — no `..`, no path
+/// separators, no absolute prefix. This is the first line of defence against
+/// path traversal via the requested template name (e.g. `../../etc`).
+fn valid_template_name(name: &str) -> bool {
+    if name.is_empty() || name.contains('\0') {
+        return false;
+    }
+    let path = Path::new(name);
+    let mut comps = path.components();
+    matches!(
+        (comps.next(), comps.next()),
+        (Some(Component::Normal(_)), None)
+    )
+}
+
+fn invalid_name_msg(name: &str) -> String {
+    format!(
+        "Invalid template name '{name}': a template name must be a single path \
+         component without '..' or path separators."
+    )
+}
+
+/// Resolve a user-defined template by name from the environment-configured
+/// templates root.
+///
+/// - `Ok(Some(_))` — a valid template directory with a parseable descriptor.
+/// - `Ok(None)` — no templates root is configured, or no directory of this
+///   name exists under it (reported upstream as "unknown").
+/// - `Err(_)` — the name is unsafe, or the descriptor is missing/malformed.
+fn resolve_custom_template(name: &str) -> Result<Option<CustomTemplate>, String> {
+    if !valid_template_name(name) {
+        return Err(invalid_name_msg(name));
+    }
+    match templates_root() {
+        Some(root) => resolve_custom_template_in(&root, name),
+        None => Ok(None),
+    }
+}
+
+/// Resolve a custom template under an explicit `root` (testable without the
+/// process environment). Assumes `name` validity is the caller's concern but
+/// re-checks it defensively.
+fn resolve_custom_template_in(root: &Path, name: &str) -> Result<Option<CustomTemplate>, String> {
+    if !valid_template_name(name) {
+        return Err(invalid_name_msg(name));
+    }
+    let template_dir = root.join(name);
+    if !template_dir.is_dir() {
+        return Ok(None);
+    }
+    let descriptor_path = template_dir.join("template.json");
+    if !descriptor_path.is_file() {
+        return Err(format!(
+            "Custom template '{name}' at {} is missing template.json.",
+            template_dir.display()
+        ));
+    }
+    let raw = std::fs::read_to_string(&descriptor_path).map_err(|e| {
+        format!(
+            "Failed to read template descriptor {}: {e}",
+            descriptor_path.display()
+        )
+    })?;
+    let descriptor: TemplateDescriptor = serde_json::from_str(&raw)
+        .map_err(|e| format!("Invalid template.json for custom template '{name}': {e}"))?;
+    Ok(Some(CustomTemplate {
+        name: name.to_string(),
+        dir: template_dir,
+        descriptor,
+    }))
+}
+
+/// Materialize a resolved custom template into `dir`, applying placeholder
+/// substitution to file contents and to file/directory names.
+fn materialize_custom_template(
+    dir: &Path,
+    custom: &CustomTemplate,
+    config: &ScaffoldConfig,
+) -> Result<ScaffoldResult, String> {
+    let files_root = custom.dir.join("files");
+    if !files_root.is_dir() {
+        return Err(format!(
+            "Custom template '{}' has no 'files/' directory at {}.",
+            custom.name,
+            files_root.display()
+        ));
+    }
+
+    // Compute placeholder values once.
+    let app_id = if custom.descriptor.generate_id {
+        fresh_guid()
+    } else {
+        config.id.clone()
+    };
+    let id_from = custom.descriptor.id_from.unwrap_or(50100);
+    let id_to = custom
+        .descriptor
+        .id_to
+        .unwrap_or_else(|| id_from.saturating_add(49));
+    let substitutions: std::collections::HashMap<&str, String> = [
+        ("name", config.name.clone()),
+        ("publisher", config.publisher.clone()),
+        ("version", config.version.clone()),
+        ("runtime", config.runtime.clone()),
+        ("target", config.target.clone()),
+        ("id", app_id),
+        ("id_from", id_from.to_string()),
+        ("id_to", id_to.to_string()),
+    ]
+    .into_iter()
+    .collect();
+    let substitute = |input: &str| -> String { substitute_placeholders(input, &substitutions) };
+
+    // Gather the template's files (relative to `files/`), rejecting symlinks
+    // and any path that escapes the root.
+    let mut rel_files: Vec<PathBuf> = Vec::new();
+    collect_template_files(&files_root, &files_root, &mut rel_files)?;
+    rel_files.sort();
+
+    // Render every file before writing any, so the destinations can be
+    // checked as a set and a template cannot replace half a directory.
+    let mut planned: Vec<(String, PathBuf, Vec<u8>)> = Vec::new();
+    for rel in &rel_files {
+        // Defence in depth: the source path must be a normal relative path.
+        guard_relative(rel)?;
+        // Substitute placeholders in path components, then re-check — a
+        // substituted value must not be able to inject `..` or an absolute
+        // escape into the destination path.
+        let dest_rel = substitute_path(rel, &substitute)?;
+        guard_relative(&dest_rel)?;
+
+        let src_path = files_root.join(rel);
+        // Substitute placeholders in UTF-8 contents; copy non-UTF-8 (binary)
+        // assets verbatim.
+        let bytes = std::fs::read(&src_path)
+            .map_err(|e| format!("Failed to read template file {}: {e}", src_path.display()))?;
+        let out_bytes = match String::from_utf8(bytes) {
+            Ok(text) => substitute(&text).into_bytes(),
+            Err(err) => err.into_bytes(),
+        };
+        let rel_display = dest_rel.to_string_lossy().replace('\\', "/");
+        planned.push((rel_display, dest_rel, out_bytes));
+    }
+
+    if planned.is_empty() {
+        return Err(format!(
+            "Custom template '{}' contains no files under {}.",
+            custom.name,
+            files_root.display()
+        ));
+    }
+    refuse_existing_destinations(dir, planned.iter().map(|(name, _, _)| name.as_str()))?;
+
+    std::fs::create_dir_all(dir).map_err(|e| format!("Failed to create project directory: {e}"))?;
+
+    let mut created = Vec::new();
+    for (rel_display, dest_rel, out_bytes) in planned {
+        let dest_path = dir.join(&dest_rel);
+        if let Some(parent) = dest_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directory {}: {e}", parent.display()))?;
+        }
+        atomic_write(&dest_path, &out_bytes, &rel_display)?;
+        created.push(rel_display);
+    }
+    created.sort();
+
+    Ok(ScaffoldResult {
+        project_dir: dir.display().to_string(),
+        files_created: created,
+    })
+}
+
+/// Recursively collect regular files under `dir`, pushing their paths relative
+/// to `root`. Symlinks are rejected (a traversal vector); directory entries are
+/// recursed into. Uses `DirEntry::file_type`, which does not traverse symlinks.
+fn collect_template_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("Failed to read template directory {}: {e}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Failed to read template entry: {e}"))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("Failed to stat {}: {e}", path.display()))?;
+        if file_type.is_symlink() {
+            return Err(format!(
+                "Refusing to materialize symlink in template (path traversal risk): {}",
+                path.display()
+            ));
+        }
+        if file_type.is_dir() {
+            collect_template_files(root, &path, out)?;
+        } else if file_type.is_file() {
+            let rel = path
+                .strip_prefix(root)
+                .map_err(|_| format!("Template path escaped root: {}", path.display()))?;
+            out.push(rel.to_path_buf());
+        }
+    }
+    Ok(())
+}
+
+/// Reject any relative path that contains a `..` component or an absolute
+/// prefix/root. Mirrors the daemon's absolute-path guard for project dirs.
+fn guard_relative(rel: &Path) -> Result<(), String> {
+    if rel.as_os_str().is_empty() {
+        return Err("empty template file path".to_string());
+    }
+    for comp in rel.components() {
+        match comp {
+            Component::Normal(_) | Component::CurDir => {}
+            Component::ParentDir => {
+                return Err(format!(
+                    "path traversal ('..') is not allowed in template path: {}",
+                    rel.display()
+                ));
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "absolute paths are not allowed in template path: {}",
+                    rel.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Apply placeholder substitution to each `Normal` component of a relative path.
+fn substitute_path(rel: &Path, substitute: &impl Fn(&str) -> String) -> Result<PathBuf, String> {
+    let mut out = PathBuf::new();
+    for comp in rel.components() {
+        match comp {
+            Component::Normal(os) => {
+                let s = os.to_str().ok_or_else(|| {
+                    format!("non-UTF-8 path component in template: {}", rel.display())
+                })?;
+                out.push(substitute(s));
+            }
+            Component::CurDir => {}
+            _ => {
+                return Err(format!(
+                    "unexpected path component in template: {}",
+                    rel.display()
+                ))
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Generate a fresh v4-shaped GUID (canonical lowercase, unbraced) for the
+/// `{{id}}` placeholder when a descriptor requests `generateId`.
+///
+/// This crate has no RNG dependency, so this seeds a SplitMix64 stream from the
+/// wall clock, the process id, and a monotonic counter. That is *not*
+/// cryptographic randomness, but a scaffold's app id only needs to be unique,
+/// which this comfortably provides (distinct calls advance the counter).
+fn fresh_guid() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let seed = nanos
+        ^ ((std::process::id() as u64) << 32)
+        ^ COUNTER.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
+
+    let hi = splitmix64(seed);
+    let lo = splitmix64(seed ^ 0xD1B5_4A32_D192_ED03);
+    let mut b = [0u8; 16];
+    b[..8].copy_from_slice(&hi.to_le_bytes());
+    b[8..].copy_from_slice(&lo.to_le_bytes());
+    b[6] = (b[6] & 0x0f) | 0x40; // version 4
+    b[8] = (b[8] & 0x3f) | 0x80; // variant 1 (RFC 4122)
+
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14],
+        b[15]
+    )
+}
+
+fn splitmix64(seed: u64) -> u64 {
+    let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+fn generate_app_json(config: &ScaffoldConfig) -> Result<String, String> {
+    let application = application_version_for_runtime(&config.runtime)?;
+    let (target, features) = match &config.template {
+        ProjectTemplate::AppSourceApp => (
+            "Cloud",
+            serde_json::json!(["NoImplicitWith", "GenerateCaptions"]),
+        ),
+        ProjectTemplate::Api => ("Cloud", serde_json::json!(["NoImplicitWith"])),
+        _ => (
+            config.target.as_str(),
+            serde_json::json!(["NoImplicitWith"]),
+        ),
+    };
+
+    let mut manifest = serde_json::json!({
+        "id": config.id,
+        "name": config.name,
+        "publisher": config.publisher,
+        "version": config.version,
+        "brief": "",
+        "description": "",
+        "privacyStatement": "",
+        "EULA": "",
+        "help": "",
+        "url": "",
+        "logo": "",
+        "dependencies": [],
+        "screenshots": [],
+        "platform": "1.0.0.0",
+        "application": application,
+        "idRanges": [{"from": 50100, "to": 50149}],
+        "resourceExposurePolicy": {
+            "allowDebugging": true,
+            "allowDownloadingSource": true,
+            "includeSourceInSymbolFile": true
+        },
+        "runtime": config.runtime,
+        "target": target,
+        "features": features
+    });
+
+    if matches!(
+        &config.template,
+        ProjectTemplate::Copilot | ProjectTemplate::Agent
+    ) {
+        manifest["capabilities"] = serde_json::json!(["AzureOpenAI"]);
+    }
+
+    serde_json::to_string_pretty(&manifest)
+        .map_err(|e| format!("Failed to serialize app.json: {e}"))
+}
+
+/// The analyzers a template's projects are checked with.
+fn template_code_analyzers(template: &ProjectTemplate) -> &'static [&'static str] {
+    match template {
+        ProjectTemplate::AppSourceApp => &["AppSourceCop", "PerTenantExtensionCop", "UICop"],
+        _ => &["PerTenantExtensionCop"],
+    }
+}
+
+/// `.vscode/settings.json` choosing the template's analyzers.
+///
+/// They used to go into `app.json` as `codeAnalyzers`, which is not an
+/// app.json property: the compiler ignores it, and Microsoft's AL extension
+/// and this one read `al.codeAnalyzers` from settings.
+fn generate_vscode_settings(config: &ScaffoldConfig) -> Result<String, String> {
+    let analyzers: Vec<String> = template_code_analyzers(&config.template)
+        .iter()
+        .map(|analyzer| format!("${{{analyzer}}}"))
+        .collect();
+    serde_json::to_string_pretty(&serde_json::json!({ "al.codeAnalyzers": analyzers }))
+        .map(|text| text + "\n")
+        .map_err(|error| format!("rendering .vscode/settings.json: {error}"))
+}
+
+fn generate_gitignore() -> String {
+    "\
+# AL build artifacts
+*.app
+*.dep
+*.xlf~
+
+# Package cache
+.alpackages/
+
+# .vscode/settings.json is not ignored: it holds al.codeAnalyzers, which a
+# clone and CI must run too.
+
+# OS files
+.DS_Store
+Thumbs.db
+"
+    .to_string()
+}
+
+fn generate_debug_json() -> Result<String, String> {
+    serde_json::to_string_pretty(&serde_json::json!([
+        {
+            "adapter": "al",
+            "label": "Publish: Your own server",
+            "request": "launch",
+            "environmentType": "OnPrem",
+            "server": "http://bcserver",
+            "serverInstance": "BC",
+            "authentication": "MicrosoftEntraID",
+            "startupObjectId": 22,
+            "breakOnError": "All",
+            "breakOnRecordWrite": "None",
+            "launchBrowser": true,
+            "enableSqlInformationDebugger": true,
+            "enableLongRunningSqlStatements": true,
+            "longRunningSqlStatementsThreshold": 500,
+            "numberOfSqlStatements": 10,
+            "tenant": "default"
+        },
+        {
+            "adapter": "al",
+            "label": "Publish: Cloud Sandbox",
+            "request": "launch",
+            "environmentType": "Sandbox",
+            "environmentName": "sandbox",
+            "startupObjectId": 22,
+            "breakOnError": "All",
+            "breakOnRecordWrite": "None",
+            "launchBrowser": true,
+            "enableSqlInformationDebugger": true,
+            "enableLongRunningSqlStatements": true,
+            "longRunningSqlStatementsThreshold": 500,
+            "numberOfSqlStatements": 10
+        },
+        {
+            "adapter": "al",
+            "label": "Attach: Your own server",
+            "request": "attach",
+            "environmentType": "OnPrem",
+            "server": "http://bcserver",
+            "serverInstance": "BC",
+            "authentication": "MicrosoftEntraID",
+            "breakOnError": "All",
+            "breakOnRecordWrite": "None",
+            "enableSqlInformationDebugger": true,
+            "enableLongRunningSqlStatements": true,
+            "longRunningSqlStatementsThreshold": 500,
+            "numberOfSqlStatements": 10,
+            "breakOnNext": "WebServiceClient",
+            "tenant": "default"
+        },
+        {
+            "adapter": "al",
+            "label": "Attach: Cloud Sandbox",
+            "request": "attach",
+            "environmentType": "Sandbox",
+            "environmentName": "sandbox",
+            "breakOnError": "All",
+            "breakOnRecordWrite": "None",
+            "enableSqlInformationDebugger": true,
+            "enableLongRunningSqlStatements": true,
+            "longRunningSqlStatementsThreshold": 500,
+            "numberOfSqlStatements": 10,
+            "breakOnNext": "WebServiceClient"
+        }
+    ]))
+    .map_err(|e| format!("Failed to serialize debug.json: {e}"))
+}
+
+/// Escape `text` for an AL single-quoted string literal.
+///
+/// AL doubles `'` inside a literal and treats `"` as an ordinary character —
+/// the opposite of a quoted identifier, which `permissions::al_escape_name`
+/// handles. Using the identifier escape here produced
+/// `Message('Hello from Brad's App!');`, which does not parse.
+fn al_escape_literal(text: &str) -> String {
+    text.replace('\'', "''")
+}
+
+fn generate_starter_codeunit(config: &ScaffoldConfig) -> String {
+    let name = al_escape_literal(&config.name);
+    format!(
+        r#"codeunit 50100 "Hello World"
+{{
+    trigger OnRun()
+    begin
+        Message('Hello from {name}!');
+    end;
+}}
+"#
+    )
+}
+
+fn generate_library_codeunit(config: &ScaffoldConfig) -> String {
+    let name = al_escape_name(&config.name);
+    format!(
+        r#"codeunit 50100 "{name} Library"
+{{
+    procedure GetVersion(): Text
+    begin
+        exit('1.0.0.0');
+    end;
+}}
+"#
+    )
+}
+
+fn generate_test_codeunit(config: &ScaffoldConfig) -> String {
+    let name = al_escape_name(&config.name);
+    let stub = default_test_stub();
+    format!(
+        r#"codeunit 50100 "{name} Test"
+{{
+    Subtype = Test;
+
+{stub}}}
+"#
+    )
+}
+
+/// The capability the template's own codeunit runs under.
+///
+/// A capability is a value an extension adds to the `Copilot Capability` enum
+/// and registers at install time, not something Microsoft's chat hands out:
+/// chat with Copilot is not extensible.
+/// <https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/ai-build-capability-in-al>
+fn generate_copilot_capability_enum(config: &ScaffoldConfig) -> String {
+    let name = al_escape_name(&config.name);
+    let caption = al_escape_literal(&config.name);
+    format!(
+        r#"enumextension 50100 "{name} Copilot Capability" extends "Copilot Capability"
+{{
+    // The value must be unique across every installed extension. Register it
+    // from an install codeunit with Codeunit "Copilot Capability".
+    value(50100; "{name} Capability")
+    {{
+        Caption = '{caption}';
+    }}
+}}
+"#
+    )
+}
+
+fn generate_copilot_codeunit(config: &ScaffoldConfig) -> String {
+    let name = al_escape_name(&config.name);
+    format!(
+        r#"codeunit 50100 "{name} Copilot Participant"
+{{
+    // Call this from your PromptDialog page. `GenerateTextCompletion` takes
+    // the prompt and an "AOAI Operation Response" that carries the outcome;
+    // the generated text is the return value.
+    // learn.microsoft.com/dynamics365/business-central/application/system-application/codeunit/system.ai.azure-openai
+    procedure Generate(Prompt: SecretText): Text
+    var
+        AzureOpenAI: Codeunit "Azure OpenAI";
+        AOAIOperationResponse: Codeunit "AOAI Operation Response";
+        Completion: Text;
+    begin
+        AzureOpenAI.SetAuthorization(Enum::"AOAI Model Type"::"Text Completions", GetEndpoint(), GetDeployment(), GetApiKey());
+        AzureOpenAI.SetCopilotCapability(Enum::"Copilot Capability"::"{name} Capability");
+        Completion := AzureOpenAI.GenerateTextCompletion(Prompt, AOAIOperationResponse);
+        if not AOAIOperationResponse.IsSuccess() then
+            Error(AOAIOperationResponse.GetError());
+        exit(Completion);
+    end;
+
+    local procedure GetEndpoint(): Text
+    begin
+        exit('');
+    end;
+
+    local procedure GetDeployment(): Text
+    begin
+        exit('gpt-4o');
+    end;
+
+    local procedure GetApiKey(): SecretText
+    var
+        Key: SecretText;
+    begin
+        exit(Key);
+    end;
+}}
+"#
+    )
+}
+
+fn generate_azure_openai_codeunit(config: &ScaffoldConfig) -> String {
+    let name = al_escape_name(&config.name);
+    let single_quoted = al_escape_literal(&config.name);
+    format!(
+        r#"codeunit 50101 "{name} Azure OpenAI Helper"
+{{
+    procedure BuildPrompt(UserQuery: Text): Text
+    begin
+        exit(StrSubstNo('You are a helpful assistant for %1. %2', '{single_quoted}', UserQuery));
+    end;
+}}
+"#
+    )
+}
+
+fn generate_agent_codeunit(config: &ScaffoldConfig) -> String {
+    let name = al_escape_name(&config.name);
+    format!(
+        r#"codeunit 50100 "{name} Agent"
+{{
+    procedure Run(Instructions: Text): Text
+    var
+        JobHandler: Codeunit "{name} Agent Job Handler";
+        Result: Text;
+    begin
+        JobHandler.Execute(Instructions, Result);
+        exit(Result);
+    end;
+}}
+"#
+    )
+}
+
+fn generate_agent_job_handler(config: &ScaffoldConfig) -> String {
+    let name = al_escape_name(&config.name);
+    format!(
+        r#"codeunit 50101 "{name} Agent Job Handler"
+{{
+    procedure Execute(Instructions: Text; var Result: Text)
+    begin
+        // Call your AI endpoint here, e.g. via HttpClient to Azure OpenAI
+        // and store the response text in Result.
+        Result := StrSubstNo('Processed: %1', Instructions);
+    end;
+}}
+"#
+    )
+}
+
+/// The table the API template exposes. The entity names are derived from it,
+/// so the endpoint and its payload describe the same object.
+const API_TEMPLATE_SOURCE_TABLE: &str = "Customer";
+
+/// Reduce `text` to the lowercase alphanumeric form an `APIPublisher` /
+/// `APIGroup` value takes. Empty input falls back to `default`.
+fn api_identifier(text: &str) -> String {
+    let out: String = text
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    if out.is_empty() {
+        "default".to_string()
+    } else {
+        out
+    }
+}
+
+fn generate_api_page(config: &ScaffoldConfig) -> String {
+    let name = al_escape_name(&config.name);
+    // `EntityName = 'item'` over `SourceTable = Customer` made `/items` return
+    // customers. The publisher and group come from the project rather than the
+    // `defaultPublisher` / `defaultGroup` placeholders AppSourceCop flags.
+    let entity = API_TEMPLATE_SOURCE_TABLE.to_ascii_lowercase();
+    let publisher = api_identifier(&config.publisher);
+    let group = api_identifier(&config.name);
+    format!(
+        r#"page 50100 "{name} API"
+{{
+    PageType = API;
+    APIPublisher = '{publisher}';
+    APIGroup = '{group}';
+    APIVersion = 'v1.0';
+    EntityName = '{entity}';
+    EntitySetName = '{entity}s';
+    SourceTable = {API_TEMPLATE_SOURCE_TABLE};
+    DelayedInsert = true;
+
+    layout
+    {{
+        area(Content)
+        {{
+            repeater(Group)
+            {{
+                field(id; Rec.SystemId)
+                {{
+                    Caption = 'ID';
+                    ApplicationArea = All;
+                }}
+                field(no; Rec."No.")
+                {{
+                    Caption = 'No';
+                    ApplicationArea = All;
+                }}
+                field(name; Rec.Name)
+                {{
+                    Caption = 'Name';
+                    ApplicationArea = All;
+                }}
+            }}
+        }}
+    }}
+}}
+"#
+    )
+}
+
+fn generate_app_source_cop_json() -> Result<String, String> {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "mandatoryAffixes": [],
+        "mandatoryAnalyzers": ["AppSourceCop", "PerTenantExtensionCop", "UICop"],
+        "obsoleteTagMinAllowedMajorMinor": "14.0"
+    }))
+    .map_err(|e| format!("Failed to serialize AppSourceCop.json: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_al_parses(label: &str, source: &str) {
+        let result = al_syntax::parser::AlParser::parse_quick(source);
+        assert!(
+            result.errors.is_empty(),
+            "{label} did not parse cleanly:\n{source}\nerrors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn scaffold_creates_all_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ScaffoldConfig::default();
+        let result = create_project(dir.path(), &config).unwrap();
+
+        assert_eq!(result.files_created.len(), 5);
+        assert!(dir.path().join("app.json").exists());
+        assert!(dir.path().join(".gitignore").exists());
+        assert!(dir.path().join(".zed/debug.json").exists());
+        assert!(dir.path().join("src/HelloWorld.Codeunit.al").exists());
+        assert!(dir.path().join(".vscode/settings.json").exists());
+        // The analyzers live there, so the generated .gitignore must not
+        // keep them out of the repository.
+        let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(
+            !gitignore
+                .lines()
+                .any(|line| line.trim() == ".vscode/settings.json"),
+            "{gitignore}"
+        );
+    }
+
+    /// `codeAnalyzers` is not an app.json property; the analyzers go to the
+    /// `al.codeAnalyzers` setting, and a folder's own settings are kept.
+    #[test]
+    fn analyzers_go_to_settings_not_app_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ScaffoldConfig {
+            template: ProjectTemplate::AppSourceApp,
+            ..ScaffoldConfig::default()
+        };
+        create_project(dir.path(), &config).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("app.json")).unwrap())
+                .unwrap();
+        assert!(manifest.get("codeAnalyzers").is_none(), "{manifest}");
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join(".vscode/settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            settings["al.codeAnalyzers"],
+            serde_json::json!(["${AppSourceCop}", "${PerTenantExtensionCop}", "${UICop}"])
+        );
+
+        let existing = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(existing.path().join(".vscode")).unwrap();
+        std::fs::write(
+            existing.path().join(".vscode/settings.json"),
+            "{\"mine\": 1}",
+        )
+        .unwrap();
+        create_project(existing.path(), &ScaffoldConfig::default()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(existing.path().join(".vscode/settings.json")).unwrap(),
+            "{\"mine\": 1}"
+        );
+    }
+
+    #[test]
+    fn scaffold_refuses_existing_project() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.json"), "{}").unwrap();
+
+        let config = ScaffoldConfig::default();
+        let result = create_project(dir.path(), &config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("already contains"));
+    }
+
+    /// `app.json` was the only collision check, so scaffolding into a directory
+    /// that already held a `.gitignore` or a starter source file replaced them
+    /// without a word.
+    #[test]
+    fn scaffold_refuses_to_replace_existing_files() {
+        for (path, contents) in [
+            (".gitignore", "target/\n"),
+            ("src/HelloWorld.Codeunit.al", "// my work\n"),
+            (".zed/debug.json", "{}"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let full = dir.path().join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(&full, contents).unwrap();
+
+            let error = create_project(dir.path(), &ScaffoldConfig::default())
+                .expect_err("must refuse to replace an existing file");
+            assert!(error.contains(path), "error must name {path}: {error}");
+            assert_eq!(
+                std::fs::read_to_string(&full).unwrap(),
+                contents,
+                "{path} must be left alone"
+            );
+            assert!(
+                !dir.path().join("app.json").exists(),
+                "nothing may be written when the scaffold is refused"
+            );
+        }
+    }
+
+    /// AL object names are limited to 30 characters (AL0305). A template that
+    /// appends a suffix to the project name can exceed that, and the project
+    /// then did not compile.
+    #[test]
+    fn scaffold_refuses_a_name_whose_derived_object_exceeds_thirty_characters() {
+        for (template, limit) in [
+            (ProjectTemplate::Copilot, 10usize),
+            (ProjectTemplate::Agent, 12),
+            (ProjectTemplate::Library, 22),
+            (ProjectTemplate::TestApp, 25),
+            (ProjectTemplate::Api, 26),
+        ] {
+            let too_long = "X".repeat(limit + 1);
+            let dir = tempfile::tempdir().unwrap();
+            let error = create_project(
+                dir.path(),
+                &ScaffoldConfig {
+                    name: too_long,
+                    template: template.clone(),
+                    ..ScaffoldConfig::default()
+                },
+            )
+            .unwrap_err();
+            assert!(
+                error.contains(&limit.to_string()),
+                "{template:?}: the error must name the {limit}-character limit: {error}"
+            );
+            assert!(
+                !dir.path().join("app.json").exists(),
+                "{template:?}: nothing may be written when the name is refused"
+            );
+
+            let dir = tempfile::tempdir().unwrap();
+            create_project(
+                dir.path(),
+                &ScaffoldConfig {
+                    name: "X".repeat(limit),
+                    template: template.clone(),
+                    ..ScaffoldConfig::default()
+                },
+            )
+            .unwrap_or_else(|e| {
+                panic!("{template:?}: a {limit}-character name must be accepted: {e}")
+            });
+        }
+    }
+
+    /// Every derived object name the built-in templates emit has to be covered
+    /// by the limit check, or a template can grow a longer suffix unnoticed.
+    #[test]
+    fn declared_suffixes_match_the_names_the_templates_emit() {
+        for template in [
+            ProjectTemplate::Library,
+            ProjectTemplate::TestApp,
+            ProjectTemplate::Copilot,
+            ProjectTemplate::Agent,
+            ProjectTemplate::Api,
+        ] {
+            let config = ScaffoldConfig {
+                name: "Zqx".to_string(),
+                template: template.clone(),
+                ..ScaffoldConfig::default()
+            };
+            let rendered: String = generate_template_files(&config)
+                .unwrap()
+                .into_iter()
+                .map(|(_, bytes)| String::from_utf8(bytes).unwrap())
+                .collect();
+            for suffix in derived_object_suffixes(&template) {
+                assert!(
+                    rendered.contains(&format!("\"Zqx{suffix}\"")),
+                    "{template:?} does not emit an object named 'Zqx{suffix}':\n{rendered}"
+                );
+            }
+        }
+    }
+
+    /// Applying the pairs in sequence let an inserted value be substituted by
+    /// a later pair.
+    #[test]
+    fn placeholder_substitution_never_rewrites_a_value_it_just_inserted() {
+        let values: std::collections::HashMap<&str, String> = [
+            ("name", "{{publisher}}".to_string()),
+            ("publisher", "Contoso".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            substitute_placeholders("app {{name}} by {{publisher}}", &values),
+            "app {{publisher}} by Contoso"
+        );
+        assert_eq!(
+            substitute_placeholders("{{unknown}} stays", &values),
+            "{{unknown}} stays"
+        );
+        assert_eq!(
+            substitute_placeholders("unterminated {{name", &values),
+            "unterminated {{name"
+        );
+        assert_eq!(substitute_placeholders("", &values), "");
+    }
+
+    /// The API template shipped `EntityName = 'item'` over
+    /// `SourceTable = Customer`, so `/items` returned customers, and the
+    /// `defaultPublisher` / `defaultGroup` placeholders AppSourceCop flags.
+    #[test]
+    fn api_template_entity_names_match_its_source_table() {
+        let src = generate_api_page(&ScaffoldConfig {
+            name: "Sales Portal".to_string(),
+            publisher: "Contoso Ltd.".to_string(),
+            ..ScaffoldConfig::default()
+        });
+        assert_al_parses("api page", &src);
+        assert!(src.contains("SourceTable = Customer;"), "{src}");
+        assert!(src.contains("EntityName = 'customer';"), "{src}");
+        assert!(src.contains("EntitySetName = 'customers';"), "{src}");
+        assert!(src.contains("APIPublisher = 'contosoltd';"), "{src}");
+        assert!(src.contains("APIGroup = 'salesportal';"), "{src}");
+        assert!(!src.contains("default"), "{src}");
+    }
+
+    #[test]
+    fn api_identifier_falls_back_when_nothing_survives() {
+        assert_eq!(api_identifier("Contoso Ltd."), "contosoltd");
+        assert_eq!(api_identifier("!!!"), "default");
+        assert_eq!(api_identifier(""), "default");
+    }
+
+    #[test]
+    fn app_json_has_required_fields() {
+        let config = ScaffoldConfig {
+            name: "Test App".to_string(),
+            publisher: "Test Publisher".to_string(),
+            ..Default::default()
+        };
+        let json = generate_app_json(&config).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["name"], "Test App");
+        assert_eq!(parsed["publisher"], "Test Publisher");
+        assert!(parsed["idRanges"].is_array());
+        assert!(parsed["dependencies"].is_array());
+    }
+
+    #[test]
+    fn scaffold_application_version_is_derived_from_runtime() {
+        for (runtime, application) in [
+            ("1.0", "12.0.0.0"),
+            ("6.3", "17.3.0.0"),
+            ("14.0", "25.0.0.0"),
+            ("17.0", "28.0.0.0"),
+        ] {
+            let config = ScaffoldConfig {
+                runtime: runtime.to_string(),
+                ..Default::default()
+            };
+            let json = generate_app_json(&config).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed["runtime"], runtime);
+            assert_eq!(parsed["application"], application);
+        }
+    }
+
+    #[test]
+    fn scaffold_rejects_invalid_runtime_instead_of_emitting_stale_application() {
+        for runtime in ["", "latest", "0.0", "17.0.1", "99.0"] {
+            let config = ScaffoldConfig {
+                runtime: runtime.to_string(),
+                ..Default::default()
+            };
+            let error = generate_app_json(&config).expect_err("invalid runtime must fail");
+            assert!(error.contains(runtime), "error was: {error}");
+        }
+    }
+
+    #[test]
+    fn gitignore_excludes_app_files() {
+        let content = generate_gitignore();
+        assert!(content.contains("*.app"));
+        assert!(content.contains(".alpackages/"));
+    }
+
+    #[test]
+    fn starter_codeunit_includes_project_name() {
+        let config = ScaffoldConfig {
+            name: "My Cool App".to_string(),
+            ..Default::default()
+        };
+        let content = generate_starter_codeunit(&config);
+        assert!(content.contains("My Cool App"));
+        assert!(content.contains("codeunit 50100"));
+    }
+
+    #[test]
+    fn scaffold_creates_subdirectories() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("new_project");
+        let config = ScaffoldConfig::default();
+        let result = create_project(&subdir, &config);
+        assert!(result.is_ok());
+        assert!(subdir.join("src").is_dir());
+        assert!(subdir.join(".zed").is_dir());
+    }
+
+    #[test]
+    fn scaffold_result_serializes() {
+        let result = ScaffoldResult {
+            project_dir: "/tmp/test".to_string(),
+            files_created: vec!["app.json".to_string()],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"projectDir\""));
+        assert!(json.contains("\"filesCreated\""));
+    }
+
+    #[test]
+    fn generate_app_json_returns_valid_json() {
+        let config = ScaffoldConfig::default();
+        let json = generate_app_json(&config).expect("serialization should not fail");
+        let _: serde_json::Value = serde_json::from_str(&json).expect("should be valid JSON");
+    }
+
+    #[test]
+    fn generate_debug_json_returns_valid_json() {
+        let json = generate_debug_json().expect("serialization should not fail");
+        let configs: Vec<serde_json::Value> =
+            serde_json::from_str(&json).expect("should be valid JSON");
+        assert_eq!(configs.len(), 4);
+        for config in &configs {
+            assert!(
+                config.get("build").is_none(),
+                "native launch performs its own build"
+            );
+            assert!(config.get("usePublicURLFromServer").is_none());
+        }
+        for config in configs.iter().filter(|config| {
+            config.get("environmentType").and_then(|v| v.as_str()) == Some("OnPrem")
+        }) {
+            assert_eq!(
+                config.get("authentication").and_then(|v| v.as_str()),
+                Some("MicrosoftEntraID")
+            );
+        }
+    }
+
+    #[test]
+    fn template_fromstr_parses_all_variants() {
+        assert!(matches!(
+            "default".parse::<ProjectTemplate>().unwrap(),
+            ProjectTemplate::Default
+        ));
+        assert!(matches!(
+            "copilot".parse::<ProjectTemplate>().unwrap(),
+            ProjectTemplate::Copilot
+        ));
+        assert!(matches!(
+            "agent".parse::<ProjectTemplate>().unwrap(),
+            ProjectTemplate::Agent
+        ));
+        assert!(matches!(
+            "api".parse::<ProjectTemplate>().unwrap(),
+            ProjectTemplate::Api
+        ));
+        assert!(matches!(
+            "pte".parse::<ProjectTemplate>().unwrap(),
+            ProjectTemplate::PerTenantExtension
+        ));
+        assert!(matches!(
+            "appsource".parse::<ProjectTemplate>().unwrap(),
+            ProjectTemplate::AppSourceApp
+        ));
+        assert!(matches!(
+            "library".parse::<ProjectTemplate>().unwrap(),
+            ProjectTemplate::Library
+        ));
+        assert!(matches!(
+            "test".parse::<ProjectTemplate>().unwrap(),
+            ProjectTemplate::TestApp
+        ));
+        assert!("unknown".parse::<ProjectTemplate>().is_err());
+    }
+
+    #[test]
+    fn scaffold_copilot_template_creates_ai_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ScaffoldConfig {
+            name: "MyCopilot".to_string(),
+            template: ProjectTemplate::Copilot,
+            ..Default::default()
+        };
+        let result = create_project(dir.path(), &config).unwrap();
+        assert!(result
+            .files_created
+            .iter()
+            .any(|f| f.contains("CopilotParticipant")));
+        assert!(result
+            .files_created
+            .iter()
+            .any(|f| f.contains("AzureOpenAI")));
+        let participant =
+            std::fs::read_to_string(dir.path().join("src/CopilotParticipant.Codeunit.al")).unwrap();
+        // The template used to subscribe to `Codeunit::"Copilot Chat"` with an
+        // `OnGenerateCompletion` event and call a two-argument
+        // `GenerateTextCompletion(Prompt, Completion)`. Neither exists: chat
+        // with Copilot is not extensible, and every `GenerateTextCompletion`
+        // overload takes an "AOAI Operation Response" and returns the text.
+        assert!(
+            !participant.contains("Copilot Chat") && !participant.contains("EventSubscriber"),
+            "the participant must not subscribe to Microsoft's chat:\n{participant}"
+        );
+        assert!(
+            participant.contains(r#"AOAIOperationResponse: Codeunit "AOAI Operation Response""#),
+            "the operation response carries the outcome:\n{participant}"
+        );
+        assert!(
+            participant.contains(
+                "Completion := AzureOpenAI.GenerateTextCompletion(Prompt, AOAIOperationResponse);"
+            ),
+            "the generated text is the return value:\n{participant}"
+        );
+        assert!(
+            participant.contains("AOAIOperationResponse.IsSuccess()"),
+            "a failed operation must be checked:\n{participant}"
+        );
+
+        // The capability the codeunit runs under is this extension's own value
+        // of the `Copilot Capability` enum.
+        let capability =
+            std::fs::read_to_string(dir.path().join("src/CopilotCapability.EnumExt.al")).unwrap();
+        assert!(
+            capability.contains(r#"extends "Copilot Capability""#)
+                && capability.contains(r#"value(50100; "MyCopilot Capability")"#),
+            "{capability}"
+        );
+        assert!(
+            participant
+                .contains(r#"AzureOpenAI.SetCopilotCapability(Enum::"Copilot Capability"::"MyCopilot Capability");"#),
+            "the codeunit must run under the capability it declares:\n{participant}"
+        );
+        assert_al_parses("scaffolded copilot capability", &capability);
+        assert_al_parses("scaffolded copilot participant", &participant);
+    }
+
+    #[test]
+    fn scaffold_agent_template_creates_job_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ScaffoldConfig {
+            name: "MyAgent".to_string(),
+            template: ProjectTemplate::Agent,
+            ..Default::default()
+        };
+        let result = create_project(dir.path(), &config).unwrap();
+        assert!(result
+            .files_created
+            .iter()
+            .any(|f| f.contains("Agent.Codeunit")));
+        assert!(result
+            .files_created
+            .iter()
+            .any(|f| f.contains("AgentJobHandler")));
+    }
+
+    #[test]
+    fn scaffold_api_template_creates_api_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ScaffoldConfig {
+            name: "MyApi".to_string(),
+            template: ProjectTemplate::Api,
+            ..Default::default()
+        };
+        let result = create_project(dir.path(), &config).unwrap();
+        assert!(result.files_created.iter().any(|f| f.contains("Api.Page")));
+        let page = std::fs::read_to_string(dir.path().join("src/Api.Page.al")).unwrap();
+        assert!(page.contains("PageType = API"));
+        assert!(page.contains("APIVersion"));
+    }
+
+    #[test]
+    fn copilot_app_json_has_capability() {
+        let config = ScaffoldConfig {
+            template: ProjectTemplate::Copilot,
+            ..Default::default()
+        };
+        let json = generate_app_json(&config).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed["capabilities"].is_array());
+    }
+
+    #[test]
+    fn appsource_scaffold_creates_cop_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ScaffoldConfig {
+            template: ProjectTemplate::AppSourceApp,
+            ..Default::default()
+        };
+        let result = create_project(dir.path(), &config).unwrap();
+        assert!(result
+            .files_created
+            .iter()
+            .any(|f| f == "AppSourceCop.json"));
+    }
+
+    #[test]
+    fn atomic_write_does_not_leave_tempfile_on_success() {
+        // A successful scaffold must not leave
+        // `<file>.<pid>.tmp` lingering next to the final artefact. The
+        // helper renames atomically, so the tempfile name should not
+        // exist after the call returns.
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("foo.al");
+        atomic_write(&target, b"hello", "foo.al").unwrap();
+        assert!(target.exists(), "final file must exist after atomic_write");
+        let pid = std::process::id();
+        let tmp = dir.path().join(format!("foo.al.{pid}.tmp"));
+        assert!(
+            !tmp.exists(),
+            "tempfile {tmp:?} should have been renamed away"
+        );
+        let read = std::fs::read(&target).unwrap();
+        assert_eq!(read, b"hello");
+    }
+
+    #[test]
+    fn atomic_write_overwrites_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("foo.al");
+        atomic_write(&target, b"v1", "foo.al").unwrap();
+        atomic_write(&target, b"v2", "foo.al").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"v2");
+    }
+
+    #[test]
+    fn atomic_write_returns_err_on_missing_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("no-such-subdir/foo.al");
+        let result = atomic_write(&target, b"hello", "foo.al");
+        assert!(result.is_err(), "expected Err for missing parent dir");
+        let pid = std::process::id();
+        let tmp = dir.path().join(format!("no-such-subdir/foo.al.{pid}.tmp"));
+        assert!(!tmp.exists());
+    }
+
+    /// Asserts that the given AL source parses through tree-sitter-al with
+    /// no errors. Used to guard against generator templates that drift
+    /// out-of-sync with the grammar (e.g. property renames, syntax
+    /// tightening). A string-content assertion would not catch this.
+    #[test]
+    fn generated_starter_codeunit_parses() {
+        let config = ScaffoldConfig::default();
+        let src = generate_starter_codeunit(&config);
+        assert_al_parses("starter codeunit", &src);
+    }
+
+    /// The name goes into a single-quoted AL literal, where `'` is doubled and
+    /// `"` is an ordinary character. Escaping it for a quoted *identifier*
+    /// instead produced `Message('Hello from Brad's App!');`, which does not
+    /// parse, and printed `My""App` for a name containing a double quote.
+    #[test]
+    fn generated_starter_codeunit_escapes_the_name_for_a_string_literal() {
+        let config = ScaffoldConfig {
+            name: "Brad's App".to_string(),
+            ..ScaffoldConfig::default()
+        };
+        let src = generate_starter_codeunit(&config);
+        assert_al_parses("starter codeunit with an apostrophe", &src);
+        assert!(src.contains("Message('Hello from Brad''s App!');"), "{src}");
+
+        let config = ScaffoldConfig {
+            name: "My\"App".to_string(),
+            ..ScaffoldConfig::default()
+        };
+        let src = generate_starter_codeunit(&config);
+        assert_al_parses("starter codeunit with a double quote", &src);
+        assert!(src.contains("Message('Hello from My\"App!');"), "{src}");
+    }
+
+    #[test]
+    fn generated_library_codeunit_parses() {
+        let config = ScaffoldConfig::default();
+        let src = generate_library_codeunit(&config);
+        assert_al_parses("library codeunit", &src);
+    }
+
+    #[test]
+    fn generated_test_codeunit_parses() {
+        let config = ScaffoldConfig::default();
+        let src = generate_test_codeunit(&config);
+        assert_al_parses("test codeunit", &src);
+        assert!(src.contains("Error('Placeholder test: implementation required')"));
+        assert!(!src.contains("Assert.IsTrue(true"));
+    }
+
+    #[test]
+    fn generated_copilot_codeunit_parses() {
+        let config = ScaffoldConfig::default();
+        let src = generate_copilot_codeunit(&config);
+        assert_al_parses("copilot participant", &src);
+    }
+
+    #[test]
+    fn generated_azure_openai_codeunit_parses() {
+        let config = ScaffoldConfig::default();
+        let src = generate_azure_openai_codeunit(&config);
+        assert_al_parses("azure openai helper", &src);
+    }
+
+    #[test]
+    fn generated_agent_codeunit_parses() {
+        let config = ScaffoldConfig::default();
+        let src = generate_agent_codeunit(&config);
+        assert_al_parses("agent codeunit", &src);
+    }
+
+    #[test]
+    fn generated_agent_job_handler_parses() {
+        let config = ScaffoldConfig::default();
+        let src = generate_agent_job_handler(&config);
+        assert_al_parses("agent job handler", &src);
+    }
+
+    #[test]
+    fn generated_api_page_parses() {
+        let config = ScaffoldConfig::default();
+        let src = generate_api_page(&config);
+        assert_al_parses("api page", &src);
+    }
+
+    #[test]
+    fn generated_codeunit_with_escaped_quote_in_name_parses() {
+        let config = ScaffoldConfig {
+            name: r#"My"App"#.to_string(),
+            ..Default::default()
+        };
+        let src = generate_library_codeunit(&config);
+        assert!(src.contains(r#""My""App Library""#));
+        assert_al_parses("library codeunit with escaped quote", &src);
+    }
+
+    fn write_custom_template(root: &Path, name: &str, descriptor: &str, files: &[(&str, &str)]) {
+        let tdir = root.join(name);
+        std::fs::create_dir_all(tdir.join("files")).unwrap();
+        std::fs::write(tdir.join("template.json"), descriptor).unwrap();
+        for (rel, content) in files {
+            let p = tdir.join("files").join(rel);
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(p, content).unwrap();
+        }
+    }
+
+    #[test]
+    fn custom_template_materializes_with_substitution() {
+        let store = tempfile::tempdir().unwrap();
+        write_custom_template(
+            store.path(),
+            "mytmpl",
+            r#"{ "description": "demo", "generateId": true, "idFrom": 60000 }"#,
+            &[
+                (
+                    "app.json",
+                    r#"{"id":"{{id}}","name":"{{name}}","publisher":"{{publisher}}","idRanges":[{"from":{{id_from}},"to":{{id_to}}}]}"#,
+                ),
+                (
+                    "src/Main.Codeunit.al",
+                    "// {{name}} by {{publisher}} starting at {{id_from}}\n",
+                ),
+            ],
+        );
+
+        let custom = resolve_custom_template_in(store.path(), "mytmpl")
+            .unwrap()
+            .unwrap();
+        let proj = tempfile::tempdir().unwrap();
+        let target = proj.path().join("new");
+        let config = ScaffoldConfig {
+            name: "Acme App".to_string(),
+            publisher: "Acme".to_string(),
+            id: "00000000-0000-0000-0000-000000000000".to_string(),
+            template: ProjectTemplate::Custom(custom),
+            ..Default::default()
+        };
+
+        let result = create_project(&target, &config).unwrap();
+        assert!(result.files_created.iter().any(|f| f == "app.json"));
+        assert!(result
+            .files_created
+            .iter()
+            .any(|f| f == "src/Main.Codeunit.al"));
+        // No built-in scaffolding is imposed on a custom template.
+        assert!(!target.join(".gitignore").exists());
+        assert!(!target.join(".zed/debug.json").exists());
+
+        let app = std::fs::read_to_string(target.join("app.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&app).unwrap();
+        assert_eq!(parsed["name"], "Acme App");
+        assert_eq!(parsed["publisher"], "Acme");
+        assert_eq!(parsed["idRanges"][0]["from"], 60000);
+        assert_eq!(parsed["idRanges"][0]["to"], 60049);
+        // generateId -> a fresh GUID, not the all-zero config id.
+        let id = parsed["id"].as_str().unwrap();
+        assert_ne!(id, "00000000-0000-0000-0000-000000000000");
+        assert_eq!(id.len(), 36);
+
+        let main = std::fs::read_to_string(target.join("src/Main.Codeunit.al")).unwrap();
+        assert!(main.contains("Acme App by Acme starting at 60000"));
+    }
+
+    #[test]
+    fn custom_template_without_generate_id_uses_config_id() {
+        let store = tempfile::tempdir().unwrap();
+        write_custom_template(
+            store.path(),
+            "t",
+            r#"{}"#,
+            &[("app.json", r#"{"id":"{{id}}"}"#)],
+        );
+        let custom = resolve_custom_template_in(store.path(), "t")
+            .unwrap()
+            .unwrap();
+        let proj = tempfile::tempdir().unwrap();
+        let config = ScaffoldConfig {
+            id: "11111111-2222-3333-4444-555555555555".to_string(),
+            template: ProjectTemplate::Custom(custom),
+            ..Default::default()
+        };
+        create_project(&proj.path().join("p"), &config).unwrap();
+        let app = std::fs::read_to_string(proj.path().join("p/app.json")).unwrap();
+        assert!(app.contains("11111111-2222-3333-4444-555555555555"));
+    }
+
+    #[test]
+    fn custom_template_substitutes_path_placeholders() {
+        let store = tempfile::tempdir().unwrap();
+        write_custom_template(
+            store.path(),
+            "t",
+            r#"{}"#,
+            &[("src/{{name}}.Codeunit.al", "ok")],
+        );
+        let custom = resolve_custom_template_in(store.path(), "t")
+            .unwrap()
+            .unwrap();
+        let proj = tempfile::tempdir().unwrap();
+        let config = ScaffoldConfig {
+            name: "Widget".to_string(),
+            template: ProjectTemplate::Custom(custom),
+            ..Default::default()
+        };
+        let result = create_project(&proj.path().join("p"), &config).unwrap();
+        assert!(
+            result
+                .files_created
+                .iter()
+                .any(|f| f == "src/Widget.Codeunit.al"),
+            "files: {:?}",
+            result.files_created
+        );
+        assert!(proj.path().join("p/src/Widget.Codeunit.al").exists());
+    }
+
+    #[test]
+    fn resolve_custom_rejects_traversal_name() {
+        let store = tempfile::tempdir().unwrap();
+        let err = resolve_custom_template_in(store.path(), "../evil").unwrap_err();
+        assert!(err.contains("Invalid template name"), "{err}");
+        assert!(resolve_custom_template_in(store.path(), "a/b").is_err());
+        assert!(resolve_custom_template_in(store.path(), "..").is_err());
+        assert!(resolve_custom_template_in(store.path(), "").is_err());
+    }
+
+    #[test]
+    fn resolve_custom_unknown_returns_none() {
+        let store = tempfile::tempdir().unwrap();
+        assert!(resolve_custom_template_in(store.path(), "nope")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn resolve_custom_missing_descriptor_errors() {
+        let store = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(store.path().join("t/files")).unwrap();
+        let err = resolve_custom_template_in(store.path(), "t").unwrap_err();
+        assert!(err.contains("missing template.json"), "{err}");
+    }
+
+    #[test]
+    fn resolve_custom_parses_descriptor() {
+        let store = tempfile::tempdir().unwrap();
+        write_custom_template(
+            store.path(),
+            "t",
+            r#"{"generateId": true, "idFrom": 70000, "idTo": 70099, "description": "d"}"#,
+            &[("app.json", "{}")],
+        );
+        let custom = resolve_custom_template_in(store.path(), "t")
+            .unwrap()
+            .unwrap();
+        assert_eq!(custom.name, "t");
+        assert!(custom.descriptor.generate_id);
+        assert_eq!(custom.descriptor.id_from, Some(70000));
+        assert_eq!(custom.descriptor.id_to, Some(70099));
+    }
+
+    #[test]
+    fn resolve_custom_malformed_descriptor_errors() {
+        let store = tempfile::tempdir().unwrap();
+        write_custom_template(store.path(), "t", r#"{ not json"#, &[("app.json", "{}")]);
+        let err = resolve_custom_template_in(store.path(), "t").unwrap_err();
+        assert!(err.contains("Invalid template.json"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn custom_template_rejects_symlink() {
+        let store = tempfile::tempdir().unwrap();
+        let tdir = store.path().join("t");
+        std::fs::create_dir_all(tdir.join("files")).unwrap();
+        std::fs::write(tdir.join("template.json"), "{}").unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", tdir.join("files/leak.al")).unwrap();
+
+        let custom = resolve_custom_template_in(store.path(), "t")
+            .unwrap()
+            .unwrap();
+        let proj = tempfile::tempdir().unwrap();
+        let config = ScaffoldConfig {
+            template: ProjectTemplate::Custom(custom),
+            ..Default::default()
+        };
+        let err = create_project(&proj.path().join("p"), &config).unwrap_err();
+        assert!(err.contains("symlink"), "{err}");
+    }
+
+    #[test]
+    fn from_str_unknown_template_has_clear_error() {
+        let err = "totally-bogus-template-xyz"
+            .parse::<ProjectTemplate>()
+            .unwrap_err();
+        assert!(err.contains("Unknown template"), "{err}");
+        assert!(err.contains("totally-bogus-template-xyz"), "{err}");
+    }
+
+    #[test]
+    fn guard_relative_blocks_parent_and_absolute() {
+        assert!(guard_relative(Path::new("a/b.al")).is_ok());
+        assert!(guard_relative(Path::new("../a")).is_err());
+        assert!(guard_relative(Path::new("a/../../b")).is_err());
+        assert!(guard_relative(Path::new("/abs")).is_err());
+    }
+
+    #[test]
+    fn a_built_in_template_gets_its_own_app_id() {
+        let ids: Vec<String> = (0..2)
+            .map(|_| {
+                let dir = tempfile::tempdir().unwrap();
+                let target = dir.path().join("app");
+                create_project(&target, &ScaffoldConfig::default()).unwrap();
+                let app: serde_json::Value = serde_json::from_str(
+                    &std::fs::read_to_string(target.join("app.json")).unwrap(),
+                )
+                .unwrap();
+                app["id"].as_str().unwrap().to_string()
+            })
+            .collect();
+        assert_ne!(ids[0], "00000000-0000-0000-0000-000000000000");
+        assert_ne!(ids[0], ids[1], "two projects must not share an app id");
+    }
+
+    #[test]
+    fn fresh_guid_is_well_formed_and_distinct() {
+        let a = fresh_guid();
+        let b = fresh_guid();
+        assert_eq!(a.len(), 36);
+        assert_ne!(a, b);
+        for (i, &c) in a.as_bytes().iter().enumerate() {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                assert_eq!(c, b'-', "expected hyphen at {i}: {a}");
+            } else {
+                assert!(c.is_ascii_hexdigit(), "non-hex at {i}: {a}");
+            }
+        }
+        // version-4 nibble
+        assert_eq!(a.as_bytes()[14], b'4', "{a}");
+    }
+}

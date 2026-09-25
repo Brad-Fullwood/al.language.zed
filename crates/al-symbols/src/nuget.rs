@@ -48,6 +48,8 @@ pub enum NuGetError {
     Json(#[from] serde_json::Error),
     #[error("NuGet client state lock '{0}' is poisoned")]
     StatePoisoned(&'static str),
+    #[error("No usable NuGet feed: every configured feed was refused ({0})")]
+    NoAcceptableFeed(String),
 }
 
 #[derive(Debug, Clone)]
@@ -87,20 +89,14 @@ const SYSTEM_APP_ID: &str = "8874ed3a-0643-4247-9ced-7a7002f7135d";
 /// BC NuGet package IDs follow the pattern:
 /// - Core Microsoft packages have fixed names (no GUID or special casing)
 /// - Other packages: `{Publisher}.{AppName}.symbols.{AppId}` (spaces removed, lowercase)
-pub fn resolve_dependencies(deps: &[AppDependency]) -> Vec<PackageRef> {
-    resolve_dependencies_for_country(deps, None)
-}
-
-/// Country/region-aware variant (`al.symbolsCountryRegion` parity, BC 2026 W1).
+///
+/// `country` follows `al.symbolsCountryRegion` (BC 2026 W1).
 ///
 /// Localized apps (Application, Base Application) ship country-specific
 /// packages on the MSSymbols feed — e.g. `Microsoft.Application.DE.symbols`.
 /// `"w1"` (worldwide) and `None` resolve to the unsuffixed W1 packages.
 /// Platform/System packages are country-invariant.
-pub fn resolve_dependencies_for_country(
-    deps: &[AppDependency],
-    country: Option<&str>,
-) -> Vec<PackageRef> {
+pub fn resolve_dependencies(deps: &[AppDependency], country: Option<&str>) -> Vec<PackageRef> {
     let cc = country
         .map(str::trim)
         .filter(|c| !c.is_empty() && !c.eq_ignore_ascii_case("w1"))
@@ -203,8 +199,55 @@ pub struct NuGetClient {
     country: Option<String>,
 }
 
+/// Whether a feed URL may be requested.
+///
+/// https, or http to a loopback host for a feed served on the developer's own
+/// machine. Anything else is refused before the first request: a feed URL from
+/// a project file is a place the machine connects to on the project's say-so,
+/// and a plain-http feed on the local network both reaches hosts an attacker
+/// cannot and returns the object names, procedure names and documentation an
+/// agent later reads back as if they were Microsoft's.
+#[must_use]
+pub fn is_acceptable_feed_url(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url.trim()) else {
+        return false;
+    };
+    match parsed.scheme() {
+        "https" => true,
+        "http" => parsed.host_str().is_some_and(|host| {
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+        }),
+        _ => false,
+    }
+}
+
 impl NuGetClient {
     pub fn new(feeds: Vec<NuGetFeed>) -> Result<Self, NuGetError> {
+        let (feeds, refused): (Vec<NuGetFeed>, Vec<NuGetFeed>) = feeds
+            .into_iter()
+            .partition(|feed| is_acceptable_feed_url(&feed.index_url));
+        if !refused.is_empty() {
+            warn!(
+                feeds = ?refused.iter().map(|feed| feed.index_url.as_str()).collect::<Vec<_>>(),
+                "Refusing NuGet feeds that are neither https nor http to loopback"
+            );
+        }
+        // An empty list on the way in is a caller that has no feeds to offer,
+        // which is not the same as every feed being refused.
+        if feeds.is_empty() && !refused.is_empty() {
+            return Err(NuGetError::NoAcceptableFeed(
+                refused
+                    .iter()
+                    .map(|feed| feed.index_url.clone())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ));
+        }
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
             .build()?;
@@ -302,7 +345,7 @@ impl NuGetClient {
         dest: &Path,
     ) -> Vec<Result<PathBuf, NuGetError>> {
         const MAX_CONCURRENT_DOWNLOADS: usize = 4;
-        let refs = resolve_dependencies_for_country(deps, self.country.as_deref());
+        let refs = resolve_dependencies(deps, self.country.as_deref());
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DOWNLOADS));
         let futures = refs.iter().map(|pkg_ref| {
             let sem = std::sync::Arc::clone(&semaphore);
@@ -548,9 +591,10 @@ async fn get_with_retry(
     for attempt in 1..=MAX_DOWNLOAD_ATTEMPTS {
         match client.get(url).send().await {
             Ok(response)
-                if is_retryable_status(response.status()) && attempt < MAX_DOWNLOAD_ATTEMPTS =>
+                if crate::retry::is_retryable_status(response.status().as_u16())
+                    && attempt < MAX_DOWNLOAD_ATTEMPTS =>
             {
-                let delay = retry_delay(&response, attempt);
+                let delay = crate::retry::retry_delay(response.headers(), attempt as u32 - 1);
                 warn!(url, status = %response.status(), attempt, ?delay, "Transient NuGet response; retrying");
                 tokio::time::sleep(delay).await;
             }
@@ -566,20 +610,6 @@ async fn get_with_retry(
     unreachable!("retry loop always returns on its final attempt")
 }
 
-fn is_retryable_status(status: reqwest::StatusCode) -> bool {
-    matches!(status.as_u16(), 429 | 502 | 503 | 504)
-}
-
-fn retry_delay(response: &reqwest::Response, attempt: usize) -> std::time::Duration {
-    response
-        .headers()
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(|seconds| std::time::Duration::from_secs(seconds.min(30)))
-        .unwrap_or_else(|| std::time::Duration::from_millis(200 * (1 << (attempt - 1))))
-}
-
 fn body_too_large_error(name: &str, actual: u64, limit: u64) -> NuGetError {
     NuGetError::Io(std::io::Error::new(
         std::io::ErrorKind::InvalidData,
@@ -588,8 +618,6 @@ fn body_too_large_error(name: &str, actual: u64, limit: u64) -> NuGetError {
 }
 
 fn download_temp_path(dest: &Path, package_id: &str) -> PathBuf {
-    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let safe_id: String = package_id
         .chars()
         .map(|character| {
@@ -601,9 +629,8 @@ fn download_temp_path(dest: &Path, package_id: &str) -> PathBuf {
         })
         .collect();
     dest.join(format!(
-        ".{safe_id}.{}.{}.nupkg.tmp",
-        std::process::id(),
-        sequence
+        ".{safe_id}.{}.nupkg.tmp",
+        crate::temp_path::unique_token()
     ))
 }
 
@@ -700,21 +727,23 @@ fn extract_app_from_nupkg_reader<R: std::io::Read + std::io::Seek>(
         let name = file.name().to_string();
 
         if name.to_lowercase().ends_with(".app") {
-            // Extract the bare filename, stripping both Unix and Windows path
-            // separators to prevent ZIP-slip attacks.
-            let raw_filename = name.rsplit(['/', '\\']).next().unwrap_or(&name);
-
-            // Reject filenames that are empty, traverse directories, or contain
-            // embedded separators that survived splitting.
-            if raw_filename.is_empty()
-                || raw_filename.contains("..")
-                || raw_filename.contains('/')
-                || raw_filename.contains('\\')
-            {
+            // Take the bare filename, then resolve it with the same joiner the
+            // package inspector uses, which drops root and drive prefixes and
+            // rejects traversal. String checks alone let `C:evil.app` through,
+            // and on Windows `PathBuf::push` would then write it to the current
+            // directory of drive C instead of under `dest`.
+            let bare = name.rsplit(['/', '\\']).next().unwrap_or(&name);
+            let out_path = super::app_inspect::safe_join(dest, bare)
+                .filter(|path| path.parent() == Some(dest) && path.file_name().is_some());
+            let Some(out_path) = out_path else {
                 warn!(entry = %name, "Skipping unsafe ZIP entry (potential ZIP-slip)");
                 continue;
-            }
-            let out_path = dest.join(raw_filename);
+            };
+            let raw_filename = out_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string();
             static EXTRACT_SEQUENCE: std::sync::atomic::AtomicU64 =
                 std::sync::atomic::AtomicU64::new(0);
             let sequence = EXTRACT_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -808,6 +837,46 @@ fn nuget_manifest_satisfies(path: &Path, package: &PackageRef) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_feed_url_must_be_https_or_loopback_http() {
+        assert!(is_acceptable_feed_url(
+            "https://dynamicssmb2.pkgs.visualstudio.com/x/v3/index.json"
+        ));
+        assert!(is_acceptable_feed_url(
+            "http://localhost:8081/v3/index.json"
+        ));
+        assert!(is_acceptable_feed_url(
+            "http://127.0.0.1:8081/v3/index.json"
+        ));
+        assert!(is_acceptable_feed_url("http://[::1]:8081/v3/index.json"));
+
+        // The finding's case: a repository pointing the machine at a host on
+        // the developer's network.
+        assert!(!is_acceptable_feed_url(
+            "http://10.0.0.5:8081/v3/index.json"
+        ));
+        assert!(!is_acceptable_feed_url(
+            "http://nuget.corp.example/index.json"
+        ));
+        assert!(!is_acceptable_feed_url("file:///etc/passwd"));
+        assert!(!is_acceptable_feed_url("gopher://example.com"));
+        assert!(!is_acceptable_feed_url(""));
+    }
+
+    #[test]
+    fn a_client_whose_every_feed_is_refused_does_not_build() {
+        let built = NuGetClient::new(vec![NuGetFeed {
+            index_url: "http://10.0.0.5:8081/v3/index.json".to_string(),
+        }]);
+        match built {
+            Err(NuGetError::NoAcceptableFeed(refused)) => {
+                assert!(refused.contains("10.0.0.5"), "{refused}")
+            }
+            Err(other) => panic!("expected NoAcceptableFeed, got {other}"),
+            Ok(_) => panic!("a cleartext feed on the local network must not build a client"),
+        }
+    }
+
     fn valid_app_bytes() -> Vec<u8> {
         app_bytes("test-id", "1.0.0.0")
     }
@@ -846,7 +915,7 @@ mod tests {
             version: "24.0.12345.0".to_string(),
         }];
 
-        let refs = resolve_dependencies(&deps);
+        let refs = resolve_dependencies(&deps, None);
         assert_eq!(refs.len(), 1);
         assert_eq!(
             refs[0].id,
@@ -880,7 +949,7 @@ mod tests {
                 version: "26.0.0.0".to_string(),
             },
         ];
-        let refs = resolve_dependencies_for_country(&deps, Some("de"));
+        let refs = resolve_dependencies(&deps, Some("de"));
         assert_eq!(refs[0].id, "Microsoft.Application.DE.symbols");
         assert_eq!(
             refs[1].id,
@@ -890,9 +959,9 @@ mod tests {
         assert_eq!(refs[2].id, "Microsoft.Platform.symbols");
 
         // "w1" (and case variants) means worldwide — identical to None.
-        let w1 = resolve_dependencies_for_country(&deps, Some("W1"));
+        let w1 = resolve_dependencies(&deps, Some("W1"));
         assert_eq!(w1[0].id, "Microsoft.Application.symbols");
-        let none = resolve_dependencies_for_country(&deps, None);
+        let none = resolve_dependencies(&deps, None);
         assert_eq!(none[0].id, "Microsoft.Application.symbols");
     }
 
@@ -905,7 +974,7 @@ mod tests {
             version: "26.5.0.0".to_string(),
         }];
 
-        let refs = resolve_dependencies(&deps);
+        let refs = resolve_dependencies(&deps, None);
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].id, "Microsoft.Application.symbols");
     }
@@ -919,7 +988,7 @@ mod tests {
             version: "1.0.0.0".to_string(),
         }];
 
-        let refs = resolve_dependencies(&deps);
+        let refs = resolve_dependencies(&deps, None);
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].id, "Microsoft.Platform.symbols");
     }
@@ -933,7 +1002,7 @@ mod tests {
             version: "26.0.0.0".to_string(),
         }];
 
-        let refs = resolve_dependencies(&deps);
+        let refs = resolve_dependencies(&deps, None);
         assert_eq!(refs.len(), 1);
         assert_eq!(
             refs[0].id,
@@ -950,7 +1019,7 @@ mod tests {
             version: "26.0.0.0".to_string(),
         }];
 
-        let refs = resolve_dependencies(&deps);
+        let refs = resolve_dependencies(&deps, None);
         assert_eq!(refs.len(), 1);
         assert_eq!(
             refs[0].id,
@@ -969,7 +1038,7 @@ mod tests {
             version: "26.5.0.0".to_string(),
         }];
 
-        let refs = resolve_dependencies(&deps);
+        let refs = resolve_dependencies(&deps, None);
         assert_eq!(refs[0].id, "Microsoft.Application.symbols");
     }
 
@@ -982,7 +1051,7 @@ mod tests {
             version: "1.0.0.0".to_string(),
         }];
 
-        let refs = resolve_dependencies(&deps);
+        let refs = resolve_dependencies(&deps, None);
         assert_eq!(
             refs[0].id,
             "AcmeCorp.CoolTool.symbols.ab12cd34-0000-0000-0000-000000000000"
@@ -1006,7 +1075,7 @@ mod tests {
                 version: "2.0.0.0".to_string(),
             },
         ];
-        let refs = resolve_dependencies(&deps);
+        let refs = resolve_dependencies(&deps, None);
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0].display_name, "A");
         assert_eq!(refs[1].display_name, "B");
@@ -1095,7 +1164,7 @@ mod tests {
             version: "1.0.0.0".to_string(),
         }];
 
-        let refs = resolve_dependencies(&deps);
+        let refs = resolve_dependencies(&deps, None);
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].id, "ContosoLtd.MyApp.symbols.id-2");
     }
@@ -1159,11 +1228,73 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dest);
     }
 
+    /// Entry names a feed could use to escape `dest`: a Windows drive-relative
+    /// name, an absolute path, traversal, and backslash separators. Each has
+    /// to land directly in `dest`.
     #[test]
-    fn extract_app_rejects_dotdot_basename() {
-        // The guard rejects any .app whose *basename* (after stripping path
-        // separators) still contains "..". Such an entry is skipped, and with
-        // no other safe .app the result is NoAppInNupkg — nothing is written.
+    fn extract_app_contains_hostile_entry_names() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+
+        for (entry, expected) in [
+            ("C:evil.app", Some("evil.app")),
+            ("/etc/cron.d/evil.app", Some("evil.app")),
+            ("..\\..\\evil.app", Some("evil.app")),
+            ("lib\\net\\Nested.app", Some("Nested.app")),
+            ("../evil.app", Some("evil.app")),
+        ] {
+            let mut nupkg_buf = Vec::new();
+            {
+                let cursor = std::io::Cursor::new(&mut nupkg_buf);
+                let mut zip = zip::ZipWriter::new(cursor);
+                let options = SimpleFileOptions::default();
+                zip.start_file(format!("{entry}.app"), options).unwrap();
+                zip.write_all(&valid_app_bytes()).unwrap();
+                zip.finish().unwrap();
+            }
+
+            let dest = std::env::temp_dir().join(format!(
+                "al-symbols-hostile-{}",
+                entry.replace(['/', '\\', ':', '.'], "_")
+            ));
+            let _ = std::fs::remove_dir_all(&dest);
+            let result = extract_app_from_nupkg(&nupkg_buf, &dest, "Test");
+
+            match expected {
+                Some(filename) => {
+                    let path = result.unwrap_or_else(|error| {
+                        panic!("entry {entry:?} should extract safely: {error}")
+                    });
+                    assert_eq!(
+                        path.parent(),
+                        Some(dest.as_path()),
+                        "entry {entry:?} escaped the destination"
+                    );
+                    // A drive prefix is only a prefix on Windows; elsewhere
+                    // `C:evil.app` is an ordinary file name.
+                    let landed = path.file_name().unwrap().to_str().unwrap();
+                    assert!(
+                        landed == format!("{filename}.app") || !landed.contains(['/', '\\']),
+                        "entry {entry:?} landed as {landed}"
+                    );
+                }
+                None => assert!(
+                    result.is_err(),
+                    "entry {entry:?} must be skipped, got {result:?}"
+                ),
+            }
+            assert!(
+                !std::path::Path::new("/tmp/evil.app").exists(),
+                "entry {entry:?} wrote outside the destination"
+            );
+            let _ = std::fs::remove_dir_all(&dest);
+        }
+    }
+
+    #[test]
+    fn a_doubled_dot_inside_a_basename_is_not_traversal() {
+        // Traversal is a `..` path *component*. A file name that merely
+        // contains two dots is ordinary and extracts under dest.
         use std::io::Write;
         use zip::write::SimpleFileOptions;
 
@@ -1172,21 +1303,15 @@ mod tests {
             let cursor = std::io::Cursor::new(&mut nupkg_buf);
             let mut zip = zip::ZipWriter::new(cursor);
             let options = SimpleFileOptions::default();
-            // Basename survives splitting and still contains "..".
             zip.start_file("lib/evil..payload.app", options).unwrap();
-            zip.write_all(b"NAVX").unwrap();
+            zip.write_all(&valid_app_bytes()).unwrap();
             zip.finish().unwrap();
         }
 
         let dest = std::env::temp_dir().join("al-symbols-test-dotdot");
         let _ = std::fs::remove_dir_all(&dest);
-        let result = extract_app_from_nupkg(&nupkg_buf, &dest, "Test");
-        assert!(
-            matches!(result, Err(NuGetError::NoAppInNupkg)),
-            "entry with '..' in basename must be skipped, got {result:?}"
-        );
-        // The unsafe basename must never be materialised under dest.
-        assert!(!dest.join("evil..payload.app").exists());
+        let path = extract_app_from_nupkg(&nupkg_buf, &dest, "Test").expect("extracts");
+        assert_eq!(path, dest.join("evil..payload.app"));
         let _ = std::fs::remove_dir_all(&dest);
     }
 

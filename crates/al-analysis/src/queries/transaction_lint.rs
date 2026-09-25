@@ -5,6 +5,7 @@
 //! event, trigger, interface, and dependency graph. A file-local token scan
 //! cannot see the transaction stack that gives either operation its meaning.
 
+use al_syntax::IdentifierText;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
@@ -407,6 +408,10 @@ fn collect_effects(
     Ok(effects)
 }
 
+// The file path, object identity and reportable flag identify the caller,
+// while the node, tree, source and insight graph are the walk inputs. Each
+// varies independently per call, so a bundling struct would be built at the
+// call site and destructured here for no reduction.
 #[allow(clippy::too_many_arguments)]
 fn effects_for_procedure(
     path: &std::path::Path,
@@ -423,8 +428,7 @@ fn effects_for_procedure(
     let name = name_node
         .utf8_text(bytes)
         .ok()?
-        .trim()
-        .trim_matches('"')
+        .unquote_identifier()
         .to_string();
     let attributes = procedure_attributes(procedure, bytes);
     let node_key = callable_key(object_kind, object_name, &name, &attributes);
@@ -564,12 +568,8 @@ fn collect_effect_sites(
                     let Some(member) = last.child_by_field_name("member") else {
                         continue;
                     };
-                    let method = member
-                        .utf8_text(bytes)
-                        .unwrap_or("")
-                        .trim()
-                        .trim_matches('"');
-                    if !is_database_write_method(method) {
+                    let method = member.utf8_text(bytes).unwrap_or("").unquote_identifier();
+                    if !is_database_write_method(&method) {
                         continue;
                     }
                     let Some(receiver_node) = children.first().copied() else {
@@ -578,10 +578,9 @@ fn collect_effect_sites(
                     let receiver = receiver_node
                         .utf8_text(bytes)
                         .unwrap_or("")
-                        .trim()
-                        .trim_matches('"');
+                        .unquote_identifier();
                     let pos = syntax_position(source, receiver_node.start_position());
-                    let Some(decl) = resolver.resolve_type(receiver, pos) else {
+                    let Some(decl) = resolver.resolve_type(&receiver, pos) else {
                         continue;
                     };
                     if !matches!(

@@ -44,79 +44,20 @@ impl Kind {
     }
 }
 
-pub(super) fn handles(method: &str) -> bool {
-    matches!(
-        method,
-        "compile"
-            | "package"
-            | "debug"
-            | "snapshot"
-            | "profiling"
-            | "trace"
-            | "graphExport"
-            | "deadCode"
-            | "impact"
-            | "tableImpact"
-            | "traceChain"
-            | "eventMap"
-            | "suggestEvent"
-            | "clearCache"
-            | "shutdown"
-            | "setup"
-            | "downloadSymbols"
-            | "lint"
-            | "format"
-            | "hover"
-            | "definition"
-            | "typeDefinition"
-            | "declaration"
-            | "implementation"
-            | "references"
-            | "signatureHelp"
-            | "completions"
-            | "documentSymbols"
-            | "foldingRanges"
-            | "semanticTokens"
-            | "rename"
-            | "permissions"
-            | "parse"
-            | "inlayHints"
-            | "fix"
-            | "authenticate"
-            | "newProject"
-            | "metrics"
-            | "profiler.hints"
-            | "sortMembers"
-            | "organizeFiles"
-            | "tests.snapshot_capture"
-            | "tests.snapshot_validate"
-            | "tests.snapshot_replay"
-            | "tests.snapshot_diff"
-            | "tests.mutate"
-            | "search"
-            | "source"
-            | "location"
-            | "events"
-            | "subscribers"
-            | "eventSource"
-            | "composed"
-            | "packages"
-            | "generate"
-            | "deps.graph"
-            | "duplicates"
-            | "fix.applicationArea"
-            | "fix.tooltips"
-            | "fix.dataClassification"
-            | "tests.run"
-            | "tests.run_batch"
-            | "tests.run_auto"
-            | "tests.last_results"
-    )
-}
-
 pub(super) fn validate(method: &str, params: Option<&Value>, result: &Value) -> Result<(), String> {
     let validation = match method {
         "compile" | "package" => validate_build(result),
+        "publish" => fields(
+            result,
+            "publish",
+            &[
+                ("success", Kind::Boolean),
+                ("server", Kind::String),
+                ("method", Kind::String),
+                ("diagnostics", Kind::Array),
+                ("steps", Kind::Array),
+            ],
+        ),
         "debug" => validate_debug(params, result),
         "snapshot" => validate_snapshot(params, result),
         "profiling" => validate_profiling(params, result),
@@ -241,7 +182,7 @@ pub(super) fn validate(method: &str, params: Option<&Value>, result: &Value) -> 
                 array_objects(
                     result,
                     "foldingRanges",
-                    &[("start_line", Kind::Unsigned), ("end_line", Kind::Unsigned)],
+                    &[("startLine", Kind::Unsigned), ("endLine", Kind::Unsigned)],
                 )
             }
         }
@@ -263,15 +204,26 @@ pub(super) fn validate(method: &str, params: Option<&Value>, result: &Value) -> 
             }
         }
         "rename" => validate_workspace_edit_or_null(result),
-        "permissions" => fields(
-            result,
-            "permissions",
-            &[
-                ("format", Kind::String),
-                ("content", Kind::String),
-                ("objectCount", Kind::Unsigned),
-            ],
-        ),
+        "permissions" => {
+            fields(
+                result,
+                "permissions",
+                &[
+                    ("format", Kind::String),
+                    ("content", Kind::String),
+                    ("objectCount", Kind::Unsigned),
+                    // The files the collector could not read. A consumer that
+                    // does not look at these reports a set as complete when it
+                    // omits an object.
+                    ("skipped", Kind::Array),
+                ],
+            )?;
+            named_array_objects(
+                result,
+                "skipped",
+                &[("path", Kind::String), ("reason", Kind::String)],
+            )
+        }
         "parse" => {
             fields(
                 result,
@@ -403,14 +355,7 @@ pub(super) fn validate(method: &str, params: Option<&Value>, result: &Value) -> 
                 ("source_availability", Kind::String),
             ],
         ),
-        "source" => fields(
-            result,
-            "source",
-            &[
-                ("source_availability", Kind::String),
-                ("code", Kind::String),
-            ],
-        ),
+        "source" => validate_source(params, result),
         "location" => validate_source_location(result),
         "events" => validate_events(result),
         "subscribers" => validate_subscribers(result),
@@ -449,6 +394,225 @@ pub(super) fn validate(method: &str, params: Option<&Value>, result: &Value) -> 
         "tests.run" => validate_test_run(result),
         "tests.run_batch" | "tests.run_auto" => validate_test_run_batch(method, result),
         "tests.last_results" => validate_test_last_results(params, result),
+        "entrypoints" => array_objects(
+            result,
+            method,
+            &[
+                ("type", Kind::String),
+                ("object_name", Kind::String),
+                ("name", Kind::String),
+            ],
+        ),
+        "obsolete" => array_objects(
+            result,
+            method,
+            &[
+                ("kind", Kind::String),
+                ("object", Kind::String),
+                ("symbol", Kind::String),
+                ("state", Kind::String),
+            ],
+        ),
+        "obsoleteUsages" => array_objects(
+            result,
+            method,
+            &[("file", Kind::String), ("message", Kind::String)],
+        ),
+        "packageDiff" => fields(
+            result,
+            method,
+            &[
+                ("totalChanges", Kind::Unsigned),
+                ("breakingChanges", Kind::Unsigned),
+                ("affectingWorkspace", Kind::Unsigned),
+                ("changes", Kind::Array),
+            ],
+        ),
+        "audit.dataClassification" => array_objects(
+            result,
+            method,
+            &[
+                ("table", Kind::String),
+                ("field", Kind::String),
+                ("classification", Kind::String),
+                ("risk", Kind::String),
+            ],
+        ),
+        "breaking" => array_objects(
+            result,
+            method,
+            &[
+                ("kind", Kind::String),
+                ("object", Kind::String),
+                ("objectKind", Kind::String),
+                ("description", Kind::String),
+                ("isBreaking", Kind::Boolean),
+            ],
+        ),
+        "arch.lint" => array_objects(
+            result,
+            method,
+            &[
+                ("ruleId", Kind::String),
+                ("message", Kind::String),
+                ("object", Kind::String),
+            ],
+        ),
+        "nativeCheck" => array_objects(
+            result,
+            method,
+            &[
+                ("code", Kind::String),
+                ("severity", Kind::String),
+                ("objectType", Kind::String),
+                ("objectName", Kind::String),
+                ("message", Kind::String),
+            ],
+        ),
+        "upgrade" => array_objects(
+            result,
+            method,
+            &[
+                ("kind", Kind::String),
+                ("object", Kind::String),
+                ("description", Kind::String),
+                ("migrationHint", Kind::String),
+                ("severity", Kind::String),
+            ],
+        ),
+        "object" | "byId" => array_objects(
+            result,
+            method,
+            &[
+                ("kind", Kind::String),
+                ("id", Kind::Integer),
+                ("name", Kind::String),
+                ("package", Kind::String),
+            ],
+        ),
+        "sqlPatterns" => array_objects(
+            result,
+            method,
+            &[
+                ("kind", Kind::String),
+                ("message", Kind::String),
+                ("object", Kind::String),
+                ("procedure", Kind::String),
+                ("line", Kind::Unsigned),
+            ],
+        ),
+        "rules" => array_objects(
+            result,
+            method,
+            &[
+                ("code", Kind::String),
+                ("severity", Kind::String),
+                ("name", Kind::String),
+                ("description", Kind::String),
+            ],
+        ),
+        "errorCodes" => array_objects(
+            result,
+            method,
+            &[("code", Kind::String), ("description", Kind::String)],
+        ),
+        "builtinTypes" => array_objects(
+            result,
+            method,
+            &[("name", Kind::String), ("methods", Kind::Array)],
+        ),
+        "tests.discover" => validate_test_discovery(result),
+        "insightStats" => fields(
+            result,
+            method,
+            &[("nodes", Kind::Unsigned), ("edges", Kind::Unsigned)],
+        ),
+        // `mode` selects which of the remaining fields are present, so it is
+        // the one field the formatter cannot do without.
+        "freeIds" => fields(
+            result,
+            method,
+            &[("mode", Kind::String), ("usedCount", Kind::Integer)],
+        ),
+        "xlf.generate" => validate_xlf_generate(result),
+        "xlf.refresh" => fields(
+            result,
+            method,
+            &[
+                ("added", Kind::Array),
+                ("changed", Kind::Array),
+                ("removed", Kind::Array),
+                ("preserved", Kind::Unsigned),
+            ],
+        ),
+        "xlf.untranslated" => fields(
+            result,
+            method,
+            &[("count", Kind::Unsigned), ("untranslated", Kind::Array)],
+        )
+        .and_then(|()| {
+            named_array_objects(
+                result,
+                "untranslated",
+                &[("id", Kind::String), ("source", Kind::String)],
+            )
+        }),
+        "xlf.suggest" => fields(
+            result,
+            method,
+            &[("count", Kind::Unsigned), ("suggestions", Kind::Array)],
+        )
+        .and_then(|()| {
+            named_array_objects(
+                result,
+                "suggestions",
+                &[
+                    ("unit_id", Kind::String),
+                    ("source", Kind::String),
+                    ("suggested_translation", Kind::String),
+                    ("confidence", Kind::Number),
+                ],
+            )
+        }),
+        "diag" => fields(result, method, &[]),
+        "tests.coverage" => fields(
+            result,
+            method,
+            &[("coverage", Kind::Array), ("untested", Kind::Array)],
+        ),
+        "tests.affected" => named_array_objects(
+            result,
+            "affected",
+            &[
+                ("codeunitName", Kind::String),
+                ("codeunitId", Kind::Integer),
+                ("methodName", Kind::String),
+                ("line", Kind::Integer),
+            ],
+        ),
+        "tests.classify" => named_array_objects(
+            result,
+            "classifications",
+            &[
+                ("codeunitId", Kind::Integer),
+                ("codeunitName", Kind::String),
+                ("methodName", Kind::String),
+                ("decision", Kind::String),
+                ("runsLocally", Kind::Boolean),
+                ("execution", Kind::String),
+                ("reasons", Kind::Array),
+            ],
+        ),
+        "permissions.audit" => validate_permissions_audit(result),
+        "deps" => fields(
+            result,
+            method,
+            &[
+                ("project", Kind::Object),
+                ("explicit", Kind::Array),
+                ("all", Kind::Array),
+            ],
+        ),
         _ => {
             return Err(format!(
                 "no manual response contract is registered for '{method}'"
@@ -859,6 +1023,46 @@ fn validate_download_symbols(result: &Value) -> Result<(), String> {
         result,
         "results",
         &[("name", Kind::String), ("status", Kind::String)],
+    )
+}
+
+/// `source` answers with one of two shapes. `listProcedures` returns an
+/// object's members without bodies, so there is no `code` to check; the
+/// ordinary lookup returns the source itself.
+fn validate_source(params: Option<&Value>, result: &Value) -> Result<(), String> {
+    let list_procedures = params
+        .and_then(|value| value.get("listProcedures"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if list_procedures {
+        fields(
+            result,
+            "source --list-procedures",
+            &[
+                ("source_availability", Kind::String),
+                ("members", Kind::Array),
+                ("total", Kind::Unsigned),
+            ],
+        )?;
+        return named_array_objects(
+            result,
+            "members",
+            &[
+                ("name", Kind::String),
+                ("kind", Kind::String),
+                ("signature", Kind::String),
+                ("startLine", Kind::Unsigned),
+                ("endLine", Kind::Unsigned),
+            ],
+        );
+    }
+    fields(
+        result,
+        "source",
+        &[
+            ("source_availability", Kind::String),
+            ("code", Kind::String),
+        ],
     )
 }
 
@@ -1350,6 +1554,109 @@ fn validate_test_status(value: &Value, label: &str) -> Result<(), String> {
     }
 }
 
+fn validate_test_discovery(result: &Value) -> Result<(), String> {
+    array_objects(
+        result,
+        "tests.discover",
+        &[
+            ("name", Kind::String),
+            ("id", Kind::Integer),
+            ("file", Kind::String),
+            ("tests", Kind::Array),
+            ("testInitializers", Kind::Array),
+            ("testCleanups", Kind::Array),
+        ],
+    )?;
+    for (index, codeunit) in result.as_array().into_iter().flatten().enumerate() {
+        for field in ["tests", "testInitializers", "testCleanups"] {
+            array_objects(
+                &codeunit[field],
+                &format!("tests.discover[{index}].{field}"),
+                &[
+                    ("name", Kind::String),
+                    ("line", Kind::Unsigned),
+                    ("handlerFunctions", Kind::Array),
+                ],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_xlf_generate(result: &Value) -> Result<(), String> {
+    fields(result, "xlf.generate", &[("units", Kind::Unsigned)])?;
+    match result.get("path") {
+        Some(path) if path.is_null() || path.is_string() => Ok(()),
+        Some(path) => Err(format!(
+            "xlf.generate.path must be a string or null, got {}",
+            type_name(path)
+        )),
+        None => Err("xlf.generate is missing required field 'path'".to_string()),
+    }
+}
+
+fn validate_permissions_audit(result: &Value) -> Result<(), String> {
+    // `parseIssues` carries the clauses the audit could not read. A consumer
+    // that does not look at it calls a set clean when the clause took no part
+    // in any check.
+    fields(
+        result,
+        "permissions.audit",
+        &[
+            ("coverage", Kind::Array),
+            ("overBroad", Kind::Array),
+            ("overGrantedRights", Kind::Array),
+            ("parseIssues", Kind::Array),
+        ],
+    )?;
+    named_array_objects(
+        result,
+        "coverage",
+        &[
+            ("kind", Kind::String),
+            ("id", Kind::Integer),
+            ("name", Kind::String),
+            ("covered", Kind::Boolean),
+            ("coveredBy", Kind::Array),
+        ],
+    )?;
+    named_array_objects(
+        result,
+        "overBroad",
+        &[
+            ("permissionSet", Kind::String),
+            ("objectType", Kind::String),
+            ("object", Kind::String),
+            ("rights", Kind::String),
+            ("reason", Kind::String),
+        ],
+    )?;
+    named_array_objects(
+        result,
+        "overGrantedRights",
+        &[
+            ("permissionSet", Kind::String),
+            ("objectType", Kind::String),
+            ("object", Kind::String),
+            ("grantedRights", Kind::String),
+            ("overGranted", Kind::String),
+            ("observedRights", Kind::String),
+            ("reason", Kind::String),
+        ],
+    )?;
+    named_array_objects(
+        result,
+        "parseIssues",
+        &[
+            ("permissionSet", Kind::String),
+            ("file", Kind::String),
+            ("clause", Kind::Integer),
+            ("text", Kind::String),
+            ("reason", Kind::String),
+        ],
+    )
+}
+
 fn type_name(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
@@ -1395,21 +1702,21 @@ mod tests {
     #[test]
     fn daemon_folding_and_semantic_token_shapes_are_accepted_exactly() {
         let folding = serde_json::json!([{
-            "start_line": 1,
-            "start_character": null,
-            "end_line": 4,
-            "end_character": null,
-            "kind": "Region"
+            "startLine": 1,
+            "startCharacter": null,
+            "endLine": 4,
+            "endCharacter": null,
+            "kind": "region"
         }]);
         assert!(validate("foldingRanges", None, &folding).is_ok());
         assert!(
             validate(
                 "foldingRanges",
                 None,
-                &serde_json::json!([{"startLine": 1, "endLine": 4}])
+                &serde_json::json!([{"start_line": 1, "end_line": 4}])
             )
             .is_err(),
-            "the daemon's transport-agnostic folding shape must not drift to an unannounced LSP shape"
+            "the Rust field names are not the wire shape"
         );
 
         let tokens = serde_json::json!([{

@@ -13,11 +13,12 @@
 //! package gating, the explicit `al-explorer native-check` command, and the
 //! `nativeCheck` daemon RPC.
 
+use al_syntax::IdentifierText;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use tree_sitter::{Node, Tree};
+use tree_sitter::Node;
 
 use al_symbols::ObjectKind;
 use al_workspace::Workspace;
@@ -217,18 +218,25 @@ fn configuration_finding(file: PathBuf, message: String) -> NativeFinding {
 
 /// Build [`ObjectRecord`]s from a complete validated workspace snapshot.
 fn collect_objects(sources: &[crate::workspace_sources::WorkspaceSource]) -> Vec<ObjectRecord> {
+    // One record per object declaration, not per file. A file may hold
+    // several objects, and reading them all from the tree root recorded the
+    // second object's fields and enum values under the first object's kind,
+    // ID and name, so AL-NC duplicate-member and ID-range checks answered for
+    // the wrong object.
     sources
         .iter()
-        .map(|source| {
+        .flat_map(|source| {
             let bytes = source.text.as_bytes();
-            ObjectRecord {
-                object_type: source.object.info.kind.clone(),
-                id: source.object.info.id,
-                name: source.object.info.name.clone(),
-                file: source.path.clone(),
-                extends: extract_extends(&source.tree, bytes),
-                member_ids: extract_member_ids(&source.tree, bytes, &source.object.info.kind),
-            }
+            source
+                .object_nodes()
+                .map(move |(object, node)| ObjectRecord {
+                    object_type: object.info.kind.clone(),
+                    id: object.info.id,
+                    name: object.info.name.clone(),
+                    file: source.path.clone(),
+                    extends: al_syntax::object_extends_target(node, bytes),
+                    member_ids: extract_member_ids(node, bytes, &object.info.kind),
+                })
         })
         .collect()
 }
@@ -403,55 +411,13 @@ pub fn affix_rules_from_appsourcecop(root: &Path) -> Result<AffixRules, String> 
     })
 }
 
-/// Extract the `extends`/`customizes` target object name from a parse tree.
-///
-/// The grammar emits the clause either as `object_modifier`
-/// (`modifier`/`target` fields) or — what real headers produce — as
-/// `implements_clause` (positional `metadata_keyword` + `name`, shared with
-/// `implements`). The leading keyword disambiguates. Mirrors the proven
-/// extraction in `al-insight`. Returns `None` for objects with no such clause.
-fn extract_extends(tree: &Tree, source: &[u8]) -> Option<String> {
-    let mut stack = vec![tree.root_node()];
-    while let Some(node) = stack.pop() {
-        if matches!(node.kind(), "object_modifier" | "implements_clause") {
-            let mut kw_cursor = node.walk();
-            let keyword_node = node.child_by_field_name("modifier").or_else(|| {
-                node.children(&mut kw_cursor)
-                    .find(|c| c.kind() == "metadata_keyword")
-            });
-            let keyword = keyword_node
-                .and_then(|m| m.utf8_text(source).ok())
-                .unwrap_or("")
-                .trim();
-            if keyword.eq_ignore_ascii_case("extends") || keyword.eq_ignore_ascii_case("customizes")
-            {
-                let mut tgt_cursor = node.walk();
-                let target_node = node.child_by_field_name("target").or_else(|| {
-                    node.children(&mut tgt_cursor)
-                        .find(|c| matches!(c.kind(), "name" | "name_or_keyword"))
-                });
-                return target_node
-                    .and_then(|t| t.utf8_text(source).ok())
-                    .map(|t| t.trim().trim_matches('"').to_string());
-            }
-        }
-        // The clause lives in the object header — procedure code can't contain
-        // these nodes, so skip object bodies for speed.
-        if node.kind() != "object_body" {
-            let mut cursor = node.walk();
-            stack.extend(node.children(&mut cursor));
-        }
-    }
-    None
-}
-
 /// Extract `(id, name)` pairs for a table's fields or an enum's values.
 ///
 /// Both grammar forms are `keyword(ID; "Name"; ...)` parsed as an
 /// `object_section`; enum values may instead appear as `enum_value_declaration`
 /// with `id`/`name` fields. Gated by object kind so a page's controls are never
 /// mistaken for table fields. Returns empty for kinds without numbered members.
-fn extract_member_ids(tree: &Tree, source: &[u8], kind: &str) -> Vec<(i64, String)> {
+fn extract_member_ids(object: Node<'_>, source: &[u8], kind: &str) -> Vec<(i64, String)> {
     let kl = kind.to_lowercase();
     let want_field = matches!(kl.as_str(), "table" | "tableextension");
     let want_value = matches!(kl.as_str(), "enum" | "enumextension");
@@ -459,7 +425,7 @@ fn extract_member_ids(tree: &Tree, source: &[u8], kind: &str) -> Vec<(i64, Strin
         return Vec::new();
     }
     let mut out = Vec::new();
-    let mut stack = vec![tree.root_node()];
+    let mut stack = vec![object];
     while let Some(node) = stack.pop() {
         match node.kind() {
             "object_section" => {
@@ -526,7 +492,7 @@ fn member_from_paren(section: Node, source: &[u8]) -> Option<(i64, String)> {
                 if past_semicolon && name.is_none() =>
             {
                 if let Ok(t) = child.utf8_text(source) {
-                    let trimmed = t.trim().trim_matches('"').trim().to_string();
+                    let trimmed = t.unquote_identifier().into_owned();
                     if !trimmed.is_empty() {
                         name = Some(trimmed);
                     }
@@ -547,7 +513,7 @@ fn enum_value_member(node: Node, source: &[u8]) -> Option<(i64, String)> {
     let name = node
         .child_by_field_name("name")
         .and_then(|n| n.utf8_text(source).ok())
-        .map(|t| t.trim().trim_matches('"').to_string())
+        .map(|t| t.unquote_identifier().into_owned())
         .filter(|name| !name.is_empty())?;
     Some((id, name))
 }
@@ -1178,6 +1144,51 @@ mod tests {
         )
         .unwrap();
         assert!(affix_rules_from_appsourcecop(dir.path()).is_err());
+    }
+
+    /// A file may declare several objects. Each object's fields and enum
+    /// values belong to that object: reading them all from the tree root put
+    /// the second object's members under the first object's kind, ID and
+    /// name, so AL-NC006 reported a duplicate field ID that does not exist
+    /// and missed the one that does.
+    #[test]
+    fn member_ids_belong_to_the_object_that_declares_them() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            PathBuf::from("/project/Pair.al"),
+            r#"table 50100 "Ship Setup"
+{
+    fields
+    {
+        field(1; "Primary Key"; Code[10]) { }
+    }
+}
+
+table 50101 "Ship Line"
+{
+    fields
+    {
+        field(1; "Line No."; Integer) { }
+        field(1; "Duplicate"; Integer) { }
+    }
+}
+"#
+            .to_string(),
+        );
+
+        let sources = crate::workspace_sources::snapshot(&workspace).unwrap();
+        let objects = collect_objects(&sources);
+        assert_eq!(objects.len(), 2, "one record per object: {objects:?}");
+        let line = objects
+            .iter()
+            .find(|object| object.name == "Ship Line")
+            .unwrap_or_else(|| panic!("the second table must have its own record: {objects:?}"));
+        assert_eq!(line.member_ids.len(), 2, "{objects:?}");
+
+        let findings = duplicate_member_id_findings(&objects);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].object_name, "Ship Line", "{findings:?}");
+        assert_eq!(findings[0].object_id, Some(50101), "{findings:?}");
     }
 
     #[test]

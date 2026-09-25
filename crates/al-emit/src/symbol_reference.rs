@@ -2,10 +2,11 @@
 //!
 //! Produces a `serde_json::Value` matching what `alc` writes: object-type
 //! groupings, `TypeDefinition` objects, generated method `Id`s (via the cracked
-//! [`super::method_id`]), property/attribute value normalisation, etc. Verified
+//! [`super::method_id()`]), property/attribute value normalisation, etc. Verified
 //! by differential testing against the local `alc` (see the project's emit
 //! example + the spike doc).
 
+use al_syntax::IdentifierText;
 use serde_json::{json, Map, Value};
 
 use super::method_id::{combine_hash, fnv1_hash, fnv1_hash_bytes, member_id, method_id, ParamSig};
@@ -58,6 +59,9 @@ pub struct ExternalSymbols {
     /// package. Used to reject an explicitly declared dependency that is absent
     /// from `.alpackages` instead of emitting against an incomplete symbol set.
     pub package_ids: std::collections::HashSet<String>,
+    /// `(table, procedure)` for every procedure a dependency's table, or a
+    /// dependency's extension of a table, declares. Lowercase.
+    pub table_methods: std::collections::HashSet<(String, String)>,
 }
 
 const OBJECT_GROUPS: &[(&str, Option<ObjectKind>, bool)] = &[
@@ -177,7 +181,7 @@ pub fn build_symbol_reference(
             {
                 page_source_tables.insert(
                     o.entry.name.to_lowercase(),
-                    st.value.trim_matches('"').to_string(),
+                    st.value.unquote_identifier().into_owned(),
                 );
             }
         }
@@ -193,16 +197,16 @@ pub fn build_symbol_reference(
     let mut root = Map::new();
     root.insert("RuntimeVersion".into(), json!(meta.runtime_version));
 
-    let namespaces = namespace_tree(objects);
-    insert_object_groups(
-        &mut root,
-        &namespaces.objects,
-        &resolver,
+    let ctx = SymbolRefCtx {
+        resolver: &resolver,
         meta,
-        &field_types,
-        &page_source_tables,
-        &report_dataitem_tables,
-    );
+        field_types: &field_types,
+        page_source_tables: &page_source_tables,
+        report_dataitem_tables: &report_dataitem_tables,
+    };
+
+    let namespaces = namespace_tree(objects);
+    insert_object_groups(&mut root, &namespaces.objects, &ctx);
     if !namespaces.children.is_empty() {
         root.insert(
             "Namespaces".into(),
@@ -210,17 +214,7 @@ pub fn build_symbol_reference(
                 namespaces
                     .children
                     .iter()
-                    .map(|(name, node)| {
-                        namespace_json(
-                            name,
-                            node,
-                            &resolver,
-                            meta,
-                            &field_types,
-                            &page_source_tables,
-                            &report_dataitem_tables,
-                        )
-                    })
+                    .map(|(name, node)| namespace_json(name, node, &ctx))
                     .collect(),
             ),
         );
@@ -234,15 +228,10 @@ pub fn build_symbol_reference(
     Value::Object(root)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn insert_object_groups(
     target: &mut Map<String, Value>,
     objects: &[&EmitObject],
-    resolver: &Resolver,
-    meta: &SymbolRefMeta,
-    field_types: &FieldTypes,
-    page_source_tables: &std::collections::HashMap<String, String>,
-    report_dataitem_tables: &std::collections::HashMap<(String, String), String>,
+    ctx: &SymbolRefCtx<'_>,
 ) {
     // `always` groups are present at every namespace level in alc output.
     // DotNetPackages has no source kind and therefore stays an empty array.
@@ -251,17 +240,7 @@ fn insert_object_groups(
             Some(kind) => objects
                 .iter()
                 .filter(|object| object.entry.kind == *kind)
-                .map(|object| {
-                    object_json(
-                        object,
-                        resolver,
-                        &meta.app_id,
-                        &meta.name,
-                        field_types,
-                        page_source_tables,
-                        report_dataitem_tables,
-                    )
-                })
+                .map(|object| object_json(object, &ctx.meta.app_id, &ctx.meta.name, ctx))
                 .collect(),
             None => Vec::new(),
         };
@@ -271,26 +250,9 @@ fn insert_object_groups(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn namespace_json(
-    name: &str,
-    namespace: &NamespaceNode<'_>,
-    resolver: &Resolver,
-    meta: &SymbolRefMeta,
-    field_types: &FieldTypes,
-    page_source_tables: &std::collections::HashMap<String, String>,
-    report_dataitem_tables: &std::collections::HashMap<(String, String), String>,
-) -> Value {
+fn namespace_json(name: &str, namespace: &NamespaceNode<'_>, ctx: &SymbolRefCtx<'_>) -> Value {
     let mut value = Map::new();
-    insert_object_groups(
-        &mut value,
-        &namespace.objects,
-        resolver,
-        meta,
-        field_types,
-        page_source_tables,
-        report_dataitem_tables,
-    );
+    insert_object_groups(&mut value, &namespace.objects, ctx);
     if !namespace.children.is_empty() {
         value.insert(
             "Namespaces".into(),
@@ -298,17 +260,7 @@ fn namespace_json(
                 namespace
                     .children
                     .iter()
-                    .map(|(child_name, child)| {
-                        namespace_json(
-                            child_name,
-                            child,
-                            resolver,
-                            meta,
-                            field_types,
-                            page_source_tables,
-                            report_dataitem_tables,
-                        )
-                    })
+                    .map(|(child_name, child)| namespace_json(child_name, child, ctx))
                     .collect(),
             ),
         );
@@ -333,6 +285,15 @@ pub fn build_profile_symbol_references(
     let empty_pst: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let empty_rdt: std::collections::HashMap<(String, String), String> =
         std::collections::HashMap::new();
+    // A profile has no fields, no page source table and no report data items,
+    // so the three lookups are empty here by construction.
+    let ctx = SymbolRefCtx {
+        resolver: &resolver,
+        meta,
+        field_types: &empty_ft,
+        page_source_tables: &empty_pst,
+        report_dataitem_tables: &empty_rdt,
+    };
 
     let mut out = Vec::new();
     for o in objects {
@@ -341,15 +302,7 @@ pub fn build_profile_symbol_references(
             ObjectKind::ProfileExtension => "ProfileExtensions",
             _ => continue,
         };
-        let obj = object_json(
-            o,
-            &resolver,
-            &meta.app_id,
-            &meta.name,
-            &empty_ft,
-            &empty_pst,
-            &empty_rdt,
-        );
+        let obj = object_json(o, &meta.app_id, &meta.name, &ctx);
         let mut doc = Map::new();
         doc.insert(group.into(), json!([obj]));
         let mut bytes = vec![0xEF, 0xBB, 0xBF];
@@ -367,6 +320,16 @@ pub fn build_profile_symbol_references(
 }
 
 type FieldTypes = std::collections::HashMap<(String, String), String>;
+
+/// The five lookups every symbol-reference emitter needs, threaded as one
+/// reference instead of five parameters.
+struct SymbolRefCtx<'a> {
+    resolver: &'a Resolver,
+    meta: &'a SymbolRefMeta,
+    field_types: &'a FieldTypes,
+    page_source_tables: &'a std::collections::HashMap<String, String>,
+    report_dataitem_tables: &'a std::collections::HashMap<(String, String), String>,
+}
 
 /// The auto-generated strong-name `PublicKeyToken` alc assigns to an inline
 /// control add-in: the first 8 bytes of `SHA256(UTF8(app/module name))`, lowercase
@@ -391,16 +354,14 @@ pub(super) fn metadata_name(name: &str) -> String {
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
-fn object_json(
-    obj: &EmitObject,
-    resolver: &Resolver,
-    app_id: &str,
-    app_name: &str,
-    field_types: &FieldTypes,
-    page_source_tables: &std::collections::HashMap<String, String>,
-    report_dataitem_tables: &std::collections::HashMap<(String, String), String>,
-) -> Value {
+fn object_json(obj: &EmitObject, app_id: &str, app_name: &str, ctx: &SymbolRefCtx<'_>) -> Value {
+    let SymbolRefCtx {
+        resolver,
+        field_types,
+        page_source_tables,
+        report_dataitem_tables,
+        ..
+    } = ctx;
     let e = &obj.entry;
     let mut m = Map::new();
 
@@ -423,12 +384,20 @@ fn object_json(
         .map(|v| (v.name.to_lowercase(), v.type_name.clone()))
         .collect();
 
+    // alc records an object's globals under `Variables` whatever the object
+    // kind, ahead of the kind's own sections: a report writes
+    // `Variables, RequestPage, …` and a report extension
+    // `Target, Variables, …`. The key is absent when there are none.
+    if !e.variables.is_empty() {
+        m.insert("Variables".into(), variables_json(&e.variables, resolver));
+    }
+
     if matches!(e.kind, ObjectKind::Page | ObjectKind::PageExtension) {
         let source_table = e
             .properties
             .iter()
             .find(|p| p.name.eq_ignore_ascii_case("SourceTable"))
-            .map(|p| p.value.trim_matches('"').to_string())
+            .map(|p| p.value.unquote_identifier().into_owned())
             .unwrap_or_default();
         if !obj.page_controls.is_empty() {
             m.insert(
@@ -439,12 +408,14 @@ fn object_json(
                         .map(|c| {
                             control_json(
                                 c,
-                                e.id,
-                                &source_table,
-                                field_types,
-                                resolver,
-                                &locals,
-                                false,
+                                &ControlCtx {
+                                    object_id: e.id,
+                                    source_table: &source_table,
+                                    field_types,
+                                    resolver,
+                                    locals: &locals,
+                                    inject_editable_false: false,
+                                },
                             )
                         })
                         .collect(),
@@ -474,7 +445,7 @@ fn object_json(
         let base_table = e
             .extends
             .as_deref()
-            .and_then(|t| page_source_tables.get(&t.trim_matches('"').to_lowercase()))
+            .and_then(|t| page_source_tables.get(&t.unquote_identifier().to_lowercase()))
             .cloned()
             .unwrap_or_default();
         // alc forces every field added by a page customization non-editable in
@@ -488,12 +459,14 @@ fn object_json(
                     .map(|ch| {
                         control_change_json(
                             ch,
-                            e.id,
-                            &base_table,
-                            field_types,
-                            resolver,
-                            &locals,
-                            inject_editable_false,
+                            &ControlCtx {
+                                object_id: e.id,
+                                source_table: &base_table,
+                                field_types,
+                                resolver,
+                                locals: &locals,
+                                inject_editable_false,
+                            },
                         )
                     })
                     .collect(),
@@ -502,9 +475,6 @@ fn object_json(
     }
 
     if e.kind == ObjectKind::Report {
-        if !e.variables.is_empty() {
-            m.insert("Variables".into(), variables_json(&e.variables, resolver));
-        }
         // alc always emits a report's request page (an empty one when the report
         // declares no `requestpage`); `Controls` appears only when non-empty.
         let mut request_page = Map::new();
@@ -514,7 +484,19 @@ fn object_json(
                 Value::Array(
                     obj.page_controls
                         .iter()
-                        .map(|c| control_json(c, e.id, "", field_types, resolver, &locals, false))
+                        .map(|c| {
+                            control_json(
+                                c,
+                                &ControlCtx {
+                                    object_id: e.id,
+                                    source_table: "",
+                                    field_types,
+                                    resolver,
+                                    locals: &locals,
+                                    inject_editable_false: false,
+                                },
+                            )
+                        })
                         .collect(),
                 ),
             );
@@ -536,9 +518,6 @@ fn object_json(
     }
 
     if e.kind == ObjectKind::ReportExtension {
-        if !e.variables.is_empty() {
-            m.insert("Variables".into(), variables_json(&e.variables, resolver));
-        }
         // alc always writes a RequestPageExtension marker for a report
         // extension. Layout changes add its controls and source provenance.
         if obj.control_changes.is_empty() {
@@ -550,7 +529,19 @@ fn object_json(
             let control_changes: Vec<Value> = obj
                 .control_changes
                 .iter()
-                .map(|ch| control_change_json(ch, e.id, "", field_types, resolver, &locals, false))
+                .map(|ch| {
+                    control_change_json(
+                        ch,
+                        &ControlCtx {
+                            object_id: e.id,
+                            source_table: "",
+                            field_types,
+                            resolver,
+                            locals: &locals,
+                            inject_editable_false: false,
+                        },
+                    )
+                })
                 .collect();
             m.insert(
                 "RequestPage".into(),
@@ -581,7 +572,7 @@ fn object_json(
                 let ty = field_types
                     .get(&(
                         table.to_lowercase(),
-                        source.trim_matches('"').to_lowercase(),
+                        source.unquote_identifier().to_lowercase(),
                     ))
                     .cloned()
                     .unwrap_or_else(|| "None".to_string());
@@ -1099,6 +1090,19 @@ fn member_id_for(object_id: i32, name: &str) -> i32 {
 
 type LocalTypes = std::collections::HashMap<String, String>;
 
+/// What a page control needs beyond itself: its enclosing object, that
+/// object's source table and the three type lookups, plus the page-extension
+/// flag that forces `Editable = false` onto every emitted control.
+#[derive(Clone, Copy)]
+struct ControlCtx<'a> {
+    object_id: i32,
+    source_table: &'a str,
+    field_types: &'a FieldTypes,
+    resolver: &'a Resolver,
+    locals: &'a LocalTypes,
+    inject_editable_false: bool,
+}
+
 /// Resolve a field's `SourceExpression` to a type: `Rec."No."` → the source
 /// table's field type; a bare name → a local variable's type (report request
 /// pages). Project-local resolution only.
@@ -1112,14 +1116,14 @@ fn resolve_field_type(
         return "None".to_string();
     };
     if let Some(field) = expr.strip_prefix("Rec.") {
-        let field = field.trim_matches('"');
+        let field = field.unquote_identifier();
         return ft
             .get(&(source_table.to_lowercase(), field.to_lowercase()))
             .cloned()
             .unwrap_or_else(|| "None".to_string());
     }
     locals
-        .get(&expr.trim_matches('"').to_lowercase())
+        .get(&expr.unquote_identifier().to_lowercase())
         .cloned()
         .unwrap_or_else(|| "None".to_string())
 }
@@ -1146,16 +1150,15 @@ fn control_change_property_json(p: &PropertyValue) -> Value {
     json!({ "Name": p.name, "Value": value })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn control_json(
-    c: &PageControl,
-    object_id: i32,
-    source_table: &str,
-    field_types: &FieldTypes,
-    resolver: &Resolver,
-    locals: &LocalTypes,
-    inject_editable_false: bool,
-) -> Value {
+fn control_json(c: &PageControl, ctx: &ControlCtx<'_>) -> Value {
+    let ControlCtx {
+        object_id,
+        source_table,
+        field_types,
+        resolver,
+        locals,
+        inject_editable_false,
+    } = *ctx;
     let mut m = Map::new();
     let kind = control_kind(&c.keyword);
     if kind != 0 {
@@ -1164,22 +1167,7 @@ fn control_json(
     if !c.children.is_empty() {
         m.insert(
             "Controls".into(),
-            Value::Array(
-                c.children
-                    .iter()
-                    .map(|ch| {
-                        control_json(
-                            ch,
-                            object_id,
-                            source_table,
-                            field_types,
-                            resolver,
-                            locals,
-                            inject_editable_false,
-                        )
-                    })
-                    .collect(),
-            ),
+            Value::Array(c.children.iter().map(|ch| control_json(ch, ctx)).collect()),
         );
     }
     // Fields carry the resolved source type + a SourceExpression property;
@@ -1233,31 +1221,8 @@ fn change_kind(keyword: &str) -> i32 {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn control_change_json(
-    ch: &ControlChange,
-    object_id: i32,
-    source_table: &str,
-    field_types: &FieldTypes,
-    resolver: &Resolver,
-    locals: &LocalTypes,
-    inject_editable_false: bool,
-) -> Value {
-    let controls: Vec<Value> = ch
-        .controls
-        .iter()
-        .map(|c| {
-            control_json(
-                c,
-                object_id,
-                source_table,
-                field_types,
-                resolver,
-                locals,
-                inject_editable_false,
-            )
-        })
-        .collect();
+fn control_change_json(ch: &ControlChange, ctx: &ControlCtx<'_>) -> Value {
+    let controls: Vec<Value> = ch.controls.iter().map(|c| control_json(c, ctx)).collect();
     let mut m = Map::new();
     m.insert("Anchor".into(), json!(ch.anchor));
     m.insert("ChangeKind".into(), json!(change_kind(&ch.kind)));
@@ -1313,12 +1278,12 @@ fn permission_json(p: &PermissionDecl, resolver: &Resolver) -> Value {
         m.insert("PermissionObject".into(), json!(code));
     }
     m.insert("Value".into(), json!(permission_value(&p.permission)));
-    let name = p.object_name.trim_matches('"');
+    let name = p.object_name.unquote_identifier();
     // System (code 10) objects are platform built-ins, resolved from the
     // generated system-object table; every other kind resolves against the
     // project + referenced-app objects.
     let id = if code == 10 {
-        al_syntax::language_data::system_object_id(name).unwrap_or(0)
+        al_syntax::language_data::system_object_id(&name).unwrap_or(0)
     } else {
         resolver
             .get(&name.to_lowercase())
@@ -1344,16 +1309,29 @@ fn permission_object_code(t: &str) -> i32 {
     }
 }
 
-/// Permission flags bitmask: R=1, I=2, M=4, D=8, X=16.
+/// Permission flags bitmask. An uppercase letter is a direct grant, R=1, I=2,
+/// M=4, D=8, X=16; a lowercase one is the indirect grant, the same bit shifted
+/// left by 5 (r=32 ... x=512).
+///
+/// The shift is read off Microsoft's own packages: Base Application 26's
+/// 16,816 permission-set grants use 55 distinct values, none sets a letter
+/// both directly and indirectly, and the common ones decode to the familiar
+/// `RIMD`, `Rimd` (449) and `Rm` (129). Folding case wrote `Rimd` as `RIMD`,
+/// a direct grant the source never gave.
 fn permission_value(perm: &str) -> i32 {
     perm.chars().fold(0, |acc, c| {
-        acc | match c.to_ascii_uppercase() {
+        let direct = match c.to_ascii_uppercase() {
             'R' => 1,
             'I' => 2,
             'M' => 4,
             'D' => 8,
             'X' => 16,
             _ => 0,
+        };
+        acc | if c.is_ascii_lowercase() {
+            direct << 5
+        } else {
+            direct
         }
     })
 }
@@ -1379,7 +1357,7 @@ fn report_layouts_json(layouts: &[ReportLayout]) -> Value {
     )
 }
 
-/// Report / report-extension global variables, in alc's `Variables` shape.
+/// An object's global variables, in alc's `Variables` shape.
 fn variables_json(vars: &[VariableSymbol], resolver: &Resolver) -> Value {
     Value::Array(
         vars.iter()
@@ -1429,7 +1407,7 @@ fn report_dataitem_json(
                 .iter()
                 .map(|(name, source)| {
                     let ty = field_types
-                        .get(&(table.clone(), source.trim_matches('"').to_lowercase()))
+                        .get(&(table.clone(), source.unquote_identifier().to_lowercase()))
                         .cloned()
                         .unwrap_or_else(|| "None".to_string());
                     json!({
@@ -1460,7 +1438,7 @@ fn report_dataitem_json(
 /// `#<module-id-without-dashes>#<object-name>` archive representation.
 fn qualified_object_name(name: &str, resolver: &Resolver) -> String {
     match resolver
-        .get(&name.trim_matches('"').to_lowercase())
+        .get(&name.unquote_identifier().to_lowercase())
         .and_then(|reference| reference.module_id.as_deref())
     {
         Some(module_id) => format!("#{}#{}", module_id.replace('-', ""), name),
@@ -1525,7 +1503,7 @@ fn property_json(p: &PropertyValue) -> Value {
 /// `IncludedPermissionSets` keeps each referenced name quoted-as-needed.
 fn object_property_json(p: &PropertyValue, resolver: &Resolver) -> Value {
     if p.name.eq_ignore_ascii_case("SourceTable") {
-        let name = p.value.trim_matches('"').to_lowercase();
+        let name = p.value.unquote_identifier().to_lowercase();
         if let Some(r) = resolver.get(&name) {
             return json!({ "Name": p.name, "Value": r.id.to_string() });
         }

@@ -60,11 +60,8 @@ pub fn get_composed(index: &SymbolIndex, kind: ObjectKind, name: &str) -> Option
     Some(compose(base, relevant_extensions))
 }
 
-/// Whether an entry was contributed by the open workspace rather than a
-/// loaded `.app` package (see `source_availability::classify`).
 fn is_workspace_entry(entry: &SymbolEntry) -> bool {
-    entry.package.eq_ignore_ascii_case("workspace")
-        || entry.package.eq_ignore_ascii_case("(workspace)")
+    super::source_availability::is_workspace_package(&entry.package)
 }
 
 /// Compose a base object with a set of extensions.
@@ -207,22 +204,12 @@ mod tests {
 
     fn make_enum(id: i32, name: &str, values: Vec<EnumValueSymbol>) -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Enum,
             id,
             name: name.to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Base".to_string(),
-            methods: Vec::new(),
-            fields: Vec::new(),
-            controls: Vec::new(),
             enum_values: values,
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 

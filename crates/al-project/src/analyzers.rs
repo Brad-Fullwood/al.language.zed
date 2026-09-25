@@ -228,25 +228,51 @@ fn find_best_below(
     Ok(candidates.pop())
 }
 
+/// Order two discovered analyzer paths by the version numbers in the first
+/// component where they differ.
+///
+/// Candidates all sit below one search root, so their shared prefix compares
+/// equal and the first difference is the package's own version directory.
+/// Taking the largest number found anywhere in the path instead made the
+/// answer depend on where the project happened to live: under a macOS
+/// temporary directory such as `/var/folders/36/...` both candidates keyed on
+/// `36`, the tie fell through to a string comparison, and `1.9.0` beat
+/// `1.10.0`.
 fn compare_versioned_paths(left: &PathBuf, right: &PathBuf) -> Ordering {
     version_key(left)
         .cmp(&version_key(right))
         .then_with(|| left.cmp(right))
 }
 
-fn version_key(path: &Path) -> Vec<u64> {
+/// A path component, keyed so that dotted numbers compare numerically.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ComponentKey {
+    /// Anything that is not a dotted number. Ordered below every version so a
+    /// numbered release outranks a directory named `current` or `beta`.
+    Name(String),
+    Version(Vec<u64>),
+}
+
+fn version_key(path: &Path) -> Vec<ComponentKey> {
     path.components()
-        .filter_map(|component| {
+        .map(|component| {
             let text = component.as_os_str().to_string_lossy();
-            let numbers: Vec<u64> = text
-                .split(['.', '-', '+'])
-                .map(str::parse)
-                .collect::<Result<_, _>>()
-                .ok()?;
-            (!numbers.is_empty()).then_some(numbers)
+            match parse_version(&text) {
+                Some(numbers) => ComponentKey::Version(numbers),
+                None => ComponentKey::Name(text.into_owned()),
+            }
         })
-        .max()
-        .unwrap_or_default()
+        .collect()
+}
+
+/// The numbers in a component like `1.10.0`, `2-1` or `3+4`, or `None` when
+/// any part of it is not a number.
+fn parse_version(text: &str) -> Option<Vec<u64>> {
+    text.split(['.', '-', '+'])
+        .map(str::parse)
+        .collect::<Result<Vec<u64>, _>>()
+        .ok()
+        .filter(|numbers| !numbers.is_empty())
 }
 
 fn matching_immediate_directories(
@@ -336,6 +362,62 @@ mod tests {
         assert_eq!(found, expected.canonicalize().unwrap());
     }
 
+    /// macOS hands tests a temporary directory under `/var/folders/36/...`.
+    /// A numeric directory above the project must not take part in the version
+    /// comparison; this reproduces that shape on any platform.
+    #[test]
+    fn a_numeric_directory_above_the_project_does_not_decide_the_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("36");
+        let package = project.join(".netpackages/businesscentral.lintercop");
+        let old = package.join("1.9.0/lib/net8.0");
+        let new = package.join("1.10.0/lib/net8.0");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(old.join("BusinessCentral.LinterCop.dll"), b"old").unwrap();
+        let expected = new.join("BusinessCentral.LinterCop.dll");
+        std::fs::write(&expected, b"new").unwrap();
+
+        let found = discover_custom_analyzer("BusinessCentral.LinterCop", &project, &[])
+            .unwrap()
+            .expect("analyzer");
+        assert_eq!(found, expected.canonicalize().unwrap());
+    }
+
+    /// `read_dir` returns entries in whatever order the filesystem holds them,
+    /// so the winner must be the same whichever order the candidates arrive in.
+    #[test]
+    fn the_highest_version_wins_in_either_enumeration_order() {
+        let root = Path::new("/packages/businesscentral.lintercop");
+        let older = root.join("1.9.0/lib/net8.0/BusinessCentral.LinterCop.dll");
+        let newer = root.join("1.10.0/lib/net8.0/BusinessCentral.LinterCop.dll");
+
+        for order in [
+            vec![older.clone(), newer.clone()],
+            vec![newer.clone(), older.clone()],
+        ] {
+            let mut candidates = order;
+            candidates.sort_by(compare_versioned_paths);
+            assert_eq!(candidates.pop().unwrap(), newer, "highest version must win");
+        }
+    }
+
+    #[test]
+    fn a_numbered_release_outranks_a_named_directory() {
+        let root = Path::new("/packages/analyzer");
+        let named = root.join("current/BusinessCentral.LinterCop.dll");
+        let numbered = root.join("2.0.0/BusinessCentral.LinterCop.dll");
+
+        for order in [
+            vec![named.clone(), numbered.clone()],
+            vec![numbered.clone(), named.clone()],
+        ] {
+            let mut candidates = order;
+            candidates.sort_by(compare_versioned_paths);
+            assert_eq!(candidates.pop().unwrap(), numbered);
+        }
+    }
+
     #[test]
     fn explicit_relative_path_is_resolved_against_project() {
         let project = tempfile::tempdir().unwrap();
@@ -366,6 +448,312 @@ mod tests {
         assert_eq!(
             analyzer_name("BusinessCentral.LinterCop.DLL"),
             "BusinessCentral.LinterCop"
+        );
+    }
+
+    /// An entry the toolchain resolves itself, or no entry at all, is not a custom
+    /// analyzer — even when a file of that name sits in the project.
+    #[test]
+    fn builtin_and_blank_entries_resolve_to_nothing() {
+        let project = tempfile::tempdir().unwrap();
+        let packages = project.path().join(".netpackages");
+        std::fs::create_dir_all(&packages).unwrap();
+        std::fs::write(packages.join("CodeCop.dll"), b"x").unwrap();
+
+        for entry in ["", "   ", "CodeCop", "codecop.dll", "AppSourceCop", "UICop"] {
+            assert_eq!(
+                discover_custom_analyzer(entry, project.path(), &[]).unwrap(),
+                None,
+                "{entry:?} must not resolve as a custom analyzer"
+            );
+        }
+    }
+
+    #[test]
+    fn absolute_explicit_path_is_used_as_given() {
+        let project = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let dll = elsewhere.path().join("Custom.dll");
+        std::fs::write(&dll, b"analyzer").unwrap();
+
+        let found = discover_custom_analyzer(&dll.display().to_string(), project.path(), &[])
+            .unwrap()
+            .expect("analyzer");
+        assert_eq!(found, dll.canonicalize().unwrap());
+    }
+
+    /// An explicit path naming a directory is a configuration error, like a missing one:
+    /// the entry has to identify a file.
+    #[test]
+    fn explicit_path_to_a_directory_is_an_error() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join("analyzers/Custom.dll")).unwrap();
+        assert!(matches!(
+            discover_custom_analyzer("analyzers/Custom.dll", project.path(), &[]),
+            Err(AnalyzerDiscoveryError::MissingExplicitPath(_))
+        ));
+    }
+
+    /// A configured probing path is the user's own setting, so a missing one is reported
+    /// rather than skipped. The implicit `.netpackages` / `packages` roots are skipped.
+    #[test]
+    fn missing_configured_probing_path_is_reported_but_missing_defaults_are_not() {
+        let project = tempfile::tempdir().unwrap();
+        let error = discover_custom_analyzer("Custom", project.path(), &[PathBuf::from("nope")])
+            .expect_err("a missing configured probing path must be reported");
+        assert!(matches!(error, AnalyzerDiscoveryError::Inspect { .. }));
+
+        // With no probing paths configured, the absent default roots are simply not there.
+        assert_eq!(
+            discover_custom_analyzer("Custom", project.path(), &[]).unwrap(),
+            None
+        );
+    }
+
+    /// A probing path may name the assembly file itself, not only a directory.
+    #[test]
+    fn probing_path_may_point_straight_at_the_file() {
+        let project = tempfile::tempdir().unwrap();
+        let dll = project.path().join("tools/Custom.dll");
+        std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
+        std::fs::write(&dll, b"analyzer").unwrap();
+
+        let found = discover_custom_analyzer(
+            "Custom",
+            project.path(),
+            &[PathBuf::from("tools/Custom.dll")],
+        )
+        .unwrap()
+        .expect("analyzer");
+        assert_eq!(found, dll.canonicalize().unwrap());
+    }
+
+    /// A probing path naming a file of a different name matches nothing and does not
+    /// stop the search.
+    #[test]
+    fn probing_path_to_an_unrelated_file_falls_through() {
+        let project = tempfile::tempdir().unwrap();
+        let other = project.path().join("tools/Other.dll");
+        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+        std::fs::write(&other, b"x").unwrap();
+        let wanted = project.path().join("packages/Custom.dll");
+        std::fs::create_dir_all(wanted.parent().unwrap()).unwrap();
+        std::fs::write(&wanted, b"analyzer").unwrap();
+
+        let found = discover_custom_analyzer(
+            "Custom",
+            project.path(),
+            &[PathBuf::from("tools/Other.dll")],
+        )
+        .unwrap()
+        .expect("analyzer");
+        assert_eq!(found, wanted.canonicalize().unwrap());
+    }
+
+    /// Probing paths are searched in the order the user configured them.
+    #[test]
+    fn probing_paths_are_searched_in_configured_order() {
+        let project = tempfile::tempdir().unwrap();
+        for dir in ["first", "second"] {
+            let path = project.path().join(dir);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("Custom.dll"), dir.as_bytes()).unwrap();
+        }
+
+        let found = discover_custom_analyzer(
+            "Custom",
+            project.path(),
+            &[PathBuf::from("second"), PathBuf::from("first")],
+        )
+        .unwrap()
+        .expect("analyzer");
+        assert_eq!(
+            found,
+            project
+                .path()
+                .join("second/Custom.dll")
+                .canonicalize()
+                .unwrap()
+        );
+    }
+
+    /// `packages/` is searched when `.netpackages/` holds nothing.
+    #[test]
+    fn packages_directory_is_the_second_default_root() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".netpackages/empty")).unwrap();
+        let dll = project.path().join("packages/lib/Custom.dll");
+        std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
+        std::fs::write(&dll, b"analyzer").unwrap();
+
+        let found = discover_custom_analyzer("Custom", project.path(), &[])
+            .unwrap()
+            .expect("analyzer");
+        assert_eq!(found, dll.canonicalize().unwrap());
+    }
+
+    /// A symlink is never followed, so a cycle cannot hang the scan and a link cannot
+    /// smuggle an assembly in from outside the tree.
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_are_skipped() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("Custom.dll"), b"analyzer").unwrap();
+        let packages = project.path().join(".netpackages");
+        std::fs::create_dir_all(&packages).unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("Custom.dll"),
+            packages.join("Custom.dll"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(outside.path(), packages.join("linked")).unwrap();
+
+        assert_eq!(
+            discover_custom_analyzer("Custom", project.path(), &[]).unwrap(),
+            None,
+            "a symlinked assembly must not be picked up"
+        );
+    }
+
+    /// The scan stops at `MAX_SCAN_DEPTH` directories below the root.
+    #[test]
+    fn scan_does_not_descend_past_the_depth_limit() {
+        let project = tempfile::tempdir().unwrap();
+        let mut deep = project.path().join(".netpackages");
+        for i in 0..=MAX_SCAN_DEPTH {
+            deep = deep.join(format!("d{i}"));
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("Custom.dll"), b"analyzer").unwrap();
+
+        assert_eq!(
+            discover_custom_analyzer("Custom", project.path(), &[]).unwrap(),
+            None
+        );
+    }
+
+    /// Version ordering is numeric per component, so `1.10` beats `1.9`. A component is
+    /// a version only when every `.`/`-`/`+` separated part is a number, so a target
+    /// moniker such as `net8.0` contributes nothing and a path with no version at all
+    /// sorts below every versioned one.
+    #[test]
+    fn version_ordering_is_numeric_and_tolerates_unversioned_directories() {
+        assert!(version_key(Path::new("pkg/1.10.0/lib")) > version_key(Path::new("pkg/1.9.0/lib")));
+        assert!(
+            version_key(Path::new("pkg/2.0.0/lib")) > version_key(Path::new("pkg/1.99.99/lib"))
+        );
+        let versions = |path: &str| -> Vec<Vec<u64>> {
+            version_key(Path::new(path))
+                .into_iter()
+                .filter_map(|key| match key {
+                    ComponentKey::Version(numbers) => Some(numbers),
+                    ComponentKey::Name(_) => None,
+                })
+                .collect()
+        };
+        assert_eq!(versions("pkg/1.2.3/lib"), vec![vec![1, 2, 3]]);
+        assert_eq!(versions("pkg/1.2.3-4/lib"), vec![vec![1, 2, 3, 4]]);
+        // `net8.0` is not a version: `net8` is not a number.
+        assert!(versions("pkg/lib/net8.0").is_empty());
+        assert!(versions("pkg/lib").is_empty());
+        assert!(
+            version_key(Path::new("pkg/1.0.0/lib/net8.0"))
+                > version_key(Path::new("pkg/lib/net8.0"))
+        );
+        assert_eq!(
+            compare_versioned_paths(&PathBuf::from("a/1.0/x"), &PathBuf::from("a/1.0/x")),
+            Ordering::Equal
+        );
+        // Equal versions fall back to the path itself, so the result is a total order.
+        assert_eq!(
+            compare_versioned_paths(&PathBuf::from("a/1.0/x"), &PathBuf::from("a/1.0/y")),
+            Ordering::Less
+        );
+    }
+
+    /// The entry may or may not carry the `.dll` suffix, and neither the entry nor the
+    /// file on disk has to match the other's casing.
+    #[test]
+    fn entry_and_file_casing_and_suffix_are_both_optional() {
+        let project = tempfile::tempdir().unwrap();
+        let packages = project.path().join(".netpackages");
+        std::fs::create_dir_all(&packages).unwrap();
+        let dll = packages.join("MyAnalyzer.dll");
+        std::fs::write(&dll, b"analyzer").unwrap();
+        let expected = dll.canonicalize().unwrap();
+
+        for entry in [
+            "MyAnalyzer",
+            "MyAnalyzer.dll",
+            "myanalyzer",
+            "MYANALYZER.DLL",
+        ] {
+            assert_eq!(
+                discover_custom_analyzer(entry, project.path(), &[])
+                    .unwrap()
+                    .expect("analyzer"),
+                expected,
+                "entry {entry:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dedup_paths_keeps_the_first_occurrence() {
+        let mut paths = vec![
+            PathBuf::from("/a"),
+            PathBuf::from("/b"),
+            PathBuf::from("/a"),
+            PathBuf::from("/c"),
+            PathBuf::from("/b"),
+        ];
+        dedup_paths(&mut paths);
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("/a"),
+                PathBuf::from("/b"),
+                PathBuf::from("/c")
+            ]
+        );
+    }
+
+    #[test]
+    fn matching_immediate_directories_ignores_punctuation_and_case() {
+        let root = tempfile::tempdir().unwrap();
+        for name in [
+            "BusinessCentral.LinterCop-1.0.0",
+            "businesscentral-lintercop",
+            "business_central_lintercop",
+            "unrelated-extension",
+        ] {
+            std::fs::create_dir_all(root.path().join(name)).unwrap();
+        }
+        std::fs::write(root.path().join("businesscentral.lintercop"), b"a file").unwrap();
+
+        let found = matching_immediate_directories(root.path(), "businesscentral.lintercop")
+            .unwrap()
+            .into_iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            found,
+            vec![
+                "BusinessCentral.LinterCop-1.0.0",
+                "business_central_lintercop",
+                "businesscentral-lintercop",
+            ]
+        );
+    }
+
+    #[test]
+    fn matching_immediate_directories_on_a_missing_root_is_empty() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(
+            matching_immediate_directories(&root.path().join("nope"), "x")
+                .unwrap()
+                .is_empty()
         );
     }
 }

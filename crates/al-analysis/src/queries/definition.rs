@@ -32,6 +32,7 @@ pub fn definition(
     let Some(clean_name) = super::node_clean_name(node, source) else {
         return Ok(None);
     };
+    let clean_name = clean_name.as_str();
 
     if let Some(access) = resolution::access_path_at(&tree, &text, position) {
         if let Some(receiver) = resolution::resolve_expression_type(
@@ -78,6 +79,13 @@ pub fn definition(
                         }
                     }
                 }
+            }
+            // The receiver is a known object and the member is not one of
+            // its own. The name-only stages below would jump to any
+            // same-named procedure in the workspace: `Cust.Refresh()` on a
+            // record landed on a page extension's `Refresh`.
+            if receiver.type_subtype.is_some() && is_object_type(&receiver.type_name) {
+                return Ok(None);
             }
         }
     }
@@ -127,6 +135,25 @@ pub fn definition(
         }
     }
 
+    // A table's own procedures and triggers reach its fields through the
+    // implicit `Rec`, so a bare name matching a field of the enclosing object
+    // is that field. Without this the bare use resolved through the
+    // last-resort same-name scan below, which lands on whichever occurrence
+    // comes first in the file, so `rename` saw the bare use and the
+    // declaration as two different symbols and left the bare use behind.
+    // Locals and parameters shadow a field, which is why this sits below the
+    // type resolver.
+    if let Some(object) = enclosing_record_object(node) {
+        if let Some((_, def_range)) = resolution::find_field_under(&text, object, clean_name) {
+            if def_range.start != position {
+                return Ok(Some(vec![Location {
+                    uri: uri.clone(),
+                    range: def_range,
+                }]));
+            }
+        }
+    }
+
     if let Some(decl_range) = find_same_file_procedure_decl(&tree, source, clean_name) {
         let def_range: Range = al_syntax::ts_range_to_syntax(&decl_range, source).into();
         if def_range.start != position {
@@ -139,7 +166,11 @@ pub fn definition(
 
     let current_path = uri.to_file_path().ok();
 
-    if let Some(file_path) = workspace.file_index.object_path(clean_name) {
+    let object_owner = match current_path.as_deref() {
+        Some(from) => workspace.file_index.object_path_near(clean_name, from),
+        None => workspace.file_index.object_path(clean_name),
+    };
+    if let Some(file_path) = object_owner {
         let is_current = current_path.as_ref().is_some_and(|cp| *cp == file_path);
         if !is_current {
             if let Some(obj_info_entry) = workspace.file_index.object_info.get(&file_path) {
@@ -206,6 +237,55 @@ pub fn definition(
     Ok(None)
 }
 
+/// Whether `type_name` (`Record`, `Codeunit`, ...) is a type whose subtype
+/// names an AL object with its own members.
+fn is_object_type(type_name: &str) -> bool {
+    [
+        "record",
+        "codeunit",
+        "page",
+        "report",
+        "query",
+        "xmlport",
+        "enum",
+        "interface",
+        "testpage",
+        "testrequestpage",
+    ]
+    .iter()
+    .any(|object_type| type_name.eq_ignore_ascii_case(object_type))
+}
+
+/// The `table` or `tableextension` declaration whose member body holds `node`,
+/// when a bare name there means one of that object's own fields.
+///
+/// Returns `None` outside a member body (a field header names its own field,
+/// and a property value is not an expression), inside a `type_reference` (the
+/// subtype `Customer` in `Record Customer` is an object, not a field), and for
+/// any object kind without an implicit `Rec`.
+fn enclosing_record_object(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    let mut in_member = false;
+    let mut current = Some(node);
+    while let Some(n) = current {
+        match n.kind() {
+            "type_reference" => return None,
+            "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration" => {
+                in_member = true;
+            }
+            "object_declaration" => {
+                if !in_member {
+                    return None;
+                }
+                let kind = n.child_by_field_name("kind")?.kind();
+                return matches!(kind, "kw_table" | "kw_tableextension").then_some(n);
+            }
+            _ => {}
+        }
+        current = n.parent();
+    }
+    None
+}
+
 /// True when `position` falls inside `range` (inclusive of start, exclusive of
 /// end on the same line; multi-line ranges compare by line then column).
 fn range_contains(range: Range, position: Position) -> bool {
@@ -253,7 +333,7 @@ fn type_reference_subtype_keyword(node: tree_sitter::Node, source: &[u8]) -> Opt
     Some(kw)
 }
 
-fn find_same_file_procedure_decl(
+pub(super) fn find_same_file_procedure_decl(
     tree: &tree_sitter::Tree,
     source: &[u8],
     target: &str,
@@ -265,7 +345,7 @@ fn find_same_file_procedure_decl(
             "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     if let Ok(name_text) = name_node.utf8_text(source) {
-                        if name_text.trim_matches('"').eq_ignore_ascii_case(target) {
+                        if al_syntax::clean_identifier(name_text).eq_ignore_ascii_case(target) {
                             return Some(name_node.range());
                         }
                     }
@@ -525,6 +605,181 @@ mod tests {
                 "column {col} must resolve to the TABLE, not the page or the cursor's own usage"
             );
         }
+    }
+
+    /// A field a workspace table extension adds to a package table: the
+    /// composed package members carry no location, so this landed on the
+    /// package outline of the base table.
+    #[test]
+    fn a_field_from_a_workspace_table_extension_resolves_to_the_extension() {
+        let ws = Workspace::new();
+        ws.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Table,
+            id: 18,
+            name: "Customer".to_string(),
+            package: "Base Application".to_string(),
+            fields: vec![al_symbols::FieldSymbol {
+                id: 1,
+                name: "No.".to_string(),
+                type_name: "Code[20]".to_string(),
+                properties: Vec::new(),
+            }],
+            ..Default::default()
+        }]);
+        let extension = std::path::PathBuf::from("/ws/CustExt.TableExt.al");
+        ws.file_index.add_file(
+            extension.clone(),
+            r#"tableextension 50100 "Cust Ext" extends Customer
+{
+    fields
+    {
+        field(50100; "Loyalty Tier"; Code[10]) { }
+    }
+}
+"#
+            .to_string(),
+        );
+        let uri = Url::parse("file:///ws/Loyalty.Codeunit.al").unwrap();
+        open_doc(
+            &ws,
+            &uri,
+            r#"codeunit 50101 Loyalty
+{
+    procedure SetTier(var Cust: Record Customer)
+    begin
+        Cust."Loyalty Tier" := 'GOLD';
+    end;
+}
+"#,
+        );
+
+        // Line 4 is `        Cust."Loyalty Tier" := 'GOLD';`.
+        let locs = definition(
+            &ws,
+            &uri,
+            Position {
+                line: 4,
+                character: 16,
+            },
+        )
+        .expect("the extension field must resolve");
+        assert_eq!(
+            locs[0].uri,
+            Url::from_file_path(&extension).unwrap(),
+            "{locs:?}"
+        );
+        assert_eq!(locs[0].range.start.line, 4, "{locs:?}");
+    }
+
+    /// A record's member that the table does not have is not any same-named
+    /// procedure elsewhere: `Cust.Refresh()` used to land on a page
+    /// extension's `Refresh`.
+    #[test]
+    fn an_unknown_member_of_a_resolved_record_does_not_jump_by_name() {
+        let ws = Workspace::new();
+        let page_extension = std::path::PathBuf::from("/ws/CustCard.PageExt.al");
+        ws.file_index.add_file(
+            page_extension.clone(),
+            r#"pageextension 50102 "Cust Card Ext" extends Customer
+{
+    procedure Refresh()
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+        let uri = Url::parse("file:///ws/Uses.Codeunit.al").unwrap();
+        open_doc(
+            &ws,
+            &uri,
+            r#"codeunit 50101 Uses
+{
+    procedure Run(var Cust: Record Customer)
+    begin
+        Cust.Refresh();
+    end;
+}
+"#,
+        );
+
+        // Line 4 is `        Cust.Refresh();`.
+        let locs = definition(
+            &ws,
+            &uri,
+            Position {
+                line: 4,
+                character: 14,
+            },
+        )
+        .unwrap_or_default();
+        let page_uri = Url::from_file_path(&page_extension).unwrap();
+        assert!(
+            locs.iter().all(|location| location.uri != page_uri),
+            "{locs:?}"
+        );
+    }
+
+    /// A bare field name inside the table's own procedure is an implicit `Rec`
+    /// access, so it resolves to the field declaration. A local of the same
+    /// name shadows the field, and the subtype of a `Record` type reference is
+    /// still an object.
+    #[test]
+    fn a_bare_field_name_in_a_tables_own_procedure_resolves_to_the_field() {
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///ws/Shipment.Table.al").unwrap();
+        open_doc(
+            &ws,
+            &uri,
+            r#"table 50100 "Shipment"
+{
+    procedure Stamp()
+    var
+        Amount: Decimal;
+    begin
+        "Posting Date" := Today();
+        Amount := 0;
+    end;
+
+    fields
+    {
+        field(1; "Posting Date"; Date) { }
+        field(2; Amount; Decimal) { }
+    }
+}
+"#,
+        );
+
+        // Line 6 is `        "Posting Date" := Today();`.
+        let locs = definition(
+            &ws,
+            &uri,
+            Position {
+                line: 6,
+                character: 14,
+            },
+        )
+        .expect("a bare field use must resolve");
+        assert_eq!(locs[0].uri, uri);
+        assert_eq!(
+            locs[0].range.start.line, 12,
+            "must land on the field declaration, not on another use: {locs:?}"
+        );
+
+        // Line 7 is `        Amount := 0;`, and `Amount` is a local here.
+        let locs = definition(
+            &ws,
+            &uri,
+            Position {
+                line: 7,
+                character: 10,
+            },
+        )
+        .expect("the local must resolve");
+        assert_eq!(
+            locs[0].range.start.line, 4,
+            "a local shadows the field of the same name: {locs:?}"
+        );
     }
 
     #[test]

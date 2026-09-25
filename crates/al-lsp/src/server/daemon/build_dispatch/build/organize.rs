@@ -32,9 +32,19 @@ pub(in crate::server::daemon) fn dispatch_sort_members(
             }
         },
     };
-    let file_uri = match file_uri_from_params(params) {
+    // Name a contradictory request as one before resolving the path: with
+    // `content` already supplied, a refusal about where the path points would
+    // describe the wrong problem.
+    if raw_content.is_some() && (params.get("uri").is_some() || params.get("file").is_some()) {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            "select exactly one of 'content', 'uri'/'file', or 'all': true",
+        );
+    }
+    let file_uri = match file_uri_from_params(workspace, params) {
         Ok(file_uri) => file_uri,
-        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+        Err(rejection) => return rejection.into_response(id),
     };
     let all = match optional_bool_param(params, "all", false) {
         Ok(all) => all,
@@ -59,9 +69,9 @@ pub(in crate::server::daemon) fn dispatch_sort_members(
             Ok(root) => root,
             Err(response) => return response,
         };
-        let files = match al_analysis::queries::bulk_fix::collect_al_files(&root) {
+        let files = match al_source::file_index::collect_al_files(&root) {
             Ok(files) => files,
-            Err(message) => return rpc_error(id, error_codes::INTERNAL_ERROR, &message),
+            Err(error) => return super::super::scan_error_response(id, &error),
         };
         let revision = workspace.generation_revision();
         let mut pending = Vec::new();
@@ -282,9 +292,9 @@ pub(in crate::server::daemon) fn dispatch_organize_files(
         Err(e) => return e,
     };
 
-    let files = match al_analysis::queries::bulk_fix::collect_al_files(&root) {
+    let files = match al_source::file_index::collect_al_files(&root) {
         Ok(files) => files,
-        Err(message) => return rpc_error(id, error_codes::INTERNAL_ERROR, &message),
+        Err(error) => return super::super::scan_error_response(id, &error),
     };
     let revision = workspace.generation_revision();
     let mut plan = Vec::new();
@@ -627,6 +637,7 @@ mod tests {
                 packages_dir: tmp.path().join(".alpackages"),
                 packages: Vec::new(),
                 server_configs: Vec::new(),
+                launch_config_error: None,
             });
         }
         // A real on-disk file whose name does NOT match <Kind><Id>.<Name>.al.

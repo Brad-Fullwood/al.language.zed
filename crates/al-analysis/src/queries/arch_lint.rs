@@ -52,19 +52,40 @@ pub struct ArchRule {
     pub regex: bool,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+/// The shape `.alarch.json` deserializes into before validation.
+///
+/// `ArchConfig` converts from this, so every deserialization runs
+/// [`ArchConfig::validate`] — reaching `arch_lint` with an unvalidated config
+/// used to be possible through plain `serde_json::from_str::<ArchConfig>`.
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
-pub struct ArchConfig {
+struct UncheckedArchConfig {
     #[serde(default)]
+    rules: Vec<ArchRule>,
+}
+
+impl TryFrom<UncheckedArchConfig> for ArchConfig {
+    type Error = String;
+
+    fn try_from(unchecked: UncheckedArchConfig) -> Result<Self, Self::Error> {
+        let config = Self {
+            rules: unchecked.rules,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(try_from = "UncheckedArchConfig")]
+pub struct ArchConfig {
     pub rules: Vec<ArchRule>,
 }
 
 impl ArchConfig {
     pub fn from_json(json: &str) -> Result<Self, String> {
-        let config: Self = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        config.validate()?;
-        Ok(config)
+        serde_json::from_str(json).map_err(|e| e.to_string())
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -238,31 +259,28 @@ pub fn arch_lint(
     let sources = crate::workspace_sources::snapshot(workspace)?;
     let mut violations = Vec::new();
 
+    let builtin = ArchConfig::builtin_rules();
     for source in sources {
         let file_path = source.path.to_string_lossy().to_string();
-        let obj_kind_lower = source.object.info.kind.to_lowercase();
-        for rule in &config.rules {
-            apply_rule(
-                &file_path,
-                &source.text,
-                &source.tree,
-                &source.object.info,
-                &obj_kind_lower,
-                rule,
-                &mut violations,
-            );
-        }
-
-        for rule in &ArchConfig::builtin_rules() {
-            apply_rule(
-                &file_path,
-                &source.text,
-                &source.tree,
-                &source.object.info,
-                &obj_kind_lower,
-                rule,
-                &mut violations,
-            );
+        // Per object declaration, not per file: a file may hold several
+        // objects, and reading the kind, name and ID from the first one put
+        // every violation under that object and skipped the rules that only
+        // apply to the later objects' kinds.
+        for (object, node) in source.object_nodes() {
+            let obj_kind_lower = object.info.kind.to_lowercase();
+            for rule in config.rules.iter().chain(builtin.iter()) {
+                apply_rule(
+                    &file_path,
+                    &source.text,
+                    object.text(&source.text),
+                    object.first_line(),
+                    node,
+                    &object.info,
+                    &obj_kind_lower,
+                    rule,
+                    &mut violations,
+                );
+            }
         }
     }
 
@@ -289,10 +307,17 @@ fn legacy_naming_regex(pattern: &str) -> String {
     }
 }
 
+/// `object_text` is this object's own source and `first_line` the zero-based
+/// line it starts on in the file, so a line counted within `object_text` maps
+/// back. Node-based checks still read `file_text`, because the node's byte
+/// offsets are offsets into the whole file.
+#[allow(clippy::too_many_arguments)]
 fn apply_rule(
     file_path: &str,
-    text: &str,
-    tree: &tree_sitter::Tree,
+    file_text: &str,
+    object_text: &str,
+    first_line: u32,
+    object: tree_sitter::Node<'_>,
     obj_info: &al_syntax::ObjectInfo,
     obj_kind_lower: &str,
     rule: &ArchRule,
@@ -306,7 +331,12 @@ fn apply_rule(
         ArchRuleKind::NamingConvention => {
             if let Some(name_pattern) = rule.values.first() {
                 let effective = legacy_naming_regex(name_pattern);
-                let regex = Regex::new(&effective).expect("validated naming regular expression");
+                // `validate` rejects an unusable pattern, but the fields are
+                // public, so a rule built in code can still carry one. Skip it
+                // rather than take the whole lint down.
+                let Ok(regex) = Regex::new(&effective) else {
+                    return;
+                };
                 if !regex.is_match(&obj_info.name) {
                     violations.push(ArchViolation {
                         rule_id: rule.id.clone(),
@@ -316,7 +346,7 @@ fn apply_rule(
                         ),
                         object: obj_info.name.clone(),
                         file: file_path.to_string(),
-                        line: 1,
+                        line: first_line + 1,
                     });
                 }
             }
@@ -326,11 +356,13 @@ fn apply_rule(
                 // Find the first line that actually contains the pattern so
                 // editor jump-to-diagnostic lands somewhere useful, instead
                 // of always reporting line: Some(1).
-                let regex = rule
-                    .regex
-                    .then(|| Regex::new(forbidden).expect("validated forbidden regex"));
+                let regex = match rule.regex.then(|| Regex::new(forbidden)) {
+                    Some(Ok(regex)) => Some(regex),
+                    Some(Err(_)) => continue,
+                    None => None,
+                };
                 let forbidden_lower = (!rule.regex).then(|| forbidden.to_lowercase());
-                let line_no = text.lines().enumerate().find_map(|(idx, line)| {
+                let line_no = object_text.lines().enumerate().find_map(|(idx, line)| {
                     let matches = regex.as_ref().map_or_else(
                         || {
                             line.to_lowercase()
@@ -338,7 +370,7 @@ fn apply_rule(
                         },
                         |regex| regex.is_match(line),
                     );
-                    matches.then_some((idx + 1) as u32)
+                    matches.then_some(first_line + idx as u32 + 1)
                 });
                 if let Some(line) = line_no {
                     violations.push(ArchViolation {
@@ -361,8 +393,9 @@ fn apply_rule(
                 // than silently parsing `LO` and falling back to u32::MAX for
                 // the upper bound, which would let out-of-range IDs slip past.
                 if let Some((lo, hi)) = range.split_once('-') {
-                    let lo: u32 = lo.parse().expect("validated range");
-                    let hi: u32 = hi.parse().expect("validated range");
+                    let (Ok(lo), Ok(hi)) = (lo.parse::<u32>(), hi.parse::<u32>()) else {
+                        return;
+                    };
                     if !(lo..=hi).contains(&(id as u32)) {
                         violations.push(ArchViolation {
                             rule_id: rule.id.clone(),
@@ -372,20 +405,17 @@ fn apply_rule(
                             ),
                             object: obj_info.name.clone(),
                             file: file_path.to_string(),
-                            line: 1,
+                            line: first_line + 1,
                         });
                     }
                 }
             }
         }
         ArchRuleKind::MaxComplexity => {
-            let max: u32 = rule
-                .values
-                .first()
-                .expect("validated threshold")
-                .parse()
-                .expect("validated threshold");
-            let metrics = al_syntax::complexity::compute_complexity(tree, text);
+            let Some(Ok(max)) = rule.values.first().map(|value| value.parse::<u32>()) else {
+                return;
+            };
+            let metrics = al_syntax::complexity::compute_complexity_under(object, file_text);
             for m in &metrics {
                 if m.cyclomatic > max {
                     violations.push(ArchViolation {
@@ -417,6 +447,143 @@ mod tests {
                 .add_file(PathBuf::from(name), content.to_string());
         }
         ws
+    }
+
+    /// `ArchConfig` is public and derives `Deserialize`, so a config could
+    /// reach `arch_lint` without `from_json`'s validation. The `expect`s that
+    /// relied on it then panicked on the next lint.
+    #[test]
+    fn deserializing_an_arch_config_runs_the_same_validation_as_from_json() {
+        let json = r#"{"rules":[{"id":"x","description":"d","kind":"maxComplexity"}]}"#;
+        let error = serde_json::from_str::<ArchConfig>(json)
+            .expect_err("a rule with no threshold must not deserialize");
+        assert!(error.to_string().contains("threshold"), "got: {}", error);
+        assert!(ArchConfig::from_json(json).is_err());
+    }
+
+    /// A file may declare several objects. A rule scoped to a kind has to see
+    /// the kind of each object, and a violation has to name the object it is
+    /// in, at the line it is on. Reading the first declaration for the whole
+    /// file did neither.
+    #[test]
+    fn a_violation_in_the_second_object_of_a_file_names_that_object() {
+        let ws = workspace_with(vec![(
+            "/src/Pair.al",
+            r#"codeunit 50100 "Ship Helper"
+{
+    procedure DoWork()
+    begin
+    end;
+}
+
+page 50101 "Ship Card"
+{
+    PageType = Card;
+
+    trigger OnOpenPage()
+    begin
+        Sleep(1000);
+    end;
+}"#,
+        )]);
+        let config = ArchConfig {
+            rules: vec![ArchRule {
+                id: "no-sleep".to_string(),
+                description: "Pages must not sleep".to_string(),
+                kind: ArchRuleKind::ForbiddenPattern,
+                // Scoped to pages, so the codeunit above must not be linted.
+                pattern: "page".to_string(),
+                values: vec!["Sleep(".to_string()],
+                regex: false,
+            }],
+        };
+
+        let violations: Vec<_> = arch_lint(&ws, &config)
+            .expect("lint must not fail")
+            .into_iter()
+            .filter(|violation| violation.rule_id == "no-sleep")
+            .collect();
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert_eq!(violations[0].object, "Ship Card");
+        assert_eq!(
+            violations[0].line, 14,
+            "the line must be the one in the file: {violations:?}"
+        );
+    }
+
+    /// The fields are public, so a rule can still be built in code without
+    /// values. Lint must skip it rather than take the query down.
+    #[test]
+    fn a_rule_built_without_values_is_skipped_rather_than_panicking() {
+        let ws = workspace_with(vec![(
+            "/src/Some.al",
+            r#"codeunit 50100 "MyCodeunit"
+{
+    procedure DoWork()
+    begin
+        Sleep(1000);
+    end;
+}"#,
+        )]);
+        for kind in [
+            ArchRuleKind::MaxComplexity,
+            ArchRuleKind::NamingConvention,
+            ArchRuleKind::RequiredProperty,
+        ] {
+            let config = ArchConfig {
+                rules: vec![ArchRule {
+                    id: "x".to_string(),
+                    description: "d".to_string(),
+                    kind: kind.clone(),
+                    pattern: String::new(),
+                    values: Vec::new(),
+                    regex: false,
+                }],
+            };
+            assert!(
+                arch_lint(&ws, &config)
+                    .expect("lint must not fail")
+                    .is_empty(),
+                "{kind:?} with no values must be skipped"
+            );
+        }
+    }
+
+    /// A value that is not a usable regex or number must be skipped too.
+    #[test]
+    fn a_rule_with_an_unusable_value_is_skipped_rather_than_panicking() {
+        let ws = workspace_with(vec![(
+            "/src/Some.al",
+            r#"codeunit 50100 "MyCodeunit"
+{
+    procedure DoWork()
+    begin
+        Sleep(1000);
+    end;
+}"#,
+        )]);
+        for (kind, value) in [
+            (ArchRuleKind::MaxComplexity, "not-a-number"),
+            (ArchRuleKind::NamingConvention, "[unclosed"),
+            (ArchRuleKind::RequiredProperty, "lo-hi"),
+        ] {
+            let config = ArchConfig {
+                rules: vec![ArchRule {
+                    id: "x".to_string(),
+                    description: "d".to_string(),
+                    kind: kind.clone(),
+                    pattern: String::new(),
+                    values: vec![value.to_string()],
+                    regex: false,
+                }],
+            };
+            assert!(
+                arch_lint(&ws, &config)
+                    .expect("lint must not fail")
+                    .is_empty(),
+                "{kind:?} with value {value:?} must be skipped"
+            );
+        }
     }
 
     #[test]

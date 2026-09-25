@@ -6,6 +6,19 @@ use super::{Position, Range};
 use crate::resolution::{self, ResolvedMemberKind};
 use al_workspace::{Workspace, WorkspaceStateError};
 
+/// Why a hover query failed.
+///
+/// `hover_native` can only hit workspace state; `hover_full` adds the
+/// CodeAnalysis bridge, so the pair differs by one variant rather than by
+/// error type.
+#[derive(Debug, thiserror::Error)]
+pub enum HoverError {
+    #[error(transparent)]
+    WorkspaceState(#[from] WorkspaceStateError),
+    #[error("semantic hover bridge failed: {0}")]
+    Bridge(#[from] al_semantic::SemanticError),
+}
+
 /// Hover result: markdown content and optional highlight range.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct HoverResult {
@@ -13,7 +26,12 @@ pub struct HoverResult {
     pub range: Option<Range>,
 }
 
-pub fn hover(
+/// Hover from workspace state alone, without the .NET CodeAnalysis bridge.
+///
+/// [`hover_full`] is what the LSP and daemon entry points call; this is the
+/// half of it that needs no bridge, which is what the benches and the
+/// integration tests want.
+pub fn hover_native(
     workspace: &Workspace,
     uri: &Url,
     position: Position,
@@ -27,7 +45,8 @@ pub fn hover(
     };
     let source = text.as_bytes();
     let node_text = node.utf8_text(source).unwrap_or("");
-    let clean_name = node_text.trim_matches('"');
+    let clean_name = al_syntax::clean_identifier(node_text);
+    let clean_name = clean_name.as_str();
 
     if clean_name.is_empty() {
         tracing::debug!("hover: empty clean_name, returning None");
@@ -190,7 +209,8 @@ pub fn hover(
             if n.kind() == "parameter" {
                 if let Some(name_node) = n.child_by_field_name("name") {
                     if let Ok(name_text) = name_node.utf8_text(source) {
-                        let pname = name_text.trim_matches('"');
+                        let pname = al_syntax::clean_identifier(name_text);
+                        let pname = pname.as_str();
                         for param in &proc_info.parameters {
                             if param.name.eq_ignore_ascii_case(pname) {
                                 let content = format!("```al\n{}\n```\n*(parameter)*", param);
@@ -222,6 +242,27 @@ pub fn hover(
                 "```al\n{}{}: {}{}\n```\n*({})*",
                 var_prefix, decl.name, decl.type_name, subtype, label
             );
+            return Ok(Some(HoverResult {
+                contents: content,
+                range: Some(node_range),
+            }));
+        }
+    }
+
+    // An unqualified call to another procedure of the same object:
+    // `SetLoyaltyTier(Cust, 'GOLD');`. Only the enclosing procedure was
+    // compared, so the call showed nothing while `definition` found it.
+    if let Some(decl) = super::definition::find_same_file_procedure_decl(&tree, source, clean_name)
+    {
+        let at: Position = al_syntax::ts_range_to_syntax(&decl, source).start.into();
+        if let Some(proc_info) = al_syntax::find_procedure_at(&tree, &text, at.into()) {
+            let mut content = format_procedure_hover(&proc_info);
+            if let Some(doc) =
+                resolution::extract_doc_comment(&text, proc_info.range.start_point.row)
+            {
+                content.push_str("\n\n");
+                content.push_str(&resolution::format_xml_doc(&doc));
+            }
             return Ok(Some(HoverResult {
                 contents: content,
                 range: Some(node_range),
@@ -322,8 +363,8 @@ pub async fn hover_full(
     workspace: &Workspace,
     uri: &Url,
     position: Position,
-) -> Result<Option<HoverResult>, String> {
-    if let Some(result) = hover(workspace, uri, position).map_err(|error| error.to_string())? {
+) -> Result<Option<HoverResult>, HoverError> {
+    if let Some(result) = hover_native(workspace, uri, position)? {
         return Ok(Some(result));
     }
 
@@ -378,7 +419,7 @@ pub async fn hover_full(
                     tracing::warn!(error = %restart_error, "hover_full: bridge restart failed");
                 }
             }
-            return Err(format!("semantic hover bridge failed: {e}"));
+            return Err(HoverError::Bridge(e));
         }
     };
     let mut contents = format!(
@@ -463,7 +504,7 @@ mod tests {
     use url::Url;
 
     fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<HoverResult> {
-        super::hover(workspace, uri, position).unwrap()
+        super::hover_native(workspace, uri, position).unwrap()
     }
 
     async fn hover_full(
@@ -481,6 +522,29 @@ mod tests {
     }
 
     const PARAM_FIXTURE: &str = "codeunit 50150 \"Test\"\n{\n    procedure Add(A: Integer; B: Integer): Integer\n    begin\n        exit(A + B);\n    end;\n}\n";
+
+    /// `definition` found an unqualified call to a sibling procedure, hover
+    /// showed nothing.
+    #[test]
+    fn hover_on_an_unqualified_call_to_a_sibling_procedure_shows_its_signature() {
+        let ws = Workspace::new();
+        let uri = open_doc(
+            &ws,
+            "codeunit 50101 \"Loyalty Mgt\"\n{\n    procedure SetLoyaltyTier(Tier: Code[10])\n    begin\n    end;\n\n    procedure Run()\n    begin\n        SetLoyaltyTier('GOLD');\n    end;\n}\n",
+        );
+        // Line 8 is `        SetLoyaltyTier('GOLD');`.
+        let r = hover(
+            &ws,
+            &uri,
+            Position {
+                line: 8,
+                character: 12,
+            },
+        )
+        .expect("hover on a sibling call");
+        assert!(r.contents.contains("SetLoyaltyTier"), "{}", r.contents);
+        assert!(r.contents.contains("Tier: Code[10]"), "{}", r.contents);
+    }
 
     #[test]
     fn hover_on_parameter_name_returns_parameter_info() {
@@ -590,13 +654,9 @@ mod tests {
     #[test]
     fn test_format_symbol_hover() {
         let entry = al_symbols::SymbolEntry {
-            synthetic: false,
             kind: al_symbols::ObjectKind::Table,
             id: 18,
             name: "Customer".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Base Application".to_string(),
             methods: vec![al_symbols::MethodSymbol {
                 name: "GetBalance".to_string(),
@@ -611,12 +671,7 @@ mod tests {
                 type_name: "Code".to_string(),
                 properties: vec![],
             }],
-            controls: vec![],
-            enum_values: vec![],
-            keys: vec![],
-            properties: vec![],
-            permissions: vec![],
-            variables: vec![],
+            ..Default::default()
         };
         let result = format_symbol_hover(&entry);
         assert!(result.contains("Table"));
@@ -652,13 +707,9 @@ mod tests {
 
     fn table_entry() -> al_symbols::SymbolEntry {
         al_symbols::SymbolEntry {
-            synthetic: false,
             kind: al_symbols::ObjectKind::Table,
             id: 18,
             name: "Customer".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Base Application".to_string(),
             methods: vec![
                 al_symbols::MethodSymbol {
@@ -676,13 +727,7 @@ mod tests {
                     is_local: true,
                 },
             ],
-            fields: vec![],
-            controls: vec![],
-            enum_values: vec![],
-            keys: vec![],
-            properties: vec![],
-            permissions: vec![],
-            variables: vec![],
+            ..Default::default()
         }
     }
 
@@ -703,17 +748,10 @@ mod tests {
     #[test]
     fn format_symbol_hover_renders_enum_values() {
         let entry = al_symbols::SymbolEntry {
-            synthetic: false,
             kind: al_symbols::ObjectKind::Enum,
             id: 50100,
             name: "Color".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "MyApp".to_string(),
-            methods: vec![],
-            fields: vec![],
-            controls: vec![],
             enum_values: vec![
                 al_symbols::EnumValueSymbol {
                     name: "Red".to_string(),
@@ -724,10 +762,7 @@ mod tests {
                     ordinal: 1,
                 },
             ],
-            keys: vec![],
-            properties: vec![],
-            permissions: vec![],
-            variables: vec![],
+            ..Default::default()
         };
         let result = format_symbol_hover(&entry);
         assert!(result.contains("Enum"), "got: {result:?}");

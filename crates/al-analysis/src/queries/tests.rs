@@ -1,6 +1,6 @@
 //! Test discovery query — `al tests`.
 //!
-//! Uses tree-sitter static analysis to find [Test] codeunits and [Test] procedures
+//! Uses tree-sitter static analysis to find `[Test]` codeunits and `[Test]` procedures
 //! in AL source files. No runtime connection to BC required.
 
 use std::collections::HashSet;
@@ -60,36 +60,38 @@ pub struct TestCodeunit {
     pub test_cleanups: Vec<TestProcedure>,
 }
 
-/// Discover all [Test] codeunits and procedures in workspace .al files.
+/// Discover all `[Test]` codeunits and procedures in workspace .al files.
 pub fn discover_tests(workspace: &Workspace) -> Result<Vec<TestCodeunit>, TestQueryError> {
     let mut results = Vec::new();
 
     let sources =
         crate::workspace_sources::snapshot(workspace).map_err(super::WorkspaceQueryError::from)?;
-    for source_file in sources {
+    for source_file in &sources {
         let path = source_file.path.to_string_lossy().to_string();
         let source = source_file.text.as_bytes();
 
-        if !al_syntax::language_data::is_test_container_kind(&source_file.object.info.kind) {
-            continue;
-        }
+        // Every object in the file: a test codeunit after a table in the
+        // same file was never discovered.
+        for (object, root) in source_file.object_nodes() {
+            if !al_syntax::language_data::is_test_container_kind(&object.info.kind) {
+                continue;
+            }
+            let is_test_subtype = has_test_subtype(root, source);
+            let test_procs = collect_test_procedures(root, source);
+            let test_initializers =
+                collect_procedures_with_attribute(root, source, "TestInitialize");
+            let test_cleanups = collect_procedures_with_attribute(root, source, "TestCleanup");
 
-        let obj_id = source_file.object.normalized_id;
-        let root = source_file.tree.root_node();
-        let is_test_subtype = has_test_subtype(root, source);
-        let test_procs = collect_test_procedures(root, source);
-        let test_initializers = collect_procedures_with_attribute(root, source, "TestInitialize");
-        let test_cleanups = collect_procedures_with_attribute(root, source, "TestCleanup");
-
-        if is_test_subtype || !test_procs.is_empty() {
-            results.push(TestCodeunit {
-                name: source_file.object.info.name.clone(),
-                id: obj_id,
-                file: path,
-                tests: test_procs,
-                test_initializers,
-                test_cleanups,
-            });
+            if is_test_subtype || !test_procs.is_empty() {
+                results.push(TestCodeunit {
+                    name: object.info.name.clone(),
+                    id: object.normalized_id,
+                    file: path.clone(),
+                    tests: test_procs,
+                    test_initializers,
+                    test_cleanups,
+                });
+            }
         }
     }
 
@@ -211,11 +213,9 @@ pub fn files_reachable_from_tests(
     let mut seen: HashSet<NodeId> = HashSet::new();
     let mut queue = std::collections::VecDeque::new();
     for codeunit in &discovered {
-        let kind = object_identity_for_path(workspace, &codeunit.file)?
-            .map(|(kind, _)| kind)
-            .ok_or_else(|| TestQueryError::MissingObjectDeclaration {
-                path: PathBuf::from(&codeunit.file),
-            })?;
+        // Tests live only in codeunits; the file's first object may be a
+        // table the codeunit sits after.
+        let kind = ObjectKind::Codeunit;
         let object = codeunit.name.to_lowercase();
         for procedure in &codeunit.tests {
             let key = NodeKey::Procedure(kind, object.clone(), procedure.name.to_lowercase());
@@ -326,6 +326,25 @@ fn affected_via_call_graph(
             seeds.extend(indices.iter().map(|idx| NodeId::from(*idx)));
         }
     }
+    // A table or table extension has few graph members of its own, but its
+    // fields are read and written by every procedure holding its records.
+    // One walk of the workspace for all the changed tables.
+    let tables = changed_tables(workspace, &want);
+    for (kind, object, procedure) in
+        al_insight::analysis::workspace_procedures_using_tables(&workspace.file_index, &tables)
+    {
+        let (object, procedure) = (object.to_lowercase(), procedure.to_lowercase());
+        // A subscriber or an event publisher has its own node kind.
+        seeds.extend(
+            [
+                NodeKey::Procedure(kind, object.clone(), procedure.clone()),
+                NodeKey::Subscriber(kind, object.clone(), procedure.clone()),
+                NodeKey::Event(kind, object, procedure),
+            ]
+            .iter()
+            .find_map(|key| CallGraph::node_id_for(&insight, key)),
+        );
+    }
     if seeds.is_empty() {
         // Changed object(s) exist but contribute no graph members (e.g. an
         // empty table). Don't claim a precise empty answer — let the caller
@@ -337,11 +356,7 @@ fn affected_via_call_graph(
 
     let mut affected = Vec::new();
     for cu in discover_tests(workspace)? {
-        let kind = object_identity_for_path(workspace, &cu.file)?
-            .map(|(kind, _)| kind)
-            .ok_or_else(|| TestQueryError::MissingObjectDeclaration {
-                path: PathBuf::from(&cu.file),
-            })?;
+        let kind = ObjectKind::Codeunit;
         let obj_lower = cu.name.to_lowercase();
         for proc in &cu.tests {
             let key = NodeKey::Procedure(kind, obj_lower.clone(), proc.name.to_lowercase());
@@ -363,6 +378,27 @@ fn affected_via_call_graph(
         }
     }
     Ok(Some(affected))
+}
+
+/// The tables whose records a change to `objects` affects: a changed table
+/// itself, and the table a changed table extension extends.
+fn changed_tables(workspace: &Workspace, objects: &HashSet<(ObjectKind, String)>) -> Vec<String> {
+    let mut tables: Vec<String> = objects
+        .iter()
+        .filter_map(|(kind, name)| match kind {
+            ObjectKind::Table => Some(name.clone()),
+            ObjectKind::TableExtension => workspace
+                .symbols
+                .get_by_name(name)
+                .iter()
+                .find(|entry| entry.kind == ObjectKind::TableExtension)
+                .and_then(|entry| entry.extends.clone()),
+            _ => None,
+        })
+        .collect();
+    tables.sort_by_key(|table| table.to_lowercase());
+    tables.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    tables
 }
 
 /// Resolve the `(ObjectKind, lowercased name)` of the AL object declared in
@@ -444,7 +480,7 @@ pub fn has_test_subtype(root: tree_sitter::Node, source: &[u8]) -> bool {
     loop {
         if !did_visit {
             let node = cursor.node();
-            if node.kind() == "property" || node.kind() == "property_assignment" {
+            if node.kind() == "property_assignment" {
                 if let Ok(text) = node.utf8_text(source) {
                     if let Some((key, value)) = text.split_once('=') {
                         let k = key.trim();
@@ -493,8 +529,8 @@ pub fn collect_procedures_with_attribute(
                     .and_then(|name| name.utf8_text(source).ok())
                 {
                     procedures.push(TestProcedure {
-                        name: name.trim_matches('"').to_string(),
-                        line: node.start_position().row as u32 + 1,
+                        name: al_syntax::clean_identifier(name),
+                        line: procedure_line(node),
                         handler_functions: Vec::new(),
                     });
                 }
@@ -508,6 +544,14 @@ pub fn collect_procedures_with_attribute(
     procedures
 }
 
+/// The 1-based line of a declaration's `procedure` keyword.
+///
+/// Not the node's own start: the grammar nests a procedure's attributes inside
+/// the declaration, and a `[Test]` procedure always has one.
+fn procedure_line(node: tree_sitter::Node<'_>) -> u32 {
+    al_syntax::procedure_keyword_row(node).unwrap_or_else(|| node.start_position().row) as u32 + 1
+}
+
 fn has_exact_attribute(proc_node: tree_sitter::Node, source: &[u8], wanted: &str) -> bool {
     let matches = |node: tree_sitter::Node| {
         node.utf8_text(source).ok().is_some_and(|text| {
@@ -519,15 +563,15 @@ fn has_exact_attribute(proc_node: tree_sitter::Node, source: &[u8], wanted: &str
     let mut cursor = proc_node.walk();
     if proc_node
         .children(&mut cursor)
-        .any(|child| matches!(child.kind(), "attribute" | "attribute_list") && matches(child))
+        .any(|child| child.kind() == "attribute" && matches(child))
     {
         return true;
     }
     let mut sibling = proc_node.prev_sibling();
     while let Some(node) = sibling {
         match node.kind() {
-            "attribute" | "attribute_list" if matches(node) => return true,
-            "attribute" | "attribute_list" | "comment" => {}
+            "attribute" if matches(node) => return true,
+            "attribute" | "comment" => {}
             _ => break,
         }
         sibling = node.prev_sibling();
@@ -554,8 +598,8 @@ fn collect_test_procs_iterative(
                     if let Some(name_node) = node.child_by_field_name("name") {
                         if let Ok(name) = name_node.utf8_text(source) {
                             procs.push(TestProcedure {
-                                name: name.trim_matches('"').to_string(),
-                                line: node.start_position().row as u32 + 1,
+                                name: al_syntax::clean_identifier(name),
+                                line: procedure_line(node),
                                 handler_functions: handler_functions(node, source),
                             });
                         }
@@ -588,12 +632,12 @@ fn handler_functions(proc_node: tree_sitter::Node, source: &[u8]) -> Vec<String>
     attributes.extend(
         proc_node
             .children(&mut cursor)
-            .filter(|node| matches!(node.kind(), "attribute" | "attribute_list")),
+            .filter(|node| node.kind() == "attribute"),
     );
     let mut sibling = proc_node.prev_sibling();
     while let Some(node) = sibling {
         match node.kind() {
-            "attribute" | "attribute_list" => attributes.push(node),
+            "attribute" => attributes.push(node),
             "comment" => {}
             _ => break,
         }
@@ -630,7 +674,7 @@ fn has_test_attribute(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
     // In AL tree-sitter grammar, attributes are children of procedure_declaration
     let mut cursor = proc_node.walk();
     for child in proc_node.children(&mut cursor) {
-        if child.kind() == "attribute" || child.kind() == "attribute_list" {
+        if child.kind() == "attribute" {
             if let Ok(text) = child.utf8_text(source) {
                 if is_test_attribute(text) {
                     return true;
@@ -641,7 +685,7 @@ fn has_test_attribute(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
     let mut sibling = proc_node.prev_sibling();
     while let Some(s) = sibling {
         match s.kind() {
-            "attribute" | "attribute_list" => {
+            "attribute" => {
                 if let Ok(text) = s.utf8_text(source) {
                     if is_test_attribute(text) {
                         return true;
@@ -658,16 +702,89 @@ fn has_test_attribute(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
 
 /// Return true if the attribute text is `[Test]` (case-insensitive, not TestPermissions etc.).
 pub fn is_test_attribute(text: &str) -> bool {
-    let inner = text.trim().trim_start_matches('[').trim_end_matches(']');
-    inner
+    attribute_names(text).any(|name| name.eq_ignore_ascii_case("test"))
+}
+
+/// The AL attributes that make the test framework invoke a procedure without
+/// anything calling it.
+///
+/// The thirteen UI handlers Microsoft documents under "Create handler methods",
+/// plus the per-test lifecycle pair. A handler must be reachable by the
+/// framework, so it is never `local` and nothing calls it by name.
+const FRAMEWORK_INVOKED_ATTRIBUTES: &[&str] = &[
+    "test",
+    "testinitialize",
+    "testcleanup",
+    "messagehandler",
+    "confirmhandler",
+    "strmenuhandler",
+    "pagehandler",
+    "modalpagehandler",
+    "reporthandler",
+    "requestpagehandler",
+    "sendnotificationhandler",
+    "hyperlinkhandler",
+    "recallnotificationhandler",
+    "sessionsettingshandler",
+    "filterpagehandler",
+    "httpclienthandler",
+];
+
+/// True for an attribute that makes the test framework invoke the procedure.
+///
+/// Reporting these as untested production code was a false positive on every
+/// test suite of any size: a `[MessageHandler]` is not `local`, nothing calls
+/// it, and it cannot be covered by construction.
+///
+/// <https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/devenv-creating-handler-methods>
+pub fn is_framework_invoked_attribute(text: &str) -> bool {
+    attribute_names(text).any(|name| {
+        FRAMEWORK_INVOKED_ATTRIBUTES
+            .iter()
+            .any(|known| name.eq_ignore_ascii_case(known))
+    })
+}
+
+/// The attribute names in one `[A; B(x)]` block, without arguments.
+fn attribute_names(text: &str) -> impl Iterator<Item = &str> {
+    text.trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
         .split(';')
-        .any(|part| part.trim().eq_ignore_ascii_case("test"))
+        .map(|part| {
+            let part = part.trim();
+            part.split_once('(').map_or(part, |(name, _)| name).trim()
+        })
 }
 
 #[cfg(test)]
 mod test_discovery {
     use super::*;
     use al_syntax::AlParser;
+
+    /// A `[Test]` procedure always carries an attribute, and the grammar nests
+    /// it inside the declaration, so the node's own row is the attribute's
+    /// line. Every reported test line was one line high.
+    #[test]
+    fn a_test_procedure_reports_its_procedure_keyword_line() {
+        let source = "codeunit 50100 \"My Tests\"\n\
+                      {\n\
+                      \x20   Subtype = Test;\n\
+                      \n\
+                      \x20   [Test]\n\
+                      \x20   procedure TestSomething()\n\
+                      \x20   begin\n\
+                      \x20   end;\n\
+                      }\n";
+        let parsed = AlParser::parse_quick(source);
+        let procs = collect_test_procedures(parsed.tree.root_node(), source.as_bytes());
+        assert_eq!(procs.len(), 1);
+        assert_eq!(procs[0].name, "TestSomething");
+        assert_eq!(
+            procs[0].line, 6,
+            "line 5 is the [Test] attribute, line 6 is the procedure"
+        );
+    }
 
     #[test]
     fn test_attribute_detection() {
@@ -1016,6 +1133,110 @@ mod affected_call_graph {
         let ws = build_ws();
         let result = affected_tests_detailed(&ws, &[]).unwrap();
         assert!(result.tests.is_empty());
+    }
+
+    /// A table extension has no procedures, so call edges alone found no
+    /// test; its fields are used by every procedure holding a Customer.
+    #[test]
+    fn changing_a_table_extension_marks_tests_holding_its_records() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/ws/custext.al"),
+            r#"tableextension 50100 "Cust Ext" extends Customer
+{
+    fields
+    {
+        field(50100; "Loyalty Tier"; Code[10]) { }
+    }
+}
+"#
+            .to_string(),
+        );
+        ws.file_index.add_file(
+            PathBuf::from("/ws/mgt.al"),
+            r#"codeunit 50101 "Loyalty Mgt"
+{
+    procedure SetTier(var Cust: Record Customer; Tier: Code[10])
+    begin
+        Cust."Loyalty Tier" := Tier;
+    end;
+}
+"#
+            .to_string(),
+        );
+        ws.file_index.add_file(
+            PathBuf::from("/ws/tests.al"),
+            r#"codeunit 50110 "Loyalty Test"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure ThroughMgt()
+    var
+        Mgt: Codeunit "Loyalty Mgt";
+        C: Record Integer;
+    begin
+        Mgt.SetTier(C, 'GOLD');
+    end;
+
+    [Test]
+    procedure Direct()
+    var
+        Cust: Record Customer;
+    begin
+        Cust."Loyalty Tier" := '';
+    end;
+
+    [Test]
+    procedure Unrelated()
+    var
+        V: Record Vendor;
+    begin
+        V.Init();
+    end;
+
+    [Test]
+    procedure ThroughTempBuffer()
+    var
+        Buffer: Record Customer temporary;
+    begin
+        Buffer.Insert();
+    end;
+
+    [Test]
+    procedure ThroughOnRun()
+    begin
+        Codeunit.Run(Codeunit::"Loyalty Job");
+    end;
+}
+"#
+            .to_string(),
+        );
+        ws.file_index.add_file(
+            PathBuf::from("/ws/job.al"),
+            r#"codeunit 50102 "Loyalty Job"
+{
+    trigger OnRun()
+    var
+        Cust: Record Customer;
+    begin
+        Cust.Modify();
+    end;
+}
+"#
+            .to_string(),
+        );
+        let (mode, names) = affected_names(&ws, &["/ws/custext.al"]);
+        assert_eq!(mode, AffectedMode::CallGraph);
+        assert_eq!(
+            names,
+            vec![
+                "Direct".to_string(),
+                "ThroughMgt".to_string(),
+                "ThroughOnRun".to_string(),
+                "ThroughTempBuffer".to_string()
+            ]
+        );
     }
 
     #[test]

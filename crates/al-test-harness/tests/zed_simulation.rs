@@ -214,11 +214,29 @@ async fn test_fixture_diagnostics_on_real_files() {
         .open_file("src/WorkOrderHelper.Codeunit.al", &content)
         .await;
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
-    let _diags = client.drain_diagnostics();
-    // Real AL code should compile cleanly (no syntax errors)
-    // but may have lint warnings
+    // Real AL code parses cleanly. Lint warnings are fine; an error-severity
+    // diagnostic means the parser or the analysis rejected valid AL. Poll until
+    // the server publishes for this file rather than guessing how long the
+    // first parse takes.
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+    let mut errors: Vec<serde_json::Value> = Vec::new();
+    while tokio::time::Instant::now() < deadline {
+        let published = client.drain_diagnostics();
+        if !published.is_empty() {
+            errors.extend(
+                published
+                    .into_values()
+                    .flatten()
+                    .filter(|diagnostic| diagnostic["severity"].as_u64() == Some(1)),
+            );
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        errors.is_empty(),
+        "real AL must publish no error-severity diagnostics, got: {errors:?}"
+    );
 
     client.shutdown().await;
 }
@@ -240,21 +258,28 @@ async fn test_fixture_cross_file_goto_definition() {
         .open_file("src/WorkOrderStaging.Table.al", &table_content)
         .await;
 
-    for (i, line) in codeunit_content.lines().enumerate() {
-        if line.contains("\"Work Order Staging\"") {
-            if let Some(pos) = line.find("\"Work Order Staging\"") {
-                let _def = client
-                    .definition(
-                        "src/WorkOrderPostTask.Codeunit.al",
-                        i as u32,
-                        (pos + 1) as u32,
-                    )
-                    .await;
-                // Whether or not it resolves, it shouldn't crash
-                break;
-            }
-        }
-    }
+    let (line_index, column) = codeunit_content
+        .lines()
+        .enumerate()
+        .find_map(|(index, line)| {
+            line.find("\"Work Order Staging\"")
+                .map(|column| (index as u32, column as u32))
+        })
+        .expect("the codeunit references the Work Order Staging table");
+
+    let definition = client
+        .definition("src/WorkOrderPostTask.Codeunit.al", line_index, column + 1)
+        .await
+        .expect("a table reference must resolve to its declaration");
+    let uri = definition
+        .get("uri")
+        .or_else(|| definition.get(0).and_then(|first| first.get("uri")))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        uri.ends_with("WorkOrderStaging.Table.al"),
+        "go-to-definition must land in the table's own file, got: {definition:?}"
+    );
 
     client.shutdown().await;
 }
@@ -1553,11 +1578,19 @@ async fn test_fixture_code_actions_no_crash() {
     let line_count = post_task.lines().count() as u32;
 
     let actions = client.code_actions(post_task_rel, 0, line_count).await;
-    eprintln!("Post task code actions: {} found", actions.len());
     for action in &actions {
-        if let Some(title) = action.get("title").and_then(|t| t.as_str()) {
-            eprintln!("  - {}", title);
-        }
+        let title = action
+            .get("title")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        assert!(
+            !title.is_empty(),
+            "every code action needs a title the editor can show: {action:?}"
+        );
+        assert!(
+            action.get("edit").is_some() || action.get("command").is_some(),
+            "a code action must carry an edit or a command: {action:?}"
+        );
     }
 
     client.shutdown().await;

@@ -217,6 +217,11 @@
       "type": "boolean",
       "default": true,
       "description": "If the value is set to false, the server certificate will not be validated."
+    },
+    "acceptInvalidCerts": {
+      "type": "boolean",
+      "default": false,
+      "description": "The inverse of validateServerCertificate, accepted for parity with the AL CLI. Setting it to true disables TLS certificate verification for every request the native debug session makes to Business Central, so a man-in-the-middle can read and alter the session. Setting both this and validateServerCertificate to the same value is a configuration error."
     }
   }
 }

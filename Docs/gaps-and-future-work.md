@@ -30,7 +30,7 @@ environment has not supplied its contract evidence.
 
 | Area | Current completion evidence | State |
 |---|---|---|
-| AL grammar | Pinned BCApps and ALAppExtensions corpus parses 46,389/46,389 files; 23 valid and 9 invalid focused fixtures pass; grammar crate and generator tests pass; full proprietary-input regeneration is byte-stable | Verified |
+| AL grammar | Pinned BCApps and ALAppExtensions corpus parses 46,389/46,389 files; 25 valid and 10 invalid focused fixtures pass; grammar crate and generator tests pass; full proprietary-input regeneration is byte-stable | Verified |
 | Generated assets and schemas | Generator-owned grammar, queries, language metadata, themes, and Zed package reproduce without drift; schema/snippet/settings/DAP consumers are cross-checked by repository tests; ordinary and full-regeneration CI profiles exist | Verified |
 | Shared build architecture | Daemon `compile`/`package`, LSP compile, CLI, publish, and DAP route through `al_compile::build`/`BuildRequest`; artifact selection, exact package staging, diagnostics, cancellation, timeout, and atomic handoff regressions pass | Verified |
 | Compiler settings | Official-only rulesets, probing paths, analyzer statistics, incremental mode, raw options, analyzers, and `AL_DOTNET_PATH` are mapped and tested; native behavior and backend-specific limits are explicit in settings/schema documentation | Verified |

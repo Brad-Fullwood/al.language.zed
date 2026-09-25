@@ -63,8 +63,26 @@ impl serde::Serialize for CompletionKind {
 
 use al_syntax::context::{detect_context, CompletionContext};
 
-/// Get completions at a position in a document.
-pub fn completions(
+/// Why a completions query failed.
+///
+/// `completions_native` can only hit workspace state; `completions_full` adds
+/// the CodeAnalysis bridge, so the pair differs by one variant rather than by
+/// error type.
+#[derive(Debug, thiserror::Error)]
+pub enum CompletionError {
+    #[error(transparent)]
+    WorkspaceState(#[from] al_workspace::WorkspaceStateError),
+    #[error("semantic completion bridge failed: {0}")]
+    Bridge(#[from] al_semantic::SemanticError),
+}
+
+/// Completions from workspace state alone, without the .NET CodeAnalysis
+/// bridge.
+///
+/// [`completions_full`] is what the LSP and daemon entry points call; this is
+/// the half of it that needs no bridge, which is what the benches and the
+/// integration tests want.
+pub fn completions_native(
     workspace: &Workspace,
     uri: &Url,
     position: Position,
@@ -95,8 +113,15 @@ pub fn completions(
                         &receiver_expr,
                         position,
                     )? {
-                        let lsp_items =
+                        let mut lsp_items =
                             resolution::completion_items_for_receiver(workspace, &receiver)?;
+                        // `Cust."Lo`: the user already opened the quote, so
+                        // the member goes in bare.
+                        if typed_open_quote(&text, position) {
+                            for item in &mut lsp_items {
+                                item.insert_text = None;
+                            }
+                        }
                         items.extend(lsp_items.into_iter().map(from_lsp_completion));
                     }
                 }
@@ -136,25 +161,30 @@ pub fn completions(
                     sort_text: None,
                 });
             }
-            const TYPE_COMPLETION_CAP: usize = 50;
+            // Filter by what the user has already typed before capping.
+            // `get_by_kind` returns the per-kind vector in index insertion
+            // order, so taking the first 50 of the Base Application's
+            // thousands of tables offered the 50 loaded first — `Customer`
+            // almost certainly not among them — and the server sent nothing
+            // the client could recover.
+            let typed = typed_type_prefix(&text, position);
             for kind in [
                 al_symbols::ObjectKind::Table,
                 al_symbols::ObjectKind::Enum,
                 al_symbols::ObjectKind::Codeunit,
                 al_symbols::ObjectKind::Interface,
             ] {
-                for arc in workspace
-                    .symbols
-                    .get_by_kind(kind)
-                    .iter()
-                    .take(TYPE_COMPLETION_CAP)
-                {
+                for arc in matching_type_symbols(workspace, kind, &typed) {
+                    // The label is the bare name, so a client filtering
+                    // against what the user typed matches it; the quoted form
+                    // AL needs goes in `insert_text`.
+                    let quoted = needs_quoting(&arc.name);
                     items.push(CompletionEntry {
-                        label: format!("\"{}\"", arc.name),
+                        label: arc.name.clone(),
                         kind: CompletionKind::Class,
                         detail: Some(format!("{} {}", arc.kind, arc.id)),
                         documentation: None,
-                        insert_text: None,
+                        insert_text: quoted.then(|| format!("\"{}\"", arc.name)),
                         sort_text: None,
                     });
                 }
@@ -192,8 +222,8 @@ pub async fn completions_full(
     workspace: &Workspace,
     uri: &Url,
     position: Position,
-) -> Result<Vec<CompletionEntry>, String> {
-    let items = completions(workspace, uri, position).map_err(|error| error.to_string())?;
+) -> Result<Vec<CompletionEntry>, CompletionError> {
+    let items = completions_native(workspace, uri, position)?;
     if !items.is_empty() {
         return Ok(items);
     }
@@ -259,7 +289,7 @@ pub async fn completions_full(
                     tracing::warn!(error = %restart_error, "completions_full: bridge restart failed");
                 }
             }
-            return Err(format!("semantic completion bridge failed: {e}"));
+            return Err(CompletionError::Bridge(e));
         }
     };
     if bridge_items.is_empty() {
@@ -368,7 +398,7 @@ fn add_default_completions(
     }
 
     // Use the precomputed cache instead of scanning all indexed symbols.
-    let index_results = workspace.symbols.get_default_completions();
+    let index_results = workspace.symbols.default_completions_snapshot();
     for entry in &index_results {
         let kind = match entry.kind {
             al_symbols::ObjectKind::Table | al_symbols::ObjectKind::TableExtension => {
@@ -412,6 +442,89 @@ fn add_default_completions(
     }
     drop(builtins); // release read lock promptly
     Ok(())
+}
+
+/// How many object names a single type-position request offers per kind.
+const TYPE_COMPLETION_CAP: usize = 50;
+
+/// The partially typed name immediately before the cursor in a type position.
+///
+/// `var Cust: Record Cust` yields `Cust`. An unclosed quote takes everything
+/// after it, so `Record "Sales He` yields `Sales He` — an AL quoted name may
+/// contain spaces, and stopping at the space would filter on the wrong word.
+fn typed_type_prefix(text: &str, position: Position) -> String {
+    let Some(line) = text.lines().nth(position.line as usize) else {
+        return String::new();
+    };
+    let byte = al_syntax::utf16_col_to_byte_offset(line, position.character as usize);
+    let before = &line[..byte];
+    if before.matches('"').count() % 2 == 1 {
+        let quote = before.rfind('"').expect("odd count means one is present");
+        return before[quote + 1..].to_string();
+    }
+    let mut prefix: Vec<char> = before
+        .chars()
+        .rev()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    prefix.reverse();
+    prefix.into_iter().collect()
+}
+
+/// Whether the member being typed at `position` already has its opening
+/// quote: an odd number of `"` after the last `.` on the line.
+fn typed_open_quote(text: &str, position: Position) -> bool {
+    let Some(line) = text.lines().nth(position.line as usize) else {
+        return false;
+    };
+    let before: String = line.chars().take(position.character as usize).collect();
+    let member = before
+        .rsplit_once('.')
+        .map_or(before.as_str(), |(_, member)| member);
+    member.matches('"').count() % 2 == 1
+}
+
+/// True when AL requires the name to be written in quotes.
+pub(crate) fn needs_quoting(name: &str) -> bool {
+    name.is_empty()
+        || name.chars().next().is_some_and(|c| c.is_ascii_digit())
+        || !name.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// Objects of `kind` worth offering for the partially typed `prefix`, ranked
+/// and capped.
+///
+/// Prefix matches come before mid-name matches, then alphabetical, so the cap
+/// keeps the names the user is most likely reaching for instead of whichever
+/// ones the symbol index happened to load first.
+fn matching_type_symbols(
+    workspace: &Workspace,
+    kind: al_symbols::ObjectKind,
+    prefix: &str,
+) -> Vec<std::sync::Arc<al_symbols::SymbolEntry>> {
+    let prefix_lower = prefix.to_lowercase();
+    let mut ranked: Vec<(u8, String, std::sync::Arc<al_symbols::SymbolEntry>)> = workspace
+        .symbols
+        .get_by_kind(kind)
+        .into_iter()
+        .filter(|arc| !arc.synthetic)
+        .filter_map(|arc| {
+            let name_lower = arc.name.to_lowercase();
+            let rank = if prefix_lower.is_empty() {
+                1
+            } else if name_lower.starts_with(&prefix_lower) {
+                0
+            } else if name_lower.contains(&prefix_lower) {
+                1
+            } else {
+                return None;
+            };
+            Some((rank, name_lower, arc))
+        })
+        .collect();
+    ranked.sort_by(|left, right| (left.0, &left.1).cmp(&(right.0, &right.1)));
+    ranked.truncate(TYPE_COMPLETION_CAP);
+    ranked.into_iter().map(|(_, _, arc)| arc).collect()
 }
 
 fn finalize_completion_items(items: &mut Vec<CompletionEntry>) {
@@ -479,7 +592,7 @@ mod tests {
     use al_workspace::Workspace;
 
     fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<CompletionEntry> {
-        super::completions(workspace, uri, position).unwrap()
+        super::completions_native(workspace, uri, position).unwrap()
     }
 
     fn add_default_completions(
@@ -502,6 +615,165 @@ mod tests {
         // tower_lsp::lsp_types::Position the function pointer coercion below
         // will fail to type-check.
         let _: fn(&Workspace, &Url, Position, &mut Vec<CompletionEntry>) = add_default_completions;
+    }
+
+    #[test]
+    fn typed_type_prefix_reads_the_partial_name_at_the_cursor() {
+        let unquoted = "codeunit 50100 X\n{\n    var\n        Cust: Record Cust\n}\n";
+        assert_eq!(
+            typed_type_prefix(
+                unquoted,
+                Position {
+                    line: 3,
+                    character: 29
+                }
+            ),
+            "Cust"
+        );
+
+        // An AL quoted name may contain spaces, so an open quote takes
+        // everything after it rather than stopping at the space.
+        let quoted = "codeunit 50100 X\n{\n    var\n        H: Record \"Sales He\n}\n";
+        assert_eq!(
+            typed_type_prefix(
+                quoted,
+                Position {
+                    line: 3,
+                    character: 27
+                }
+            ),
+            "Sales He"
+        );
+
+        // A closed quote is not a partial name.
+        let closed = "codeunit 50100 X\n{\n    var\n        H: Record \"Sales Header\";\n}\n";
+        assert_eq!(
+            typed_type_prefix(
+                closed,
+                Position {
+                    line: 3,
+                    character: 32
+                }
+            ),
+            ""
+        );
+    }
+
+    #[test]
+    fn needs_quoting_matches_al_identifier_rules() {
+        assert!(!needs_quoting("Customer"));
+        assert!(!needs_quoting("My_Table2"));
+        assert!(needs_quoting("Sales Header"));
+        assert!(needs_quoting("Sales-Post"));
+        assert!(needs_quoting("2Fast"));
+    }
+
+    /// `get_by_kind` returns the per-kind vector in index insertion order, so
+    /// taking the first 50 of thousands of Base Application tables offered
+    /// whichever loaded first and the client had no way to recover the rest.
+    #[test]
+    fn type_position_filters_by_what_has_been_typed_and_ranks_prefix_matches() {
+        let workspace = Workspace::new();
+        let mut entries: Vec<al_symbols::SymbolEntry> = (0..80)
+            .map(|index| al_symbols::SymbolEntry {
+                kind: al_symbols::ObjectKind::Table,
+                id: 50_000 + index,
+                name: format!("Zzz Filler {index:02}"),
+                ..Default::default()
+            })
+            .collect();
+        for (id, name) in [
+            (18, "Customer"),
+            (36, "Sales Header"),
+            (112, "Posted Customer Entry"),
+        ] {
+            entries.push(al_symbols::SymbolEntry {
+                kind: al_symbols::ObjectKind::Table,
+                id,
+                name: name.to_string(),
+                ..Default::default()
+            });
+        }
+        workspace.symbols.add_entries_owned(entries);
+
+        let names = |prefix: &str| {
+            matching_type_symbols(&workspace, al_symbols::ObjectKind::Table, prefix)
+                .into_iter()
+                .map(|arc| arc.name.clone())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            names("Cust"),
+            vec!["Customer".to_string(), "Posted Customer Entry".to_string()],
+            "a prefix match outranks a mid-name match, and nothing else matches"
+        );
+        assert_eq!(names("Sales He"), vec!["Sales Header".to_string()]);
+        assert!(names("Vendor").is_empty());
+        assert_eq!(
+            names("").len(),
+            TYPE_COMPLETION_CAP,
+            "an empty prefix still caps"
+        );
+        assert_eq!(
+            names("")[0],
+            "Customer",
+            "and the cap keeps a deterministic, alphabetical slice"
+        );
+    }
+
+    /// The label always carried the quotes, so a user who had typed `Cust` got
+    /// no match from a client filtering against `"Customer"`.
+    #[test]
+    fn type_position_labels_are_bare_and_quote_only_in_insert_text() {
+        let workspace = Workspace::new();
+        workspace.symbols.add_entries_owned(vec![
+            al_symbols::SymbolEntry {
+                kind: al_symbols::ObjectKind::Table,
+                id: 18,
+                name: "Customer".to_string(),
+                ..Default::default()
+            },
+            al_symbols::SymbolEntry {
+                kind: al_symbols::ObjectKind::Table,
+                id: 36,
+                name: "Sales Header".to_string(),
+                ..Default::default()
+            },
+        ]);
+
+        let uri = test_uri();
+        let source = "codeunit 50100 X\n{\n    var\n        C: Record \n}\n";
+        workspace
+            .documents
+            .open(uri.clone(), source.to_string())
+            .unwrap();
+        let items = completions(
+            &workspace,
+            &uri,
+            Position {
+                line: 3,
+                character: 19,
+            },
+        );
+
+        let find = |label: &str| {
+            items
+                .iter()
+                .find(|item| item.label == label)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "no completion labelled {label}: {:?}",
+                        items.iter().map(|i| &i.label).collect::<Vec<_>>()
+                    )
+                })
+        };
+        assert_eq!(find("Customer").insert_text, None, "no quotes needed");
+        assert_eq!(
+            find("Sales Header").insert_text.as_deref(),
+            Some("\"Sales Header\""),
+            "a name with a space is inserted quoted"
+        );
     }
 
     #[test]
@@ -544,7 +816,7 @@ mod tests {
             line: 0,
             character: 0,
         };
-        let result = completions(&ws, &uri, pos);
+        let result = completions_native(&ws, &uri, pos).expect("workspace state is healthy");
         assert!(
             result.is_empty(),
             "unopened document should return empty completions"
@@ -560,7 +832,7 @@ mod tests {
             line: 0,
             character: 0,
         };
-        let result = completions(&ws, &uri, pos);
+        let result = completions_native(&ws, &uri, pos).expect("workspace state is healthy");
         // Empty file — may return keywords but should not panic
         let _ = result;
     }
@@ -576,7 +848,7 @@ mod tests {
             line: 0,
             character: 5,
         };
-        let result = completions(&ws, &uri, pos);
+        let result = completions_native(&ws, &uri, pos).expect("workspace state is healthy");
         // Should not panic on malformed code
         let _ = result;
     }
@@ -593,7 +865,7 @@ mod tests {
             line: 100,
             character: 0,
         };
-        let result = completions(&ws, &uri, pos);
+        let result = completions_native(&ws, &uri, pos).expect("workspace state is healthy");
         let _ = result; // just ensure no panic
     }
 
@@ -618,7 +890,7 @@ mod tests {
             line: 4,
             character: 8,
         }; // inside begin block
-        let result = completions(&ws, &uri, pos);
+        let result = completions_native(&ws, &uri, pos).expect("workspace state is healthy");
         let labels: Vec<&str> = result.iter().map(|c| c.label.as_str()).collect();
         assert!(
             labels.contains(&"if"),
@@ -828,7 +1100,7 @@ mod tests {
             line: 8,
             character: 8,
         };
-        let result = completions(&ws, &uri, pos);
+        let result = completions_native(&ws, &uri, pos).expect("workspace state is healthy");
         let labels: Vec<&str> = result.iter().map(|c| c.label.as_str()).collect();
         assert!(
             labels.contains(&"Helper"),

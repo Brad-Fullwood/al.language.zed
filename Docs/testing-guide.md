@@ -301,20 +301,31 @@ publishes. Its numbered output is the authoritative order:
 3. Focused grammar fixtures and the pinned external repository corpus.
 4. Grammar package-manifest listing.
 5. Binary-download repository-slug consistency.
-6. Stale `crates/<name>` documentation-path rejection.
-7. Release hygiene: product-version alignment (root `zed-al` =
+6. ShellCheck over `scripts/`, the editor-e2e harness scripts and the grammar
+   test scripts, the same file set as the `test` job in `ci.yml`.
+7. Stale `crates/<name>` documentation-path rejection.
+8. Release hygiene: product-version alignment (root `zed-al` =
    `extension.toml` = `al-lsp` = `al-explorer` = their `Cargo.lock` entries),
-   submodule/grammar-revision alignment, required generated assets, and
-   `languages/al` currency.
-8. `make repro-artifacts`, including language-package regeneration/diff and
+   submodule/grammar-revision alignment, commit-SHA pinning of every workflow
+   action, required generated assets, and `languages/al` currency.
+9. `make repro-artifacts`, including language-package regeneration/diff and
    deterministic Zed-index generation.
-9. Workspace formatting plus `clippy -D warnings`.
-10. Native workspace build plus the real semantic-feature `al-lsp` binary.
-11. Full native workspace tests.
-12. Host tests and the release WASM build for the actual Zed extension.
-13. `cargo package --list` for every publishable library crate. This validates
+10. Workspace formatting plus `clippy -D warnings`.
+11. `cargo deny --workspace check`: the `deny.toml` license, advisory, source
+    and banned-crate policy.
+12. Native workspace build plus the real semantic-feature `al-lsp` binary.
+13. Full native workspace tests.
+14. `al-semantic` and `al-lsp` clippy and tests under the `semantic` feature,
+    which is where every `unsafe` CLR FFI block in the workspace lives.
+15. Host tests and the release WASM build for the actual Zed extension.
+16. `cargo package --list` for every publishable library crate. This validates
     local package manifests/content without pretending that unpublished
     workspace dependencies already resolve on crates.io.
+
+Stages 6 and 11 print a skip note instead of running when `shellcheck` or
+`cargo-deny` is not installed. CI installs both, and a tag push waits for the
+whole `CI` workflow to succeed, so a local skip is not a pass on the release
+path. Run `make shellcheck` or `make deny` on their own to check one of them.
 
 Registry publication has a separate strict gate:
 

@@ -10,7 +10,20 @@ use al_test_harness::{test_project_dir, LspClient};
 use std::time::{Duration, Instant};
 
 const ITERATIONS: usize = 7;
-const MAX_MEDIAN: Duration = Duration::from_millis(250);
+
+/// Hang detection, not a latency SLA. The file's own header says this suite is
+/// a hang and regression guard rather than a microbenchmark, and 250 ms on a
+/// loaded CI runner or a developer machine building in parallel is a flake, not
+/// a regression. Criterion owns the timing reports. Set AL_PERF_MAX_MEDIAN_MS
+/// on a controlled host to enforce a tighter budget.
+const DEFAULT_MAX_MEDIAN: Duration = Duration::from_secs(5);
+
+fn max_median() -> Duration {
+    std::env::var("AL_PERF_MAX_MEDIAN_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .map_or(DEFAULT_MAX_MEDIAN, Duration::from_millis)
+}
 
 fn fixture(path: &str) -> String {
     let absolute = test_project_dir().join(path);
@@ -52,9 +65,10 @@ macro_rules! measure {
             "{} median={measured:?} samples={samples:?}",
             $label
         );
+        let budget = max_median();
         assert!(
-            measured < MAX_MEDIAN,
-            "{} median {measured:?} exceeded the {MAX_MEDIAN:?} binary smoke budget",
+            measured < budget,
+            "{} median {measured:?} exceeded the {budget:?} hang-detection budget",
             $label
         );
     }};

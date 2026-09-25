@@ -33,7 +33,7 @@ pub fn cmd_profiler_hints(hotspots: &[String], json: bool) -> ExitCode {
             if json {
                 print_json(&result);
             } else {
-                let hints = result.as_array().cloned().unwrap_or_default();
+                let hints = list_rows(&result).as_array().cloned().unwrap_or_default();
                 if hints.is_empty() {
                     println!("No profiler hints found.");
                 } else {
@@ -75,10 +75,31 @@ pub fn cmd_sort_members(file: Option<&str>, all: bool, dry_run: bool, json: bool
                     .get("changed")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                if changed {
-                    println!("Members sorted.");
-                } else {
+                if !changed {
                     println!("Already sorted — no changes.");
+                } else if dry_run {
+                    // The file is untouched; say what would change instead of
+                    // reporting a sort that did not happen.
+                    match (
+                        result.get("sorted").and_then(|v| v.as_str()),
+                        result.get("files"),
+                    ) {
+                        (Some(sorted), _) => {
+                            println!("Would reorder members (dry run, nothing written):\n");
+                            print!("{sorted}");
+                        }
+                        (None, Some(files)) => {
+                            println!("Would reorder members in (dry run, nothing written):");
+                            for file in files.as_array().into_iter().flatten() {
+                                if file["changed"].as_bool() == Some(true) {
+                                    println!("  {}", file["file"].as_str().unwrap_or("?"));
+                                }
+                            }
+                        }
+                        _ => println!("Would reorder members (dry run, nothing written)."),
+                    }
+                } else {
+                    println!("Members sorted.");
                 }
             }
             ExitCode::SUCCESS
@@ -112,14 +133,10 @@ pub fn cmd_organize_files(dry_run: bool, json: bool) -> ExitCode {
                     for f in &files {
                         let from = f.get("from").and_then(|v| v.as_str()).unwrap_or("?");
                         let to = f.get("to").and_then(|v| v.as_str()).unwrap_or("?");
-                        let renamed = f.get("renamed").and_then(|v| v.as_bool()).unwrap_or(false);
-                        let status = if dry_run {
-                            "[dry-run]"
-                        } else if renamed {
-                            "[renamed]"
-                        } else {
-                            "[failed]"
-                        };
+                        // The daemon reports `renamed: !dryRun` and turns a
+                        // failed rename into an RPC error, so a listed file in
+                        // a non-dry run was renamed.
+                        let status = if dry_run { "[dry-run]" } else { "[renamed]" };
                         println!("{status} {from} -> {to}");
                     }
                 }
@@ -184,6 +201,19 @@ fn report_snapshot_comparison(
     } else {
         ExitCode::FAILURE
     }
+}
+
+/// Failing methods in a `tests.snapshot_capture` response.
+///
+/// The daemon runs the test to record the snapshot and returns its
+/// `TestCodeunitResult` under `testResult`. A baseline captured from a red test
+/// is worthless, so it must not report success.
+pub(crate) fn captured_test_failures(result: &serde_json::Value) -> u64 {
+    result
+        .get("testResult")
+        .and_then(|value| value.get("failed"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0)
 }
 
 pub fn cmd_test_snapshot(subcmd: &crate::cli::TestSnapshotCommands, json: bool) -> ExitCode {
@@ -261,22 +291,32 @@ pub fn cmd_test_snapshot(subcmd: &crate::cli::TestSnapshotCommands, json: bool) 
             ));
             match request_checked(&mut client, "tests.snapshot_capture", Some(params)) {
                 Ok(result) => {
+                    let failed = captured_test_failures(&result);
                     if json {
                         print_json(&result);
                     } else {
-                        println!(
-                            "[PASS] Captured {} sample(s) to {}",
-                            result
-                                .get("sampleCount")
-                                .and_then(|value| value.as_u64())
-                                .unwrap_or(0),
-                            result
-                                .get("snapshotPath")
-                                .and_then(|value| value.as_str())
-                                .unwrap_or("?"),
-                        );
+                        let samples = result
+                            .get("sampleCount")
+                            .and_then(|value| value.as_u64())
+                            .unwrap_or(0);
+                        let path = result
+                            .get("snapshotPath")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("?");
+                        if failed > 0 {
+                            println!(
+                                "[FAIL] Captured {samples} sample(s) to {path} from a test with \
+                                 {failed} failing method(s)"
+                            );
+                        } else {
+                            println!("[PASS] Captured {samples} sample(s) to {path}");
+                        }
                     }
-                    ExitCode::SUCCESS
+                    if failed > 0 {
+                        ExitCode::FAILURE
+                    } else {
+                        ExitCode::SUCCESS
+                    }
                 }
                 Err(error) => report_error(&error, json),
             }
@@ -479,13 +519,13 @@ pub fn cmd_test_mutate(
                             .get("survivalReason")
                             .and_then(|x| x.as_str())
                             .unwrap_or("unknown");
+                        // The variant id embeds the source file name verbatim,
+                        // so a byte slice splits a multi-byte character in
+                        // `Kundæ.al` and panics.
+                        let id_short: String = id.chars().take(8).collect();
                         println!(
                             "{:<8} {:<30} {:>5}  {} [{}]",
-                            &id[..id.len().min(8)],
-                            file_short,
-                            line,
-                            desc,
-                            reason
+                            id_short, file_short, line, desc, reason
                         );
                     }
                 }
@@ -519,6 +559,36 @@ fn mutation_exit_code(result: &serde_json::Value) -> Result<ExitCode, String> {
 #[cfg(test)]
 mod mutation_exit_tests {
     use super::*;
+
+    #[test]
+    fn a_capture_from_a_failing_test_is_not_a_success() {
+        // `test-snapshot capture` used to print `[PASS]` and exit 0 whatever
+        // the captured test did, so every later validate/replay compared
+        // against a baseline recorded from a red test.
+        let response = |failed: u64| {
+            serde_json::json!({
+                "captured": true,
+                "snapshotPath": "snap/base.snap.json",
+                "sampleCount": 3,
+                "testResult": { "total": 2, "passed": 2 - failed, "failed": failed, "skipped": 0 },
+            })
+        };
+        assert_eq!(captured_test_failures(&response(0)), 0);
+        assert_eq!(captured_test_failures(&response(1)), 1);
+        // A response without the field must not read as a failure.
+        assert_eq!(
+            captured_test_failures(&serde_json::json!({ "captured": true })),
+            0
+        );
+    }
+
+    #[test]
+    fn a_non_ascii_variant_id_is_shortened_by_characters() {
+        // `&id[..8]` split the `æ` in a `Kundæ.al` variant id and panicked.
+        let id = "cb:Kundæ.al:12:340:x";
+        let short: String = id.chars().take(8).collect();
+        assert_eq!(short, "cb:Kundæ");
+    }
 
     #[test]
     fn mutation_exit_fails_for_every_non_killed_outcome() {

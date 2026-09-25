@@ -40,6 +40,27 @@ pub enum ObjectKind {
     DotNet,
 }
 
+/// A string that names no AL object kind.
+///
+/// The message lists the base keywords from `object_types.json` rather than a
+/// second hand-kept list, so a kind added to the data file appears here without
+/// an edit.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "Unknown object kind: '{name}'. Valid kinds: {}(and their extension variants)",
+    base_object_keywords()
+)]
+pub struct UnknownObjectKind {
+    pub name: String,
+}
+
+fn base_object_keywords() -> String {
+    al_syntax::language_data::object_types()
+        .iter()
+        .map(|kind| format!("{}, ", kind.keyword))
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum DeclarationIdError {
     #[error("{kind} declarations require a numeric object ID")]
@@ -79,17 +100,21 @@ impl fmt::Display for ObjectKind {
 }
 
 impl FromStr for ObjectKind {
-    type Err = String;
+    type Err = UnknownObjectKind;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "table" => Ok(ObjectKind::Table),
-            "tableextension" | "table_extension" | "table-extension" => Ok(ObjectKind::TableExtension),
+            "tableextension" | "table_extension" | "table-extension" => {
+                Ok(ObjectKind::TableExtension)
+            }
             "page" => Ok(ObjectKind::Page),
             "pageextension" | "page_extension" | "page-extension" => Ok(ObjectKind::PageExtension),
             "codeunit" => Ok(ObjectKind::Codeunit),
             "report" => Ok(ObjectKind::Report),
-            "reportextension" | "report_extension" | "report-extension" => Ok(ObjectKind::ReportExtension),
+            "reportextension" | "report_extension" | "report-extension" => {
+                Ok(ObjectKind::ReportExtension)
+            }
             "xmlport" => Ok(ObjectKind::XmlPort),
             "query" => Ok(ObjectKind::Query),
             "enum" => Ok(ObjectKind::Enum),
@@ -103,15 +128,15 @@ impl FromStr for ObjectKind {
             "pagecustomization" | "page_customization" | "page-customization" => {
                 Ok(ObjectKind::PageCustomization)
             }
-            "controladdin" | "control_addin" | "control-addin" => {
-                Ok(ObjectKind::ControlAddIn)
-            }
+            "controladdin" | "control_addin" | "control-addin" => Ok(ObjectKind::ControlAddIn),
             "entitlement" => Ok(ObjectKind::Entitlement),
             "profileextension" | "profile_extension" | "profile-extension" => {
                 Ok(ObjectKind::ProfileExtension)
             }
             "dotnet" => Ok(ObjectKind::DotNet),
-            _ => Err(format!("Unknown object kind: '{}'. Valid kinds: table, page, codeunit, report, xmlport, query, enum, interface, permissionset, profile, controladdin, entitlement (and their extension variants)", s)),
+            _ => Err(UnknownObjectKind {
+                name: s.to_string(),
+            }),
         }
     }
 }
@@ -119,7 +144,7 @@ impl FromStr for ObjectKind {
 impl ObjectKind {
     /// The primary (first-listed) extension kind for this base kind.
     pub fn extension_kind(&self) -> Option<ObjectKind> {
-        crate::language_data::object_type_by_keyword(self.al_keyword())?
+        al_syntax::language_data::object_type_by_keyword(self.al_keyword())?
             .extensions
             .first()
             .and_then(|kw| kw.parse::<ObjectKind>().ok())
@@ -127,7 +152,7 @@ impl ObjectKind {
 
     pub fn base_kind(&self) -> Option<ObjectKind> {
         let kw = self.al_keyword();
-        crate::language_data::object_types()
+        al_syntax::language_data::object_types()
             .iter()
             .find(|ot| ot.extensions.iter().any(|e| e.eq_ignore_ascii_case(kw)))
             .and_then(|ot| ot.keyword.parse::<ObjectKind>().ok())
@@ -627,7 +652,16 @@ pub(crate) struct ObjectJson {
     pub id: i32,
     #[serde(alias = "Name", default)]
     pub name: String,
-    #[serde(alias = "ExtendsObjectName", default)]
+    /// The extended object. Microsoft's packages and alc write it as
+    /// `TargetObject` (`Target` on report extensions); `ExtendsObjectName` is
+    /// the older spelling. A target in another app carries that app's id:
+    /// `#63ca2fa44f034f2ba480172fef340d3f#Feature To Update`.
+    #[serde(
+        alias = "TargetObject",
+        alias = "Target",
+        alias = "ExtendsObjectName",
+        default
+    )]
     pub extends: Option<String>,
     /// Interface names from `implements` clause (codeunits only).
     #[serde(alias = "Implements", default)]
@@ -1029,6 +1063,17 @@ fn synthesize_option_enums(
     entries
 }
 
+/// `#<app id without dashes>#Name` → `Name`: the form a package gives an
+/// extension target that lives in another app.
+fn strip_target_app_id(target: String) -> String {
+    target
+        .strip_prefix('#')
+        .and_then(|rest| rest.split_once('#'))
+        .filter(|(app_id, _)| app_id.len() == 32 && app_id.chars().all(|c| c.is_ascii_hexdigit()))
+        .map(|(_, name)| name.to_string())
+        .unwrap_or(target)
+}
+
 impl ObjectJson {
     fn into_entry(self, kind: ObjectKind, package: &str, namespace: &str) -> SymbolEntry {
         SymbolEntry {
@@ -1036,7 +1081,7 @@ impl ObjectJson {
             id: self.id,
             synthetic: false,
             name: self.name,
-            extends: self.extends,
+            extends: self.extends.map(strip_target_app_id),
             package: package.to_string(),
             methods: self.methods.into_iter().map(|m| m.into_method()).collect(),
             fields: self.fields.into_iter().map(|f| f.into_field()).collect(),
@@ -1193,6 +1238,21 @@ impl EnumValueJson {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unknown_kind_string_comes_back_typed_and_named() {
+        let error = "notanobjectkind"
+            .parse::<ObjectKind>()
+            .expect_err("unknown kind must not parse");
+        assert_eq!(error.name, "notanobjectkind");
+        let message = error.to_string();
+        assert!(message.contains("notanobjectkind"), "{message}");
+        // The valid-kind list comes from object_types.json, not a second list
+        // kept by hand here.
+        for keyword in ["table", "codeunit", "permissionset"] {
+            assert!(message.contains(keyword), "{message}");
+        }
+    }
 
     /// `ObjectKind` must cover every object type the grammar's
     /// LanguageData JSON declares — Microsoft adds object types per BC
@@ -1697,6 +1757,46 @@ mod tests {
         assert_eq!(deserialized.kind, ObjectKind::Enum);
         assert_eq!(deserialized.name, "MyEnum");
         assert_eq!(deserialized.enum_values.len(), 2);
+    }
+
+    /// Base Application 26 moved manufacturing fields into table extensions
+    /// in the same app. Its packages name the target in `TargetObject`
+    /// (`Target` on report extensions), prefixed with the app id when the
+    /// target is in another app; reading only `ExtendsObjectName` left all
+    /// 80 table and 41 enum extensions detached from their base object.
+    #[test]
+    fn package_extensions_attach_through_target_object() {
+        let json = r##"{
+            "TableExtensions": [
+                { "Id": 99000750, "Name": "Mfg. Item", "TargetObject": "Item" }
+            ],
+            "EnumExtensionTypes": [
+                { "Id": 2611, "Name": "Feature To Update - BaseApp",
+                  "TargetObject": "#63ca2fa44f034f2ba480172fef340d3f#Feature To Update" }
+            ],
+            "ReportExtensions": [
+                { "Id": 929, "Name": "Asm. Get Demand To Reserve", "Target": "Get Demand To Reserve" }
+            ]
+        }"##;
+
+        let sr: SymbolReferenceJson = serde_json::from_str(json).unwrap();
+        let entries = sr.into_entries("Base Application");
+        let extends = |name: &str| {
+            entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .and_then(|entry| entry.extends.clone())
+        };
+
+        assert_eq!(extends("Mfg. Item").as_deref(), Some("Item"));
+        assert_eq!(
+            extends("Feature To Update - BaseApp").as_deref(),
+            Some("Feature To Update")
+        );
+        assert_eq!(
+            extends("Asm. Get Demand To Reserve").as_deref(),
+            Some("Get Demand To Reserve")
+        );
     }
 
     #[test]

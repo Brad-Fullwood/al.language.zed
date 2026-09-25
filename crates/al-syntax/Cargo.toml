@@ -6,13 +6,14 @@ license.workspace = true
 description = "Tree-sitter-based AL (Business Central) syntax layer: parsing, AST navigation, formatting, folding, lint, complexity, semantic tokens"
 repository.workspace = true
 [dependencies]
-tree-sitter = "0.25"
+tree-sitter = { workspace = true }
 tree-sitter-al = { package = "tree-sitter-al-bc", path = "../../tree-sitter-al", version = "0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]

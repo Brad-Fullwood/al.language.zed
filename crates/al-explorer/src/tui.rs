@@ -43,13 +43,17 @@ pub(crate) fn run_tui() -> Result<(), Box<dyn Error>> {
 
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(std::io::stderr(), crossterm::terminal::LeaveAlternateScreen);
+        restore_terminal();
         original_hook(info);
     }));
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
+    // From here every exit path runs `TerminalGuard::drop`. Leaving mouse
+    // capture on sends the shell an escape sequence for every mouse move until
+    // the user runs `reset`, and the `?` operators below used to return with
+    // raw mode and mouse capture still set.
+    let _guard = TerminalGuard;
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -62,13 +66,7 @@ pub(crate) fn run_tui() -> Result<(), Box<dyn Error>> {
 
     let res = run_app(&mut terminal, app);
 
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+    let _ = terminal.show_cursor();
 
     if let Err(err) = res {
         eprintln!("{:?}", err);
@@ -77,12 +75,30 @@ pub(crate) fn run_tui() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Undo every terminal mode `run_tui` sets, in reverse order. Safe to call when
+/// a mode was never set: each command is a no-op the terminal ignores.
+fn restore_terminal() {
+    let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
+    let _ = disable_raw_mode();
+}
+
+/// Restores the terminal on every way out of `run_tui`: normal return, `?`, and
+/// unwinding.
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        restore_terminal();
+    }
+}
+
 fn run_app<B: Backend<Error = io::Error>>(
     terminal: &mut Terminal<B>,
     mut app: App,
 ) -> io::Result<()> {
     loop {
         app.poll_init();
+        app.test_runner.poll_run();
         terminal.draw(|f| ui(f, &mut app))?;
 
         if event::poll(std::time::Duration::from_millis(250))? {

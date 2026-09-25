@@ -10,13 +10,17 @@ pub mod lint;
 pub mod navigation;
 pub mod parser;
 pub mod sort;
+pub mod source_lines;
 pub mod symbols;
 pub mod tokens;
 pub mod traversal;
 pub mod type_resolver;
 pub mod types;
 
-pub use context::{detect_context, extract_last_identifier, find_call_context, CompletionContext};
+pub use context::{
+    code_before_open_literal, detect_context, extract_last_identifier, find_call_context,
+    CompletionContext,
+};
 pub use folding::extract_folding_ranges;
 pub use formatting::{
     format_al, format_range, BlankLinesBetweenProcedures, BraceStyle, FormatOptions, KeywordCasing,
@@ -24,13 +28,17 @@ pub use formatting::{
 pub use lint::{lint, lint_rules, LintDiagnostic, LintRuleInfo, LintSeverity};
 pub use navigation::{
     collect_call_site_names, collect_call_sites, collect_member_access_names,
-    collect_primary_expression_names, find_call_references, find_event_subscriber_references,
-    find_node_at_position, find_object_declaration, find_procedure_at, find_variable_references,
-    ObjectInfo, ParameterInfo, ProcedureInfo,
+    collect_primary_expression_names, collect_primary_expression_names_under,
+    count_call_references, count_identifier_occurrences, find_event_subscriber_attributes,
+    find_event_subscriber_references, find_node_at_position, find_object_declaration,
+    find_object_declarations, find_procedure_at, find_variable_references,
+    find_variable_references_under, procedure_keyword_row, EventSubscriberAttribute, ObjectInfo,
+    ParameterInfo, ProcedureInfo, SubscriberArgument,
 };
 pub use parser::{AlParser, ParseResult, SyntaxError};
 pub use sort::sort_members;
-pub use symbols::extract_document_symbols;
+pub use source_lines::{get_source_line, SourceLines};
+pub use symbols::{extract_document_symbols, extract_document_symbols_under};
 pub use tokens::{extract_semantic_tokens, SemanticToken};
 pub use traversal::{walk_tree, walk_tree_until};
 pub use type_resolver::{object_kind_to_al_type, TypeResolver, VariableDecl, VariableScope};
@@ -40,18 +48,29 @@ pub use types::{
 };
 
 /// Clean an attribute argument: trim, strip a leading `Type::` prefix, and strip
-/// surrounding `"`/`'` quotes. A pure string helper shared by the navigation,
+/// one surrounding `"`/`'` pair, unescaping the doubled quote inside it. A pure string helper shared by the navigation,
 /// insight and query layers.
 pub fn clean_attr_arg(s: &str) -> String {
     let s = s.trim();
-    let s = if let Some(pos) = s.find("::") {
-        &s[pos + 2..]
-    } else {
-        s
+    // `Codeunit::"Sales-Post"` names the object after the scope operator. A
+    // quoted argument is a name in its own right, `::` inside it included.
+    let s = match s.find("::") {
+        Some(pos) if !s.starts_with('"') && !s.starts_with('\'') => s[pos + 2..].trim(),
+        _ => s,
     };
-    let s = s.trim_matches('"');
-    let s = s.trim_matches('\'');
-    s.trim().to_string()
+    // One quote pair, with the doubled quote unescaped, so `"My ""Big"" Unit"`
+    // matches the name al-syntax reports for that object. An unbalanced value
+    // keeps the old lenient strip.
+    for quote in ['"', '\''] {
+        if s.len() >= 2 && s.starts_with(quote) && s.ends_with(quote) {
+            let doubled: String = [quote, quote].iter().collect();
+            return s[1..s.len() - 1]
+                .replace(&doubled, &quote.to_string())
+                .trim()
+                .to_string();
+        }
+    }
+    s.trim_matches('"').trim_matches('\'').trim().to_string()
 }
 
 /// Convert a byte-offset column (as produced by tree-sitter) within a UTF-8 line to a
@@ -117,6 +136,41 @@ pub fn clean_identifier_text(text: &str) -> Option<String> {
     }
 }
 
+/// [`clean_identifier_text`] with an empty string in place of `None`.
+///
+/// For the call sites that treat an empty name as "no name" rather than
+/// branching on it.
+pub fn clean_identifier(text: &str) -> String {
+    clean_identifier_text(text).unwrap_or_default()
+}
+
+/// Identifier cleanup for text that did not come straight from a syntax node.
+pub trait IdentifierText {
+    /// Trim whitespace, drop one leading and one trailing `"`, and unescape
+    /// `""` to `"`.
+    ///
+    /// Replaces `trim_matches('"')`, which strips quote *runs*: it left the
+    /// doubled quote inside `"Cust ""Main"" Rec"` and over-stripped
+    /// `"Name"""` to `Name`, so those names never matched the ones al-syntax
+    /// reports. Each end is handled on its own, so text cut off mid-name while
+    /// the user types (`"Sales Hea`) still loses its opening quote. Borrows
+    /// when there is nothing to unescape.
+    fn unquote_identifier(&self) -> std::borrow::Cow<'_, str>;
+}
+
+impl IdentifierText for str {
+    fn unquote_identifier(&self) -> std::borrow::Cow<'_, str> {
+        let text = self.trim();
+        let text = text.strip_prefix('"').unwrap_or(text);
+        let text = text.strip_suffix('"').unwrap_or(text);
+        if text.contains("\"\"") {
+            std::borrow::Cow::Owned(text.replace("\"\"", "\""))
+        } else {
+            std::borrow::Cow::Borrowed(text)
+        }
+    }
+}
+
 pub fn node_text_or(node: tree_sitter::Node, source: &[u8], fallback: &str) -> String {
     node_text_clean(node, source).unwrap_or_else(|| fallback.to_string())
 }
@@ -127,6 +181,49 @@ pub fn node_name_or(node: tree_sitter::Node, source: &[u8], fallback: &str) -> S
     node.child_by_field_name("name")
         .and_then(|n| node_text_clean(n, source))
         .unwrap_or_else(|| fallback.to_string())
+}
+
+/// The object an extension object extends (`extends` / `customizes`), cleaned
+/// of quotes, or `None` for an object with no such clause.
+///
+/// The grammar emits the clause either as `object_modifier` (`modifier` and
+/// `target` fields) or, for the headers real code has, as
+/// `implements_clause` (a positional `metadata_keyword` and `name`, shared
+/// with `implements`); the leading keyword tells them apart. Only the object
+/// header is searched.
+pub fn object_extends_target(object: tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
+    let mut stack = vec![object];
+    while let Some(node) = stack.pop() {
+        if matches!(node.kind(), "object_modifier" | "implements_clause") {
+            let mut keyword_cursor = node.walk();
+            let keyword = node
+                .child_by_field_name("modifier")
+                .or_else(|| {
+                    node.children(&mut keyword_cursor)
+                        .find(|child| child.kind() == "metadata_keyword")
+                })
+                .and_then(|keyword| keyword.utf8_text(source).ok())
+                .unwrap_or("")
+                .trim();
+            if keyword.eq_ignore_ascii_case("extends") || keyword.eq_ignore_ascii_case("customizes")
+            {
+                let mut target_cursor = node.walk();
+                return node
+                    .child_by_field_name("target")
+                    .or_else(|| {
+                        node.children(&mut target_cursor)
+                            .find(|child| matches!(child.kind(), "name" | "name_or_keyword"))
+                    })
+                    .and_then(|target| target.utf8_text(source).ok())
+                    .map(|text| text.unquote_identifier().into_owned());
+            }
+        }
+        if node.kind() != "object_body" {
+            let mut cursor = node.walk();
+            stack.extend(node.children(&mut cursor));
+        }
+    }
+    None
 }
 
 /// Extract the object name from an `object_declaration` node.
@@ -224,16 +321,25 @@ pub fn find_ancestor(
     None
 }
 
-/// Return the text of a single source line by zero-based `row` index.
+/// UTF-16 code unit column of the position `byte_offset` bytes into `source`,
+/// given tree-sitter's byte `column` for the same position.
 ///
-/// Returns an empty string if `row` is out of range or the bytes are not valid UTF-8.
-/// Uses `splitn` to avoid scanning past the requested line.
-pub fn get_source_line(source: &[u8], row: usize) -> &str {
-    source
-        .splitn(row + 2, |&b| b == b'\n')
-        .nth(row)
-        .and_then(|b| std::str::from_utf8(b).ok())
-        .unwrap_or("")
+/// A tree-sitter point carries the byte offset of the position and the byte
+/// column within its line, so the line begins at `byte_offset - column` and the
+/// conversion only has to read that one line prefix. Reaching the line by
+/// splitting the file on `\n` instead would walk from byte 0 on every call,
+/// which is what made `documentSymbol` on a large table quadratic in file size.
+fn utf16_col_at(source: &[u8], byte_offset: usize, column: usize) -> u32 {
+    let line_start = byte_offset.saturating_sub(column);
+    let Some(prefix) = source.get(line_start..byte_offset) else {
+        return 0;
+    };
+    match std::str::from_utf8(prefix) {
+        Ok(prefix) => byte_col_to_utf16_col(prefix, prefix.len()),
+        // A position inside a multi-byte character has no UTF-16 column of its
+        // own; the byte column is the closest honest answer.
+        Err(_) => column as u32,
+    }
 }
 
 /// Convert a tree-sitter Range to a transport-agnostic [`types::SyntaxRange`].
@@ -241,24 +347,92 @@ pub fn get_source_line(source: &[u8], row: usize) -> &str {
 /// `source` must be the complete source bytes of the file so that tree-sitter byte-offset
 /// columns (`point.column`) can be converted to UTF-16 code unit columns correctly.
 pub fn ts_range_to_syntax(range: &tree_sitter::Range, source: &[u8]) -> types::SyntaxRange {
-    let get_line = |row: usize| -> &str { get_source_line(source, row) };
-
-    let start_line = get_line(range.start_point.row);
-    let end_line = if range.end_point.row == range.start_point.row {
-        start_line
-    } else {
-        get_line(range.end_point.row)
-    };
-
     types::SyntaxRange {
         start: types::SyntaxPosition {
             line: range.start_point.row as u32,
-            character: byte_col_to_utf16_col(start_line, range.start_point.column),
+            character: utf16_col_at(source, range.start_byte, range.start_point.column),
         },
         end: types::SyntaxPosition {
             line: range.end_point.row as u32,
-            character: byte_col_to_utf16_col(end_line, range.end_point.column),
+            character: utf16_col_at(source, range.end_byte, range.end_point.column),
         },
+    }
+}
+
+#[cfg(test)]
+mod range_conversion_tests {
+    use super::{byte_col_to_utf16_col, get_source_line, ts_range_to_syntax};
+
+    /// The conversion `ts_range_to_syntax` replaced: reach the line by
+    /// splitting the file, then count UTF-16 units up to the byte column.
+    fn by_line_scan(range: &tree_sitter::Range, source: &[u8]) -> (u32, u32) {
+        let start_line = get_source_line(source, range.start_point.row);
+        let end_line = get_source_line(source, range.end_point.row);
+        (
+            byte_col_to_utf16_col(start_line, range.start_point.column),
+            byte_col_to_utf16_col(end_line, range.end_point.column),
+        )
+    }
+
+    #[test]
+    fn byte_arithmetic_agrees_with_a_line_scan_including_multibyte_lines() {
+        let mut source = String::new();
+        for row in 0..400 {
+            // Emoji are outside the BMP, so the UTF-16 column differs from both
+            // the byte column and the character column.
+            source.push_str(&format!("    Message('café 🚀 row {row}');\n"));
+        }
+        let bytes = source.as_bytes();
+
+        let parsed = crate::parser::AlParser::parse_quick(&source);
+        let mut checked = 0;
+        crate::walk_tree(parsed.tree.root_node(), &mut |node| {
+            let range = node.range();
+            let expected = by_line_scan(&range, bytes);
+            let actual = ts_range_to_syntax(&range, bytes);
+            assert_eq!(
+                (actual.start.character, actual.end.character),
+                expected,
+                "{} at {:?}",
+                node.kind(),
+                range.start_point
+            );
+            checked += 1;
+        });
+        assert!(
+            checked > 400,
+            "expected a real tree, walked {checked} nodes"
+        );
+    }
+
+    #[test]
+    fn a_range_at_the_end_of_a_large_file_reads_only_its_own_line() {
+        // The conversion cost must not grow with the number of lines before
+        // the range. Ten thousand identical lines, then one range on the last:
+        // a from-byte-0 scan would read the whole file for it.
+        let line = "    Message('x');\n";
+        let source = line.repeat(10_000);
+        let bytes = source.as_bytes();
+        let last_start = source.len() - line.len();
+
+        let range = tree_sitter::Range {
+            start_byte: last_start + 4,
+            end_byte: last_start + 11,
+            start_point: tree_sitter::Point {
+                row: 9_999,
+                column: 4,
+            },
+            end_point: tree_sitter::Point {
+                row: 9_999,
+                column: 11,
+            },
+        };
+
+        let converted = ts_range_to_syntax(&range, bytes);
+
+        assert_eq!(converted.start.line, 9_999);
+        assert_eq!(converted.start.character, 4);
+        assert_eq!(converted.end.character, 11);
     }
 }
 
@@ -294,6 +468,69 @@ mod clean_identifier_tests {
         assert_eq!(clean_identifier_text(""), None);
         assert_eq!(clean_identifier_text(r#""""#), None);
         assert_eq!(clean_identifier_text("   "), None);
+    }
+}
+
+#[cfg(test)]
+mod unquote_identifier_tests {
+    use super::IdentifierText;
+
+    #[test]
+    fn strips_one_quote_at_each_end_and_unescapes() {
+        assert_eq!(
+            "\"Cust \"\"Main\"\" Rec\"".unquote_identifier(),
+            "Cust \"Main\" Rec"
+        );
+        assert_eq!("\"Name\"\"\"".unquote_identifier(), "Name\"");
+        assert_eq!("  \"Sales Header\" ".unquote_identifier(), "Sales Header");
+        assert_eq!("Customer".unquote_identifier(), "Customer");
+    }
+
+    #[test]
+    fn an_unbalanced_quote_is_still_dropped() {
+        assert_eq!("\"Sales Hea".unquote_identifier(), "Sales Hea");
+        assert_eq!("\"\"".unquote_identifier(), "");
+    }
+
+    #[test]
+    fn borrows_when_nothing_is_unescaped() {
+        assert!(matches!(
+            "\"Sales Header\"".unquote_identifier(),
+            std::borrow::Cow::Borrowed("Sales Header")
+        ));
+    }
+}
+
+#[cfg(test)]
+mod clean_attr_arg_tests {
+    use super::clean_attr_arg;
+
+    #[test]
+    fn strips_the_scope_prefix() {
+        assert_eq!(clean_attr_arg("ObjectType::Codeunit"), "Codeunit");
+        assert_eq!(clean_attr_arg(" Codeunit::\"Sales-Post\" "), "Sales-Post");
+    }
+
+    #[test]
+    fn unescapes_a_doubled_quote_inside_one_quote_pair() {
+        assert_eq!(
+            clean_attr_arg("\"My \"\"Big\"\" Codeunit\""),
+            "My \"Big\" Codeunit"
+        );
+        assert_eq!(clean_attr_arg("'Don''t'"), "Don't");
+        assert_eq!(clean_attr_arg("\"Name\"\"\""), "Name\"");
+    }
+
+    #[test]
+    fn keeps_a_scope_operator_inside_a_quoted_name() {
+        assert_eq!(clean_attr_arg("\"A::B\""), "A::B");
+    }
+
+    #[test]
+    fn plain_and_unbalanced_values_keep_the_lenient_strip() {
+        assert_eq!(clean_attr_arg("OnAfterPost"), "OnAfterPost");
+        assert_eq!(clean_attr_arg("'OnAfterPost"), "OnAfterPost");
+        assert_eq!(clean_attr_arg("''"), "");
     }
 }
 

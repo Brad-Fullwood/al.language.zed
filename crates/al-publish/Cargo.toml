@@ -10,13 +10,12 @@ al-bc = { path = "../al-bc", version = "0.1.0" }
 al-compile = { path = "../al-compile", version = "0.1.0" }
 al-project = { path = "../al-project", version = "0.1.0" }
 al-workspace = { path = "../al-workspace", version = "0.1.0" }
-al-types = { path = "../al-types", version = "0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 wiremock = "0.6"
 tokio = { workspace = true }

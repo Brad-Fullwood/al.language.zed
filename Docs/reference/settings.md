@@ -10,6 +10,11 @@ kept in lockstep with the keys the server reads by a repo test.
 
 Status: ✅ honored · 🟡 honored, partial · ⛔ parsed but inert.
 
+🔒 marks a setting that needs project trust when it comes from the repository's own
+`.vscode/settings.json` or `.zed/settings.json`. Written in your user settings it applies as
+it always has; written in the clone it is dropped, with one message naming it, until you run
+`al-explorer trust` on that project. See [project trust](../features/project-trust.md).
+
 ## Semantic analysis
 
 | Setting | Type | Default | Status |
@@ -18,10 +23,10 @@ Status: ✅ honored · 🟡 honored, partial · ⛔ parsed but inert.
 | `al.backgroundCodeAnalysis` | boolean | `true` | ✅ |
 | `al.diagnosticsScope` | `project`\|`openFiles` | `project` | ✅ |
 | `al.diagnosticsTrigger` | `continuous`\|`onSave` | `continuous` | ✅ |
-| `al.codeAnalyzers` | string[] | `["CodeCop","AppSourceCop","UICop","PerTenantCop"]` | ✅ (incl. 3rd-party DLL paths) |
+| `al.codeAnalyzers` | string[] | `["CodeCop","AppSourceCop","UICop","PerTenantCop"]` | ✅ (incl. 3rd-party DLL paths), 🔒 entries that are not built-in tokens |
 | `al.enableExternalRulesets` | boolean | `false` | ✅ official `alc` backend; not the in-process bridge |
-| `al.ruleSetPath` | string\|null | `null` | ✅ official `alc` backend; not the in-process bridge |
-| `al.assemblyProbingPaths` | string[] | `[]` | ✅ official `alc` backend; not the in-process bridge |
+| `al.ruleSetPath` | string\|null | `null` | ✅ official `alc` backend; not the in-process bridge, 🔒 outside the project |
+| `al.assemblyProbingPaths` | string[] | `[]` | ✅ official `alc` backend; not the in-process bridge, 🔒 |
 | `al.outputAnalyzerStatistics` | boolean | `false` | ✅ official `alc` backend; not the in-process bridge |
 
 ## Editor features
@@ -43,20 +48,20 @@ Status: ✅ honored · 🟡 honored, partial · ⛔ parsed but inert.
 
 | Setting | Type | Default | Status |
 | --- | --- | --- | --- |
-| `al.packageCachePath` | string\|null | `null` (→ `<project>/.alpackages/`) | ✅ |
-| `al.appLocalFolderPaths` | string[] | `[]` | ✅ |
-| `al.nugetFeeds` | object[] `{name,url}` | `[]` | ✅ |
-| `al.useOnlyCustomFeeds` | boolean | `false` | ✅ |
+| `al.packageCachePath` | string\|null | `null` (→ `<project>/.alpackages/`) | ✅, 🔒 outside the project |
+| `al.appLocalFolderPaths` | string[] | `[]` | ✅, 🔒 outside the project |
+| `al.nugetFeeds` | object[] `{name,url}` | `[]` | ✅, 🔒 |
+| `al.useOnlyCustomFeeds` | boolean | `false` | ✅, 🔒 |
 | `al.symbolsCountryRegion` | string\|null | `null` | ✅ |
 
 ## Compiler
 
 | Setting | Type | Default | Status |
 | --- | --- | --- | --- |
-| `al.compilationOptions` | string[] | `[]` | ✅ official `alc` backend only |
+| `al.compilationOptions` | string[] | `[]` | ✅ official `alc` backend only, 🔒 |
 | `al.incrementalBuild` | boolean | `false` | ✅ official `alc` backend only |
 | `al.useOfficialCompiler` | boolean | `false` | ✅ escape hatch → `dotnet alc` |
-| `al.dotnetPath` | string\|null | `null` | ✅ extension-side executable override for all spawned .NET/`alc` processes; replaces environment-only `AL_DOTNET_PATH` configuration |
+| `al.dotnetPath` | string\|null | `null` | ✅ extension-side executable override for all spawned .NET/`alc` processes; replaces environment-only `AL_DOTNET_PATH` configuration, 🔒 when it names a program inside the project |
 
 ## Resource limits & escape hatches
 

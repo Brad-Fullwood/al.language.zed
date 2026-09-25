@@ -221,7 +221,7 @@ pub fn extract_app(data: &[u8], dest_dir: &Path) -> Result<AppContents, AppReade
             }
         }
 
-        let tmp_path = extraction_temp_path(&rel);
+        let tmp_path = crate::temp_path::beside(&rel, "entry");
         let extraction = (|| -> Result<(AppEntryKind, u64), AppReaderError> {
             let mut output = std::fs::OpenOptions::new()
                 .write(true)
@@ -321,23 +321,13 @@ fn unsafe_entry_error(name: &str) -> AppReaderError {
     ))
 }
 
-fn extraction_temp_path(target: &Path) -> std::path::PathBuf {
-    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let filename = target
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("entry");
-    target.with_file_name(format!(
-        ".{filename}.{}.{}.tmp",
-        std::process::id(),
-        sequence
-    ))
-}
-
 /// Join an archive entry name under `base`, rejecting absolute paths and any
 /// component that would escape `base` (`..`). Returns `None` for unsafe names.
-fn safe_join(base: &Path, entry: &str) -> Option<std::path::PathBuf> {
+///
+/// Dropping `Component::Prefix` is what stops a Windows drive-relative name
+/// such as `C:evil.app`, which `PathBuf::push` would otherwise let replace the
+/// whole path.
+pub(crate) fn safe_join(base: &Path, entry: &str) -> Option<std::path::PathBuf> {
     use std::path::Component;
     let candidate = Path::new(entry);
     let mut out = base.to_path_buf();

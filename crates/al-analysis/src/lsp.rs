@@ -1,9 +1,10 @@
 //! Conversions between the transport-agnostic `queries::*` types and
 //! `tower_lsp::lsp_types` wire types.
 //!
-//! These impls live in `server` — the LSP transport boundary — so that the
-//! `queries` module stays greppably free of `lsp_types`; the
-//! architecture rule is that queries never speak a wire format).
+//! This module is the only place in al-analysis that names `lsp_types`, and it
+//! is compiled only under the `lsp` feature. The `queries` module stays
+//! greppably free of the wire format, which is the architecture rule: a query
+//! answers in transport-agnostic types and the boundary converts.
 
 use crate::queries::{
     AlDocumentSymbol, AlFoldingRange, AlFoldingRangeKind, AlInlayHint, AlInlayHintKind,
@@ -142,8 +143,8 @@ impl From<AlDocumentSymbol> for tower_lsp::lsp_types::DocumentSymbol {
 /// The LSP spec only permits the nested `DocumentSymbol[]` response when the
 /// client opts in via that capability; otherwise the server must return the
 /// flat form. Each emitted symbol carries its parent symbol's name as
-/// `container_name`, and the parent's `range` as its `location` range (there is
-/// no per-child URI in the flat form, so every symbol points at `uri`).
+/// `container_name` and its own `range` as its `location` range. The flat form
+/// has no per-child URI, so every symbol points at `uri`.
 pub fn flatten_document_symbols(
     symbols: Vec<AlDocumentSymbol>,
     uri: &tower_lsp::lsp_types::Url,
@@ -248,8 +249,8 @@ impl From<tower_lsp::lsp_types::InlayHint> for AlInlayHint {
         let label = match h.label {
             tower_lsp::lsp_types::InlayHintLabel::String(s) => AlInlayHintLabel::String(s),
             // For label parts, concatenate values into a single string. We
-            // do not currently emit InlayHintLabel::LabelParts from al-core,
-            // so this branch is defensive.
+            // do not currently emit InlayHintLabel::LabelParts, so this branch
+            // is defensive.
             tower_lsp::lsp_types::InlayHintLabel::LabelParts(parts) => {
                 AlInlayHintLabel::String(parts.into_iter().map(|p| p.value).collect())
             }

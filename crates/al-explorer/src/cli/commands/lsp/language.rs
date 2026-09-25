@@ -4,16 +4,12 @@ use std::process::ExitCode;
 
 use crate::cli::commands::*;
 
-pub fn cmd_lint(file: Option<&str>, all: bool, analyzers: Option<&str>, json: bool) -> ExitCode {
+pub fn cmd_lint(file: Option<&str>, all: bool, json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
     let mut params = serde_json::json!({ "all": all });
-    if let Some(a) = analyzers {
-        let analyzer_list: Vec<&str> = a.split(',').map(|s| s.trim()).collect();
-        params["analyzers"] = serde_json::json!(analyzer_list);
-    }
     if let Some(f) = file {
         let uri = match file_to_uri(f) {
             Ok(uri) => uri,
@@ -36,7 +32,7 @@ pub fn cmd_lint(file: Option<&str>, all: bool, analyzers: Option<&str>, json: bo
                 };
             }
             if all {
-                if let Some(files) = result.as_array() {
+                if let Some(files) = list_rows(&result).as_array() {
                     for file_result in files {
                         let fname = file_result
                             .get("file")
@@ -57,7 +53,7 @@ pub fn cmd_lint(file: Option<&str>, all: bool, analyzers: Option<&str>, json: bo
                     );
                 }
             } else {
-                let diagnostics = result.as_array().cloned().unwrap_or_default();
+                let diagnostics = list_rows(&result).as_array().cloned().unwrap_or_default();
                 if diagnostics.is_empty() {
                     eprintln!("No issues found");
                 } else {
@@ -370,7 +366,7 @@ fn print_position_query_human(method: &str, result: &serde_json::Value) {
 
     match method {
         "definition" | "typeDefinition" | "declaration" | "implementation" => {
-            if let Some(locations) = result.as_array() {
+            if let Some(locations) = list_rows(result).as_array() {
                 for loc in locations {
                     if let Some(s) = location_str(loc) {
                         println!("{s}");
@@ -386,7 +382,7 @@ fn print_position_query_human(method: &str, result: &serde_json::Value) {
             }
         }
         "references" => {
-            if let Some(locations) = result.as_array() {
+            if let Some(locations) = list_rows(result).as_array() {
                 for loc in locations {
                     if let Some(s) = location_str(loc) {
                         println!("{s}");
@@ -400,6 +396,21 @@ fn print_position_query_human(method: &str, result: &serde_json::Value) {
                 );
             }
         }
+        "completions" => {
+            let items = list_rows(result)
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            for item in items {
+                let label = item["label"].as_str().unwrap_or("?");
+                match item["detail"].as_str().filter(|detail| !detail.is_empty()) {
+                    Some(detail) => println!("{label}  {detail}"),
+                    None => println!("{label}"),
+                }
+            }
+            eprintln!("\n{} completion(s)", items.len());
+        }
+        "signatureHelp" => print_signature_help(result),
         _ => {
             println!("Result:");
             println!(
@@ -408,14 +419,137 @@ fn print_position_query_human(method: &str, result: &serde_json::Value) {
             );
         }
     }
+    print_page_footer(result);
+}
+
+/// Each signature on its own line, the active one marked and its active
+/// parameter in brackets: `> SetTier(var Cust: Record Customer; [Tier: Code[10]])`.
+fn print_signature_help(result: &serde_json::Value) {
+    let active_signature = result["activeSignature"].as_u64().unwrap_or(0);
+    let signatures = result["signatures"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    for (index, signature) in signatures.iter().enumerate() {
+        let mut label = signature["label"].as_str().unwrap_or("?").to_string();
+        let active_parameter = signature["activeParameter"]
+            .as_u64()
+            .or_else(|| result["activeParameter"].as_u64());
+        let parameter = active_parameter
+            .and_then(|active| signature["parameters"].get(active as usize))
+            .and_then(|parameter| parameter["label"].as_str());
+        if let Some(parameter) = parameter
+            && let Some(start) = label.find(parameter)
+        {
+            label.replace_range(start..start + parameter.len(), &format!("[{parameter}]"));
+        }
+        let marker = if index as u64 == active_signature {
+            ">"
+        } else {
+            " "
+        };
+        println!("{marker} {label}");
+    }
 }
 
 pub fn cmd_symbols(file: &str, json: bool) -> ExitCode {
-    cmd_file_query("documentSymbols", file, json)
+    if json {
+        return cmd_file_query("documentSymbols", file, json);
+    }
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+    let uri = match file_to_uri(file) {
+        Ok(uri) => uri,
+        Err(error) => return report_error(&error, json),
+    };
+    match request_checked(
+        &mut client,
+        "documentSymbols",
+        Some(serde_json::json!({ "uri": uri })),
+    ) {
+        Ok(result) => {
+            let outline = render_outline(list_rows(&result));
+            if outline.is_empty() {
+                eprintln!("No symbols in {file}");
+            } else {
+                print!("{outline}");
+                print_page_footer(&result);
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+/// Document symbols as an indented outline, one symbol per line with its
+/// 1-based line: `Method SetTier(var Cust: Record Customer)  :3`.
+fn render_outline(symbols: &serde_json::Value) -> String {
+    fn walk(symbols: &serde_json::Value, depth: usize, out: &mut String) {
+        for symbol in symbols.as_array().into_iter().flatten() {
+            let kind = symbol["kind"].as_str().unwrap_or("Symbol");
+            let name = symbol["name"].as_str().unwrap_or("?");
+            let detail = symbol["detail"].as_str().unwrap_or("");
+            let line = symbol["range"]["start"]["line"]
+                .as_u64()
+                .map_or(0, |l| l + 1);
+            let separator = if detail.starts_with('(') || detail.is_empty() {
+                ""
+            } else {
+                " "
+            };
+            out.push_str(&format!(
+                "{:indent$}{kind} {name}{separator}{detail}  :{line}\n",
+                "",
+                indent = depth * 2
+            ));
+            walk(&symbol["children"], depth + 1, out);
+        }
+    }
+    let mut out = String::new();
+    walk(symbols, 0, &mut out);
+    out
 }
 
 pub fn cmd_folding(file: &str, json: bool) -> ExitCode {
-    cmd_file_query("foldingRanges", file, json)
+    if json {
+        return cmd_file_query("foldingRanges", file, json);
+    }
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+    let uri = match file_to_uri(file) {
+        Ok(uri) => uri,
+        Err(error) => return report_error(&error, json),
+    };
+    match request_checked(
+        &mut client,
+        "foldingRanges",
+        Some(serde_json::json!({ "uri": uri })),
+    ) {
+        Ok(result) => {
+            let ranges = list_rows(&result)
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            if ranges.is_empty() {
+                eprintln!("No folding ranges in {file}");
+            } else {
+                // 1-based, as the command's input and every other text output.
+                for range in ranges {
+                    let start = range["startLine"].as_u64().map_or(0, |line| line + 1);
+                    let end = range["endLine"].as_u64().map_or(0, |line| line + 1);
+                    let kind = range["kind"].as_str().unwrap_or("region");
+                    println!("{start}-{end}  {kind}");
+                }
+                print_page_footer(&result);
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
 }
 
 pub fn cmd_tokens(file: &str, json: bool) -> ExitCode {
@@ -531,10 +665,15 @@ fn rename_exit_code(result: &serde_json::Value) -> ExitCode {
 /// objects (`{ range: { start, end }, newText }`).  Edits are applied in
 /// reverse position order so that later offsets are not invalidated by earlier
 /// mutations.  Returns the number of files that were written.
+///
+/// The whole edit is all-or-nothing. Every file's new content is computed
+/// first, then written; a rename touching five files whose third is read-only
+/// used to leave the first two rewritten, exit 1, and hand the user a
+/// workspace carrying both the old and the new name.
 fn apply_workspace_edit(
     changes: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<usize, String> {
-    let mut files_changed = 0;
+    let mut staged: Vec<(std::path::PathBuf, String)> = Vec::new();
 
     for (uri, edits_val) in changes {
         let edits = match edits_val.as_array() {
@@ -640,18 +779,132 @@ fn apply_workspace_edit(
         }
 
         if new_content != content {
-            std::fs::write(&path, &new_content)
-                .map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
-            files_changed += 1;
+            staged.push((path, new_content));
         }
     }
 
-    Ok(files_changed)
+    write_all_or_nothing(staged)
+}
+
+/// Write every staged `(path, content)` pair, or none of them.
+///
+/// Each file is written to a temp file in its own directory and persisted over
+/// the original, so a crash mid-write cannot truncate a source file. If any
+/// write fails, the files already persisted are restored from the contents read
+/// before the first write.
+fn write_all_or_nothing(staged: Vec<(std::path::PathBuf, String)>) -> Result<usize, String> {
+    let mut rollback: Vec<(std::path::PathBuf, String)> = Vec::with_capacity(staged.len());
+    for (path, new_content) in &staged {
+        let previous = std::fs::read_to_string(path)
+            .map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
+        match persist_atomically(path, new_content) {
+            Ok(()) => rollback.push((path.clone(), previous)),
+            Err(error) => {
+                let mut report = error;
+                for (done, content) in rollback.iter().rev() {
+                    if let Err(error) = persist_atomically(done, content) {
+                        report.push_str(&format!(
+                            "\nand {} could not be rolled back: {error}",
+                            done.display()
+                        ));
+                    }
+                }
+                return Err(report);
+            }
+        }
+    }
+    Ok(staged.len())
+}
+
+/// Replace `path`'s contents through a temp file in the same directory.
+fn persist_atomically(path: &std::path::Path, content: &str) -> Result<(), String> {
+    use std::io::Write;
+
+    let directory = path.parent().unwrap_or(std::path::Path::new("."));
+    let mut temp = tempfile::NamedTempFile::new_in(directory)
+        .map_err(|error| format!("Cannot stage {}: {error}", path.display()))?;
+    temp.write_all(content.as_bytes())
+        .and_then(|()| temp.as_file().sync_all())
+        .map_err(|error| format!("Cannot write {}: {error}", path.display()))?;
+    // `NamedTempFile` is 0600; a source file must keep the mode it had.
+    if let Ok(metadata) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(temp.path(), metadata.permissions());
+    }
+    temp.persist(path)
+        .map_err(|error| format!("Cannot replace {}: {error}", path.display()))?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod exit_status_tests {
     use super::*;
+
+    /// A `changes` map renaming `old` to `new` on line 0 of each file.
+    fn rename_edit(paths: &[&std::path::Path]) -> serde_json::Map<String, serde_json::Value> {
+        paths
+            .iter()
+            .map(|path| {
+                (
+                    url::Url::from_file_path(path).unwrap().to_string(),
+                    serde_json::json!([{
+                        "range": {
+                            "start": { "line": 0, "character": 0 },
+                            "end": { "line": 0, "character": 3 },
+                        },
+                        "newText": "new",
+                    }]),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_failed_file_write_leaves_the_whole_workspace_unchanged() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        // "A.al" sorts before "locked/B.al", and `changes` is a BTreeMap, so
+        // the writable file is written before the failure is hit.
+        let writable = dir.path().join("A.al");
+        let locked_dir = dir.path().join("locked");
+        std::fs::create_dir(&locked_dir).unwrap();
+        let unwritable = locked_dir.join("B.al");
+        std::fs::write(&writable, "old text\n").unwrap();
+        std::fs::write(&unwritable, "old text\n").unwrap();
+        std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = apply_workspace_edit(&rename_edit(&[&writable, &unwritable]));
+
+        let writable_after = std::fs::read_to_string(&writable).unwrap();
+        let unwritable_after = std::fs::read_to_string(&unwritable).unwrap();
+        std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let error = result.expect_err("an unwritable directory must fail the edit");
+        assert!(error.contains("B.al"), "{error}");
+        assert_eq!(
+            writable_after, "old text\n",
+            "the file written before the failure must be rolled back"
+        );
+        assert_eq!(unwritable_after, "old text\n");
+    }
+
+    #[test]
+    fn a_successful_edit_writes_every_file_and_keeps_its_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("A.al");
+        let second = dir.path().join("B.al");
+        std::fs::write(&first, "old text\n").unwrap();
+        std::fs::write(&second, "old text\n").unwrap();
+        let before = std::fs::metadata(&first).unwrap().permissions();
+
+        let changed = apply_workspace_edit(&rename_edit(&[&first, &second])).unwrap();
+
+        assert_eq!(changed, 2);
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "new text\n");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "new text\n");
+        assert_eq!(std::fs::metadata(&first).unwrap().permissions(), before);
+    }
 
     #[test]
     fn lint_counts_findings_in_single_and_all_responses() {
@@ -682,6 +935,31 @@ mod exit_status_tests {
         assert_eq!(
             rename_exit_code(&serde_json::json!({"changes": {}})),
             ExitCode::SUCCESS
+        );
+    }
+}
+
+#[cfg(test)]
+mod outline_tests {
+    use super::render_outline;
+
+    #[test]
+    fn outline_indents_children_and_shows_one_based_lines() {
+        let symbols = serde_json::json!([{
+            "name": "Loyalty Mgt",
+            "detail": "codeunit 50101",
+            "kind": "Class",
+            "range": { "start": { "line": 0, "character": 0 } },
+            "children": [{
+                "name": "SetTier",
+                "detail": "(var Cust: Record Customer)",
+                "kind": "Method",
+                "range": { "start": { "line": 2, "character": 4 } }
+            }]
+        }]);
+        assert_eq!(
+            render_outline(&symbols),
+            "Class Loyalty Mgt codeunit 50101  :1\n  Method SetTier(var Cust: Record Customer)  :3\n"
         );
     }
 }

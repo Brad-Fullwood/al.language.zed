@@ -19,7 +19,12 @@ pub struct ProcedureComplexity {
 }
 
 pub fn compute_complexity(tree: &Tree, text: &str) -> Vec<ProcedureComplexity> {
-    let root = tree.root_node();
+    compute_complexity_under(tree.root_node(), text)
+}
+
+/// [`compute_complexity`] under one node, for a caller that holds a single
+/// object declaration of a multi-object file.
+pub fn compute_complexity_under(root: Node<'_>, text: &str) -> Vec<ProcedureComplexity> {
     let source = text.as_bytes();
     let mut results = Vec::new();
 

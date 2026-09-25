@@ -22,6 +22,10 @@ pub struct ProfilingConfig {
     pub company: String,
     /// Output directory for downloaded `.alcpuprofile` files. Must be an absolute path.
     pub output_dir: PathBuf,
+    /// Optional username for Basic auth. With no username and password the
+    /// request falls back to the `BC_ACCESS_TOKEN` bearer override, and with
+    /// neither it carries no `Authorization` header — there is no
+    /// Windows-integrated fallback.
     pub username: Option<String>,
     /// Optional password for Basic auth. Never serialized to prevent credential leaks.
     #[serde(default, skip_serializing)]
@@ -89,7 +93,7 @@ pub async fn start_profiling(config: &ProfilingConfig) -> Result<String, Profili
 
     debug!(url = %url, "profiling: starting CPU profiler");
 
-    let req = crate::http_auth::apply_basic_auth(
+    let req = crate::http_auth::apply_snapshot_auth(
         client.post(&url).json(&serde_json::json!({})),
         &config.username,
         &config.password,
@@ -151,7 +155,7 @@ pub async fn stop_profiling(
     debug!(url = %url, session_id = session_id, "profiling: stopping profiler");
 
     let body = serde_json::json!({ "sessionId": session_id });
-    let req = crate::http_auth::apply_basic_auth(
+    let req = crate::http_auth::apply_snapshot_auth(
         client.post(&url).json(&body),
         &config.username,
         &config.password,
@@ -332,7 +336,7 @@ fn aggregate_total_time_ms(
 /// Each node has `{ "id": N, "callFrame": { "functionName": ..., "url": ... }, "hitCount": N, "children": [...] }`.
 ///
 /// Self time is computed by aggregating `timeDeltas` per node (see
-/// [`aggregate_self_time_us`]); profiles that omit `samples`/`timeDeltas` fall
+/// `aggregate_self_time_us`); profiles that omit `samples`/`timeDeltas` fall
 /// back to the legacy 1 ms-per-hit approximation. `hit_count` is always retained.
 pub fn analyze_profile(
     profile_data: &[u8],
@@ -457,16 +461,7 @@ pub fn analyze_profile(
     })
 }
 
-/// Maximum size of an on-disk `.alcpuprofile` file `analyze_profile_file` will
-/// read into memory. A profile downloaded via `stop_profiling` is already
-/// bounded on the way in by `bc_client::MAX_BC_BINARY_RESPONSE_BYTES` (500
-/// MB); `analyze_profile_file` reads an arbitrary caller-supplied path
-/// directly off disk with no equivalent bound, unlike every other BC input
-/// path (`MAX_UPLOADABLE_APP_BYTES`, `MAX_BC_JSON_RESPONSE_BYTES`,
-/// `MAX_LAUNCH_FILE_BYTES`, …). Mirrors that same 500 MB cap so a hostile or
-/// mistakenly huge file can't be buffered wholesale into the daemon's address
-/// space before `serde_json` even starts parsing it.
-const MAX_PROFILE_FILE_BYTES: u64 = 500 * 1024 * 1024;
+pub use al_types::MAX_PROFILE_FILE_BYTES;
 
 pub async fn analyze_profile_file(
     path: &std::path::Path,

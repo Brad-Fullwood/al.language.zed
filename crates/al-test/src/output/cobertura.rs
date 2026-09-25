@@ -48,18 +48,24 @@ struct ClassEntry {
     lines: Vec<ProcLine>,
 }
 
+/// Group procedures into one `<class>` per AL object, one `<line>` per
+/// procedure.
+///
+/// A procedure reached by several tests appears once per test in
+/// `report.coverage`. Emitting a `<line>` for each repeated the same line
+/// number and inflated the per-class `line-rate`, which the document's own
+/// top-level rate contradicted. The `hits` count carries the number of
+/// covering tests instead.
 fn group_by_object(report: &CoverageReport) -> Vec<ClassEntry> {
-    let mut classes: BTreeMap<(String, String), Vec<ProcLine>> = BTreeMap::new();
+    let mut classes: BTreeMap<(String, String), BTreeMap<u32, u32>> = BTreeMap::new();
 
     for entry in &report.coverage {
         for cov in &entry.covers {
-            classes
+            *classes
                 .entry((cov.object.clone(), cov.file.clone()))
                 .or_default()
-                .push(ProcLine {
-                    line: cov.line,
-                    hits: 1,
-                });
+                .entry(cov.line)
+                .or_insert(0) += 1;
         }
     }
 
@@ -67,18 +73,19 @@ fn group_by_object(report: &CoverageReport) -> Vec<ClassEntry> {
         classes
             .entry((u.object.clone(), u.file.clone()))
             .or_default()
-            .push(ProcLine {
-                line: u.line,
-                hits: 0,
-            });
+            .entry(u.line)
+            .or_insert(0);
     }
 
     classes
         .into_iter()
-        .map(|((object, file), lines)| ClassEntry {
+        .map(|((object, file), hits_by_line)| ClassEntry {
             object,
             file,
-            lines,
+            lines: hits_by_line
+                .into_iter()
+                .map(|(line, hits)| ProcLine { line, hits })
+                .collect(),
         })
         .collect()
 }
@@ -213,17 +220,24 @@ pub fn write_cobertura<W: Write>(report: &CoverageReport, out: W) -> Result<(), 
 /// `coverage-mode="dynamic-executed-lines"` attribute on `<coverage>` (mirroring
 /// the static path's `coverage-mode="static-call-graph"`). Both are inert to
 /// standard Cobertura consumers, so the file stays valid.
+///
+/// ## No line-rate
+///
+/// A hits-only report has no "executable but not executed" denominator, so a
+/// `line-rate` computed from it is 1.0 whenever anything ran. That made a CI
+/// step gating on line coverage pass unconditionally. The document therefore
+/// carries no `line-rate` or `lines-valid` and says so with
+/// `line-coverage="unavailable"`; `lines-covered` stays, because the count of
+/// executed lines is a fact. `branch-rate` and the MC/DC attributes have real
+/// denominators and are unaffected. Restoring line-rate means feeding in the
+/// executable-line set per file, which needs a statement-line query this
+/// workspace does not have yet.
 pub fn write_cobertura_dynamic<W: Write>(
     report: &DynamicCoverageReport,
     out: W,
 ) -> Result<(), io::Error> {
     // Totals: distinct executed lines (covered) and recorded branch decisions.
     let lines_covered: usize = report.files.iter().map(|f| f.executed_lines.len()).sum();
-    // Every emitted line is a hit, so the line-rate of executed lines is 1.0
-    // when anything ran, 0.0 when the report is empty. (Cobertura's line-rate is
-    // covered/valid; we only know the lines we executed — there is no "valid but
-    // not executed" denominator in a hits-only dynamic report.)
-    let overall_rate = if lines_covered > 0 { "1.0" } else { "0.0" };
 
     // Branch-rate: fraction of executable control-flow paths observed. A
     // multi-way CASE contributes one path per arm plus ELSE/no-match; ordinary
@@ -275,17 +289,18 @@ pub fn write_cobertura_dynamic<W: Write>(
         " AL DYNAMIC executed-line coverage (al-test interpreter): hits = line was \
          actually executed at runtime; number = executed statement line. Branch \
          lines carry path coverage from if/case decisions and explicit MC/DC \
-         evidence for compound Boolean decisions. See \
+         evidence for compound Boolean decisions. There is no line-rate: this \
+         report records hits, not misses, so it has no executable-but-not-executed \
+         denominator to divide by. Gate on branch-rate or mcdc-rate instead. See \
          coverage-mode=\"dynamic-executed-lines\" below. ",
     )))?;
 
     let mut coverage_start = BytesStart::new("coverage");
-    coverage_start.push_attribute(("line-rate", overall_rate));
     coverage_start.push_attribute(("branch-rate", branch_rate.as_str()));
     coverage_start.push_attribute(("version", "1.9"));
     coverage_start.push_attribute(("timestamp", timestamp.as_str()));
     coverage_start.push_attribute(("lines-covered", lines_covered.to_string().as_str()));
-    coverage_start.push_attribute(("lines-valid", lines_covered.to_string().as_str()));
+    coverage_start.push_attribute(("line-coverage", "unavailable"));
     coverage_start.push_attribute(("mcdc-rate", mcdc_rate.as_str()));
     coverage_start.push_attribute(("conditions-covered", mcdc_covered.to_string().as_str()));
     coverage_start.push_attribute(("conditions-valid", mcdc_total.to_string().as_str()));
@@ -303,7 +318,6 @@ pub fn write_cobertura_dynamic<W: Write>(
 
     let mut package_start = BytesStart::new("package");
     package_start.push_attribute(("name", "al"));
-    package_start.push_attribute(("line-rate", overall_rate));
     package_start.push_attribute(("branch-rate", branch_rate.as_str()));
     package_start.push_attribute(("complexity", "0"));
     writer.write_event(Event::Start(package_start))?;
@@ -319,7 +333,6 @@ pub fn write_cobertura_dynamic<W: Write>(
         let mut class_start = BytesStart::new("class");
         class_start.push_attribute(("name", file.file.as_str()));
         class_start.push_attribute(("filename", file.file.as_str()));
-        class_start.push_attribute(("line-rate", overall_rate));
         class_start.push_attribute(("branch-rate", branch_rate.as_str()));
         class_start.push_attribute(("complexity", "0"));
         writer.write_event(Event::Start(class_start))?;
@@ -642,7 +655,7 @@ mod tests {
         let xml = run_cobertura_dynamic(&report);
         assert_well_formed_xml(&xml);
         assert!(xml.contains(r#"coverage-mode="dynamic-executed-lines""#));
-        assert!(xml.contains(r#"line-rate="0.0""#));
+        assert!(xml.contains(r#"line-coverage="unavailable""#));
         if let Some(start) = xml.find("<!--") {
             let body = &xml[start + 4..];
             let end = body.find("-->").expect("comment is closed");
@@ -731,5 +744,77 @@ mod tests {
         assert!(xml.contains(r#"type="mcdc""#), "{xml}");
         assert!(xml.contains(r#"number="0" type="mcdc" coverage="100%""#));
         assert!(xml.contains(r#"number="1" type="mcdc" coverage="0%""#));
+    }
+
+    #[test]
+    fn the_dynamic_document_does_not_claim_full_line_coverage() {
+        let report = DynamicCoverageReport {
+            files: vec![FileCoverage {
+                file: "src/MyCodeunit.al".to_string(),
+                executed_lines: vec![10, 11, 12],
+                branches: Vec::new(),
+            }],
+        };
+        let xml = run_cobertura_dynamic(&report);
+        assert_well_formed_xml(&xml);
+        assert!(
+            !xml.contains(r#"line-rate="1.0""#),
+            "a hits-only report has no line denominator, so it must not report full line \
+             coverage:\n{xml}"
+        );
+        assert!(
+            !xml.contains("lines-valid="),
+            "lines-valid would repeat lines-covered, which is not a denominator:\n{xml}"
+        );
+        assert!(
+            xml.contains(r#"line-coverage="unavailable""#),
+            "the document must say why the line figures are absent:\n{xml}"
+        );
+        assert!(
+            xml.contains(r#"lines-covered="3""#),
+            "the executed-line count is honest and stays:\n{xml}"
+        );
+    }
+
+    #[test]
+    fn a_procedure_covered_by_several_tests_is_one_line() {
+        let covered = |test: &str| TestCoverageEntry {
+            codeunit: "TestCU".to_string(),
+            test_procedure: test.to_string(),
+            covers: vec![CoveredProcedure {
+                name: "DoWork".to_string(),
+                object: "MyCodeunit".to_string(),
+                file: "src/MyCodeunit.al".to_string(),
+                line: 10,
+            }],
+            unresolved_calls: Vec::new(),
+        };
+        let report = CoverageReport {
+            coverage: vec![covered("TestA"), covered("TestB"), covered("TestC")],
+            untested: vec![UntestedProcedure {
+                name: "Unused".to_string(),
+                object: "MyCodeunit".to_string(),
+                file: "src/MyCodeunit.al".to_string(),
+                line: 20,
+            }],
+        };
+        let xml = run_cobertura(&report);
+        assert_well_formed_xml(&xml);
+
+        assert_eq!(
+            xml.matches(r#"<line number="10""#).count(),
+            1,
+            "the covered procedure must appear once, not once per covering test:\n{xml}"
+        );
+        assert!(
+            xml.contains(r#"<line number="10" hits="3""#),
+            "hits must count the covering tests:\n{xml}"
+        );
+        // One covered procedure of two: both rates in the document say 0.5.
+        assert_eq!(
+            xml.matches(r#"line-rate="0.5000""#).count(),
+            3,
+            "the coverage, package and class rates must agree:\n{xml}"
+        );
     }
 }

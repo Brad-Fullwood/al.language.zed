@@ -19,7 +19,7 @@ files, snippets, themes, and JSON schemas for project files.
 | --- | --- |
 | `config.toml` | Zed language registration: name "AL", grammar "al", `.al` suffix, `//` comments, bracket pairs, word chars, `al-lsp` server |
 | `highlights.scm` | syntax highlighting captures (keywords, types, functions, comments, strings, numbers, operators) derived for parity with the VS Code AL grammar |
-| `outline.scm` | document outline (objects, procedures/triggers, events, keys, enum values) |
+| `outline.scm` | document outline (objects, procedures/triggers, events, keys, enum values, and the executable scopes nested under a callable: `begin`, `if`, `case`, `for`, `foreach`, `while`, `repeat`, `with`, each named after its own expression) |
 | `locals.scm` | local variable scope & resolution (scopes for blocks/case/events/loops/objects; definitions for objects/methods/vars/parameters) |
 | `textobjects.scm` | text-object selection (objects, procedures, triggers, events, statements) |
 | `folds.scm` | folding regions (objects, procedures, blocks, control statements, attribute lists) |

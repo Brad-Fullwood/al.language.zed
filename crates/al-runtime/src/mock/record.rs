@@ -7,7 +7,7 @@
 //! This module does **not** wire into the interpreter's `Value::Record(handle)`
 //! semantics — the handle mapping is the interpreter's responsibility.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use thiserror::Error;
 
 use crate::interpreter::value::{Decimal, Value};
@@ -66,6 +66,8 @@ pub enum RecordError {
     TriggerExecutionUnsupported(&'static str),
     #[error("arithmetic overflow while calculating FlowField {0}")]
     FlowArithmeticOverflow(&'static str),
+    #[error("field {0} is part of the primary key; ModifyAll cannot change it")]
+    PrimaryKeyModifyAll(FieldNo),
     #[error("invalid FIND direction '{0}' (expected '-' or '+')")]
     InvalidFindDirection(char),
 }
@@ -110,7 +112,10 @@ fn field_cmp(value: &Value, bound: &Value) -> Option<std::cmp::Ordering> {
     }
     if let (Some(x), Some(y)) = (flow_text(value), flow_text(bound)) {
         return Some(if matches!(value, Value::Code(_)) {
-            x.to_ascii_uppercase().cmp(&y.to_ascii_uppercase())
+            // Full Unicode folding, matching `normalize_key_value`. Folding only ASCII
+            // here would make `SetRange('A', 'É')` reject a row the key index files
+            // under `'É'`.
+            x.to_uppercase().cmp(&y.to_uppercase())
         } else {
             x.cmp(&y)
         });
@@ -136,6 +141,15 @@ fn zero_like(bound: &Value) -> Option<Value> {
         Value::DateTime(_) => Value::DateTime(0),
         Value::Duration(_) => Value::Duration(0),
         Value::Char(_) => Value::Char('\0'),
+        // An option or enum cell holds an ordinal, and BC zero-initialises it,
+        // so an unset cell is the bound's own type at ordinal 0.
+        Value::Option {
+            type_name, member, ..
+        } => Value::Option {
+            type_name: type_name.clone(),
+            member: member.clone(),
+            ordinal: 0,
+        },
         _ => return None,
     })
 }
@@ -146,17 +160,27 @@ fn zero_like(bound: &Value) -> Option<Value> {
 struct SortKey {
     /// Field numbers, in priority order.
     fields: Vec<FieldNo>,
+    /// `Ascending(false)`: iterate the whole key, primary key included, in
+    /// reverse.
+    descending: bool,
 }
 
 impl SortKey {
     fn from_fields(fields: Vec<FieldNo>) -> Self {
-        SortKey { fields }
+        SortKey {
+            fields,
+            descending: false,
+        }
     }
 
+    /// The sort key normalises each cell exactly as the primary-key index does. A BC
+    /// `Code` cell is caseless, so `'a'` must sort next to `'A'` rather than after every
+    /// upper-case value, and an `Integer` cell must sort among `Decimal` cells by value
+    /// rather than ahead of them all on `Value`'s variant tag.
     fn key_of(&self, row: &Row) -> Vec<Value> {
         self.fields
             .iter()
-            .map(|f| row.get(f).cloned().unwrap_or(Value::Empty))
+            .map(|f| row.get(f).map(normalize_key_value).unwrap_or(Value::Empty))
             .collect()
     }
 }
@@ -211,6 +235,37 @@ fn normalize_key(key: &[Value]) -> PrimaryKey {
     key.iter().map(normalize_key_value).collect()
 }
 
+/// Sum numeric cells: Integer when every one is, Decimal otherwise.
+fn sum_cells<'a>(cells: impl Iterator<Item = &'a Value>) -> Result<Value, RecordError> {
+    let mut int_sum: i64 = 0;
+    let mut dec_sum = Decimal::ZERO;
+    let mut any_decimal = false;
+    for cell in cells {
+        match cell {
+            Value::Integer(n) | Value::BigInteger(n) => {
+                int_sum = int_sum
+                    .checked_add(*n)
+                    .ok_or(RecordError::FlowArithmeticOverflow("Sum"))?;
+                dec_sum = dec_sum
+                    .checked_add(Decimal::from(*n))
+                    .ok_or(RecordError::FlowArithmeticOverflow("Sum"))?;
+            }
+            Value::Decimal(d) => {
+                any_decimal = true;
+                dec_sum = dec_sum
+                    .checked_add(*d)
+                    .ok_or(RecordError::FlowArithmeticOverflow("Sum"))?;
+            }
+            _ => {}
+        }
+    }
+    Ok(if any_decimal {
+        Value::Decimal(dec_sum)
+    } else {
+        Value::Integer(int_sum)
+    })
+}
+
 fn row_matches_filters(filters: &BTreeMap<FieldNo, FieldFilter>, row: &Row) -> bool {
     for (&field, filter) in filters {
         let value = row.get(&field).unwrap_or(&Value::Empty);
@@ -237,6 +292,10 @@ pub struct MockRecord {
     pub table_name: String,
     primary_key_fields: Vec<FieldNo>,
     rows: BTreeMap<PrimaryKey, Row>,
+    /// Field number → the declared type's zero value. Used where BC reads a
+    /// field that was never assigned, notably the primary key of a row
+    /// inserted straight after `Init`.
+    field_defaults: HashMap<FieldNo, Value>,
     /// Built-in view backing the plain (view-less) API.
     view: RecordView,
 }
@@ -254,11 +313,19 @@ impl MockRecord {
             table_name,
             primary_key_fields: primary_key_fields.clone(),
             rows: BTreeMap::new(),
+            field_defaults: HashMap::new(),
             view: RecordView {
                 sort_key,
                 ..RecordView::default()
             },
         }
+    }
+
+    /// Attach the table's per-field zero values, recovered from the workspace
+    /// table definition.
+    pub fn with_field_defaults(mut self, field_defaults: HashMap<FieldNo, Value>) -> Self {
+        self.field_defaults = field_defaults;
+        self
     }
 
     /// A fresh, unfiltered view of this table sorted by the primary key —
@@ -309,12 +376,19 @@ impl MockRecord {
         &self.primary_key_fields
     }
 
+    /// The current buffer's primary key.
+    ///
+    /// A key field with no value in the buffer falls back to the field's
+    /// declared zero: BC inserts a row under the blank key rather than
+    /// refusing, and only rejects a second such insert as a duplicate. The
+    /// error remains for a table whose zero values could not be recovered.
     fn current_primary_key(&self, view: &RecordView) -> Result<PrimaryKey, RecordError> {
         self.primary_key_fields
             .iter()
             .map(|&f| {
                 view.current
                     .get(&f)
+                    .or_else(|| self.field_defaults.get(&f))
                     .map(normalize_key_value)
                     .ok_or(RecordError::MissingKeyField(f))
             })
@@ -526,12 +600,27 @@ impl MockRecord {
         self.with_default_view(|table, view| table.rename_in(view, new_key_values))
     }
 
-    /// `SETCURRENTKEY(fields…)` — change iteration sort order.
+    /// `SETCURRENTKEY(fields…)` — change iteration sort order. The direction
+    /// set by `Ascending` is kept.
     #[allow(clippy::unused_self)]
     pub fn set_current_key_in(&self, view: &mut RecordView, fields: Vec<FieldNo>) {
-        view.sort_key = SortKey::from_fields(fields);
+        view.sort_key.fields = fields;
         view.iter_set.clear();
         view.iter_pos = None;
+    }
+
+    /// `ASCENDING(flag)` — iterate the current key forwards or backwards.
+    #[allow(clippy::unused_self)]
+    pub fn set_ascending_in(&self, view: &mut RecordView, ascending: bool) {
+        view.sort_key.descending = !ascending;
+        view.iter_set.clear();
+        view.iter_pos = None;
+    }
+
+    /// `ASCENDING()` — whether the view iterates forwards.
+    #[allow(clippy::unused_self)]
+    pub fn is_ascending_in(&self, view: &RecordView) -> bool {
+        !view.sort_key.descending
     }
 
     pub fn set_current_key(&mut self, fields: Vec<FieldNo>) {
@@ -601,6 +690,11 @@ impl MockRecord {
             let row_b = self.rows.get(b).unwrap();
             sort_key.key_of(row_a).cmp(&sort_key.key_of(row_b))
         });
+        // Ties on the current key fall back to primary-key order, which
+        // descending order reverses too.
+        if sort_key.descending {
+            keys.reverse();
+        }
 
         view.iter_set = keys;
     }
@@ -721,6 +815,49 @@ impl MockRecord {
         self.count_in(&self.view)
     }
 
+    /// `ModifyAll(field, value)` — set `field` on every row the view's
+    /// filters select, returning how many changed. A primary-key field would
+    /// move rows and is refused.
+    pub fn modify_all_in(
+        &mut self,
+        view: &RecordView,
+        field: FieldNo,
+        value: Value,
+        run_trigger: bool,
+    ) -> Result<usize, RecordError> {
+        if run_trigger {
+            return Err(RecordError::TriggerExecutionUnsupported("ModifyAll"));
+        }
+        if self.primary_key_fields().contains(&field) {
+            return Err(RecordError::PrimaryKeyModifyAll(field));
+        }
+        let mut changed = 0;
+        for row in self.rows.values_mut() {
+            if row_matches_filters(&view.filters, row) {
+                row.insert(field, value.clone());
+                changed += 1;
+            }
+        }
+        Ok(changed)
+    }
+
+    /// `CalcSums` — the total of `field` over the rows the view's filters
+    /// select. Integer when every contributing cell is, Decimal otherwise or
+    /// when the field is declared Decimal.
+    pub fn calc_sum_in(&self, view: &RecordView, field: FieldNo) -> Result<Value, RecordError> {
+        let total = sum_cells(
+            self.rows
+                .values()
+                .filter(|row| row_matches_filters(&view.filters, row))
+                .filter_map(|row| row.get(&field)),
+        )?;
+        let declared_decimal = matches!(self.field_defaults.get(&field), Some(Value::Decimal(_)));
+        Ok(match total {
+            Value::Integer(n) if declared_decimal => Value::Decimal(Decimal::from(n)),
+            other => other,
+        })
+    }
+
     pub fn x_rec(&self) -> &Row {
         &self.view.x_rec
     }
@@ -772,35 +909,7 @@ impl MockRecord {
                     .map_err(|_| RecordError::FlowArithmeticOverflow("Count"))?,
             )),
             FlowAgg::Exist => Ok(Value::Boolean(!matching.is_empty())),
-            FlowAgg::Sum => {
-                let mut int_sum: i64 = 0;
-                let mut dec_sum = Decimal::ZERO;
-                let mut any_decimal = false;
-                for cell in target_cells() {
-                    match cell {
-                        Value::Integer(n) | Value::BigInteger(n) => {
-                            int_sum = int_sum
-                                .checked_add(*n)
-                                .ok_or(RecordError::FlowArithmeticOverflow("Sum"))?;
-                            dec_sum = dec_sum
-                                .checked_add(Decimal::from(*n))
-                                .ok_or(RecordError::FlowArithmeticOverflow("Sum"))?;
-                        }
-                        Value::Decimal(d) => {
-                            any_decimal = true;
-                            dec_sum = dec_sum
-                                .checked_add(*d)
-                                .ok_or(RecordError::FlowArithmeticOverflow("Sum"))?;
-                        }
-                        _ => {}
-                    }
-                }
-                if any_decimal {
-                    Ok(Value::Decimal(dec_sum))
-                } else {
-                    Ok(Value::Integer(int_sum))
-                }
-            }
+            FlowAgg::Sum => sum_cells(target_cells()),
             FlowAgg::Average => {
                 let nums: Vec<Decimal> = target_cells().filter_map(as_number).collect();
                 if nums.is_empty() {
@@ -818,8 +927,16 @@ impl MockRecord {
                 }
             }
             FlowAgg::Min | FlowAgg::Max => {
+                // Unlike Sum, Min and Max are changed by a row whose cell was
+                // never assigned: BC aggregates the field's zero for it, so a
+                // set of 5 and unassigned has minimum 0. The substitute is
+                // available only when the field's declared zero is known.
+                let zero = target.and_then(|t| self.field_defaults.get(&t));
                 let mut best: Option<&Value> = None;
-                for cell in target_cells() {
+                for cell in matching
+                    .iter()
+                    .filter_map(|row| target.and_then(|t| row.get(&t)).or(zero))
+                {
                     let Some(cur) = as_number(cell) else { continue };
                     best = match best {
                         None => Some(cell),
@@ -867,7 +984,8 @@ fn flow_value_eq(a: &Value, b: &Value) -> bool {
         return x == y;
     }
     match (flow_text(a), flow_text(b)) {
-        (Some(x), Some(y)) => x.eq_ignore_ascii_case(&y),
+        // Full Unicode folding, matching the rest of the caseless text comparisons.
+        (Some(x), Some(y)) => x.to_uppercase() == y.to_uppercase(),
         _ => false,
     }
 }
@@ -908,6 +1026,103 @@ mod tests {
             rec.field_set(*f, v.clone());
         }
         rec.insert(false).expect("insert should succeed");
+    }
+
+    fn insert_code(rec: &mut MockRecord, code: &str) {
+        rec.init();
+        rec.field_set(1, Value::Code(code.to_string()));
+        rec.insert(false).expect("insert should succeed");
+    }
+
+    fn iterate_codes(rec: &mut MockRecord) -> Vec<String> {
+        let mut out = Vec::new();
+        if !rec.find_set().unwrap() {
+            return out;
+        }
+        loop {
+            match rec.field_get(1) {
+                Some(Value::Code(c)) => out.push(c.clone()),
+                other => panic!("key field is {other:?}"),
+            }
+            if rec.next(1).unwrap() == 0 {
+                break;
+            }
+        }
+        out
+    }
+
+    /// A `Code` cell is caseless, so `FindSet` must order `'a'` next to `'A'` rather
+    /// than after every upper-case value. The primary-key index already folded case;
+    /// only the sort key read the raw cell. Found by
+    /// `tests/property_record_model.rs::record_operations_match_a_btreemap_model`
+    /// with the two inserts below.
+    #[test]
+    fn find_set_orders_code_keys_caselessly() {
+        let mut rec = MockRecord::new(50100, "Prop", vec![1]);
+        insert_code(&mut rec, "a");
+        insert_code(&mut rec, "AA");
+        assert_eq!(iterate_codes(&mut rec), vec!["a", "AA"]);
+    }
+
+    /// An `Integer` cell and a `Decimal` cell in the same sort field order by value,
+    /// not by `Value`'s variant tag.
+    #[test]
+    fn find_set_orders_integer_and_decimal_cells_by_value() {
+        let mut rec = MockRecord::new(50100, "Prop", vec![1]);
+        for v in [
+            Value::Decimal(dec!(1.5)),
+            Value::Integer(1),
+            Value::Integer(2),
+        ] {
+            rec.init();
+            rec.field_set(1, v);
+            rec.insert(false).unwrap();
+        }
+        rec.find_set().unwrap();
+        let mut seen = Vec::new();
+        loop {
+            seen.push(rec.field_get(1).cloned().unwrap());
+            if rec.next(1).unwrap() == 0 {
+                break;
+            }
+        }
+        assert_eq!(
+            seen,
+            vec![
+                Value::Integer(1),
+                Value::Decimal(dec!(1.5)),
+                Value::Integer(2)
+            ]
+        );
+    }
+
+    /// The caseless `Code` rule is one rule: the key index folds with full Unicode
+    /// uppercase, so `SetRange` must too. Folding only ASCII made
+    /// `SetRange('A', 'É')` reject a row filed under `'É'`. Found by the same property
+    /// test with `SetRange("A", "É")` followed by `Insert("é")`.
+    #[test]
+    fn set_range_folds_non_ascii_code_like_the_key_index() {
+        let mut rec = MockRecord::new(50100, "Prop", vec![1]);
+        insert_code(&mut rec, "é");
+        rec.set_range(1, Value::Code("A".into()), Value::Code("É".into()));
+        assert_eq!(
+            rec.count(),
+            1,
+            "SetRange must match the row filed under 'É'"
+        );
+        assert!(!rec.is_empty());
+    }
+
+    /// The same rule through `SetFilter`'s ordered comparisons.
+    #[test]
+    fn set_filter_folds_non_ascii_code_like_the_key_index() {
+        let mut rec = MockRecord::new(50100, "Prop", vec![1]);
+        insert_code(&mut rec, "é");
+        rec.set_filter(1, ">=É").unwrap();
+        assert_eq!(rec.count(), 1);
+        rec.clear_filter(1);
+        rec.set_filter(1, "<=é").unwrap();
+        assert_eq!(rec.count(), 1);
     }
 
     #[test]

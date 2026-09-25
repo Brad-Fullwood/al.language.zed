@@ -1,13 +1,34 @@
-//! Bulk fix operations for AL projects.
+//! Bulk fix planning for AL projects.
 //!
-//! Implements project-wide fixes:
-//! - `add_application_area` — add ApplicationArea to page fields/actions missing it
-//! - `add_tooltips` — add ToolTip to page fields from symbol data
-//! - `add_data_classification` — add DataClassification to table fields
+//! Each `plan_*` function reads the project and returns a [`BulkFixPlan`]: the
+//! original and updated text of every file it would change. Applying the plan
+//! belongs to the caller, because the only caller that writes (the daemon's
+//! `fix.*` methods) must go through the workspace refresh protocol so the
+//! document store, the file index and the generation counter stay in step.
+//!
+//! - `plan_application_area` — add ApplicationArea to page fields/actions missing it
+//! - `plan_tooltips` — add ToolTip to page fields from symbol data
+//! - `plan_data_classification` — add DataClassification to table fields
 
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+
+/// Why a bulk fix could not be planned.
+#[derive(Debug, thiserror::Error)]
+pub enum BulkFixError {
+    /// The caller's value or tooltip list cannot be written into AL.
+    #[error("{0}")]
+    InvalidInput(String),
+    /// The project could not be read: a scan limit or a disk fault, which
+    /// the caller reports differently (the user can narrow one of them).
+    #[error(transparent)]
+    Scan(#[from] al_source::file_index::ScanError),
+    /// The project's source cannot be changed safely: malformed AL, a file
+    /// with no object, or a transformation that would produce invalid AL.
+    #[error("{0}")]
+    Refused(String),
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,23 +69,7 @@ impl BulkFixPlan {
     }
 }
 
-/// Add `ApplicationArea = <value>;` to all page fields and page action items that
-/// are missing it across all AL files under `project_dir`.
-///
-/// Respects existing `ApplicationArea` properties — only adds where absent.
-pub fn add_application_area(
-    project_dir: &Path,
-    value: &str,
-    dry_run: bool,
-) -> Result<BulkFixResult, String> {
-    let plan = plan_application_area(project_dir, value)?;
-    if !dry_run {
-        apply_plan_to_disk(&plan)?;
-    }
-    Ok(plan.result(dry_run))
-}
-
-pub fn plan_application_area(project_dir: &Path, value: &str) -> Result<BulkFixPlan, String> {
+pub fn plan_application_area(project_dir: &Path, value: &str) -> Result<BulkFixPlan, BulkFixError> {
     validate_property_value(value, "ApplicationArea")?;
     build_plan(project_dir, |source, tree, object_kind| {
         if !is_page_kind(object_kind) {
@@ -74,41 +79,28 @@ pub fn plan_application_area(project_dir: &Path, value: &str) -> Result<BulkFixP
     })
 }
 
-/// Add `ToolTip = '<value>';` to page fields that reference base-app table fields
-/// and are missing a ToolTip property.
-///
-/// `tooltips` is a map from field name (case-insensitive) to tooltip text. These
-/// would typically come from symbol data for the source table.
-pub fn add_tooltips(
-    project_dir: &Path,
-    tooltips: &[(String, String)],
-    dry_run: bool,
-) -> Result<BulkFixResult, String> {
-    let plan = plan_tooltips(project_dir, tooltips)?;
-    if !dry_run {
-        apply_plan_to_disk(&plan)?;
-    }
-    Ok(plan.result(dry_run))
-}
-
 pub fn plan_tooltips(
     project_dir: &Path,
     tooltips: &[(String, String)],
-) -> Result<BulkFixPlan, String> {
+) -> Result<BulkFixPlan, BulkFixError> {
     let mut normalized = std::collections::BTreeMap::new();
     for (field, tooltip) in tooltips {
         let field = field.trim();
         if field.is_empty() {
-            return Err("Tooltip source field name must not be empty".to_string());
+            return Err(BulkFixError::InvalidInput(
+                "Tooltip source field name must not be empty".to_string(),
+            ));
         }
         if tooltip.trim().is_empty() {
-            return Err(format!("Tooltip for field '{field}' must not be empty"));
+            return Err(BulkFixError::InvalidInput(format!(
+                "Tooltip for field '{field}' must not be empty"
+            )));
         }
         let key = field.to_ascii_lowercase();
         if normalized.insert(key, tooltip.clone()).is_some() {
-            return Err(format!(
+            return Err(BulkFixError::InvalidInput(format!(
                 "Tooltip source contains duplicate field name '{field}'"
-            ));
+            )));
         }
     }
     build_plan(project_dir, |source, tree, object_kind| {
@@ -119,23 +111,10 @@ pub fn plan_tooltips(
     })
 }
 
-/// Add `DataClassification = <value>;` to all table fields missing it across all
-/// AL table files under `project_dir`.
-///
-/// Skips FlowFields and FlowFilters (where DataClassification is not applicable).
-pub fn add_data_classification(
+pub fn plan_data_classification(
     project_dir: &Path,
     value: &str,
-    dry_run: bool,
-) -> Result<BulkFixResult, String> {
-    let plan = plan_data_classification(project_dir, value)?;
-    if !dry_run {
-        apply_plan_to_disk(&plan)?;
-    }
-    Ok(plan.result(dry_run))
-}
-
-pub fn plan_data_classification(project_dir: &Path, value: &str) -> Result<BulkFixPlan, String> {
+) -> Result<BulkFixPlan, BulkFixError> {
     validate_property_value(value, "DataClassification")?;
     build_plan(project_dir, |source, tree, object_kind| {
         if !is_table_kind(object_kind) {
@@ -143,16 +122,6 @@ pub fn plan_data_classification(project_dir: &Path, value: &str) -> Result<BulkF
         }
         inject_data_classification(source, tree, value)
     })
-}
-
-/// Collect project AL files without following symlinks out of the project.
-///
-/// Project-wide mutations must not quietly skip unreadable directories or
-/// disagree with the workspace index about which paths belong to the project.
-/// Discovery is therefore delegated to the source index's authoritative
-/// walker rather than maintaining a second set of path and exclusion rules.
-pub fn collect_al_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    al_source::file_index::collect_al_files(dir).map_err(|error| error.to_string())
 }
 
 fn is_page_kind(kind: &str) -> bool {
@@ -174,10 +143,12 @@ fn is_table_kind(kind: &str) -> bool {
     )
 }
 
-fn validate_property_value(value: &str, property: &str) -> Result<(), String> {
+fn validate_property_value(value: &str, property: &str) -> Result<(), BulkFixError> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return Err(format!("{property} value must not be empty"));
+        return Err(BulkFixError::InvalidInput(format!(
+            "{property} value must not be empty"
+        )));
     }
     if trimmed
         .chars()
@@ -186,23 +157,25 @@ fn validate_property_value(value: &str, property: &str) -> Result<(), String> {
         || trimmed.contains("/*")
         || trimmed.contains("*/")
     {
-        return Err(format!(
+        return Err(BulkFixError::InvalidInput(format!(
             "{property} value contains characters that cannot appear in an AL property value"
-        ));
+        )));
     }
     Ok(())
 }
 
-fn build_plan<F>(project_dir: &Path, transform: F) -> Result<BulkFixPlan, String>
+fn build_plan<F>(project_dir: &Path, transform: F) -> Result<BulkFixPlan, BulkFixError>
 where
     F: Fn(&str, &tree_sitter::Tree, &str) -> Result<(String, usize), String>,
 {
-    let files = collect_al_files(project_dir)?;
+    // Discovery goes through the source index's walker so a bulk fix cannot
+    // disagree with the workspace about which paths belong to the project.
+    let files = al_source::file_index::collect_al_files(project_dir)?;
     let mut changes = Vec::new();
     for path in files {
-        let source = al_source::file_index::read_source_file(&path)
-            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?
-            .ok_or_else(|| format!("Workspace source disappeared: {}", path.display()))?;
+        let source = al_source::file_index::read_source_file(&path)?.ok_or_else(|| {
+            BulkFixError::Refused(format!("Workspace source disappeared: {}", path.display()))
+        })?;
         let parsed = al_syntax::AlParser::parse_quick(&source);
         if parsed.tree.root_node().has_error() {
             let details = parsed
@@ -219,7 +192,7 @@ where
                 })
                 .collect::<Vec<_>>()
                 .join("; ");
-            return Err(format!(
+            return Err(BulkFixError::Refused(format!(
                 "Bulk fix refused malformed AL source '{}': {}",
                 path.display(),
                 if details.is_empty() {
@@ -227,32 +200,32 @@ where
                 } else {
                     &details
                 }
-            ));
+            )));
         }
         let object =
             al_syntax::find_object_declaration(&parsed.tree, &source).ok_or_else(|| {
-                format!(
+                BulkFixError::Refused(format!(
                     "Bulk fix refused '{}': no complete AL object declaration was found",
                     path.display()
-                )
+                ))
             })?;
         let (updated, changes_count) = transform(&source, &parsed.tree, &object.kind)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
+            .map_err(|error| BulkFixError::Refused(format!("{}: {error}", path.display())))?;
         if (changes_count == 0) != (updated == source) {
-            return Err(format!(
+            return Err(BulkFixError::Refused(format!(
                 "Bulk-fix transformation integrity mismatch for '{}'",
                 path.display()
-            ));
+            )));
         }
         if changes_count > 0 {
             let verification = al_syntax::AlParser::parse_quick(&updated);
             if verification.tree.root_node().has_error()
                 || al_syntax::find_object_declaration(&verification.tree, &updated).is_none()
             {
-                return Err(format!(
+                return Err(BulkFixError::Refused(format!(
                     "Bulk fix generated invalid AL for '{}'; no files were changed",
                     path.display()
-                ));
+                )));
             }
             changes.push(BulkFixChange {
                 path,
@@ -263,92 +236,6 @@ where
         }
     }
     Ok(BulkFixPlan { changes })
-}
-
-fn apply_plan_to_disk(plan: &BulkFixPlan) -> Result<(), String> {
-    for change in &plan.changes {
-        let current = al_source::file_index::read_source_file(&change.path)
-            .map_err(|error| format!("Failed to re-read {}: {error}", change.path.display()))?
-            .ok_or_else(|| {
-                format!(
-                    "Source disappeared before bulk fix: {}",
-                    change.path.display()
-                )
-            })?;
-        if current != change.original {
-            return Err(format!(
-                "Source changed after bulk-fix planning: {}; no files were changed",
-                change.path.display()
-            ));
-        }
-    }
-
-    let mut applied: Vec<&BulkFixChange> = Vec::new();
-    for change in &plan.changes {
-        if let Err(error) = atomic_replace(&change.path, &change.updated) {
-            let mut rollback_errors = Vec::new();
-            for previous in applied.into_iter().rev() {
-                if let Err(rollback_error) = atomic_replace(&previous.path, &previous.original) {
-                    rollback_errors.push(format!("{}: {rollback_error}", previous.path.display()));
-                }
-            }
-            let suffix = if rollback_errors.is_empty() {
-                String::new()
-            } else {
-                format!("; rollback also failed: {}", rollback_errors.join("; "))
-            };
-            return Err(format!(
-                "Failed to update {}: {error}{suffix}",
-                change.path.display()
-            ));
-        }
-        applied.push(change);
-    }
-    Ok(())
-}
-
-fn atomic_replace(path: &Path, content: &str) -> Result<(), String> {
-    use std::io::Write;
-
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
-    let permissions = std::fs::metadata(path)
-        .map_err(|error| format!("inspect {} failed: {error}", path.display()))?
-        .permissions();
-    let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|error| {
-        format!(
-            "create temporary file beside {} failed: {error}",
-            path.display()
-        )
-    })?;
-    temporary
-        .as_file()
-        .set_permissions(permissions)
-        .map_err(|error| {
-            format!(
-                "set temporary permissions for {} failed: {error}",
-                path.display()
-            )
-        })?;
-    temporary.write_all(content.as_bytes()).map_err(|error| {
-        format!(
-            "write temporary file for {} failed: {error}",
-            path.display()
-        )
-    })?;
-    temporary
-        .as_file()
-        .sync_all()
-        .map_err(|error| format!("sync temporary file for {} failed: {error}", path.display()))?;
-    temporary
-        .persist(path)
-        .map_err(|error| format!("replace {} failed: {}", path.display(), error.error))?;
-    #[cfg(unix)]
-    std::fs::File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| format!("sync directory {} failed: {error}", parent.display()))?;
-    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -371,6 +258,23 @@ pub(crate) fn collect_ast_sections(
     }
     let mut sections = Vec::new();
     collect_ast_sections_from_node(tree.root_node(), source, target_keywords, &mut sections)?;
+    Ok(sections)
+}
+
+/// [`collect_ast_sections`] restricted to one subtree.
+///
+/// A file declaring two tables would otherwise hand both tables' fields to a
+/// caller asking about one of them.
+pub(crate) fn collect_ast_sections_in(
+    node: tree_sitter::Node<'_>,
+    source: &str,
+    target_keywords: &[&str],
+) -> Result<Vec<AstObjectSection>, String> {
+    if node.has_error() {
+        return Err("cannot inspect sections in malformed AL source".to_string());
+    }
+    let mut sections = Vec::new();
+    collect_ast_sections_from_node(node, source, target_keywords, &mut sections)?;
     Ok(sections)
 }
 
@@ -602,6 +506,33 @@ fn normalize_tooltip_text(value: &str) -> String {
     }
 }
 
+/// Give `value` the "Specifies " opening that UICop AA0218 asks for, unless it
+/// already has one.
+///
+/// The sole caller reads the base-app table field's own `ToolTip` property,
+/// which follows that convention already, so prefixing unconditionally wrote
+/// `Specifies Specifies the number of the customer.` across every matching
+/// page field in the project. A value that merely starts with the same letters
+/// ("Specification number") still gets the prefix.
+///
+/// The prefix is counted in characters. A tooltip read from a package is in
+/// the package's language, and slicing the first nine bytes of
+/// `Spécifié le numéro` lands inside an `é`.
+fn with_specifies_prefix(value: &str) -> String {
+    const PREFIX: &str = "Specifies";
+    let already_prefixed = value
+        .char_indices()
+        .nth(PREFIX.chars().count())
+        .is_some_and(|(byte, following)| {
+            following.is_whitespace() && value[..byte].eq_ignore_ascii_case(PREFIX)
+        });
+    if already_prefixed {
+        value.to_string()
+    } else {
+        format!("{PREFIX} {value}")
+    }
+}
+
 fn parse_record_field_source(expression: &str) -> Option<String> {
     let (receiver, field) = expression.split_once('.')?;
     if !receiver.trim().eq_ignore_ascii_case("rec") {
@@ -671,11 +602,11 @@ fn inject_tooltips(
         let Some(tooltip) = tooltips.get(&field_name.to_ascii_lowercase()) else {
             continue;
         };
-        let escaped = normalize_tooltip_text(tooltip).replace('\'', "''");
+        let escaped = with_specifies_prefix(&normalize_tooltip_text(tooltip)).replace('\'', "''");
         insertions.push(property_insertion(
             source,
             &section,
-            &format!("ToolTip = 'Specifies {escaped}';"),
+            &format!("ToolTip = '{escaped}';"),
         )?);
     }
     let count = insertions.len();
@@ -971,7 +902,100 @@ mod tests {
         let tooltips = tooltip_map("No.", "the item number");
         let (result, changes) = inject_tooltips(source, &parse(source), &tooltips).unwrap();
         assert_eq!(changes, 1);
-        assert!(result.contains("ToolTip"));
+        assert!(
+            result.contains("                ToolTip = 'Specifies the item number';"),
+            "{result}"
+        );
+        assert!(!parse(&result).root_node().has_error());
+    }
+
+    /// The only caller reads the base-app field's own `ToolTip`, which by the
+    /// UICop AA0218 convention already starts with "Specifies".
+    #[test]
+    fn inject_tooltips_does_not_repeat_an_existing_specifies_prefix() {
+        let source = r#"page 50100 "Test"
+{
+    layout
+    {
+        area(Content)
+        {
+            field(no; Rec."No.")
+            {
+                ApplicationArea = All;
+            }
+        }
+    }
+}
+"#;
+        for value in [
+            "Specifies the number of the customer.",
+            "specifies the number of the customer.",
+        ] {
+            let tooltips = tooltip_map("No.", value);
+            let (result, changes) = inject_tooltips(source, &parse(source), &tooltips).unwrap();
+            assert_eq!(changes, 1);
+            assert!(
+                result.contains(&format!("                ToolTip = '{value}';")),
+                "{value}: {result}"
+            );
+            assert!(!parse(&result).root_node().has_error());
+        }
+    }
+
+    /// A tooltip read from a symbol package is in the package's language. The
+    /// prefix check sliced the first nine *bytes*, and byte 9 of
+    /// `Spécifié le numéro` is the second byte of an `é`, so the whole
+    /// add-tooltips run panicked on a French base application.
+    #[test]
+    fn inject_tooltips_handles_a_non_ascii_tooltip() {
+        let source = r#"page 50100 "Test"
+{
+    layout
+    {
+        area(Content)
+        {
+            field(no; Rec."No.")
+            {
+                ApplicationArea = All;
+            }
+        }
+    }
+}
+"#;
+        let tooltips = tooltip_map("No.", "Spécifié le numéro");
+        let (result, changes) = inject_tooltips(source, &parse(source), &tooltips).unwrap();
+        assert_eq!(changes, 1);
+        assert!(
+            result.contains("ToolTip = 'Specifies Spécifié le numéro';"),
+            "{result}"
+        );
+        assert!(!parse(&result).root_node().has_error());
+    }
+
+    /// "Specification" starts with the same letters but is not the prefix.
+    #[test]
+    fn inject_tooltips_prefixes_a_word_that_merely_starts_with_specifies() {
+        let source = r#"page 50100 "Test"
+{
+    layout
+    {
+        area(Content)
+        {
+            field(no; Rec."No.")
+            {
+                ApplicationArea = All;
+            }
+        }
+    }
+}
+"#;
+        let tooltips = tooltip_map("No.", "Specification number");
+        let (result, _) = inject_tooltips(source, &parse(source), &tooltips).unwrap();
+        assert!(
+            result.contains("                ToolTip = 'Specifies Specification number';"),
+            "{result}"
+        );
+        assert!(!parse(&result).root_node().has_error());
     }
 
     #[test]
@@ -995,22 +1019,24 @@ mod tests {
         assert_eq!(changes, 0);
     }
 
+    /// Planning reads the project and touches nothing on disk; writing is the
+    /// daemon's job, through the workspace refresh protocol.
     #[test]
-    fn add_application_area_dry_run_does_not_write() {
+    fn planning_reports_changes_without_writing() {
         let dir = tempfile::tempdir().unwrap();
         let page_content = "page 50100 \"Test\"\n{\n    layout\n    {\n        area(Content)\n        {\n            field(f; Rec.\"No.\")\n            {\n            }\n        }\n    }\n}\n";
         let page_path = dir.path().join("Test.Page.al");
         std::fs::write(&page_path, page_content).unwrap();
 
-        let result = add_application_area(dir.path(), "All", true).unwrap();
+        let plan = plan_application_area(dir.path(), "All").unwrap();
+        let result = plan.result(true);
         assert!(result.dry_run);
         assert!(result.changes_count > 0);
-        let content = std::fs::read_to_string(&page_path).unwrap();
-        assert!(!content.contains("ApplicationArea"));
+        assert_eq!(std::fs::read_to_string(&page_path).unwrap(), page_content);
     }
 
     #[test]
-    fn malformed_file_blocks_the_entire_bulk_fix_before_writes() {
+    fn malformed_file_blocks_the_entire_bulk_fix_plan() {
         let dir = tempfile::tempdir().unwrap();
         let good = "page 50100 \"Good\"\n{\n    layout\n    {\n        area(Content)\n        {\n            field(f; Rec.\"No.\") { }\n        }\n    }\n}\n";
         let good_path = dir.path().join("A.Good.al");
@@ -1021,13 +1047,15 @@ mod tests {
         )
         .unwrap();
 
-        let error = add_application_area(dir.path(), "All", false).unwrap_err();
-        assert!(error.contains("malformed AL source"), "{error}");
+        let error = plan_application_area(dir.path(), "All").unwrap_err();
+        assert!(error.to_string().contains("malformed AL source"), "{error}");
         assert_eq!(std::fs::read_to_string(good_path).unwrap(), good);
     }
 
+    /// Every file the plan covers must parse after the edit, or the daemon
+    /// would write a broken project.
     #[test]
-    fn non_dry_run_writes_a_complete_parseable_plan() {
+    fn a_complete_plan_is_parseable_for_every_file_it_covers() {
         let dir = tempfile::tempdir().unwrap();
         let first_path = dir.path().join("First.al");
         let second_path = dir.path().join("Second.al");
@@ -1042,14 +1070,20 @@ mod tests {
         )
         .unwrap();
 
-        let result = add_application_area(dir.path(), "All", false).unwrap();
+        let plan = plan_application_area(dir.path(), "All").unwrap();
+        let result = plan.result(false);
         assert!(!result.dry_run);
         assert_eq!(result.changes_count, 2);
         assert_eq!(result.modified_files.len(), 2);
+        assert_eq!(plan.changes.len(), 2);
+        for change in &plan.changes {
+            assert!(change.updated.contains("ApplicationArea = All;"));
+            assert!(!parse(&change.updated).root_node().has_error());
+        }
         for path in [&first_path, &second_path] {
-            let updated = std::fs::read_to_string(path).unwrap();
-            assert!(updated.contains("ApplicationArea = All;"));
-            assert!(!parse(&updated).root_node().has_error());
+            assert!(!std::fs::read_to_string(path)
+                .unwrap()
+                .contains("ApplicationArea"));
         }
     }
 
@@ -1094,7 +1128,7 @@ mod tests {
         .unwrap();
         std::os::unix::fs::symlink(external.path(), project.path().join("linked")).unwrap();
 
-        let files = collect_al_files(project.path()).unwrap();
+        let files = al_source::file_index::collect_al_files(project.path()).unwrap();
         let expected = project.path().join("Inside.al");
         let outside = external.path().join("Outside.al");
         assert_eq!(files, vec![expected]);

@@ -24,6 +24,18 @@ use clap_complete::generate;
 use commands::{build, debug, insight, lsp};
 
 pub fn run(cli: Cli) -> ExitCode {
+    if let Some(millis) = cli.timeout_ms {
+        commands::set_request_timeout_override(millis);
+    }
+    commands::set_compact_json(cli.compact);
+    commands::set_projection_override(cli.limit, cli.offset, &cli.fields, cli.scope.as_deref());
+    // `--compact` is about how JSON is rendered, so asking for it is asking
+    // for JSON. `--fields` too: the text tables have a column for every field
+    // and printed `?` in each one the projection had dropped.
+    let cli = Cli {
+        json: cli.json || cli.compact || !cli.fields.is_empty(),
+        ..cli
+    };
     match cli.command {
         Commands::GenerateCompletions { shell } => {
             let mut cmd = Cli::command();
@@ -66,7 +78,7 @@ pub fn run(cli: Cli) -> ExitCode {
         Commands::DownloadSymbols { project, source } => {
             lsp::cmd_download_symbols(project.as_deref(), source.as_deref(), cli.json)
         }
-        Commands::Search { query, limit } => lsp::cmd_search(&query, limit, cli.json),
+        Commands::Search { query } => lsp::cmd_search(&query, cli.limit, cli.json),
         Commands::Object { kind, name } => lsp::cmd_object(&kind, &name, cli.json),
         Commands::ById { kind, id } => lsp::cmd_by_id(&kind, id, cli.json),
         Commands::Source {
@@ -75,18 +87,41 @@ pub fn run(cli: Cli) -> ExitCode {
             package,
             procedure,
             trigger,
+            list_procedures,
         } => lsp::cmd_source(
             &name,
             kind.as_deref(),
             package.as_deref(),
             procedure.as_deref(),
             trigger.as_deref(),
+            list_procedures,
             cli.json,
         ),
+        Commands::Location {
+            name,
+            kind,
+            package,
+        } => lsp::cmd_location(&name, kind.as_deref(), package.as_deref(), cli.json),
         Commands::Events { name } => lsp::cmd_events(&name, cli.json),
         Commands::Subscribers { event } => lsp::cmd_subscribers(&event, cli.json),
         Commands::EventSource { file, line } => lsp::cmd_event_source(&file, line, cli.json),
-        Commands::Composed { kind, name } => lsp::cmd_composed(&kind, name.as_deref(), cli.json),
+        // `composed <NAME>`, `composed <KIND> <NAME>` and `composed [KIND]
+        // --name <NAME>` all reach the same two arguments. With `--name` and no
+        // kind, the name takes the single-argument slot the resolver already
+        // treats as a name.
+        Commands::Composed {
+            kind,
+            name_positional,
+            name,
+        } => {
+            let (kind, name) = match (kind, name) {
+                (Some(kind), None) => (kind, name_positional),
+                (Some(kind), Some(name)) => (kind, Some(name)),
+                (None, Some(name)) => (name, None),
+                (None, None) => unreachable!("clap requires a kind or --name"),
+            };
+            lsp::cmd_composed(&kind, name.as_deref(), cli.json)
+        }
         Commands::Packages => lsp::cmd_packages(cli.json),
         Commands::Deps => lsp::cmd_deps(cli.json),
         Commands::Compile { project } => build::cmd_compile(project.as_deref(), cli.json),
@@ -94,22 +129,38 @@ pub fn run(cli: Cli) -> ExitCode {
             project,
             out,
             validate,
-        } => build::cmd_pack_native(project.as_deref(), out.as_deref(), validate, cli.json),
+            analyzers,
+        } => build::cmd_pack_native(
+            project.as_deref(),
+            out.as_deref(),
+            validate,
+            analyzers.as_deref(),
+            cli.json,
+        ),
         Commands::Lint {
             file,
             all,
             analyzers,
         } => {
+            if analyzers.is_some() {
+                return commands::report_error(
+                    "lint runs the native rules only and cannot run Microsoft's analyzers \
+                     (earlier versions accepted --analyzers and ignored it). Microsoft's cops \
+                     run under alc: use `al-explorer pack-native --validate --analyzers <list>`, \
+                     or set al.codeAnalyzers and `al-explorer compile` with al.useOfficialCompiler.",
+                    cli.json,
+                );
+            }
             let targets = commands::resolve_lint_targets(&file);
             match targets.as_slice() {
-                [] => lsp::cmd_lint(None, all, analyzers.as_deref(), cli.json),
-                [only] => lsp::cmd_lint(Some(only), all, analyzers.as_deref(), cli.json),
+                [] => lsp::cmd_lint(None, all, cli.json),
+                [only] => lsp::cmd_lint(Some(only), all, cli.json),
                 many => {
                     // Multiple distinct files: lint each in turn and fail the
                     // whole invocation if any file reports findings or errors.
                     let mut overall = ExitCode::SUCCESS;
                     for target in many {
-                        let code = lsp::cmd_lint(Some(target), all, analyzers.as_deref(), cli.json);
+                        let code = lsp::cmd_lint(Some(target), all, cli.json);
                         if code != ExitCode::SUCCESS {
                             overall = ExitCode::FAILURE;
                         }
@@ -181,6 +232,10 @@ pub fn run(cli: Cli) -> ExitCode {
             role_id,
         } => lsp::cmd_permissions(&format, &name, id, &role_id, cli.json),
         Commands::Package => build::cmd_package(cli.json),
+        Commands::Publish {
+            config,
+            incremental,
+        } => build::cmd_publish(config.as_deref(), incremental, cli.json),
         Commands::New {
             dir,
             name,
@@ -193,7 +248,7 @@ pub fn run(cli: Cli) -> ExitCode {
             Err(error) => commands::report_error(&error, cli.json),
         },
         Commands::Authenticate { cmd, tenant } => {
-            lsp::cmd_authenticate(&cmd, tenant.as_deref(), cli.json)
+            lsp::cmd_authenticate(cmd.as_str(), tenant.as_deref(), cli.json)
         }
         Commands::Trace { event, depth, tree } => insight::cmd_trace(&event, depth, tree, cli.json),
         Commands::Intercept => insight::cmd_intercept(cli.json),
@@ -282,7 +337,14 @@ pub fn run(cli: Cli) -> ExitCode {
             subject.as_deref(),
             cli.json,
         ),
-        Commands::Obsolete => lsp::cmd_obsolete(cli.json),
+        Commands::Obsolete { used } => {
+            if used {
+                lsp::cmd_obsolete_usages(cli.json)
+            } else {
+                lsp::cmd_obsolete(cli.json)
+            }
+        }
+        Commands::PackageDiff { from, to, all } => lsp::cmd_package_diff(&from, &to, all, cli.json),
         Commands::AuditData => lsp::cmd_audit_data_classification(cli.json),
         Commands::PermissionAudit => lsp::cmd_permission_audit(cli.json),
         Commands::DepsGraph { format } => lsp::cmd_deps_graph(&format, cli.json),
@@ -291,6 +353,18 @@ pub fn run(cli: Cli) -> ExitCode {
         }
         Commands::ArchLint => lsp::cmd_arch_lint(cli.json),
         Commands::NativeCheck => lsp::cmd_native_check(cli.json),
+        Commands::FreeIds {
+            kind,
+            object,
+            count,
+            include_used,
+        } => lsp::cmd_free_ids(
+            kind.as_deref(),
+            object.as_deref(),
+            count,
+            include_used,
+            cli.json,
+        ),
         Commands::Duplicates {
             min_tokens,
             min_similarity,
@@ -303,5 +377,19 @@ pub fn run(cli: Cli) -> ExitCode {
             lsp::cmd_sort_members(file.as_deref(), all, dry_run, cli.json)
         }
         Commands::OrganizeFiles { dry_run } => lsp::cmd_organize_files(dry_run, cli.json),
+        Commands::Trust {
+            project,
+            show,
+            revoke,
+            yes,
+            root,
+        } => commands::trust::cmd_trust(
+            project.as_deref(),
+            show,
+            revoke,
+            yes,
+            root.as_deref(),
+            cli.json,
+        ),
     }
 }

@@ -136,26 +136,38 @@ impl<'a> Parser<'a> {
         self.pos >= self.input.len()
     }
 
-    /// Read a name (table name or field name).
-    /// If next char is `"` or `'`, reads a quoted name (may contain spaces).
-    /// Otherwise reads an unquoted identifier: alphanumeric, `_`, `.`, `-`
-    /// (no spaces — spaces are used to delimit WHERE).
+    /// Read a table or field name.
+    ///
+    /// A quoted name (`"` or `'`) may hold anything, including the `.` and the
+    /// spaces that force the quotes in the first place. An unquoted one is an
+    /// AL identifier: letters, digits and `_`. `.` stops the scan, because in
+    /// a CalcFormula the only unquoted dot is the separator between the table
+    /// and the field, as in `Lookup(Item."Block Reason" where(...))`
+    /// (microsoft/BCApps, SOAItemExt.TableExt.al).
     fn read_name(&mut self) -> Result<String, CalcParseError> {
+        self.read_token(|c| c.is_alphanumeric() || c == '_')
+    }
+
+    /// Read the argument of `CONST(...)`, which is a value rather than a name:
+    /// `CONST(1.5)`, `CONST(-1)` and `CONST(01/31/26)` all reach here, so the
+    /// characters a name stops at are part of the token.
+    fn read_const_value(&mut self) -> Result<String, CalcParseError> {
+        self.read_token(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '-' || c == '/')
+    }
+
+    fn read_token(
+        &mut self,
+        is_token_char: impl Fn(char) -> bool,
+    ) -> Result<String, CalcParseError> {
         self.skip_whitespace();
         match self.peek() {
             None => Err(CalcParseError::UnexpectedEnd),
             Some('"') | Some('\'') => self.read_quoted(),
             _ => {
                 let mut s = String::new();
-                loop {
-                    match self.peek() {
-                        None => break,
-                        Some(c) if c.is_alphanumeric() || c == '_' || c == '.' || c == '-' => {
-                            s.push(c);
-                            self.advance();
-                        }
-                        _ => break,
-                    }
+                while let Some(c) = self.peek().filter(|c| is_token_char(*c)) {
+                    s.push(c);
+                    self.advance();
                 }
                 if s.is_empty() {
                     Err(CalcParseError::UnexpectedEnd)
@@ -286,7 +298,7 @@ impl<'a> Parser<'a> {
         // For FILTER, preserve the raw filter expression string.
         let value = match value_kw.to_uppercase().as_str() {
             "CONST" => {
-                let inner = self.read_name()?;
+                let inner = self.read_const_value()?;
                 self.expect_char(')')?;
                 if inner.trim().is_empty() {
                     return Err(CalcParseError::EmptyConstArgument(field));
@@ -416,6 +428,57 @@ mod tests {
         assert_eq!(f.table_name, "Sales Line");
         assert_eq!(f.field_name.as_deref(), Some("Amount"));
         assert!(f.where_clause.is_empty());
+    }
+
+    /// An unquoted table name is legal whenever the name needs no quotes, and
+    /// BCApps uses it: `Lookup(Item."Block Reason" where("No." = field("No.")))`
+    /// in src/Apps/W1/SalesOrderAgent/app/src/ItemAvailability/SOAItemExt.TableExt.al.
+    /// The parser read `SalesDetail.Amount` as one name and then failed on the
+    /// missing `.`, and the error took the whole table down with it.
+    #[test]
+    fn unquoted_table_name_before_a_field() {
+        let f = parse("Sum(SalesDetail.Amount)").unwrap();
+        assert_eq!(f.table_name, "SalesDetail");
+        assert_eq!(f.field_name.as_deref(), Some("Amount"));
+
+        let f = parse("Lookup(Item.UnitPrice)").unwrap();
+        assert_eq!(f.formula_type, FormulaType::Lookup);
+        assert_eq!(f.table_name, "Item");
+        assert_eq!(f.field_name.as_deref(), Some("UnitPrice"));
+
+        let f = parse(r#"Lookup(Item."Block Reason" where("No." = field("No.")))"#).unwrap();
+        assert_eq!(f.table_name, "Item");
+        assert_eq!(f.field_name.as_deref(), Some("Block Reason"));
+        assert_eq!(f.where_clause.len(), 1);
+
+        let f = parse(r#"Sum(SalesDetail.Amount WHERE (DocNo = FIELD("No.")))"#).unwrap();
+        assert_eq!(f.table_name, "SalesDetail");
+        assert_eq!(f.field_name.as_deref(), Some("Amount"));
+        assert_eq!(f.where_clause[0].field, "DocNo");
+        assert_eq!(
+            f.where_clause[0].value,
+            WhereValue::Field("No.".to_string())
+        );
+    }
+
+    /// A CONST argument is a value, not a name, so it keeps the characters a
+    /// name now stops at.
+    #[test]
+    fn const_values_keep_dots_dashes_and_slashes() {
+        let f = parse("Count(Entry WHERE (Amount=CONST(1.5)))").unwrap();
+        assert_eq!(
+            f.where_clause[0].value,
+            WhereValue::Const("1.5".to_string())
+        );
+
+        let f = parse("Count(Entry WHERE (Amount=CONST(-1)))").unwrap();
+        assert_eq!(f.where_clause[0].value, WhereValue::Const("-1".to_string()));
+
+        let f = parse("Count(Entry WHERE (PostingDate=CONST(01/31/26)))").unwrap();
+        assert_eq!(
+            f.where_clause[0].value,
+            WhereValue::Const("01/31/26".to_string())
+        );
     }
 
     #[test]

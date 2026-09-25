@@ -11,10 +11,13 @@ al-types = { path = "../al-types", version = "0.1.0" }
 dashmap = { workspace = true }
 ropey = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
-tree-sitter = "0.25"
+tree-sitter = { workspace = true }
 tracing = { workspace = true }
-url = "2"
+url = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+al-syntax = { path = "../al-syntax", version = "0.1.0" }
+proptest = "1"
+tempfile = { workspace = true }

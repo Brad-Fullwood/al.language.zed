@@ -9,11 +9,11 @@ pub mod cache;
 pub mod composition;
 pub mod events;
 pub mod index;
-pub mod language_data;
 pub mod manifest;
 pub mod model;
 pub mod source_availability;
 pub mod source_index;
+mod temp_path;
 pub mod virtual_file;
 
 #[cfg(feature = "nuget")]
@@ -22,12 +22,14 @@ pub mod bc_server;
 pub mod nuget;
 #[cfg(feature = "nuget")]
 pub mod oauth;
+#[cfg(feature = "nuget")]
+mod retry;
 
 pub use index::{PackageLoadError, PackageLoadFailure, SymbolIndex, SymbolIndexMemoryStats};
 pub use model::{
     AttributeSymbol, ComposedObject, ControlSymbol, DeclarationIdError, EnumValueSymbol,
     FieldSymbol, KeySymbol, MethodSymbol, ObjectKind, ParameterSymbol, PermissionSymbol,
-    PropertyValue, SymbolEntry, SymbolPackage, VariableSymbol,
+    PropertyValue, SymbolEntry, SymbolPackage, UnknownObjectKind, VariableSymbol,
 };
 pub use source_availability::{SourceAvailability, SourceAvailabilitySummary};
 

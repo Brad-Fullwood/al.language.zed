@@ -61,8 +61,8 @@ pub(in crate::server::daemon) fn dispatch_permissions(
             }
         },
     };
-    let entries = match al_analysis::permissions::collect_permissions(workspace) {
-        Ok(entries) => entries,
+    let collection = match al_analysis::permissions::collect_permissions(workspace) {
+        Ok(collection) => collection,
         Err(error) => {
             return rpc_error(
                 id,
@@ -71,37 +71,44 @@ pub(in crate::server::daemon) fn dispatch_permissions(
             );
         }
     };
+    let entries = collection.entries;
+    // Files that could not contribute an entry travel with the result: the set
+    // is usable, and the caller can see which sources it does not cover.
+    let skipped: Vec<serde_json::Value> = collection
+        .skipped
+        .iter()
+        .map(|skip| {
+            serde_json::json!({
+                "path": skip.path.to_string_lossy(),
+                "reason": skip.reason,
+            })
+        })
+        .collect();
 
-    match format {
-        "xml" => {
-            let output = al_analysis::permissions::render_xml(&entries, role_id, name);
-            Response {
-                id,
-                result: Some(serde_json::json!({
-                    "format": "xml",
-                    "content": output,
-                    "objectCount": entries.len(),
-                })),
-                error: None,
-                ..Default::default()
-            }
-        }
-        _ => {
-            let output = al_analysis::permissions::render_al(&entries, name, perm_id);
-            Response {
-                id,
-                result: Some(serde_json::json!({
-                    "format": "al",
-                    "content": output,
-                    "objectCount": entries.len(),
-                })),
-                error: None,
-                ..Default::default()
-            }
-        }
+    let (format_name, output) = match format {
+        "xml" => (
+            "xml",
+            al_analysis::permissions::render_xml(&entries, role_id, name),
+        ),
+        _ => (
+            "al",
+            al_analysis::permissions::render_al(&entries, perm_id, name),
+        ),
+    };
+    Response {
+        id,
+        result: Some(serde_json::json!({
+            "format": format_name,
+            "content": output,
+            "objectCount": entries.len(),
+            "skipped": skipped,
+        })),
+        error: None,
+        ..Default::default()
     }
 }
 pub(in crate::server::daemon) fn dispatch_new_project(
+    workspace: &al_workspace::Workspace,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
@@ -119,8 +126,9 @@ pub(in crate::server::daemon) fn dispatch_new_project(
             };
         }
     };
-    // Require an absolute path to prevent path traversal via relative paths
-    // (e.g., "../../etc/malicious-dir").
+    // A relative path would resolve against the daemon process cwd, which
+    // outlives the shell that started the daemon and is not the project.
+    // Traversal is handled separately, by the containment check below.
     if !dir.is_absolute() {
         return Response {
             id,
@@ -132,6 +140,22 @@ pub(in crate::server::daemon) fn dispatch_new_project(
             ..Default::default()
         };
     }
+    // Scaffolding writes app.json, src/ and .vscode/ under `dir`, so an
+    // unconstrained `dir` creates files anywhere the daemon's user can write.
+    let dir = match crate::server::daemon::containment::resolve_within_project(workspace, &dir) {
+        Ok(dir) => dir,
+        Err(message) => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INVALID_PARAMS,
+                    message: format!("'dir' {message}"),
+                }),
+                ..Default::default()
+            };
+        }
+    };
 
     let invalid = |message: String| Response {
         id,
@@ -192,7 +216,7 @@ pub(in crate::server::daemon) fn dispatch_new_project(
     };
 
     match al_analysis::scaffold::create_project(&dir, &config) {
-        Ok(result) => serialized_response(id, "new-project result", &result),
+        Ok(result) => serialized_response(id, &result, "new-project result"),
         Err(e) => Response {
             id,
             result: None,
@@ -275,8 +299,74 @@ pub(in crate::server::daemon) async fn dispatch_builtin_types(
 }
 pub(in crate::server::daemon) fn dispatch_setup(workspace: &Workspace, id: u64) -> Response {
     let report = crate::toolchain::doctor(workspace);
-    serialized_response(id, "setup report", &report)
+    serialized_response(id, &report, "setup report")
 }
+/// Last object ID of Microsoft's own range. Its object-range page assigns
+/// 0-49,999 to the base application and 50,000-99,999 to customizations, and
+/// PerTenantExtensionCop PTE0001 says the same, so 50000 is the first ID
+/// generated code may take.
+/// <https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/devenv-object-ranges>
+const MICROSOFT_ID_RANGE_END: i32 = 49_999;
+
+/// The ID to generate with when the caller gave none: the first one free in
+/// the project's `idRanges` for this kind. 50100 when the project has no
+/// ranges or the kind has no object ID space, with a warning saying why.
+fn default_object_id(
+    workspace: &Workspace,
+    project_root: Option<&std::path::Path>,
+    kind: Option<al_symbols::ObjectKind>,
+    warnings: &mut Vec<String>,
+) -> i32 {
+    const FALLBACK: i32 = 50100;
+    let (Some(root), Some(kind)) = (project_root, kind) else {
+        return FALLBACK;
+    };
+    let query = al_analysis::queries::free_ids::FreeIdsQuery {
+        kind: Some(kind),
+        count: 1,
+        ..Default::default()
+    };
+    match al_analysis::queries::free_ids::free_ids(workspace, Some(root), &query) {
+        Ok(report) => match report.next_free.or_else(|| report.free.first().copied()) {
+            Some(free) => i32::try_from(free).unwrap_or(FALLBACK),
+            None => {
+                warnings.extend(report.warnings);
+                FALLBACK
+            }
+        },
+        Err(error) => {
+            warnings.push(format!("used ID {FALLBACK}: {error}"));
+            FALLBACK
+        }
+    }
+}
+
+/// A warning when `object_id` lies outside the `idRanges` app.json declares:
+/// the compiler rejects such an object.
+fn out_of_range_warning(project_root: &std::path::Path, object_id: i32) -> Option<String> {
+    let ranges = al_analysis::queries::native_check::id_ranges_from_app_json(project_root).ok()?;
+    let id = i64::from(object_id);
+    if ranges.is_empty() || ranges.iter().any(|(from, to)| (*from..=*to).contains(&id)) {
+        return None;
+    }
+    let declared = ranges
+        .iter()
+        .map(|(from, to)| format!("{from}-{to}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "Object ID {object_id} is outside the idRanges in app.json ({declared}); the compiler \
+         will reject it. Omit `id` to take the next free one."
+    ))
+}
+
+fn with_warnings(mut result: serde_json::Value, warnings: &[String]) -> serde_json::Value {
+    if !warnings.is_empty() {
+        result["warnings"] = serde_json::json!(warnings);
+    }
+    result
+}
+
 pub(in crate::server::daemon) fn dispatch_generate(
     workspace: &Workspace,
     id: u64,
@@ -290,13 +380,53 @@ pub(in crate::server::daemon) fn dispatch_generate(
     // out-of-range wire value (e.g. i32::MAX + 1 → i32::MIN), which would then
     // bypass the object-ID conflict check below against a different ID than the
     // caller intended. Reject out-of-range IDs with INVALID_PARAMS instead.
+    let target_kind = match kind {
+        "page" => Some(al_symbols::ObjectKind::Page),
+        "report" => Some(al_symbols::ObjectKind::Report),
+        "test" => Some(al_symbols::ObjectKind::Codeunit),
+        _ => None,
+    };
+    let project_root = super::super::project_root_with_wait(workspace)
+        .ok()
+        .flatten();
+    let mut warnings = Vec::new();
     let object_id = match params.get("id") {
-        None => 50100,
+        None => default_object_id(
+            workspace,
+            project_root.as_deref(),
+            target_kind,
+            &mut warnings,
+        ),
         Some(_) => match extract_i32(params, "id") {
             Some(n) => n,
             None => return invalid_params(id),
         },
     };
+    // An AL object ID is positive, and 1..=50000 is Microsoft's own range:
+    // `al generate page --id -5` used to emit `page -5 "NewPage"`.
+    if object_id <= 0 {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            &format!("Object ID {object_id} is not valid: AL object IDs are positive"),
+        );
+    }
+    if object_id <= MICROSOFT_ID_RANGE_END {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            &format!(
+                "Object ID {object_id} is inside Microsoft's reserved range \
+                 (1-{MICROSOFT_ID_RANGE_END}) — pass an `id` from your own range"
+            ),
+        );
+    }
+    if let Some(warning) = project_root
+        .as_deref()
+        .and_then(|root| out_of_range_warning(root, object_id))
+    {
+        warnings.push(warning);
+    }
     let table_name = params.get("table").and_then(|v| v.as_str()).unwrap_or("");
 
     // Object-ID conflict check. The default of 50100 makes it
@@ -305,12 +435,6 @@ pub(in crate::server::daemon) fn dispatch_generate(
     // ID surfaces at generate time instead of at compile time. The check
     // is scoped to the same object kind — a Page 50100 and Table 50100 can
     // legitimately coexist in BC's ID space.
-    let target_kind = match kind {
-        "page" => Some(al_symbols::ObjectKind::Page),
-        "report" => Some(al_symbols::ObjectKind::Report),
-        "test" => Some(al_symbols::ObjectKind::Codeunit),
-        _ => None,
-    };
     if let Some(target_kind) = target_kind {
         let collisions = workspace.symbols.get_by_id(target_kind, object_id);
         if let Some(existing) = collisions.first() {
@@ -358,9 +482,11 @@ pub(in crate::server::daemon) fn dispatch_generate(
                 .get("pageType")
                 .and_then(|v| v.as_str())
                 .unwrap_or("List");
-            let page_type = page_type_str
-                .parse::<al_analysis::generators::PageType>()
-                .unwrap_or_default();
+            // `--page-type Bogus` used to give a List without a word.
+            let page_type = match page_type_str.parse::<al_analysis::generators::PageType>() {
+                Ok(page_type) => page_type,
+                Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
+            };
 
             let Some(source) = table_entry else {
                 return rpc_error(
@@ -378,7 +504,10 @@ pub(in crate::server::daemon) fn dispatch_generate(
             let code = al_analysis::generators::generate_page(&config);
             Response {
                 id,
-                result: Some(serde_json::json!({ "code": code, "kind": "page" })),
+                result: Some(with_warnings(
+                    serde_json::json!({ "code": code, "kind": "page" }),
+                    &warnings,
+                )),
                 error: None,
                 ..Default::default()
             }
@@ -404,7 +533,10 @@ pub(in crate::server::daemon) fn dispatch_generate(
             let code = al_analysis::generators::generate_report(&config);
             Response {
                 id,
-                result: Some(serde_json::json!({ "code": code, "kind": "report" })),
+                result: Some(with_warnings(
+                    serde_json::json!({ "code": code, "kind": "report" }),
+                    &warnings,
+                )),
                 error: None,
                 ..Default::default()
             }
@@ -457,7 +589,10 @@ pub(in crate::server::daemon) fn dispatch_generate(
             let code = al_analysis::generators::generate_test(&config);
             Response {
                 id,
-                result: Some(serde_json::json!({ "code": code, "kind": "test" })),
+                result: Some(with_warnings(
+                    serde_json::json!({ "code": code, "kind": "test" }),
+                    &warnings,
+                )),
                 error: None,
                 ..Default::default()
             }
@@ -484,14 +619,24 @@ mod tests {
         Workspace::new()
     }
 
+    /// A workspace whose project root is `root`, so `newProject` can scaffold
+    /// inside it.
+    fn ws_rooted_at(root: &std::path::Path) -> Workspace {
+        let workspace = Workspace::new();
+        crate::server::daemon::set_test_project_root(&workspace, root);
+        workspace
+    }
+
     #[test]
     fn dispatch_new_project_honors_template_and_rejects_invalid() {
         // Regression: the `template` param was dropped, so
         // every `al new` produced the Default scaffold and invalid templates
         // were silently accepted.
         let tmp = tempfile::tempdir().unwrap();
+        let ws = ws_rooted_at(tmp.path());
         let dir = tmp.path().join("proj");
         let resp = dispatch_new_project(
+            &ws,
             1,
             &serde_json::json!({
                 "dir": dir.to_str().unwrap(),
@@ -510,6 +655,7 @@ mod tests {
         );
 
         let bad = dispatch_new_project(
+            &ws,
             2,
             &serde_json::json!({
                 "dir": tmp.path().join("proj2").to_str().unwrap(),
@@ -526,6 +672,7 @@ mod tests {
         // Present-but-non-string `template` is a malformed request, not an
         // absent field: it must be rejected, not silently defaulted.
         let wrong_type = dispatch_new_project(
+            &ws,
             3,
             &serde_json::json!({
                 "dir": tmp.path().join("proj3").to_str().unwrap(),
@@ -537,6 +684,58 @@ mod tests {
             .error
             .expect("non-string template must error, not default silently");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
+    }
+
+    /// 50000 is the first ID a customization may use: Microsoft's object-range
+    /// page assigns 0-49,999 to the base application and 50,000-99,999 to
+    /// customizations, and PerTenantExtensionCop PTE0001 says the same.
+    /// The guard refused it.
+    #[test]
+    fn dispatch_generate_accepts_the_first_customization_object_id() {
+        let ws = empty_ws();
+        let response = dispatch_generate(
+            &ws,
+            1,
+            &serde_json::json!({ "kind": "page", "id": 50_000, "table": "Customer" }),
+        );
+        // The empty workspace has no Customer table, so generation still
+        // fails; it must fail on that and not on the ID.
+        let message = response
+            .error
+            .map(|error| error.message)
+            .unwrap_or_default();
+        assert!(
+            !message.contains("reserved range"),
+            "50000 is the first customization ID: {message}"
+        );
+    }
+
+    /// `al generate page --id -5` used to emit `page -5 "NewPage"`, and
+    /// `--id 18` an object inside Microsoft's own range.
+    #[test]
+    fn dispatch_generate_rejects_non_positive_and_base_range_object_ids() {
+        for (object_id, expected) in [
+            (-5, "positive"),
+            (0, "positive"),
+            (18, "reserved range"),
+            (49_999, "reserved range"),
+        ] {
+            let ws = empty_ws();
+            let resp = dispatch_generate(
+                &ws,
+                1,
+                &serde_json::json!({ "kind": "page", "id": object_id, "table": "Customer" }),
+            );
+            let error = resp
+                .error
+                .unwrap_or_else(|| panic!("id {object_id} must be rejected"));
+            assert_eq!(error.code, error_codes::INVALID_PARAMS);
+            assert!(
+                error.message.contains(expected),
+                "id {object_id}: {}",
+                error.message
+            );
+        }
     }
 
     #[test]
@@ -668,6 +867,72 @@ mod tests {
         );
     }
 
+    /// A project whose idRanges start at 60000, with page 60000 taken and a
+    /// package Customer table to build pages on.
+    fn project_in_the_60000_range() -> (tempfile::TempDir, Workspace) {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("app.json"),
+            r#"{"id":"11111111-2222-3333-4444-555555555555","name":"Ranged","publisher":"Test","version":"1.0.0.0","idRanges":[{"from":60000,"to":60049}]}"#,
+        )
+        .unwrap();
+        let ws = ws_rooted_at(root.path());
+        ws.file_index.add_file(
+            root.path().join("Taken.Page.al"),
+            "page 60000 Taken\n{\n}\n".to_string(),
+        );
+        ws.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Table,
+            id: 18,
+            name: "Customer".to_string(),
+            package: "Base Application".to_string(),
+            fields: vec![al_symbols::FieldSymbol {
+                id: 1,
+                name: "No.".to_string(),
+                type_name: "Code[20]".to_string(),
+                properties: Vec::new(),
+            }],
+            ..Default::default()
+        }]);
+        (root, ws)
+    }
+
+    /// Without an `id`, the page takes the first free ID in the project's own
+    /// range, not a hard-coded 50100 the compiler would reject.
+    #[test]
+    fn dispatch_generate_takes_the_next_free_id_in_the_project_range() {
+        let (_root, ws) = project_in_the_60000_range();
+
+        let resp = dispatch_generate(
+            &ws,
+            46,
+            &serde_json::json!({ "kind": "page", "name": "Demo", "table": "Customer" }),
+        );
+
+        let result = resp.result.unwrap_or_else(|| panic!("{:?}", resp.error));
+        let code = result["code"].as_str().unwrap();
+        assert!(code.contains("page 60001"), "{code}");
+        assert!(result.get("warnings").is_none(), "{result}");
+    }
+
+    #[test]
+    fn dispatch_generate_warns_on_an_id_outside_the_project_range() {
+        let (_root, ws) = project_in_the_60000_range();
+
+        let resp = dispatch_generate(
+            &ws,
+            47,
+            &serde_json::json!({ "kind": "page", "id": 50100, "name": "Demo", "table": "Customer" }),
+        );
+
+        let result = resp.result.unwrap_or_else(|| panic!("{:?}", resp.error));
+        let warning = result["warnings"][0].as_str().unwrap_or_default();
+        assert!(
+            warning.contains("outside the idRanges") && warning.contains("60000-60049"),
+            "{result}"
+        );
+    }
+
     #[test]
     fn dispatch_permissions_rejects_out_of_range_id() {
         let ws = empty_ws();
@@ -706,42 +971,91 @@ mod tests {
         assert!(content.contains("50123"), "rendered AL: {content}");
     }
 
+    /// A malformed source used to fail the whole request. It is now reported
+    /// beside a permission set built from the files that do parse.
     #[test]
-    fn dispatch_permissions_rejects_malformed_workspace_source() {
+    fn dispatch_permissions_reports_a_malformed_source_and_covers_the_rest() {
         let ws = empty_ws();
         ws.file_index.add_file(
             std::path::PathBuf::from("/project/Broken.al"),
             "codeunit 50100 Broken { procedure Incomplete(".to_string(),
         );
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/project/Good.al"),
+            r#"codeunit 50101 "Good Codeunit" { procedure Run() begin end; }"#.to_string(),
+        );
 
         let resp = dispatch_permissions(&ws, 3, &serde_json::json!({}));
-        let error = resp
-            .error
-            .expect("incomplete permission input must return an error");
-        assert_eq!(error.code, error_codes::INTERNAL_ERROR);
-        assert!(error.message.contains("refused incomplete workspace input"));
-        assert!(resp.result.is_none());
+        assert!(resp.error.is_none(), "got error: {:?}", resp.error);
+        let result = resp.result.expect("a permission set");
+        assert_eq!(result.get("objectCount").and_then(|v| v.as_u64()), Some(1));
+        let content = result
+            .get("content")
+            .and_then(|v| v.as_str())
+            .expect("content");
+        assert!(content.contains("Good Codeunit"), "rendered AL: {content}");
+
+        let skipped = result
+            .get("skipped")
+            .and_then(|v| v.as_array())
+            .expect("skipped list");
+        assert_eq!(skipped.len(), 1, "{skipped:?}");
+        assert!(skipped[0]
+            .get("path")
+            .and_then(|v| v.as_str())
+            .is_some_and(|path| path.ends_with("Broken.al")));
     }
 
     #[test]
     fn new_project_missing_dir_is_invalid_params() {
-        let resp = dispatch_new_project(1, &serde_json::json!({}));
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = ws_rooted_at(tmp.path());
+        let resp = dispatch_new_project(&ws, 1, &serde_json::json!({}));
         assert_eq!(resp.error.expect("err").code, error_codes::INVALID_PARAMS);
     }
 
     #[test]
     fn new_project_rejects_relative_dir() {
-        let resp = dispatch_new_project(2, &serde_json::json!({ "dir": "../evil" }));
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = ws_rooted_at(tmp.path());
+        let resp = dispatch_new_project(&ws, 2, &serde_json::json!({ "dir": "../evil" }));
         let err = resp.error.expect("relative dir must error");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("absolute"), "got: {}", err.message);
     }
 
     #[test]
+    fn new_project_rejects_a_dir_outside_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let ws = ws_rooted_at(&root);
+        let outside = tmp.path().join("elsewhere").join("MyApp");
+        let resp = dispatch_new_project(
+            &ws,
+            5,
+            &serde_json::json!({ "dir": outside.to_string_lossy() }),
+        );
+        let err = resp.error.expect("a dir outside the project must error");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(
+            err.message.contains("outside the project"),
+            "got: {}",
+            err.message
+        );
+        assert!(
+            !outside.exists(),
+            "nothing may be created outside the project"
+        );
+    }
+
+    #[test]
     fn new_project_scaffolds_into_absolute_dir() {
         let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_rooted_at(tmp.path());
         let dir = tmp.path().join("MyApp");
         let resp = dispatch_new_project(
+            &ws,
             3,
             &serde_json::json!({
                 "dir": dir.to_string_lossy(),
@@ -762,8 +1076,10 @@ mod tests {
     fn new_project_rejects_invalid_or_non_string_runtime() {
         for runtime in [serde_json::json!("latest"), serde_json::json!(17)] {
             let tmp = tempfile::TempDir::new().unwrap();
+            let ws = ws_rooted_at(tmp.path());
             let dir = tmp.path().join("MyApp");
             let resp = dispatch_new_project(
+                &ws,
                 4,
                 &serde_json::json!({
                     "dir": dir.to_string_lossy(),

@@ -20,18 +20,17 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 petgraph = { workspace = true }
-tree-sitter = "0.25"
-url = { version = "2", features = ["serde"] }
+tree-sitter = { workspace = true }
+url = { workspace = true }
 tower-lsp = { workspace = true, optional = true }
-rayon = "1"
 regex = { workspace = true }
-tempfile = "3"
+tempfile = { workspace = true }
 
 [features]
 # Enable the in-process .NET bridge in both semantic dependencies.
 semantic = ["al-semantic/semantic", "al-workspace/semantic"]
 # Opt-in tower_lsp wire conversions (the `lsp` module). Default-off keeps
-# al-analysis transport-agnostic; al-core's server / al-lsp enable it.
+# al-analysis transport-agnostic; al-lsp enables it.
 lsp = ["dep:tower-lsp"]
 
 [dev-dependencies]

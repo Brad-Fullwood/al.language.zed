@@ -18,6 +18,7 @@
 //! Output: per-test-procedure list of called production procedures, plus a
 //! reverse map of untested public production procedures.
 
+use al_syntax::IdentifierText;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::Serialize;
@@ -91,6 +92,10 @@ struct ProcDef {
     file: String,
     line: u32,
     is_local: bool,
+    /// True for a declaration the test framework invokes by attribute — a
+    /// `[Test]` method, a UI handler, or a `[TestInitialize]`/`[TestCleanup]`.
+    /// Such a procedure is test code, so it is neither creditable as covered
+    /// production code nor reportable as untested.
     is_test: bool,
 }
 
@@ -132,35 +137,41 @@ pub fn test_coverage(workspace: &Workspace) -> Result<CoverageReport, TestCovera
 
     for source_file in &sources {
         let path = source_file.path.to_string_lossy().to_string();
-        if !al_syntax::language_data::is_test_container_kind(&source_file.object.info.kind) {
-            continue;
-        }
-
-        let root = source_file.tree.root_node();
         let source = source_file.text.as_bytes();
-        if !has_test_subtype(root, source) {
-            continue;
+        for object in &source_file.objects {
+            if !al_syntax::language_data::is_test_container_kind(&object.info.kind) {
+                continue;
+            }
+            let range = object.info.range;
+            let Some(object_node) = source_file
+                .tree
+                .root_node()
+                .descendant_for_byte_range(range.start_byte, range.end_byte)
+            else {
+                continue;
+            };
+            if !has_test_subtype(object_node, source) {
+                continue;
+            }
+
+            let test_procs = collect_test_procedures(object_node, source);
+            if test_procs.is_empty() {
+                continue;
+            }
+
+            let mut cursor = object_node.walk();
+            collect_coverage_from_tree(
+                object_node,
+                source,
+                &object.info.name,
+                &path,
+                &test_procs,
+                &proc_by_name,
+                &mut coverage,
+                &mut covered_proc_keys,
+                &mut cursor,
+            );
         }
-
-        let test_procs = collect_test_procedures(root, source);
-        if test_procs.is_empty() {
-            continue;
-        }
-
-        let codeunit_name = source_file.object.info.name.clone();
-
-        let mut cursor = root.walk();
-        collect_coverage_from_tree(
-            root,
-            source,
-            &codeunit_name,
-            &path,
-            &test_procs,
-            &proc_by_name,
-            &mut coverage,
-            &mut covered_proc_keys,
-            &mut cursor,
-        );
     }
 
     // Supplement uniquely resolved bare calls with the qualified, transitive
@@ -322,10 +333,7 @@ fn augment_coverage_with_call_graph(
 fn is_executable_forward_edge(kind: &EdgeKind) -> bool {
     matches!(
         kind,
-        EdgeKind::DirectCall
-            | EdgeKind::IndirectCall
-            | EdgeKind::TriggerInvocation
-            | EdgeKind::RecordTrigger
+        EdgeKind::DirectCall | EdgeKind::IndirectCall | EdgeKind::RecordTrigger
     )
 }
 
@@ -353,15 +361,31 @@ fn collect_all_procedures(sources: &[crate::workspace_sources::WorkspaceSource])
 
     for source_file in sources {
         let path = source_file.path.to_string_lossy().to_string();
-        let object_name = source_file.object.info.name.clone();
-
-        let root = source_file.tree.root_node();
         let source = source_file.text.as_bytes();
-        let is_test_cu =
-            al_syntax::language_data::is_test_container_kind(&source_file.object.info.kind)
-                && has_test_subtype(root, source);
+        // Per object declaration: a procedure used to be labelled with the
+        // file's *first* object's name, so in a multi-object file every
+        // `ProcKey`, `covers` and `untested` row named the wrong object.
+        for object in &source_file.objects {
+            let range = object.info.range;
+            let Some(object_node) = source_file
+                .tree
+                .root_node()
+                .descendant_for_byte_range(range.start_byte, range.end_byte)
+            else {
+                continue;
+            };
+            let is_test_cu = al_syntax::language_data::is_test_container_kind(&object.info.kind)
+                && has_test_subtype(object_node, source);
 
-        collect_procs_recursive(root, source, &object_name, &path, is_test_cu, &mut result);
+            collect_procs_recursive(
+                object_node,
+                source,
+                &object.info.name,
+                &path,
+                is_test_cu,
+                &mut result,
+            );
+        }
     }
 
     result
@@ -382,15 +406,22 @@ fn collect_procs_recursive(
             let node = cursor.node();
             if node.kind() == "procedure_declaration" {
                 let is_local = has_local_modifier(node, source);
-                let is_test = in_test_codeunit && has_test_attr_child(node, source);
+                let is_test = in_test_codeunit && has_framework_attr_child(node, source);
 
                 if let Some(name_node) = node.child_by_field_name("name") {
                     if let Ok(name) = name_node.utf8_text(source) {
+                        // The declaration node starts at its first attribute,
+                        // so a `[Test]` procedure's own node row is the
+                        // attribute's line.
+                        let line = al_syntax::procedure_keyword_row(node)
+                            .unwrap_or_else(|| node.start_position().row)
+                            as u32
+                            + 1;
                         result.push(ProcDef {
-                            name: name.trim_matches('"').to_string(),
+                            name: al_syntax::clean_identifier(name),
                             object: object.to_string(),
                             file: file.to_string(),
-                            line: node.start_position().row as u32 + 1,
+                            line,
                             is_local,
                             is_test,
                         });
@@ -420,7 +451,11 @@ fn collect_procs_recursive(
 fn has_local_modifier(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
     let mut cursor = proc_node.walk();
     for child in proc_node.children(&mut cursor) {
-        if child.kind() == "local" {
+        if child.kind() != "member_modifier" {
+            continue;
+        }
+        let mut inner = child.walk();
+        if child.children(&mut inner).any(|kw| kw.kind() == "kw_local") {
             return true;
         }
         if let Ok(text) = child.utf8_text(source) {
@@ -432,12 +467,21 @@ fn has_local_modifier(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
     false
 }
 
-fn has_test_attr_child(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
+/// True when a declaration inside a test codeunit carries an attribute that
+/// makes the test framework invoke it.
+///
+/// Not only `[Test]`: AL's test framework invokes a `[MessageHandler]`,
+/// `[ConfirmHandler]`, `[ModalPageHandler]` and the rest by attribute, never by
+/// a call. A handler has to be reachable by the framework, so it is not
+/// `local`, and nothing calls it — which put every handler in a test suite into
+/// the `untested` list as production code that cannot be covered by
+/// construction.
+fn has_framework_attr_child(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
     let mut cursor = proc_node.walk();
     for child in proc_node.children(&mut cursor) {
-        if child.kind() == "attribute" || child.kind() == "attribute_list" {
+        if child.kind() == "attribute" {
             if let Ok(text) = child.utf8_text(source) {
-                if crate::queries::tests::is_test_attribute(text) {
+                if crate::queries::tests::is_framework_invoked_attribute(text) {
                     return true;
                 }
             }
@@ -471,7 +515,7 @@ fn collect_coverage_from_tree(
             if node.kind() == "procedure_declaration" {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     if let Ok(raw_name) = name_node.utf8_text(source) {
-                        let proc_name = raw_name.trim_matches('"');
+                        let proc_name = raw_name.unquote_identifier();
                         if test_names.contains(&proc_name.to_lowercase()) {
                             let (called, unresolved_calls) = collect_called_identifiers(
                                 node,
@@ -544,13 +588,11 @@ fn collect_identifiers_recursive(
     loop {
         if !did_visit {
             let node = cursor.node();
-            let kind = node.kind();
-            if kind == "method_call"
-                || kind == "function_call"
-                || kind == "invocation_expression"
-                || kind == "call_expression"
+            if matches!(node.kind(), "identifier" | "quoted_identifier")
+                && is_bare_call_callee(node)
             {
-                if let Some(callee) = find_callee_name(node, source) {
+                if let Ok(text) = node.utf8_text(source) {
+                    let callee = al_syntax::clean_identifier(text);
                     let key = callee.to_lowercase();
                     if seen.insert(key.clone()) {
                         if let Some(defs) = proc_lookup.get(&key) {
@@ -580,7 +622,7 @@ fn collect_identifiers_recursive(
                                 }),
                                 [] => {}
                                 many => unresolved.push(UnresolvedCoverageCall {
-                                    name: callee.to_string(),
+                                    name: callee.clone(),
                                     candidates: many
                                         .iter()
                                         .map(|definition| {
@@ -617,19 +659,44 @@ fn collect_identifiers_recursive(
     }
 }
 
-fn find_callee_name<'a>(node: tree_sitter::Node, source: &'a [u8]) -> Option<&'a str> {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        match child.kind() {
-            "identifier" | "name" => {
-                if let Ok(text) = child.utf8_text(source) {
-                    return Some(text.trim_matches('"'));
-                }
-            }
-            _ => {}
-        }
+/// True when an `identifier`/`quoted_identifier` node is the callee of a
+/// parenthesised bare call — `DoWork(...)`.
+///
+/// tree-sitter-al has no single "call" node: a bare call is
+/// `postfix_expression(primary_expression(name(identifier)), call_suffix)`.
+///
+/// Qualified calls (`Obj.DoWork()`, whose callee sits in a
+/// `member_call_suffix`) are excluded on purpose. This pass resolves a callee
+/// by name alone, and it cannot tell which object a receiver names, so
+/// crediting one would be a coverage claim the analysis has not earned. The
+/// call graph pass resolves receivers and covers those.
+///
+/// A parenthesis-less call (`DoWork;`) is also excluded: with no `call_suffix`
+/// it is syntactically identical to a plain variable reference.
+fn is_bare_call_callee(node: tree_sitter::Node) -> bool {
+    let Some(name) = node.parent() else {
+        return false;
+    };
+    if name.kind() != "name" {
+        return false;
     }
-    None
+    let Some(primary) = name.parent() else {
+        return false;
+    };
+    if primary.kind() != "primary_expression" {
+        return false;
+    }
+    let Some(postfix) = primary.parent() else {
+        return false;
+    };
+    if postfix.kind() != "postfix_expression" {
+        return false;
+    }
+    let mut cursor = postfix.walk();
+    let has_call_suffix = postfix
+        .children(&mut cursor)
+        .any(|child| child.kind() == "call_suffix");
+    has_call_suffix
 }
 
 #[cfg(test)]
@@ -883,37 +950,224 @@ mod tests {
         assert_eq!(from_b, 2, "both Test B procedures carry the right codeunit");
     }
 
-    #[test]
-    fn find_callee_name_returns_first_identifier() {
-        let src = r#"codeunit 50600 "X"
-{
-    procedure P()
-    begin
-        DoThing();
-    end;
-}"#;
+    /// Parse `src`, find the `procedure_declaration` named `proc`, and run the
+    /// direct pass over it against `procs`.
+    fn direct_pass(
+        src: &str,
+        proc: &str,
+        caller_object: &str,
+        procs: &[ProcDef],
+    ) -> (Vec<CoveredProcedure>, Vec<UnresolvedCoverageCall>) {
         let result = al_syntax::AlParser::parse_quick(src);
         let tree = result.tree;
         let source = src.as_bytes();
 
+        let mut lookup: HashMap<String, Vec<&ProcDef>> = HashMap::new();
+        for definition in procs {
+            lookup
+                .entry(definition.name.to_lowercase())
+                .or_default()
+                .push(definition);
+        }
+
         let mut cursor = tree.root_node().walk();
         let mut stack = vec![tree.root_node()];
-        let mut found: Option<String> = None;
         while let Some(node) = stack.pop() {
-            if let Some(name) = find_callee_name(node, source) {
-                if name == "DoThing" {
-                    found = Some(name.to_string());
-                    break;
-                }
+            if node.kind() == "procedure_declaration"
+                && node
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(source).ok())
+                    .is_some_and(|name| al_syntax::clean_identifier(name) == proc)
+            {
+                return collect_called_identifiers(node, source, caller_object, &lookup);
             }
             for child in node.named_children(&mut cursor) {
                 stack.push(child);
             }
         }
+        panic!("procedure '{proc}' not found in fixture");
+    }
+
+    fn prod_proc(object: &str, name: &str, line: u32) -> ProcDef {
+        ProcDef {
+            name: name.to_string(),
+            object: object.to_string(),
+            file: format!("/src/{object}.al"),
+            line,
+            is_local: false,
+            is_test: false,
+        }
+    }
+
+    /// AL's test framework invokes a handler by attribute, never by a call, so
+    /// a handler is not `local` and nothing calls it. It used to land in
+    /// `untested` on every run, alongside `[TestInitialize]` and
+    /// `[TestCleanup]`.
+    #[test]
+    fn test_handlers_are_not_reported_as_untested_production_code() {
+        let ws = workspace_with(&[(
+            "/src/Tests.al",
+            r#"codeunit 50100 "My Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestOne()
+    begin
+    end;
+
+    [MessageHandler]
+    procedure HandleMessage(Message: Text)
+    begin
+    end;
+
+    [ConfirmHandler]
+    procedure HandleConfirm(Question: Text; var Reply: Boolean)
+    begin
+    end;
+
+    [ModalPageHandler]
+    procedure HandleModalPage(var Page: TestPage "Some Page")
+    begin
+    end;
+
+    [TestInitialize]
+    procedure Init()
+    begin
+    end;
+
+    [TestCleanup]
+    procedure Cleanup()
+    begin
+    end;
+
+    procedure PlainHelper()
+    begin
+    end;
+}"#,
+        )]);
+
+        let report = test_coverage(&ws).unwrap();
+        let untested: Vec<&str> = report
+            .untested
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
         assert_eq!(
-            found.as_deref(),
-            Some("DoThing"),
-            "find_callee_name should locate the callee identifier"
+            untested,
+            vec!["PlainHelper"],
+            "only the plain helper is production code"
+        );
+    }
+
+    #[test]
+    fn direct_pass_credits_a_uniquely_named_bare_call() {
+        let src = r#"codeunit 50600 "Test X"
+{
+    Subtype = Test;
+    [Test]
+    procedure T1()
+    begin
+        DoThing();
+    end;
+}"#;
+        let (covered, unresolved) =
+            direct_pass(src, "T1", "Test X", &[prod_proc("Prod CU", "DoThing", 12)]);
+        assert_eq!(
+            covered.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["DoThing"],
+            "a bare call to a uniquely named production procedure is credited"
+        );
+        assert_eq!(covered[0].object, "Prod CU");
+        assert_eq!(covered[0].line, 12);
+        assert!(unresolved.is_empty());
+    }
+
+    #[test]
+    fn direct_pass_reports_an_ambiguous_bare_call_as_unresolved() {
+        let src = r#"codeunit 50601 "Test Y"
+{
+    Subtype = Test;
+    [Test]
+    procedure T1()
+    begin
+        Post();
+    end;
+}"#;
+        let (covered, unresolved) = direct_pass(
+            src,
+            "T1",
+            "Test Y",
+            &[
+                prod_proc("Sales CU", "Post", 5),
+                prod_proc("Purch CU", "Post", 9),
+            ],
+        );
+        assert!(
+            covered.is_empty(),
+            "an ambiguous bare call is never credited"
+        );
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(unresolved[0].name, "Post");
+        assert_eq!(unresolved[0].candidates.len(), 2);
+        assert!(unresolved[0].reason.contains("multiple declarations"));
+    }
+
+    #[test]
+    fn direct_pass_prefers_a_same_object_declaration() {
+        let src = r#"codeunit 50602 "Test Z"
+{
+    Subtype = Test;
+    [Test]
+    procedure T1()
+    begin
+        Helper();
+    end;
+}"#;
+        let (covered, unresolved) = direct_pass(
+            src,
+            "T1",
+            "Test Z",
+            &[
+                prod_proc("Other CU", "Helper", 3),
+                prod_proc("Test Z", "Helper", 40),
+            ],
+        );
+        assert!(unresolved.is_empty());
+        assert_eq!(covered.len(), 1);
+        assert_eq!(covered[0].object, "Test Z");
+    }
+
+    #[test]
+    fn direct_pass_ignores_qualified_calls_and_arguments() {
+        let src = r#"codeunit 50603 "Test Q"
+{
+    Subtype = Test;
+    [Test]
+    procedure T1()
+    var
+        Helper: Codeunit "Prod CU";
+        Total: Decimal;
+    begin
+        Helper.DoThing();
+        Compute(Total);
+    end;
+}"#;
+        let (covered, _) = direct_pass(
+            src,
+            "T1",
+            "Test Q",
+            &[
+                prod_proc("Prod CU", "DoThing", 12),
+                prod_proc("Prod CU", "Compute", 20),
+                prod_proc("Prod CU", "Total", 30),
+            ],
+        );
+        assert_eq!(
+            covered.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["Compute"],
+            "a receiver-qualified call is left to the call graph pass, and an \
+             argument identifier is not a call"
         );
     }
 

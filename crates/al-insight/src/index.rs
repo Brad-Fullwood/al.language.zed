@@ -7,7 +7,8 @@
 //! |------|---------|
 //! | `DirectCall` | Procedure A calls Procedure B (populated from source-parsed trees) |
 //! | `EventSubscription` | Subscriber A subscribes to Event B |
-//! | `TriggerInvocation` | Trigger A invokes Procedure B |
+//! | `RecordTrigger` | A record operation triggers a table event |
+//! | `IndirectCall` | An over-approximated polymorphic call |
 //!
 //! Because `.app` symbol files contain declarations only (no call-site
 //! information), `DirectCall` edges can only be added when the source AST is
@@ -51,7 +52,6 @@ pub enum EdgeKind {
     /// A direct procedure-to-procedure call (source-derived).
     DirectCall,
     EventSubscription,
-    TriggerInvocation,
     /// A record operation (Insert/Modify/Delete/Validate) triggers table events.
     RecordTrigger,
     /// A *polymorphic / indirect* call that cannot be resolved to a single
@@ -80,7 +80,6 @@ impl std::fmt::Display for EdgeKind {
         match self {
             EdgeKind::DirectCall => write!(f, "direct_call"),
             EdgeKind::EventSubscription => write!(f, "event_subscription"),
-            EdgeKind::TriggerInvocation => write!(f, "trigger_invocation"),
             EdgeKind::RecordTrigger => write!(f, "record_trigger"),
             EdgeKind::IndirectCall => write!(f, "indirect_call"),
         }
@@ -176,7 +175,7 @@ impl CallGraph {
     ///
     /// Direct-call edges are NOT populated here because `InsightGraph` does
     /// not store them (they require source-level parsing).  Call
-    /// [`add_direct_call`] or [`add_trigger_invocation`] after parsing.
+    /// [`CallGraph::add_direct_call`] after parsing.
     pub fn build_from_insight(graph: &InsightGraph) -> Self {
         let mut cg = CallGraph::new();
 
@@ -212,15 +211,6 @@ impl CallGraph {
         self.insert_edge(edge);
     }
 
-    pub fn add_trigger_invocation(&mut self, from: NodeId, to: NodeId) {
-        let edge = CallEdge {
-            from,
-            to,
-            kind: EdgeKind::TriggerInvocation,
-        };
-        self.insert_edge(edge);
-    }
-
     pub fn add_trigger(&mut self, from: NodeId, to: NodeId) {
         let edge = CallEdge {
             from,
@@ -242,7 +232,11 @@ impl CallGraph {
         self.insert_edge(edge);
     }
 
-    /// Remove all outgoing edges from `node`. Used for invalidation.
+    /// Remove all outgoing edges from `node` and mark it unresolved.
+    ///
+    /// Lazy edge resolution in `calls.rs` is gated on the node not already
+    /// being `Resolved`, so dropping the edges without also dropping that state
+    /// would leave the node permanently edge-less.
     pub fn remove_edges_from(&mut self, node: NodeId) {
         if let Some(edges) = self.outgoing.remove(&node) {
             for edge in &edges {
@@ -251,6 +245,7 @@ impl CallGraph {
                 }
             }
         }
+        self.resolution.remove(&node);
     }
 
     pub fn node_id_for(graph: &InsightGraph, key: &NodeKey) -> Option<NodeId> {
@@ -406,22 +401,12 @@ mod tests {
 
     fn make_codeunit(id: i32, name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Codeunit,
             id,
             name: name.to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "TestPkg".to_string(),
             methods,
-            fields: vec![],
-            controls: vec![],
-            enum_values: vec![],
-            keys: vec![],
-            properties: vec![],
-            permissions: Vec::new(),
-            variables: vec![],
+            ..Default::default()
         }
     }
 
@@ -617,44 +602,6 @@ mod tests {
     }
 
     #[test]
-    fn trigger_invocation_edge() {
-        let index = SymbolIndex::new();
-        index.add_entries(&[make_codeunit(
-            1,
-            "MyCU",
-            vec![regular_method("OnValidate"), regular_method("Validate")],
-        )]);
-
-        let mut graph = InsightGraph::new();
-        graph.build_from_index(&index);
-        let mut cg = CallGraph::build_from_insight(&graph);
-
-        let trigger_key = NodeKey::Procedure(
-            ObjectKind::Codeunit,
-            "mycu".to_string(),
-            "onvalidate".to_string(),
-        );
-        let proc_key = NodeKey::Procedure(
-            ObjectKind::Codeunit,
-            "mycu".to_string(),
-            "validate".to_string(),
-        );
-
-        let trigger_id = CallGraph::node_id_for(&graph, &trigger_key).unwrap();
-        let proc_id = CallGraph::node_id_for(&graph, &proc_key).unwrap();
-
-        cg.add_trigger_invocation(trigger_id, proc_id);
-
-        let callees = cg.callees_of(trigger_id);
-        assert_eq!(callees.len(), 1);
-        assert_eq!(callees[0].kind, EdgeKind::TriggerInvocation);
-
-        let callers = cg.callers_of(proc_id);
-        assert_eq!(callers.len(), 1);
-        assert_eq!(callers[0].kind, EdgeKind::TriggerInvocation);
-    }
-
-    #[test]
     fn duplicate_edges_not_inserted() {
         let index = SymbolIndex::new();
         index.add_entries(&[make_codeunit(
@@ -807,11 +754,20 @@ mod tests {
         cg.add_direct_call(b, c);
         assert_eq!(cg.edge_count(), 3);
 
+        cg.set_resolution_state(a, EdgeResolutionState::Resolved);
         cg.remove_edges_from(a);
         assert_eq!(cg.edge_count(), 1);
         assert_eq!(cg.callees_of(a).len(), 0);
         assert_eq!(cg.callers_of(b).len(), 0);
         assert_eq!(cg.callers_of(c).len(), 1);
+
+        // Invalidation has to reopen the node for lazy resolution, which is
+        // gated on the state not already being Resolved. Leaving it Resolved
+        // left the node permanently edge-less.
+        assert_eq!(cg.resolution_state(a), EdgeResolutionState::Unresolved);
+        cg.add_direct_call(a, b);
+        assert_eq!(cg.callees_of(a).len(), 1);
+        assert_eq!(cg.callers_of(b).len(), 1);
     }
 
     #[test]

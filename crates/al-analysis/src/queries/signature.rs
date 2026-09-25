@@ -134,7 +134,7 @@ fn signature_help_inner(
     // cursor at the wrong call context if AL identifiers contain
     // multi-codepoint sequences (e.g. emoji, surrogate pairs in a quoted
     // identifier). Surface the clamp via a debug-level trace so the edge
-    // case is observable in `RUST_LOG=al_core=debug` mode.
+    // case is observable in `RUST_LOG=al_analysis=debug` mode.
     let (col_byte, clamped_remaining) = {
         let mut utf16_remaining = col_utf16;
         let mut byte_off = line.len(); // default: end of line
@@ -159,7 +159,9 @@ fn signature_help_inner(
             "signature_help: UTF-16 column past end of line; clamped to line.len()"
         );
     }
-    let prefix = &line[..col_byte];
+    // Inside a string argument the rest of the line is text: the receiver
+    // lookups below would take a `.` or `(` in it for code.
+    let prefix = al_syntax::code_before_open_literal(&line[..col_byte]);
 
     let (func_name, active_param) = al_syntax::find_call_context(prefix)?;
 
@@ -182,40 +184,37 @@ fn signature_help_inner(
                 .map(Into::into)
                 .collect()
         });
-    for sym in &doc_symbols {
-        if let Some(children) = &sym.children {
-            for child in children {
-                if child.name.eq_ignore_ascii_case(func_name)
-                    && super::is_procedure_symbol(child.kind)
-                {
-                    let detail = child.detail.as_deref().unwrap_or("()");
-                    let parameters = parse_parameters_from_detail(detail);
-                    return Some(SignatureHelpResult {
-                        signatures: vec![SignatureInfo {
-                            label: format!("{}{}", child.name, detail),
-                            documentation: None,
-                            parameters,
-                            active_parameter: Some(active_param),
-                        }],
-                        active_signature: Some(0),
-                        active_parameter: Some(active_param),
-                    });
-                }
-            }
+    // `find_call_context` returns the *bare* callee name, so `Cust.Modify(`
+    // arrives here as `Modify`. Resolve the receiver first: `Get`, `Run`,
+    // `Init`, `Insert`, `Delete`, `Validate` and `Find` are all both common
+    // local procedure names and record methods, and answering `Cust.Modify(`
+    // with a same-named procedure from the current file is a plain wrong
+    // answer. The same-file scan is for the unqualified form only.
+    if has_receiver(prefix) {
+        if let Some(sig) = resolve_receiver_signature(
+            workspace,
+            uri,
+            &text,
+            &tree,
+            prefix,
+            func_name,
+            active_param,
+            position,
+        ) {
+            return Some(sig);
         }
-    }
-
-    if let Some(sig) = resolve_receiver_signature(
-        workspace,
-        uri,
-        &text,
-        &tree,
-        prefix,
-        func_name,
-        active_param,
-        position,
-    ) {
-        return Some(sig);
+    } else {
+        if let Some(sig) = same_file_signature(&doc_symbols, func_name, active_param) {
+            return Some(sig);
+        }
+        // A bare `Modify(` inside a table calls the implicit `Rec`, so answer
+        // with the Record method — but only after the scan above, because a
+        // local procedure of that name shadows it.
+        if let Some(sig) =
+            implicit_rec_signature(&tree, &text, position, builtins, func_name, active_param)
+        {
+            return Some(sig);
+        }
     }
 
     // Return all overloads for clients that present multiple signatures.
@@ -245,38 +244,7 @@ fn signature_help_inner(
     for bt in builtins.iter() {
         for method in &bt.methods {
             if method.name.eq_ignore_ascii_case(func_name) {
-                let params: Vec<SignatureParameterInfo> = method
-                    .parameters
-                    .iter()
-                    .map(|p| SignatureParameterInfo {
-                        label: p.to_string(),
-                        documentation: None,
-                    })
-                    .collect();
-                let params_str: Vec<String> =
-                    method.parameters.iter().map(|p| p.to_string()).collect();
-                let return_str = method
-                    .return_type
-                    .as_ref()
-                    .map(|r| format!(": {}", r))
-                    .unwrap_or_default();
-                let doc = if method.documentation.is_empty() {
-                    None
-                } else {
-                    Some(resolution::format_xml_doc(&method.documentation))
-                };
-                signatures.push(SignatureInfo {
-                    label: format!(
-                        "{}.{}({}){}",
-                        bt.name,
-                        method.name,
-                        params_str.join("; "),
-                        return_str
-                    ),
-                    documentation: doc,
-                    parameters: params,
-                    active_parameter: Some(active_param),
-                });
+                signatures.push(builtin_signature_info(&bt.name, method, active_param));
             }
         }
     }
@@ -293,6 +261,142 @@ fn signature_help_inner(
     }
 
     None
+}
+
+/// True when the call being completed is receiver-qualified (`Cust.Modify(`).
+///
+/// Reads the same shape `resolve_receiver_signature` does: the text before the
+/// open paren ends in `<receiver>.<method>`.
+fn has_receiver(prefix: &str) -> bool {
+    let Some(paren_pos) = prefix.rfind('(') else {
+        return false;
+    };
+    let before_paren = prefix[..paren_pos].trim_end();
+    let Some(dot_pos) = before_paren.rfind('.') else {
+        return false;
+    };
+    !al_syntax::extract_last_identifier(before_paren[..dot_pos].trim()).is_empty()
+}
+
+/// The procedure named `func_name` declared in this file.
+fn same_file_signature(
+    doc_symbols: &[super::AlDocumentSymbol],
+    func_name: &str,
+    active_param: u32,
+) -> Option<SignatureHelpResult> {
+    for sym in doc_symbols {
+        let children = sym.children.as_ref()?;
+        for child in children {
+            if child.name.eq_ignore_ascii_case(func_name) && super::is_procedure_symbol(child.kind)
+            {
+                let detail = child.detail.as_deref().unwrap_or("()");
+                return Some(SignatureHelpResult {
+                    signatures: vec![SignatureInfo {
+                        label: format!("{}{}", child.name, detail),
+                        documentation: None,
+                        parameters: parse_parameters_from_detail(detail),
+                        active_parameter: Some(active_param),
+                    }],
+                    active_signature: Some(0),
+                    active_parameter: Some(active_param),
+                });
+            }
+        }
+    }
+    None
+}
+
+/// The `Record` method an unqualified call inside a table object resolves to.
+///
+/// AL gives a table's own code an implicit `Rec`, so `Modify(` in a table
+/// trigger is `Rec.Modify(`.
+fn implicit_rec_signature(
+    tree: &tree_sitter::Tree,
+    text: &str,
+    position: Position,
+    builtins: &[al_semantic::BuiltinType],
+    func_name: &str,
+    active_param: u32,
+) -> Option<SignatureHelpResult> {
+    if !enclosing_object_has_implicit_rec(tree, text, position) {
+        return None;
+    }
+    let record = builtins
+        .iter()
+        .find(|builtin| builtin.name.eq_ignore_ascii_case("Record"))?;
+    let signatures: Vec<SignatureInfo> = record
+        .methods
+        .iter()
+        .filter(|method| method.name.eq_ignore_ascii_case(func_name))
+        .map(|method| builtin_signature_info(&record.name, method, active_param))
+        .collect();
+    if signatures.is_empty() {
+        return None;
+    }
+    let active_sig = signatures
+        .iter()
+        .position(|signature| signature.parameters.len() as u32 > active_param)
+        .unwrap_or(0) as u32;
+    Some(SignatureHelpResult {
+        signatures,
+        active_signature: Some(active_sig),
+        active_parameter: Some(active_param),
+    })
+}
+
+/// True when the object declaration containing `position` is a table or table
+/// extension, the two kinds whose code carries an implicit `Rec`.
+fn enclosing_object_has_implicit_rec(
+    tree: &tree_sitter::Tree,
+    text: &str,
+    position: Position,
+) -> bool {
+    let point = tree_sitter::Point {
+        row: position.line as usize,
+        column: position.character as usize,
+    };
+    al_syntax::find_object_declarations(tree, text)
+        .into_iter()
+        .filter(|info| {
+            point.row >= info.range.start_point.row && point.row <= info.range.end_point.row
+        })
+        .any(|info| matches!(info.kind.as_str(), "table" | "tableextension"))
+}
+
+fn builtin_signature_info(
+    type_name: &str,
+    method: &al_semantic::BuiltinMethod,
+    active_param: u32,
+) -> SignatureInfo {
+    let parameters: Vec<SignatureParameterInfo> = method
+        .parameters
+        .iter()
+        .map(|parameter| SignatureParameterInfo {
+            label: parameter.to_string(),
+            documentation: None,
+        })
+        .collect();
+    let params_str: Vec<String> = method.parameters.iter().map(ToString::to_string).collect();
+    let return_str = method
+        .return_type
+        .as_ref()
+        .map(|ret| format!(": {ret}"))
+        .unwrap_or_default();
+    let documentation = if method.documentation.is_empty() {
+        None
+    } else {
+        Some(resolution::format_xml_doc(&method.documentation))
+    };
+    SignatureInfo {
+        label: format!(
+            "{type_name}.{}({}){return_str}",
+            method.name,
+            params_str.join("; ")
+        ),
+        documentation,
+        parameters,
+        active_parameter: Some(active_param),
+    }
 }
 
 // All eight parameters (workspace, uri, source bytes, tree, type resolver,
@@ -638,6 +742,181 @@ mod tests {
     use al_workspace::Workspace;
 
     const SRC: &str = "codeunit 50100 \"Sig CU\"\n{\n    procedure Compute(Amount: Decimal; Factor: Integer): Decimal\n    begin\n    end;\n\n    procedure Run()\n    begin\n        Compute(\n    end;\n}\n";
+
+    /// `Cust.Modify(` names the record method, not the same-named procedure
+    /// next to it in the file. `Get`, `Run`, `Init`, `Insert`, `Delete`,
+    /// `Validate` and `Find` collide the same way.
+    #[test]
+    fn a_receiver_qualified_call_does_not_answer_with_a_same_named_local_procedure() {
+        const SHADOWED: &str = "codeunit 50100 \"Ship Mgt\"\n{\n    procedure Modify(Reason: Text; Silent: Boolean)\n    begin\n    end;\n\n    procedure Post(var Cust: Record Customer)\n    begin\n        Cust.Modify(\n    end;\n}\n";
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/shadowed.al").expect("uri");
+        ws.documents
+            .open(uri.clone(), SHADOWED.to_string())
+            .unwrap();
+        let lines: Vec<&str> = SHADOWED.lines().collect();
+        let call_line = lines
+            .iter()
+            .position(|line| line.trim_start().starts_with("Cust.Modify("))
+            .expect("call line") as u32;
+        let col = lines[call_line as usize].find('(').expect("open paren") as u32 + 1;
+
+        let result = signature_help(
+            &ws,
+            &uri,
+            Position {
+                line: call_line,
+                character: col,
+            },
+        );
+
+        if let Some(result) = result {
+            for signature in &result.signatures {
+                assert!(
+                    !signature.label.starts_with("Modify(Reason"),
+                    "Cust.Modify( must not resolve to the local procedure: {}",
+                    signature.label
+                );
+            }
+        }
+    }
+
+    /// The same file, the same name, called bare: now the local procedure is
+    /// the right answer.
+    #[test]
+    fn an_unqualified_call_still_answers_with_the_local_procedure() {
+        const SHADOWED: &str = "codeunit 50100 \"Ship Mgt\"\n{\n    procedure Modify(Reason: Text; Silent: Boolean)\n    begin\n    end;\n\n    procedure Post()\n    begin\n        Modify(\n    end;\n}\n";
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/bare.al").expect("uri");
+        ws.documents
+            .open(uri.clone(), SHADOWED.to_string())
+            .unwrap();
+        let lines: Vec<&str> = SHADOWED.lines().collect();
+        let call_line = lines
+            .iter()
+            .position(|line| line.trim_start() == "Modify(")
+            .expect("call line") as u32;
+        let col = lines[call_line as usize].find('(').expect("open paren") as u32 + 1;
+
+        let result = signature_help(
+            &ws,
+            &uri,
+            Position {
+                line: call_line,
+                character: col,
+            },
+        )
+        .expect("the unqualified form resolves in the current file");
+        assert!(
+            result.signatures[0].label.starts_with("Modify(Reason"),
+            "label = {}",
+            result.signatures[0].label
+        );
+    }
+
+    #[test]
+    fn has_receiver_reads_the_qualified_form() {
+        assert!(has_receiver("        Cust.Modify("));
+        assert!(has_receiver("        SalesHeader.Insert("));
+        assert!(!has_receiver("        Modify("));
+        assert!(!has_receiver("        Modify(100, "));
+        assert!(!has_receiver("        "));
+    }
+
+    fn record_builtin() -> Vec<al_semantic::BuiltinType> {
+        vec![
+            al_semantic::BuiltinType {
+                name: "Record".to_string(),
+                methods: vec![al_semantic::BuiltinMethod {
+                    name: "Modify".to_string(),
+                    parameters: vec![],
+                    return_type: Some("Boolean".to_string()),
+                    documentation: String::new(),
+                }],
+                enum_values: Vec::new(),
+            },
+            al_semantic::BuiltinType {
+                name: "Codeunit".to_string(),
+                methods: vec![al_semantic::BuiltinMethod {
+                    name: "Modify".to_string(),
+                    parameters: vec![],
+                    return_type: None,
+                    documentation: String::new(),
+                }],
+                enum_values: Vec::new(),
+            },
+        ]
+    }
+
+    /// A bare `Modify(` inside a table is `Rec.Modify(`.
+    #[test]
+    fn a_bare_call_in_a_table_resolves_to_the_implicit_rec_method() {
+        let src = "table 50100 \"Ship Log\"\n{\n    fields { field(1; \"No.\"; Code[20]) { } }\n\n    procedure Touch()\n    begin\n        Modify(\n    end;\n}\n";
+        let parsed = al_syntax::AlParser::parse_quick(src);
+        let line = src
+            .lines()
+            .position(|line| line.trim_start() == "Modify(")
+            .expect("call line") as u32;
+
+        let result = implicit_rec_signature(
+            &parsed.tree,
+            src,
+            Position {
+                line,
+                character: 15,
+            },
+            &record_builtin(),
+            "Modify",
+            0,
+        )
+        .expect("a table's own code carries an implicit Rec");
+        assert_eq!(result.signatures.len(), 1);
+        assert!(
+            result.signatures[0].label.starts_with("Record.Modify("),
+            "label = {}",
+            result.signatures[0].label
+        );
+    }
+
+    #[test]
+    fn a_bare_call_in_a_codeunit_has_no_implicit_rec() {
+        let src = "codeunit 50100 \"Ship Mgt\"\n{\n    procedure Touch()\n    begin\n        Modify(\n    end;\n}\n";
+        let parsed = al_syntax::AlParser::parse_quick(src);
+        assert!(implicit_rec_signature(
+            &parsed.tree,
+            src,
+            Position {
+                line: 4,
+                character: 15
+            },
+            &record_builtin(),
+            "Modify",
+            0,
+        )
+        .is_none());
+    }
+
+    /// A `.` and `(` inside the string being typed were read as a receiver
+    /// call (`3 (`), which skipped the same-file lookup.
+    #[test]
+    fn a_dot_and_paren_inside_the_string_argument_are_not_a_receiver() {
+        let src = "codeunit 50100 X\n{\n    procedure Notify(Msg: Text)\n    begin\n    end;\n\n    procedure Run()\n    begin\n        Notify('See p. 3 (\n    end;\n}\n";
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/notify.al").expect("uri");
+        ws.documents.open(uri.clone(), src.to_string()).unwrap();
+        let line = src.lines().nth(8).unwrap();
+        let result = signature_help(
+            &ws,
+            &uri,
+            Position {
+                line: 8,
+                character: line.len() as u32,
+            },
+        )
+        .expect("the local Notify signature");
+        assert!(result.signatures[0].label.starts_with("Notify("));
+        assert_eq!(result.active_parameter, Some(0));
+    }
 
     #[test]
     fn signature_help_local_procedure_happy_path() {

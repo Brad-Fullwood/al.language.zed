@@ -1565,7 +1565,7 @@ async fn workspace_symbol_with_unknown_field_is_graceful() {
 // deliberately exercises the LSP mapping; real daemon IPC/auto-start coverage
 // lives in cli_smoke and extension_smoke.
 
-/// definition query (→ al-core::queries::definition)
+/// definition query (→ al_analysis::queries::definition)
 #[tokio::test]
 async fn core_definition_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -1582,7 +1582,7 @@ async fn core_definition_query() {
     client.shutdown().await;
 }
 
-/// references query (→ al-core::queries::references)
+/// references query (→ al_analysis::queries::references)
 #[tokio::test]
 async fn core_references_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -1601,7 +1601,7 @@ async fn core_references_query() {
     client.shutdown().await;
 }
 
-/// completions query (→ al-core::queries::completions)
+/// completions query (→ al_analysis::queries::completions)
 #[tokio::test]
 async fn core_completions_query() {
     let code = r#"codeunit 50176 "Core Compl"
@@ -1629,7 +1629,7 @@ async fn core_completions_query() {
     client.shutdown().await;
 }
 
-/// hover query (→ al-core::queries::hover)
+/// hover query (→ al_analysis::queries::hover)
 #[tokio::test]
 async fn core_hover_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -1646,7 +1646,7 @@ async fn core_hover_query() {
     client.shutdown().await;
 }
 
-/// document symbols query (→ al-core::queries::symbols)
+/// document symbols query (→ al_analysis::queries::symbols)
 #[tokio::test]
 async fn core_document_symbols_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -1665,7 +1665,7 @@ async fn core_document_symbols_query() {
     client.shutdown().await;
 }
 
-/// semantic tokens query (→ al-core::queries::semantic_tokens)
+/// semantic tokens query (→ al_analysis::queries::semantic_tokens)
 #[tokio::test]
 async fn core_semantic_tokens_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -1682,7 +1682,7 @@ async fn core_semantic_tokens_query() {
     client.shutdown().await;
 }
 
-/// folding ranges query (→ al-core::queries::folding)
+/// folding ranges query (→ al_analysis::queries::folding)
 #[tokio::test]
 async fn core_folding_ranges_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -1696,7 +1696,7 @@ async fn core_folding_ranges_query() {
     client.shutdown().await;
 }
 
-/// format query (→ al-core::queries::source)
+/// format query (→ al_analysis::queries::source)
 #[tokio::test]
 async fn core_format_query() {
     let bad = r#"codeunit 50177 "Format Core"
@@ -1718,7 +1718,7 @@ end;
     client.shutdown().await;
 }
 
-/// rename query (→ al-core::queries::rename)
+/// rename query (→ al_analysis::queries::rename)
 #[tokio::test]
 async fn core_rename_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
@@ -1737,7 +1737,7 @@ async fn core_rename_query() {
     client.shutdown().await;
 }
 
-/// signature help query (→ al-core::queries::signature)
+/// signature help query (→ al_analysis::queries::signature)
 #[tokio::test]
 async fn core_signature_help_query() {
     let code = r#"codeunit 50178 "Sig Core"
@@ -1765,7 +1765,7 @@ async fn core_signature_help_query() {
     client.shutdown().await;
 }
 
-/// workspace symbol query (→ al-core::queries::symbols)
+/// workspace symbol query (→ al_analysis::queries::symbols)
 #[tokio::test]
 async fn core_workspace_symbol_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();

@@ -1,8 +1,42 @@
 //! Native Any test-codeunit procedures.
 
+use std::cell::Cell;
+
 use crate::interpreter::scope::Eval;
 use crate::interpreter::value::{Decimal, ErrorInfo, Value};
 use rust_decimal::prelude::ToPrimitive;
+
+/// Longest text these generators will build.
+///
+/// The AL originals loop `for i := 1 to Length` into an unbounded `Text`, so
+/// `Any.AlphabeticText(2000000000)` asked for a 2 GB allocation here while BC
+/// stops at the variable's declared length. 2048 is the largest a Text or Code
+/// table field can declare (Microsoft Learn, Code data type).
+const MAX_TEXT_LENGTH: i64 = 2048;
+
+thread_local! {
+    /// The seed `SetSeed` last installed.
+    ///
+    /// Codeunit 130500 keeps `Seed: Integer` next to the RNG and `GetSeed`
+    /// returns that field, not the generator's state, so the value survives
+    /// every draw. 1 is the resting value because `GetNextValue` calls
+    /// `SetSeed(1)` on first use; BC returns 0 before the very first draw,
+    /// which is the one case this does not reproduce.
+    static SEED: Cell<i64> = const { Cell::new(1) };
+}
+
+/// Reject a text length that is negative or past [`MAX_TEXT_LENGTH`].
+fn checked_text_length(procedure: &str, length: i64) -> Result<usize, Eval> {
+    if length < 0 {
+        return Err(err(format!("Any.{procedure}: Length must be \u{2265} 0")));
+    }
+    if length > MAX_TEXT_LENGTH {
+        return Err(err(format!(
+            "Any.{procedure}: Length {length} exceeds the {MAX_TEXT_LENGTH}-character maximum"
+        )));
+    }
+    Ok(length as usize)
+}
 
 fn next_rand(max: i64) -> i64 {
     super::library_random::next_rand(max)
@@ -34,14 +68,15 @@ pub fn boolean(args: &[Value]) -> Eval {
 /// `Any.IntegerInRange(Min: Integer; Max: Integer): Integer` — two-arg overload
 pub fn integer_in_range(args: &[Value]) -> Eval {
     match args {
-        [Value::Integer(max)] => {
+        [Value::Integer(max) | Value::BigInteger(max)] => {
             let m = *max;
             if m < 1 {
                 return ok(Value::Integer(1));
             }
             ok(Value::Integer(next_rand(m)))
         }
-        [Value::Integer(min), Value::Integer(max)] => {
+        [Value::Integer(min) | Value::BigInteger(min), Value::Integer(max) | Value::BigInteger(max)] =>
+        {
             let (a, b) = (*min, *max);
             if a >= b {
                 return ok(Value::Integer(a));
@@ -56,27 +91,36 @@ pub fn integer_in_range(args: &[Value]) -> Eval {
 /// `Any.DecimalInRange(MaxValue: Integer; DecimalPlaces: Integer): Decimal`
 /// `Any.DecimalInRange(Min: Integer; Max: Integer; DecimalPlaces: Integer): Decimal`
 /// `Any.DecimalInRange(Min: Decimal; Max: Decimal; DecimalPlaces: Integer): Decimal`
+///
+/// The two-argument overload declares `MaxValue: Integer`, but AL converts a
+/// Decimal argument to it, so `Any.DecimalInRange(MaxAmount, 2)` with a
+/// Decimal `MaxAmount` compiles and runs on BC. It used to error here.
 pub fn decimal_in_range(args: &[Value]) -> Eval {
     match args {
         // Two-arg form: DecimalInRange(Max, Places)
-        [Value::Integer(max), Value::Integer(places)] => {
-            decimal_in_range_impl(Decimal::ZERO, Decimal::from(*max), *places)
+        [max, Value::Integer(places) | Value::BigInteger(places)] => {
+            let Some(max) = numeric_bound(max) else {
+                return err("Any.DecimalInRange expects (Num, Integer) or (Num, Num, Integer)");
+            };
+            decimal_in_range_impl(Decimal::ZERO, max, *places)
         }
-        // Three-arg integer form: DecimalInRange(Min, Max, Places)
-        [Value::Integer(min), Value::Integer(max), Value::Integer(places)] => {
-            decimal_in_range_impl(Decimal::from(*min), Decimal::from(*max), *places)
+        // Three-arg forms, in any Integer/BigInteger/Decimal mix.
+        [min, max, Value::Integer(places) | Value::BigInteger(places)] => {
+            let (Some(min), Some(max)) = (numeric_bound(min), numeric_bound(max)) else {
+                return err("Any.DecimalInRange expects (Num, Integer) or (Num, Num, Integer)");
+            };
+            decimal_in_range_impl(min, max, *places)
         }
-        // Three-arg decimal form
-        [Value::Decimal(min), Value::Decimal(max), Value::Integer(places)] => {
-            decimal_in_range_impl(*min, *max, *places)
-        }
-        [Value::Integer(min), Value::Decimal(max), Value::Integer(places)] => {
-            decimal_in_range_impl(Decimal::from(*min), *max, *places)
-        }
-        [Value::Decimal(min), Value::Integer(max), Value::Integer(places)] => {
-            decimal_in_range_impl(*min, Decimal::from(*max), *places)
-        }
-        _ => err("Any.DecimalInRange expects (Integer, Integer) or (Num, Num, Integer)"),
+        _ => err("Any.DecimalInRange expects (Num, Integer) or (Num, Num, Integer)"),
+    }
+}
+
+/// A numeric range bound: Integer, BigInteger or Decimal.
+fn numeric_bound(value: &Value) -> Option<Decimal> {
+    match value {
+        Value::Integer(n) | Value::BigInteger(n) => Some(Decimal::from(*n)),
+        Value::Decimal(d) => Some(*d),
+        _ => None,
     }
 }
 
@@ -121,13 +165,14 @@ fn decimal_in_range_impl(min: Decimal, max: Decimal, places: i64) -> Eval {
 ///   `Number := IntegerInRange(97, 122); TextValue[i] := Number;`
 pub fn alphabetic_text(args: &[Value]) -> Eval {
     let length = match args {
-        [Value::Integer(n)] => *n,
+        [Value::Integer(n) | Value::BigInteger(n)] => *n,
         _ => return err("Any.AlphabeticText expects (Integer)"),
     };
-    if length < 0 {
-        return err("Any.AlphabeticText: Length must be ≥ 0");
-    }
-    let s: String = (0..length as usize)
+    let length = match checked_text_length("AlphabeticText", length) {
+        Ok(length) => length,
+        Err(error) => return error,
+    };
+    let s: String = (0..length)
         .map(|_| {
             // IntegerInRange(97, 122): span = 26
             let code = 96 + next_rand(26); // 97 = 'a'
@@ -139,23 +184,20 @@ pub fn alphabetic_text(args: &[Value]) -> Eval {
 
 /// `Any.AlphanumericText(Length: Integer): Text`
 ///
-/// The AL implementation builds text by stripping `-`/`{`/`}` from GUIDs.
-/// We generate a lowercase alphanumeric string directly — same distribution
-/// of characters (0–9, a–f from GUIDs → here extended to a–z for variety,
-/// matching the GUID-based distribution of hex digits mixed with lowercase).
-///
-/// Implementation matches the AL strategy: produce groups of hex-like chars
-/// and concatenate until the requested length is reached.
+/// Lowercase hex. The AL original loops
+/// `GuidTxt += LowerCase(DelChr(Format(GuidValue()), '=', '{}-'))`, so
+/// stripping the braces and dashes out of a GUID leaves 0-9 and a-f only.
 pub fn alphanumeric_text(args: &[Value]) -> Eval {
     let length = match args {
-        [Value::Integer(n)] => *n,
+        [Value::Integer(n) | Value::BigInteger(n)] => *n,
         _ => return err("Any.AlphanumericText expects (Integer)"),
     };
-    if length < 0 {
-        return err("Any.AlphanumericText: Length must be ≥ 0");
-    }
+    let length = match checked_text_length("AlphanumericText", length) {
+        Ok(length) => length,
+        Err(error) => return error,
+    };
     const HEX: &[u8] = b"0123456789abcdef";
-    let s: String = (0..length as usize)
+    let s: String = (0..length)
         .map(|_| HEX[(next_rand(16) - 1) as usize] as char)
         .collect();
     ok(Value::Text(s))
@@ -167,14 +209,15 @@ pub fn alphanumeric_text(args: &[Value]) -> Eval {
 /// replicating the AL `IntegerInRange(1072, 1103)` loop.
 pub fn unicode_text(args: &[Value]) -> Eval {
     let length = match args {
-        [Value::Integer(n)] => *n,
+        [Value::Integer(n) | Value::BigInteger(n)] => *n,
         _ => return err("Any.UnicodeText expects (Integer)"),
     };
-    if length < 0 {
-        return err("Any.UnicodeText: Length must be ≥ 0");
-    }
+    let length = match checked_text_length("UnicodeText", length) {
+        Ok(length) => length,
+        Err(error) => return error,
+    };
     // Cyrillic code points 0x0430 (1072) to 0x044F (1103): span = 32.
-    let s: String = (0..length as usize)
+    let s: String = (0..length)
         .map(|_| {
             let code = 1071 + next_rand(32); // 1072 = 'а'
             char::from_u32(code as u32).unwrap_or('а')
@@ -191,11 +234,16 @@ pub fn unicode_text(args: &[Value]) -> Eval {
 pub fn email(args: &[Value]) -> Eval {
     let (local_len, domain_len) = match args {
         [] => (20i64, 20i64),
-        [Value::Integer(l), Value::Integer(d)] => (*l, *d),
+        [Value::Integer(l) | Value::BigInteger(l), Value::Integer(d) | Value::BigInteger(d)] => {
+            (*l, *d)
+        }
         _ => return err("Any.Email expects () or (Integer, Integer)"),
     };
     if local_len < 1 || domain_len < 1 {
         return err("Any.Email: lengths must be ≥ 1");
+    }
+    if local_len > MAX_TEXT_LENGTH || domain_len > MAX_TEXT_LENGTH {
+        return err(format!("Any.Email: lengths must be ≤ {MAX_TEXT_LENGTH}"));
     }
     let local: String = (0..local_len as usize)
         .map(|_| {
@@ -222,7 +270,7 @@ pub fn guid_value(args: &[Value]) -> Eval {
         return err("Any.GuidValue expects no arguments");
     }
     let mut buf = [0u8; 16];
-    if getrandom::getrandom(&mut buf).is_err() {
+    if getrandom::fill(&mut buf).is_err() {
         return err("Any.GuidValue: failed to obtain random bytes");
     }
     // RFC 4122 version 4 / variant bits
@@ -244,25 +292,24 @@ pub fn guid_value(args: &[Value]) -> Eval {
 /// Seeds the thread-local RNG.  Seed 0 → treated as 1 (BC convention).
 pub fn set_seed(args: &[Value]) -> Eval {
     let seed = match args {
-        [Value::Integer(n)] => *n as u64,
+        [Value::Integer(n) | Value::BigInteger(n)] => *n,
         [] => return err("Any.SetSeed requires 1 argument"),
         _ => return err("Any.SetSeed expects (Integer)"),
     };
-    super::library_random::set_lcg_seed(seed);
+    SEED.with(|cell| cell.set(seed));
+    super::library_random::set_lcg_seed(seed as u64);
     ok(Value::Empty)
 }
 
 /// `Any.GetSeed(): Integer`
 ///
-/// Returns the current seed.  In the interpreter, the LCG *state* is not
-/// the same as the user-visible seed (the state is updated on every call).
-/// We return the raw state cast to i64 — adequate for round-trip tests.
+/// Returns the seed `SetSeed` installed, unchanged by the draws since. The
+/// generator's state advances on every call and is not the seed.
 pub fn get_seed(args: &[Value]) -> Eval {
     if !args.is_empty() {
         return err("Any.GetSeed expects no arguments");
     }
-    let state = super::library_random::lcg_state() as i64;
-    ok(Value::Integer(state))
+    ok(Value::Integer(SEED.with(|cell| cell.get())))
 }
 
 /// `Any.SetDefaultSeed()`
@@ -271,7 +318,9 @@ pub fn set_default_seed(args: &[Value]) -> Eval {
     if !args.is_empty() {
         return err("Any.SetDefaultSeed expects no arguments");
     }
-    super::library_random::set_lcg_seed(crate::interpreter::dispatch::clock_time() as u64);
+    let seed = crate::interpreter::dispatch::clock_time();
+    SEED.with(|cell| cell.set(seed));
+    super::library_random::set_lcg_seed(seed as u64);
     ok(Value::Empty)
 }
 
@@ -469,6 +518,72 @@ mod tests {
         assert!(msg.contains("expects"), "got: {msg}");
     }
 
+    /// The AL signature takes an Integer, and AL converts a Decimal argument
+    /// to it, so the two-argument call with a Decimal max runs on BC.
+    #[test]
+    fn decimal_in_range_two_args_accepts_a_decimal_max() {
+        seed(7);
+        match decimal_in_range(&[Value::Decimal(Decimal::from(100)), Value::Integer(2)]) {
+            Eval::Normal(Value::Decimal(d)) => {
+                assert!(
+                    d >= Decimal::ZERO && d <= Decimal::from(100),
+                    "out of range: {d}"
+                );
+            }
+            other => panic!("expected Decimal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn numeric_arguments_accept_big_integer() {
+        seed(7);
+        assert!(matches!(
+            integer_in_range(&[Value::BigInteger(10)]),
+            Eval::Normal(Value::Integer(_))
+        ));
+        assert!(matches!(
+            decimal_in_range(&[Value::BigInteger(10), Value::BigInteger(2)]),
+            Eval::Normal(Value::Decimal(_))
+        ));
+        assert!(matches!(
+            alphabetic_text(&[Value::BigInteger(4)]),
+            Eval::Normal(Value::Text(_))
+        ));
+    }
+
+    /// The AL loop writes into a sized Text, so BC stops at its length. These
+    /// generators used to allocate whatever was asked for: AlphabeticText with
+    /// two billion took the runner down.
+    #[test]
+    fn a_text_length_past_the_cap_is_an_error_not_an_allocation() {
+        seed(7);
+        for procedure in [alphabetic_text, alphanumeric_text, unicode_text] {
+            let msg = is_err(procedure(&[Value::Integer(2_000_000_000)]));
+            assert!(msg.contains("2048"), "got: {msg}");
+        }
+        let msg = is_err(email(&[Value::Integer(2_000_000_000), Value::Integer(20)]));
+        assert!(msg.contains("2048"), "got: {msg}");
+
+        // The cap itself is still allowed.
+        match alphabetic_text(&[Value::Integer(2048)]) {
+            Eval::Normal(Value::Text(text)) => assert_eq!(text.chars().count(), 2048),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn alphanumeric_text_is_lowercase_hex() {
+        seed(7);
+        match alphanumeric_text(&[Value::Integer(64)]) {
+            Eval::Normal(Value::Text(text)) => assert!(
+                text.chars()
+                    .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+                "the GUID-derived original yields hex only, got: {text}"
+            ),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
     #[test]
     fn alphabetic_text_negative_length_is_error() {
         let msg = is_err(alphabetic_text(&[Value::Integer(-1)]));
@@ -576,16 +691,19 @@ mod tests {
         assert!(msg.contains("expects"), "got: {msg}");
     }
 
+    /// Codeunit 130500 stores the seed in a field and `GetSeed` returns it,
+    /// so draws in between must not move it.
     #[test]
     fn set_seed_then_get_seed_round_trips() {
         ok_val(set_seed(&[Value::Integer(999)]));
-        // After SetSeed(999), GetSeed returns a non-zero value (the LCG state
-        // is advanced once by SetSeed, so it won't equal 999 exactly, but it
-        // is deterministic).
-        match get_seed(&[]) {
-            Eval::Normal(Value::Integer(_)) => {}
-            other => panic!("expected Integer from GetSeed, got {other:?}"),
-        }
+        assert_eq!(ok_val(get_seed(&[])), Value::Integer(999));
+        ok_val(integer_in_range(&[Value::Integer(100)]));
+        ok_val(integer_in_range(&[Value::Integer(100)]));
+        assert_eq!(
+            ok_val(get_seed(&[])),
+            Value::Integer(999),
+            "GetSeed returns the seed, not the generator state"
+        );
     }
 
     #[test]
@@ -617,7 +735,10 @@ mod tests {
         let before = crate::interpreter::dispatch::clock_time().max(1) as u64;
         ok_val(set_default_seed(&[]));
         let after = crate::interpreter::dispatch::clock_time().max(1) as u64;
-        let seed = super::super::library_random::lcg_state();
+        let seed = match get_seed(&[]) {
+            Eval::Normal(Value::Integer(seed)) => seed as u64,
+            other => panic!("expected Integer from GetSeed, got {other:?}"),
+        };
         if before <= after {
             assert!((before..=after).contains(&seed));
         } else {

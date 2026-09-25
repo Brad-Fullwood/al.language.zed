@@ -1,9 +1,9 @@
-//! `al-dap`: the AL debug-adapter layer (tier 3).
+//! `al-dap`: the AL debug-adapter layer (T1 in `Docs/architecture.md`).
 //!
 //! - `dap` — the native Business Central debug adapter (`bc_debug`, speaks REST +
 //!   SignalR directly, no external binary), the low-level DAP `client` for the
 //!   legacy EditorServices.Host proxy, plus `framing`, `protocol`, `types`,
-//!   `config`, and the `json_util` JSONC re-exports.
+//!   and `config`.
 //! - `native_debug` — the in-process native debug session built on `dap::bc_debug`.
 //!
 //! The compiler / emitter pipeline is deliberately NOT a dependency:

@@ -255,6 +255,7 @@ async fn download_dependency_wave(
     deps: &[al_symbols::nuget::AppDependency],
     dest: &std::path::Path,
     project_configs: &[al_bc::launch::BcServerConfig],
+    requested_config: Option<&str>,
 ) -> Vec<serde_json::Value> {
     if source == "server" {
         if project_configs.is_empty() {
@@ -262,7 +263,22 @@ async fn download_dependency_wave(
                 "error": "No BC server config found"
             })];
         }
-        let cfg = &project_configs[0];
+        // `requested_config` names one of the project's launch configurations.
+        // With no name the first entry is used, and the caller reports which
+        // one, so a project listing Sandbox and Production never downloads
+        // from one of them silently.
+        let cfg = match al_bc::launch::pick_config(project_configs, requested_config) {
+            Ok(cfg) => cfg,
+            Err(error) => return vec![serde_json::json!({ "error": error })],
+        };
+        // The launch configuration ships in the repository, and the download
+        // presents the user's Business Central credential to whatever server
+        // it names.
+        if let Err(error) =
+            crate::server::daemon::debug_dispatch::authorize_launch_target(workspace, cfg)
+        {
+            return vec![serde_json::json!({ "error": error })];
+        }
         let auth = match cfg.authentication {
             al_bc::launch::AuthMethod::Windows => al_symbols::bc_server::AuthMethod::Windows,
             al_bc::launch::AuthMethod::UserPassword => {
@@ -367,33 +383,59 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
         }
     };
 
-    let project = match workspace.project.try_read() {
-        Ok(guard) => guard,
-        Err(_) => {
+    let requested_config = match params.get("config") {
+        None => None,
+        Some(value) => match value.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(name) => Some(name.to_string()),
+            None => {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    "'config' must be a non-empty string when supplied",
+                );
+            }
+        },
+    };
+
+    // Copy out what the download needs and release the project read guard
+    // here. It used to live to the end of the function (a `let _ = project;`
+    // does not drop anything), and the function takes `project.write()` once
+    // a package has been downloaded, so every successful download waited on
+    // its own guard forever and the caller never got a response.
+    let (all_deps, dest, project_configs, configured_packages) = {
+        let project = match workspace.project.try_read() {
+            Ok(guard) => guard,
+            Err(_) => {
+                return Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INTERNAL_ERROR,
+                        message: ERR_INITIALIZING.to_string(),
+                    }),
+                    ..Default::default()
+                };
+            }
+        };
+        let Some(project) = project.as_ref() else {
             return Response {
                 id,
                 result: None,
                 error: Some(RpcError {
                     code: error_codes::INTERNAL_ERROR,
-                    message: ERR_INITIALIZING.to_string(),
+                    message: ERR_NO_PROJECT.to_string(),
                 }),
                 ..Default::default()
             };
-        }
-    };
-    let Some(project) = project.as_ref() else {
-        return Response {
-            id,
-            result: None,
-            error: Some(RpcError {
-                code: error_codes::INTERNAL_ERROR,
-                message: ERR_NO_PROJECT.to_string(),
-            }),
-            ..Default::default()
         };
+        (
+            project.all_dependencies(),
+            project.packages_dir.clone(),
+            project.server_configs.clone(),
+            project.packages.clone(),
+        )
     };
 
-    let all_deps = project.all_dependencies();
     if all_deps.is_empty() {
         return Response {
             id,
@@ -411,11 +453,15 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
         };
     }
 
-    let dest = project.packages_dir.clone();
-    let project_configs = project.server_configs.clone();
-    let configured_packages = project.packages.clone();
-
-    let _ = project;
+    // Named in the result so the caller always knows which BC environment the
+    // packages came from, whether or not it asked for one.
+    let chosen_config = (source == "server")
+        .then(|| {
+            al_bc::launch::pick_config(&project_configs, requested_config.as_deref())
+                .ok()
+                .map(|config| config.name.clone())
+        })
+        .flatten();
 
     // don't re-download dependencies already satisfied in
     // package cache. The resolver fetched app.json MINIMUM versions — pulling
@@ -456,8 +502,15 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
             if queue.is_empty() {
                 break;
             }
-            let round =
-                download_dependency_wave(workspace, source, &queue, &dest, &project_configs).await;
+            let round = download_dependency_wave(
+                workspace,
+                source,
+                &queue,
+                &dest,
+                &project_configs,
+                requested_config.as_deref(),
+            )
+            .await;
             let downloaded: Vec<std::path::PathBuf> = round
                 .iter()
                 .filter(|entry| entry.get("status").and_then(|v| v.as_str()) == Some("ok"))
@@ -546,6 +599,7 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
         id,
         result: Some(serde_json::json!({
             "source": source,
+            "config": chosen_config,
             "downloaded": success,
             "failed": failed,
             "skipped": skipped_count,
@@ -601,25 +655,14 @@ fn refresh_workspace_after_download(
             .symbols
             .load_packages_cached(&downloaded_paths, &cache)
     };
-    let loaded = match tokio::runtime::Handle::try_current() {
-        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
-            tokio::task::block_in_place(load)
-        }
-        _ => load(),
-    }
-    .map_err(|error| error.to_string())?;
+    let loaded = crate::server::daemon::blocking(load).map_err(|error| error.to_string())?;
     workspace.symbols.load_runtime_enums();
     for package in &loaded {
         package_info.retain(|existing| {
             !(existing.name.eq_ignore_ascii_case(&package.name)
                 && existing.publisher.eq_ignore_ascii_case(&package.publisher))
         });
-        package_info.push(al_workspace::PackageInfo {
-            name: package.name.clone(),
-            publisher: package.publisher.clone(),
-            version: package.version.clone(),
-            object_count: package.object_count,
-        });
+        package_info.push(al_workspace::PackageInfo::from(package));
     }
     drop(package_info);
     workspace.invalidate_insight_graph();
@@ -633,6 +676,52 @@ mod tests {
 
     fn empty_ws() -> Workspace {
         Workspace::new()
+    }
+
+    /// A project listing Sandbox first and Production second used to download
+    /// from whichever entry happened to be first, with no way to name one and
+    /// no message saying which was picked.
+    #[tokio::test]
+    async fn download_symbols_rejects_a_malformed_config_name() {
+        let ws = empty_ws();
+        for params in [
+            serde_json::json!({ "source": "server", "config": 7 }),
+            serde_json::json!({ "source": "server", "config": "  " }),
+        ] {
+            let response = dispatch_download_symbols(&ws, 1, &params).await;
+            let error = response.error.expect("a malformed config must be rejected");
+            assert_eq!(error.code, error_codes::INVALID_PARAMS);
+            assert!(error.message.contains("config"), "{}", error.message);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_named_config_that_does_not_exist_is_reported_not_silently_replaced() {
+        let configs = [al_bc::launch::BcServerConfig {
+            name: "Sandbox".to_string(),
+            environment_type: al_bc::launch::EnvironmentType::Sandbox,
+            server: None,
+            server_instance: None,
+            port: None,
+            environment_name: Some("Sandbox".to_string()),
+            tenant: None,
+            authentication: al_bc::launch::AuthMethod::AAD,
+            accept_invalid_certs: false,
+            debug_args: serde_json::Value::Null,
+        }];
+        let ws = empty_ws();
+        let entries = download_dependency_wave(
+            &ws,
+            "server",
+            &[],
+            std::path::Path::new("/nonexistent"),
+            &configs,
+            Some("Production"),
+        )
+        .await;
+        let error = entries[0]["error"].as_str().expect("an error entry");
+        assert!(error.contains("Production"), "{error}");
+        assert!(error.contains("Sandbox"), "{error}");
     }
 
     #[test]

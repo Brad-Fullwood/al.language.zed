@@ -6,6 +6,7 @@
 //! - `package`: source extracted from .app ZIP archive
 //! - `outline`: rendered from SymbolReference.json (full signatures, no bodies)
 
+use al_symbols::source_availability::is_workspace_package;
 use al_symbols::{MethodSymbol, ObjectKind, SourceAvailability, SymbolEntry};
 use serde::Serialize;
 use std::fmt;
@@ -53,7 +54,8 @@ pub struct SourceResult {
 /// File range for workspace source.
 #[derive(Debug, Clone, Serialize)]
 pub struct SourceRange {
-    /// Relative file path.
+    /// File path relative to the app root that holds it, with forward
+    /// slashes. Never absolute: the answer goes to MCP agents.
     pub f: String,
     /// Start line (1-based).
     pub l: u32,
@@ -89,92 +91,74 @@ pub struct SourceMember<'a> {
     pub name: &'a str,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SourceLookupError {
-    ObjectNotFound {
-        name: String,
-    },
-    Ambiguous {
-        name: String,
-        matches: Vec<String>,
-    },
+    #[error("Object '{name}' not found in workspace or symbol packages")]
+    ObjectNotFound { name: String },
+    #[error(
+        "Source lookup for '{name}' is ambiguous; specify --kind and/or --package. Matches: {}",
+        matches.join(", ")
+    )]
+    Ambiguous { name: String, matches: Vec<String> },
+    // The tail differs by whether any member names were recovered, which a
+    // single format string cannot express.
+    #[error(fmt = member_not_found_fmt)]
     MemberNotFound {
         object: String,
         member: String,
         kind: SourceMemberKind,
+        /// Names the object does declare, closest first. Empty when the
+        /// object's members could not be read.
+        candidates: Vec<String>,
+        /// How many members the object declares in all, so a short list is
+        /// not read as the whole.
+        declared: usize,
     },
+    #[error("{} '{member}' in object '{object}' is unavailable: {reason}", kind.label())]
     MemberUnavailable {
         object: String,
         member: String,
         kind: SourceMemberKind,
         reason: String,
     },
+    #[error(
+        "Source for object '{object}' in package '{package}' could not be read from '{path}': {reason}"
+    )]
     PackageSourceUnavailable {
         object: String,
         package: String,
         path: String,
         reason: String,
     },
-    InvalidWorkspaceDeclaration {
-        path: PathBuf,
-        reason: String,
-    },
+    #[error("Workspace source '{}' has an invalid AL object declaration: {reason}", path.display())]
+    InvalidWorkspaceDeclaration { path: PathBuf, reason: String },
 }
 
-impl fmt::Display for SourceLookupError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ObjectNotFound { name } => {
-                write!(
-                    f,
-                    "Object '{name}' not found in workspace or symbol packages"
-                )
-            }
-            Self::Ambiguous { name, matches } => write!(
-                f,
-                "Source lookup for '{name}' is ambiguous; specify --kind and/or --package. Matches: {}",
-                matches.join(", ")
-            ),
-            Self::MemberNotFound {
-                object,
-                member,
-                kind,
-            } => write!(
-                f,
-                "{} '{}' was not found in object '{}'",
-                kind.label(),
-                member,
-                object
-            ),
-            Self::MemberUnavailable {
-                object,
-                member,
-                kind,
-                reason,
-            } => write!(
-                f,
-                "{} '{}' in object '{}' is unavailable: {}",
-                kind.label(),
-                member,
-                object,
-                reason
-            ),
-            Self::PackageSourceUnavailable {
-                object,
-                package,
-                path,
-                reason,
-            } => write!(
-                f,
-                "Source for object '{object}' in package '{package}' could not be read from '{}': {reason}",
-                path
-            ),
-            Self::InvalidWorkspaceDeclaration { path, reason } => write!(
-                f,
-                "Workspace source '{}' has an invalid AL object declaration: {reason}",
-                path.display()
-            ),
-        }
+fn member_not_found_fmt(
+    object: &String,
+    member: &String,
+    kind: &SourceMemberKind,
+    candidates: &[String],
+    declared: &usize,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    write!(
+        f,
+        "{} '{}' was not found in object '{}'",
+        kind.label(),
+        member,
+        object
+    )?;
+    if candidates.is_empty() {
+        write!(f, ". List its members with listProcedures")
+    } else if *declared > candidates.len() {
+        write!(
+            f,
+            ". Closest of its {declared} members: {}. List them all with listProcedures",
+            candidates.join(", ")
+        )
+    } else {
+        write!(f, ". It declares: {}", candidates.join(", "))
     }
 }
 
@@ -237,27 +221,38 @@ fn source_candidates(
     let package_filter = package_filter
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let workspace_requested = package_filter.is_none_or(|package| {
-        package.eq_ignore_ascii_case("workspace") || package.eq_ignore_ascii_case("(workspace)")
-    });
+    let workspace_requested = package_filter.is_none_or(is_workspace_package);
 
     let mut workspace_candidates = Vec::new();
     if workspace_requested {
         for path in workspace.file_index.object_paths(name) {
-            let info = workspace.file_index.object_info.get(&path).ok_or_else(|| {
-                SourceLookupError::InvalidWorkspaceDeclaration {
+            // A file can declare several objects. Take the declaration that
+            // carries the requested *name*, not the file's first one.
+            let infos = workspace.file_index.object_infos_in(&path);
+            let mut matched = false;
+            for info in infos
+                .iter()
+                .filter(|info| info.name.eq_ignore_ascii_case(name))
+            {
+                let kind = info.kind.parse::<ObjectKind>().map_err(|reason| {
+                    SourceLookupError::InvalidWorkspaceDeclaration {
+                        path: path.clone(),
+                        reason: reason.to_string(),
+                    }
+                })?;
+                matched = true;
+                if kind_filter.is_none_or(|expected| expected == kind) {
+                    workspace_candidates.push(SourceCandidate::Workspace {
+                        path: path.clone(),
+                        kind,
+                    });
+                }
+            }
+            if !matched {
+                return Err(SourceLookupError::InvalidWorkspaceDeclaration {
                     path: path.clone(),
                     reason: "object-name index has no matching declaration metadata".to_string(),
-                }
-            })?;
-            let kind = info.kind.parse::<ObjectKind>().map_err(|reason| {
-                SourceLookupError::InvalidWorkspaceDeclaration {
-                    path: path.clone(),
-                    reason,
-                }
-            })?;
-            if kind_filter.is_none_or(|expected| expected == kind) {
-                workspace_candidates.push(SourceCandidate::Workspace { path, kind });
+                });
             }
         }
     }
@@ -278,10 +273,7 @@ fn source_candidates(
         .get_by_name(name)
         .into_iter()
         .filter(|entry| !entry.synthetic)
-        .filter(|entry| {
-            !entry.package.eq_ignore_ascii_case("workspace")
-                && !entry.package.eq_ignore_ascii_case("(workspace)")
-        })
+        .filter(|entry| !is_workspace_package(&entry.package))
         .filter(|entry| kind_filter.is_none_or(|expected| expected == entry.kind))
         .filter(|entry| {
             package_filter.is_none_or(|package| entry.package.eq_ignore_ascii_case(package))
@@ -324,15 +316,26 @@ fn try_workspace_source(
             name: name.to_string(),
         })?;
 
-    let obj_info = al_syntax::find_object_declaration(&tree, &text).ok_or_else(|| {
-        SourceLookupError::ObjectNotFound {
+    // Re-read the declarations from the text and tree in hand rather than the
+    // index, so an open, edited buffer answers about itself. The declaration
+    // wanted is the one named `name`, which in a multi-object file is not
+    // necessarily the first.
+    let declarations = al_syntax::find_object_declarations(&tree, &text);
+    let obj_info = declarations
+        .iter()
+        .find(|info| info.name.eq_ignore_ascii_case(name) && kind_matches(&info.kind, kind))
+        .or_else(|| {
+            declarations
+                .iter()
+                .find(|info| info.name.eq_ignore_ascii_case(name))
+        })
+        .ok_or_else(|| SourceLookupError::ObjectNotFound {
             name: name.to_string(),
-        }
-    })?;
+        })?;
     let declared_kind = obj_info.kind.parse::<ObjectKind>().map_err(|reason| {
         SourceLookupError::InvalidWorkspaceDeclaration {
             path: file_path.to_path_buf(),
-            reason,
+            reason: reason.to_string(),
         }
     })?;
     if declared_kind != kind {
@@ -347,18 +350,19 @@ fn try_workspace_source(
             path: file_path.to_path_buf(),
             reason: error.to_string(),
         })?;
+    let object_range = obj_info.range;
+    let object_node = tree
+        .root_node()
+        .descendant_for_byte_range(object_range.start_byte, object_range.end_byte)
+        .unwrap_or_else(|| tree.root_node());
 
     if let Some(member) = member {
-        let root = tree.root_node();
-        if let Some((node, sig)) = find_member_node(&root, &text, member) {
+        if let Some((node, sig)) = find_member_node(&object_node, &text, member) {
             let start_line = node.start_position().row;
             let end_line = node.end_position().row;
             let code = node.utf8_text(text.as_bytes()).unwrap_or("").to_string();
 
-            let relative_path = file_path
-                .file_name()
-                .map(|f| f.to_string_lossy().to_string())
-                .unwrap_or_default();
+            let relative_path = project_relative_path(workspace, file_path);
 
             return Ok(SourceResult {
                 k: kind,
@@ -382,9 +386,16 @@ fn try_workspace_source(
             object: name.to_string(),
             member: member.name.to_string(),
             kind: member.kind,
+            candidates: member_candidates(&text, member.name),
+            declared: member_outlines(&text).len(),
         });
     }
 
+    // A whole-object lookup used to return `code` with no `range`, so an agent
+    // that asked where the object lives got `null` and fell back to `find`.
+    // The declaration's own span and path answer that without a second call —
+    // the span of the object that was asked for, which in a multi-object file
+    // is not necessarily the file's first.
     Ok(SourceResult {
         k: kind,
         id,
@@ -394,10 +405,41 @@ fn try_workspace_source(
         source_availability: SourceAvailability::WorkspaceSource,
         pkg: None,
         sig: None,
-        range: None,
-        code: text.clone(),
+        range: Some(SourceRange {
+            f: project_relative_path(workspace, file_path),
+            l: object_range.start_point.row as u32 + 1,
+            end: object_range.end_point.row as u32 + 1,
+        }),
+        code: text[object_range.start_byte..object_range.end_byte.min(text.len())].to_string(),
         note: None,
     })
+}
+
+/// `file_path` as `SourceRange.f` spells it: relative to the app root that
+/// holds the file, with forward slashes.
+///
+/// The whole-object exit used to answer the absolute path, which puts the
+/// developer's filesystem layout into a response MCP hands to an agent, and
+/// the member exit the bare file name, which cannot tell two `Shipment.al`
+/// files apart. Falls back to the absolute path only when the file sits under
+/// no app root, which an indexed workspace file does not.
+fn project_relative_path(workspace: &Workspace, file_path: &Path) -> String {
+    let relative = workspace
+        .file_index
+        .app_root_for(file_path)
+        .and_then(|root| file_path.strip_prefix(root).ok().map(Path::to_path_buf));
+    let path = relative.as_deref().unwrap_or(file_path);
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Compare a parsed declaration kind string against a resolved [`ObjectKind`].
+fn kind_matches(declared: &str, kind: ObjectKind) -> bool {
+    declared
+        .parse::<ObjectKind>()
+        .is_ok_and(|parsed| parsed == kind)
 }
 
 fn try_package_source(
@@ -445,6 +487,8 @@ fn try_package_source(
                     object: entry.name.clone(),
                     member: member.name.to_string(),
                     kind: member.kind,
+                    candidates: member_candidates(&full_source, member.name),
+                    declared: member_outlines(&full_source).len(),
                 });
             }
 
@@ -488,6 +532,13 @@ fn try_package_source(
                 object: entry.name.clone(),
                 member: member.name.to_string(),
                 kind: member.kind,
+                // No AL source here, only SymbolReference.json metadata, so
+                // the candidates come from the indexed method names.
+                candidates: closest_names(
+                    entry.methods.iter().map(|method| method.name.as_str()),
+                    member.name,
+                ),
+                declared: entry.methods.len(),
             })?;
         let sig = render_method_signature(method);
         return Ok(SourceResult {
@@ -544,11 +595,9 @@ fn find_member_node<'a>(
         if kind == member.kind.declaration_kind() {
             if let Some(name_node) = node.child_by_field_name("name") {
                 let node_name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
-                let clean = node_name.trim_matches('"');
+                let clean = al_syntax::clean_identifier(node_name);
                 if clean.eq_ignore_ascii_case(member.name) {
-                    let text = node.utf8_text(source.as_bytes()).unwrap_or("");
-                    let sig = extract_signature_from_text(text);
-                    return Some((node, sig));
+                    return Some((node, member_signature(node, source)));
                 }
             }
         }
@@ -563,39 +612,225 @@ fn find_member_node<'a>(
     None
 }
 
-fn extract_signature_from_text(text: &str) -> String {
-    // Take text up to and including the first closing paren that completes the signature
-    let mut depth = 0i32;
-    let mut end = 0;
-    for (i, ch) in text.char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    end = i + 1;
-                    let rest = &text[end..];
-                    let same_line = rest.split('\n').next().unwrap_or("");
-                    if let Some(colon_pos) = same_line.find(':') {
-                        // Include the return type (everything after ':' on same line)
-                        let return_part = same_line[colon_pos..].trim_end_matches(';').trim_end();
-                        end = end + colon_pos + return_part.len();
-                    }
-                    break;
-                }
-            }
-            '\n' if depth == 0 => {
-                end = i;
-                break;
-            }
-            _ => {}
+/// The signature line of a procedure/trigger declaration node.
+///
+/// Built from the declaration's own children rather than by scanning its text:
+/// the grammar nests `repeat($.attribute)` inside `procedure_declaration`, so a
+/// text scan for the first balanced `(...)` finds the *attribute's* argument
+/// list. Every `[EventSubscriber]`, `[IntegrationEvent]` and `[Test]`
+/// procedure reported its attribute, truncated before the closing `]`, as its
+/// signature.
+fn member_signature(node: tree_sitter::Node<'_>, source: &str) -> String {
+    let bytes = source.as_bytes();
+    let keyword_row = al_syntax::procedure_keyword_row(node);
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return signature_from_row(node, source, keyword_row);
+    };
+    // The declaration's own leading keyword: `procedure`, `function` or
+    // `trigger`. A trigger rendered as "procedure OnInsert()" is a signature
+    // no AL file contains.
+    let mut cursor = node.walk();
+    let keyword = node
+        .children(&mut cursor)
+        .find(|child| matches!(child.kind(), "kw_procedure" | "kw_function" | "kw_trigger"))
+        .and_then(|child| child.utf8_text(bytes).ok())
+        .unwrap_or("procedure")
+        .to_string();
+    let name = name_node.utf8_text(bytes).unwrap_or("");
+    let parameters = node
+        .child_by_field_name("parameters")
+        .and_then(|child| child.utf8_text(bytes).ok())
+        .unwrap_or("()");
+    let return_type = node
+        .child_by_field_name("return_type")
+        .and_then(|child| child.utf8_text(bytes).ok());
+    let return_var = node
+        .child_by_field_name("return_var")
+        .and_then(|child| child.utf8_text(bytes).ok());
+
+    let mut signature = format!("{keyword} {name}{parameters}");
+    if let Some(return_type) = return_type {
+        // AL names an optional return variable before the colon:
+        // `procedure Total(Amount: Decimal) Result: Decimal`.
+        match return_var {
+            Some(return_var) => signature.push_str(&format!(" {}: ", return_var.trim())),
+            None => signature.push_str(": "),
         }
+        signature.push_str(return_type.trim());
     }
-    if end == 0 {
-        text.lines().next().unwrap_or(text).to_string()
+    signature
+}
+
+/// The declaration's first non-attribute line, for a node whose fields the
+/// parser did not populate.
+fn signature_from_row(
+    node: tree_sitter::Node<'_>,
+    source: &str,
+    keyword_row: Option<usize>,
+) -> String {
+    let row = keyword_row.unwrap_or_else(|| node.start_position().row);
+    source.lines().nth(row).unwrap_or("").trim().to_string()
+}
+
+/// One member of an object, without its body.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberOutline {
+    pub name: String,
+    /// `procedure` or `trigger`.
+    pub kind: &'static str,
+    /// The declaration up to the return type.
+    pub signature: String,
+    /// 1-based first and last line of the declaration in the object's source.
+    pub start_line: u32,
+    pub end_line: u32,
+}
+
+/// Every procedure and trigger an object declares, with signatures and line
+/// ranges but no bodies.
+///
+/// `source "Sales-Post"` was 837 KB because the only way to find a procedure
+/// name was to read the whole codeunit, and the `not found` error listed none
+/// of the 609 names it knew. Both of those read this.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberList {
+    pub k: ObjectKind,
+    pub id: i32,
+    pub n: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pkg: Option<String>,
+    /// Spelled as `SourceResult` spells it, because the CLI's response
+    /// contract for `source` checks this field whichever mode answered.
+    #[serde(rename = "source_availability")]
+    pub source_availability: SourceAvailability,
+    pub members: Vec<MemberOutline>,
+    pub total: usize,
+}
+
+/// List an object's procedures and triggers without their bodies.
+pub fn list_members(
+    workspace: &Workspace,
+    name: &str,
+    kind_filter: Option<ObjectKind>,
+    package_filter: Option<&str>,
+) -> Result<MemberList, SourceLookupError> {
+    let whole = source(workspace, name, kind_filter, package_filter, None)?;
+    let members = member_outlines(&whole.code);
+    Ok(MemberList {
+        k: whole.k,
+        id: whole.id,
+        n: whole.n,
+        pkg: whole.pkg,
+        source_availability: whole.source_availability,
+        total: members.len(),
+        members,
+    })
+}
+
+/// Parse `source` and return each procedure and trigger declaration's name,
+/// signature and line range.
+fn member_outlines(source: &str) -> Vec<MemberOutline> {
+    let parsed = al_syntax::AlParser::parse_quick(source);
+    let mut outlines = Vec::new();
+    let mut stack = vec![parsed.tree.root_node()];
+    while let Some(node) = stack.pop() {
+        let member_kind = match node.kind() {
+            "procedure_declaration" => Some("procedure"),
+            "trigger_declaration" => Some("trigger"),
+            _ => None,
+        };
+        if let Some(member_kind) = member_kind {
+            if let Some(name) = node
+                .child_by_field_name("name")
+                .and_then(|name| name.utf8_text(source.as_bytes()).ok())
+            {
+                outlines.push(MemberOutline {
+                    name: al_syntax::clean_identifier(name),
+                    kind: member_kind,
+                    // From the declaration's children, not a text scan: the
+                    // grammar nests a procedure's attributes inside it, so
+                    // scanning for the first balanced `(...)` finds the
+                    // attribute's argument list.
+                    signature: member_signature(node, source),
+                    start_line: node.start_position().row as u32 + 1,
+                    end_line: node.end_position().row as u32 + 1,
+                });
+            }
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
+    }
+    outlines.sort_by_key(|outline| outline.start_line);
+    outlines
+}
+
+/// Member names close enough to `wanted` to be worth offering, plus the first
+/// few names outright when nothing is close.
+///
+/// A `not found` that dead-ends costs the agent a call that pulls the whole
+/// object to read one name off it.
+pub fn member_candidates(source: &str, wanted: &str) -> Vec<String> {
+    let outlines = member_outlines(source);
+    closest_names(outlines.iter().map(|outline| outline.name.as_str()), wanted)
+}
+
+/// Up to eight of `names` to offer for a mistyped `wanted`, closest first:
+/// those containing it, contained in it, sharing its first four letters
+/// (`PostSalesDoc` for `PostSalesLines`), or within two edits of it
+/// (`OnAfterPostSalesDocc`). With nothing close, the first eight.
+fn closest_names<'a>(names: impl Iterator<Item = &'a str>, wanted: &str) -> Vec<String> {
+    let wanted_lower = wanted.to_lowercase();
+    let names: Vec<&str> = names.collect();
+    let mut close: Vec<(usize, &str)> = names
+        .iter()
+        .filter_map(|name| {
+            let lower = name.to_lowercase();
+            let distance = edit_distance(&lower, &wanted_lower);
+            let related = lower.contains(&wanted_lower)
+                || wanted_lower.contains(&lower)
+                || shared_prefix_len(&lower, &wanted_lower) >= 4
+                || distance <= 2;
+            related.then_some((distance, *name))
+        })
+        .collect();
+    close.sort_by_key(|(distance, _)| *distance);
+    let mut out: Vec<String> = if close.is_empty() {
+        names.iter().map(|name| name.to_string()).collect()
     } else {
-        text[..end].trim().to_string()
+        close
+            .into_iter()
+            .map(|(_, name)| name.to_string())
+            .collect()
+    };
+    out.dedup();
+    out.truncate(8);
+    out
+}
+
+/// Levenshtein distance over bytes; names are ASCII identifiers.
+fn edit_distance(left: &str, right: &str) -> usize {
+    let right = right.as_bytes();
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    for (i, a) in left.bytes().enumerate() {
+        let mut current = vec![i + 1; right.len() + 1];
+        for (j, b) in right.iter().enumerate() {
+            let cost = usize::from(a != *b);
+            current[j + 1] = (previous[j] + cost)
+                .min(previous[j + 1] + 1)
+                .min(current[j] + 1);
+        }
+        previous = current;
     }
+    previous[right.len()]
+}
+
+/// How many leading bytes two lowercased names share.
+fn shared_prefix_len(left: &str, right: &str) -> usize {
+    left.bytes()
+        .zip(right.bytes())
+        .take_while(|(a, b)| a == b)
+        .count()
 }
 
 fn extract_member_from_text(source: &str, member: SourceMember<'_>) -> Option<(String, String)> {
@@ -853,7 +1088,7 @@ fn find_procedure_decl_line(
             if child.kind() == "procedure_declaration" || child.kind() == "trigger_declaration" {
                 if let Some(name_node) = child.child_by_field_name("name") {
                     if let Ok(text) = name_node.utf8_text(source.as_bytes()) {
-                        let clean = text.trim_matches('"');
+                        let clean = al_syntax::clean_identifier(text);
                         if clean.eq_ignore_ascii_case(name) {
                             let row = name_node.start_position().row;
                             let sig = source
@@ -880,13 +1115,9 @@ mod tests {
 
     fn make_table_entry() -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Table,
             id: 18,
             name: "Customer".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Base Application".to_string(),
             methods: vec![
                 MethodSymbol {
@@ -922,32 +1153,21 @@ mod tests {
                     properties: vec![],
                 },
             ],
-            controls: Vec::new(),
-            enum_values: Vec::new(),
             keys: vec![KeySymbol {
                 name: "PK".to_string(),
                 field_names: vec!["No.".to_string()],
                 properties: vec![],
             }],
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 
     fn make_enum_entry() -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Enum,
             id: 50100,
             name: "Sales Document Type".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Base Application".to_string(),
-            methods: Vec::new(),
-            fields: Vec::new(),
-            controls: Vec::new(),
             enum_values: vec![
                 EnumValueSymbol {
                     ordinal: 0,
@@ -966,22 +1186,15 @@ mod tests {
                     name: "Credit Memo".to_string(),
                 },
             ],
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 
     fn make_codeunit_with_events() -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Codeunit,
             id: 80,
             name: "Sales-Post".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Base Application".to_string(),
             methods: vec![
                 MethodSymbol {
@@ -1021,43 +1234,29 @@ mod tests {
                     is_local: true,
                 },
             ],
-            fields: Vec::new(),
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
             variables: vec![VariableSymbol {
                 name: "TotalAmount".to_string(),
                 type_name: "Decimal".to_string(),
                 is_protected: false,
             }],
+            ..Default::default()
         }
     }
 
     fn make_table_ext_entry() -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::TableExtension,
             id: 50100,
             name: "Customer Ext".to_string(),
             extends: Some("Customer".to_string()),
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "My Extension".to_string(),
-            methods: Vec::new(),
             fields: vec![FieldSymbol {
                 id: 50100,
                 name: "Custom Field".to_string(),
                 type_name: "Boolean".to_string(),
                 properties: vec![],
             }],
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -1069,7 +1268,8 @@ mod tests {
         assert!(outline.starts_with("table 18 Customer\n{\n"));
         assert!(outline.contains("field(1; \"No.\"; Code[20]) { }"));
         assert!(outline.contains("field(2; Name; Text[100]) { }"));
-        assert!(outline.contains("key(PK; No.)"));
+        // Key field names are quoted: `No.` is not a plain AL identifier.
+        assert!(outline.contains("key(PK; \"No.\")"), "{outline}");
         assert!(outline.contains("procedure SetFilter(FilterStr: Text)"));
         assert!(outline.contains("procedure GetBalance(): Decimal"));
         assert!(outline.ends_with("}\n"));
@@ -1153,38 +1353,13 @@ mod tests {
     }
 
     #[test]
-    fn extract_signature_from_simple_procedure() {
-        let text = "procedure DoWork(x: Integer)\nvar\n    y: Text;\nbegin\nend;";
-        let sig = extract_signature_from_text(text);
-        assert_eq!(sig, "procedure DoWork(x: Integer)");
-    }
-
-    #[test]
-    fn extract_signature_with_return_type() {
-        let text = "procedure GetValue(): Decimal\nbegin\nend;";
-        let sig = extract_signature_from_text(text);
-        assert_eq!(sig, "procedure GetValue(): Decimal");
-    }
-
-    #[test]
     fn render_outline_empty_object() {
         let entry = SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Codeunit,
             id: 50100,
             name: "Empty CU".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "pkg".to_string(),
-            methods: Vec::new(),
-            fields: Vec::new(),
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         };
 
         let outline = render_outline(&entry);
@@ -1224,30 +1399,125 @@ mod tests {
     }
 
     #[test]
-    fn extract_signature_no_parens_falls_back_to_first_line() {
-        let text = "trigger OnInsert\nbegin\nend;";
-        let sig = extract_signature_from_text(text);
-        assert_eq!(sig, "trigger OnInsert");
+    /// The signature cases the deleted `extract_signature_from_text` covered,
+    /// now asserted against the node-based `member_signature` that replaced it
+    /// — plus the attributed procedure the text scan got wrong.
+    fn member_signatures_cover_the_shapes_a_text_scan_used_to() {
+        let signature = |source: &str, name: &str| {
+            member_outlines(source)
+                .into_iter()
+                .find(|outline| outline.name == name)
+                .unwrap_or_else(|| panic!("no member named {name} in:\n{source}"))
+                .signature
+        };
+
+        let source = "table 50100 \"Ship Log\"\n\
+                      {\n\
+                      \x20   trigger OnInsert()\n\
+                      \x20   begin\n\
+                      \x20   end;\n\
+                      \n\
+                      \x20   procedure GetValue(): Decimal\n\
+                      \x20   begin\n\
+                      \x20   end;\n\
+                      \n\
+                      \x20   procedure Foo(a: Integer)\n\
+                      \x20   begin\n\
+                      \x20   end;\n\
+                      \n\
+                      \x20   [EventSubscriber(ObjectType::Codeunit, Codeunit::\"Sales-Post\", 'OnAfterPost', '', false, false)]\n\
+                      \x20   local procedure HandlePost(var SalesHeader: Record \"Sales Header\")\n\
+                      \x20   begin\n\
+                      \x20   end;\n\
+                      }\n";
+
+        assert_eq!(signature(source, "OnInsert"), "trigger OnInsert()");
+        assert_eq!(
+            signature(source, "GetValue"),
+            "procedure GetValue(): Decimal"
+        );
+        assert_eq!(signature(source, "Foo"), "procedure Foo(a: Integer)");
+        assert_eq!(
+            signature(source, "HandlePost"),
+            "procedure HandlePost(var SalesHeader: Record \"Sales Header\")",
+            "the attribute's argument list is not the signature"
+        );
+        assert!(
+            member_outlines("").is_empty(),
+            "empty source has no members"
+        );
+    }
+
+    /// `source` answers with either shape, and the CLI's response contract
+    /// checks `source_availability` on both. A camelCase rename here made
+    /// `--list-procedures` fail that check at runtime.
+    #[test]
+    fn member_list_spells_source_availability_the_way_source_does() {
+        let list = MemberList {
+            k: ObjectKind::Codeunit,
+            id: 80,
+            n: "Sales-Post".to_string(),
+            pkg: Some("Base Application".to_string()),
+            source_availability: SourceAvailability::EmbeddedSource,
+            members: Vec::new(),
+            total: 0,
+        };
+        let value = serde_json::to_value(&list).expect("serializable");
+        assert!(
+            value.get("source_availability").is_some(),
+            "wire name must match SourceResult: {value}"
+        );
+        assert!(value.get("sourceAvailability").is_none());
     }
 
     #[test]
-    fn extract_signature_strips_trailing_semicolon_on_return_type() {
-        let text = "procedure GetValue(): Decimal;\nbegin\nend;";
-        let sig = extract_signature_from_text(text);
-        assert_eq!(sig, "procedure GetValue(): Decimal");
+    fn member_outlines_carry_signatures_and_line_ranges_without_bodies() {
+        let source = "codeunit 50100 Helper\n{\n    procedure Alpha()\n    begin\n    end;\n\n    trigger OnRun()\n    begin\n    end;\n}\n";
+        let outlines = member_outlines(source);
+        assert_eq!(outlines.len(), 2, "{outlines:?}");
+        assert_eq!(outlines[0].name, "Alpha");
+        assert_eq!(outlines[0].kind, "procedure");
+        assert_eq!(outlines[0].signature, "procedure Alpha()");
+        assert_eq!(outlines[0].start_line, 3);
+        assert_eq!(outlines[0].end_line, 5);
+        assert_eq!(outlines[1].kind, "trigger");
+        assert!(
+            !outlines
+                .iter()
+                .any(|outline| outline.signature.contains("begin")),
+            "a signature must not carry the body: {outlines:?}"
+        );
     }
 
     #[test]
-    fn extract_signature_empty_input_returns_empty() {
-        let sig = extract_signature_from_text("");
-        assert_eq!(sig, "");
+    fn member_candidates_offer_close_names_then_fall_back_to_the_first_few() {
+        let source = "codeunit 80 \"Sales-Post\"\n{\n    procedure RunWithCheck()\n    begin\n    end;\n\n    procedure PostSalesLines()\n    begin\n    end;\n}\n";
+        assert_eq!(
+            member_candidates(source, "PostSalesDoc"),
+            vec!["PostSalesLines".to_string()],
+            "the shared prefix must win"
+        );
+        assert_eq!(
+            member_candidates(source, "zzzz").len(),
+            2,
+            "nothing close means offer what there is"
+        );
     }
 
+    /// `OnAfterPostSalesDocc` is one letter off; the first eight names of a
+    /// several-hundred-procedure codeunit were offered instead.
     #[test]
-    fn extract_signature_no_return_type_after_close_paren() {
-        let text = "procedure Foo(a: Integer) // comment\nbegin\nend;";
-        let sig = extract_signature_from_text(text);
-        assert_eq!(sig, "procedure Foo(a: Integer)");
+    fn a_one_letter_typo_offers_the_name_it_meant() {
+        let names = [
+            "RunWithCheck",
+            "CopyToTempLines",
+            "OnAfterPostSalesDoc",
+            "PostItemLine",
+        ];
+        assert_eq!(
+            closest_names(names.into_iter(), "OnAfterPostSalesDocc"),
+            vec!["OnAfterPostSalesDoc".to_string()]
+        );
     }
 
     #[test]
@@ -1411,22 +1681,11 @@ mod tests {
         table.kind = ObjectKind::Table;
         table.id = 27;
         let codeunit = SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Codeunit,
             id: 99,
             name: "Item".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Base Application".to_string(),
-            methods: Vec::new(),
-            fields: Vec::new(),
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         };
         ws.symbols.add_entries_owned(vec![table, codeunit]);
 
@@ -1524,6 +1783,215 @@ mod tests {
             source(&ws, "Workspace Source", None, None, procedure("OnInsert")),
             Err(SourceLookupError::MemberNotFound { .. })
         ));
+    }
+
+    const TWO_TABLES: &str = r#"table 50100 "Shipment Header"
+{
+    fields { field(1; "No."; Code[20]) { } }
+
+    procedure HeaderWork()
+    begin
+    end;
+}
+
+table 50101 "Shipment Line"
+{
+    fields { field(1; "Line No."; Integer) { } }
+
+    procedure LineWork()
+    begin
+    end;
+}
+"#;
+
+    /// AL escapes an embedded `"` in a quoted name by doubling it, so
+    /// `"Do ""It"" Now"` names the procedure `Do "It" Now`. Stripping quote
+    /// runs yields `Do ""It"" Now` with its outer quotes gone but the doubling
+    /// left in, which matches neither the symbol index nor another occurrence.
+    #[test]
+    fn source_finds_a_member_whose_name_contains_an_escaped_quote() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/project/Quoted.al"),
+            "codeunit 50100 \"Quoted CU\"\n\
+             {\n\
+             \x20   procedure \"Do \"\"It\"\" Now\"()\n\
+             \x20   begin\n\
+             \x20   end;\n\
+             }\n"
+            .to_string(),
+        );
+
+        let result = source(&ws, "Quoted CU", None, None, procedure("Do \"It\" Now"))
+            .expect("the doubled quote is an escape, not part of the name");
+        assert_eq!(result.proc_name.as_deref(), Some("Do \"It\" Now"));
+    }
+
+    /// The grammar nests attributes inside `procedure_declaration`, so a text
+    /// scan for the first balanced `(...)` found the attribute's argument list
+    /// and reported `[EventSubscriber(...` as the signature.
+    #[test]
+    fn source_reports_the_signature_of_an_attributed_procedure() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/project/Sub.al"),
+            r#"codeunit 50100 "Ship Sub"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Sales-Post", 'OnAfterPost', '', false, false)]
+    local procedure MyHandler(var SalesHeader: Record "Sales Header")
+    begin
+    end;
+
+    procedure Total(Amount: Decimal) Result: Decimal
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+
+        let handler = source(&ws, "Ship Sub", None, None, procedure("MyHandler"))
+            .expect("attributed procedure");
+        assert_eq!(
+            handler.sig.as_deref(),
+            Some("procedure MyHandler(var SalesHeader: Record \"Sales Header\")")
+        );
+
+        let total = source(&ws, "Ship Sub", None, None, procedure("Total"))
+            .expect("return-typed procedure");
+        assert_eq!(
+            total.sig.as_deref(),
+            Some("procedure Total(Amount: Decimal) Result: Decimal")
+        );
+    }
+
+    #[test]
+    fn source_returns_the_named_object_in_a_multi_object_file() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/project/Shipment.al"),
+            TWO_TABLES.to_string(),
+        );
+
+        let header = source(&ws, "Shipment Header", None, None, None).expect("first object");
+        assert_eq!(header.id, 50100);
+        assert!(header.code.starts_with("table 50100"));
+        assert!(
+            !header.code.contains("Shipment Line"),
+            "the first object's source must stop before the second"
+        );
+
+        let line = source(&ws, "Shipment Line", None, None, None).expect("second object");
+        assert_eq!(line.id, 50101, "the second object reports its own id");
+        assert_eq!(line.n, "Shipment Line");
+        assert!(line.code.starts_with("table 50101"));
+        assert!(
+            !line.code.contains("Shipment Header"),
+            "the second object's source must not include the first"
+        );
+    }
+
+    #[test]
+    fn source_finds_a_second_object_of_a_different_kind() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/project/Setup.al"),
+            r#"table 50110 "Ship Setup"
+{
+    fields { field(1; "Primary Key"; Code[10]) { } }
+}
+
+page 50110 "Ship Setup Card"
+{
+    PageType = Card;
+    SourceTable = "Ship Setup";
+
+    procedure Refresh()
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+
+        let page = source(&ws, "Ship Setup Card", None, None, None)
+            .expect("a page declared after a table is still findable");
+        assert_eq!(page.k, ObjectKind::Page);
+        assert_eq!(page.id, 50110);
+
+        let filtered = source(&ws, "Ship Setup Card", Some(ObjectKind::Page), None, None)
+            .expect("an explicit --kind page must not drop the candidate");
+        assert_eq!(filtered.k, ObjectKind::Page);
+
+        let table = source(&ws, "Ship Setup", Some(ObjectKind::Table), None, None)
+            .expect("the table is still findable by its own kind");
+        assert_eq!(table.k, ObjectKind::Table);
+    }
+
+    /// `SourceRange.f` documents a relative path. Two merged changes gave it
+    /// two spellings: the whole-object exit wrote the absolute path, which put
+    /// the developer's filesystem layout into an answer MCP hands to an agent,
+    /// and the member exit wrote the bare file name, which cannot locate the
+    /// file in a project with two `Shipment.al` files.
+    #[test]
+    fn source_reports_one_project_relative_path_from_both_exits() {
+        let ws = al_workspace::Workspace::new();
+        std::fs::create_dir_all("/tmp/al-source-range-test/src").ok();
+        std::fs::write("/tmp/al-source-range-test/app.json", "{}").ok();
+        let path = PathBuf::from("/tmp/al-source-range-test/src/Shipment.al");
+        ws.file_index.add_file(
+            path.clone(),
+            r#"codeunit 50100 "Shipment Helper"
+{
+    procedure Stamp()
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+
+        let object = source(&ws, "Shipment Helper", None, None, None).expect("the object");
+        let member = source(
+            &ws,
+            "Shipment Helper",
+            None,
+            None,
+            Some(SourceMember {
+                kind: SourceMemberKind::Procedure,
+                name: "Stamp",
+            }),
+        )
+        .expect("the member");
+
+        let object_path = object.range.expect("object range").f;
+        let member_path = member.range.expect("member range").f;
+        assert_eq!(object_path, member_path, "one spelling from both exits");
+        assert_eq!(
+            object_path, "src/Shipment.al",
+            "the path is relative to the app root"
+        );
+    }
+
+    #[test]
+    fn source_member_lookup_is_scoped_to_the_named_object() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/project/Shipment.al"),
+            TWO_TABLES.to_string(),
+        );
+
+        let line_member = source(&ws, "Shipment Line", None, None, procedure("LineWork"))
+            .expect("the second object's own procedure");
+        assert!(line_member.code.contains("procedure LineWork"));
+
+        assert!(
+            matches!(
+                source(&ws, "Shipment Line", None, None, procedure("HeaderWork")),
+                Err(SourceLookupError::MemberNotFound { .. })
+            ),
+            "a procedure of the sibling object is not a member of this one"
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@
 
 use super::super::{
     ensure_document, file_not_found, file_uri_from_params, invalid_params, optional_bool_param,
-    require_document_text, require_project_root, rpc_error,
+    read_document_from_params, require_document_text, require_project_root, rpc_error,
 };
 use super::build::write_al_file_and_refresh;
 use super::serialized_response;
@@ -63,10 +63,9 @@ pub(in crate::server::daemon) async fn dispatch_lint(
         };
     }
 
-    let uri = match file_uri_from_params(params) {
-        Ok(Some(uri)) => uri,
-        Ok(None) => return invalid_params(id),
-        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
     };
     let _text = match require_document_text(workspace, &uri, id).await {
         Ok(t) => t,
@@ -104,9 +103,9 @@ pub(in crate::server::daemon) async fn dispatch_format(
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
 
-    let file_uri = match file_uri_from_params(params) {
+    let file_uri = match file_uri_from_params(workspace, params) {
         Ok(file_uri) => file_uri,
-        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+        Err(rejection) => return rejection.into_response(id),
     };
     if params.get("content").is_some() && file_uri.is_some() {
         return rpc_error(
@@ -188,7 +187,7 @@ pub(in crate::server::daemon) async fn dispatch_format(
                 }
             };
             if changed {
-                if let Err(e) = tokio::task::block_in_place(|| {
+                if let Err(e) = crate::server::daemon::blocking(|| {
                     write_al_file_and_refresh(workspace, &path, formatted.clone())
                 }) {
                     return rpc_error(
@@ -245,9 +244,9 @@ pub(in crate::server::daemon) fn dispatch_fix(
         }
     }
 
-    let file_uri = match file_uri_from_params(params) {
+    let file_uri = match file_uri_from_params(workspace, params) {
         Ok(uri) => uri,
-        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+        Err(rejection) => return rejection.into_response(id),
     };
     let targets = if let Some(uri) = file_uri {
         let path = match uri.to_file_path() {
@@ -260,9 +259,9 @@ pub(in crate::server::daemon) fn dispatch_fix(
             Ok(root) => root,
             Err(response) => return response,
         };
-        let paths = match al_analysis::queries::bulk_fix::collect_al_files(&root) {
+        let paths = match al_source::file_index::collect_al_files(&root) {
             Ok(paths) => paths,
-            Err(error) => return rpc_error(id, error_codes::INTERNAL_ERROR, &error),
+            Err(error) => return super::scan_error_response(id, &error),
         };
         let mut targets = Vec::with_capacity(paths.len());
         for path in paths {
@@ -557,14 +556,10 @@ pub(in crate::server::daemon) fn dispatch_parse(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let uri = match file_uri_from_params(params) {
-        Ok(Some(uri)) => uri,
-        Ok(None) => return invalid_params(id),
-        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
+        Ok(document) => document,
+        Err(response) => return response,
     };
-    if let Err(response) = ensure_document(workspace, &uri, id) {
-        return response;
-    }
 
     let Some(text) = workspace.documents.get_text(&uri) else {
         return file_not_found(id);
@@ -612,13 +607,7 @@ pub(in crate::server::daemon) fn dispatch_fix_application_area(
 
     let plan = match al_analysis::queries::bulk_fix::plan_application_area(&project_root, value) {
         Ok(plan) => plan,
-        Err(error) => {
-            return rpc_error(
-                id,
-                error_codes::CODE_ANALYSIS_ERROR,
-                &format!("application-area fix planning failed: {error}"),
-            );
-        }
+        Err(error) => return bulk_fix_error_response(id, "application-area", &error),
     };
     apply_bulk_fix_plan(workspace, id, plan, dry_run, "application-area")
 }
@@ -693,13 +682,7 @@ pub(in crate::server::daemon) fn dispatch_fix_tooltips(
 
     let plan = match al_analysis::queries::bulk_fix::plan_tooltips(&project_root, &tooltips) {
         Ok(plan) => plan,
-        Err(error) => {
-            return rpc_error(
-                id,
-                error_codes::CODE_ANALYSIS_ERROR,
-                &format!("tooltip fix planning failed: {error}"),
-            );
-        }
+        Err(error) => return bulk_fix_error_response(id, "tooltip", &error),
     };
     apply_bulk_fix_plan(workspace, id, plan, dry_run, "tooltip")
 }
@@ -724,15 +707,31 @@ pub(in crate::server::daemon) fn dispatch_fix_data_classification(
     let plan = match al_analysis::queries::bulk_fix::plan_data_classification(&project_root, value)
     {
         Ok(plan) => plan,
-        Err(error) => {
-            return rpc_error(
-                id,
-                error_codes::CODE_ANALYSIS_ERROR,
-                &format!("data-classification fix planning failed: {error}"),
-            );
-        }
+        Err(error) => return bulk_fix_error_response(id, "data-classification", &error),
     };
     apply_bulk_fix_plan(workspace, id, plan, dry_run, "data-classification")
+}
+
+/// A planning failure, coded by whose problem it is: a bad value or a
+/// workspace over the scan limits is the caller's to change
+/// (`INVALID_PARAMS`), a disk fault is internal, and source the fix cannot
+/// change safely is a code-analysis error. All three were
+/// `CODE_ANALYSIS_ERROR` while the plan returned a String.
+fn bulk_fix_error_response(
+    id: u64,
+    fix: &str,
+    error: &al_analysis::queries::bulk_fix::BulkFixError,
+) -> Response {
+    use al_analysis::queries::bulk_fix::BulkFixError;
+    match error {
+        BulkFixError::Scan(scan) => super::scan_error_response(id, scan),
+        BulkFixError::InvalidInput(message) => rpc_error(id, error_codes::INVALID_PARAMS, message),
+        BulkFixError::Refused(message) => rpc_error(
+            id,
+            error_codes::CODE_ANALYSIS_ERROR,
+            &format!("{fix} fix planning failed: {message}"),
+        ),
+    }
 }
 
 fn apply_bulk_fix_plan(
@@ -744,7 +743,7 @@ fn apply_bulk_fix_plan(
 ) -> Response {
     let result = plan.result(dry_run);
     if dry_run {
-        return serialized_response(id, &format!("{label} fix result"), &result);
+        return serialized_response(id, &result, &format!("{label} fix result"));
     }
 
     for change in &plan.changes {
@@ -812,7 +811,7 @@ fn apply_bulk_fix_plan(
         }
         applied.push((change.path.clone(), change.original.clone()));
     }
-    serialized_response(id, &format!("{label} fix result"), &result)
+    serialized_response(id, &result, &format!("{label} fix result"))
 }
 
 fn property_value_param<'a>(
@@ -926,6 +925,14 @@ mod tests {
         Workspace::new()
     }
 
+    /// A workspace rooted at `tmp`, so the `file`/`uri` parameters below fall
+    /// inside the project boundary the dispatchers enforce.
+    fn ws_at(tmp: &tempfile::TempDir) -> Workspace {
+        let workspace = Workspace::new();
+        crate::server::daemon::set_test_project_root(&workspace, tmp.path());
+        workspace
+    }
+
     /// Open a real `.al` file on disk and return its `file://` URI string,
     /// suitable for the `{ "file": ... }` param shape the dispatchers accept.
     /// The file must exist because `file_uri_from_params` canonicalises it.
@@ -933,6 +940,28 @@ mod tests {
         let path = tmp.path().join(name);
         std::fs::write(&path, content).unwrap();
         path.canonicalize().unwrap().to_string_lossy().to_string()
+    }
+
+    /// `dispatch_format` called `block_in_place` directly, which panics and
+    /// aborts on a current-thread runtime — what a plain `#[tokio::test]` and
+    /// any single-threaded embedder give it. The write path must survive one.
+    #[test]
+    fn format_writes_the_file_on_a_current_thread_runtime() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let ws = ws_at(&tmp);
+            let file = write_al(
+                &tmp,
+                "Fmt.al",
+                "codeunit 50100 Fmt\n{\n      procedure X() begin end;\n}\n",
+            );
+            let response = dispatch_format(&ws, 1, &serde_json::json!({ "file": file })).await;
+            assert!(response.error.is_none(), "{:?}", response.error);
+        });
     }
 
     #[tokio::test]
@@ -945,8 +974,8 @@ mod tests {
 
     #[tokio::test]
     async fn lint_single_file_reports_parse_errors() {
-        let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_at(&tmp);
         // Deliberately malformed AL — unterminated object.
         let file = write_al(&tmp, "Bad.al", "codeunit 50100 \"Bad\" { procedure X( ");
         let resp = dispatch_lint(&ws, 2, &serde_json::json!({ "file": file })).await;
@@ -1020,6 +1049,7 @@ mod tests {
             packages_dir: tmp.path().join(".alpackages"),
             packages: Vec::new(),
             server_configs: Vec::new(),
+            launch_config_error: None,
         });
 
         let response = dispatch_arch_lint(&workspace, 4).await;
@@ -1136,8 +1166,8 @@ mod tests {
 
     #[test]
     fn fix_reports_zero_fixes_for_clean_file() {
-        let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_at(&tmp);
         let file = write_al(&tmp, "Ok.al", "codeunit 50100 \"Ok\"\n{\n}\n");
         let resp = dispatch_fix(&ws, 2, &serde_json::json!({ "file": file, "dryRun": true }));
         assert!(resp.error.is_none(), "{:?}", resp.error);
@@ -1148,8 +1178,8 @@ mod tests {
 
     #[test]
     fn fix_dry_run_reports_edit_and_apply_updates_workspace_and_disk() {
-        let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_at(&tmp);
         let source = r#"table 50100 "Fix Me"
 {
     fields
@@ -1198,8 +1228,8 @@ mod tests {
 
     #[test]
     fn fix_rejects_unknown_rule_instead_of_reporting_false_zero() {
-        let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_at(&tmp);
         let file = write_al(&tmp, "Fix.al", "codeunit 50100 X { }\n");
         let response = dispatch_fix(
             &ws,
@@ -1240,8 +1270,8 @@ mod tests {
 
     #[test]
     fn parse_reports_node_count_and_errors() {
-        let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_at(&tmp);
         let file = write_al(&tmp, "P.al", "codeunit 50100 \"P\"\n{\n}\n");
         let resp = dispatch_parse(&ws, 2, &serde_json::json!({ "file": file }));
         assert!(resp.error.is_none());
@@ -1249,5 +1279,30 @@ mod tests {
         let nodes = r["nodeCount"].as_u64().expect("nodeCount");
         assert!(nodes > 0, "a non-empty file must parse to >0 nodes");
         assert!(r.get("parseErrors").is_some());
+    }
+
+    #[test]
+    fn a_bulk_fix_failure_is_coded_by_whose_problem_it_is() {
+        use al_analysis::queries::bulk_fix::BulkFixError;
+        use al_source::file_index::ScanError;
+        let code = |error: BulkFixError| {
+            bulk_fix_error_response(1, "tooltip", &error)
+                .error
+                .expect("error response")
+                .code
+        };
+        assert_eq!(
+            code(BulkFixError::InvalidInput("bad".into())),
+            error_codes::INVALID_PARAMS
+        );
+        assert_eq!(
+            code(BulkFixError::Scan(ScanError::FileLimit { limit: 10 })),
+            error_codes::INVALID_PARAMS,
+            "a workspace over the scan limit is the caller's to narrow"
+        );
+        assert_eq!(
+            code(BulkFixError::Refused("malformed".into())),
+            error_codes::CODE_ANALYSIS_ERROR
+        );
     }
 }

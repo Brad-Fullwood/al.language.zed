@@ -1,3 +1,5 @@
+//! Profiler view: the loaded profile's hot procedures and their call sites.
+
 use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
@@ -156,6 +158,25 @@ impl ProfilerView {
         if path.is_empty() {
             self.status = "No file path entered".to_string();
             return;
+        }
+        // The same bound `al_bc::profiling::analyze_profile_file` enforces.
+        // Without it, typing the path of a multi-gigabyte file froze the TUI
+        // on its single thread with no redraw and no way to cancel, then
+        // OOMed — the one safeguard this port did not carry over.
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.len() > al_types::MAX_PROFILE_FILE_BYTES => {
+                self.status = format!(
+                    "Profile is {} bytes, over the {} byte limit",
+                    metadata.len(),
+                    al_types::MAX_PROFILE_FILE_BYTES
+                );
+                return;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                self.status = format!("Cannot read file: {e}");
+                return;
+            }
         }
         let data = match std::fs::read(&path) {
             Ok(d) => d,

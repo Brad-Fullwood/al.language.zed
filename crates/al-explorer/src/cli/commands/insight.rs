@@ -1,6 +1,9 @@
+//! `al-explorer` insight subcommands: event traces, call graphs, entry points,
+//! dead code and impact reports, printed as tables or raw JSON.
+
 use std::process::ExitCode;
 
-use super::{connect, print_json, report_error, request_checked, run_command};
+use super::{connect, list_rows, print_json, report_error, request_checked, run_command};
 
 pub fn cmd_trace(event: &str, depth: usize, tree: bool, json: bool) -> ExitCode {
     if tree {
@@ -16,7 +19,7 @@ pub fn cmd_trace(event: &str, depth: usize, tree: bool, json: bool) -> ExitCode 
         Ok(result) => {
             if json {
                 print_json(&result);
-            } else if let Some(steps) = result.as_array() {
+            } else if let Some(steps) = list_rows(&result).as_array() {
                 if steps.is_empty() {
                     // be explicit when the input isn't an event rather
                     // than silently printing nothing.
@@ -47,7 +50,7 @@ pub fn cmd_trace(event: &str, depth: usize, tree: bool, json: bool) -> ExitCode 
 
 pub fn cmd_entrypoints(json: bool) -> ExitCode {
     run_command("entrypoints", None, json, None, |result| {
-        if let Some(entries) = result.as_array() {
+        if let Some(entries) = list_rows(result).as_array() {
             println!("Entry points ({} found):", entries.len());
             for e in entries {
                 let obj = e.get("object_name").and_then(|v| v.as_str()).unwrap_or("?");
@@ -101,6 +104,23 @@ pub fn cmd_insight_stats(json: bool) -> ExitCode {
     })
 }
 
+/// Any finding fails the `dead-code` gate.
+///
+/// Gating on high confidence alone let a workspace whose findings are all
+/// `Confidence::Medium` — what al-analysis emits for an unreferenced object —
+/// print the whole "possibly unused" table and exit 0, against the contract in
+/// `Docs/reference/cli-commands.md`.
+pub(crate) fn dead_code_exit_code(result: &serde_json::Value) -> ExitCode {
+    let empty = list_rows(result)
+        .as_array()
+        .is_none_or(|findings| findings.is_empty());
+    if empty {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
 pub fn cmd_dead_code(json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
@@ -109,18 +129,11 @@ pub fn cmd_dead_code(json: bool) -> ExitCode {
 
     match request_checked(&mut client, "deadCode", None) {
         Ok(result) => {
-            let has_high_confidence = result.as_array().is_some_and(|findings| {
-                findings.iter().any(|finding| {
-                    finding
-                        .get("confidence")
-                        .and_then(|value| value.as_str())
-                        .is_some_and(|confidence| confidence.eq_ignore_ascii_case("high"))
-                })
-            });
+            let exit = dead_code_exit_code(&result);
             if json {
                 print_json(&result);
             } else {
-                let unused = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+                let unused = list_rows(&result).as_array().map(|v| &v[..]).unwrap_or(&[]);
                 if unused.is_empty() {
                     println!("No dead code found.");
                 } else {
@@ -177,11 +190,7 @@ pub fn cmd_dead_code(json: bool) -> ExitCode {
                     );
                 }
             }
-            if has_high_confidence {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            }
+            exit
         }
         Err(e) => report_error(&e, json),
     }
@@ -296,13 +305,13 @@ fn cmd_table_impact(table: &str, json: bool) -> ExitCode {
                         println!("  {kind} {oname}");
                         if let Some(impacts) = obj.get("impacts").and_then(|v| v.as_array()) {
                             for imp in impacts {
-                                let op =
+                                let operation =
                                     imp.get("operation").and_then(|v| v.as_str()).unwrap_or("?");
                                 let hint = imp
                                     .get("locationHint")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("");
-                                println!("      [{op}] {hint}");
+                                println!("      [{operation}] {hint}");
                             }
                         }
                     }
@@ -415,12 +424,16 @@ pub fn cmd_intercept(json: bool) -> ExitCode {
                             .unwrap_or(0);
                         println!("  {pubobj}::{ename}  ({count} subscriber(s))");
                         if let Some(subs) = ev.get("subscribers").and_then(|v| v.as_array()) {
-                            for s in subs {
-                                let so =
-                                    s.get("objectName").and_then(|v| v.as_str()).unwrap_or("?");
-                                let sm =
-                                    s.get("methodName").and_then(|v| v.as_str()).unwrap_or("?");
-                                println!("      <- {so}.{sm}");
+                            for subscriber in subs {
+                                let sub_object = subscriber
+                                    .get("objectName")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("?");
+                                let sub_method = subscriber
+                                    .get("methodName")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("?");
+                                println!("      <- {sub_object}.{sub_method}");
                             }
                         }
                     }
@@ -429,15 +442,26 @@ pub fn cmd_intercept(json: bool) -> ExitCode {
                             "\nOrphan subscribers ({}) — target an event with no workspace publisher:",
                             orphans.len()
                         );
-                        for o in orphans {
-                            let oo = o.get("objectName").and_then(|v| v.as_str()).unwrap_or("?");
-                            let om = o.get("methodName").and_then(|v| v.as_str()).unwrap_or("?");
-                            let to = o
+                        for orphan in orphans {
+                            let orphan_object = orphan
+                                .get("objectName")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?");
+                            let orphan_method = orphan
+                                .get("methodName")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?");
+                            let target_object = orphan
                                 .get("targetObject")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("?");
-                            let te = o.get("targetEvent").and_then(|v| v.as_str()).unwrap_or("?");
-                            println!("  {oo}.{om} -> {to}::{te} (missing)");
+                            let target_event = orphan
+                                .get("targetEvent")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?");
+                            println!(
+                                "  {orphan_object}.{orphan_method} -> {target_object}::{target_event} (missing)"
+                            );
                         }
                     }
                 }
@@ -445,6 +469,44 @@ pub fn cmd_intercept(json: bool) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => report_error(&e, json),
+    }
+}
+
+/// Why a suggest-event answer leaves something out.
+fn print_suggest_event_gaps(result: &serde_json::Value) {
+    if result.get("depthCut").and_then(|v| v.as_bool()) == Some(true) {
+        let depth = result
+            .get("maxDepth")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(10);
+        eprintln!(
+            "Note: the trace stops {depth} calls deep, so events further down are not \
+             listed. Start from a deeper --procedure to see them."
+        );
+    }
+    let count = result
+        .get("withoutSourceCount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    if count > 0 {
+        let names: Vec<&str> = result
+            .get("withoutSource")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str())
+            .take(5)
+            .collect();
+        let more = if count as usize > names.len() {
+            format!(" and {} more", count as usize - names.len())
+        } else {
+            String::new()
+        };
+        eprintln!(
+            "Note: {count} procedure(s) on the trace have no source loaded (package code), so \
+             the events they raise are not followed: {}{more}.",
+            names.join(", ")
+        );
     }
 }
 
@@ -560,16 +622,12 @@ pub fn cmd_suggest_event(
                     }
                 }
                 if partial {
-                    eprintln!(
-                        "Note: Some call paths are still being analyzed. Results may be incomplete."
-                    );
+                    print_suggest_event_gaps(&result);
                 }
             }
-            if partial {
-                ExitCode::from(75)
-            } else {
-                ExitCode::SUCCESS
-            }
+            // A cut trace is the whole answer to this query, not a transient
+            // state: retrying gives the same result, so it is not exit 75.
+            ExitCode::SUCCESS
         }
         Err(e) => report_error(&e, json),
     }

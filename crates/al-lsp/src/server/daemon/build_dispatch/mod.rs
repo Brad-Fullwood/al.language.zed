@@ -4,6 +4,7 @@
 mod build;
 mod codegen;
 mod fixes;
+mod free_ids;
 mod symbols_auth;
 mod tests_dispatch;
 mod xliff;
@@ -11,50 +12,113 @@ mod xliff;
 pub(super) use build::*;
 pub(super) use codegen::*;
 pub(super) use fixes::*;
+pub(super) use free_ids::*;
 pub(super) use symbols_auth::*;
 pub(super) use tests_dispatch::*;
 pub(super) use xliff::*;
 
 use super::rpc_error;
+// One helper, in `daemon/mod.rs`. This module used to declare a second with the
+// same name and its last two arguments swapped, and because both are generic
+// over `Serialize` and `&str` is `Serialize`, moving a dispatcher between the
+// two modules compiled and answered with the label.
+pub(super) use super::serialized_response;
 use al_protocol::jsonrpc::{error_codes, Response};
 use al_workspace::Workspace;
 
 pub(super) const ERR_INITIALIZING: &str = "Workspace is initializing, try again";
 pub(super) const ERR_NO_PROJECT: &str = "No project loaded";
 
-fn serialized_response<T: serde::Serialize>(id: u64, label: &str, value: &T) -> Response {
-    match serde_json::to_value(value) {
-        Ok(value) => Response {
-            id,
-            result: Some(value),
-            error: None,
-            ..Default::default()
-        },
-        Err(error) => rpc_error(
-            id,
-            error_codes::INTERNAL_ERROR,
-            &format!("serialize {label} failed: {error}"),
-        ),
-    }
+/// Response for a workspace scan that failed.
+///
+/// The three limit variants are something the caller can act on by narrowing
+/// the workspace or raising the limit, so they get `INVALID_PARAMS`. The rest
+/// are disk faults the caller cannot do anything about.
+pub(crate) fn scan_error_response(id: u64, error: &al_source::file_index::ScanError) -> Response {
+    use al_source::file_index::ScanError;
+    let code = match error {
+        ScanError::FileLimit { .. }
+        | ScanError::FileTooLarge { .. }
+        | ScanError::WorkspaceTooLarge { .. } => error_codes::INVALID_PARAMS,
+        _ => error_codes::INTERNAL_ERROR,
+    };
+    rpc_error(id, code, &error.to_string())
 }
 
 pub(super) fn dispatch_obsolete(workspace: &Workspace, id: u64) -> Response {
     match al_analysis::queries::obsolescence::obsolescence_timeline(workspace) {
-        Ok(entries) => serialized_response(id, "obsolescence timeline", &entries),
+        Ok(entries) => serialized_response(id, &entries, "obsolescence timeline"),
         Err(error) => rpc_error(id, error_codes::INTERNAL_ERROR, &error.to_string()),
+    }
+}
+
+/// Calls in the workspace to procedures that are obsolete: the question a
+/// developer asks before an upgrade, where `obsolete` lists every pending
+/// obsoletion in every loaded package (1,553 for Base Application 26).
+pub(super) fn dispatch_obsolete_usages(workspace: &Workspace, id: u64) -> Response {
+    // Parses every workspace source; keep it off the async workers.
+    match super::blocking(|| al_analysis::queries::obsolete_usage::obsolete_usages(workspace)) {
+        Ok(findings) => serialized_response(id, &findings, "obsolete usages"),
+        Err(error) => rpc_error(id, error_codes::INTERNAL_ERROR, &error.to_string()),
+    }
+}
+
+/// Diff two versions of a dependency and keep the changes the workspace uses.
+///
+/// Both packages are read by the daemon, inside the same boundary as every
+/// other path parameter: sending Base Application's symbols over the socket
+/// twice would be tens of megabytes.
+pub(super) fn dispatch_package_diff(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    let path = |key: &str| -> Result<std::path::PathBuf, String> {
+        let requested = params
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("Missing '{key}': the path of a .app package"))?;
+        super::containment::resolve_within_project(workspace, std::path::Path::new(requested))
+            .map_err(|message| format!("'{key}' {message}"))
+    };
+    let (from, to) = match (path("from"), path("to")) {
+        (Ok(from), Ok(to)) => (from, to),
+        (Err(message), _) | (_, Err(message)) => {
+            return rpc_error(id, error_codes::INVALID_PARAMS, &message);
+        }
+    };
+    let include_unused = params
+        .get("all")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let report = super::blocking(|| {
+        let read = |path: &std::path::Path| {
+            al_symbols::app_reader::read_app_file(path)
+                .map_err(|error| format!("could not read {}: {error}", path.display()))
+        };
+        let from = read(&from)?;
+        let to = read(&to)?;
+        al_analysis::queries::package_diff::package_diff(workspace, &from, &to, include_unused)
+            .map_err(|error| error.to_string())
+    });
+    match report {
+        Ok(report) => serialized_response(id, &report, "package diff"),
+        Err(message) => rpc_error(id, error_codes::CODE_ANALYSIS_ERROR, &message),
     }
 }
 
 pub(super) fn dispatch_audit_data_classification(workspace: &Workspace, id: u64) -> Response {
     match al_analysis::queries::audit::data_classification_audit(workspace) {
-        Ok(entries) => serialized_response(id, "data-classification audit", &entries),
+        Ok(entries) => serialized_response(id, &entries, "data-classification audit"),
         Err(error) => rpc_error(id, error_codes::INTERNAL_ERROR, &error.to_string()),
     }
 }
 
 pub(super) fn dispatch_permission_set_audit(workspace: &Workspace, id: u64) -> Response {
     match al_analysis::queries::audit::permission_set_audit(workspace) {
-        Ok(entries) => serialized_response(id, "permission-set audit", &entries),
+        Ok(entries) => serialized_response(id, &entries, "permission-set audit"),
         Err(error) => rpc_error(id, error_codes::INTERNAL_ERROR, &error.to_string()),
     }
 }
@@ -194,7 +258,8 @@ fn current_workspace_symbols(
     workspace: &Workspace,
     project: &al_project::project::AlProject,
 ) -> Result<Vec<al_symbols::SymbolEntry>, String> {
-    let paths = al_analysis::queries::bulk_fix::collect_al_files(&project.root)?;
+    let paths = al_source::file_index::collect_al_files(&project.root)
+        .map_err(|error| error.to_string())?;
     let mut objects = Vec::new();
     for path in paths {
         let uri = url::Url::from_file_path(&path)
@@ -260,29 +325,14 @@ fn current_workspace_symbols(
 }
 
 /// Run the whole-workspace public-surface scan off the async executor.
-///
-/// `block_in_place` panics outright on a current-thread runtime (unit tests and
-/// any embedder that drives the dispatcher from one), so guard it exactly like
-/// `ensure_document` does instead of crashing the process on a `breaking` or
-/// `upgrade` request.
 fn scan_current_workspace_symbols(
     workspace: &Workspace,
 ) -> Result<Vec<al_symbols::SymbolEntry>, String> {
-    // Resolve the project *before* entering `block_in_place` so the lock wait
-    // never nests inside it.
+    // Resolve the project *before* entering `blocking` so the lock wait never
+    // nests inside `block_in_place`.
     let project = super::project_state_with_wait(workspace, |project| project.cloned())?
         .ok_or_else(|| ERR_NO_PROJECT.to_string())?;
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle)
-            if matches!(
-                handle.runtime_flavor(),
-                tokio::runtime::RuntimeFlavor::MultiThread
-            ) =>
-        {
-            tokio::task::block_in_place(|| current_workspace_symbols(workspace, &project))
-        }
-        _ => current_workspace_symbols(workspace, &project),
-    }
+    super::blocking(|| current_workspace_symbols(workspace, &project))
 }
 
 pub(super) async fn dispatch_breaking_changes(
@@ -304,7 +354,7 @@ pub(super) async fn dispatch_breaking_changes(
         Ok(changes) => changes,
         Err(error) => return rpc_error(id, error_codes::CODE_ANALYSIS_ERROR, &error),
     };
-    serialized_response(id, "breaking-change report", &changes)
+    serialized_response(id, &changes, "breaking-change report")
 }
 
 pub(super) fn dispatch_find_duplicates(
@@ -349,7 +399,7 @@ pub(super) fn dispatch_find_duplicates(
         },
     };
     match al_analysis::queries::duplicates::find_duplicates(workspace, min_tokens, min_similarity) {
-        Ok(duplicates) => serialized_response(id, "duplicate report", &duplicates),
+        Ok(duplicates) => serialized_response(id, &duplicates, "duplicate report"),
         Err(
             error @ (al_analysis::queries::duplicates::DuplicateError::InvalidMinTokens { .. }
             | al_analysis::queries::duplicates::DuplicateError::InvalidMinSimilarity {
@@ -377,7 +427,7 @@ pub(super) async fn dispatch_upgrade_report(
         Ok(issues) => issues,
         Err(error) => return rpc_error(id, error_codes::CODE_ANALYSIS_ERROR, &error),
     };
-    serialized_response(id, "upgrade report", &issues)
+    serialized_response(id, &issues, "upgrade report")
 }
 
 pub(super) fn dispatch_sql_patterns(
@@ -386,7 +436,7 @@ pub(super) fn dispatch_sql_patterns(
     _params: &serde_json::Value,
 ) -> Response {
     match al_analysis::queries::sql_patterns::detect_sql_patterns(workspace) {
-        Ok(findings) => serialized_response(id, "SQL-pattern report", &findings),
+        Ok(findings) => serialized_response(id, &findings, "SQL-pattern report"),
         Err(error) => rpc_error(id, error_codes::INTERNAL_ERROR, &error.to_string()),
     }
 }
@@ -403,6 +453,45 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::empty_ws;
     use super::*;
+
+    /// Before this mapping existed, `bulk_fix::collect_al_files` erased
+    /// `ScanError` to a String and every caller reported `INTERNAL_ERROR`, so a
+    /// workspace the user can narrow looked identical to a disk fault.
+    #[test]
+    fn scan_limits_are_invalid_params_and_disk_faults_are_internal() {
+        use al_source::file_index::ScanError;
+
+        let limit = scan_error_response(1, &ScanError::FileLimit { limit: 10 });
+        assert_eq!(
+            limit.error.as_ref().map(|e| e.code),
+            Some(error_codes::INVALID_PARAMS)
+        );
+
+        let too_large = scan_error_response(
+            2,
+            &ScanError::FileTooLarge {
+                path: std::path::PathBuf::from("/project/Big.al"),
+                size: 2,
+                limit: 1,
+            },
+        );
+        assert_eq!(
+            too_large.error.as_ref().map(|e| e.code),
+            Some(error_codes::INVALID_PARAMS)
+        );
+
+        let disk_fault = scan_error_response(
+            3,
+            &ScanError::ReadDirectory {
+                path: std::path::PathBuf::from("/project"),
+                source: std::io::Error::other("disk gone"),
+            },
+        );
+        assert_eq!(
+            disk_fault.error.as_ref().map(|e| e.code),
+            Some(error_codes::INTERNAL_ERROR)
+        );
+    }
 
     /// A file without a usable AL object declaration is skipped per file
     /// (`al_analysis::workspace_sources`); it no longer takes the whole audit
@@ -503,6 +592,7 @@ mod tests {
             packages_dir: root.join(".alpackages"),
             packages,
             server_configs: Vec::new(),
+            launch_config_error: None,
         });
     }
 

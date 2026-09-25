@@ -4,7 +4,8 @@
 //! - Listens on a deterministic local endpoint
 //! - Initializes a Workspace for the given project
 //! - Accepts JSON-RPC requests and routes them to core queries
-//! - Auto-shuts down after 30 minutes of idle
+//! - Exits after 30 minutes with no connections and no running work, or as
+//!   soon as its project root stops existing
 //!
 //! # Platform support
 //!
@@ -14,9 +15,16 @@
 //! every platform.
 
 mod build_dispatch;
+mod containment;
 mod debug_dispatch;
 mod insight_dispatch;
 mod lsp_dispatch;
+mod process_memory;
+mod projection;
+mod scope;
+
+pub(crate) use projection::list_target;
+pub(crate) use scope::accepts_scope;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -51,6 +59,10 @@ fn now_activity_ms() -> u64 {
 #[cfg(unix)]
 static SOCKET_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
+/// The directory this daemon was started for, which the per-request refresh
+/// scans when the workspace has no app.json project.
+static SCAN_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
 #[cfg(unix)]
 pub(crate) fn cleanup_socket() {
     if let Some(path) = SOCKET_PATH.get() {
@@ -69,29 +81,77 @@ impl Drop for SocketCleanup {
     }
 }
 
-const IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// How long a daemon with no connections and no running work stays alive.
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Overrides [`DEFAULT_IDLE_TIMEOUT`]. `0` keeps the daemon alive until it is
+/// stopped.
+const IDLE_TIMEOUT_ENV: &str = "AL_DAEMON_IDLE_SECS";
+/// How often the lifecycle task looks at the idle clock and the project root.
+/// Both checks are two atomic loads and one `stat`, so a one-second cadence
+/// costs nothing and lets a deleted project root be noticed while the tooling
+/// that deleted it is still running.
+const LIFECYCLE_POLL: Duration = Duration::from_secs(1);
+/// How often the lifecycle task repeats a reason for not exiting.
+const SKIP_LOG_INTERVAL: Duration = Duration::from_secs(60);
+/// Consecutive polls that must find the project root missing before the daemon
+/// stops. Two polls keep a network filesystem's momentary failure from
+/// stopping a daemon whose project is still there.
+const MISSING_ROOT_POLLS: u32 = 2;
 const MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 const MAX_CONNECTIONS: usize = 64;
+/// How many requests one connection may have running at once.
+///
+/// The connection loop used to await each dispatch before reading the next
+/// line, so a `ping` pipelined behind a `tests.run` or a `downloadSymbols`
+/// waited for the long call. Requests now run as tasks; the cap keeps one
+/// client from filling the blocking pool, and reading stops until a permit
+/// frees up, which is the backpressure the sequential loop gave for free.
+const MAX_IN_FLIGHT_PER_CONNECTION: usize = 8;
 const ACCEPT_BACKOFF_START: Duration = Duration::from_millis(10);
 const ACCEPT_BACKOFF_CAP: Duration = Duration::from_secs(5);
 
-/// Create `dir` (and parents) restricted to the owner (0o700).
-///
-/// `DirBuilder::mode` applies the mode only to directories this call creates, so
-/// a dir left at a laxer mode by an earlier run (created before this hardening,
-/// or under a different umask) would keep its old permissions. We therefore
-/// re-assert 0o700 after creation, making the result independent of prior state.
+// The daemon runtime directory check lives beside the client's endpoint
+// check, so the two cannot drift: the daemon runs it before it creates the
+// socket and the client runs it before it connects. See
+// `al_protocol::endpoint`.
 #[cfg(unix)]
-fn ensure_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)?;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+use al_protocol::endpoint::ensure_private_dir;
+
+/// How long this daemon stays alive with nothing to do.
+///
+/// `explicit` is the `--idle-timeout-secs` argument. Without it the
+/// [`IDLE_TIMEOUT_ENV`] environment variable decides, and without that
+/// [`DEFAULT_IDLE_TIMEOUT`] does. `Some(0)` from either source means the
+/// daemon never exits on its own.
+fn resolve_idle_timeout(explicit: Option<Duration>) -> Option<Duration> {
+    let configured = match explicit {
+        Some(timeout) => timeout,
+        None => match std::env::var(IDLE_TIMEOUT_ENV) {
+            Err(_) => DEFAULT_IDLE_TIMEOUT,
+            Ok(raw) => match raw.trim().parse::<u64>() {
+                Ok(secs) => Duration::from_secs(secs),
+                Err(_) => {
+                    tracing::warn!(
+                        value = %raw,
+                        "daemon: {IDLE_TIMEOUT_ENV} is not a number of seconds, using the default"
+                    );
+                    DEFAULT_IDLE_TIMEOUT
+                }
+            },
+        },
+    };
+    (!configured.is_zero()).then_some(configured)
 }
 
-pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_daemon(
+    project_root: PathBuf,
+    idle_timeout: Option<Duration>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Capture the build identity before anything can overwrite the executable
+    // on disk, so a rebuild cannot make this process claim the new build.
+    let identity = al_protocol::identity::current_identity();
+    tracing::info!(build = %identity, "daemon: build identity");
+
     let endpoint = socket_path(&project_root).ok_or(
         "Cannot determine a local daemon endpoint: no per-user runtime directory is available",
     )?;
@@ -127,13 +187,40 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
     // CLI/TUI daemon clients do not send LSP initializationOptions. Merge the
     // persisted config with project-local VS Code/Zed settings so compiler
     // backend and symbol-package paths match the editor.
-    *workspace.config.write().await = al_project::config::AlConfig::load_effective(&project_root)?;
+    // Recorded before the read, so a store or settings file written while this
+    // evaluation runs is seen as a change by the next request rather than
+    // missed.
+    TRUST_INPUTS.store(
+        al_project::trust::inputs_fingerprint(&project_root),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    let evaluated = al_project::trust::evaluate(&project_root)?;
+    *workspace.config.write().await = evaluated.config;
+    if let Some(advisory) = evaluated.decision.advisory() {
+        tracing::warn!("daemon: {advisory}");
+    }
+    if let Some(advisory) = al_project::trust::enforce_dotnet_path(&project_root) {
+        tracing::warn!("daemon: {advisory}");
+    }
+    let _ = workspace.trust_advisory.set(evaluated.decision.advisory());
 
     let _ = workspace.notify_sink.set(std::sync::Arc::new(|msg: &str| {
         tracing::warn!("daemon: {msg}");
     }));
 
     initialize_daemon_workspace(&workspace, &project_root).await?;
+    let _ = SCAN_ROOT.set(project_root.clone());
+
+    // Warm the dependency AL source index and the graphs built on it now,
+    // rather than inside whichever query needs them first. The build takes
+    // about a minute on Base Application; paid here it overlaps with the
+    // agent's first few symbol queries, and `status` can report its progress
+    // from the start instead of only once something is already blocked on it.
+    let warm_workspace = Arc::clone(&workspace);
+    tokio::task::spawn_blocking(move || match warm_workspace.get_or_build_call_graph() {
+        Ok(_) => tracing::info!("daemon: dependency source index and call graph warm"),
+        Err(error) => tracing::warn!(%error, "daemon: background index warm-up failed"),
+    });
 
     // stored as millis-since-`DAEMON_EPOCH` in an AtomicU64 so
     // the hot per-connection-accept + per-dispatch update is lock-free.
@@ -148,51 +235,92 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
     let in_flight_reaper = Arc::clone(&in_flight);
     let ws_clone = Arc::clone(&workspace);
     let shutdown_idle = Arc::clone(&shutdown_signal);
+    let watched_root = project_root.clone();
+    let idle_timeout = resolve_idle_timeout(idle_timeout);
+    match idle_timeout {
+        Some(timeout) => tracing::info!(
+            idle_secs = timeout.as_secs(),
+            "daemon: will exit after this much idle time"
+        ),
+        None => tracing::info!("daemon: idle exit disabled ({IDLE_TIMEOUT_ENV}=0)"),
+    }
     let idle_timeout_handle = tokio::spawn(async move {
+        let mut missing_root_polls = 0_u32;
+        let mut last_skip_log: Option<Instant> = None;
         loop {
-            tokio::time::sleep(Duration::from_secs(60)).await;
+            tokio::time::sleep(LIFECYCLE_POLL).await;
+
+            // A project root that no longer exists cannot be served, and the
+            // work in flight for it cannot mean anything either. This is the
+            // case that left daemons for deleted git worktrees resident: the
+            // idle clock is not the thing that notices.
+            if watched_root.exists() {
+                missing_root_polls = 0;
+            } else {
+                missing_root_polls += 1;
+                if missing_root_polls >= MISSING_ROOT_POLLS {
+                    tracing::info!(
+                        project = %watched_root.display(),
+                        "daemon: project root is gone, shutting down"
+                    );
+                    shutdown_idle.notify_one();
+                    return;
+                }
+                continue;
+            }
+
+            let Some(idle_timeout) = idle_timeout else {
+                continue;
+            };
             let elapsed = Duration::from_millis(
                 now_activity_ms().saturating_sub(activity_clone.load(Ordering::Relaxed)),
             );
-            if elapsed >= IDLE_TIMEOUT {
-                // Don't shut down while a request is still being served. The
-                // activity timestamp is bumped when a request starts and again
-                // when it finishes, but a single operation can legitimately run
-                // longer than the whole idle window (a large symbol download, a
-                // live-BC snapshot with a long `timeoutMs`), and reaping it
-                // mid-flight cut the operation off after only the 10 s drain.
-                if in_flight_reaper.load(Ordering::Acquire) > 0 {
-                    tracing::info!("daemon: idle timeout skipped (requests in flight)");
-                    continue;
-                }
-                // Don't shut down if a debug session is active.
-                //
-                // the `try_lock` here is intentional — if the
-                // `debug_session` mutex is currently held by another task
-                // (mid-RPC) we treat that as "session active" via the
-                // `unwrap_or(true)` fallback. The invariant: the only way
-                // this mutex is held for >60 ms is during an in-flight
-                // debug-session RPC, which by definition means a session
-                // exists. If a future contributor ever changes this mutex
-                // to be held for long stretches outside debug RPCs, the
-                // daemon will never time out — flag it as a deliberate
-                // trade-off rather than a bug.
-                let has_debug_session = ws_clone
+            if elapsed < idle_timeout {
+                continue;
+            }
+
+            // Don't shut down while a request is still being served. The
+            // activity timestamp is bumped when a request starts and again
+            // when it finishes, but a single operation can legitimately run
+            // longer than the whole idle window (a large symbol download, a
+            // live-BC snapshot with a long `timeoutMs`), and reaping it
+            // mid-flight cut the operation off after only the 10 s drain.
+            let running = in_flight_reaper.load(Ordering::Acquire);
+            // A debug session keeps the daemon alive too. The `try_lock` is
+            // deliberate: a held `debug_session` mutex counts as a live
+            // session, because the only thing that holds it for longer than a
+            // few milliseconds is a debug-session RPC, which means a session
+            // exists. Holding it anywhere else would keep the daemon resident
+            // for good, so this reports which guard fired.
+            let has_debug_session = running == 0
+                && ws_clone
                     .debug_session
                     .try_lock()
-                    .map(|g| g.is_some())
+                    .map(|session| session.is_some())
                     .unwrap_or(true);
-                if has_debug_session {
-                    tracing::info!("daemon: idle timeout skipped (debug session active)");
-                    continue;
+            if running > 0 || has_debug_session {
+                // At warn, because past the idle window these are the two
+                // reasons a daemon outlives the session that started it, and
+                // the log is the only place that says which one it was.
+                let due = last_skip_log.is_none_or(|at| at.elapsed() >= SKIP_LOG_INTERVAL);
+                if due {
+                    last_skip_log = Some(Instant::now());
+                    tracing::warn!(
+                        idle_secs = elapsed.as_secs(),
+                        in_flight = running,
+                        debug_session = has_debug_session,
+                        "daemon: past its idle window but still holding work"
+                    );
                 }
-                tracing::info!(
-                    idle_secs = elapsed.as_secs(),
-                    "daemon: idle timeout, shutting down"
-                );
-                shutdown_idle.notify_one();
-                return;
+                continue;
             }
+
+            tracing::info!(
+                idle_secs = elapsed.as_secs(),
+                "daemon: idle timeout, shutting down"
+            );
+            shutdown_idle.notify_one();
+            return;
         }
     });
 
@@ -414,8 +542,17 @@ async fn handle_connection(
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
     shutdown: Arc<Notify>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (reader, mut writer) = stream.split();
+    let (reader, writer) = stream.split();
     let mut reader = BufReader::new(reader);
+    // One writer shared by every in-flight request on this connection, so two
+    // responses can never interleave on the wire. Mirrors `run_mcp`'s
+    // `write_mcp_frame`.
+    let writer = Arc::new(tokio::sync::Mutex::new(writer));
+    let permits = Arc::new(Semaphore::new(MAX_IN_FLIGHT_PER_CONNECTION));
+    let mut in_flight_tasks = tokio::task::JoinSet::new();
+    // Set when a write fails, so the read loop stops instead of queueing more
+    // work for a client that is gone.
+    let client_gone = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // previously a 50 ms ring-buffer dedup over hover / completions /
     // signatureHelp / inlayHints replied to repeat requests with `null` /
@@ -427,6 +564,9 @@ async fn handle_connection(
     // correctness debt.
 
     while let Some(line) = read_bounded_line(&mut reader, MAX_MESSAGE_SIZE).await? {
+        if client_gone.load(Ordering::Relaxed) {
+            break;
+        }
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -446,7 +586,7 @@ async fn handle_connection(
                 // surface. Logging first preserves the diagnostic either way.
                 tracing::warn!(error = %e, "daemon: malformed JSON-RPC request");
                 if !write_frame(
-                    &mut writer,
+                    &mut *writer.lock().await,
                     &error_frame(
                         serde_json::Value::Null,
                         error_codes::PARSE_ERROR,
@@ -470,7 +610,7 @@ async fn handle_connection(
             Err(e) => {
                 tracing::warn!(error = %e, "daemon: invalid JSON-RPC request object");
                 if !write_frame(
-                    &mut writer,
+                    &mut *writer.lock().await,
                     &error_frame(
                         echo_id,
                         error_codes::INVALID_REQUEST,
@@ -492,38 +632,78 @@ async fn handle_connection(
         // alive for the idle window measured from the end of the work.
         last_activity.store(now_activity_ms(), Ordering::Relaxed);
 
-        let is_notification = req.is_notification();
-        let request_id = req.id.clone();
-        let method = req.method.clone();
-        let start = Instant::now();
-        let response = {
-            // Held for the whole dispatch so the idle reaper cannot fire
-            // mid-request, however long the operation takes.
-            let _in_flight = InFlightGuard::new(&in_flight);
-            dispatch_request(&workspace, req, &shutdown).await
+        // Reading stops here while the connection is already at its in-flight
+        // cap, which is the backpressure the sequential loop provided.
+        let permit = match Arc::clone(&permits).acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => break,
         };
-        let elapsed = start.elapsed();
-        tracing::debug!(method = %method, id = ?request_id, elapsed_us = elapsed.as_micros() as u64, "daemon: request");
-        last_activity.store(now_activity_ms(), Ordering::Relaxed);
 
-        if is_notification {
-            // JSON-RPC 2.0 §4.1: a notification is processed but MUST NOT be
-            // answered.
-            continue;
-        }
+        let workspace = Arc::clone(&workspace);
+        let shutdown = Arc::clone(&shutdown);
+        let writer = Arc::clone(&writer);
+        let last_activity = Arc::clone(&last_activity);
+        let client_gone = Arc::clone(&client_gone);
+        let in_flight = Arc::clone(&in_flight);
+        in_flight_tasks.spawn(async move {
+            let _permit = permit;
+            let is_notification = req.is_notification();
+            let request_id = req.id.clone();
+            let method = req.method.clone();
+            let start = Instant::now();
+            let response = {
+                // Held for the whole dispatch so the idle reaper cannot fire
+                // mid-request, however long the operation takes.
+                let _in_flight = InFlightGuard::new(&in_flight);
+                dispatch_request(&workspace, req, &shutdown).await
+            };
+            let elapsed = start.elapsed();
+            tracing::debug!(method = %method, id = ?request_id, elapsed_us = elapsed.as_micros() as u64, "daemon: request");
+            last_activity.store(now_activity_ms(), Ordering::Relaxed);
 
-        let frame = match request_id {
-            // The common case — an id that round-trips through the dispatcher's
-            // `u64` — serializes the typed response directly. Anything else
-            // (string, null, negative, or fractional) is echoed verbatim.
-            Some(ref id) if id.as_u64().is_some() => serde_json::to_value(&response)?,
-            Some(ref id) => response.to_json_with_id(id),
-            None => serde_json::to_value(&response)?,
-        };
-        if !write_frame(&mut writer, &frame).await {
-            break;
-        }
+            if is_notification {
+                // JSON-RPC 2.0 §4.1: a notification is processed but MUST NOT
+                // be answered.
+                return;
+            }
+
+            let frame = match request_id {
+                // The common case — an id that round-trips through the
+                // dispatcher's `u64` — serializes the typed response directly.
+                // Anything else (string, null, negative, or fractional) is
+                // echoed verbatim.
+                Some(ref id) if id.as_u64().is_some() => serde_json::to_value(&response),
+                Some(ref id) => Ok(response.to_json_with_id(id)),
+                None => serde_json::to_value(&response),
+            };
+            let frame = match frame {
+                Ok(frame) => frame,
+                Err(error) => {
+                    tracing::error!(method = %method, %error, "daemon: response is not serializable");
+                    error_frame(
+                        request_id
+                            .as_ref()
+                            .map(|id| id.to_json())
+                            .unwrap_or(serde_json::Value::Null),
+                        error_codes::INTERNAL_ERROR,
+                        &format!("response for {method} is not serializable: {error}"),
+                    )
+                }
+            };
+            if !write_frame(&mut *writer.lock().await, &frame).await {
+                client_gone.store(true, Ordering::Relaxed);
+            }
+        });
+
+        // Reap finished tasks so the set does not grow for the connection's
+        // lifetime. `try_join_next` never blocks the read loop.
+        while in_flight_tasks.try_join_next().is_some() {}
     }
+
+    // Requests already accepted must finish and answer before the connection
+    // closes, so a client that pipelined and then stopped reading still gets
+    // every response it was owed.
+    while in_flight_tasks.join_next().await.is_some() {}
 
     Ok(())
 }
@@ -576,7 +756,317 @@ where
     }
 }
 
+/// The fingerprint of the trust inputs the daemon last evaluated.
+///
+/// Process-wide rather than per workspace: a daemon serves one project.
+static TRUST_INPUTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Re-evaluate trust when anything it reads has changed.
+///
+/// The daemon evaluated once at startup and kept that configuration until it
+/// exited, which is up to `AL_DAEMON_IDLE_SECS` after the last request, or
+/// never while an editor keeps it busy. So `al-explorer trust --revoke` left
+/// the privileged settings in effect in the process that was applying them.
+///
+/// Four `stat` calls per request decide whether to read the files again, so
+/// the common case costs nothing and a revoke takes effect on the next
+/// request.
+async fn refresh_trust(workspace: &Workspace) {
+    use std::sync::atomic::Ordering;
+
+    let Some(project_root) = workspace
+        .project
+        .try_read()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|project| project.root.clone()))
+    else {
+        return;
+    };
+
+    let fingerprint = al_project::trust::inputs_fingerprint(&project_root);
+    if TRUST_INPUTS.swap(fingerprint, Ordering::Relaxed) == fingerprint {
+        return;
+    }
+
+    match al_project::trust::evaluate(&project_root) {
+        Ok(evaluated) => {
+            if let Some(advisory) = evaluated.decision.advisory() {
+                tracing::warn!("daemon: {advisory}");
+            }
+            *workspace.config.write().await = evaluated.config;
+        }
+        // A settings file that stopped parsing is not a reason to keep serving
+        // the configuration it used to hold.
+        Err(error) => {
+            tracing::warn!(%error, "daemon: trust re-evaluation failed, denying privileged settings");
+            al_project::trust::deny_privileged(&mut *workspace.config.write().await);
+        }
+    }
+}
+
+/// Pick up `.al` files written, edited or deleted since the last request.
+///
+/// A metadata walk of the project per request; files whose size and mtime are
+/// unchanged are not read. Refreshes run one at a time, so a burst of requests
+/// after an edit re-reads the file once and every one of them sees it.
+async fn refresh_workspace_files(workspace: &std::sync::Arc<Workspace>) {
+    static REFRESH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    // The root the startup scan indexed: the project, or the directory the
+    // daemon was started for when it has no app.json.
+    let project_root = workspace
+        .project
+        .try_read()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|project| project.root.clone()));
+    let Some(scan_root) = project_root.or_else(|| SCAN_ROOT.get().cloned()) else {
+        return;
+    };
+    let _serialized = REFRESH.lock().await;
+    let scan_workspace = std::sync::Arc::clone(workspace);
+    let scanned = tokio::task::spawn_blocking(move || {
+        let delta = al_workspace::refresh_workspace_files(&scan_workspace, &scan_root)?;
+        sync_disk_documents(&scan_workspace, &delta);
+        Ok::<_, al_source::file_index::ScanError>(delta)
+    })
+    .await;
+    match scanned {
+        Ok(Ok(delta)) if !delta.is_empty() => tracing::info!(
+            changed = delta.changed.len(),
+            removed = delta.removed.len(),
+            topology_changed = delta.topology_changed,
+            "daemon: workspace files changed on disk"
+        ),
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "daemon: could not refresh workspace files from disk")
+        }
+        Err(error) => tracing::warn!(%error, "daemon: workspace refresh worker failed"),
+    }
+}
+
+/// Carry a disk refresh into the daemon's document store.
+///
+/// The daemon opens every scanned file as a document at startup, and the
+/// per-file queries (`symbols`, `hover`, `lint`) read the document. Refreshing
+/// only the file index left them answering from the text the file had when
+/// the daemon started.
+fn sync_disk_documents(workspace: &Workspace, delta: &al_source::file_index::ScanDelta) {
+    for path in &delta.changed {
+        let Ok(uri) = url::Url::from_file_path(path) else {
+            continue;
+        };
+        let Some(text) = workspace
+            .file_index
+            .files
+            .get(path)
+            .map(|entry| entry.value().clone())
+        else {
+            continue;
+        };
+        if let Err(error) = workspace.documents.replace_or_open(uri, text) {
+            tracing::warn!(path = %path.display(), %error, "daemon: changed file rejected by the document store");
+        }
+    }
+    for path in &delta.removed {
+        if let Ok(uri) = url::Url::from_file_path(path) {
+            workspace.documents.close(&uri);
+        }
+    }
+}
+
 pub(crate) async fn dispatch_request(
+    workspace: &std::sync::Arc<Workspace>,
+    req: Request,
+    shutdown: &Notify,
+) -> Response {
+    refresh_trust(workspace).await;
+    refresh_workspace_files(workspace).await;
+    let method = req.method.clone();
+    let params = req.params.clone().unwrap_or(serde_json::Value::Null);
+    let declared = DISPATCHERS
+        .iter()
+        .find(|dispatcher| dispatcher.method == method);
+    if declared.is_some_and(|dispatcher| dispatcher.credential == CredentialUse::Authorized) {
+        // The methods that can put a Business Central credential on the wire,
+        // named in the log before they do it.
+        tracing::info!(%method, "daemon: request may spend a Business Central credential");
+    }
+    let response = dispatch_method(workspace, req, shutdown).await;
+    let response = path_refusal_advice(declared, response);
+    // `scope` first, so a `limit` counts the rows that survive it rather than
+    // the rows it was about to drop. Both are applied once, here, for every
+    // method that takes them. See `scope` and `projection`.
+    let response = scope::apply(workspace, &method, &params, response);
+    projection::apply(&method, &params, response)
+}
+
+/// Tell a caller whose path was refused what it can do instead, which depends
+/// on whether the method would have written the file.
+///
+/// `al-explorer` acts on the code alone, but the same refusal reaches an agent
+/// through MCP's `al_call`, where the message is all there is.
+fn path_refusal_advice(declared: Option<&Dispatcher>, mut response: Response) -> Response {
+    let Some(dispatcher) = declared else {
+        return response;
+    };
+    if let Some(error) = response.error.as_mut() {
+        if error.code == error_codes::PATH_NOT_AUTHORIZED {
+            match dispatcher.path {
+                PathUse::Read => error.message.push_str(
+                    "; send the file's 'text' with the request to have that content analysed \
+                     without the daemon opening the path",
+                ),
+                PathUse::Write => error.message.push_str(
+                    "; this method rewrites the file it names, so it takes a path inside the \
+                     project and nothing else",
+                ),
+                PathUse::None => {}
+            }
+        }
+    }
+    response
+}
+
+/// What a method does with a path its caller names.
+///
+/// Declared beside the arm that routes to it, because the arm is generated
+/// from the declaration: [`dispatch_table!`] builds [`DISPATCHERS`] and the
+/// dispatch match from the same list, so a method cannot be dispatched without
+/// stating what it reaches, and the tests below drive every entry. `rename`
+/// took a `uri` straight to the filesystem for a release because nothing tied
+/// the arm to the check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PathUse {
+    /// Opens no path the caller names. A `file` that only identifies an
+    /// already-indexed object, the way `debug breakpoint` uses it, is none of
+    /// it: nothing is opened.
+    None,
+    /// Reads the one file its `uri`/`file` names, through
+    /// [`read_document_from_params`], and accepts `text` in place of a path
+    /// the daemon may not open.
+    Read,
+    /// Rewrites the file its `uri`/`file` names, through
+    /// [`file_uri_from_params`], which takes no `text`.
+    Write,
+}
+
+impl PathUse {
+    /// Fold the capabilities one arm declares into a single value.
+    const fn or(self, other: Self) -> Self {
+        match self {
+            Self::None => other,
+            declared => declared,
+        }
+    }
+}
+
+/// Which Business Central credential a method can spend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CredentialUse {
+    /// Only what the request or the user's own environment carries, against a
+    /// target the caller chose.
+    Caller,
+    /// A credential the daemon holds, or the user's own sent to a server named
+    /// by a file the repository carries. Both go through
+    /// `al_project::trust::authorize_cached_credential`.
+    Authorized,
+}
+
+impl CredentialUse {
+    const fn or(self, other: Self) -> Self {
+        match self {
+            Self::Caller => other,
+            declared => declared,
+        }
+    }
+}
+
+/// One dispatched method and what it reaches.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Dispatcher {
+    pub(crate) method: &'static str,
+    pub(crate) path: PathUse,
+    pub(crate) credential: CredentialUse,
+}
+
+macro_rules! declared_path {
+    (read) => {
+        PathUse::Read
+    };
+    (write) => {
+        PathUse::Write
+    };
+    (authorized) => {
+        PathUse::None
+    };
+}
+
+macro_rules! declared_credential {
+    (read) => {
+        CredentialUse::Caller
+    };
+    (write) => {
+        CredentialUse::Caller
+    };
+    (authorized) => {
+        CredentialUse::Authorized
+    };
+}
+
+/// Build [`DISPATCHERS`] and the method match from one list of arms.
+///
+/// The capabilities in brackets are the ones [`PathUse`] and [`CredentialUse`]
+/// define: `read`, `write`, `authorized`. An arm that declares none reaches
+/// neither a caller-named path nor a credential.
+macro_rules! dispatch_table {
+    (
+        ($workspace:ident, $method:ident, $id:ident, $params:ident, $shutdown:ident)
+        $( $name:literal [$($cap:ident),*] => $body:expr, )*
+    ) => {
+        /// Every method the daemon dispatches, with what each one reaches.
+        pub(crate) const DISPATCHERS: &[Dispatcher] = &[
+            $(Dispatcher {
+                method: $name,
+                path: PathUse::None $(.or(declared_path!($cap)))*,
+                credential: CredentialUse::Caller $(.or(declared_credential!($cap)))*,
+            },)*
+        ];
+
+        async fn dispatch_known_method(
+            $workspace: &std::sync::Arc<Workspace>,
+            $method: &str,
+            $id: u64,
+            $params: serde_json::Value,
+            $shutdown: &Notify,
+        ) -> Response {
+            match $method {
+                $($name => $body,)*
+                unknown => unknown_method($id, unknown),
+            }
+        }
+    };
+}
+
+/// The answer for a method the daemon does not dispatch.
+///
+/// A method that differs only in case is named, because the spelling is the
+/// whole of that mistake and an agent calling `al_call` has no completion to
+/// correct it with.
+fn unknown_method(id: u64, method: &str) -> Response {
+    let suggestion = DISPATCHERS
+        .iter()
+        .find(|dispatcher| dispatcher.method.eq_ignore_ascii_case(method))
+        .map(|dispatcher| format!(". Did you mean '{}'?", dispatcher.method))
+        .unwrap_or_default();
+    rpc_error(
+        id,
+        error_codes::METHOD_NOT_FOUND,
+        &format!("Unknown method: {method}{suggestion}"),
+    )
+}
+
+async fn dispatch_method(
     workspace: &std::sync::Arc<Workspace>,
     req: Request,
     shutdown: &Notify,
@@ -585,156 +1075,219 @@ pub(crate) async fn dispatch_request(
     // connection loop restores the original id on the wire.
     let id = req.dispatch_id();
     let params = req.params.unwrap_or(serde_json::Value::Null);
+    dispatch_known_method(workspace, &req.method, id, params, shutdown).await
+}
 
-    match req.method.as_str() {
-        "hover" => lsp_dispatch::dispatch_hover(workspace, id, &params).await,
-        "definition" => lsp_dispatch::dispatch_definition(workspace, id, &params),
-        "references" => lsp_dispatch::dispatch_references(workspace, id, &params),
-        "implementations" => lsp_dispatch::dispatch_implementations(workspace, id, &params),
-        "completions" => lsp_dispatch::dispatch_completions(workspace, id, &params).await,
-        "signatureHelp" => lsp_dispatch::dispatch_signature_help(workspace, id, &params),
-        "rename" => lsp_dispatch::dispatch_rename(workspace, id, &params),
-        "documentSymbols" => lsp_dispatch::dispatch_document_symbols(workspace, id, &params),
-        "foldingRanges" => lsp_dispatch::dispatch_folding_ranges(workspace, id, &params),
-        "semanticTokens" => lsp_dispatch::dispatch_semantic_tokens(workspace, id, &params),
-        "inlayHints" => lsp_dispatch::dispatch_inlay_hints(workspace, id, &params),
-        "codeActions" => lsp_dispatch::dispatch_code_actions(workspace, id, &params),
-        "search" => lsp_dispatch::dispatch_search(workspace, id, &params),
-        "object" => lsp_dispatch::dispatch_object(workspace, id, &params),
-        "byId" => lsp_dispatch::dispatch_by_id(workspace, id, &params),
-        "events" => lsp_dispatch::dispatch_events(workspace, id, &params),
-        "subscribers" => lsp_dispatch::dispatch_subscribers(workspace, id, &params),
-        "composed" => lsp_dispatch::dispatch_composed(workspace, id, &params),
-        "packages" => lsp_dispatch::dispatch_packages(workspace, id),
-        "deps" => lsp_dispatch::dispatch_deps(workspace, id),
-        "lint" => build_dispatch::dispatch_lint(workspace, id, &params).await,
-        "format" => build_dispatch::dispatch_format(workspace, id, &params).await,
-        "fix" => build_dispatch::dispatch_fix(workspace, id, &params),
-        "fix.applicationArea" => {
+dispatch_table! {
+    (workspace, method, id, params, shutdown)
+        "hover" [read] => lsp_dispatch::dispatch_hover(workspace, id, &params).await,
+        "definition" [read] => lsp_dispatch::dispatch_definition(workspace, id, &params),
+        "references" [read] => lsp_dispatch::dispatch_references(workspace, id, &params),
+        "implementations" [read] => lsp_dispatch::dispatch_implementations(workspace, id, &params),
+        "completions" [read] => lsp_dispatch::dispatch_completions(workspace, id, &params).await,
+        "signatureHelp" [read] => lsp_dispatch::dispatch_signature_help(workspace, id, &params),
+        "rename" [read] => lsp_dispatch::dispatch_rename(workspace, id, &params),
+        "documentSymbols" [read] => lsp_dispatch::dispatch_document_symbols(workspace, id, &params),
+        "foldingRanges" [read] => lsp_dispatch::dispatch_folding_ranges(workspace, id, &params),
+        "semanticTokens" [read] => lsp_dispatch::dispatch_semantic_tokens(workspace, id, &params),
+        "inlayHints" [read] => lsp_dispatch::dispatch_inlay_hints(workspace, id, &params),
+        "codeActions" [read] => lsp_dispatch::dispatch_code_actions(workspace, id, &params),
+        "search" [] => lsp_dispatch::dispatch_search(workspace, id, &params),
+        "object" [] => lsp_dispatch::dispatch_object(workspace, id, &params),
+        "byId" [] => lsp_dispatch::dispatch_by_id(workspace, id, &params),
+        "events" [] => lsp_dispatch::dispatch_events(workspace, id, &params),
+        "subscribers" [] => lsp_dispatch::dispatch_subscribers(workspace, id, &params),
+        "composed" [] => lsp_dispatch::dispatch_composed(workspace, id, &params),
+        "packages" [] => lsp_dispatch::dispatch_packages(workspace, id),
+        "deps" [] => lsp_dispatch::dispatch_deps(workspace, id),
+        "lint" [read] => build_dispatch::dispatch_lint(workspace, id, &params).await,
+        "format" [write] => build_dispatch::dispatch_format(workspace, id, &params).await,
+        "fix" [write] => build_dispatch::dispatch_fix(workspace, id, &params),
+        "fix.applicationArea" [] => {
             build_dispatch::dispatch_fix_application_area(workspace, id, &params)
-        }
-        "fix.tooltips" => build_dispatch::dispatch_fix_tooltips(workspace, id, &params),
-        "fix.dataClassification" => {
+        },
+        "fix.tooltips" [] => build_dispatch::dispatch_fix_tooltips(workspace, id, &params),
+        "fix.dataClassification" [] => {
             build_dispatch::dispatch_fix_data_classification(workspace, id, &params)
-        }
-        "rules" => build_dispatch::dispatch_rules(id),
-        "parse" => build_dispatch::dispatch_parse(workspace, id, &params),
-        "metrics" => build_dispatch::dispatch_metrics(workspace, id, &params),
-        "sqlPatterns" => build_dispatch::dispatch_sql_patterns(workspace, id, &params),
-        "sortMembers" => build_dispatch::dispatch_sort_members(workspace, id, &params),
-        "organizeFiles" => build_dispatch::dispatch_organize_files(workspace, id, &params),
-        "source" => build_dispatch::dispatch_source(workspace, id, &params),
-        "eventSource" => build_dispatch::dispatch_event_source(workspace, id, &params),
-        "location" => build_dispatch::dispatch_location(workspace, id, &params),
-        "trace" => {
+        },
+        "rules" [] => build_dispatch::dispatch_rules(id),
+        "parse" [read] => build_dispatch::dispatch_parse(workspace, id, &params),
+        "metrics" [read] => build_dispatch::dispatch_metrics(workspace, id, &params),
+        "sqlPatterns" [] => build_dispatch::dispatch_sql_patterns(workspace, id, &params),
+        "sortMembers" [write] => build_dispatch::dispatch_sort_members(workspace, id, &params),
+        "organizeFiles" [] => build_dispatch::dispatch_organize_files(workspace, id, &params),
+        "source" [] => build_dispatch::dispatch_source(workspace, id, &params),
+        "eventSource" [] => build_dispatch::dispatch_event_source(workspace, id, &params),
+        "location" [] => build_dispatch::dispatch_location(workspace, id, &params),
+        "trace" [] => {
             let (ws, args) = (Arc::clone(workspace), params.clone());
             offload(id, "trace", move || {
                 insight_dispatch::dispatch_trace(&ws, id, &args)
             })
             .await
-        }
-        "entrypoints" => {
+        },
+        "entrypoints" [] => {
             let ws = Arc::clone(workspace);
             offload(id, "entrypoints", move || {
                 insight_dispatch::dispatch_entrypoints(&ws, id)
             })
             .await
-        }
-        "graphExport" => {
+        },
+        "graphExport" [] => {
             let (ws, args) = (Arc::clone(workspace), params.clone());
             offload(id, "graphExport", move || {
                 insight_dispatch::dispatch_graph_export(&ws, id, &args)
             })
             .await
-        }
-        "insightStats" => insight_dispatch::dispatch_insight_stats(workspace, id),
-        "deadCode" => {
+        },
+        "insightStats" [] => {
+            let ws = Arc::clone(workspace);
+            offload(id, "insightStats", move || {
+                insight_dispatch::dispatch_insight_stats(&ws, id)
+            })
+            .await
+        },
+        "deadCode" [] => {
             let ws = Arc::clone(workspace);
             offload(id, "deadCode", move || {
                 insight_dispatch::dispatch_dead_code(&ws, id)
             })
             .await
-        }
-        "nativeCheck" => insight_dispatch::dispatch_native_check(workspace, id).await,
-        "impact" => {
+        },
+        "nativeCheck" [] => insight_dispatch::dispatch_native_check(workspace, id).await,
+        "impact" [] => {
             let (ws, args) = (Arc::clone(workspace), params.clone());
             offload(id, "impact", move || {
                 insight_dispatch::dispatch_impact(&ws, id, &args)
             })
             .await
-        }
-        "tableImpact" => insight_dispatch::dispatch_table_impact(workspace, id, &params),
-        "suggestEvent" => {
+        },
+        "tableImpact" [] => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "tableImpact", move || {
+                insight_dispatch::dispatch_table_impact(&ws, id, &args)
+            })
+            .await
+        },
+        "suggestEvent" [] => {
             let (ws, args) = (Arc::clone(workspace), params.clone());
             offload(id, "suggestEvent", move || {
                 insight_dispatch::dispatch_suggest_event(&ws, id, &args)
             })
             .await
-        }
-        "traceChain" => insight_dispatch::dispatch_trace_chain(workspace, id, &params),
-        "eventMap" => insight_dispatch::dispatch_event_map(workspace, id),
-        "permissions" => build_dispatch::dispatch_permissions(workspace, id, &params),
-        "compile" => build_dispatch::dispatch_compile(workspace, id).await,
-        "package" => build_dispatch::dispatch_package(workspace, id).await,
-        "newProject" => build_dispatch::dispatch_new_project(id, &params),
-        "errorCodes" => build_dispatch::dispatch_error_codes(workspace, id).await,
-        "builtinTypes" => build_dispatch::dispatch_builtin_types(workspace, id).await,
-        "setup" => build_dispatch::dispatch_setup(workspace, id),
-        "clearCache" => build_dispatch::dispatch_clear_cache(id).await,
-        "authenticate" => build_dispatch::dispatch_authenticate(workspace, id, &params).await,
-        "downloadSymbols" => {
+        },
+        "traceChain" [] => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "traceChain", move || {
+                insight_dispatch::dispatch_trace_chain(&ws, id, &args)
+            })
+            .await
+        },
+        "eventMap" [] => {
+            let ws = Arc::clone(workspace);
+            offload(id, "eventMap", move || {
+                insight_dispatch::dispatch_event_map(&ws, id)
+            })
+            .await
+        },
+        "freeIds" [] => build_dispatch::dispatch_free_ids(workspace, id, &params).await,
+        "permissions" [] => build_dispatch::dispatch_permissions(workspace, id, &params),
+        "compile" [] => build_dispatch::dispatch_compile(workspace, id).await,
+        "package" [] => build_dispatch::dispatch_package(workspace, id).await,
+        "publish" [authorized] => build_dispatch::dispatch_publish(workspace, id, &params).await,
+        "newProject" [] => build_dispatch::dispatch_new_project(workspace, id, &params),
+        "errorCodes" [] => build_dispatch::dispatch_error_codes(workspace, id).await,
+        "builtinTypes" [] => build_dispatch::dispatch_builtin_types(workspace, id).await,
+        "setup" [] => build_dispatch::dispatch_setup(workspace, id),
+        "clearCache" [] => build_dispatch::dispatch_clear_cache(id).await,
+        "authenticate" [] => build_dispatch::dispatch_authenticate(workspace, id, &params).await,
+        "downloadSymbols" [authorized] => {
             build_dispatch::dispatch_download_symbols(workspace, id, &params).await
-        }
-        "debug" => debug_dispatch::dispatch_debug(workspace, id, &params).await,
-        "snapshot" => build_dispatch::dispatch_snapshot(id, &params).await,
-        "profiling" => build_dispatch::dispatch_profiling(id, &params).await,
-        "xlf.generate" => build_dispatch::dispatch_xlf_generate(workspace, id, &params).await,
-        "xlf.refresh" => build_dispatch::dispatch_xlf_refresh(workspace, id, &params).await,
-        "xlf.untranslated" => build_dispatch::dispatch_xlf_untranslated(id, &params),
-        "xlf.suggest" => build_dispatch::dispatch_xlf_suggest(workspace, id, &params).await,
-        "tests.discover" => build_dispatch::dispatch_tests_discover(workspace, id),
-        "tests.run" => build_dispatch::dispatch_tests_run(workspace, id, &params).await,
-        "tests.coverage" => build_dispatch::dispatch_tests_coverage(workspace, id),
-        "tests.run_batch" => build_dispatch::dispatch_tests_run_batch(workspace, id, &params).await,
-        "tests.run_auto" => build_dispatch::dispatch_tests_run_auto(workspace, id, &params).await,
-        "tests.last_results" => {
+        },
+        "debug" [authorized] => debug_dispatch::dispatch_debug(workspace, id, &params).await,
+        "snapshot" [] => build_dispatch::dispatch_snapshot(workspace, id, &params).await,
+        "profiling" [] => build_dispatch::dispatch_profiling(workspace, id, &params).await,
+        "xlf.generate" [] => build_dispatch::dispatch_xlf_generate(workspace, id, &params).await,
+        "xlf.refresh" [] => build_dispatch::dispatch_xlf_refresh(workspace, id, &params).await,
+        "xlf.untranslated" [] => build_dispatch::dispatch_xlf_untranslated(id, &params),
+        "xlf.suggest" [] => build_dispatch::dispatch_xlf_suggest(workspace, id, &params).await,
+        "tests.discover" [] => build_dispatch::dispatch_tests_discover(workspace, id),
+        "tests.run" [] => build_dispatch::dispatch_tests_run(workspace, id, &params).await,
+        "tests.coverage" [] => build_dispatch::dispatch_tests_coverage(workspace, id),
+        "tests.run_batch" [] => build_dispatch::dispatch_tests_run_batch(workspace, id, &params).await,
+        "tests.run_auto" [] => build_dispatch::dispatch_tests_run_auto(workspace, id, &params).await,
+        "tests.last_results" [] => {
             build_dispatch::dispatch_tests_last_results(workspace, id, &params).await
-        }
-        "tests.affected" => build_dispatch::dispatch_tests_affected(workspace, id, &params),
-        "tests.classify" => build_dispatch::dispatch_tests_classify(workspace, id),
-        "tests.snapshot_validate" => {
+        },
+        "tests.affected" [] => build_dispatch::dispatch_tests_affected(workspace, id, &params),
+        "tests.classify" [] => build_dispatch::dispatch_tests_classify(workspace, id),
+        "tests.snapshot_validate" [] => {
             build_dispatch::dispatch_tests_snapshot_validate(workspace, id, &params).await
-        }
-        "tests.snapshot_capture" => {
+        },
+        "tests.snapshot_capture" [authorized] => {
             build_dispatch::dispatch_tests_snapshot_capture(workspace, id, &params).await
-        }
-        "tests.snapshot_replay" => {
+        },
+        "tests.snapshot_replay" [authorized] => {
             build_dispatch::dispatch_tests_snapshot_replay(workspace, id, &params).await
-        }
-        "tests.snapshot_diff" => {
+        },
+        "tests.snapshot_diff" [] => {
             build_dispatch::dispatch_tests_snapshot_diff(workspace, id, &params).await
-        }
-        "tests.mutate" => build_dispatch::dispatch_tests_mutate(workspace, id, &params).await,
-        "generate" => build_dispatch::dispatch_generate(workspace, id, &params),
-        "obsolete" => build_dispatch::dispatch_obsolete(workspace, id),
-        "audit.dataClassification" => {
+        },
+        "tests.mutate" [] => build_dispatch::dispatch_tests_mutate(workspace, id, &params).await,
+        "generate" [] => build_dispatch::dispatch_generate(workspace, id, &params),
+        "obsolete" [] => build_dispatch::dispatch_obsolete(workspace, id),
+        "obsoleteUsages" [] => build_dispatch::dispatch_obsolete_usages(workspace, id),
+        "packageDiff" [] => build_dispatch::dispatch_package_diff(workspace, id, &params),
+        "audit.dataClassification" [] => {
             build_dispatch::dispatch_audit_data_classification(workspace, id)
-        }
-        "permissions.audit" => build_dispatch::dispatch_permission_set_audit(workspace, id),
-        "deps.graph" => build_dispatch::dispatch_deps_graph(workspace, id, &params).await,
-        "breaking" => build_dispatch::dispatch_breaking_changes(workspace, id, &params).await,
-        "arch.lint" => build_dispatch::dispatch_arch_lint(workspace, id).await,
-        "duplicates" => build_dispatch::dispatch_find_duplicates(workspace, id, &params),
-        "upgrade" => build_dispatch::dispatch_upgrade_report(workspace, id, &params).await,
-        "profiler.hints" => build_dispatch::dispatch_profiler_hints(workspace, id, &params),
-        "diag" => dispatch_diag(workspace, id, &params),
-        "ping" => Response {
+        },
+        "permissions.audit" [] => build_dispatch::dispatch_permission_set_audit(workspace, id),
+        "deps.graph" [] => build_dispatch::dispatch_deps_graph(workspace, id, &params).await,
+        "breaking" [] => build_dispatch::dispatch_breaking_changes(workspace, id, &params).await,
+        "arch.lint" [] => build_dispatch::dispatch_arch_lint(workspace, id).await,
+        "duplicates" [] => build_dispatch::dispatch_find_duplicates(workspace, id, &params),
+        "upgrade" [] => build_dispatch::dispatch_upgrade_report(workspace, id, &params).await,
+        "profiler.hints" [] => build_dispatch::dispatch_profiler_hints(workspace, id, &params),
+        "diag" [] => dispatch_diag(workspace, id, &params),
+        "ping" [] => Response {
             id,
             result: Some(serde_json::json!("pong")),
             error: None,
             ..Default::default()
         },
-        "shutdown" => {
+        // Which build this daemon came from. A client compares it with its own
+        // before it uses a daemon it did not start, and replaces a daemon that
+        // answers with a different one. See `al_protocol::identity`.
+        "handshake" [] => {
+            let identity = al_protocol::identity::current_identity();
+            let mut result = serde_json::json!({
+                "version": identity.version,
+                "build": identity.build,
+                "pid": std::process::id(),
+            });
+            // Everything the identity is made of is world-readable, so a
+            // process answering on this endpoint could say the same words. The
+            // proof is an HMAC over the client's nonce and the identity, keyed
+            // by a file only this user can read, so the answer is something a
+            // planted daemon cannot produce.
+            let nonce = params
+                .get("nonce")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if !nonce.is_empty() {
+                if let Some(secret) = al_protocol::client::handshake_secret() {
+                    result["proof"] =
+                        serde_json::json!(al_protocol::identity::proof(&secret, nonce, &identity));
+                }
+            }
+            Response {
+                id,
+                result: Some(result),
+                error: None,
+                ..Default::default()
+            }
+        },
+        "shutdown" [] => {
             tracing::info!("daemon: shutdown requested");
             shutdown.notify_one();
             Response {
@@ -743,8 +1296,16 @@ pub(crate) async fn dispatch_request(
                 error: None,
                 ..Default::default()
             }
-        }
-        "status" => {
+        },
+        "status" [] => {
+            // Read the project before taking the std RwLock guards below: a
+            // guard held across an await makes this dispatch future non-Send.
+            let launch_config_error = workspace
+                .project
+                .read()
+                .await
+                .as_ref()
+                .and_then(|project| project.launch_config_error.clone());
             let semantic_cache = match workspace.semantic_cache.read() {
                 Ok(cache) => cache,
                 Err(_) => {
@@ -777,6 +1338,17 @@ pub(crate) async fn dispatch_request(
                 "workspaceObjects": workspace.file_index.object_count(),
                 "builtinTypes": builtins.len(),
                 "semanticCache": cache_stats,
+                // Present only when the project's debug configuration file
+                // could not be read. Symbol queries are unaffected; the BC
+                // connection commands are the ones that need it.
+                "launchConfigError": launch_config_error,
+                // `subscribers`, `composed`, `events`, `lint`, `trace`,
+                // `impact` and `entrypoints` all wait for this. A client that
+                // sees `building` should keep waiting rather than retry.
+                "sourceIndex": workspace.dependency_source_progress(),
+                // What the process costs the machine, which the per-structure
+                // totals in `diag` do not show.
+                "memory": process_memory::ResidentMemory::read().to_json(),
             });
             Response {
                 id,
@@ -784,17 +1356,7 @@ pub(crate) async fn dispatch_request(
                 error: None,
                 ..Default::default()
             }
-        }
-        _ => Response {
-            id,
-            result: None,
-            error: Some(RpcError {
-                code: error_codes::METHOD_NOT_FOUND,
-                message: format!("Unknown method: {}", req.method),
-            }),
-            ..Default::default()
         },
-    }
 }
 
 fn dispatch_diag(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
@@ -824,12 +1386,32 @@ fn dispatch_diag(workspace: &Workspace, id: u64, params: &serde_json::Value) -> 
                 }
             };
             match serde_json::to_value(&stats) {
-                Ok(value) => Response {
-                    id,
-                    result: Some(value),
-                    error: None,
-                    ..Default::default()
-                },
+                Ok(mut value) => {
+                    if let Some(object) = value.as_object_mut() {
+                        object.insert(
+                            "process".into(),
+                            process_memory::ResidentMemory::read().to_json(),
+                        );
+                        match serde_json::to_value(workspace.dependency_source_progress()) {
+                            Ok(progress) => {
+                                object.insert("sourceIndex".into(), progress);
+                            }
+                            Err(error) => {
+                                return rpc_error(
+                                    id,
+                                    error_codes::INTERNAL_ERROR,
+                                    &format!("diag/summary source-index progress: {error}"),
+                                );
+                            }
+                        }
+                    }
+                    Response {
+                        id,
+                        result: Some(value),
+                        error: None,
+                        ..Default::default()
+                    }
+                }
                 Err(e) => Response {
                     id,
                     result: None,
@@ -959,11 +1541,14 @@ pub(crate) fn serialized_response<T: serde::Serialize>(
             error: None,
             ..Default::default()
         },
-        Err(error) => rpc_error(
-            id,
-            error_codes::INTERNAL_ERROR,
-            &format!("Failed to serialize {method} response: {error}"),
-        ),
+        Err(error) => {
+            tracing::error!(method, %error, "daemon: serializing a result failed");
+            rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("serialization failed for {method}: {error}"),
+            )
+        }
     }
 }
 
@@ -1067,6 +1652,26 @@ pub(crate) fn parse_object_kind(
     })
 }
 
+/// Run a blocking step off the async executor when the runtime supports it.
+///
+/// `tokio::task::block_in_place` panics outright on a current-thread runtime,
+/// which is what a plain `#[tokio::test]` gives and what an embedder may drive
+/// the dispatcher from. Every blocking step in the daemon goes through here so
+/// none of them can abort the process.
+pub(crate) fn blocking<T>(work: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle)
+            if matches!(
+                handle.runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            ) =>
+        {
+            tokio::task::block_in_place(work)
+        }
+        _ => work(),
+    }
+}
+
 /// Ensure a file is loaded in the document store. If not found, read it through
 /// the same bounded, regular-file-only ingestion path used by workspace scans.
 #[allow(clippy::result_large_err)]
@@ -1085,20 +1690,7 @@ pub(crate) fn ensure_document(
             "Document URI is not a local file",
         )
     })?;
-    let read_result = match tokio::runtime::Handle::try_current() {
-        Ok(handle)
-            if matches!(
-                handle.runtime_flavor(),
-                tokio::runtime::RuntimeFlavor::MultiThread
-            ) =>
-        {
-            tokio::task::block_in_place(|| al_source::file_index::read_source_file(&path))
-        }
-        // Synchronous/unit-test callers and current-thread runtimes cannot use
-        // block_in_place. The dispatcher API is synchronous, so perform the
-        // bounded read directly rather than panicking.
-        _ => al_source::file_index::read_source_file(&path),
-    };
+    let read_result = blocking(|| al_source::file_index::read_source_file(&path));
     let content = read_result
         .map_err(|error| {
             rpc_error(
@@ -1120,65 +1712,309 @@ pub(crate) fn ensure_document(
         })
 }
 
-pub(crate) fn file_uri_from_params(params: &serde_json::Value) -> Result<Option<url::Url>, String> {
-    // Daemon file operations accept exactly one existing local regular file.
-    // Failing canonicalisation used to fall back to the unresolved path, which
-    // made missing files, inaccessible parents, and symlink failures look like
-    // a valid request until a later and often unrelated operation failed.
+/// A path parameter the daemon refused, carrying the JSON-RPC code the client
+/// needs to tell "the daemon will not touch this path" from any other bad
+/// parameter.
+///
+/// `al-explorer` resends a read-only request with the file's text when it sees
+/// [`error_codes::PATH_NOT_AUTHORIZED`], so the distinction has to survive the
+/// round trip as a code rather than as prose.
+#[derive(Debug)]
+pub(crate) struct PathRejection {
+    pub(crate) code: i32,
+    pub(crate) message: String,
+}
+
+impl std::fmt::Display for PathRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl PathRejection {
+    fn invalid(message: impl Into<String>) -> Self {
+        Self {
+            code: error_codes::INVALID_PARAMS,
+            message: message.into(),
+        }
+    }
+
+    fn unauthorized(message: impl Into<String>) -> Self {
+        Self {
+            code: error_codes::PATH_NOT_AUTHORIZED,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn into_response(self, id: u64) -> Response {
+        rpc_error(id, self.code, &self.message)
+    }
+}
+
+/// The path a request names, before any containment or filesystem check.
+///
+/// `Ok(None)` means the request named no file at all, which several
+/// dispatchers treat as a whole-project request.
+fn path_from_params(params: &serde_json::Value) -> Result<Option<PathBuf>, PathRejection> {
     let uri_value = params.get("uri");
     let file_value = params.get("file");
     if uri_value.is_some() && file_value.is_some() {
-        return Err("'uri' and 'file' are mutually exclusive".to_string());
+        return Err(PathRejection::invalid(
+            "'uri' and 'file' are mutually exclusive",
+        ));
     }
 
-    let path = match (uri_value, file_value) {
+    match (uri_value, file_value) {
         (Some(value), None) => {
             let raw = value
                 .as_str()
-                .ok_or_else(|| "'uri' must be a string when supplied".to_string())?;
+                .ok_or_else(|| PathRejection::invalid("'uri' must be a string when supplied"))?;
             if raw.trim().is_empty() {
-                return Err("'uri' must not be empty".to_string());
+                return Err(PathRejection::invalid("'uri' must not be empty"));
             }
-            let uri = url::Url::parse(raw).map_err(|error| format!("invalid 'uri': {error}"))?;
-            uri.to_file_path()
-                .map_err(|()| "'uri' must identify a local file".to_string())?
+            let uri = url::Url::parse(raw)
+                .map_err(|error| PathRejection::invalid(format!("invalid 'uri': {error}")))?;
+            let path = uri
+                .to_file_path()
+                .map_err(|()| PathRejection::invalid("'uri' must identify a local file"))?;
+            Ok(Some(path))
         }
         (None, Some(value)) => {
             let raw = value
                 .as_str()
-                .ok_or_else(|| "'file' must be a string when supplied".to_string())?;
+                .ok_or_else(|| PathRejection::invalid("'file' must be a string when supplied"))?;
             if raw.trim().is_empty() {
-                return Err("'file' must not be empty".to_string());
+                return Err(PathRejection::invalid("'file' must not be empty"));
             }
-            let path = std::path::Path::new(raw);
-            if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                std::env::current_dir()
-                    .map_err(|error| format!("resolve current directory failed: {error}"))?
-                    .join(path)
-            }
+            Ok(Some(PathBuf::from(raw)))
         }
-        (None, None) => return Ok(None),
+        (None, None) => Ok(None),
         (Some(_), Some(_)) => unreachable!("mutual exclusion checked above"),
-    };
+    }
+}
 
-    let canonical = path
-        .canonicalize()
-        .map_err(|error| format!("resolve input file '{}' failed: {error}", path.display()))?;
-    if !canonical.is_file() {
-        return Err(format!(
-            "input path '{}' is not a regular file",
-            canonical.display()
+/// The `text` a caller supplied in place of letting the daemon open the path.
+fn text_from_params(params: &serde_json::Value) -> Result<Option<String>, PathRejection> {
+    match params.get("text") {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value
+            .as_str()
+            .map(|text| Some(text.to_string()))
+            .ok_or_else(|| PathRejection::invalid("'text' must be a string when supplied")),
+    }
+}
+
+/// The single existing local regular file a request names, resolved inside the
+/// loaded project's boundary.
+///
+/// Every dispatcher that takes `uri` or `file` goes through here, so the
+/// containment check in [`containment::resolve_within_project`] applies to all
+/// of them at once. Relative paths resolve against the project root, not the
+/// daemon's working directory: the daemon outlives the shell that started it,
+/// so its cwd is not a meaningful base for a client's path.
+///
+/// This is the path a method that *writes* the file takes, so it never accepts
+/// `text`: the content a caller supplies can be analysed, never written back
+/// over a file the caller was not allowed to name.
+pub(crate) fn file_uri_from_params(
+    workspace: &Workspace,
+    params: &serde_json::Value,
+) -> Result<Option<url::Url>, PathRejection> {
+    // Daemon file operations accept exactly one existing local regular file.
+    // Failing canonicalisation used to fall back to the unresolved path, which
+    // made missing files, inaccessible parents, and symlink failures look like
+    // a valid request until a later and often unrelated operation failed.
+    if text_from_params(params)?.is_some() {
+        return Err(PathRejection::invalid(
+            "'text' is not accepted here: this method rewrites the file it names, and only a \
+             path inside the project can be written",
         ));
     }
+    let Some(path) = path_from_params(params)? else {
+        return Ok(None);
+    };
+
+    let canonical = containment::resolve_within_project(workspace, &path)
+        .map_err(PathRejection::unauthorized)?;
+    if !canonical.is_file() {
+        return Err(PathRejection::invalid(format!(
+            "input path '{}' is not a regular file",
+            canonical.display()
+        )));
+    }
     let uri = url::Url::from_file_path(&canonical).map_err(|()| {
-        format!(
+        PathRejection::invalid(format!(
             "input file cannot be represented as a file URI: {}",
             canonical.display()
-        )
+        ))
     })?;
     Ok(Some(uri))
+}
+
+/// A document the caller supplied the text for, removed from the store when
+/// the request that needed it is answered.
+///
+/// The text stands in for a file the daemon is not allowed to open, so it must
+/// not outlive the one request: it is not part of the project, and leaving it
+/// behind would put a file the daemon never read into workspace-wide answers.
+pub(crate) struct SuppliedDocument<'a> {
+    workspace: &'a Workspace,
+    uri: url::Url,
+}
+
+impl Drop for SuppliedDocument<'_> {
+    fn drop(&mut self) {
+        self.workspace.documents.close(&self.uri);
+    }
+}
+
+/// Whether a method names its subject document through
+/// `read_document_from_params`, and so accepts `uri` or `file`, plus `text`
+/// for a path the daemon may not open itself.
+///
+/// The MCP bridge derives the document arguments of a named tool's schema from
+/// this, the way it derives `limit`/`offset`/`fields` from
+/// `projection::list_target` and `scope` from `scope::accepts_scope`. A schema
+/// written out by hand drifted once already: `al_getdiagnostics` rejected
+/// `text` that `lint` accepts.
+pub(crate) fn reads_document(method: &str) -> bool {
+    matches!(
+        method,
+        "hover"
+            | "definition"
+            | "references"
+            | "implementations"
+            | "completions"
+            | "signatureHelp"
+            | "documentSymbols"
+            | "foldingRanges"
+            | "semanticTokens"
+            | "inlayHints"
+            | "codeActions"
+            | "lint"
+            | "format"
+            | "metrics"
+    )
+}
+
+/// The document a read-only single-file request works on, and the guard that
+/// removes it again when the caller supplied its text.
+///
+/// Three inputs, tried in order:
+///
+/// 1. `text` from the caller. The daemon answers from that and never opens the
+///    path, which is how `al-explorer` serves a file outside the project: the
+///    user running the CLI can read their own files, the daemon must not read
+///    them on anyone's behalf. Refused for a path *inside* the project, so no
+///    caller can substitute its own content for a project file the daemon
+///    holds and have a later write flush it to disk.
+/// 2. a document already open in the store, which the editor put there. No
+///    filesystem access, so containment has nothing to guard.
+/// 3. the path itself, contained in the project and read from disk.
+#[allow(clippy::result_large_err)]
+pub(crate) fn read_document_from_params<'a>(
+    workspace: &'a Workspace,
+    params: &serde_json::Value,
+    id: u64,
+) -> Result<(url::Url, Option<SuppliedDocument<'a>>), Response> {
+    let supplied = text_from_params(params).map_err(|rejection| rejection.into_response(id))?;
+    if let Some(text) = supplied {
+        let path = path_from_params(params)
+            .map_err(|rejection| rejection.into_response(id))?
+            .ok_or_else(|| {
+                rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    "'text' needs the 'uri' or 'file' it stands for",
+                )
+            })?;
+        if let Ok(inside) = containment::resolve_within_project(workspace, &path) {
+            return Err(rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                &format!(
+                    "'{}' is inside the project, so the daemon reads it itself; 'text' is only \
+                     for a path the daemon may not open",
+                    inside.display()
+                ),
+            ));
+        }
+        let absolute = if path.is_absolute() {
+            path
+        } else {
+            std::env::current_dir().unwrap_or_default().join(path)
+        };
+        let uri = url::Url::from_file_path(&absolute).map_err(|()| {
+            rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                &format!(
+                    "supplied path cannot be represented as a file URI: {}",
+                    absolute.display()
+                ),
+            )
+        })?;
+        workspace
+            .documents
+            .open(uri.clone(), text)
+            .map_err(|error| {
+                rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    &format!("supplied document was rejected: {error}"),
+                )
+            })?;
+        let guard = SuppliedDocument {
+            workspace,
+            uri: uri.clone(),
+        };
+        return Ok((uri, Some(guard)));
+    }
+
+    // The raw URI, before containment: a document the editor already opened is
+    // answered from the store, exactly as `ensure_document` has always done,
+    // and reading it touches no filesystem for containment to guard.
+    if let Some(uri) = extract_uri(params) {
+        if workspace.documents.contains(&uri) {
+            return Ok((uri, None));
+        }
+    }
+
+    let uri = match file_uri_from_params(workspace, params) {
+        Ok(Some(uri)) => uri,
+        Ok(None) => return Err(invalid_params(id)),
+        Err(rejection) => return Err(rejection.into_response(id)),
+    };
+    ensure_document(workspace, &uri, id)?;
+    Ok((uri, None))
+}
+
+/// Load a minimal project rooted at `root` so a test workspace has a
+/// containment boundary. `try_write` rather than `write().await` so the same
+/// helper serves synchronous and `#[tokio::test]` callers.
+#[cfg(test)]
+pub(crate) fn set_test_project_root(workspace: &Workspace, root: &Path) {
+    *workspace
+        .project
+        .try_write()
+        .expect("test workspace project lock is uncontended") =
+        Some(al_project::project::AlProject {
+            root: root.to_path_buf(),
+            app_json: al_project::project::AppManifest {
+                id: "test".to_string(),
+                name: "Test".to_string(),
+                publisher: "Test".to_string(),
+                version: "1.0.0.0".to_string(),
+                dependencies: Vec::new(),
+                application: None,
+                platform: None,
+                runtime: None,
+            },
+            packages_dir: root.join(".alpackages"),
+            packages: Vec::new(),
+            server_configs: Vec::new(),
+            launch_config_error: None,
+        });
 }
 
 /// Only failures that leave the daemon without a usable workspace abort
@@ -1254,813 +2090,6 @@ pub(crate) async fn initialize_daemon_workspace(
     Ok(())
 }
 
+#[cfg(unix)]
 #[cfg(test)]
-mod tests {
-    use super::{
-        dispatch_diag, dispatch_request, ensure_document, extract_i32, extract_position,
-        extract_uri, file_not_found, file_uri_from_params, invalid_params, parse_object_kind,
-        read_bounded_line, require_document_text, require_project_root, rpc_error,
-    };
-    use al_protocol::jsonrpc::{error_codes, Request};
-    use futures::FutureExt;
-    use std::collections::BTreeSet;
-    use tokio::sync::Notify;
-
-    fn dispatched_method_literals(source: &str) -> BTreeSet<String> {
-        let dispatch = source
-            .split_once("match req.method.as_str() {")
-            .expect("dispatch_request method match")
-            .1
-            .split_once("\n        _ => Response {")
-            .expect("dispatch_request unknown-method arm")
-            .0;
-        dispatch
-            .lines()
-            .filter_map(|line| line.strip_prefix("        \""))
-            .filter_map(|line| line.split_once('"').map(|(method, _)| method))
-            .map(str::to_string)
-            .collect()
-    }
-
-    /// The daemon reference and MCP's generic `al_call` promise the complete
-    /// dispatcher, not a hand-picked subset. Keep the human reference pinned
-    /// directly to the executable method match so newly registered methods
-    /// cannot become undocumented agent-only knowledge.
-    #[test]
-    fn daemon_reference_names_every_dispatched_method() {
-        let source = include_str!("mod.rs");
-        let methods = dispatched_method_literals(source);
-        assert!(
-            methods.len() >= 80,
-            "dispatcher extraction unexpectedly found only {} methods",
-            methods.len()
-        );
-        let reference = include_str!("../../../../../Docs/reference/daemon-methods.md");
-        let missing = methods
-            .iter()
-            .filter(|method| !reference.contains(&format!("`{method}`")))
-            .cloned()
-            .collect::<Vec<_>>();
-        assert!(
-            missing.is_empty(),
-            "Docs/reference/daemon-methods.md omits dispatched methods: {missing:?}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn ensure_private_dir_creates_owner_only() {
-        use std::os::unix::fs::PermissionsExt;
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("al-lsp");
-        super::ensure_private_dir(&dir).unwrap();
-        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o700, "newly created dir must be 0o700");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn ensure_private_dir_tightens_preexisting_lax_dir() {
-        use std::os::unix::fs::PermissionsExt;
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("al-lsp");
-        std::fs::create_dir(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        super::ensure_private_dir(&dir).unwrap();
-        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
-        assert_eq!(
-            mode & 0o777,
-            0o700,
-            "pre-existing 0o755 dir must be tightened to 0o700"
-        );
-    }
-
-    #[test]
-    fn extract_i32_accepts_in_range() {
-        let params = serde_json::json!({ "id": 50_100 });
-        assert_eq!(extract_i32(&params, "id"), Some(50_100));
-        let params = serde_json::json!({ "id": -1 });
-        assert_eq!(extract_i32(&params, "id"), Some(-1));
-        let params = serde_json::json!({ "id": i32::MAX });
-        assert_eq!(extract_i32(&params, "id"), Some(i32::MAX));
-        let params = serde_json::json!({ "id": i32::MIN });
-        assert_eq!(extract_i32(&params, "id"), Some(i32::MIN));
-    }
-
-    #[test]
-    fn extract_i32_rejects_overflow() {
-        let params = serde_json::json!({ "id": (i32::MAX as i64) + 1 });
-        assert_eq!(extract_i32(&params, "id"), None);
-        let params = serde_json::json!({ "id": (i32::MIN as i64) - 1 });
-        assert_eq!(extract_i32(&params, "id"), None);
-        let params = serde_json::json!({ "id": u64::MAX });
-        assert_eq!(extract_i32(&params, "id"), None);
-    }
-
-    #[test]
-    fn extract_i32_rejects_missing_or_wrong_type() {
-        let params = serde_json::json!({});
-        assert_eq!(extract_i32(&params, "id"), None);
-        let params = serde_json::json!({ "id": "fifty" });
-        assert_eq!(extract_i32(&params, "id"), None);
-        let params = serde_json::json!({ "id": 3.5 });
-        assert_eq!(extract_i32(&params, "id"), None);
-    }
-
-    #[test]
-    fn extract_position_rejects_overflow() {
-        let params = serde_json::json!({ "line": (u32::MAX as u64) + 1, "character": 0 });
-        assert!(extract_position(&params).is_none());
-    }
-
-    #[test]
-    fn socket_path_is_deterministic() {
-        std::env::set_var("XDG_RUNTIME_DIR", "/tmp");
-        let p = std::path::Path::new("/tmp");
-        let path1 = al_protocol::socket_path(p)
-            .expect("socket_path returned None with XDG_RUNTIME_DIR set");
-        let path2 = al_protocol::socket_path(p)
-            .expect("socket_path returned None with XDG_RUNTIME_DIR set");
-        assert_eq!(path1, path2);
-        assert!(path1.to_str().unwrap().ends_with(".sock"));
-        let filename = path1.file_name().unwrap().to_str().unwrap();
-        let hash_part = filename.strip_suffix(".sock").unwrap();
-        assert_eq!(hash_part.len(), 16);
-        assert!(hash_part.chars().all(|c| c.is_ascii_hexdigit()));
-    }
-
-    #[tokio::test]
-    async fn bounded_read_accepts_line_within_limit() {
-        let input = b"hello world\n";
-        let mut reader = tokio::io::BufReader::new(input.as_ref());
-        let result = read_bounded_line(&mut reader, 64).await.unwrap();
-        assert_eq!(result, Some("hello world".to_string()));
-    }
-
-    #[tokio::test]
-    async fn bounded_read_rejects_line_exceeding_limit() {
-        let input = b"0123456789";
-        let mut reader = tokio::io::BufReader::new(input.as_ref());
-        let err = read_bounded_line(&mut reader, 5).await.unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-        assert!(err.to_string().contains("byte limit"));
-    }
-
-    #[tokio::test]
-    async fn bounded_read_returns_none_on_empty_eof() {
-        let input: &[u8] = b"";
-        let mut reader = tokio::io::BufReader::new(input);
-        let result = read_bounded_line(&mut reader, 64).await.unwrap();
-        assert_eq!(result, None);
-    }
-
-    #[tokio::test]
-    async fn bounded_read_rejects_line_with_newline_exceeding_limit() {
-        let input = b"0123456789\nmore data";
-        let mut reader = tokio::io::BufReader::new(input.as_ref());
-        let err = read_bounded_line(&mut reader, 5).await.unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-        assert!(err.to_string().contains("byte limit"));
-    }
-
-    #[tokio::test]
-    async fn bounded_read_returns_partial_line_on_eof() {
-        let input = b"no newline here";
-        let mut reader = tokio::io::BufReader::new(input.as_ref());
-        let result = read_bounded_line(&mut reader, 64).await.unwrap();
-        assert_eq!(result, Some("no newline here".to_string()));
-    }
-
-    #[test]
-    fn file_uri_accepts_existing_local_uri() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("doc.al");
-        std::fs::write(&file, b"x").unwrap();
-        let params = serde_json::json!({
-            "uri": url::Url::from_file_path(&file).unwrap(),
-        });
-        let uri = file_uri_from_params(&params)
-            .expect("uri must be valid")
-            .expect("uri must be present");
-        assert_eq!(uri.to_file_path().unwrap(), file.canonicalize().unwrap());
-    }
-
-    #[test]
-    fn file_uri_canonicalizes_absolute_existing_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("doc.al");
-        std::fs::write(&file, b"x").unwrap();
-        let params = serde_json::json!({ "file": file.to_str().unwrap() });
-        let uri = file_uri_from_params(&params)
-            .expect("absolute file path must be valid")
-            .expect("absolute file path must produce a uri");
-        let canon = file.canonicalize().unwrap();
-        assert_eq!(uri.to_file_path().unwrap(), canon);
-    }
-
-    #[test]
-    fn file_uri_resolves_existing_relative_path_against_cwd() {
-        let cwd = std::env::current_dir().unwrap();
-        let dir = tempfile::tempdir_in(&cwd).unwrap();
-        let file = dir.path().join("relative.al");
-        std::fs::write(&file, b"x").unwrap();
-        let relative = file.strip_prefix(&cwd).unwrap();
-        let params = serde_json::json!({ "file": relative });
-        let uri = file_uri_from_params(&params)
-            .expect("relative path must be valid")
-            .expect("relative path must produce a uri");
-        let path = uri.to_file_path().unwrap();
-        assert_eq!(path, file.canonicalize().unwrap());
-    }
-
-    #[test]
-    fn file_uri_rejects_missing_path_instead_of_falling_back() {
-        let params = serde_json::json!({
-            "file": "/definitely/not/existing/al-test-xyz.al"
-        });
-        let error = file_uri_from_params(&params).expect_err("nonexistent path must be rejected");
-        assert!(
-            error.contains("resolve input file"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn file_uri_returns_absent_without_uri_or_file() {
-        let params = serde_json::json!({ "something": "else" });
-        assert_eq!(file_uri_from_params(&params).unwrap(), None);
-    }
-
-    #[test]
-    fn file_uri_rejects_ambiguous_or_malformed_inputs() {
-        for params in [
-            serde_json::json!({"uri": "file:///tmp/x.al", "file": "/tmp/x.al"}),
-            serde_json::json!({"uri": 7}),
-            serde_json::json!({"uri": "not a url"}),
-            serde_json::json!({"uri": "https://example.com/Test.al"}),
-            serde_json::json!({"file": false}),
-            serde_json::json!({"file": "  "}),
-        ] {
-            assert!(
-                file_uri_from_params(&params).is_err(),
-                "malformed input must be rejected: {params}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn dispatch_ping_returns_pong() {
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        let shutdown = Notify::new();
-        let req = Request::new(7, "ping", None);
-        let resp = dispatch_request(&ws, req, &shutdown).await;
-        assert_eq!(resp.id, 7);
-        assert!(resp.error.is_none());
-        assert_eq!(resp.result, Some(serde_json::json!("pong")));
-    }
-
-    #[tokio::test]
-    async fn dispatch_unknown_method_is_method_not_found() {
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        let shutdown = Notify::new();
-        let req = Request::new(11, "definitelyNotAMethod", None);
-        let resp = dispatch_request(&ws, req, &shutdown).await;
-        assert_eq!(resp.id, 11);
-        assert!(resp.result.is_none());
-        let err = resp.error.expect("unknown method must yield an error");
-        assert_eq!(err.code, error_codes::METHOD_NOT_FOUND);
-        assert!(
-            err.message.contains("definitelyNotAMethod"),
-            "message should name the method: {}",
-            err.message
-        );
-    }
-
-    #[tokio::test]
-    async fn dispatch_status_reports_pid() {
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        let shutdown = Notify::new();
-        let req = Request::new(3, "status", None);
-        let resp = dispatch_request(&ws, req, &shutdown).await;
-        assert_eq!(resp.id, 3);
-        assert!(resp.error.is_none());
-        let result = resp.result.expect("status must return a result");
-        assert_eq!(
-            result.get("pid").and_then(|v| v.as_u64()),
-            Some(u64::from(std::process::id()))
-        );
-        assert_eq!(
-            result.get("indexedSymbols").and_then(|v| v.as_u64()),
-            Some(0)
-        );
-        assert!(
-            result
-                .get("semanticCache")
-                .is_some_and(serde_json::Value::is_object),
-            "a healthy cache must report concrete statistics"
-        );
-    }
-
-    #[tokio::test]
-    async fn dispatch_status_rejects_poisoned_inventory_locks() {
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        let poison_target = std::sync::Arc::clone(&ws);
-        let _ = std::thread::spawn(move || {
-            let _guard = poison_target
-                .semantic_cache
-                .write()
-                .expect("lock starts healthy");
-            panic!("poison semantic-cache lock for status regression");
-        })
-        .join();
-
-        let shutdown = Notify::new();
-        let response = dispatch_request(&ws, Request::new(4, "status", None), &shutdown).await;
-        let error = response
-            .error
-            .expect("poisoned status inventory must not be reported as empty");
-        assert_eq!(error.code, error_codes::INTERNAL_ERROR);
-        assert!(error.message.contains("poisoned"), "got: {}", error.message);
-    }
-
-    #[tokio::test]
-    async fn dispatch_shutdown_signals_notify_and_acks() {
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        let shutdown = Notify::new();
-        let notified = shutdown.notified();
-        tokio::pin!(notified);
-        assert!(
-            notified.as_mut().now_or_never().is_none(),
-            "notify should not be pre-signalled"
-        );
-
-        let req = Request::new(99, "shutdown", None);
-        let resp = dispatch_request(&ws, req, &shutdown).await;
-        assert_eq!(resp.id, 99);
-        assert!(resp.error.is_none());
-        assert_eq!(
-            resp.result,
-            Some(serde_json::json!({"shutdownRequested": true}))
-        );
-
-        assert!(
-            notified.as_mut().now_or_never().is_some(),
-            "shutdown must have signalled the Notify"
-        );
-    }
-
-    #[tokio::test]
-    async fn dispatch_diag_defaults_to_summary_when_params_absent() {
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        let shutdown = Notify::new();
-        let req = Request::new(5, "diag", None);
-        let resp = dispatch_request(&ws, req, &shutdown).await;
-        assert_eq!(resp.id, 5);
-        assert!(
-            resp.error.is_none(),
-            "diag summary must succeed: {:?}",
-            resp.error
-        );
-        assert!(resp.result.is_some());
-    }
-
-    #[test]
-    fn dispatch_diag_summary_serializes_memory_stats() {
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        let resp = dispatch_diag(&ws, 1, &serde_json::json!({ "cmd": "summary" }));
-        assert_eq!(resp.id, 1);
-        assert!(resp.error.is_none());
-        let result = resp.result.expect("summary must return memory stats");
-        assert!(
-            result.is_object(),
-            "memory stats serialize to a JSON object"
-        );
-    }
-
-    #[test]
-    fn dispatch_diag_rejects_unknown_subcommand() {
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        let resp = dispatch_diag(&ws, 2, &serde_json::json!({ "cmd": "bogus" }));
-        assert_eq!(resp.id, 2);
-        assert!(resp.result.is_none());
-        let err = resp.error.expect("unknown subcommand must error");
-        assert_eq!(err.code, error_codes::INVALID_PARAMS);
-        assert!(err.message.contains("bogus"));
-    }
-
-    #[test]
-    fn dispatch_diag_rejects_non_string_subcommand() {
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        let resp = dispatch_diag(&ws, 3, &serde_json::json!({ "cmd": false }));
-        let err = resp.error.expect("wrong-type subcommand must error");
-        assert_eq!(err.code, error_codes::INVALID_PARAMS);
-        assert!(err.message.contains("'cmd'"));
-    }
-
-    #[test]
-    fn parse_object_kind_rejects_garbage_with_invalid_params() {
-        // A non-AL kind string must map to an INVALID_PARAMS error Response
-        // that names the bad input — never panic, never default silently.
-        let err = parse_object_kind(8, "notakind").expect_err("garbage kind must be rejected");
-        assert_eq!(err.id, 8);
-        let rpc = err.error.expect("must carry an RpcError");
-        assert_eq!(rpc.code, error_codes::INVALID_PARAMS);
-        assert!(rpc.message.contains("notakind"));
-    }
-
-    #[test]
-    fn require_project_root_errors_when_no_project_loaded() {
-        // A fresh workspace has no project; require_project_root must return
-        // an INTERNAL_ERROR Response rather than a path.
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        let err = require_project_root(&ws, 4).expect_err("no project => Err");
-        assert_eq!(err.id, 4);
-        let rpc = err.error.expect("must carry an RpcError");
-        assert_eq!(rpc.code, error_codes::INTERNAL_ERROR);
-    }
-
-    /// JSON-RPC 2.0 ids may be strings; the daemon must dispatch them and echo
-    /// the id back unchanged instead of answering `-32700`.
-    #[tokio::test]
-    async fn string_and_null_request_ids_are_dispatched_and_echoed() {
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        let shutdown = Notify::new();
-
-        let request: Request =
-            serde_json::from_str(r#"{"jsonrpc":"2.0","id":"call-7","method":"ping"}"#)
-                .expect("a string id must deserialize");
-        let id = request.id.clone().expect("id present");
-        let response = dispatch_request(&ws, request, &shutdown).await;
-        let frame = response.to_json_with_id(&id);
-        assert_eq!(frame["id"], serde_json::json!("call-7"));
-        assert_eq!(frame["result"], serde_json::json!("pong"));
-
-        // A negative id is legal JSON-RPC but does not fit the dispatcher's
-        // u64, so it must be echoed verbatim rather than answered with 0.
-        let request: Request = serde_json::from_str(r#"{"jsonrpc":"2.0","id":-3,"method":"ping"}"#)
-            .expect("a negative id must deserialize");
-        let id = request.id.clone().expect("id present");
-        assert!(id.as_u64().is_none());
-        let response = dispatch_request(&ws, request, &shutdown).await;
-        assert_eq!(response.to_json_with_id(&id)["id"], serde_json::json!(-3));
-
-        let request: Request =
-            serde_json::from_str(r#"{"jsonrpc":"2.0","id":null,"method":"ping"}"#)
-                .expect("a null id must deserialize");
-        assert!(
-            !request.is_notification(),
-            "an explicit null id is a request, not a notification"
-        );
-        let id = request.id.clone().expect("id present");
-        let response = dispatch_request(&ws, request, &shutdown).await;
-        assert!(response.to_json_with_id(&id)["id"].is_null());
-    }
-
-    #[test]
-    fn in_flight_guard_tracks_dispatch_and_restores_on_drop() {
-        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        {
-            let _first = super::InFlightGuard::new(&counter);
-            assert_eq!(counter.load(std::sync::atomic::Ordering::Acquire), 1);
-            {
-                let _second = super::InFlightGuard::new(&counter);
-                assert_eq!(counter.load(std::sync::atomic::Ordering::Acquire), 2);
-            }
-            assert_eq!(
-                counter.load(std::sync::atomic::Ordering::Acquire),
-                1,
-                "a finished request must release its in-flight slot"
-            );
-        }
-        assert_eq!(
-            counter.load(std::sync::atomic::Ordering::Acquire),
-            0,
-            "the idle reaper must see zero once every request completes"
-        );
-    }
-
-    #[test]
-    fn a_message_without_an_id_is_a_notification() {
-        let notification: Request =
-            serde_json::from_str(r#"{"jsonrpc":"2.0","method":"ping"}"#).expect("valid request");
-        assert!(notification.is_notification());
-    }
-
-    /// Valid JSON that is not a valid request object is `-32600`, not `-32700`.
-    #[test]
-    fn malformed_request_objects_are_invalid_request_not_parse_error() {
-        // Valid JSON, but `method` is missing.
-        let value: serde_json::Value =
-            serde_json::from_str(r#"{"jsonrpc":"2.0","id":4}"#).expect("valid JSON");
-        assert!(serde_json::from_value::<Request>(value).is_err());
-        // Whereas this is not JSON at all.
-        assert!(serde_json::from_str::<serde_json::Value>("{not json").is_err());
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn project_root_wait_reports_busy_instead_of_no_project() {
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        // Hold the project write lock for longer than the wait window.
-        let holder = std::sync::Arc::clone(&ws);
-        let guard = holder.project.write().await;
-        let ws_for_task = std::sync::Arc::clone(&ws);
-        let probe =
-            tokio::task::spawn_blocking(move || super::project_root_with_wait(&ws_for_task));
-        let error = probe.await.expect("probe joins").expect_err("lock held");
-        assert!(error.contains("busy"), "unexpected error: {error}");
-        drop(guard);
-
-        // Once released, the same call reports "no project loaded" (Ok(None)),
-        // which is a different condition from "busy".
-        let ws_for_task = std::sync::Arc::clone(&ws);
-        let resolved =
-            tokio::task::spawn_blocking(move || super::project_root_with_wait(&ws_for_task))
-                .await
-                .expect("probe joins")
-                .expect("lock is free");
-        assert!(resolved.is_none());
-    }
-
-    // al-workspace's core initializer uses `block_in_place`, so this needs the
-    // multi-threaded flavor (the daemon itself always runs multi-threaded).
-    #[tokio::test(flavor = "multi_thread")]
-    async fn oversized_workspace_files_are_skipped_instead_of_aborting_startup() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("app.json"),
-            serde_json::json!({
-                "id": "00000000-0000-0000-0000-0000000000aa",
-                "name": "Skip test",
-                "publisher": "Tests",
-                "version": "1.0.0.0",
-                "dependencies": [],
-            })
-            .to_string(),
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("Small.Codeunit.al"),
-            "codeunit 50100 Small\n{\n}\n",
-        )
-        .unwrap();
-        let big = "codeunit 50101 Big\n{\n}\n".to_string() + &" ".repeat(4096);
-        std::fs::write(dir.path().join("Big.Codeunit.al"), &big).unwrap();
-
-        let ws = al_workspace::Workspace::new();
-        ws.config.write().await.max_document_size_bytes = Some(128);
-        super::initialize_daemon_workspace(&ws, dir.path())
-            .await
-            .expect("one oversized file must not abort daemon startup");
-
-        let small = url::Url::from_file_path(dir.path().join("Small.Codeunit.al")).unwrap();
-        assert!(
-            ws.documents.contains(&small),
-            "the rest of the workspace must still be queryable"
-        );
-        let oversized = url::Url::from_file_path(dir.path().join("Big.Codeunit.al")).unwrap();
-        assert!(
-            !ws.documents.contains(&oversized),
-            "the oversized file must be skipped, not opened"
-        );
-    }
-
-    #[test]
-    fn ensure_document_loads_file_from_disk_then_serves_text() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("On.al");
-        std::fs::write(&file, b"codeunit 50000 Foo {}").unwrap();
-        let uri = url::Url::from_file_path(&file).unwrap();
-
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        assert!(ws.documents.get_text(&uri).is_none());
-
-        // ensure_document uses block_in_place, which requires a multi-thread
-        // runtime context.
-        let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
-        let text = rt.block_on(async { require_document_text(&ws, &uri, 1).await });
-        assert_eq!(text.unwrap(), "codeunit 50000 Foo {}");
-        assert_eq!(
-            ws.documents.get_text(&uri).as_deref(),
-            Some("codeunit 50000 Foo {}")
-        );
-    }
-
-    #[test]
-    fn require_document_text_returns_file_not_found_for_missing_file() {
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        let uri = url::Url::parse("file:///no/such/al-file-xyz.al").unwrap();
-        let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
-        let err = rt.block_on(async { require_document_text(&ws, &uri, 6).await.unwrap_err() });
-        assert_eq!(err.id, 6);
-        let rpc = err.error.expect("must carry an RpcError");
-        assert_eq!(rpc.code, error_codes::FILE_NOT_FOUND);
-    }
-
-    #[test]
-    fn ensure_document_returns_invalid_params_for_non_file_uri() {
-        // A non-file URI has no filesystem path; ensure_document must return
-        // a concrete protocol error rather than silently failing.
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        let uri = url::Url::parse("https://example.com/x.al").unwrap();
-        let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
-        let response = rt
-            .block_on(async { ensure_document(&ws, &uri, 7) })
-            .expect_err("non-file URI must be rejected");
-        assert_eq!(response.id, 7);
-        assert_eq!(
-            response.error.expect("RPC error").code,
-            error_codes::INVALID_PARAMS
-        );
-    }
-
-    #[test]
-    fn extract_uri_parses_valid_file_url() {
-        let params = serde_json::json!({ "uri": "file:///a/b.al" });
-        let uri = extract_uri(&params).expect("a valid file URL must parse");
-        assert_eq!(uri.as_str(), "file:///a/b.al");
-        assert_eq!(uri.scheme(), "file");
-    }
-
-    #[test]
-    fn extract_uri_returns_none_when_uri_missing_or_unparseable() {
-        assert!(extract_uri(&serde_json::json!({})).is_none());
-        assert!(extract_uri(&serde_json::json!({ "uri": 42 })).is_none());
-        // Present string but not a parseable URL (no scheme → relative-ref error).
-        assert!(extract_uri(&serde_json::json!({ "uri": "not a url" })).is_none());
-    }
-
-    #[test]
-    fn extract_position_parses_valid_line_and_character() {
-        let params = serde_json::json!({ "line": 12, "character": 34 });
-        let pos = extract_position(&params).expect("valid coords must parse");
-        assert_eq!(pos.line, 12);
-        assert_eq!(pos.character, 34);
-    }
-
-    #[test]
-    fn extract_position_returns_none_when_a_field_is_missing() {
-        assert!(extract_position(&serde_json::json!({ "line": 1 })).is_none());
-        assert!(extract_position(&serde_json::json!({ "character": 1 })).is_none());
-        assert!(extract_position(&serde_json::json!({})).is_none());
-    }
-
-    #[test]
-    fn extract_position_rejects_character_overflow() {
-        // line in range, character out of u32 range — must reject the whole
-        // position rather than truncate the character.
-        let params = serde_json::json!({ "line": 0, "character": (u32::MAX as u64) + 1 });
-        assert!(extract_position(&params).is_none());
-    }
-
-    #[test]
-    fn invalid_params_carries_invalid_params_code_and_id() {
-        let resp = invalid_params(42);
-        assert_eq!(resp.id, 42);
-        assert!(resp.result.is_none());
-        let err = resp.error.expect("invalid_params must carry an error");
-        assert_eq!(err.code, error_codes::INVALID_PARAMS);
-        assert!(!err.message.is_empty());
-    }
-
-    #[test]
-    fn file_not_found_carries_file_not_found_code_and_id() {
-        let resp = file_not_found(13);
-        assert_eq!(resp.id, 13);
-        assert!(resp.result.is_none());
-        let err = resp.error.expect("file_not_found must carry an error");
-        assert_eq!(err.code, error_codes::FILE_NOT_FOUND);
-    }
-
-    #[test]
-    fn rpc_error_preserves_code_message_and_id() {
-        let resp = rpc_error(77, error_codes::INTERNAL_ERROR, "boom");
-        assert_eq!(resp.id, 77);
-        assert!(resp.result.is_none());
-        let err = resp.error.expect("rpc_error must carry an error");
-        assert_eq!(err.code, error_codes::INTERNAL_ERROR);
-        assert_eq!(err.message, "boom");
-    }
-
-    /// `rules` is a static query (lint rule catalogue) needing no project; it
-    /// must route through `dispatch_request` and return a JSON array result
-    /// with no error. The catalogue combines file-local, transaction,
-    /// native-check, and workspace-native rule registries; this test pins the
-    /// transport shape while the registry-specific test pins its contents.
-    #[tokio::test]
-    async fn dispatch_rules_returns_array_result() {
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        let shutdown = Notify::new();
-        let resp = dispatch_request(&ws, Request::new(21, "rules", None), &shutdown).await;
-        assert_eq!(resp.id, 21);
-        assert!(resp.error.is_none(), "rules must succeed: {:?}", resp.error);
-        assert!(
-            resp.result.expect("rules must return a result").is_array(),
-            "rules result must be a JSON array"
-        );
-    }
-
-    #[tokio::test]
-    async fn dispatch_packages_returns_empty_array_on_fresh_workspace() {
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        let shutdown = Notify::new();
-        let resp = dispatch_request(&ws, Request::new(22, "packages", None), &shutdown).await;
-        assert_eq!(resp.id, 22);
-        assert!(resp.error.is_none());
-        let arr = resp.result.expect("packages result").as_array().cloned();
-        assert_eq!(arr, Some(vec![]));
-    }
-
-    /// `entrypoints` builds the insight graph lazily; on a fresh (empty)
-    /// workspace it must still succeed and return a JSON array.
-    #[tokio::test]
-    async fn dispatch_entrypoints_succeeds_on_empty_workspace() {
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        let shutdown = Notify::new();
-        let resp = dispatch_request(&ws, Request::new(23, "entrypoints", None), &shutdown).await;
-        assert_eq!(resp.id, 23);
-        assert!(resp.error.is_none());
-        assert!(resp.result.expect("entrypoints result").is_array());
-    }
-
-    /// `hover` requires uri + position; with null params (the default when the
-    /// wire omits `params`) it must route through and surface INVALID_PARAMS,
-    /// proving both the routing entry and the shared `invalid_params` helper.
-    #[tokio::test]
-    async fn dispatch_hover_without_params_is_invalid_params() {
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        let shutdown = Notify::new();
-        let resp = dispatch_request(&ws, Request::new(31, "hover", None), &shutdown).await;
-        assert_eq!(resp.id, 31);
-        assert!(resp.result.is_none());
-        let err = resp.error.expect("missing hover params must error");
-        assert_eq!(err.code, error_codes::INVALID_PARAMS);
-    }
-
-    /// Routing for synchronous LSP methods that also validate params. Each must
-    /// be reachable via `dispatch_request` and return INVALID_PARAMS for the
-    /// empty-params case — this covers a swath of the routing table at once.
-    #[tokio::test]
-    async fn dispatch_param_validating_methods_route_and_reject_empty_params() {
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        let shutdown = Notify::new();
-        for method in [
-            "definition",
-            "references",
-            "implementations",
-            "signatureHelp",
-            "rename",
-            "documentSymbols",
-            "foldingRanges",
-            "semanticTokens",
-            "lint",
-            "format",
-            "trace",
-        ] {
-            let req = Request::new(40, method, None);
-            let resp = dispatch_request(&ws, req, &shutdown).await;
-            assert_eq!(resp.id, 40, "{method}: id must be preserved");
-            assert!(
-                resp.result.is_none(),
-                "{method}: empty params must not yield a result"
-            );
-            let err = resp
-                .error
-                .unwrap_or_else(|| panic!("{method}: empty params must error"));
-            assert_eq!(
-                err.code,
-                error_codes::INVALID_PARAMS,
-                "{method}: expected INVALID_PARAMS, got code {}",
-                err.code
-            );
-        }
-    }
-
-    /// `object` requires a `kind` param; an unknown kind string must route
-    /// through `parse_object_kind` and surface INVALID_PARAMS naming the input.
-    #[tokio::test]
-    async fn dispatch_object_with_bad_kind_is_invalid_params() {
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        let shutdown = Notify::new();
-        let params = serde_json::json!({ "kind": "notakind", "name": "X" });
-        let req = Request::new(45, "object", Some(params));
-        let resp = dispatch_request(&ws, req, &shutdown).await;
-        assert_eq!(resp.id, 45);
-        let err = resp.error.expect("bad kind must error");
-        assert_eq!(err.code, error_codes::INVALID_PARAMS);
-        assert!(err.message.contains("notakind"));
-    }
-
-    /// The request id must be threaded through to the response for the
-    /// not-found path too — a regression here would mismatch client futures.
-    #[tokio::test]
-    async fn dispatch_preserves_request_id_on_unknown_method() {
-        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
-        let shutdown = Notify::new();
-        let resp = dispatch_request(&ws, Request::new(9_999, "nope.nope", None), &shutdown).await;
-        assert_eq!(resp.id, 9_999);
-        assert_eq!(
-            resp.error.expect("unknown must error").code,
-            error_codes::METHOD_NOT_FOUND
-        );
-    }
-}
+mod tests;

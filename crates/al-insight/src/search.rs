@@ -7,7 +7,8 @@
 //!
 //! Two APIs are available:
 //!
-//! - [`trace_event`] — simple flattened list, uses only the insight graph.
+//! - [`trace_event`] — flattened list; pass a [`CallGraph`] to follow the
+//!   events a subscriber's body raises, or `None` for insight-graph edges only.
 //! - [`trace_event_chain`] — full tree, uses the [`CallGraph`] for richer
 //!   traversal through direct/trigger calls as well as event subscriptions.
 //!   Cycle detection prevents infinite loops.
@@ -44,17 +45,11 @@ pub struct TraceStep {
     pub object: String,
 }
 
-/// Flattened event trace using only the insight graph.
-///
-/// Without a call graph the analysis cannot know which events a subscriber's
-/// *body* raises, so no `publishes` hops are emitted. Pass a call graph to
-/// [`trace_event_with_calls`] for the full chain.
-pub fn trace_event(graph: &InsightGraph, event_name: &str, max_depth: usize) -> Vec<TraceStep> {
-    trace_event_with_calls(graph, None, event_name, max_depth)
-}
-
 /// Flattened event trace, optionally following the events a subscriber's body
 /// actually raises (via `call_graph`).
+///
+/// With `call_graph` as `None` the analysis cannot know which events a
+/// subscriber's body raises, so no `publishes` hops are emitted.
 ///
 /// The previous implementation pushed *every* event published by a subscriber's
 /// **object** as a depth+1 "publishes" step, without checking that the
@@ -62,7 +57,7 @@ pub fn trace_event(graph: &InsightGraph, event_name: &str, max_depth: usize) -> 
 /// happened to also contain subscribers. It also shared one `visited` set
 /// across all same-named root events, which truncated every root's chain after
 /// the first.
-pub fn trace_event_with_calls(
+pub fn trace_event(
     graph: &InsightGraph,
     call_graph: Option<&CallGraph>,
     event_name: &str,
@@ -136,12 +131,7 @@ fn events_raised_by(
     let mut raised: Vec<petgraph::graph::NodeIndex> = call_graph
         .callees_of(NodeId::from(subscriber))
         .iter()
-        .filter(|edge| {
-            matches!(
-                edge.kind,
-                EdgeKind::DirectCall | EdgeKind::IndirectCall | EdgeKind::TriggerInvocation
-            )
-        })
+        .filter(|edge| matches!(edge.kind, EdgeKind::DirectCall | EdgeKind::IndirectCall))
         .map(|edge| petgraph::graph::NodeIndex::new(edge.to.0))
         .filter(|&idx| {
             graph
@@ -427,10 +417,9 @@ fn recurse_subscriber(
     fn kind_rank(k: &EdgeKind) -> u8 {
         match k {
             EdgeKind::DirectCall => 0,
-            EdgeKind::TriggerInvocation => 1,
-            EdgeKind::RecordTrigger => 2,
-            EdgeKind::EventSubscription => 3,
-            EdgeKind::IndirectCall => 4,
+            EdgeKind::RecordTrigger => 1,
+            EdgeKind::EventSubscription => 2,
+            EdgeKind::IndirectCall => 3,
         }
     }
     callees.sort_by(|a, b| {
@@ -441,6 +430,11 @@ fn recurse_subscriber(
     let mut children = Vec::new();
 
     for edge in callees {
+        // A subscriber's subscription edge leads back to the event being
+        // traced, which printed as a cycle in place of the subscriber's body.
+        if edge.kind == EdgeKind::EventSubscription {
+            continue;
+        }
         let callee_id = edge.to;
         let info = cg.node_info(callee_id);
         let node_type = info.map(|i| i.node_type.as_str()).unwrap_or("unknown");
@@ -493,17 +487,6 @@ fn recurse_subscriber(
     children
 }
 
-/// Find entry points using only the insight graph.
-///
-/// **Call edges do not live in the insight graph** — production code only ever
-/// records them in the separate [`CallGraph`] — so this variant can only see
-/// `SubscribesTo`/`Publishes`/`Triggers` relationships and consequently reports
-/// nearly every procedure. Prefer [`find_entry_points_with_calls`], which is
-/// what the `entrypoints` command uses.
-pub fn find_entry_points(graph: &InsightGraph) -> Vec<&InsightNode> {
-    find_entry_points_with_calls(graph, None)
-}
-
 /// Find entry points: procedures that nothing else calls, subscribes through,
 /// or triggers.
 ///
@@ -512,7 +495,7 @@ pub fn find_entry_points(graph: &InsightGraph) -> Vec<&InsightNode> {
 /// is where direct/indirect/trigger call edges actually live — a procedure with
 /// any incoming call edge is excluded. Without it the result degenerates to
 /// "every procedure", which is why the daemon passes its call graph.
-pub fn find_entry_points_with_calls<'g>(
+pub fn find_entry_points<'g>(
     graph: &'g InsightGraph,
     call_graph: Option<&CallGraph>,
 ) -> Vec<&'g InsightNode> {
@@ -541,11 +524,16 @@ pub fn find_entry_points_with_calls<'g>(
 }
 
 pub fn export_dot(graph: &InsightGraph) -> String {
+    export_dot_where(graph, |_| true)
+}
+
+/// [`export_dot`] over the nodes `keep` accepts, and the edges between them.
+pub fn export_dot_where(graph: &InsightGraph, keep: impl Fn(usize) -> bool) -> String {
     let mut dot = String::from("digraph insight {\n");
     dot.push_str("    rankdir=LR;\n");
     dot.push_str("    node [shape=box];\n\n");
 
-    for idx in graph.graph.node_indices() {
+    for idx in graph.graph.node_indices().filter(|idx| keep(idx.index())) {
         let node = &graph.graph[idx];
         let (label, shape) = match node {
             InsightNode::Object { kind, name, .. } => (format!("{kind}\\n{name}"), "box"),
@@ -571,7 +559,11 @@ pub fn export_dot(graph: &InsightGraph) -> String {
 
     dot.push('\n');
 
-    for edge_ref in graph.graph.edge_references() {
+    for edge_ref in graph
+        .graph
+        .edge_references()
+        .filter(|edge| keep(edge.source().index()) && keep(edge.target().index()))
+    {
         writeln!(
             dot,
             "    n{} -> n{} [label=\"{}\"];",
@@ -584,6 +576,45 @@ pub fn export_dot(graph: &InsightGraph) -> String {
 
     dot.push_str("}\n");
     dot
+}
+
+/// The indices of a slice of the graph: the nodes whose object `own`
+/// accepts (by name), and with `neighbours` every node one edge away from
+/// them, so a call out of the slice still shows where it goes.
+pub fn graph_slice(
+    graph: &InsightGraph,
+    own: impl Fn(&str) -> bool,
+    neighbours: bool,
+) -> HashSet<usize> {
+    let mut keep = HashSet::new();
+    for idx in graph.graph.node_indices() {
+        let object_name = match &graph.graph[idx] {
+            InsightNode::Object { name, .. } => name,
+            InsightNode::Procedure { object_name, .. }
+            | InsightNode::Event { object_name, .. }
+            | InsightNode::Subscriber { object_name, .. } => object_name,
+        };
+        if !own(object_name) {
+            continue;
+        }
+        keep.insert(idx.index());
+        if neighbours {
+            keep.extend(graph.graph.neighbors_undirected(idx).map(|n| n.index()));
+        }
+    }
+    keep
+}
+
+/// Nodes plus edges of the slice `keep`, the size an export of it has.
+pub fn slice_size(graph: &InsightGraph, keep: &HashSet<usize>) -> usize {
+    keep.len()
+        + graph
+            .graph
+            .edge_references()
+            .filter(|edge| {
+                keep.contains(&edge.source().index()) && keep.contains(&edge.target().index())
+            })
+            .count()
 }
 
 #[derive(Serialize)]
@@ -602,9 +633,16 @@ pub struct EdgeJson {
 }
 
 pub fn export_json(graph: &InsightGraph) -> GraphJson {
+    export_json_where(graph, |_| true)
+}
+
+/// [`export_json`] over the nodes `keep` accepts, and the edges between
+/// them. Node ids stay the graph's own indices.
+pub fn export_json_where(graph: &InsightGraph, keep: impl Fn(usize) -> bool) -> GraphJson {
     let nodes: Vec<serde_json::Value> = graph
         .graph
         .node_indices()
+        .filter(|idx| keep(idx.index()))
         .map(|idx| {
             let node = &graph.graph[idx];
             // InsightNode contains only JSON-compatible fields. A failure
@@ -622,6 +660,7 @@ pub fn export_json(graph: &InsightGraph) -> GraphJson {
     let edges: Vec<EdgeJson> = graph
         .graph
         .edge_references()
+        .filter(|e| keep(e.source().index()) && keep(e.target().index()))
         .map(|e| EdgeJson {
             from: e.source().index(),
             to: e.target().index(),
@@ -636,6 +675,47 @@ pub fn export_json(graph: &InsightGraph) -> GraphJson {
 mod tests {
     use super::*;
     use al_symbols::{MethodSymbol, ObjectKind, SymbolEntry, SymbolIndex};
+
+    /// A workspace slice keeps its own nodes and the ones a single edge
+    /// away, and exports only the edges inside it.
+    #[test]
+    fn a_graph_slice_keeps_its_objects_and_their_neighbours() {
+        let mut graph = InsightGraph::new();
+        let proc = |object: &str, name: &str| InsightNode::Procedure {
+            object_kind: ObjectKind::Codeunit,
+            object_name: object.into(),
+            name: name.into(),
+            is_local: false,
+        };
+        let key = |object: &str, name: &str| {
+            NodeKey::Procedure(
+                ObjectKind::Codeunit,
+                object.to_lowercase(),
+                name.to_lowercase(),
+            )
+        };
+        let mine = graph.ensure_node(key("Mine", "Run"), proc("Mine", "Run"));
+        let post = graph.ensure_node(key("Sales-Post", "Post"), proc("Sales-Post", "Post"));
+        let deep = graph.ensure_node(key("Sales-Post", "Deep"), proc("Sales-Post", "Deep"));
+        let other = graph.ensure_node(key("Other", "X"), proc("Other", "X"));
+        graph.add_edge(mine, post, InsightEdge::Calls);
+        graph.add_edge(post, deep, InsightEdge::Calls);
+        graph.add_edge(other, deep, InsightEdge::Calls);
+
+        let keep = graph_slice(&graph, |name| name == "Mine", true);
+        let expected: HashSet<usize> = [mine.index(), post.index()].into_iter().collect();
+        assert_eq!(keep, expected);
+        assert_eq!(
+            slice_size(&graph, &keep),
+            3,
+            "two nodes and the edge between them"
+        );
+
+        let json = export_json_where(&graph, |index| keep.contains(&index));
+        assert_eq!(json.nodes.len(), 2);
+        assert_eq!(json.edges.len(), 1);
+        assert!(!export_dot_where(&graph, |index| keep.contains(&index)).contains("Other"));
+    }
 
     fn make_codeunit_with_events(
         id: i32,
@@ -724,7 +804,7 @@ mod tests {
         let mut graph = InsightGraph::new();
         graph.build_from_index(&index);
 
-        let trace = trace_event(&graph, "OnPost", 10);
+        let trace = trace_event(&graph, None, "OnPost", 10);
         assert!(!trace.is_empty());
         assert_eq!(trace[0].name, "OnPost");
         assert_eq!(trace[0].node_type, "event");
@@ -760,7 +840,7 @@ mod tests {
         for _ in 0..5 {
             let mut graph = InsightGraph::new();
             graph.build_from_index(&index);
-            let trace = trace_event(&graph, "Shared", 10);
+            let trace = trace_event(&graph, None, "Shared", 10);
             match &reference {
                 None => reference = Some(trace),
                 Some(prev) => {
@@ -788,7 +868,7 @@ mod tests {
         let mut graph = InsightGraph::new();
         graph.build_from_index(&index);
 
-        let trace = trace_event(&graph, "MyEvent", 0);
+        let trace = trace_event(&graph, None, "MyEvent", 0);
         assert_eq!(trace.len(), 1);
     }
 
@@ -844,7 +924,7 @@ mod tests {
         let mut graph = InsightGraph::new();
         graph.build_from_index(&index);
 
-        let entry_points = find_entry_points(&graph);
+        let entry_points = find_entry_points(&graph, None);
         assert!(entry_points.is_empty());
     }
 
@@ -1288,7 +1368,7 @@ mod tests {
         cg.add_direct_call(NodeId::from(entry), NodeId::from(helper));
 
         // Without a call graph both procedures look like entry points.
-        let names_without: Vec<String> = find_entry_points(&insight)
+        let names_without: Vec<String> = find_entry_points(&insight, None)
             .into_iter()
             .filter_map(|node| match node {
                 InsightNode::Procedure { name, .. } => Some(name.clone()),
@@ -1297,7 +1377,7 @@ mod tests {
             .collect();
         assert_eq!(names_without.len(), 2);
 
-        let mut names: Vec<String> = find_entry_points_with_calls(&insight, Some(&cg))
+        let mut names: Vec<String> = find_entry_points(&insight, Some(&cg))
             .into_iter()
             .filter_map(|node| match node {
                 InsightNode::Procedure { name, .. } => Some(name.clone()),
@@ -1331,7 +1411,7 @@ mod tests {
         let mut insight = InsightGraph::new();
         insight.build_from_index(&index);
 
-        let steps = trace_event(&insight, "OnPost", 10);
+        let steps = trace_event(&insight, None, "OnPost", 10);
         assert!(
             steps.iter().any(|s| s.name == "Handle"),
             "the subscriber must still be listed: {steps:?}"
@@ -1377,7 +1457,7 @@ mod tests {
             .unwrap();
         cg.add_direct_call(NodeId::from(handler), NodeId::from(secondary));
 
-        let steps = trace_event_with_calls(&insight, Some(&cg), "OnPost", 10);
+        let steps = trace_event(&insight, Some(&cg), "OnPost", 10);
         assert!(
             steps
                 .iter()
@@ -1408,7 +1488,7 @@ mod tests {
         let mut insight = InsightGraph::new();
         insight.build_from_index(&index);
 
-        let steps = trace_event(&insight, "OnPost", 10);
+        let steps = trace_event(&insight, None, "OnPost", 10);
         let origins = steps.iter().filter(|s| s.edge_type == "origin").count();
         assert_eq!(origins, 2, "both publishers are roots: {steps:?}");
         assert!(steps.iter().any(|s| s.name == "HandleA"), "{steps:?}");

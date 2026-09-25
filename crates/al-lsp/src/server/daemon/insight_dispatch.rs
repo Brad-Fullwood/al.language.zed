@@ -1,6 +1,7 @@
 //! Insight engine dispatchers — trace, entrypoints, graph export, dead code, impact, suggest_event.
 
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
+use al_syntax::IdentifierText;
 use al_workspace::Workspace;
 
 use super::{invalid_params, optional_bounded_usize_param, rpc_error, serialized_response};
@@ -43,6 +44,11 @@ pub(super) fn dispatch_trace(
     // serve the WORKSPACE-ENRICHED graph (packages + workspace
     // objects/procedures/calls), not the package-only one. The enriched build
     // is cached; the returned call-graph read guard is held only while serving.
+    // A subscriber's body calls are outgoing edges of a procedure the lazy
+    // graph may not have resolved yet.
+    if let Err(error) = workspace.complete_workspace_call_edges() {
+        return graph_build_error(id, "trace", error);
+    }
     let (graph, _cg_guard) = match workspace.get_or_build_call_graph() {
         Ok(graph) => graph,
         Err(error) => return graph_build_error(id, "trace", error),
@@ -50,16 +56,15 @@ pub(super) fn dispatch_trace(
     // Supply the call graph so the trace can follow the events a subscriber's
     // body actually raises instead of fabricating hops from its object's
     // unrelated publishers.
-    let steps = al_insight::search::trace_event_with_calls(
-        &graph,
-        _cg_guard.as_ref(),
-        event_name,
-        max_depth,
-    );
+    let steps = al_insight::search::trace_event(&graph, _cg_guard.as_ref(), event_name, max_depth);
     serialized_response(id, &steps, "trace")
 }
 
 pub(super) fn dispatch_entrypoints(workspace: &Workspace, id: u64) -> Response {
+    // Callers are incoming edges, which only a fully resolved graph has.
+    if let Err(error) = workspace.complete_workspace_call_edges() {
+        return graph_build_error(id, "entrypoints", error);
+    }
     let (graph, _cg_guard) = match workspace.get_or_build_call_graph() {
         Ok(graph) => graph,
         Err(error) => return graph_build_error(id, "entrypoints", error),
@@ -67,7 +72,7 @@ pub(super) fn dispatch_entrypoints(workspace: &Workspace, id: u64) -> Response {
     // Call edges live in the CallGraph, not the InsightGraph — pass it, or the
     // filter has nothing to exclude and every procedure looks like an entry
     // point.
-    let entry_points = al_insight::search::find_entry_points_with_calls(&graph, _cg_guard.as_ref());
+    let entry_points = al_insight::search::find_entry_points(&graph, _cg_guard.as_ref());
     serialized_response(id, &entry_points, "entrypoints")
 }
 
@@ -93,17 +98,33 @@ pub(super) fn dispatch_graph_export(
             }
         },
     };
+    let scope = match super::scope::scope_param(params) {
+        Ok(scope) => scope,
+        Err(message) => return super::rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
     let (graph, _cg_guard) = match workspace.get_or_build_call_graph() {
         Ok(graph) => graph,
         Err(error) => return graph_build_error(id, "graph export", error),
     };
 
+    let keep = scope.map(|scope| scoped_graph_nodes(workspace, &graph, scope));
+    let kept = |index: usize| keep.as_ref().is_none_or(|keep| keep.contains(&index));
+
     // Refuse to materialise an unbounded graph into one JSON-RPC response.
     // The whole exported document lives in memory twice (the String/Value
     // *and* the framed JSON-RPC body), so even a "moderately large"
     // workspace can OOM the daemon's tokio worker thread.
-    let size = graph.node_count() + graph.edge_count();
+    let size = match &keep {
+        None => graph.node_count() + graph.edge_count(),
+        Some(keep) => al_insight::search::slice_size(&graph, keep),
+    };
     if size > MAX_GRAPH_EXPORT_NODES_AND_EDGES {
+        let narrower = if scope == Some(super::scope::Scope::Workspace) {
+            "Use the trace or impact endpoints to narrow the query."
+        } else {
+            "Export the workspace part with scope 'workspace' (`--scope workspace`), or use \
+             the trace or impact endpoints."
+        };
         return Response {
             id,
             result: None,
@@ -111,29 +132,65 @@ pub(super) fn dispatch_graph_export(
                 code: error_codes::INVALID_PARAMS,
                 message: format!(
                     "Graph too large to export in one response: {size} nodes+edges \
-                     exceeds cap of {MAX_GRAPH_EXPORT_NODES_AND_EDGES}. \
-                     Use the trace or impact endpoints to narrow the query."
+                     exceeds cap of {MAX_GRAPH_EXPORT_NODES_AND_EDGES}. {narrower}"
                 ),
             }),
             ..Default::default()
         };
     }
 
-    match format {
+    let mut result = match format {
         "dot" => {
-            let dot = al_insight::search::export_dot(&graph);
-            Response {
-                id,
-                result: Some(serde_json::json!({ "format": "dot", "content": dot })),
-                error: None,
-                ..Default::default()
+            let dot = al_insight::search::export_dot_where(&graph, kept);
+            serde_json::json!({ "format": "dot", "content": dot })
+        }
+        "json" => match serde_json::to_value(al_insight::search::export_json_where(&graph, kept)) {
+            Ok(value) => value,
+            Err(error) => {
+                return super::rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!("serializing graphExport: {error}"),
+                );
             }
-        }
-        "json" => {
-            let json = al_insight::search::export_json(&graph);
-            serialized_response(id, &json, "graphExport")
-        }
+        },
         _ => unreachable!("format was validated above"),
+    };
+    if let (Some(scope), Some(keep), serde_json::Value::Object(object)) =
+        (scope, &keep, &mut result)
+    {
+        object.insert("scope".into(), serde_json::json!(scope.label()));
+        object.insert(
+            "outOfScopeCount".into(),
+            serde_json::json!(graph.node_count() - keep.len()),
+        );
+    }
+    Response {
+        id,
+        result: Some(result),
+        error: None,
+        ..Default::default()
+    }
+}
+
+/// The graph nodes a scope keeps, by index.
+///
+/// `workspace` keeps the nodes of the workspace's objects and the nodes one
+/// edge away from them, so a call into Base Application shows where it goes
+/// without the rest of Base Application. `packages` keeps everything else.
+fn scoped_graph_nodes(
+    workspace: &Workspace,
+    graph: &al_insight::graph::InsightGraph,
+    scope: super::scope::Scope,
+) -> std::collections::HashSet<usize> {
+    let names = super::scope::workspace_object_names(workspace);
+    let own = |name: &str| names.contains(&name.to_lowercase());
+    match scope {
+        super::scope::Scope::All => al_insight::search::graph_slice(graph, |_| true, false),
+        super::scope::Scope::Packages => {
+            al_insight::search::graph_slice(graph, |name| !own(name), false)
+        }
+        super::scope::Scope::Workspace => al_insight::search::graph_slice(graph, own, true),
     }
 }
 
@@ -200,7 +257,41 @@ pub(super) fn dispatch_impact(
             ..Default::default()
         };
     }
+    // Consumers are found through the workspace-enriched index; without the
+    // enrichment pass a workspace symbol looks like it has none.
+    if let Err(error) = workspace.get_or_build_call_graph() {
+        return graph_build_error(id, "impact", error);
+    }
     match al_analysis::queries::impact::impact(workspace, symbol) {
+        // An empty list reads the same whether the symbol is unused or
+        // misspelled, so resolve the name before reporting zero.
+        Ok(entries) if entries.is_empty() => match resolve_impact_symbol(workspace, symbol) {
+            SymbolResolution::Found => Response {
+                id,
+                result: Some(serde_json::json!({ "symbol": symbol, "impacted": entries })),
+                error: None,
+                ..Default::default()
+            },
+            SymbolResolution::UnknownObject { name, candidates } => {
+                not_found_error(id, "impact", "object", &name, &candidates)
+            }
+            SymbolResolution::UnknownMember {
+                object,
+                member,
+                candidates,
+            } => rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                &format!(
+                    "impact: object '{object}' has no member named '{member}'. {}",
+                    if candidates.is_empty() {
+                        format!("Call `source \"{object}\" --list-procedures` for its members.")
+                    } else {
+                        format!("Closest members: {}.", candidates.join(", "))
+                    }
+                ),
+            ),
+        },
         Ok(entries) => Response {
             id,
             result: Some(serde_json::json!({ "symbol": symbol, "impacted": entries })),
@@ -247,6 +338,12 @@ pub(super) fn dispatch_suggest_event(
             }
         };
 
+    // The trace walks outgoing call edges, which the lazy graph leaves
+    // unresolved for most workspace procedures until a query reaches them:
+    // every run reported "still being analyzed" and stopped there.
+    if let Err(error) = workspace.complete_workspace_call_edges() {
+        return graph_build_error(id, "suggestEvent", error);
+    }
     match al_analysis::queries::suggest_event::suggest_event(workspace, &query) {
         Ok(result) => serialized_response(id, &result, "suggestEvent"),
         Err(al_analysis::queries::suggest_event::SuggestEventError::Graph(error)) => {
@@ -273,8 +370,169 @@ pub(super) fn dispatch_table_impact(
     let Some(table) = params.get("table").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
-    let result = al_insight::analysis::table_impact(&workspace.symbols, table);
+    // Workspace objects reach `workspace.symbols` through the call-graph
+    // enrichment pass. Without it this method saw package entries only and
+    // answered `totalImpacts: 0` for a table that workspace pages use.
+    if let Err(error) = workspace.get_or_build_call_graph() {
+        return graph_build_error(id, "tableImpact", error);
+    }
+    let mut result = al_insight::analysis::table_impact(&workspace.symbols, table);
+    al_insight::analysis::add_workspace_local_record_variables(
+        &mut result,
+        &workspace.file_index,
+        table,
+    );
+    if result.total_impacts == 0 {
+        if let SymbolResolution::UnknownObject { name, candidates } =
+            resolve_impact_symbol(workspace, table)
+        {
+            return not_found_error(id, "tableImpact", "table", &name, &candidates);
+        }
+    }
     serialized_response(id, &result, "tableImpact")
+}
+
+/// What `impact`'s `symbol` argument turned out to name.
+///
+/// An agent cannot act on a bare empty list: it reads the same whether the
+/// symbol is unused or misspelled. The survey's `impact "Sales-Post.PostSalesDoc"`
+/// returned `{"impacted": []}` for a procedure whose real name is `RunWithCheck`.
+enum SymbolResolution {
+    Found,
+    UnknownObject {
+        name: String,
+        candidates: Vec<String>,
+    },
+    UnknownMember {
+        object: String,
+        member: String,
+        candidates: Vec<String>,
+    },
+}
+
+fn resolve_impact_symbol(workspace: &Workspace, symbol: &str) -> SymbolResolution {
+    let (object, member) = split_object_member(symbol);
+    let entries = workspace.symbols.get_by_name(&object);
+    let in_workspace_files = workspace
+        .file_index
+        .object_info
+        .iter()
+        .any(|entry| entry.value().name.eq_ignore_ascii_case(&object));
+    if entries.is_empty() && !in_workspace_files {
+        let candidates = unknown_symbol_candidates(workspace, &object);
+        return SymbolResolution::UnknownObject {
+            name: object,
+            candidates,
+        };
+    }
+    let Some(member) = member else {
+        return SymbolResolution::Found;
+    };
+    // A workspace object indexed only in the file index carries no members
+    // here, so an unverifiable member is accepted rather than rejected.
+    if entries.is_empty() {
+        return SymbolResolution::Found;
+    }
+    let mut members: Vec<String> = Vec::new();
+    for entry in &entries {
+        members.extend(entry.methods.iter().map(|method| method.name.clone()));
+        members.extend(entry.fields.iter().map(|field| field.name.clone()));
+        members.extend(entry.controls.iter().map(|control| control.name.clone()));
+    }
+    if members
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(&member))
+    {
+        return SymbolResolution::Found;
+    }
+    let member_lower = member.to_lowercase();
+    let mut candidates: Vec<String> = members
+        .iter()
+        .filter(|candidate| {
+            let lower = candidate.to_lowercase();
+            lower.contains(&member_lower) || member_lower.contains(&lower)
+        })
+        .cloned()
+        .collect();
+    candidates.sort();
+    candidates.dedup();
+    candidates.truncate(8);
+    SymbolResolution::UnknownMember {
+        object,
+        member,
+        candidates,
+    }
+}
+
+/// Split `Object."Member"` into its two halves, ignoring a dot inside quotes.
+fn split_object_member(symbol: &str) -> (String, Option<String>) {
+    let mut in_quotes = false;
+    for (index, character) in symbol.char_indices() {
+        match character {
+            '"' => in_quotes = !in_quotes,
+            '.' if !in_quotes => {
+                return (
+                    symbol[..index].unquote_identifier().into_owned(),
+                    Some(symbol[index + 1..].unquote_identifier().into_owned()),
+                );
+            }
+            _ => {}
+        }
+    }
+    (symbol.unquote_identifier().into_owned(), None)
+}
+
+/// Close-enough object names for a name the index does not hold. Uses the same
+/// fuzzy matcher `search` serves, over both packages and workspace source, so
+/// the suggestion is a name the agent's next call can use verbatim.
+fn unknown_symbol_candidates(workspace: &Workspace, name: &str) -> Vec<String> {
+    let mut candidates: Vec<String> = workspace
+        .symbols
+        .search(name, 8)
+        .iter()
+        .map(|entry| entry.name.clone())
+        .collect();
+    // `workspace_search` matches substrings, so a misspelling in the last few
+    // characters finds nothing. Shortening the query until it matches turns
+    // "Sales Postr" into the prefix that does hit "Sales Poster".
+    let mut prefix_length = name.len();
+    while prefix_length >= 3 {
+        let Some(prefix) = name.get(..prefix_length) else {
+            prefix_length -= 1;
+            continue;
+        };
+        let found = al_analysis::queries::search::workspace_search(workspace, prefix, 8);
+        if !found.is_empty() {
+            candidates.extend(found.into_iter().map(|result| result.info.name));
+            break;
+        }
+        prefix_length -= 1;
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates.truncate(8);
+    candidates
+}
+
+/// A not-found error naming the closest candidates, so the agent's next call
+/// can be the right one instead of a full dump to find the real name.
+fn not_found_error(
+    id: u64,
+    method: &str,
+    noun: &str,
+    name: &str,
+    candidates: &[String],
+) -> Response {
+    let suggestion = if candidates.is_empty() {
+        format!("Run `search {name}` to find the name that does exist.")
+    } else {
+        format!("Closest names in the index: {}.", candidates.join(", "))
+    };
+    rpc_error(
+        id,
+        error_codes::INVALID_PARAMS,
+        &format!("{method}: no {noun} named '{name}' is loaded. {suggestion}"),
+    )
 }
 
 /// Returns the event propagation tree, including cycles.
@@ -291,6 +549,11 @@ pub(super) fn dispatch_trace_chain(
         Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
     };
 
+    // A subscriber's body calls are outgoing edges of a procedure the lazy
+    // graph may not have resolved yet.
+    if let Err(error) = workspace.complete_workspace_call_edges() {
+        return graph_build_error(id, "traceChain", error);
+    }
     let (insight, cg_guard) = match workspace.get_or_build_call_graph() {
         Ok(graph) => graph,
         Err(error) => return graph_build_error(id, "traceChain", error),
@@ -319,6 +582,39 @@ pub(super) fn dispatch_event_map(workspace: &Workspace, id: u64) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A procedure called only from a low-fanout file had no resolved
+    /// incoming edge, so `entrypoints` listed it as never called.
+    #[test]
+    fn entrypoints_leaves_out_procedures_called_from_their_own_object() {
+        let workspace = Workspace::new();
+        // A busier file puts the probe below the eager tier, whose threshold
+        // is relative: a lone file is always in it.
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/ws/Busy.Codeunit.al"),
+            "codeunit 50107 Busy\n{\n    procedure Run()\n    begin\n        Step(); Step(); Step(); Step(); Step(); Step();\n    end;\n\n    procedure Step()\n    begin\n    end;\n}\n"
+                .to_string(),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/ws/CallProbe.Codeunit.al"),
+            "codeunit 50106 \"Call Probe\"\n{\n    trigger OnRun()\n    begin\n        FromTrigger();\n    end;\n\n    procedure Caller()\n    begin\n        FromProcedure();\n    end;\n\n    procedure FromTrigger()\n    begin\n    end;\n\n    procedure FromProcedure()\n    begin\n    end;\n}\n"
+                .to_string(),
+        );
+
+        let response = dispatch_entrypoints(&workspace, 1);
+
+        let names: Vec<String> = response
+            .result
+            .unwrap_or_else(|| panic!("{:?}", response.error))
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row["name"].as_str().map(str::to_string))
+            .collect();
+        assert!(names.contains(&"Caller".to_string()), "{names:?}");
+        assert!(!names.contains(&"FromTrigger".to_string()), "{names:?}");
+        assert!(!names.contains(&"FromProcedure".to_string()), "{names:?}");
+    }
 
     fn workspace_with_malformed_dependency_source() -> (Workspace, tempfile::NamedTempFile) {
         use std::io::{Cursor, Write};
@@ -463,6 +759,10 @@ mod tests {
     #[test]
     fn dispatch_table_impact_returns_table_impact_result_shape() {
         let ws = Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/Customer.Table.al"),
+            "table 18 Customer\n{\n}\n".to_string(),
+        );
         let resp = dispatch_table_impact(&ws, 41, &serde_json::json!({ "table": "Customer" }));
         let value = resp.result.expect("must carry a result");
         assert_eq!(
@@ -511,6 +811,103 @@ mod tests {
         let ws = Workspace::new();
         let resp = dispatch_suggest_event(&ws, 4, &serde_json::json!({ "query": "not-an-object" }));
         assert_invalid_params(&resp);
+    }
+
+    /// `trace` timed out at 30 s twice in a row while `dead-code` answered in
+    /// 47 ms on the same daemon. `dead-code` reads the workspace file index;
+    /// `trace` waits for the dependency AL source index, which takes about a
+    /// minute on Base Application and only starts when a query first needs it.
+    /// Once that index exists the traversal itself is bounded by the event's
+    /// own subscriber fan-out, not by the graph size, which is what this
+    /// asserts: a graph with a thousand unrelated events costs the same as one
+    /// with a handful.
+    #[test]
+    fn trace_cost_follows_the_event_not_the_graph_size() {
+        fn workspace_with_events(unrelated: usize) -> Workspace {
+            let ws = Workspace::new();
+            ws.file_index.add_file(
+                std::path::PathBuf::from("/proj/Target.Codeunit.al"),
+                "codeunit 50000 \"Target Publisher\"\n{\n    [IntegrationEvent(false, false)]\n    procedure OnTargetEvent()\n    begin\n    end;\n}\n".to_string(),
+            );
+            for index in 0..unrelated {
+                ws.file_index.add_file(
+                    std::path::PathBuf::from(format!("/proj/Noise{index}.Codeunit.al")),
+                    format!(
+                        "codeunit {} \"Noise {index}\"\n{{\n    [IntegrationEvent(false, false)]\n    procedure OnNoise{index}()\n    begin\n    end;\n}}\n",
+                        50_100 + index
+                    ),
+                );
+            }
+            // Pay the graph build before timing the query. The guard is
+            // dropped at the end of this statement, which is what lets the
+            // workspace be returned.
+            drop(ws.get_or_build_call_graph().expect("graph builds"));
+            ws
+        }
+
+        let small = workspace_with_events(4);
+        let large = workspace_with_events(1_000);
+        let params = serde_json::json!({ "event": "OnTargetEvent" });
+
+        let time = |ws: &Workspace| {
+            let start = std::time::Instant::now();
+            let response = dispatch_trace(ws, 60, &params);
+            assert!(response.error.is_none(), "{:?}", response.error);
+            start.elapsed()
+        };
+        let small_elapsed = time(&small);
+        let large_elapsed = time(&large);
+
+        // Generous headroom: the point is that the cost does not scale with
+        // the 250x larger graph, not a precise ratio on a shared runner.
+        assert!(
+            large_elapsed < small_elapsed + std::time::Duration::from_millis(250),
+            "trace on a 1000-event graph took {large_elapsed:?} against {small_elapsed:?} on a \
+             4-event graph; a per-call whole-graph walk would show up here"
+        );
+    }
+
+    /// A cold call-graph build is 86 s on a project with Base Application
+    /// loaded. Two `trace` calls arriving before it finishes must join the
+    /// same build: running a second copy is the difference between one wait
+    /// and two, and a client that retried after its deadline used to be the
+    /// second caller.
+    #[test]
+    fn concurrent_cold_traces_share_one_call_graph_build() {
+        let ws = std::sync::Arc::new(Workspace::new());
+        for index in 0..40 {
+            ws.file_index.add_file(
+                std::path::PathBuf::from(format!("/proj/Object{index}.al")),
+                format!(
+                    "codeunit {} \"Object {index}\"\n{{\n    [IntegrationEvent(false, false)]\n    procedure OnThing{index}()\n    begin\n    end;\n}}\n",
+                    50_100 + index
+                ),
+            );
+        }
+        assert_eq!(ws.call_graph_build_count(), 0, "nothing built yet");
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                let ws = std::sync::Arc::clone(&ws);
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let response =
+                        dispatch_trace(&ws, 70, &serde_json::json!({ "event": "OnThing0" }));
+                    assert!(response.error.is_none(), "{:?}", response.error);
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().expect("trace worker finished");
+        }
+
+        assert_eq!(
+            ws.call_graph_build_count(),
+            1,
+            "four concurrent cold traces must share one build"
+        );
     }
 
     #[test]
@@ -696,6 +1093,55 @@ mod tests {
         assert!(value.get("content").and_then(|v| v.as_str()).is_some());
     }
 
+    /// A project with Base Application could never export its graph, and
+    /// `--scope` was ignored.
+    #[test]
+    fn dispatch_graph_export_scope_workspace_leaves_package_objects_out() {
+        use al_symbols::{MethodSymbol, ObjectKind, SymbolEntry};
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/Mine.al"),
+            "codeunit 50100 Mine\n{\n    procedure Run()\n    begin\n    end;\n}\n".to_string(),
+        );
+        let mut package = SymbolEntry {
+            kind: ObjectKind::Codeunit,
+            id: 7,
+            name: "Unrelated Base".to_string(),
+            package: "Base Application".to_string(),
+            ..Default::default()
+        };
+        package.methods = vec![MethodSymbol {
+            name: "Elsewhere".to_string(),
+            parameters: Vec::new(),
+            return_type: None,
+            attributes: Vec::new(),
+            is_local: false,
+        }];
+        ws.symbols.add_entries(&[package]);
+
+        let whole = dispatch_graph_export(&ws, 14, &serde_json::json!({ "format": "dot" }));
+        let whole = whole.result.expect("result")["content"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(whole.contains("Unrelated Base"), "{whole}");
+
+        let scoped = dispatch_graph_export(
+            &ws,
+            15,
+            &serde_json::json!({ "format": "dot", "scope": "workspace" }),
+        );
+        let scoped = scoped.result.expect("result");
+        let content = scoped["content"].as_str().unwrap();
+        assert!(content.contains("Mine"), "{content}");
+        assert!(!content.contains("Unrelated Base"), "{content}");
+        assert_eq!(scoped["scope"], "workspace");
+        assert!(scoped["outOfScopeCount"].as_u64().unwrap() > 0);
+
+        let bad = dispatch_graph_export(&ws, 16, &serde_json::json!({ "scope": "mine" }));
+        assert_invalid_params(&bad);
+    }
+
     #[test]
     fn dispatch_graph_export_unknown_format_is_invalid_params() {
         let ws = Workspace::new();
@@ -722,6 +1168,10 @@ mod tests {
     #[test]
     fn dispatch_impact_valid_symbol_returns_result() {
         let ws = Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/MyCodeunit.al"),
+            "codeunit 50100 MyCodeunit\n{\n}\n".to_string(),
+        );
         let resp = dispatch_impact(&ws, 15, &serde_json::json!({ "symbol": "MyCodeunit" }));
         assert!(resp.error.is_none(), "valid symbol must not error");
         let value = resp.result.expect("impact must carry a result");
@@ -730,6 +1180,115 @@ mod tests {
             Some("MyCodeunit")
         );
         assert!(value.get("impacted").is_some());
+    }
+
+    /// An empty `impacted` list and a misspelled name used to be the same
+    /// answer, so an agent could not tell a real zero from a typo.
+    #[test]
+    fn dispatch_impact_on_an_unknown_object_says_not_found_with_candidates() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/SalesPost.al"),
+            "codeunit 50100 \"Sales Poster\"\n{\n}\n".to_string(),
+        );
+        let resp = dispatch_impact(&ws, 50, &serde_json::json!({ "symbol": "Sales Postr" }));
+        assert_invalid_params(&resp);
+        let message = &resp.error.as_ref().expect("error").message;
+        assert!(
+            message.contains("no object named 'Sales Postr'"),
+            "got: {message}"
+        );
+        assert!(
+            message.contains("Sales Poster"),
+            "the close name must be offered: {message}"
+        );
+    }
+
+    #[test]
+    fn dispatch_impact_on_an_unknown_member_lists_the_real_members() {
+        use al_symbols::{MethodSymbol, ObjectKind, SymbolEntry};
+        let ws = Workspace::new();
+        let mut entry = SymbolEntry {
+            kind: ObjectKind::Codeunit,
+            id: 80,
+            name: "Sales-Post".to_string(),
+            package: "Base Application".to_string(),
+            ..Default::default()
+        };
+        entry.methods = vec![MethodSymbol {
+            name: "RunWithCheck".to_string(),
+            parameters: Vec::new(),
+            return_type: None,
+            attributes: Vec::new(),
+            is_local: false,
+        }];
+        ws.symbols.add_entries(&[entry]);
+
+        let resp = dispatch_impact(
+            &ws,
+            51,
+            &serde_json::json!({ "symbol": "Sales-Post.PostSalesDoc" }),
+        );
+        assert_invalid_params(&resp);
+        let message = &resp.error.as_ref().expect("error").message;
+        assert!(
+            message.contains("has no member named 'PostSalesDoc'"),
+            "got: {message}"
+        );
+    }
+
+    /// A workspace page bound to the table through `SourceTable` used to be
+    /// invisible here, so a table plainly in use reported `totalImpacts: 0`.
+    #[test]
+    fn dispatch_table_impact_counts_a_workspace_page_source_table() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/Staging.Table.al"),
+            "table 50130 \"Work Order Staging\"\n{\n    fields { field(1; \"No.\"; Code[20]) { } }\n}\n"
+                .to_string(),
+        );
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/StagingList.Page.al"),
+            "page 50130 \"Work Order List\"\n{\n    PageType = List;\n    SourceTable = \"Work Order Staging\";\n}\n"
+                .to_string(),
+        );
+
+        let resp = dispatch_table_impact(
+            &ws,
+            52,
+            &serde_json::json!({ "table": "Work Order Staging" }),
+        );
+        assert!(resp.error.is_none(), "{:?}", resp.error);
+        let value = resp.result.expect("result");
+        assert!(
+            value
+                .get("totalImpacts")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                > 0,
+            "the page must count as an impact: {value}"
+        );
+    }
+
+    #[test]
+    fn dispatch_table_impact_on_an_unknown_table_says_not_found() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/Staging.Table.al"),
+            "table 50130 \"Work Order Staging\"\n{\n}\n".to_string(),
+        );
+        let resp = dispatch_table_impact(
+            &ws,
+            53,
+            &serde_json::json!({ "table": "Work Order Stagin" }),
+        );
+        assert_invalid_params(&resp);
+        assert!(resp
+            .error
+            .as_ref()
+            .expect("error")
+            .message
+            .contains("Work Order Staging"));
     }
 
     #[test]

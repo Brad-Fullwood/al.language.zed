@@ -35,7 +35,9 @@ jobs:
         run: ./scripts/check-repo-consistency.sh
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch, 2026-09-03
+        with:
+          toolchain: stable
 
       - name: Check release hygiene
         run: ./scripts/check-release-hygiene.sh --tag "${GITHUB_REF_NAME}" --changed-since auto --require-ci
@@ -88,8 +90,9 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch, 2026-09-03
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       # The semantic feature builds AlBridge.dll with the .NET SDK.
@@ -100,7 +103,7 @@ jobs:
 
       - name: Install cross (Linux aarch64 only)
         if: matrix.cross
-        run: cargo install cross --version 0.2.5
+        run: cargo install cross --version 0.2.5 --locked
 
       - name: Cache cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -154,13 +157,25 @@ jobs:
           cp "$BRIDGE_SRC"/AlBridge.dll "$BRIDGE_SRC"/AlBridge.runtimeconfig.json "$STAGE/bridge/"
           cp "$BRIDGE_SRC"/*.dll "$STAGE/bridge/" 2>/dev/null || true
           tar -czf "$OUT.tar.gz" -C "$STAGE" .
+          # Digests of the executables INSIDE the archive, keyed
+          # <archive>/<binary>. The extension checks these after extraction:
+          # download_file unpacks a .tar.gz and does not keep the archive, and
+          # the 0.7 extension API cannot unpack a local file, so the archive
+          # digests in checksums.txt are unreachable on that path. These cover
+          # the bytes that actually get executed. See
+          # AlExtension::verify_extracted_binaries in src/lib.rs.
+          ( cd "$STAGE" && sha256sum al-lsp al-explorer ) \
+            | sed "s|  |  $OUT.tar.gz/|" > "$OUT.binaries.sha256"
+          cat "$OUT.binaries.sha256"
 
       - name: Upload binary artifact (Unix)
         if: "!matrix.windows"
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: al-${{ matrix.artifact_name }}
-          path: al-${{ matrix.artifact_name }}.tar.gz
+          path: |
+            al-${{ matrix.artifact_name }}.tar.gz
+            al-${{ matrix.artifact_name }}.binaries.sha256
 
       # Keep binaries at the archive root for extension binary resolution.
       - name: Package artifact (Windows)
@@ -180,14 +195,24 @@ jobs:
           $bridgeDst = New-Item -ItemType Directory -Path (Join-Path $stage 'bridge') -Force
           Copy-Item (Join-Path $bridgeSrc.FullName '*.dll') $bridgeDst
           Copy-Item (Join-Path $bridgeSrc.FullName 'AlBridge.runtimeconfig.json') $bridgeDst
-          Compress-Archive -Path "$stage/*" -DestinationPath "al-${{ matrix.artifact_name }}.zip"
+          $archive = "al-${{ matrix.artifact_name }}.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $archive
+          # Same per-binary digests as the Unix leg; see the comment there.
+          $lines = foreach ($name in 'al-lsp.exe', 'al-explorer.exe') {
+            $hash = (Get-FileHash (Join-Path $stage $name) -Algorithm SHA256).Hash.ToLower()
+            "$hash  $archive/$name"
+          }
+          $lines | Set-Content -Encoding ascii "al-${{ matrix.artifact_name }}.binaries.sha256"
+          Get-Content "al-${{ matrix.artifact_name }}.binaries.sha256"
 
       - name: Upload binary artifact (Windows)
         if: matrix.windows
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: al-${{ matrix.artifact_name }}
-          path: al-${{ matrix.artifact_name }}.zip
+          path: |
+            al-${{ matrix.artifact_name }}.zip
+            al-${{ matrix.artifact_name }}.binaries.sha256
 
   build-wasm:
     name: Build WASM extension
@@ -202,8 +227,9 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust stable + wasm32-wasip2
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch, 2026-09-03
         with:
+          toolchain: stable
           targets: wasm32-wasip2
 
       - name: Cache cargo registry
@@ -240,6 +266,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Build provenance: `id-token` mints the Sigstore signing certificate and
+      # `attestations` records the statement against this repository.
+      id-token: write
+      attestations: write
 
     steps:
       - name: Checkout
@@ -279,6 +309,46 @@ jobs:
             exit 1
           fi
 
+      # Collect the per-binary digests each build job produced. This is a
+      # separate asset from checksums.txt so that file stays exactly
+      # `sha256sum -c`-able for someone verifying a manual download; the
+      # `<archive>/<binary>` keys here are not paths that exist after
+      # extraction. The extension reads this one (see
+      # AlExtension::verify_extracted_binaries in src/lib.rs): it cannot hash
+      # the archive itself, because download_file extracts and discards it.
+      - name: Collect per-binary checksums
+        run: |
+          cd artifacts
+          find . -name '*.binaries.sha256' -type f -print0 \
+            | sort -z \
+            | xargs -0 cat > binary-checksums.txt
+          cat binary-checksums.txt
+          expected=$(find . \( -name '*.tar.gz' -o -name '*.zip' \) -type f | wc -l)
+          covered=$(cut -d'/' -f1 binary-checksums.txt | sed 's/^[0-9a-f]*  *//' | sort -u | wc -l)
+          if [ "$expected" -ne "$covered" ]; then
+            echo "::error::binary-checksums.txt covers $covered of $expected platform archives — the extension would refuse to start from an uncovered one"
+            exit 1
+          fi
+          # binary-checksums.txt is the file the extension verifies against, so
+          # it belongs in checksums.txt and therefore among the attestation
+          # subjects below. Without this line the attestation covered the
+          # archives, which the extension never hashes, and left the digest
+          # list it does read unattested.
+          sha256sum binary-checksums.txt >> checksums.txt
+          cat checksums.txt
+
+      # checksums.txt and binary-checksums.txt travel beside the archives on
+      # the same release, so they show a download arrived intact and nothing
+      # more. A build attestation is signed by Sigstore against this workflow's
+      # identity, which is what `gh attestation verify --repo` checks, so it
+      # says the bytes came out of this workflow rather than merely matching a
+      # digest published next to them. Subjects come from checksums.txt, whose
+      # names are already the flattened release asset names.
+      - name: Attest the release assets
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: artifacts/checksums.txt
+
       - name: Create GitHub Release and upload assets
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
@@ -290,5 +360,6 @@ jobs:
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
             artifacts/checksums.txt
+            artifacts/binary-checksums.txt
             artifacts/extension-wasm/extension.wasm
             artifacts/extension-wasm/extension.toml
