@@ -133,3 +133,68 @@ on those publishes as well. The server at 52a62864 fails the current test 5 of 1
 No. The harness reads the server's stdout in order, and the server's own trace shows the same
 order on the wire: clear, error, clear. The ghost is real and short-lived. It stays on screen
 until `did_close`'s own project pass clears it, 10 to 20 ms later in these runs.
+
+## Fix
+
+Commit ab17e6fd changes `crates/al-lsp/src/server/diagnostics.rs` and
+`crates/al-source/src/file_index/mod.rs`.
+
+- `compute_workspace_push_diagnostics` stores a `StagedInput` with each report: the file index
+  key, the index entry `Arc` (from the new `FileIndex::cached_parse_entry`), and for an open
+  document its text `Arc` and client version. It reads them under the same generation read
+  guard as the diagnostics.
+- `publish_workspace_diagnostics_parts` sends a report only when `StagedInput::is_current`
+  holds: the index entry and the document text are the same `Arc`s and the client version is
+  the same. Every index write and every document write stores a new `Arc`, and the staged input
+  keeps the old one alive, so its address is not reused.
+- A skipped URI stays in `published_uris`, so a later pass clears it if it has no diagnostics by
+  then.
+
+The three ways an input changes between staging and publishing:
+
+| Change | What the check sees | What publishes the current result |
+|---|---|---|
+| An open document is edited | new text `Arc` and version | the document's debounced publish (400 ms) and the project pass `did_change` armed |
+| A closed file exists on disk | `did_close` restores the saved text with `add_file`, a new `Arc` | `did_close`'s own pass |
+| A closed file is not on disk | `did_close` removes the entry: staged `Some`, current `None` | `did_close`'s own pass, which clears the URI |
+
+If the pass stages between the two write sections of `did_close`, the document is already
+closed but the index still holds the unsaved text. The second write section replaces or removes
+that entry, so the check skips the report in this order too.
+
+The check is per URI because a revision compare on the last attempt would drop the whole pass
+whenever anything changed. That is the behaviour before 0255a549: every keystroke moves the
+revision, so on a project where the pass is slower than the typing gaps no pass publishes. The
+per URI check drops only the reports whose own input changed and publishes the rest. The revision
+compare still decides whether attempts 1 and 2 restage.
+
+`a_project_pass_never_republishes_a_document_its_close_cleared` (b72c136c) and
+`a_project_pass_never_republishes_a_document_its_close_restored` (ab17e6fd), in
+`crates/al-lsp/src/server/lsp/tests.rs`, fail without the change and pass with it.
+
+### Counts after the fix
+
+Same method as the Counts section: each test binary run directly 16 times with `--exact`, 8 extra
+`yes` processes on the 12-core machine, other agents building, the release `al-lsp` from
+ab17e6fd through `AL_LSP_BIN`, and `RUST_LOG=al_lsp=debug,tower_lsp=trace`. The last column counts
+runs whose trace logs "input changed after staging, report skipped" for the closed URI, that is,
+runs where the race happened and the check stopped the ghost.
+
+| Test | Failed | Load average | Runs with a skipped report |
+|---|---|---|---|
+| `no_ghost_diagnostics_after_close_during_debounce` | 0 of 16 | 22.0 to 25.7 | 4 |
+| `test_completeness_d03_close_file_clears_diagnostics` | 0 of 16 | 25.3 to 25.4 | 8 |
+
+### Left open
+
+- Cross-file results on a URI whose own input did not change. In all 8 d03 runs that skipped
+  `close_diag.al`, the same pass published `HelloWorld.al` with AL-NC001, the duplicate of
+  codeunit 50100 that the closed `close_diag.al` declared. In runs 4, 11, 12 and 13
+  `did_close`'s own pass replaced it 10 to 13 ms later. In the other four the test process ended
+  first. Neither harness test asserts on other URIs. In project scope every close is followed by
+  `did_close`'s own pass, so a pass that sees a close since staging could drop its whole publish
+  without the starvation above. That needs a close signal the pass can read, which the
+  workspace does not expose today.
+- The clears at the top of the publish step, for URIs in `published_uris` with no staged report,
+  have no currency check. A clear for a document edited after staging could land after that
+  document's own publish. It was not seen in these traces.
