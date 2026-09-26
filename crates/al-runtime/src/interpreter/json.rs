@@ -425,10 +425,10 @@ fn text_arg(value: Option<&Value>, what: &str) -> Result<String, String> {
     }
 }
 
-fn index_arg(value: Option<&Value>, len: usize, inclusive: bool) -> Result<usize, String> {
+fn index_arg(value: Option<&Value>, len: usize, inclusive: bool) -> Result<usize, JsonError> {
     let index = match value {
         Some(Value::Integer(n)) => *n,
-        _ => return Err("a JSON array index must be an Integer".to_string()),
+        _ => return Err("a JSON array index must be an Integer".to_string().into()),
     };
     let limit = if inclusive {
         len
@@ -438,7 +438,34 @@ fn index_arg(value: Option<&Value>, len: usize, inclusive: bool) -> Result<usize
     usize::try_from(index)
         .ok()
         .filter(|index| *index <= limit && (inclusive || len > 0))
-        .ok_or_else(|| format!("index {index} is outside the JSON array of {len} elements"))
+        .ok_or_else(|| {
+            JsonError::Failed(format!(
+                "index {index} is outside the JSON array of {len} elements"
+            ))
+        })
+}
+
+/// Why a JSON method did not complete.
+enum JsonError {
+    /// The operation failed: `Get` of a missing key, `Add` of a key that
+    /// exists, `ReadFrom` of text that is not JSON. BC raises it when the
+    /// call's Boolean result is not used and returns false when it is.
+    Failed(String),
+    /// Always a runtime error: a wrong argument, a conversion that does not
+    /// hold, a method the runtime does not model.
+    Invalid(String),
+}
+
+impl From<String> for JsonError {
+    fn from(message: String) -> Self {
+        JsonError::Invalid(message)
+    }
+}
+
+impl From<&str> for JsonError {
+    fn from(message: &str) -> Self {
+        JsonError::Invalid(message.to_string())
+    }
 }
 
 /// `value.AsInteger()` and the typed getters: the scalar converted to `as`.
@@ -481,17 +508,23 @@ fn scalar_as(scalar: &Scalar, as_type: &str) -> Result<Value, String> {
 }
 
 /// Run `recv.method(args)` on a JSON variable. `var` results (the token of
-/// `Get`, the text of `WriteTo`) go to `ctx.var_writebacks`.
+/// `Get`, the text of `WriteTo`) go to `ctx.var_writebacks`. `statement`
+/// says the call is a statement, where a failed operation is a runtime
+/// error. Where its result is used, the result is false.
 pub(crate) fn dispatch_json_method(
     recv: &str,
     method: &str,
     args: Vec<Value>,
+    statement: bool,
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Eval {
     match run(recv, method, &args, stack, ctx) {
         Ok(value) => Eval::Normal(value),
-        Err(error) => eval_error(format!("{method}: {error}")),
+        Err(JsonError::Failed(_)) if !statement => Eval::Normal(Value::Boolean(false)),
+        Err(JsonError::Failed(error) | JsonError::Invalid(error)) => {
+            eval_error(format!("{method}: {error}"))
+        }
     }
 }
 
@@ -501,7 +534,7 @@ fn run(
     args: &[Value],
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
-) -> Result<Value, String> {
+) -> Result<Value, JsonError> {
     let (kind, handle, node) = node_of(recv, stack, ctx)?;
     let lower = method.to_ascii_lowercase();
     ctx.var_writebacks.clear();
@@ -519,9 +552,9 @@ fn run(
         }
         "readfrom" => {
             let text = text_arg(args.first(), "the JSON text")?;
-            let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) else {
-                return Ok(Value::Boolean(false));
-            };
+            let parsed = serde_json::from_str::<serde_json::Value>(&text).map_err(|error| {
+                JsonError::Failed(format!("the text is not valid JSON: {error}"))
+            })?;
             let fits = match kind {
                 JsonKind::Object => parsed.is_object(),
                 JsonKind::Array => parsed.is_array(),
@@ -529,7 +562,10 @@ fn run(
                 JsonKind::Token => true,
             };
             if !fits {
-                return Ok(Value::Boolean(false));
+                return Err(JsonError::Failed(format!(
+                    "the text does not hold a {}",
+                    kind.name()
+                )));
             }
             let imported = arena.import(&parsed)?;
             arena.targets.insert(handle, imported);
@@ -537,14 +573,12 @@ fn run(
         }
         "selecttoken" => {
             let path = text_arg(args.first(), "the path")?;
-            return Ok(match arena.select(node, &path)? {
-                Some(found) => {
-                    let token = arena.reference(JsonKind::Token, found);
-                    ctx.var_writebacks.push((1, token));
-                    Value::Boolean(true)
-                }
-                None => Value::Boolean(false),
-            });
+            let found = arena
+                .select(node, &path)?
+                .ok_or_else(|| JsonError::Failed(format!("no token matches the path '{path}'")))?;
+            let token = arena.reference(JsonKind::Token, found);
+            ctx.var_writebacks.push((1, token));
+            return Ok(Value::Boolean(true));
         }
         "clone" => {
             let copy = arena.deep_copy(node);
@@ -570,12 +604,12 @@ fn run(
         (JsonKind::Token, "asarray", Node::Array(_)) => Ok(arena.reference(JsonKind::Array, node)),
         (JsonKind::Token, "asvalue", Node::Scalar(_)) => Ok(arena.reference(JsonKind::Value, node)),
         (JsonKind::Token, "asobject" | "asarray" | "asvalue", _) => {
-            Err(format!("the token is not a JSON {}", &lower[2..]))
+            Err(format!("the token is not a JSON {}", &lower[2..]).into())
         }
         (JsonKind::Object, "add", Node::Object(mut entries)) => {
             let key = text_arg(args.first(), "the key")?;
             if entries.iter().any(|(name, _)| *name == key) {
-                return Err(format!("the key '{key}' already exists"));
+                return Err(JsonError::Failed(format!("the key '{key}' already exists")));
             }
             let child = arena.child_for(args.get(1).ok_or("the value is missing")?)?;
             entries.push((key, child));
@@ -585,7 +619,7 @@ fn run(
         (JsonKind::Object, "replace", Node::Object(mut entries)) => {
             let key = text_arg(args.first(), "the key")?;
             let Some(at) = entries.iter().position(|(name, _)| *name == key) else {
-                return Ok(Value::Boolean(false));
+                return Err(JsonError::Failed(format!("the key '{key}' does not exist")));
             };
             entries[at].1 = arena.child_for(args.get(1).ok_or("the value is missing")?)?;
             arena.set(node, Node::Object(entries));
@@ -605,14 +639,13 @@ fn run(
         }
         (JsonKind::Object, "get", Node::Object(entries)) => {
             let key = text_arg(args.first(), "the key")?;
-            Ok(match entries.iter().find(|(name, _)| *name == key) {
-                Some((_, child)) => {
-                    let token = arena.reference(JsonKind::Token, *child);
-                    ctx.var_writebacks.push((1, token));
-                    Value::Boolean(true)
-                }
-                None => Value::Boolean(false),
-            })
+            let (_, child) = entries
+                .iter()
+                .find(|(name, _)| *name == key)
+                .ok_or_else(|| JsonError::Failed(format!("the key '{key}' does not exist")))?;
+            let token = arena.reference(JsonKind::Token, *child);
+            ctx.var_writebacks.push((1, token));
+            Ok(Value::Boolean(true))
         }
         (JsonKind::Object, "keys", Node::Object(entries)) => Ok(Value::List(
             entries
@@ -634,8 +667,8 @@ fn run(
                 .map(|(_, child)| *child)
                 .ok_or_else(|| format!("the key '{key}' does not exist"))?;
             match &arena.nodes[&child] {
-                Node::Scalar(scalar) => scalar_as(scalar, &getter[3..]),
-                _ => Err(format!("the value of '{key}' is not a JSON value")),
+                Node::Scalar(scalar) => Ok(scalar_as(scalar, &getter[3..])?),
+                _ => Err(format!("the value of '{key}' is not a JSON value").into()),
             }
         }
         (JsonKind::Array, "add", Node::Array(mut items)) => {
@@ -683,7 +716,7 @@ fn run(
                     let probe = arena.child_for(other)?;
                     arena.text_of(probe)
                 }
-                None => return Err("the value is missing".to_string()),
+                None => return Err("the value is missing".into()),
             };
             Ok(Value::Integer(
                 items
@@ -693,10 +726,15 @@ fn run(
             ))
         }
         (JsonKind::Array, getter, Node::Array(items)) if getter.starts_with("get") => {
-            let at = index_arg(args.first(), items.len(), false)?;
+            // The typed getters return the value itself, so a bad index
+            // is an error wherever the call is.
+            let at = index_arg(args.first(), items.len(), false).map_err(|error| match error {
+                JsonError::Failed(message) => JsonError::Invalid(message),
+                invalid => invalid,
+            })?;
             match &arena.nodes[&items[at]] {
-                Node::Scalar(scalar) => scalar_as(scalar, &getter[3..]),
-                _ => Err(format!("element {at} is not a JSON value")),
+                Node::Scalar(scalar) => Ok(scalar_as(scalar, &getter[3..])?),
+                _ => Err(format!("element {at} is not a JSON value").into()),
             }
         }
         (JsonKind::Value, "isnull", Node::Scalar(scalar)) => {
@@ -713,12 +751,13 @@ fn run(
             Ok(Value::Empty)
         }
         (JsonKind::Value, conversion, Node::Scalar(scalar)) if conversion.starts_with("as") => {
-            scalar_as(&scalar, &conversion[2..])
+            Ok(scalar_as(&scalar, &conversion[2..])?)
         }
         (kind, _, _) => Err(format!(
             "{}.{method} is not supported by the local runtime here",
             kind.name()
-        )),
+        )
+        .into()),
     }
 }
 

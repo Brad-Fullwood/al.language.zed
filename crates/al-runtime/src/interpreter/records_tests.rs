@@ -4340,3 +4340,121 @@ fn readfrom_gives_the_variable_a_new_value_and_leaves_its_tree_alone() {
         Value::Text(r#"{"new":2}"#.into())
     );
 }
+
+const JSON_POSITION_PROBE: &str = r#"codeunit 50277 "Json Position Probe"
+{
+    procedure MissesAsExpressions(): Text
+    var
+        Obj: JsonObject;
+        Arr: JsonArray;
+        Token: JsonToken;
+        Seen: Text;
+    begin
+        Obj.Add('a', 1);
+        Arr.Add(1);
+        if not Obj.Get('missing', Token) then
+            Seen += 'get|';
+        if not Obj.ReadFrom('not json') then
+            Seen += 'read|';
+        if not Obj.SelectToken('$.missing', Token) then
+            Seen += 'select|';
+        if not Obj.Add('a', 2) then
+            Seen += 'add|';
+        if not Obj.Replace('missing', 2) then
+            Seen += 'replace|';
+        if not Arr.Get(5, Token) then
+            Seen += 'arrayget|';
+        if not Arr.Insert(5, 2) then
+            Seen += 'insert|';
+        if not Arr.Set(5, 2) then
+            Seen += 'set|';
+        if not Arr.RemoveAt(5) then
+            Seen += 'removeat|';
+        if not Arr.ReadFrom('{"an":"object"}') then
+            Seen += 'shape|';
+        exit(Seen);
+    end;
+
+    procedure GetMiss()
+    var
+        Obj: JsonObject;
+        Token: JsonToken;
+    begin
+        Obj.Add('a', 1);
+        Obj.Get('missing', Token);
+    end;
+
+    procedure ReadFromBadText()
+    var
+        Obj: JsonObject;
+    begin
+        Obj.ReadFrom('not json');
+    end;
+
+    procedure SelectTokenMiss()
+    var
+        Obj: JsonObject;
+        Token: JsonToken;
+    begin
+        Obj.SelectToken('$.missing', Token);
+    end;
+
+    procedure ReplaceMiss()
+    var
+        Obj: JsonObject;
+    begin
+        Obj.Replace('missing', 2);
+    end;
+
+    procedure ArrayGetMiss()
+    var
+        Arr: JsonArray;
+        Token: JsonToken;
+    begin
+        Arr.Get(5, Token);
+    end;
+
+    procedure AssertErrorCatchesAGetMiss(): Text
+    var
+        Obj: JsonObject;
+        Token: JsonToken;
+    begin
+        asserterror Obj.Get('missing', Token);
+        exit('caught');
+    end;
+}
+"#;
+
+/// Business Central raises a failed Get, ReadFrom, SelectToken, Add,
+/// Replace, Insert, Set or RemoveAt as a runtime error when the return
+/// value is not used, and returns false when it is. The local runtime
+/// returned false as a statement and raised in an expression.
+#[test]
+fn json_failures_raise_as_statements_and_return_false_as_expressions() {
+    let call = |proc: &str| {
+        run(
+            &[("/ws/JsonPosition.al", JSON_POSITION_PROBE)],
+            "Json Position Probe",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(
+        ok(call("MissesAsExpressions")),
+        Value::Text("get|read|select|add|replace|arrayget|insert|set|removeat|shape|".into())
+    );
+    for (proc, expected) in [
+        ("GetMiss", "the key 'missing' does not exist"),
+        ("ReadFromBadText", "not valid JSON"),
+        ("SelectTokenMiss", "no token matches"),
+        ("ReplaceMiss", "the key 'missing' does not exist"),
+        ("ArrayGetMiss", "index 5 is outside the JSON array"),
+    ] {
+        let error = error_message(call(proc));
+        assert!(error.contains(expected), "{proc}: {error}");
+    }
+    assert_eq!(
+        ok(call("AssertErrorCatchesAGetMiss")),
+        Value::Text("caught".into())
+    );
+}
