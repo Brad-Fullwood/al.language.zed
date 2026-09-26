@@ -89,6 +89,78 @@ impl SourceFileSummary {
             effects: file_effect_sites(tree, source),
         }
     }
+
+    /// Bytes this summary owns: struct sizes plus string and vector
+    /// capacities. Allocator overhead is not counted.
+    pub fn heap_bytes(&self) -> usize {
+        fn pairs(pairs: &[(String, String)]) -> usize {
+            std::mem::size_of_val(pairs)
+                + pairs
+                    .iter()
+                    .map(|(a, b)| a.capacity() + b.capacity())
+                    .sum::<usize>()
+        }
+        fn map(map: &BTreeMap<String, String>) -> usize {
+            map.iter()
+                .map(|(k, v)| std::mem::size_of::<(String, String)>() + k.capacity() + v.capacity())
+                .sum()
+        }
+        fn site(site: &CallSite) -> usize {
+            std::mem::size_of::<CallSite>()
+                + match site {
+                    CallSite::BareCall { name } => name.capacity(),
+                    CallSite::MemberCall { object, method } => {
+                        object.capacity() + method.capacity()
+                    }
+                    CallSite::RecordOp { variable, .. } => variable.capacity(),
+                    CallSite::CodeunitRun { target } => target.capacity(),
+                }
+        }
+        fn effect(effect: &EffectSite) -> usize {
+            std::mem::size_of::<EffectSite>() + effect.label.capacity()
+        }
+        let objects: usize = self
+            .objects
+            .iter()
+            .map(|object| {
+                std::mem::size_of::<ObjectSummary>()
+                    + object.kind.capacity()
+                    + object.name.capacity()
+                    + object
+                        .procedures
+                        .iter()
+                        .map(|decl| {
+                            std::mem::size_of::<ProcedureDecl>()
+                                + decl.name.capacity()
+                                + pairs(&decl.attributes)
+                        })
+                        .sum::<usize>()
+                    + object
+                        .calls
+                        .iter()
+                        .map(|(name, calls)| {
+                            name.capacity()
+                                + std::mem::size_of::<ProcedureCalls>()
+                                + calls.call_sites.iter().map(site).sum::<usize>()
+                                + map(&calls.record_vars)
+                                + map(&calls.object_vars)
+                        })
+                        .sum::<usize>()
+            })
+            .sum();
+        let effects: usize = self
+            .effects
+            .iter()
+            .map(|sites| {
+                std::mem::size_of::<ProcedureEffectSites>()
+                    + sites.name.capacity()
+                    + pairs(&sites.attributes)
+                    + sites.writes.iter().map(effect).sum::<usize>()
+                    + sites.commits.iter().map(effect).sum::<usize>()
+            })
+            .sum();
+        std::mem::size_of::<Self>() + self.archive_path.capacity() + objects + effects
+    }
 }
 
 /// A summarized file under the path the graph reports it by.

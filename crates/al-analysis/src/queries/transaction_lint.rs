@@ -122,15 +122,16 @@ pub fn transaction_lints(
         &mut call_graph,
     )?;
     let dependency_sources = workspace.get_or_build_dependency_source_index()?;
-    al_insight::calls::resolve_all_workspace_call_edges(
-        &dependency_sources,
+    let dependency_files = dependency_sources.files();
+    al_insight::calls::resolve_all_summary_call_edges(
+        &dependency_files,
         &workspace.symbols,
         &insight,
         &mut call_graph,
     )?;
 
     let mut effects = collect_effects(&workspace.file_index, &insight, true)?;
-    effects.extend(collect_effects(&dependency_sources, &insight, false)?);
+    effects.extend(collect_summary_effects(&dependency_files, &insight, false)?);
     if effects.is_empty() {
         return Ok(Vec::new());
     }
@@ -376,6 +377,35 @@ fn collect_effects(
                 &object.name,
                 object_kind,
                 &sites,
+                insight,
+                reportable,
+            ));
+        }
+    }
+    Ok(effects)
+}
+
+/// [`collect_effects`] for summarized dependency files, whose effect sites
+/// were read from the tree when the summary was built.
+fn collect_summary_effects(
+    files: &[al_insight::calls::SummarizedFile<'_>],
+    insight: &InsightGraph,
+    reportable: bool,
+) -> Result<Vec<ProcedureEffects>, al_insight::calls::SourceGraphError> {
+    let mut effects = Vec::new();
+    for (path, file) in files {
+        // A parsed file's effects belong to its first object, as above.
+        let Some(object) = file.objects.first() else {
+            continue;
+        };
+        let object_kind = al_insight::calls::declared_object_kind(path, &object.kind)?;
+        al_insight::calls::declared_object_id(path, object.id, object_kind)?;
+        for sites in &file.effects {
+            effects.extend(procedure_effects(
+                path,
+                &object.name,
+                object_kind,
+                sites,
                 insight,
                 reportable,
             ));

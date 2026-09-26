@@ -114,11 +114,20 @@ mod workspace_lifecycle_tests {
         );
         assert_eq!(stats.dependency_source_files, 0);
 
-        let index = Arc::new(FileIndex::new());
-        index.add_file(
-            PathBuf::from("/__al_dependency_sources__/pkg/Obj.al"),
-            r#"codeunit 50100 "Dep" { procedure Gamma() begin end; }"#.to_string(),
-        );
+        let source = r#"codeunit 50100 "Dep" { procedure Gamma() begin end; }"#;
+        let parsed = al_syntax::AlParser::parse_quick(source);
+        let package = PackageSourceSummary {
+            files: vec![al_insight::calls::SourceFileSummary::from_tree(
+                "src/Obj.al",
+                &parsed.tree,
+                source,
+            )],
+            skipped_files: 0,
+        };
+        let index = Arc::new(DependencySources::new(vec![(
+            PathBuf::from("/pkg/Dep.app"),
+            Arc::new(package),
+        )]));
         *workspace.dependency_source_index.write().unwrap() = Some(DependencySourceCache {
             fingerprint: Vec::new(),
             index,

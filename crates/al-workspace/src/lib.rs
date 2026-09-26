@@ -2,13 +2,16 @@
 //!
 //! Per-project documents, symbols, configuration, and semantic state.
 
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+mod dependency_sources;
 mod doctor;
 mod semantic_lifecycle;
 mod test_results;
+pub use dependency_sources::{
+    DependencySourceMemoryStats, DependencySources, PackageSourceSummary,
+};
 pub use doctor::{doctor, DoctorReport, ProjectInfo, ToolchainInfo};
 pub use semantic_lifecycle::{
     ensure_builtins_loaded, ensure_error_codes_loaded, get_or_init_bridge, restart_bridge,
@@ -66,7 +69,7 @@ type DependencyFingerprint = Vec<(PathBuf, u64, std::time::SystemTime)>;
 struct DependencySourceCache {
     /// `(canonical app path, byte length, modified time)` in stable order.
     fingerprint: DependencyFingerprint,
-    index: Arc<FileIndex>,
+    index: Arc<DependencySources>,
     /// Embedded `.al` files this generation had to skip — one that did not
     /// parse cleanly, or one without an object declaration. Indexing degrades
     /// per file, so a non-zero count is the only signal that dependency-backed
@@ -625,7 +628,7 @@ impl Workspace {
             == Some(&current))
     }
 
-    /// Return a coherent parsed index of every AL object body embedded in the
+    /// Return a coherent summary of every AL object body embedded in the
     /// currently loaded Microsoft/third-party packages.
     ///
     /// Package source is immutable during normal editing, so it is cached
@@ -633,7 +636,7 @@ impl Workspace {
     /// fingerprint forces a rebuild when a package is downloaded or replaced.
     pub fn get_or_build_dependency_source_index(
         &self,
-    ) -> Result<Arc<FileIndex>, DependencySourceError> {
+    ) -> Result<Arc<DependencySources>, DependencySourceError> {
         self.get_or_build_dependency_source_generation()
             .map(|(_, index)| index)
     }
@@ -666,7 +669,7 @@ impl Workspace {
 
     fn get_or_build_dependency_source_generation(
         &self,
-    ) -> Result<(DependencyFingerprint, Arc<FileIndex>), DependencySourceError> {
+    ) -> Result<(DependencyFingerprint, Arc<DependencySources>), DependencySourceError> {
         let (fingerprint, mut skipped_packages) = self.dependency_package_fingerprint_reporting();
         {
             let cache = self
@@ -692,100 +695,32 @@ impl Workspace {
             return Ok((fingerprint, Arc::clone(&existing.index)));
         }
 
-        let index = Arc::new(FileIndex::new());
+        let mut packages = Vec::with_capacity(fingerprint.len());
         let mut skipped_files = 0usize;
+        let mut files_done = 0usize;
         self.dependency_source_progress.begin(fingerprint.len());
         for (app_path, _, _) in &fingerprint {
-            self.dependency_source_progress
-                .finished_package(index.len());
-            // Degrade per package the way the loader degrades per file: one
+            self.dependency_source_progress.finished_package(files_done);
+            // Degrade per package the way the build degrades per file: one
             // `.app` whose embedded source trips a limit, or that was
             // rewritten mid-build, must not take call-graph and insight
             // features down for every other package.
-            let source_index = match al_symbols::source_index::get_or_build(app_path) {
-                Ok(source_index) => source_index,
-                Err(source) => {
+            match self.package_source_summary(app_path) {
+                Ok(summary) => {
+                    skipped_files += summary.skipped_files;
+                    files_done += summary.files.len();
+                    packages.push((app_path.clone(), summary));
+                }
+                Err(error) => {
                     tracing::warn!(
-                        package = %app_path.display(),
-                        %source,
-                        "dependency source index: skipping a package that cannot be indexed"
+                        %error,
+                        "dependency source index: skipping a package whose source cannot be summarized"
                     );
-                    skipped_packages.push(
-                        DependencySourceError::IndexPackage {
-                            path: app_path.clone(),
-                            source,
-                        }
-                        .to_string(),
-                    );
-                    continue;
+                    skipped_packages.push(error.to_string());
                 }
-            };
-            let sources = match source_index.extract_all_sources() {
-                Ok(sources) => sources,
-                Err(source) => {
-                    tracing::warn!(
-                        package = %app_path.display(),
-                        %source,
-                        "dependency source index: skipping a package whose source cannot be extracted"
-                    );
-                    skipped_packages.push(
-                        DependencySourceError::ExtractPackage {
-                            path: app_path.clone(),
-                            source,
-                        }
-                        .to_string(),
-                    );
-                    continue;
-                }
-            };
-            for (archive_path, source) in sources {
-                // Degrade per file: one odd embedded `.al` (a grammar gap for
-                // a newer AL construct, a namespace-only file, a vendor's
-                // scratch file) must not permanently disable call-graph and
-                // insight features for the whole workspace. Skip it with a
-                // warning and index the rest.
-                let parsed = al_syntax::AlParser::parse_quick(&source);
-                if !parsed.errors.is_empty() {
-                    let details = parsed
-                        .errors
-                        .iter()
-                        .take(3)
-                        .map(|error| {
-                            format!(
-                                "{} at {}:{}",
-                                error.message,
-                                error.range.start_point.row + 1,
-                                error.range.start_point.column + 1
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join("; ");
-                    tracing::warn!(
-                        package = %app_path.display(),
-                        archive_path = %archive_path,
-                        details = %details,
-                        "dependency source index: skipping embedded AL that does not parse cleanly"
-                    );
-                    skipped_files += 1;
-                    continue;
-                }
-                if al_syntax::find_object_declaration(&parsed.tree, &source).is_none() {
-                    tracing::debug!(
-                        package = %app_path.display(),
-                        archive_path = %archive_path,
-                        "dependency source index: skipping declaration-free embedded AL"
-                    );
-                    skipped_files += 1;
-                    continue;
-                }
-                index.add_file_with_tree(
-                    dependency_virtual_path(app_path, &archive_path),
-                    source,
-                    parsed.tree,
-                );
-                self.dependency_source_progress.indexed_file();
             }
         }
+        let index = Arc::new(DependencySources::new(packages));
         self.dependency_source_progress.finish(index.len());
         tracing::info!(
             packages = fingerprint.len(),
@@ -794,14 +729,22 @@ impl Workspace {
             skipped_packages = skipped_packages.len(),
             "dependency AL source index ready"
         );
-        let index_for_return = Arc::clone(&index);
         *cache = Some(DependencySourceCache {
             fingerprint: fingerprint.clone(),
-            index,
+            index: Arc::clone(&index),
             skipped_files,
             skipped_packages,
         });
-        Ok((fingerprint, index_for_return))
+        Ok((fingerprint, index))
+    }
+
+    /// The summarized source of one package.
+    fn package_source_summary(
+        &self,
+        app_path: &Path,
+    ) -> Result<Arc<PackageSourceSummary>, DependencySourceError> {
+        PackageSourceSummary::build(app_path, || self.dependency_source_progress.indexed_file())
+            .map(Arc::new)
     }
 
     /// How far the dependency AL source index has got.
@@ -1012,7 +955,8 @@ impl Workspace {
                 &self.symbols,
                 &mut graph,
             )?;
-            al_insight::calls::register_dependency_source_nodes(&dependency_sources, &mut graph)?;
+            let dependency_files = dependency_sources.files();
+            al_insight::calls::register_dependency_summary_nodes(&dependency_files, &mut graph)?;
             let insight = Arc::new(graph);
 
             let mut cg = CallGraph::build_from_insight(&insight);
@@ -1022,8 +966,8 @@ impl Workspace {
                 &insight,
                 &mut cg,
             )?;
-            al_insight::calls::populate_workspace_call_edges(
-                &dependency_sources,
+            al_insight::calls::populate_summary_call_edges(
+                &dependency_files,
                 &self.symbols,
                 &insight,
                 &mut cg,
@@ -1164,23 +1108,6 @@ fn reset_optional_cache<T>(lock: &std::sync::RwLock<Option<T>>, component: &'sta
     }
 }
 
-fn dependency_virtual_path(app_path: &Path, archive_path: &str) -> PathBuf {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    app_path.hash(&mut hasher);
-    let mut path = PathBuf::from("/__al_dependency_sources__");
-    path.push(format!("{:016x}", hasher.finish()));
-    let component_count_before = path.components().count();
-    for component in Path::new(archive_path).components() {
-        if let std::path::Component::Normal(component) = component {
-            path.push(component);
-        }
-    }
-    if path.components().count() == component_count_before {
-        path.push("source.al");
-    }
-    path
-}
-
 /// Approximate memory statistics for diagnostic/observability.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1196,11 +1123,9 @@ pub struct WorkspaceMemoryStats {
     pub document_store_memory: al_source::documents::DocumentStoreMemoryStats,
     pub file_index_memory: al_source::file_index::FileIndexMemoryStats,
     pub package_metadata_bytes: usize,
-    /// The parsed AL source of every loaded package, when that index is built.
-    /// It holds one text plus one tree-sitter tree per embedded `.al`, so for
-    /// a source-bearing Base Application it is the largest single allocation
-    /// in the process.
-    pub dependency_source_index_memory: Option<al_source::file_index::FileIndexMemoryStats>,
+    /// The summarized AL source of every loaded package, when that index is
+    /// built.
+    pub dependency_source_index_memory: Option<DependencySourceMemoryStats>,
     pub dependency_source_files: usize,
     pub insight_graph_memory: Option<al_insight::graph::InsightGraphMemoryStats>,
     pub call_graph_memory: Option<al_insight::index::CallGraphMemoryStats>,
