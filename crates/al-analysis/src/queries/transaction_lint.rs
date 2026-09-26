@@ -402,14 +402,14 @@ fn collect_summary_effects(
     reportable: bool,
 ) -> Result<Vec<ProcedureEffects>, al_insight::calls::SourceGraphError> {
     let mut effects = Vec::new();
-    for (path, file) in files {
-        // A parsed file's effects belong to its first object, as above.
-        let Some(object) = file.objects.first() else {
-            continue;
-        };
+    // Each object's effects under its own name, as the tree path does.
+    for (path, object) in files
+        .iter()
+        .flat_map(|(path, file)| file.objects.iter().map(move |object| (*path, object)))
+    {
         let object_kind = al_insight::calls::declared_object_kind(path, &object.kind)?;
         al_insight::calls::declared_object_id(path, object.id, object_kind)?;
-        for sites in &file.effects {
+        for sites in &object.effects {
             effects.extend(procedure_effects(
                 path,
                 &object.name,
@@ -574,6 +574,26 @@ mod tests {
 
     /// Dependency source that writes.
     const DEPENDENCY_WRITER: &str = r#"codeunit 70001 "Dependency Writer"
+{
+    procedure WriteCustomer()
+    var
+        Customer: Record Customer;
+    begin
+        Customer.Modify();
+    end;
+}"#;
+
+    /// The writer above, declared after a table in the same file, as
+    /// packages that group objects in one file ship it.
+    const DEPENDENCY_TABLE_THEN_WRITER: &str = r#"table 70050 "Dependency Buffer"
+{
+    fields
+    {
+        field(1; "Entry No."; Integer) { }
+    }
+}
+
+codeunit 70001 "Dependency Writer"
 {
     procedure WriteCustomer()
     var
@@ -848,6 +868,29 @@ codeunit 50100 "Local"
             .contains("Dependency Writer::WriteCustomer"));
     }
 
+    /// The summarized file's effects were looked up under its first object,
+    /// the table, so the codeunit's write was dropped.
+    #[test]
+    fn try_function_reports_a_dependency_write_in_the_second_object_of_a_file() {
+        let ws = workspace(&[("TryDependency.al", TRY_DEPENDENCY)]);
+        let _package = install_dependency_source_package(
+            &ws,
+            &[("src/DependencyWriter.al", DEPENDENCY_TABLE_THEN_WRITER)],
+        );
+
+        let diagnostics = transaction_lints(&ws).unwrap();
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == DATABASE_WRITE_IN_TRY_STACK)
+            .unwrap_or_else(|| panic!("expected a try stack diagnostic, got {diagnostics:?}"));
+        assert!(diagnostic
+            .message
+            .contains("database write Customer.Modify() in dependency source"));
+        assert!(diagnostic
+            .message
+            .contains("Dependency Writer::WriteCustomer"));
+    }
+
     #[test]
     fn try_stack_follows_record_event_into_subscriber_body() {
         let ws = workspace(&[(
@@ -944,7 +987,7 @@ codeunit 50100 "Local"
     fn dependency_summaries_lint_like_dependency_trees() {
         // (project file name, its source, the dependency package's files)
         type Fixture<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)]);
-        let fixtures: [Fixture<'_>; 3] = [
+        let fixtures: [Fixture<'_>; 4] = [
             (
                 "Subscriber.al",
                 SUBSCRIBER_TO_DEPENDENCY,
@@ -962,6 +1005,11 @@ codeunit 50100 "Local"
                     ("src/DependencyPublisher.al", DEPENDENCY_PUBLISHER),
                     ("src/DependencyWriter.al", DEPENDENCY_WRITER),
                 ],
+            ),
+            (
+                "TryDependency.al",
+                TRY_DEPENDENCY,
+                &[("src/DependencyWriter.al", DEPENDENCY_TABLE_THEN_WRITER)],
             ),
         ];
         for (name, project_source, dependency_sources) in fixtures {
