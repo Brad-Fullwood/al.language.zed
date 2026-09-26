@@ -15,8 +15,9 @@ live in [ROADMAP.md](../ROADMAP.md).
   every Microsoft type-inference, path-sensitive control-flow, or analyzer rule.
 - Exact CodeCop, AppSourceCop, UICop, and PerTenantCop compatibility requires the
   optional Microsoft CodeAnalysis bridge or official compiler.
-- Dependency `.app` packages expose declarations but not executable bodies, so
-  call-graph analysis does not infer side effects it cannot observe.
+- A dependency `.app` package that embeds no AL source exposes declarations but
+  not executable bodies, so call-graph analysis does not infer side effects it
+  cannot observe there. Embedded source is indexed and joins the call graph.
 - External rulesets, probing paths, analyzer statistics, incremental mode, and
   extra compiler options apply to the official `alc` backend. They do not change
   the native emitter or in-process semantic bridge.
@@ -27,7 +28,7 @@ live in [ROADMAP.md](../ROADMAP.md).
   semantic bridge diagnostics for open documents. Semantic analysis of every
   unopened file is not enabled by default.
 - References, dead-code analysis, and call graphs cannot inspect call sites inside
-  dependency packages when source is unavailable.
+  a dependency package that embeds no source.
 - Package navigation distinguishes workspace source, extractable embedded source,
   generated public-API outlines, and identity-only metadata. Generated outlines
   are not original package source, and extraction failures are reported as the
@@ -171,8 +172,8 @@ live in [ROADMAP.md](../ROADMAP.md).
   `tree-sitter-al-bc`. Its commit must be pushed and remotely reachable before
   the superproject gitlink and `extension.toml` revision are published.
 - Publishable workspace libraries have independent semantic versions. The Zed
-  extension, `al-lsp`, `extension.toml`, and corresponding lockfile product
-  entries use the synchronized release version.
+  extension, `al-lsp`, `al-explorer`, `extension.toml`, and corresponding
+  lockfile product entries use the synchronized release version.
 - The extension cannot check a downloaded archive against `checksums.txt`,
   because `zed_extension_api` 0.7's `download_file` extracts a `.tar.gz`/`.zip`
   and does not keep the archive, and the API has no way to unpack a local file.
