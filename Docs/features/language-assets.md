@@ -50,11 +50,11 @@ ln -sf "$(ls -d ~/.local/share/zed/extensions/work/al/al-lsp-*/al-explorer | tai
 
 Until that is done the task entries appear in the picker and fail with "command not found". The
 same operations are also available without `PATH` through LSP commands (`al.downloadSymbols`,
-`al.build`, …) and the resolved **AL Tools** MCP server, neither of which needs the sidecar.
+`al.compile`, …) and the resolved **AL Tools** MCP server, neither of which needs the sidecar.
 
 ## Snippets
 
-- `snippets/al.json` — 50+ AL code snippets with tab stops: procedures, triggers, events and event
+- `snippets/al.json` — 78 AL code snippets with tab stops: procedures, triggers, events and event
   subscribers, control flow (if/case/for/foreach/while/repeat), assertions, `with…do`, error handling,
   test attributes, integration/business events, test setup/teardown.
 - `snippets/json.json` — launch/attach debug configurations for on-premises and cloud Business
