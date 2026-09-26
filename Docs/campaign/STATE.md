@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-26 12:05 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-26 12:20 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -11,11 +11,6 @@ Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two 
 Session 2026-09-26 11:50 BST (headless, Fable orchestrator). Five agents re-dispatched onto the
 branches the 07:00 session left, each in its existing worktree under `.claude/worktrees/`:
 
-- Docs review (H): worktree branch `campaign/docs-review`, 35 commits plus an uncommitted prose
-  pass across 34 files. Continues the unsloppify pass, checks `native-test-runtime.md`, merges the
-  campaign branch, writes `## Review complete` in `findings/docs-review.md`. The grammar submodule
-  in that worktree sits on a docs commit (branch `campaign/docs-review` in `tree-sitter-al`); the
-  pointer moves at merge time after the grammar branch is pushed.
 - `cargo mutants` (E): worktree branch `campaign/test-mutants`, 3 of 10 files done (`method_id.rs`
   42 mutants 2 missed, `http_auth.rs` 26 and 3, `sort.rs` 107 and 20, tests added for the misses).
   Three uncommitted proptest seeds in `property_formatting.proptest-regressions` were written while
@@ -31,7 +26,7 @@ branches the 07:00 session left, each in its existing worktree under `.claude/wo
   shipped it, and names `--analyzers` when the list came from settings.
 
 Merged this session: `campaign/fix-r4-security` (14 of 14), `campaign/fix-blog-findings` (3 of 4),
-`origin/dev`. Gate result on the merge is in `LOG.md`.
+`origin/dev`, `campaign/docs-review` (done, 12:20). Gate result on the merge is in `LOG.md`.
 
 PR 30 was merged into `dev` on 2026-09-25 (afec75d1). CI runs on pushes to `main` and `dev` and on
 pull requests, so draft PR 32 (https://github.com/Brad-Fullwood/al.language.zed/pull/32, base `dev`)
@@ -75,7 +70,7 @@ whichever ones pay off most. Record progress per workstream below so gaps are vi
 | E | Tests: coverage by crate, property tests, `cargo mutants` | First pass merged: 4 bugs found by property tests, coverage table, CI job proposal | Nightly property job added (`property-nightly.yml`, 8192 cases; the per-PR run already covers 128). Next: `cargo mutants` on the 10 file shortlist in `findings/test-depth.md`, make `al-test/backends/snapshot.rs` testable |
 | F | Grammar: corpus tests, query drift between `languages/al` and `tree-sitter-al/queries` | R1 review running | From R1 findings |
 | G | AI tooling: make this project speed up and sharpen AI work on Business Central (see below) | Inventory, measurements and design done (`findings/ai-tooling-ideas.md`): latency is 4 to 150 ms warm, but 14 of 20 measured answers are too large for an agent (up to 9.4 MB). Plugin build running | Daemon projection work after the LSP fix branch merges |
-| H | Docs: `Docs/`, `README.md`, `ROADMAP.md` match the code, then unsloppify | R1 docs review running | From R1 findings |
+| H | Docs: `Docs/`, `README.md`, `ROADMAP.md` match the code, then unsloppify | Done 2026-09-26: every user doc checked against the code and given a plain-wording pass (`findings/docs-review.md`) | Re-check the docs each later merge touches |
 | I | Blog: replace the six articles with a new series on the current project, unsloppify each | On blog branch `campaign/2026-09-rewrite`: six posts deleted, site cleaned, `pnpm validate` passes (it failed on `main`), fact sheet and nine-article plan in `findings/blog-plan.md`, articles 1 to 8 drafted (8 of 9), article 9 (the campaign retrospective) is written last, article 1 `trace` paragraph corrected | Articles 2, 4, 5, 8 after the fix branches settle, article 9 last, final fact pass, merge to `main` |
 
 ### G: AI tooling detail
@@ -103,6 +98,7 @@ round on the areas with the most findings.
 
 ## Done
 
+- 2026-09-26 docs review merged (`findings/docs-review.md`): every user doc checked against the code, four drift items fixed, plain-wording pass over `Docs/`, `README.md`, `ROADMAP.md` and `plugin/`.
 - 2026-09-26 security round 4 merged: 14 of 14 fixed (`findings/r4-security.md`). Every DAP and test-run path authorises the target before a credential leaves the machine, a scheme-less server is `https`, XLIFF methods are contained, the trust digest hashes repository-resident analyzers and `dotnet`, the handshake proof is checked before the build identity, a linked `.alpackages` is an untrusted package cache, the semantic bridge is in the release digests, the scaffold and native build refuse symlinks, `trust --yes` is pinned to a reviewed digest, the language server re-gates settings when trust inputs move.
 - 2026-09-26 blog findings 1 to 3 merged: `packages` counts skip synthetic Option enums, the client deadline extends while the call graph builds, `object` and `byId` answer without the graph.
 - 2026-09-26 async locking batch merged (`findings/async-locking.md`): two deadlocks in al-lsp, DAP proxy stdout lock per frame, dead allow attributes removed, SAFETY comments on every unsafe block.
