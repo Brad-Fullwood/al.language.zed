@@ -307,7 +307,7 @@ impl NativeDebugSession {
 
         let mut variables = Vec::new();
         if is_stopped {
-            if let Ok(vars_json) = self.session.get_variables(0).await {
+            if let Ok(vars_json) = self.session.variables(0).await {
                 variables = parse_bc_variables(&vars_json);
                 if let Some(hit) = self.history.back_mut() {
                     hit.variables = variables.clone();
@@ -355,14 +355,14 @@ impl NativeDebugSession {
     /// Return locals for a specific BC stack frame.
     pub async fn variables(&mut self, frame_id: i64) -> Result<Vec<Variable>> {
         self.drain_events().await?;
-        let value = self.session.get_variables(frame_id).await?;
+        let value = self.session.variables(frame_id).await?;
         Ok(parse_bc_variables(&value))
     }
 
     /// Return globals for a specific BC stack frame.
     pub async fn globals(&mut self, frame_id: i64) -> Result<Vec<Variable>> {
         self.drain_events().await?;
-        let value = self.session.get_globals(frame_id).await?;
+        let value = self.session.globals(frame_id).await?;
         Ok(parse_bc_variables(&value))
     }
 

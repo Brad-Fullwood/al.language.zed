@@ -768,13 +768,13 @@ impl BcDebugSession {
     ///   - `SourcePosition` — `{Line, Column}`
     ///   - `DisplayName` — human-readable frame name
     ///
-    pub async fn get_call_stack(&self) -> Result<serde_json::Value> {
+    pub async fn call_stack(&self) -> Result<serde_json::Value> {
         let result = self.invoke("GetStackTrace", vec![]).await?;
         Ok(result.unwrap_or(serde_json::json!([])))
     }
 
     /// BC hub method: `GetVariables(int frameId)` → `LocalNode[]`
-    pub async fn get_variables(&self, frame_id: i64) -> Result<serde_json::Value> {
+    pub async fn variables(&self, frame_id: i64) -> Result<serde_json::Value> {
         let result = self
             .invoke("GetVariables", vec![serde_json::json!(frame_id)])
             .await?;
@@ -782,7 +782,7 @@ impl BcDebugSession {
     }
 
     /// BC hub method: `ExpandGlobals(int frameId)` → `LocalNode[]`
-    pub async fn get_globals(&self, frame_id: i64) -> Result<serde_json::Value> {
+    pub async fn globals(&self, frame_id: i64) -> Result<serde_json::Value> {
         let result = self
             .invoke("ExpandGlobals", vec![serde_json::json!(frame_id)])
             .await?;

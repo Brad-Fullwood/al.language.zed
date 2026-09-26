@@ -30,10 +30,10 @@ where
     ) -> Result<()> {
         let session_arc = self.session.lock().await.clone();
         let stack_frames = if let Some(s) = session_arc {
-            match s.get_call_stack().await {
+            match s.call_stack().await {
                 Ok(frames) => bc_stack_to_dap(frames, &self.resolve_path),
                 Err(e) => {
-                    debug!("get_call_stack failed: {e}");
+                    debug!("call_stack failed: {e}");
                     Vec::new()
                 }
             }
