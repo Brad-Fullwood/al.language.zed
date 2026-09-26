@@ -1,0 +1,20 @@
+{
+  "id": "05-impact-check-field-change",
+  "question": "What would changing the Amount field on the Work Order Staging table affect?",
+  "skill": "al-bc:bc-symbol-scout",
+  "fixture": "crates/al-test-harness/data/test_al_project",
+  "overlay": null,
+  "source": "plugin/TESTING.md question 5",
+  "checks": [
+    {
+      "args": ["--compact", "impact", "Work Order Staging.Amount", "--scope", "workspace"],
+      "jq": ".impacted | length",
+      "expect_exact": "3",
+      "expect_contains": [
+        "\"type\":\"declares\"",
+        "\"n\":\"Work Order Helper\"",
+        "\"n\":\"Work Order Post Task\""
+      ]
+    }
+  ]
+}

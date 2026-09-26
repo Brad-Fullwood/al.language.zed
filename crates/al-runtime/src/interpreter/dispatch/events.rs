@@ -206,6 +206,7 @@ pub(crate) fn raise(
                 Some(at) => values[*at].clone(),
                 None => Value::Codeunit {
                     object_name: publisher.unquote_identifier().into_owned(),
+                    instance: None,
                 },
             })
             .collect();

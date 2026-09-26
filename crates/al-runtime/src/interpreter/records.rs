@@ -3009,7 +3009,10 @@ pub(crate) fn default_for_structured(type_text: &str) -> Option<Value> {
         if rest.is_empty() || rest.starts_with(char::is_whitespace) {
             let object_name = subtype_after_keyword(trimmed, "codeunit");
             if !object_name.is_empty() {
-                return Some(Value::Codeunit { object_name });
+                return Some(Value::Codeunit {
+                    object_name,
+                    instance: None,
+                });
             }
         }
     }
