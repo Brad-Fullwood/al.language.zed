@@ -302,3 +302,19 @@ Append-only. Newest entry last.
   down how to spot it.
 - Five agents dispatched at 19:30 (`STATE.md`): round 7 fixes, round 8 review continuation, round 8
   fixes on a new branch `campaign/fix-r8-review`, the audit backlog triage, `cargo mutants`.
+
+## 2026-09-26 21:44 BST: headless session after two hours of limits, mutants merged, six agents
+
+- The 19:17 session hit its session limit at 19:53 (reset 21:40). Every headless start from 19:53
+  to 21:34 exited at once on both models. Ten commits were unpushed (d1afbef3..79dc5087, the
+  slop batch 11 merge and the round 8 findings), pushed now. The five agents were dead: the triage
+  and plugin agents had written nothing, the reviewer left 430 lines of scratch tests, the fix-r7
+  worktree still held the 317-line SEC-7 diff. All three saved as patches under `.campaign/`.
+- Merged `campaign/test-mutants` (7e4c02f3): 12 commits, tests only, for five of the ten shortlist
+  files (`method_id.rs`, `http_auth.rs`, `sort.rs`, `documents.rs`, `filter.rs`) and
+  `findings/mutants.md` with the setup, the per-file runs and the survivors marked equivalent.
+- `.campaign/run-gates.sh` now runs the semantic clippy and rustdoc lines too. Gates on 7e4c02f3
+  started in the background. The `slop-11` worktree removed, 35 GB free.
+- Six agents dispatched at 21:50 (`STATE.md`): round 7 fixes, round 8 fixes, round 8 review
+  continuation, audit triage (third attempt, writes every five items), `cargo mutants` (the last
+  five files), plugin leftovers (third attempt).
