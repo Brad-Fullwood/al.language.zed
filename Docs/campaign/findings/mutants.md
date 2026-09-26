@@ -52,6 +52,7 @@ None found so far.
 | `al-emit/src/method_id.rs` | 42 | 40 | 2 | 0 | 0 |
 | `al-bc/src/http_auth.rs` | 26 | 21 | 3 | 2 | 0 |
 | `al-syntax/src/sort.rs` | 107 | 78 | 20 | 1 | 8 |
+| `al-source/src/documents.rs` | 147 | 76 | 29 | 42 | 0 |
 
 ## Runs
 
@@ -190,3 +191,52 @@ crates/al-syntax/src/sort.rs:409:35: replace || with && in extract_member_name_p
 Re-run with `--iterate` after 43aeae8f, then `--re 'is_var_start|is_plain_var_start'`
 after the var test was tightened: the 4 equivalent mutants above remain missed, every
 other missed mutant is caught, and the 8 timeouts repeat.
+
+### al-source: `crates/al-source/src/documents.rs`
+
+```bash
+cargo mutants --in-place -p al-source --file crates/al-source/src/documents.rs
+```
+
+147 mutants in 7 minutes: 76 caught, 29 missed, 42 unviable, 0 timeout. 39 of the
+unviable mutants replace a function that returns `std::sync::Arc<…>` with `Arc::new(…)`
+or `Mutex::new(…)`. The file names `Arc` and `Mutex` by full path, so the replacement does
+not compile. The run wrote two seeds to
+`crates/al-source/tests/property_positions.proptest-regressions`, which pass on the clean
+source and were deleted.
+
+`missed.txt`, with the 18 `memory_stats` operator mutants folded into one line:
+
+```text
+crates/al-source/src/documents.rs:183:9: replace DocumentStore::memory_stats -> DocumentStoreMemoryStats with Default::default()
+crates/al-source/src/documents.rs:{193,194,197,202,203,206,211,212,219}: replace + with - and with * in DocumentStore::memory_stats
+crates/al-source/src/documents.rs:296:24: replace > with >= in DocumentStore::validate_max_doc_bytes
+crates/al-source/src/documents.rs:339:9: replace DocumentStore::validate_document_text -> Result<(), DocumentMutationError> with Ok(())
+crates/al-source/src/documents.rs:397:34: replace += with -= in DocumentStore::replace_or_open
+crates/al-source/src/documents.rs:397:34: replace += with *= in DocumentStore::replace_or_open
+crates/al-source/src/documents.rs:517:9: replace DocumentStore::get_text_and_client_version -> Option<(std::sync::Arc<String>, i32)> with None
+crates/al-source/src/documents.rs:532:9: replace DocumentStore::len -> usize with 0
+crates/al-source/src/documents.rs:532:9: replace DocumentStore::len -> usize with 1
+crates/al-source/src/documents.rs:536:9: replace DocumentStore::is_empty -> bool with true
+crates/al-source/src/documents.rs:536:9: replace DocumentStore::is_empty -> bool with false
+crates/al-source/src/documents.rs:550:9: replace DocumentStore::open_uris -> Vec<Url> with vec![]
+```
+
+- `documents.rs:183` and the 18 operator mutants in `memory_stats`: test added 055f1110
+  (`memory_stats_counts_text_and_every_map_entry`). No al-source test called
+  `memory_stats`. The test opens two documents, caches one tree and takes one parse lock,
+  and checks every field against the per-entry sizes.
+- `documents.rs:296`, `>` to `>=`: test added 055f1110
+  (`prospective_cap_equal_to_an_open_document_is_accepted`). The existing test only had a
+  document larger than the prospective cap.
+- `documents.rs:339`, `validate_document_text` returns `Ok(())`: test added 055f1110
+  (`validate_document_text_applies_the_cap_without_storing`). No test called it.
+- `documents.rs:397`, `+=` to `-=` and `*=`: test added 055f1110
+  (`replace_or_open_bumps_the_version_of_an_open_document`). No al-source test replaced an
+  open document, so the version bump was unchecked. `*=` keeps the version at 0.
+- `documents.rs:517`, `get_text_and_client_version` returns `None`: test added 055f1110
+  (`get_text_and_client_version_reads_one_snapshot`).
+- `documents.rs:532`, `536` and `550`, `len`, `is_empty` and `open_uris` return constants:
+  test added 055f1110 (`len_is_empty_and_open_uris_follow_open_and_close`).
+
+Re-run with `--iterate` after 055f1110: 29 mutants, 29 caught.
