@@ -22,8 +22,12 @@ Five agents dispatched at 07:05:
 - Blog (I): articles 2, 4, 5, 8 revised against current code, article 9 written, fact pass,
   unsloppify, `pnpm validate`. Commits on blog branch `campaign/2026-09-rewrite`. Rebuilds
   `target/release` first.
-- desloppify batch 10, async locking (C): worktree branch `campaign/slop-async-locking`,
-  writes `findings/async-locking.md`.
+- desloppify batch 10, async locking (C): done 07:55, merged d34ad3d2. Two real deadlocks in
+  al-lsp fixed (config/project lock order in diagnostics, bridge read lock taken twice), DAP
+  proxy stdout lock held for one frame, 15 dead `#[allow]` removed, SAFETY comments on every
+  unsafe block, 50 accepted guard sites recorded in `findings/async-locking.md`. Deferred:
+  `did_change_watched_files` reads files under the generation write guard on purpose. Gates
+  running on the merge (62a4f85a) at 08:00.
 
 A fix branch on origin or in `.claude/worktrees/` with commits not in this branch and no live
 agent means the agent died: re-dispatch onto that branch.
