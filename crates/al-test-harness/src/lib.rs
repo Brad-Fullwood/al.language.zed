@@ -915,8 +915,23 @@ impl LspClient {
         result
     }
 
+    /// The latest `publishDiagnostics` payload per URI.
+    ///
+    /// Earlier publishes for the same URI in the same batch are dropped. Use
+    /// [`drain_diagnostic_publishes`](Self::drain_diagnostic_publishes) when the
+    /// order and the count of publishes are what the test is about.
     pub fn drain_diagnostics(&mut self) -> HashMap<String, Vec<Value>> {
         let mut result: HashMap<String, Vec<Value>> = HashMap::new();
+        for (uri, diags) in self.drain_diagnostic_publishes() {
+            result.insert(uri, diags);
+        }
+        result
+    }
+
+    /// Every buffered `publishDiagnostics` as `(uri, diagnostics)`, in arrival
+    /// order, keeping repeated publishes for the same URI.
+    pub fn drain_diagnostic_publishes(&mut self) -> Vec<(String, Vec<Value>)> {
+        let mut result = Vec::new();
         for (method, params) in self.drain_notifications() {
             if method == "textDocument/publishDiagnostics" {
                 let uri = params["uri"]
@@ -927,7 +942,7 @@ impl LspClient {
                     .as_array()
                     .cloned()
                     .expect("publishDiagnostics missing diagnostics array");
-                result.insert(uri, diags);
+                result.push((uri, diags));
             }
         }
         result

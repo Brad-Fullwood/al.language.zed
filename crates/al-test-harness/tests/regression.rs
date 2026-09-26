@@ -201,27 +201,62 @@ async fn no_ghost_diagnostics_after_close_during_debounce() {
     client.change_file_no_wait("src/ghost_test.al", edit).await;
     client.close_file("src/ghost_test.al").await;
 
-    // The fixed wait this replaces had to exceed the server's debounce, which
-    // coupled the test to a constant it cannot see. Poll instead: the first
-    // publish for the closed file decides the result, and a window that closes
-    // with no publish at all is also a pass (the server stopped reporting).
+    // did_close clears the file with an empty publish. That clear is the anchor:
+    // every publish for this URI after it must be empty too. A non-empty one is
+    // the debounced pass from the didChange waking up after the close and
+    // painting squiggles on a document the editor no longer shows.
     let uri = format!("file://{}/src/ghost_test.al", test_project_dir().display());
-    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+    let mut sequence: Vec<String> = Vec::new();
+    let mut cleared = false;
+    let mut ghosts: Vec<String> = Vec::new();
+
+    // One window, long enough to outlast the server's 400 ms debounce, so a
+    // ghost that arrives in the same batch as the clear is still caught.
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
     while tokio::time::Instant::now() < deadline {
-        if let Some(published) = client.drain_diagnostics().get(&uri) {
-            for entry in published {
-                let arr = entry
-                    .as_array()
-                    .expect("publishDiagnostics.diagnostics is an array");
-                assert!(
-                    arr.is_empty(),
-                    "ghost diagnostic published after did_close: {entry}"
-                );
+        for (published_uri, diagnostics) in client.drain_diagnostic_publishes() {
+            if published_uri != uri {
+                continue;
             }
-            break;
+            let described = describe_publish(&diagnostics);
+            if cleared && !diagnostics.is_empty() {
+                ghosts.push(described.clone());
+            }
+            cleared |= diagnostics.is_empty();
+            sequence.push(described);
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
     }
 
+    assert!(
+        cleared,
+        "did_close must clear diagnostics for {uri} with an empty publish; publishes seen: {sequence:?}"
+    );
+    assert!(
+        ghosts.is_empty(),
+        "ghost diagnostics published for {uri} after did_close cleared it: {}\nfull publish sequence: {:?}",
+        ghosts.join(" | "),
+        sequence
+    );
+
     client.shutdown().await;
+}
+
+/// One publishDiagnostics payload as a short line, so an assertion failure
+/// names the diagnostics that were published instead of printing a count.
+fn describe_publish(diagnostics: &[serde_json::Value]) -> String {
+    if diagnostics.is_empty() {
+        return "[] (cleared)".to_string();
+    }
+    let described: Vec<String> = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let message = diagnostic["message"].as_str().unwrap_or("<no message>");
+            match diagnostic["range"]["start"]["line"].as_u64() {
+                Some(line) => format!("line {line}: {message}"),
+                None => message.to_string(),
+            }
+        })
+        .collect();
+    format!("[{}]", described.join("; "))
 }
