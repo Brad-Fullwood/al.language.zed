@@ -1,10 +1,12 @@
-//! Dependency source summaries on disk, one entry per package.
+//! Dependency source summaries on disk, one entry per package, in one store
+//! that every project of the user shares.
 //!
 //! An entry stands in for a package only while the package's bytes, the
 //! summary schema, the grammar and the summary builder are the ones it was
 //! written for, so a changed package misses and is summarized again on its
-//! own. Loading an
-//! entry decodes plain data and runs nothing. Every failure is a miss.
+//! own. A summary depends on nothing else, so two projects on the same
+//! package read the same entry. Loading an entry decodes plain data and runs
+//! nothing. Every failure is a miss.
 //!
 //! Layout, following `al_symbols::cache`: a 4-byte little-endian header
 //! length, a JSON [`EntryHeader`], then the JSON [`PackageSourceSummary`].
@@ -31,11 +33,15 @@ pub const SCHEMA_VERSION: u32 = 1;
 const MAX_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
 /// A temporary file older than this was left by a writer that died.
 const MAX_TMP_FILE_AGE: Duration = Duration::from_secs(60);
-/// An entry no generation has used for this long is deleted.
+/// An entry no generation of any project has used for this long is deleted.
 const MAX_UNUSED_ENTRY_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
-/// Past this many bytes in one project's cache, unused entries are deleted,
-/// least recently used first.
+/// Past this many bytes in the store, entries the current generation does
+/// not use are deleted, least recently used first.
 const MAX_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
+/// The store's directory under `<user data dir>/al-lsp`, and the name of the
+/// directory each project kept its own entries in before the store was
+/// shared.
+const STORE_DIR: &str = "source-index";
 const ENTRY_EXTENSION: &str = "summary";
 /// Longest package name and version kept in an entry name.
 const MAX_STEM_BYTES: usize = 120;
@@ -138,7 +144,7 @@ struct EntryHeader {
     key: PackageKey,
 }
 
-/// The dependency source summaries of one project, on disk.
+/// Dependency source summaries on disk.
 #[derive(Debug, Clone)]
 pub struct SourceSummaryCache {
     dir: PathBuf,
@@ -150,10 +156,22 @@ impl SourceSummaryCache {
         Self { dir }
     }
 
-    /// The cache of the project at `project_root`:
-    /// `<user data dir>/al-lsp/<project hash>/source-index`.
+    /// The cache the project at `project_root` uses: the store every project
+    /// shares, `<user data dir>/al-lsp/source-index`. Deletes the entries
+    /// earlier builds kept for this project alone, in
+    /// `<user data dir>/al-lsp/<project hash>/source-index`. `None` when the
+    /// user has no data directory.
     pub fn for_project(project_root: &Path) -> Option<Self> {
-        crate::project_data_dir(project_root).map(|dir| Self::at(dir.join("source-index")))
+        al_project::project::user_data_dir()
+            .map(|data_dir| Self::for_project_under(&data_dir, project_root))
+    }
+
+    /// [`Self::for_project`] with `data_dir` as the user data directory.
+    pub(crate) fn for_project_under(data_dir: &Path, project_root: &Path) -> Self {
+        remove_project_store(
+            &crate::test_results::project_data_dir_under(data_dir, project_root).join(STORE_DIR),
+        );
+        Self::at(data_dir.join("al-lsp").join(STORE_DIR))
     }
 
     pub fn dir(&self) -> &Path {
@@ -273,24 +291,26 @@ impl SourceSummaryCache {
     /// Garbage collection after a generation is built, where `keep` names the
     /// entries the generation uses. Best effort: failures are logged.
     ///
-    /// An entry the generation does not use is deleted when a kept entry has
-    /// the same package file name (the file was rewritten, so the old entry
-    /// can never match again), or when it was last used more than 30 days
-    /// ago. Entries of packages that are only absent for now, during a
-    /// symbol download or on another branch, survive. Past 1 GiB in all, the
-    /// least recently used unused entries go first. Temporary files a dead
-    /// writer left are deleted after a minute.
+    /// An entry the generation does not use may be one another project uses,
+    /// or one of a package that is absent for now, during a symbol download
+    /// or on another branch. It is deleted once no generation has loaded or
+    /// written it for 30 days. An older entry for a package of the same name
+    /// and version stays too: another project may hold that package with
+    /// other bytes, such as another localization of Base Application. Past
+    /// 1 GiB in all, the least recently used unused entries go first.
+    /// Temporary files a dead writer left are deleted after a minute.
     pub fn retain(&self, keep: &HashSet<OsString>) {
+        self.retain_within(keep, MAX_TOTAL_BYTES);
+    }
+
+    /// [`Self::retain`] with `max_total_bytes` as the size limit.
+    pub(crate) fn retain_within(&self, keep: &HashSet<OsString>, max_total_bytes: u64) {
         if private_to_this_user(&self.dir, true).is_err() {
             return;
         }
         let Ok(entries) = fs::read_dir(&self.dir) else {
             return;
         };
-        let kept_stems: HashSet<String> = keep
-            .iter()
-            .filter_map(|name| entry_stem(&name.to_string_lossy()).map(str::to_string))
-            .collect();
         let now = SystemTime::now();
         let age = |metadata: &fs::Metadata| {
             metadata
@@ -308,20 +328,20 @@ impl SourceSummaryCache {
             let Ok(metadata) = entry.metadata() else {
                 continue;
             };
-            if text.contains(".tmp.") {
+            if is_temporary_name(&text) {
                 if age(&metadata) > MAX_TMP_FILE_AGE {
                     remove_entry(&path);
                 }
                 continue;
             }
-            let Some(stem) = entry_stem(&text) else {
+            if !is_entry_name(&text) {
                 continue;
-            };
+            }
             if keep.contains(&name) {
                 total += metadata.len();
                 continue;
             }
-            if kept_stems.contains(stem) || age(&metadata) > MAX_UNUSED_ENTRY_AGE {
+            if age(&metadata) > MAX_UNUSED_ENTRY_AGE {
                 remove_entry(&path);
                 continue;
             }
@@ -331,7 +351,7 @@ impl SourceSummaryCache {
         // Oldest first.
         unused.sort_by_key(|(age, _, _)| std::cmp::Reverse(*age));
         for (_, size, path) in unused {
-            if total <= MAX_TOTAL_BYTES {
+            if total <= max_total_bytes {
                 break;
             }
             remove_entry(&path);
@@ -345,12 +365,48 @@ impl SourceSummaryCache {
     }
 }
 
-/// The package file name part of an entry name, or `None` for a file that is
-/// not an entry.
-fn entry_stem(name: &str) -> Option<&str> {
-    let rest = name.strip_suffix(ENTRY_EXTENSION)?.strip_suffix('.')?;
-    let (stem, hash) = rest.rsplit_once('.')?;
-    (hash.len() == 16 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(stem)
+/// Whether `name` is an entry name: `<stem>.<16 hex digits>.summary`.
+fn is_entry_name(name: &str) -> bool {
+    name.strip_suffix(ENTRY_EXTENSION)
+        .and_then(|rest| rest.strip_suffix('.'))
+        .and_then(|rest| rest.rsplit_once('.'))
+        .is_some_and(|(_, hash)| {
+            hash.len() == 16 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+}
+
+/// Whether `name` is a temporary file a writer renames into an entry.
+fn is_temporary_name(name: &str) -> bool {
+    name.contains(".tmp.")
+}
+
+/// Delete the entries and temporary files in `dir`, the store one project
+/// kept before the store was shared, then `dir` itself once it is empty.
+/// Leaves `dir` alone when it is a symbolic link or not this user's alone.
+fn remove_project_store(dir: &Path) {
+    if private_to_this_user(dir, true).is_err() {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let text = name.to_string_lossy();
+        if is_entry_name(&text) || is_temporary_name(&text) {
+            remove_entry(&entry.path());
+            removed += 1;
+        }
+    }
+    let _ = fs::remove_dir(dir);
+    if removed > 0 {
+        tracing::info!(
+            dir = %dir.display(),
+            removed,
+            "source summary cache: removed a project's own store, which the shared store replaces"
+        );
+    }
 }
 
 fn remove_entry(path: &Path) {

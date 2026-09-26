@@ -314,9 +314,13 @@ fn a_rewritten_package_is_rebuilt_alone() {
         .map(|(_, summary)| summary.clone())
         .unwrap();
     assert_eq!(other.files[0].objects[0].procedures[0].name, "Walk");
-    assert!(!old_entry.exists(), "the superseded entry is collected");
+    assert!(
+        old_entry.exists(),
+        "another project may hold the old bytes, so their entry stays"
+    );
     assert!(kept_entry.exists());
-    assert_eq!(fixture.entries().len(), 2, "{:?}", fixture.entries());
+    assert_eq!(fixture.entries().len(), 3, "{:?}", fixture.entries());
+    assert_eq!(fixture.start().from_disk, 2);
 }
 
 #[test]
@@ -594,7 +598,7 @@ fn entries_other_users_could_write_are_not_read() {
 }
 
 #[test]
-fn garbage_collection_keeps_absent_packages_and_drops_superseded_entries() {
+fn garbage_collection_keeps_entries_another_project_may_use() {
     let root = tempfile::tempdir().unwrap();
     let dir = root.path().join("source-index");
     let cache = SourceSummaryCache::at(dir.clone());
@@ -621,7 +625,7 @@ fn garbage_collection_keeps_absent_packages_and_drops_superseded_entries() {
         path
     };
     let day = Duration::from_secs(24 * 60 * 60);
-    let superseded = write("Kept_1.0.0.0.00000000000000aa.summary", Duration::ZERO);
+    let same_name = write("Kept_1.0.0.0.00000000000000aa.summary", Duration::ZERO);
     let absent_recent = write("Absent_1.0.0.0.00000000000000bb.summary", 3 * day);
     let absent_old = write("Gone_1.0.0.0.00000000000000cc.summary", 40 * day);
     let dead_tmp = write("Kept_1.0.0.0.00000000000000dd.summary.tmp.1.1", day);
@@ -635,8 +639,8 @@ fn garbage_collection_keeps_absent_packages_and_drops_superseded_entries() {
 
     assert!(dir.join(&kept).exists(), "the entry in use stays");
     assert!(
-        !superseded.exists(),
-        "an older entry for the same file goes"
+        same_name.exists(),
+        "an entry for other bytes under the same package name stays"
     );
     assert!(
         absent_recent.exists(),
@@ -649,6 +653,221 @@ fn garbage_collection_keeps_absent_packages_and_drops_superseded_entries() {
         unrelated.exists(),
         "files that are not entries are left alone"
     );
+}
+
+/// A fresh workspace over `apps` with `cache`, and how many packages it read
+/// from disk.
+fn start_with(apps: &[PathBuf], cache: SourceSummaryCache) -> usize {
+    let workspace = Workspace::new();
+    workspace.symbols.load_packages(apps).unwrap();
+    workspace.enable_source_summary_cache(cache);
+    workspace.get_or_build_dependency_source_index().unwrap();
+    workspace.dependency_source_progress().packages_from_disk
+}
+
+fn entry_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+/// A second project folder whose `.alpackages` holds copies of `apps`.
+fn copy_project(apps: &[&Path]) -> (tempfile::TempDir, Vec<PathBuf>) {
+    let root = tempfile::tempdir().unwrap();
+    let packages = root.path().join(".alpackages");
+    std::fs::create_dir_all(&packages).unwrap();
+    let copies = apps
+        .iter()
+        .map(|app| {
+            let copy = packages.join(app.file_name().unwrap());
+            std::fs::copy(app, &copy).unwrap();
+            copy
+        })
+        .collect();
+    (root, copies)
+}
+
+#[test]
+fn two_projects_on_the_same_packages_share_their_entries() {
+    let fixture = Fixture::new();
+    let data = tempfile::tempdir().unwrap();
+    let apps_a = vec![fixture.fixture_app.clone(), fixture.other_app.clone()];
+    let project_a = fixture.fixture_app.parent().unwrap().parent().unwrap();
+    let (project_b, apps_b) = copy_project(&[&fixture.fixture_app, &fixture.other_app]);
+
+    let cache_a = SourceSummaryCache::for_project_under(data.path(), project_a);
+    let cache_b = SourceSummaryCache::for_project_under(data.path(), project_b.path());
+    assert_eq!(cache_a.dir(), cache_b.dir());
+    assert_eq!(
+        cache_a.dir(),
+        data.path().join("al-lsp").join("source-index")
+    );
+
+    assert_eq!(
+        start_with(&apps_a, cache_a.clone()),
+        0,
+        "nothing is cached yet"
+    );
+    assert_eq!(
+        start_with(&apps_b, cache_b),
+        2,
+        "the second project reads what the first wrote"
+    );
+    assert_eq!(
+        entry_names(cache_a.dir()).len(),
+        2,
+        "one entry per package, not per project: {:?}",
+        entry_names(cache_a.dir())
+    );
+}
+
+/// Two projects hold a package of one name and version with other bytes, as
+/// two localizations of Base Application do. Each start keeps the other
+/// project's entry, so neither summarizes the package again.
+#[test]
+fn projects_with_other_bytes_under_one_package_name_keep_both_entries() {
+    let fixture = Fixture::new();
+    let data = tempfile::tempdir().unwrap();
+    let apps_a = vec![fixture.fixture_app.clone(), fixture.other_app.clone()];
+    let project_a = fixture.fixture_app.parent().unwrap().parent().unwrap();
+    let (project_b, apps_b) = copy_project(&[&fixture.fixture_app, &fixture.other_app]);
+    std::fs::write(
+        &apps_b[1],
+        app_bytes(
+            "00000000-0000-0000-0000-0000000000c2",
+            "Other",
+            &[(
+                "src/Other.al".to_string(),
+                OTHER.replace("procedure Run()", "procedure Walk()"),
+            )],
+        ),
+    )
+    .unwrap();
+    let cache_a = || SourceSummaryCache::for_project_under(data.path(), project_a);
+    let cache_b = || SourceSummaryCache::for_project_under(data.path(), project_b.path());
+
+    assert_eq!(start_with(&apps_a, cache_a()), 0);
+    assert_eq!(
+        start_with(&apps_b, cache_b()),
+        1,
+        "the fixture package is shared"
+    );
+    assert_eq!(
+        start_with(&apps_a, cache_a()),
+        2,
+        "project b kept a's entry"
+    );
+    assert_eq!(
+        start_with(&apps_b, cache_b()),
+        2,
+        "project a kept b's entry"
+    );
+    assert_eq!(entry_names(cache_a().dir()).len(), 3);
+}
+
+#[test]
+fn garbage_collection_past_the_size_limit_drops_the_least_recently_used() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("source-index");
+    let cache = SourceSummaryCache::at(dir.clone());
+    let app = root.path().join("Kept.app");
+    std::fs::write(
+        &app,
+        app_bytes(
+            "00000000-0000-0000-0000-0000000000c6",
+            "Kept",
+            &[("src/Other.al".to_string(), OTHER.to_string())],
+        ),
+    )
+    .unwrap();
+    let key = PackageKey::of(&app).unwrap();
+    let summary = PackageSourceSummary::build(&app, || {}).unwrap();
+    cache.save(&key, &summary).unwrap();
+    let kept = cache.entry_name(&key);
+    let kept_len = std::fs::metadata(dir.join(&kept)).unwrap().len();
+
+    let write = |name: &str, days: u64| {
+        let path = dir.join(name);
+        std::fs::write(&path, [0u8; 100]).unwrap();
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(SystemTime::now() - Duration::from_secs(days * 24 * 60 * 60))
+            .unwrap();
+        path
+    };
+    let oldest = write("A_1.0.0.0.00000000000000a1.summary", 5);
+    let middle = write("B_1.0.0.0.00000000000000b2.summary", 3);
+    let newest = write("C_1.0.0.0.00000000000000c3.summary", 1);
+
+    // Room for the kept entry and one and a half of the others.
+    cache.retain_within(&HashSet::from([kept.clone()]), kept_len + 150);
+
+    assert!(dir.join(&kept).exists(), "the entry in use stays");
+    assert!(!oldest.exists(), "the least recently used goes first");
+    assert!(!middle.exists(), "then the next, until the store fits");
+    assert!(newest.exists(), "the most recently used stays");
+
+    // An entry in use stays even when it alone is over the limit.
+    cache.retain_within(&HashSet::from([kept.clone()]), 1);
+    assert!(dir.join(&kept).exists());
+    assert!(!newest.exists());
+}
+
+#[test]
+fn the_store_a_project_kept_before_is_removed() {
+    let data = tempfile::tempdir().unwrap();
+    let project = Path::new("/projects/sales");
+    let project_dir = crate::test_results::project_data_dir_under(data.path(), project);
+    let old_store = project_dir.join("source-index");
+    std::fs::create_dir_all(&old_store).unwrap();
+    std::fs::write(
+        old_store.join("Microsoft_Base Application_28.1.0.0.app.00000000000000aa.summary"),
+        b"x",
+    )
+    .unwrap();
+    std::fs::write(
+        old_store.join("Other.app.00000000000000bb.summary.tmp.7.0"),
+        b"x",
+    )
+    .unwrap();
+    std::fs::write(project_dir.join("test-results.json"), b"[]").unwrap();
+
+    let cache = SourceSummaryCache::for_project_under(data.path(), project);
+
+    assert!(!old_store.exists(), "the project's own store is gone");
+    assert!(
+        project_dir.join("test-results.json").exists(),
+        "the project's other state stays"
+    );
+    assert_eq!(cache.dir(), data.path().join("al-lsp").join("source-index"));
+
+    // A store with a file that is not an entry keeps the file and the folder.
+    std::fs::create_dir_all(&old_store).unwrap();
+    std::fs::write(old_store.join("notes.txt"), b"x").unwrap();
+    SourceSummaryCache::for_project_under(data.path(), project);
+    assert!(old_store.join("notes.txt").exists());
+}
+
+/// The old store is followed only when it is a real folder of this user's:
+/// a link to another folder leaves that folder's entries alone.
+#[cfg(unix)]
+#[test]
+fn a_linked_project_store_is_not_followed() {
+    let data = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let entry = elsewhere.path().join("Other.app.00000000000000bb.summary");
+    std::fs::write(&entry, b"x").unwrap();
+    let project = Path::new("/projects/linked");
+    let project_dir = crate::test_results::project_data_dir_under(data.path(), project);
+    std::fs::create_dir_all(&project_dir).unwrap();
+    std::os::unix::fs::symlink(elsewhere.path(), project_dir.join("source-index")).unwrap();
+
+    SourceSummaryCache::for_project_under(data.path(), project);
+
+    assert!(entry.exists());
 }
 
 use std::time::{Duration, SystemTime};
