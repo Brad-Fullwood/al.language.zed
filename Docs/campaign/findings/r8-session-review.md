@@ -8,6 +8,53 @@ Read-only review of the tree at 901586e2. The round 7 findings are not repeated.
 
 Findings are added one at a time as they are confirmed.
 
+## Coverage
+
+Second reviewer, working in a worktree at 2b7bce37 (includes 1a081fbe..aa01cb97).
+
+- [x] 1. Re-check the five findings against 1a081fbe..aa01cb97
+- [x] 2. JSON interpreter (json.rs and callers): R8-JSON-1 to R8-JSON-4
+- [x] 3. Persisted dependency source index (0d11fc88, a10e5eea): R8-MULTI-1, and a note on R8-ROUTE-1 in the re-check section
+- [x] 4. Ghost race fix (3c2f2e12): no finding. Staging and `StagedInput::read` run under one generation read guard, and the publish loop checks `is_current` under a second one, so a close or edit between them skips the report. The empty clears for URIs that left the report set are not checked against the staged input and can clear what the document's own publish sent for a newer version, until the next debounced pass. That is transient and was not reproduced.
+- [x] 5. Profile extension reader (900e2174) and multi-object merges (87ff59eb, 901586e2): R8-MULTI-1, R8-MULTI-2, R8-RT-4. The profile extension reader has no finding: namespaces reuse `SymbolReferenceJson`, so nested `ProfileExtensions` are read too.
+- [x] 6. Event subscriber runner (f81de5d6 and later): R8-EV-1. Checked with no finding: subscriber order (Learn: "run one at a time in no particular order"), an erroring subscriber (propagates, as in BC), `IsHandled` passed from one subscriber to the next through `var` parameters, business and internal events (`is_publisher`), RunTrigger false on Insert, Modify, Delete and Rename, Validate events with the field as element, isolated events (under test isolation BC runs them like normal events, per "Types of events for extensibility").
+- [x] 7. Merge damage in hand merges since 0027bf80: no finding. Each of the 11 merges in `git log --merges 0027bf80..2b7bce37` was merged again with `git merge-tree --write-tree` on its two parents, and every committed tree equals the automatic merge except 914fc5f9, whose only hand edits are in `Docs/campaign/LOG.md` and `STATE.md`. That resolution keeps both entries but puts the 18:45 entry before the 18:32 one in a log that says newest entry last. Files changed on both sides (a10e5eea `al-workspace/src/lib.rs`, 0d11fc88 `daemon/mod.rs`, 8431a2a3 `trust.rs`, 1c9b3e44 six files) merged without conflict and keep both changes. The one gap between branches is R8-MULTI-1: 87ff59eb was made on top of 0d11fc88 and changed only the tree path of transaction lint.
+
+## Re-check against aa01cb97
+
+Checked with the first reviewer's scratch tests and new ones, run in a worktree at 2b7bce37, which
+contains 1a081fbe..aa01cb97.
+
+- R8-RT-1 is narrowed by 8fd1aca1. `OnAfterRenameEvent` now gets the stored row as `xRec`: the
+  scratch subscriber that errors when `Rec."Entry No." = xRec."Entry No."` no longer fires. The
+  trigger half is still open: `OnRename` fails with `OnRename: Rec holds OLD and xRec holds OLD`,
+  and an `OnBeforeRenameEvent` subscriber fails with `Rec holds OLD and xRec holds OLD`. `Rec`
+  should hold `NEW` in `OnRename`, and in `OnBeforeRenameEvent`, which BC raises just before the
+  trigger with the same `Rec` and `xRec`.
+- R8-RT-2 is still open: the scratch rename still returns `Normal(Code("OLD"))` for the related
+  entry.
+- R8-ROUTE-1 is still open. Both shapes still route `InterpRecord`: `P.Rename('B')` with an
+  `OnAfterRenameEvent` subscriber that calls `Page.RunModal(0)`, and `P.Validate(Name, 'x')`
+  where `OnValidate` runs `Rec.Modify()` and an `OnAfterModifyEvent` subscriber calls
+  `Page.RunModal(0)`. The same subscriber file with `P.Modify()` routes `LiveBc`.
+- R8-ROUTE-2 is still open: the labelled table routes `LiveBc` with "reachable helper codeunit
+  'R8 Labelled' has object-level state", and the helper codeunit whose only global is a label is refused with
+  "stateful codeunit 'R8 Label Helper' requires live BC execution".
+- R8-RT-3 is closed for codeunit publishers by aa01cb97: `Pub.Post()` with a `sender: Codeunit
+  "R8 Pub"` subscriber now returns `posted`. It is still open for a table publisher. A table
+  procedure `Stamp()` that raises `[IntegrationEvent(true, false)] local procedure OnStamp()`,
+  with a subscriber `OnStampSub(var Sender: Record "R8 Table Pub")`, fails locally with
+  "subscriber R8 Table Pub Sub.OnStampSub declares parameter 'sender', which event OnStamp does
+  not publish" (events.rs:192 accepts `sender` only when the publisher kind is `codeunit`), and
+  the router sends that test to `InterpRecord`.
+- A note for the R8-ROUTE-1 fix: dependency call sites are persisted in the summary store, and
+  `crates/al-insight/src/calls/summary_fixture.al` has no `Rename` call. Adding `Rename` to
+  `RecordOp` leaves `summary_builder_fingerprint` and the snapshot in
+  `crates/al-workspace/testdata/summary_snapshot.json` unchanged, so entries written before the
+  fix keep being served without the new edges until they go unused for 30 days. The fix has to
+  bump `SCHEMA_VERSION` in `crates/al-workspace/src/source_cache.rs` and add a `Rename` to the
+  fixture. `RecordOp::from_method_name` runs when the summary is built (crates/al-insight/src/calls/call_sites.rs:102), which is why `Rename` needs the bump. The implicit `Rec` and a bare `Modify()` in table code can be handled when edges are resolved from the stored call sites, which needs no bump.
+
 ## Findings
 
 ### [R8-RT-1] OnRename runs before the key changes, so its `Rec` holds the old key, and the rename events get the new key as `xRec`
@@ -45,3 +92,68 @@ Findings are added one at a time as they are confirmed.
 - fix: when the publisher's attribute has IncludeSender set, pass the publishing object as `sender` (a codeunit value for a codeunit, the record for a table procedure), or have the router send a test that reaches such a subscriber to live BC until it is modelled.
 - status: open
 
+### [R8-JSON-1] `ReadFrom` overwrites the node in place, so a variable reused in a loop rewrites the rows already added to an array
+- where: crates/al-runtime/src/interpreter/json.rs:506-523 (`ReadFrom` parses into a new node, then `arena.set(node, imported)` writes it into the variable's existing node, which a parent object or array may hold)
+- severity: high
+- scenario: the JsonObject.ReadFrom and JsonArray.ReadFrom pages on Microsoft Learn (Remarks) say "If the operation succeeds, the JsonObject will be disconnected from its current JSON tree and the data contained by the JsonObject will be replaced with the new value". The common loop `foreach Line in Lines do begin LineObj.ReadFrom(Line); Arr.Add(LineObj); end;` with `Lines` = `{"n":1}`, `{"n":2}`, `{"n":3}` writes `[{"n":1},{"n":2},{"n":3}]` on BC. Locally `Arr.WriteTo` returns `[{"n":3},{"n":2},{"n":3}]`: the first `Add` puts the variable's own node into the array, each later `ReadFrom` rewrites that node, and each later `Add` copies it. The smaller case `Parent.Add('child', Child); Child.ReadFrom('{"x":1}'); Parent.WriteTo(Out)` returns `{"child":{"x":1}}` locally and `{"child":{}}` on BC. Both confirmed with scratch tests in records_tests.rs, and a scratch router test routes both tests `Interp` with no reasons.
+- fix: on a successful `ReadFrom`, give the variable a new node id holding the parsed value (write the new `JsonRef` back to the variable) and leave the old node where it is. An alias made by `B := A` then keeps the old node. Check that case on BC before choosing. Add the loop above as a test.
+- status: open
+
+### [R8-JSON-2] JSON methods ignore statement position: `Get`, `ReadFrom` and `SelectToken` misses never raise, and `Add` and array index errors raise even when the return value is used
+- where: crates/al-runtime/src/interpreter/json.rs:471-481 (`dispatch_json_method` turns every `Err` into an error and every miss into `false`, and does not read `ctx.stmt_position`), :506-518 (`ReadFrom` on bad text), :525-534 (`SelectToken` miss), :591-600 (`Get` miss), :560-565 (`Add` of an existing key), :414-427 and :652 (array index out of range). Records honour the marker at crates/al-runtime/src/interpreter/records.rs:1093-1100.
+- severity: medium
+- scenario: the Learn pages for JsonObject.Get, JsonObject.ReadFrom, JsonObject.SelectToken, JsonArray.Get and every JsonObject.Add overload say of the return value: "If you omit this optional return value and the operation does not execute successfully, a runtime error will occur", and a used return value is `false`. Locally: `Obj.Add('a', 1); asserterror Obj.Get('missing', Token);` fails with "asserterror: expected an error to be raised, but none was", and so does `asserterror Obj.ReadFrom('not json');`. The other direction: `Obj.Add('a', 1); if not Obj.Add('a', 2) then exit('false');` fails with "Add: the key 'a' already exists" where BC returns `false`, and `Arr.Add(1); if not Arr.Get(5, Token) then` fails with "Get: index 5 is outside the JSON array of 1 elements". Confirmed with scratch tests, and the router routes the `asserterror Obj.Get` test `Interp`. Code under test that reads a response with a bare `JObj.ReadFrom(ResponseText)` carries on with an empty object locally where BC stops with an error.
+- fix: take `ctx.stmt_position` in `dispatch_json_method` as `dispatch_record_method` does: a miss or a failed operation raises in statement position and returns `false` otherwise, for `Get`, `ReadFrom`, `SelectToken`, `Add`, `Insert`, `Set`, `RemoveAt` and `Replace`.
+- status: open
+
+### [R8-JSON-3] `SelectToken` supports only member and index steps: a filter errors and `..` finds nothing
+- where: crates/al-runtime/src/interpreter/json.rs:213-257 (`select` reads `.name`, `['name']` and `[n]`. Anything else in brackets is "not an array index", and a second `.` is skipped, so `$..c` looks for `c` on the root only), crates/al-test/src/router/ast.rs:712-713 (the router checks the method name only)
+- severity: medium
+- scenario: the JsonObject.SelectToken page on Learn shows the query `$.company.employees[?(@.id=='John')].salary` in its example. With `{"company":{"employees":[{"id":"Marcy","salary":8.95},{"id":"John","salary":7}]}}` BC returns 7. Locally the call fails with "SelectToken: '?(@.id=='John')' is not an array index in path ...". `Obj.ReadFrom('{"a":{"b":{"c":"deep"}}}'); if not Obj.SelectToken('$..c', Token) then exit('not found');` returns `deep` on BC (one match) and `not found` locally, with no error. Confirmed with scratch tests, and the router routes the filter test `Interp`.
+- fix: have `select` return an error for any step it does not model (`..`, `*`, `[?(...)]`, `[a,b]`, slices), and have the router send a `SelectToken` whose path is a literal with such a step, or is not a literal, to live BC.
+- status: open
+
+### [R8-JSON-4] the JsonObject typed getters ignore `DefaultIfNotFound`
+- where: crates/al-runtime/src/interpreter/json.rs:614-625 (the `get*` arm reads the key only and errors when it is missing)
+- severity: medium
+- scenario: the Learn pages for JsonObject.GetText and JsonObject.GetInteger (runtime 15.0) give a second parameter: "If true and the key is not found on the object then the empty string should be returned" (0 for GetInteger). `Obj.Add('a', 'x'); exit('[' + Obj.GetText('missing', true) + ']');` returns `[]` on BC and fails locally with "GetText: the key 'missing' does not exist". Confirmed with a scratch test, and the router routes it `Interp`. JsonArray's getters take no such parameter, so they are not affected.
+- fix: when the second argument is `true` and the key is missing, return the type's default (`''`, 0, 0.0, false, `''` as Code) for GetText, GetCode, GetInteger, GetBigInteger, GetDecimal and GetBoolean.
+- status: open
+
+### [R8-MULTI-1] transaction lint still credits a summarized dependency file's effects to its first object, so writes and commits in a later object are dropped
+- where: crates/al-analysis/src/queries/transaction_lint.rs:399-422 (`collect_summary_effects` takes `file.objects.first()` and looks every procedure of the file up under that object), crates/al-insight/src/calls/summary.rs:19-24 (`SourceFileSummary::effects` is one list for the whole file, from `file_effect_sites`)
+- severity: medium
+- scenario: 87ff59eb made the tree path (`collect_effects`) walk each object on its own, but the persisted summaries (0d11fc88) keep one effect list per file and the summary path still uses the first object, with a comment that describes the old tree path. A dependency package whose file `src/DependencyWriter.al` declares `table 70050 "Dependency Buffer"` and then `codeunit 70001 "Dependency Writer"` with `procedure WriteCustomer()` that runs `Customer.Modify()`, and a project `[TryFunction] procedure TryDependencyWrite()` that calls `Writer.WriteCustomer()`. `transaction_lints` returns no diagnostics. The tree path on the same package (`lints_from_dependency_trees` in the module's tests) returns AL-NL004 "database write Customer.Modify() in dependency source is reachable from this [TryFunction]". Confirmed with a scratch test in transaction_lint.rs. `WriteCustomer` is looked up as a procedure of the table, no graph node matches, and `procedure_effects` drops it. Packages from Microsoft keep one object per file, so this hits packages from other publishers that group objects.
+- fix: keep effect sites per object in `ObjectSummary` (from `node_effect_sites(object_node(...))`), have `collect_summary_effects` loop over the objects, bump `SCHEMA_VERSION` and the snapshot, and add the table then codeunit package to `dependency_summaries_lint_like_dependency_trees`.
+- status: open
+
+### [R8-MULTI-2] the native debug adapter sets every breakpoint of a file on the file's first object
+- where: crates/al-lsp/src/bin/al-lsp.rs:365-378 (the `--dap` object resolver reads `fi.object_info.get(&path)`, which holds the first object of the file), crates/al-dap/src/dap/native_dap/breakpoints.rs:52 and :210 (one object type and id for all breakpoints of a source)
+- severity: medium
+- scenario: 87ff59eb says native DAP object paths now find the object a line belongs to, but only the object to path direction changed. `--dap` is the default adapter the Zed extension starts (src/settings.rs:182-201). A file `Posting.al` with `table 50200 "Posting Buffer"` and then `codeunit 50100 "Poster"`: a breakpoint on a line inside `Poster.Post` is sent to BC as table 50200 at that line. A scratch test confirms the resolver's input: `object_info.get("/project/Posting.al")` returns `("table", Some(50200), "Posting Buffer")`. BC gets a breakpoint on table 50200, and the codeunit line has none. The daemon's breakpoint path (`object_at_line` in debug_dispatch.rs:98-120) picks the object declared at or above the line, so only `--dap` is affected.
+- fix: give the resolver the breakpoint line and use `object_infos` to pick the object declared at or above it, and group a file's breakpoints by object in `apply_breakpoints_to_session`.
+- status: open
+
+### [R8-RT-4] the runtime finds a table by name with no kind, so a page with the same name, indexed first, breaks every record of that table
+- where: crates/al-runtime/src/interpreter/records.rs:284 (`load_table_meta`), crates/al-runtime/src/interpreter/dispatch/table_code.rs:36 and :62 (`declares`, `run_table_code`), crates/al-runtime/src/interpreter/records.rs:1523 (`validate_relation`, which the router now calls too), all through `ProcedureSource::find_by_object_name`, which crates/al-source/src/file_index/mod.rs:806-810 answers with the first owner of the name of any kind
+- severity: high
+- scenario: a setup table and its card page usually share a name (the base app has table 311 and page 459 "Sales & Receivables Setup"). Workspace files `src/MySetup.Page.al` (`page 50100 "My Setup"`, `SourceTable = "My Setup"`) and `src/MySetup.Table.al` (`table 50100 "My Setup"` with an `OnInsert` trigger), and a test that runs `Setup.Init(); Setup.Insert(true);`. `collect_al_files` sorts each directory, so the page is indexed first, and a re-index of the table file (any edit in the daemon) moves the table behind the page as well (`owners.retain` then `owners.extend`, mod.rs:709-712). The router answers `InterpRecord` ("uses workspace record table 'My Setup'", it looks tables up with `object_path_of_kind`), and the interpreter fails the test with "invalid metadata for record table 'My Setup': matching table object declaration was not found". With the table file added first the same test passes. Both confirmed with scratch tests in crates/al-test (the interpreter backend with records, and the router). BC passes the test. The lookups predate the reviewed commits, but f81de5d6 routes tables with triggers locally and aa01cb97 moved the router's Validate check onto the same lookup.
+- fix: give `ProcedureSource` a lookup by name and kind (`find_object_of_kind(name, &["table"])`, backed by `object_path_of_kind`) and use it for tables in records.rs and table_code.rs, for enums in enums.rs:19 and for codeunits in workspace_procedure.rs:52. Add the workspace with the page indexed first as a test.
+- status: open
+
+### [R8-EV-1] `DeleteAll` and `ModifyAll` raise no table events, so delete and modify subscribers do not run
+- where: crates/al-runtime/src/interpreter/records.rs:899-905 (`table_event` covers Insert, Modify, Delete and Rename only), :1322-1333 (`DeleteAll` removes the rows in one pass), :1662-1707 (`dispatch_modifyall` writes the rows in one pass), crates/al-insight/src/calls/mod.rs:143-151 (`RecordOp` has no DeleteAll or ModifyAll, so the router does not reach the subscribers either)
+- severity: high
+- scenario: the Learn page "AL database methods and performance on SQL Server" (section ModifyAll and DeleteAll) says both "revert to individual calls" when there are subscribers to OnBeforeModify, OnAfterModify, OnBeforeDelete or OnAfterDelete, and the developer performance article says table events force `ModifyAll` and `DeleteAll` to single row operations: BC raises the table events for each row, and the bulk path they replace is the RunTrigger false one. The Record.DeleteAll page adds that RunTrigger false "only affects the OnDelete trigger". A cascade subscriber `[EventSubscriber(ObjectType::Table, Database::"R8E Parent", 'OnAfterDeleteEvent', '', false, false)]` that deletes the parent's `R8E Child` rows, and a test that inserts parent `P1` and one child, calls `Parent.DeleteAll()` and counts the children: BC counts 0, locally the count is 1 (the same test with `Parent.Delete()` counts 0). An `OnBeforeModifyEvent` subscriber that errors when `Status = 'Closed'`, and `Parent.ModifyAll(Status, 'Closed')`: BC fails with the subscriber's error, locally the call returns and the test goes on. All confirmed with scratch tests in records_tests.rs, and a scratch router test routes the `DeleteAll` test `InterpRecord` with no reason naming the subscriber. Cascade deletes and guard subscribers on delete and modify are common, so both directions happen in normal use: a red BC test turns green locally, and a green one red.
+- fix: when the table has subscribers to its Delete or Modify events, run `DeleteAll` and `ModifyAll` row by row through the same path as `Delete` and `Modify` (OnBefore event, trigger when RunTrigger is true, the operation, OnAfter event, with xRec from the stored row). Add `DeleteAll` and `ModifyAll` to `RecordOp` so the router sees the subscribers, and bump the summary `SCHEMA_VERSION` with that change (see the note on R8-ROUTE-1).
+- status: open
+
+## Review complete
+
+Second reviewer: 8 findings added.
+
+- high 3: R8-JSON-1, R8-RT-4, R8-EV-1
+- medium 5: R8-JSON-2, R8-JSON-3, R8-JSON-4, R8-MULTI-1, R8-MULTI-2
+- low 0
+
+With the first reviewer's five, the file holds 13: high 4, medium 9, low 0.
