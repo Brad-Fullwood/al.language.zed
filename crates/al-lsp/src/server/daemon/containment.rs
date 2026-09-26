@@ -610,27 +610,21 @@ mod tests {
 
     /// `XDG_CONFIG_HOME` points at a scratch directory, so a test decides trust
     /// without reading or writing the user's own trust store. The variable is
-    /// process-wide, so these tests run under one mutex.
+    /// process-wide, and every al-lsp test that sets it runs under
+    /// `serial_test::serial`, so a test that uses this one does too.
     struct ScratchConfig {
         _dir: tempfile::TempDir,
         previous: Option<std::ffi::OsString>,
-        _guard: std::sync::MutexGuard<'static, ()>,
     }
-
-    static CONFIG_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     impl ScratchConfig {
         fn new() -> Self {
-            let guard = CONFIG_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
             let dir = tempfile::tempdir().unwrap();
             let previous = std::env::var_os("XDG_CONFIG_HOME");
             std::env::set_var("XDG_CONFIG_HOME", dir.path());
             Self {
                 _dir: dir,
                 previous,
-                _guard: guard,
             }
         }
     }
@@ -663,6 +657,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[serial_test::serial]
     fn a_symlinked_packages_directory_does_not_widen_the_boundary() {
         let _config = ScratchConfig::new();
         let dir = tempfile::tempdir().unwrap();
@@ -678,6 +673,7 @@ mod tests {
     /// name a directory outside the project.
     #[cfg(unix)]
     #[test]
+    #[serial_test::serial]
     fn a_trusted_project_keeps_its_package_directory() {
         let _config = ScratchConfig::new();
         let dir = tempfile::tempdir().unwrap();
