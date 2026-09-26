@@ -672,7 +672,7 @@ mod trust_gate_tests {
     async fn no_root_uri_denies_every_privileged_setting() {
         let mut config = privileged_config();
 
-        let advisory = gate_repository_settings(None, &mut config).await;
+        let advisory = gate_repository_settings(None, &mut config);
 
         assert_eq!(
             config.code_analyzers,
@@ -693,7 +693,7 @@ mod trust_gate_tests {
         let mut config = privileged_config();
         let root = Url::parse("untitled:workspace").expect("valid uri");
 
-        let advisory = gate_repository_settings(Some(&root), &mut config).await;
+        let advisory = gate_repository_settings(Some(&root), &mut config);
 
         assert_eq!(config.code_analyzers, vec!["${CodeCop}".to_string()]);
         assert!(advisory.is_some_and(|text| text.contains("no local project directory")));

@@ -787,7 +787,7 @@ fn extract_al_settings(value: serde_json::Value) -> serde_json::Value {
 /// whatever `.zed/settings.json` contributed, and nothing here can tell which
 /// ones those are. Containment answers the same situation the same way, with
 /// "No project is loaded, so no file path can be authorised".
-async fn gate_repository_settings(
+fn gate_repository_settings(
     root_uri: Option<&Url>,
     config: &mut al_project::config::AlConfig,
 ) -> Option<String> {
@@ -889,7 +889,7 @@ impl LanguageServer for AlServer {
                         "settings in initializationOptions were not applied"
                     );
                 }
-                let advisory = gate_repository_settings(root_uri.as_ref(), &mut config).await;
+                let advisory = gate_repository_settings(root_uri.as_ref(), &mut config);
                 (config.max_document_size_bytes, advisory)
             };
             if let Some(advisory) = advisory {
@@ -1159,14 +1159,15 @@ impl LanguageServer for AlServer {
             .send_replace(WorkspaceInitState::Failed(
                 "language server is shutting down".to_string(),
             ));
+        // Each handle is taken out of its slot before it is awaited. A guard
+        // in the `for` or `if let` head would otherwise stay held until the
+        // aborted task has finished.
         let pending_diagnostics: Vec<tokio::task::JoinHandle<()>> = {
             let mut guard = self.diag_tasks.lock().await;
             guard.drain().map(|(_, task)| task).collect()
         };
-        for task in pending_diagnostics
-            .into_iter()
-            .chain(self.workspace_diag_task.lock().await.take())
-        {
+        let workspace_diagnostics = self.workspace_diag_task.lock().await.take();
+        for task in pending_diagnostics.into_iter().chain(workspace_diagnostics) {
             task.abort();
             if let Err(error) = task.await {
                 if !error.is_cancelled() {
@@ -1176,7 +1177,8 @@ impl LanguageServer for AlServer {
                 }
             }
         }
-        if let Some(task) = self.init_task.lock().await.take() {
+        let init_task = self.init_task.lock().await.take();
+        if let Some(task) = init_task {
             task.abort();
             if let Err(error) = task.await {
                 if !error.is_cancelled() {
@@ -1186,7 +1188,8 @@ impl LanguageServer for AlServer {
                 }
             }
         }
-        if let Some(task) = self.reindex_task.lock().await.take() {
+        let reindex_task = self.reindex_task.lock().await.take();
+        if let Some(task) = reindex_task {
             task.abort();
             if let Err(error) = task.await {
                 if !error.is_cancelled() {
@@ -1509,9 +1512,7 @@ impl LanguageServer for AlServer {
         let old_local_paths = staged_config.app_local_folder_paths.clone();
         let report = staged_config.merge_reporting(&al_settings);
         let root_uri = self.root_uri.read().await.clone();
-        if let Some(advisory) =
-            gate_repository_settings(root_uri.as_ref(), &mut staged_config).await
-        {
+        if let Some(advisory) = gate_repository_settings(root_uri.as_ref(), &mut staged_config) {
             self.client
                 .show_message(MessageType::WARNING, advisory)
                 .await;
