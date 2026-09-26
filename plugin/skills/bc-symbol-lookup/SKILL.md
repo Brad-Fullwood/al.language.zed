@@ -84,7 +84,7 @@ daemon has built its call graph, a workspace object comes back with `partial: tr
 members. Add `--wait-for-members` (`waitForMembers: true` through MCP) to wait for them.
 Through MCP (`al_call` with `object` or `byId`) each member comes back as one
 line, `1 "No.": Code[20]` or `AssistEdit(OldCust: Record "Customer"): Boolean`
-(`signatures: true`, the MCP default, pass `false` for the full objects).
+(`signatures: true` is the MCP default. Pass `false` for the full objects.)
 
 ## Procedures of a codeunit
 
@@ -152,13 +152,13 @@ relative to the app root, the same spelling for a whole object and a member.
 
 ## When a call is slow
 
-`composed`, `events`, `subscribers`, `object` and `by-id` wait for a dependency
-source index that takes about a minute on Base Application, and for the call
-graph built from it. `object` and `by-id` wait because they run the pass that
-fills in workspace objects' fields and methods. The daemon now starts it in the
-background at startup and the client waits while it makes progress instead of
-giving up at 30 seconds, so the right response to a slow first call is to let it
-finish.
+`composed`, `events` and `subscribers` wait for a dependency source index that
+takes about a minute on Base Application, and for the call graph built from it.
+`object` and `by-id` wait for both only with `--wait-for-members`, the pass that
+fills in workspace objects' fields and methods. Without it they answer at once. The
+daemon starts the index in the background at startup, and the client keeps waiting
+while it makes progress instead of giving up at 30 seconds, so the right response
+to a slow first call is to let it finish.
 
 To watch it:
 

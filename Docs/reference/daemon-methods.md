@@ -150,8 +150,9 @@ default to `workspace`, because that is the code the project can change.
 - `status` and `diag` report `sourceIndex` as `{state, packagesDone, packagesTotal, filesDone,
   elapsedMs}`, where `state` is `idle`, `building`, `ready` or `failed`. The dependency AL source
   index takes about a minute on Base Application. `lint` and the methods that read the call graph
-  (`subscribers`, `events`, `composed`, `object`, `byId`, `generate`, `trace`, `traceChain`, `impact`,
-  `tableImpact`, `entrypoints`, `eventMap`, `graphExport`, `insightStats`) wait for it. The daemon and the MCP server start it in
+  (`subscribers`, `events`, `composed`, `generate`, `trace`, `traceChain`, `impact`,
+  `tableImpact`, `entrypoints`, `eventMap`, `graphExport`, `insightStats`, and `object` and `byId`
+  with `waitForMembers: true`) wait for it. The daemon and the MCP server start it in
   the background at startup, and the build is single-flight, so concurrent and retried callers join
   one build rather than starting their own.
 - `status` reports `callGraph` as `{state, elapsedMs}` with the same four states. The call graph
