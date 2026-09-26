@@ -735,6 +735,21 @@ template writes `["${PerTenantExtensionCop}"]`, so every freshly scaffolded proj
 trusted. The message also names `--analyzers` when the list came from settings. Reproduced on the
 built binary. **Queue as a finding.**
 
+Fixed `c197451f`. `project_local_analyzers` no longer exists, removed the same day by `2d889e93`
+(merged in from `campaign/2026-09-21` ahead of this fix). The token spelling was still refused,
+now through `discover_custom_analyzer` reporting the analyzer as not found. `analyzer_name`
+(`crates/al-project/src/analyzers.rs`) now unwraps a `${Name}` token before stripping a `.dll`
+suffix, so `is_builtin_analyzer` and `al_compile::resolve_analyzer_paths` both accept it, and
+`trust::is_builtin_analyzer_token` delegates to it instead of keeping its own copy of the unwrap.
+The message-attribution half of this finding was already gone: the only place that ever hardcoded
+`--analyzers` into the refusal was inside `project_local_analyzers`, deleted by the same `2d889e93`.
+The current refusal ("analyzer '\<entry\>' resolves to '\<path\>' inside this project, and the
+project is not trusted, ...") names neither `--analyzers` nor a settings key. A test now pins that
+text. Verified by hand: `al-explorer new` then `pack-native --validate` on the untrusted, freshly
+scaffolded project (default and `appsource` templates) no longer fails on `${PerTenantExtensionCop}`,
+`${AppSourceCop}` or `${UICop}` alone. The `appsource` template still fails validation on its
+incomplete manifest (`AS0051`, `AS0084`, and others), which is correct and unrelated.
+
 Re-check before publishing: timings on a quieter machine (the article reports these with the load),
 and the `${CodeCop}` paragraph once the finding is fixed.
 
@@ -971,8 +986,10 @@ The public-repository grep from `Docs/campaign/README.md` over all nine articles
    (`lsp_dispatch.rs:527-535`) calls `get_or_build_call_graph()` on every request, so a first
    `by-id table 18` on a fresh daemon took 52.6 s, and through a fresh MCP process 35 to 65 s,
    while `search` answered in milliseconds.
-4. **`pack-native --validate` refuses the `${CodeCop}` token spelling** (details in the plan article 4
-   revision section above).
+4. **`pack-native --validate` refuses the `${CodeCop}` token spelling**, fixed `c197451f`:
+   `analyzer_name` now unwraps a `${Name}` token before comparing against a builtin cop name, so a
+   freshly scaffolded, untrusted project no longer fails on its own default `${PerTenantExtensionCop}`
+   setting (details in the plan article 4 revision section above).
 5. **Doc drift:** `Docs/features/native-test-runtime.md` says `Evaluate` and `CalcDate` route to live
    BC. Both are in the safe list since `15e7fd11`.
 6. **`ai-tooling-ideas.md:322`** still says six answers fit and lists seven.

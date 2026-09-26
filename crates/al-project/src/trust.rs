@@ -549,14 +549,13 @@ pub fn grant(project_root: &Path) -> Result<TrustDecision, GrantError> {
 
 /// Whether `entry` names one of the analyzers the AL toolchain ships, in
 /// either the bare (`CodeCop`) or the token (`${CodeCop}`) spelling.
+///
+/// `analyzers::is_builtin_analyzer` unwraps the token spelling itself, so
+/// this only trims and delegates: one predicate, so the trust gate and every
+/// analyzer-resolution call site agree on what counts as builtin.
 #[must_use]
 pub(crate) fn is_builtin_analyzer_token(entry: &str) -> bool {
-    let entry = entry.trim();
-    let entry = entry
-        .strip_prefix("${")
-        .and_then(|rest| rest.strip_suffix('}'))
-        .unwrap_or(entry);
-    crate::analyzers::is_builtin_analyzer(entry)
+    crate::analyzers::is_builtin_analyzer(entry.trim())
 }
 
 /// Whether `path`, resolved against `project_root`, stays inside it.
