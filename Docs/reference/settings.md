@@ -26,7 +26,7 @@ it always has. Written in the clone it is dropped, with one message naming it, u
 | `al.codeAnalyzers` | string[] | `["CodeCop","AppSourceCop","UICop","PerTenantCop"]` | ✅ (incl. 3rd-party DLL paths), 🔒 entries that are not built-in tokens |
 | `al.enableExternalRulesets` | boolean | `false` | ✅ official `alc` backend. Not the in-process bridge |
 | `al.ruleSetPath` | string\|null | `null` | ✅ official `alc` backend. Not the in-process bridge, 🔒 outside the project |
-| `al.assemblyProbingPaths` | string[] | `[]` | ✅ official `alc` backend. Not the in-process bridge, 🔒 |
+| `al.assemblyProbingPaths` | string[] | `[]` | ✅ official `alc` backend, and the custom analyzer search for both backends, 🔒 |
 | `al.outputAnalyzerStatistics` | boolean | `false` | ✅ official `alc` backend. Not the in-process bridge |
 
 ## Editor features
