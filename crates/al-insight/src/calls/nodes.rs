@@ -240,7 +240,7 @@ impl ProcedureDecl {
 /// registers them.
 ///
 /// The walk does not descend into a declaration: AL has no nested procedures.
-/// [`collect_procedure_names_from_tree`] walks in the same order.
+/// `collect_procedure_names_from_tree` walks in the same order.
 pub fn procedure_decls_in_node(node: tree_sitter::Node, source: &[u8]) -> Vec<ProcedureDecl> {
     let mut decls = Vec::new();
     let mut stack = vec![node];
