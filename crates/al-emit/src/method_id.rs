@@ -235,6 +235,58 @@ mod tests {
         }
     }
 
+    /// Methods of system codeunits (id >= 2_000_000_000) carry
+    /// `|hash| % 1_250_000_000`. Vectors from the `SymbolReference.json` of
+    /// Microsoft's BC 28 System symbols package.
+    #[test]
+    fn system_codeunit_ids_fold_into_the_positive_range() {
+        let cases = [
+            ("OnCompanyOpen", k("None"), vec![], 2_000_000_003, 662130805),
+            (
+                "OpenFeatureManagement",
+                k("None"),
+                vec![],
+                2_000_000_015,
+                1178499789,
+            ),
+            (
+                "IsTestSession",
+                k("Boolean"),
+                vec![],
+                2_000_000_020,
+                705813745,
+            ),
+            (
+                "GetDefaultRoleCenterID",
+                k("None"),
+                vec![p("Integer", true)],
+                2_000_000_006,
+                709564363,
+            ),
+        ];
+        for (name, ret, params, object_id, expected) in cases {
+            assert_eq!(
+                method_id(name, ret, &params, false, object_id),
+                expected,
+                "{name} in system codeunit {object_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn system_codeunit_range_starts_at_two_billion() {
+        let none = k("None");
+        // "M0" hashes to a negative value, so the fold is visible.
+        assert_eq!(
+            method_id("M0", none, &[], false, 1_999_999_999),
+            -2118248254
+        );
+        assert_eq!(
+            method_id("M0", none, &[], false, 2_000_000_000),
+            (2118248254 % 1_250_000_000)
+        );
+    }
+
     #[test]
     fn name_is_uppercased_before_hashing() {
         let none = k("None");
