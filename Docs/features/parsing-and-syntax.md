@@ -15,15 +15,15 @@ symbols, folding, formatting, and analysis all consume. It is transport-agnostic
 | Semantic token extraction | `tokens.rs` | 43 AL-aware token classes, delta-encoded for LSP |
 | AST navigation | `navigation.rs` | node-at-position, object/procedure info, reference collection |
 | Folding | `folding.rs` | foldable regions (blocks, procedures, comments) |
-| Document symbols | `symbols.rs` | hierarchical outline (objects → members) |
+| Document symbols | `symbols/` | hierarchical outline (objects → members) |
 | Completion context | `context.rs` | member/enum/type/default context detection |
 | Type resolution | `type_resolver.rs` | variable/field type inference in scope |
 | Member sort | `sort.rs` | canonical member ordering |
 | Complexity | `complexity.rs` | cyclomatic + cognitive complexity per procedure |
-| Formatting | `formatting.rs` | indentation/keyword-casing formatter |
+| Formatting | `formatting/` | indentation/keyword-casing formatter |
 | Native lint | `lint.rs` | rule registry plus file-local `AL-NL001`/`002`/`005`–`007`/`010` diagnostics; workspace and graph rules are composed by `al-analysis` |
 | Language data | `language_data.rs` | data-driven keyword/builtin/type tables |
-| Traversal & encoding | `traversal.rs`, `mod.rs` | tree walking + UTF-16 ⇄ byte conversion |
+| Traversal & encoding | `traversal.rs`, `lib.rs`, `source_lines.rs` | tree walking + UTF-16 ⇄ byte conversion |
 
 ## How it works
 
@@ -83,7 +83,7 @@ separate entries with `nestingDepth`; their decisions are excluded from the encl
 scores are not double-counted. Exposed via `al-explorer metrics` and the shared daemon/LSP metrics
 method.
 
-### Formatting (`formatting.rs`)
+### Formatting (`formatting/`)
 
 A keyword-driven state machine (`format_al`, `format_range`) that reindents AL using `begin`/`end`,
 `var`, `if`/`then`, `repeat`/`until`, `case`/`of`, paren depth, and property-continuation tracking.
@@ -104,7 +104,9 @@ single, non-nested object.
 
 All AL vocabulary — keywords, builtin functions, object types, implicit variables, page controls,
 single-statement openers, token classification — is loaded **from JSON** in `tree-sitter-al/data/`
-via `LazyLock` singletons, not hard-coded. This is how the project keeps parity with Microsoft's
+via `LazyLock` singletons, not hard-coded. The Record method catalog is the exception: it lives in
+`crates/al-syntax/data/record_methods.json` and is regenerated from Microsoft's CodeAnalysis
+assembly with `make record-methods`. This is how the project keeps parity with Microsoft's
 keyword/type/builtin lists from a single source of truth.
 
 ## Microsoft comparison
