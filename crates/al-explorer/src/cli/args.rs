@@ -110,12 +110,20 @@ Examples:
         #[arg(value_name = "TYPE")]
         kind: String,
         name: String,
+        /// Wait for the call graph when a workspace object's fields and
+        /// methods are not loaded yet, instead of answering without them
+        #[arg(long)]
+        wait_for_members: bool,
     },
     /// Look up object by type and numeric ID
     ById {
         #[arg(value_name = "TYPE")]
         kind: String,
         id: i32,
+        /// Wait for the call graph when a workspace object's fields and
+        /// methods are not loaded yet, instead of answering without them
+        #[arg(long)]
+        wait_for_members: bool,
     },
     /// Show the strongest available source representation for an object
     Source {

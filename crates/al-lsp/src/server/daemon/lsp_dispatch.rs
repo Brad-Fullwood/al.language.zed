@@ -515,22 +515,47 @@ fn resolve_unique_kind_by_name(
     }
 }
 
-/// Run the call-graph enrichment pass so workspace objects carry their fields
-/// and methods, and carry on if it cannot.
+/// Why the workspace objects in an `object` or `byId` answer have no fields
+/// or methods, or `None` when they have them.
 ///
-/// `object` and `byId` answered a workspace object with kind, id, name and
-/// nothing else, because members only enter the symbol index through this
-/// pass. A Haiku run asked `by-id codeunit 50130` for `.methods[0].name` and
-/// got null. The pass is an enrichment here rather than a requirement: a file
-/// the index cannot parse must still not stop the lookup from answering with
-/// the object's identity.
-fn enrich_workspace_members(workspace: &Workspace, method: &str) {
-    if let Err(error) = workspace.get_or_build_call_graph() {
-        tracing::warn!(
-            method,
-            %error,
-            "workspace members are unavailable for this lookup; answering with object identity"
-        );
+/// Workspace members enter the symbol index only when the call graph is
+/// built, and the build waits for the dependency source index: a first
+/// `by-id table 18` on a fresh daemon took 52.6 s on the medium benchmark
+/// project while `search` answered in milliseconds. So a lookup uses the graph
+/// when it is already built and builds it only for `waitForMembers: true`. A
+/// build that fails still leaves the lookup answering with the object's
+/// identity.
+fn workspace_members_missing(workspace: &Workspace, method: &str, wait: bool) -> Option<String> {
+    if !wait {
+        return (!workspace.call_graph_is_current()).then(|| {
+            "fields and methods of workspace objects load with the call graph, which is not \
+             built for the current files yet. Ask again with waitForMembers: true \
+             (al-explorer --wait-for-members) to wait for it."
+                .to_string()
+        });
+    }
+    match workspace.get_or_build_call_graph() {
+        Ok(_) => None,
+        Err(error) => {
+            tracing::warn!(
+                method,
+                %error,
+                "workspace members are unavailable for this lookup; answering with object identity"
+            );
+            Some(format!(
+                "fields and methods of workspace objects are missing because the call graph did \
+                 not build: {error}"
+            ))
+        }
+    }
+}
+
+/// Mark a workspace object answered without its members, the way
+/// `suggestEvent` marks an answer that leaves something out.
+fn mark_members_missing(object: &mut serde_json::Value, reason: &str) {
+    if let Some(object) = object.as_object_mut() {
+        object.insert("partial".into(), serde_json::Value::Bool(true));
+        object.insert("partial_reason".into(), reason.into());
     }
 }
 
@@ -544,6 +569,10 @@ pub(super) fn dispatch_object(
     };
     let signatures = match optional_bool_param(params, "signatures", false) {
         Ok(signatures) => signatures,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
+    let wait_for_members = match optional_bool_param(params, "waitForMembers", false) {
+        Ok(wait) => wait,
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
     // `kind` is optional: editor tasks only have the
@@ -563,11 +592,45 @@ pub(super) fn dispatch_object(
             None => return invalid_params(id),
         },
     };
-    enrich_workspace_members(workspace, "object");
+    let name_lower = name.to_lowercase();
+    let kind_lower = kind.to_string().to_lowercase();
+    let mut workspace_objects = Vec::new();
+    for entry in workspace.file_index.object_info.iter() {
+        let info = entry.value();
+        if info.name.eq_ignore_ascii_case(&name_lower)
+            && info.kind.eq_ignore_ascii_case(&kind_lower)
+        {
+            match workspace_object_to_json(info) {
+                Ok(object) => workspace_objects.push(object),
+                Err(error) => {
+                    return rpc_error(
+                        id,
+                        error_codes::INTERNAL_ERROR,
+                        &format!("workspace object metadata is invalid: {error}"),
+                    );
+                }
+            }
+        }
+    }
+    let is_indexed_workspace_object = |entry: &al_symbols::SymbolEntry| {
+        entry.kind == kind && al_symbols::source_availability::is_workspace_package(&entry.package)
+    };
+    let members_missing = if workspace_objects.is_empty()
+        && !workspace
+            .symbols
+            .get_by_name(name)
+            .iter()
+            .any(|entry| is_indexed_workspace_object(entry))
+    {
+        None
+    } else {
+        workspace_members_missing(workspace, "object", wait_for_members)
+    };
     let candidates = workspace.symbols.get_by_name(name);
     let mut matches: Vec<serde_json::Value> = match candidates
         .iter()
         .filter(|e| e.kind == kind)
+        .filter(|e| members_missing.is_none() || !is_indexed_workspace_object(e))
         .map(|entry| symbol_entry_to_json(workspace, entry, false))
         .collect::<Result<Vec<_>, _>>()
     {
@@ -580,25 +643,12 @@ pub(super) fn dispatch_object(
             );
         }
     };
-    let name_lower = name.to_lowercase();
-    let kind_lower = kind.to_string().to_lowercase();
-    for entry in workspace.file_index.object_info.iter() {
-        let info = entry.value();
-        if info.name.eq_ignore_ascii_case(&name_lower)
-            && info.kind.eq_ignore_ascii_case(&kind_lower)
-        {
-            match workspace_object_to_json(info) {
-                Ok(object) => matches.push(object),
-                Err(error) => {
-                    return rpc_error(
-                        id,
-                        error_codes::INTERNAL_ERROR,
-                        &format!("workspace object metadata is invalid: {error}"),
-                    );
-                }
-            }
+    if let Some(reason) = &members_missing {
+        for object in &mut workspace_objects {
+            mark_members_missing(object, reason);
         }
     }
+    matches.extend(workspace_objects);
     if let Err(error) = dedup_objects_by_identity(&mut matches) {
         return rpc_error(
             id,
@@ -837,28 +887,18 @@ pub(super) fn dispatch_by_id(
         Ok(signatures) => signatures,
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
+    let wait_for_members = match optional_bool_param(params, "waitForMembers", false) {
+        Ok(wait) => wait,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
     let kind = match super::parse_object_kind(id, kind_str) {
         Ok(k) => k,
         Err(e) => return e,
     };
-    enrich_workspace_members(workspace, "byId");
-    let results = workspace.symbols.get_by_id(kind, obj_id);
-    let mut value: Vec<serde_json::Value> = match results
-        .iter()
-        .map(|entry| symbol_entry_to_json(workspace, entry, false))
-        .collect::<Result<Vec<_>, _>>()
-    {
-        Ok(value) => value,
-        Err(error) => {
-            return rpc_error(
-                id,
-                error_codes::INTERNAL_ERROR,
-                &format!("object-by-id response serialization failed: {error}"),
-            );
-        }
-    };
-    // Workspace file objects — same merge as dispatch_object.
+    // Workspace file objects, merged after the symbol index's as in
+    // dispatch_object.
     let kind_lower = kind.to_string().to_lowercase();
+    let mut workspace_objects = Vec::new();
     for entry in workspace.file_index.object_info.iter() {
         let info = entry.value();
         let (workspace_kind, workspace_id) = match workspace_object_identity(info) {
@@ -876,13 +916,49 @@ pub(super) fn dispatch_by_id(
             && info.kind.eq_ignore_ascii_case(&kind_lower)
         {
             match workspace_object_to_json(info) {
-                Ok(object) => value.push(object),
+                Ok(object) => workspace_objects.push(object),
                 Err(error) => {
                     return rpc_error(id, error_codes::INTERNAL_ERROR, &error);
                 }
             }
         }
     }
+    let is_indexed_workspace_object = |entry: &al_symbols::SymbolEntry| {
+        al_symbols::source_availability::is_workspace_package(&entry.package)
+    };
+    let members_missing = if workspace_objects.is_empty()
+        && !workspace
+            .symbols
+            .get_by_id(kind, obj_id)
+            .iter()
+            .any(|entry| is_indexed_workspace_object(entry))
+    {
+        None
+    } else {
+        workspace_members_missing(workspace, "byId", wait_for_members)
+    };
+    let results = workspace.symbols.get_by_id(kind, obj_id);
+    let mut value: Vec<serde_json::Value> = match results
+        .iter()
+        .filter(|e| members_missing.is_none() || !is_indexed_workspace_object(e))
+        .map(|entry| symbol_entry_to_json(workspace, entry, false))
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(value) => value,
+        Err(error) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("object-by-id response serialization failed: {error}"),
+            );
+        }
+    };
+    if let Some(reason) = &members_missing {
+        for object in &mut workspace_objects {
+            mark_members_missing(object, reason);
+        }
+    }
+    value.extend(workspace_objects);
     if let Err(error) = dedup_objects_by_identity(&mut value) {
         return rpc_error(
             id,
@@ -1671,6 +1747,116 @@ mod tests {
             text.contains("Custom Field"),
             "composed view must include the extension's field: {text}"
         );
+    }
+
+    /// A first `by-id table 18` on a fresh daemon waited 52.6 s for the call
+    /// graph, which adds nothing to a package object.
+    #[test]
+    fn a_package_object_lookup_does_not_build_the_call_graph() {
+        let ws = al_workspace::Workspace::new();
+        ws.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Table,
+            id: 18,
+            name: "Customer".to_string(),
+            package: "Base Application".to_string(),
+            ..Default::default()
+        }]);
+
+        let by_id = dispatch_by_id(&ws, 1, &serde_json::json!({"kind": "table", "id": 18}));
+        let by_name = dispatch_object(
+            &ws,
+            2,
+            &serde_json::json!({"kind": "table", "name": "Customer"}),
+        );
+
+        for response in [by_id, by_name] {
+            let result = response.result.expect("the package object is found");
+            assert_eq!(result[0]["name"], "Customer");
+            assert!(result[0].get("partial").is_none(), "{result}");
+        }
+        assert_eq!(ws.call_graph_build_count(), 0);
+    }
+
+    fn workspace_with_codeunit() -> al_workspace::Workspace {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/src/Greeter.Codeunit.al"),
+            "codeunit 50130 Greeter\n{\n    procedure Greet()\n    begin\n    end;\n}\n"
+                .to_string(),
+        );
+        ws
+    }
+
+    fn method_names(result: &serde_json::Value) -> Vec<String> {
+        result[0]["methods"]
+            .as_array()
+            .map(|methods| {
+                methods
+                    .iter()
+                    .filter_map(|method| method["name"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Without a built call graph a workspace object answers at once with its
+    /// identity and says its members are missing, and `waitForMembers` builds
+    /// the graph to fill them in.
+    #[test]
+    fn a_workspace_object_is_partial_until_the_call_graph_is_built() {
+        let ws = workspace_with_codeunit();
+        let lookups: [(&str, serde_json::Value); 2] = [
+            ("byId", serde_json::json!({"kind": "codeunit", "id": 50130})),
+            (
+                "object",
+                serde_json::json!({"kind": "codeunit", "name": "Greeter"}),
+            ),
+        ];
+        let lookup = |method: &str, params: &serde_json::Value| {
+            let response = match method {
+                "byId" => dispatch_by_id(&ws, 1, params),
+                _ => dispatch_object(&ws, 1, params),
+            };
+            response.result.expect("the workspace object is found")
+        };
+
+        for (method, params) in &lookups {
+            let result = lookup(method, params);
+            assert_eq!(result.as_array().map(Vec::len), Some(1), "{result}");
+            assert_eq!(result[0]["partial"], true, "{method}: {result}");
+            assert!(
+                result[0]["partial_reason"]
+                    .as_str()
+                    .is_some_and(|reason| reason.contains("waitForMembers")),
+                "{method}: {result}"
+            );
+        }
+        assert_eq!(
+            ws.call_graph_build_count(),
+            0,
+            "nothing waited on the graph"
+        );
+
+        let mut waiting = lookups[0].1.clone();
+        waiting["waitForMembers"] = serde_json::json!(true);
+        let result = lookup("byId", &waiting);
+        assert_eq!(method_names(&result), ["Greet"], "{result}");
+        assert!(result[0].get("partial").is_none(), "{result}");
+        assert_eq!(ws.call_graph_build_count(), 1);
+
+        for (method, params) in &lookups {
+            let result = lookup(method, params);
+            assert_eq!(method_names(&result), ["Greet"], "{method}: {result}");
+            assert!(result[0].get("partial").is_none(), "{method}: {result}");
+        }
+        assert_eq!(ws.call_graph_build_count(), 1, "a built graph is reused");
+
+        // An edit drops the graph. The members the symbol index still holds
+        // are from before the edit, so they are left out again.
+        ws.invalidate_insight_graph();
+        let result = lookup("object", &lookups[1].1);
+        assert_eq!(result[0]["partial"], true, "{result}");
+        assert!(method_names(&result).is_empty(), "{result}");
     }
 
     #[test]
