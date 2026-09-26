@@ -37,6 +37,19 @@ it always has; written in the clone it is dropped, with one message naming it, u
 | `al.inlayHints.parameterNames` | boolean | `true` | ✅ |
 | `al.inlayHints.returnTypes` | boolean | `false` | ✅ |
 
+## Formatting
+
+These apply to LSP document and range formatting in the editor, on top of the editor's `tabSize`
+and `insertSpaces`. `al-explorer format` reads `.alformat.json` in the project root instead, which
+takes the same four keys plus `tabSize`, `insertSpaces` and `keywordCasing`.
+
+| Setting | Type | Default | Status |
+| --- | --- | --- | --- |
+| `al.formatting.blankLinesBetweenProcedures` | `preserve`\|`one`\|`two` | `preserve` | ✅ |
+| `al.formatting.maxLineLength` | integer | `0` (no wrapping) | ✅ |
+| `al.formatting.braceStyle` | `sameLine`\|`nextLine` | `nextLine` | ✅ |
+| `al.formatting.sortProperties` | boolean | `false` | ✅ sorts contiguous object-level property runs |
+
 ## Native lint
 
 | Setting | Type | Default | Status |
@@ -79,11 +92,24 @@ it always has; written in the clone it is dropped, with one message naming it, u
 For CI, custom templates, and troubleshooting: `AL_TOOL_PATH`, `AL_DOTNET_PATH`,
 `AL_TEMPLATES_DIR`,
 `AL_COMPILE_TIMEOUT_SECS`, `AL_LOG_FILE_LEVEL`, `AL_LSP_ALLOW_HTTP_FEED`, `AL_EDITOR_SERVICES_PATH`,
-`AL_BRIDGE_DIR`, `AL_ERROR_CODES_LIVE`, `AL_DAP_CAPTURE`, `AL_OAUTH_DISABLE_KEYRING`. BC credentials
-(secrets, prefer OAuth/keyring): `BC_CLIENT_ID`, canonical `BC_ACCESS_TOKEN`
-(`BC_TOKEN` is a compatibility alias), `BC_USERNAME`/`BC_PASSWORD`, and
-`BC_TENANT`. When both bearer-token variables are set they must match; a blank,
-non-UTF-8, or conflicting override is rejected before network access.
+`AL_BRIDGE_DIR`, `AL_ERROR_CODES_LIVE`, `AL_DAP_CAPTURE`, `AL_OAUTH_DISABLE_KEYRING`,
+`AL_EXPLORER_PATH` (the `al-explorer` that `experimental/runnables` answers name, default:
+beside `al-lsp`).
+
+Daemon and client:
+
+- `AL_REQUEST_TIMEOUT_MS`: per-request deadline for `al-explorer` and other daemon clients
+  (default 30000). `--timeout-ms` overrides it for one command.
+- `AL_DAEMON_IDLE_SECS`: how long an idle daemon stays up (default 1800, `0` keeps it running).
+- `AL_ALLOW_MISMATCHED_DAEMON=1`: keep using a running daemon built from other code instead of
+  replacing it.
+- `AL_ALLOW_INSECURE_BC_HTTP=1`: allow credentials to a non-loopback Business Central server over
+  `http`. See [project trust](../features/project-trust.md).
+
+BC credentials (secrets, prefer OAuth/keyring): `BC_CLIENT_ID`, canonical `BC_ACCESS_TOKEN`
+(`BC_TOKEN` is a compatibility alias), and `BC_USERNAME`/`BC_PASSWORD`. When both bearer-token
+variables are set they must match; a blank, non-UTF-8, or conflicting override is rejected before
+network access.
 
 ## Project-file schemas
 
