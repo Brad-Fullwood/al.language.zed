@@ -250,3 +250,24 @@ Append-only. Newest entry last.
   `campaign/ai-persisted-index-2` and `campaign/slop-batch-11` had nothing committed: the persisted
   index agent had not started, the desloppify agent had run its scan and written nothing down.
 - All five re-dispatched onto their branches (see `STATE.md`).
+
+## 2026-09-26 18:32 BST: headless session, three merges, five agents
+
+- Origin was five commits ahead of the local checkout: a cloud session had pushed runtime and test
+  router work straight to the campaign branch between 16:57 and 17:30 UTC (4859b011..901586e2,
+  39 files, 3,502 insertions): table code runs on its record, event subscribers run, TextBuilder,
+  Guids, Rename and TestField run locally, labels bind, a codeunit declared after a table in one
+  file runs as itself. CI on PR 32 passed on each push. No reviewer has read them, so the round 8
+  review starts with them.
+- The 17:35 headless session left an empty log and no commits.
+- Merged three complete agent branches: `campaign/fix-ghost-race-2` (3c2f2e12: the project pass
+  skips a report whose input changed after staging, `findings/ghost-race-2.md`, both harness tests
+  0 of 16 failures at load 22 to 26), `campaign/fix-profile-extension` (900e2174:
+  `ProfileExtensions` read from `SymbolReference.json`, so Base Application indexes 7,969 of
+  7,969 objects) and `campaign/ai-persisted-index-2` (a10e5eea: the summary key covers the builder
+  through a fixture hash and a checked-in snapshot, `entrypoints` and `impact` rows come back in
+  one order, entries are shared across projects under one store with a 1 GiB limit per user).
+- The mutants worktree held a mutation that `cargo mutants --in-place` left when its agent died
+  (`mock/record.rs`, `next` returning `Ok(1)`). Restored before the re-dispatch.
+- `target/debug` (30 GB) deleted, 31 GB free after.
+- Five agents dispatched at 18:40, listed in `STATE.md`.
