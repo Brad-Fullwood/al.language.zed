@@ -714,7 +714,7 @@ mod trust_gate_tests {
             code_analyzers: vec!["${CodeCop}".to_string(), "./tools/Payload.dll".to_string()],
             ..Default::default()
         };
-        gate_repository_settings(Some(&root), &mut config).await;
+        gate_repository_settings(Some(&root), &mut config);
         *server.workspace.config.write().await = config;
 
         al_project::trust::revoke_project(&project.path().canonicalize().unwrap()).unwrap();

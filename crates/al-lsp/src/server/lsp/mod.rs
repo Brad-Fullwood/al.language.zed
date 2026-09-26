@@ -804,7 +804,7 @@ impl AlServer {
         }
         let advisory = {
             let mut config = self.workspace.config.write().await;
-            gate_repository_settings(root_uri.as_ref(), &mut config).await
+            gate_repository_settings(root_uri.as_ref(), &mut config)
         };
         self.semantic_diagnostic_cache.lock().await.clear();
         if let Some(advisory) = advisory {
