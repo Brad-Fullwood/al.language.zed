@@ -1,0 +1,4 @@
+# Byte offsets and the summary builder fingerprint are taken from these
+# files, so they keep LF line endings on every platform.
+crates/al-insight/src/calls/summary_fixture.al text eol=lf
+crates/al-workspace/testdata/summary_snapshot.json text eol=lf

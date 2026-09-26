@@ -926,8 +926,8 @@ impl Workspace {
                 return build().map(LoadedPackageSummary::built);
             }
         };
-        let entry = disk.entry_name(app_path, &key);
-        if let Some(summary) = disk_readable.then(|| disk.load(app_path, &key)).flatten() {
+        let entry = disk.entry_name(&key);
+        if let Some(summary) = disk_readable.then(|| disk.load(&key)).flatten() {
             self.dependency_source_progress
                 .indexed_files(summary.files.len());
             return Ok(LoadedPackageSummary {
@@ -942,7 +942,7 @@ impl Workspace {
         if summary.files.is_empty() {
             return Ok(LoadedPackageSummary::built(summary));
         }
-        if let Err(error) = disk.save(app_path, &key, &summary) {
+        if let Err(error) = disk.save(&key, &summary) {
             tracing::warn!(
                 package = %app_path.display(),
                 dir = %disk.dir().display(),
