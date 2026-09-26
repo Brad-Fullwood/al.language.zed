@@ -390,17 +390,15 @@ fn validation_analyzer_entries(
     requested: Option<&str>,
     config: &al_project::config::AlConfig,
 ) -> Result<Vec<String>, String> {
+    let search =
+        al_project::analyzers::CustomAnalyzerSearch::new(dir, &config.assembly_probing_paths);
     validation_analyzers(requested, &config.code_analyzers)
         .into_iter()
         .map(|entry| {
             if al_project::analyzers::is_builtin_analyzer(&entry) {
                 return Ok(entry);
             }
-            match al_project::analyzers::discover_custom_analyzer(
-                &entry,
-                dir,
-                &config.assembly_probing_paths,
-            ) {
+            match search.resolve(&entry) {
                 Ok(Some(path)) => Ok(path.display().to_string()),
                 Ok(None) => Ok(entry),
                 Err(error) => Err(error.to_string()),

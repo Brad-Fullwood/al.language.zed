@@ -374,6 +374,8 @@ fn resolve_analyzer_paths(
     let mut paths = Vec::<PathBuf>::new();
 
     if let Some(filter) = analyzer_filter {
+        let search =
+            al_project::analyzers::CustomAnalyzerSearch::new(project_root, assembly_probing_paths);
         for requested in filter {
             let requested = requested.trim();
             let builtin =
@@ -401,12 +403,9 @@ fn resolve_analyzer_paths(
                 }
                 path.clone()
             } else {
-                al_project::analyzers::discover_custom_analyzer(
-                    requested,
-                    project_root,
-                    assembly_probing_paths,
-                )
-                .map_err(|error| analyzer_configuration_error(error.to_string()))?
+                search
+                    .resolve(requested)
+                    .map_err(|error| analyzer_configuration_error(error.to_string()))?
                 .ok_or_else(|| {
                     analyzer_configuration_error(format!(
                         "requested analyzer '{requested}' could not be found in the project, probing paths, NuGet cache, or common editor extension locations"

@@ -348,6 +348,13 @@ pub fn inspect(project_root: &Path) -> Result<(RepositoryAsk, TrustDecision), Co
     Ok((ask, decision))
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread ran [`read_repository`], which walks and
+    /// hashes the project's analyzer folders.
+    pub(crate) static REPOSITORY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// One read of the repository's settings files: the merged configuration and
 /// the privileged values that merge contributed.
 ///
@@ -357,6 +364,8 @@ pub fn inspect(project_root: &Path) -> Result<(RepositoryAsk, TrustDecision), Co
 /// privileged values in the effective configuration with the project still
 /// untrusted, because the second read found nothing to remove.
 fn read_repository(project_root: &Path) -> Result<(AlConfig, RepositoryAsk), ConfigLoadError> {
+    #[cfg(test)]
+    REPOSITORY_READS.with(|reads| reads.set(reads.get() + 1));
     let mut config = match AlConfig::default_settings_path() {
         Some(path) => AlConfig::load(&path)?.unwrap_or_default(),
         None => AlConfig::default(),

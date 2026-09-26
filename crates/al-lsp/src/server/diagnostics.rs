@@ -700,6 +700,8 @@ fn resolve_semantic_analyzer_entries(
     assembly_probing_paths: &[PathBuf],
     toolchain: &al_project::toolchain::AnalyzerPaths,
 ) -> Result<Vec<String>, String> {
+    let search =
+        al_project::analyzers::CustomAnalyzerSearch::new(project_root, assembly_probing_paths);
     configured
         .iter()
         .map(|entry| {
@@ -718,18 +720,15 @@ fn resolve_semantic_analyzer_entries(
                         )
                     });
             }
-            al_project::analyzers::discover_custom_analyzer(
-                entry,
-                project_root,
-                assembly_probing_paths,
-            )
-            .map_err(|error| error.to_string())?
-            .map(|path| path.display().to_string())
-            .ok_or_else(|| {
-                format!(
-                    "Requested analyzer '{entry}' could not be found in the project, probing paths, NuGet cache, or common editor extension locations"
-                )
-            })
+            search
+                .resolve(entry)
+                .map_err(|error| error.to_string())?
+                .map(|path| path.display().to_string())
+                .ok_or_else(|| {
+                    format!(
+                        "Requested analyzer '{entry}' could not be found in the project, probing paths, NuGet cache, or common editor extension locations"
+                    )
+                })
         })
         .collect()
 }
