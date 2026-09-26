@@ -149,7 +149,7 @@ impl SymbolCache {
             name: header.package_name.clone(),
             publisher: header.publisher.clone(),
             version: header.version.clone(),
-            object_count: objects.len(),
+            object_count: SymbolPackage::declared_object_count(&objects),
             objects,
         };
 
@@ -499,6 +499,27 @@ mod tests {
         assert_eq!(loaded.objects.len(), 1);
         assert_eq!(loaded.objects[0].name, "TestTable");
         assert_eq!(loaded.objects[0].fields.len(), 1);
+    }
+
+    #[test]
+    fn a_cached_package_counts_only_declared_objects() {
+        let dir = TempDir::new().unwrap();
+        let cache = SymbolCache::at(dir.path().join("cache"));
+        let (app_path, mut pkg) = make_test_app(dir.path(), "SyntheticPkg");
+        pkg.objects.push(SymbolEntry {
+            kind: ObjectKind::Enum,
+            id: -1,
+            name: "Status".to_string(),
+            package: "SyntheticPkg".to_string(),
+            synthetic: true,
+            ..Default::default()
+        });
+
+        cache.save(&app_path, &pkg).unwrap();
+        let loaded = cache.load(&app_path).unwrap();
+
+        assert_eq!(loaded.objects.len(), 2);
+        assert_eq!(loaded.object_count, 1);
     }
 
     #[test]

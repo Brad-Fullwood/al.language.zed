@@ -37,8 +37,8 @@ path does **not** use the daemon — it uses LSP handlers directly. See
   never in a loop. `AL_ALLOW_MISMATCHED_DAEMON` keeps the running daemon instead. The identity is the
   `al-lsp` version plus the git commit with a dirty marker, and a hash of the `al-lsp` executable's
   size and mtime when the tree is dirty or is not a git checkout — a rebuild of uncommitted work
-  does not change the commit, and that is the case this catches. `connect_existing` does no
-  handshake, so lifecycle tooling can reach a daemon without replacing it.
+  does not change the commit, and that is the case this catches. `connect_existing` checks the
+  proof below and never replaces, so lifecycle tooling can reach a daemon without replacing it.
 
   The identity answers which build, not who. It is not an access control and nothing may be
   built on it as one: what decides whether a daemon may be talked to is the endpoint check in
@@ -52,8 +52,18 @@ path does **not** use the daemon — it uses LSP handlers directly. See
   created with `create_new` by whichever side looks first); the client verifies it. Without
   that, every input to the identity is world-readable — the commit is in the binary and the
   file tag hashes a length and an mtime anyone can `stat` — and a one-line answer passed as
-  a matching build. A daemon that answers without a proof is treated as a mismatch and
-  replaced, which is what a daemon predating this needs anyway.
+  a matching build.
+
+  The proof is checked before the identity, and a failure is not a build mismatch. A proof
+  that does not verify is refused with its own error, `AL_ALLOW_MISMATCHED_DAEMON` does not
+  reach it, and the endpoint is sent nothing after the handshake, so a process squatting on
+  it never receives the `shutdown` that would let it race the replacement. A replacement
+  started from this binary must prove itself too, and one that does not is refused rather than
+  used. A client that cannot name its own build still checks the proof. A daemon that
+  answers with no proof at all predates it: on Unix, where the kernel peer check has already
+  said the process is this user's, it is replaced as a mismatch. On Windows the proof is the
+  only check of who owns the pipe, so a missing proof, or no key or nonce to make the
+  challenge with, is refused, and an old daemon there is stopped by hand.
 - **Binary resolution (`find_al_lsp_binary`):** the `al-lsp` beside the running executable wins. A
   fallback to PATH is logged at warn level with the path and version, and refused when that version
   differs from the client's, with an error naming both and how to install a matching pair.

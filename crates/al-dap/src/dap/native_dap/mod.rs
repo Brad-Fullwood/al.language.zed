@@ -169,6 +169,17 @@ type BpRequest = (i64, String);
 /// exists yet.
 type PendingBreakpoints = HashMap<String, Vec<BpRequest>>;
 
+/// Decides whether a launch or attach may spend the user's Business Central
+/// credential on the server its configuration names. `Err` carries the
+/// refusal the client is shown.
+///
+/// The configuration is the debug scenario the editor read, which a cloned
+/// repository can supply in `.zed/debug.json`. al-lsp passes
+/// `al_project::trust::authorize_cached_credential` in here, the same rule the
+/// daemon's `debug` method applies.
+pub type TargetAuthorizer =
+    Arc<dyn Fn(&BcDebugConfig) -> std::result::Result<(), String> + Send + Sync>;
+
 /// Shared state and host callbacks for the native DAP server.
 pub(crate) struct NativeDapState<F, R, P, C, A> {
     /// Single monotonic sequence counter shared between handlers and the
@@ -202,6 +213,8 @@ pub(crate) struct NativeDapState<F, R, P, C, A> {
     /// event bytes to the main loop (bounded to 1024 messages).
     dap_event_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
     project_root: String,
+    /// Runs before any compile, token or request on `launch`/`attach`.
+    authorize_target: TargetAuthorizer,
     acquire_token: F,
     resolve_object: R,
     resolve_path: P,
@@ -216,12 +229,15 @@ pub(crate) struct NativeDapState<F, R, P, C, A> {
 
 /// Run the native DAP server on stdio.
 ///
+/// `authorize_target` decides whether the launch configuration's server may
+/// receive the user's credential, before anything is compiled or sent.
 /// `acquire_token` is a callback to get an OAuth access token for the given tenant.
 /// `resolve_object` maps a file path to its AL object type + ID using the workspace index.
 /// `resolve_path` is the reverse: given a BC (ObjectType, ObjectNumber) returns the source file.
 /// Both are provided by the caller (al-lsp binary) since they depend on `crate::symbols`.
 pub async fn run_native_dap<F, Fut, R, P, C, CompileFut, A>(
     project_root: &str,
+    authorize_target: TargetAuthorizer,
     acquire_token: F,
     resolve_object: R,
     resolve_path: P,
@@ -252,6 +268,7 @@ where
         cancel_rx,
         dap_event_tx,
         project_root: project_root.to_string(),
+        authorize_target,
         acquire_token,
         resolve_object,
         resolve_path,

@@ -522,7 +522,6 @@ fn section_keyword(section: Node<'_>, source: &[u8]) -> Option<String> {
 /// (field_no, name, declared_type_text, flow_calc_formula).
 /// The last element is `Some(formula)` only when the field is a FlowField.
 /// Malformed FlowField metadata is an error.
-#[allow(clippy::type_complexity)]
 fn parse_field_def(
     section: Node<'_>,
     source: &[u8],

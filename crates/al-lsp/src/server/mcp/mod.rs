@@ -1638,6 +1638,7 @@ async fn write_mcp_frame(
     stdout: &Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
     frame: &serde_json::Value,
 ) -> std::io::Result<()> {
+    // One frame per guard, so concurrent responses never interleave bytes.
     let mut guard = stdout.lock().await;
     guard.write_all(frame.to_string().as_bytes()).await?;
     guard.write_all(b"\n").await?;

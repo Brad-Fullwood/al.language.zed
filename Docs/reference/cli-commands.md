@@ -61,8 +61,8 @@ they are confined to: the daemon changes files only inside the project it has lo
 | Command | Args / flags | Purpose |
 | --- | --- | --- |
 | `search <query>` | global `--limit N` (20) | Fuzzy symbol search across packages + workspace |
-| `object <type> <name>` | — | Look up object by kind + name, with members for workspace and package objects alike |
-| `by-id <type> <id>` | — | Look up object by kind + numeric id, with members |
+| `object <type> <name>` | `--wait-for-members` | Look up object by kind + name, with members for workspace and package objects alike. A workspace object answers without members and with `partial: true` until the call graph is built, unless `--wait-for-members` is given |
+| `by-id <type> <id>` | `--wait-for-members` | Look up object by kind + numeric id, with members, on the same terms as `object` |
 | `source <name>` | `--kind <type>`, `--package <name>`, `--procedure <name>` or `--trigger <name>`, `--list-procedures` | Return the strongest actual source representation; ambiguous names require kind/package selection. `--list-procedures` returns signatures and line ranges without bodies, and a wrong `--procedure` name lists the ones that exist |
 | `location <name>` | `--kind <type>`, `--package <name>` | Print `path:line` for an object's declaration. A package object is materialised as a virtual `.al` file |
 | `composed [<kind>] <name>` | — | Base object + all extensions merged |

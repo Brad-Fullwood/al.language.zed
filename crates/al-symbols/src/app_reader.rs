@@ -153,7 +153,7 @@ fn read_archive<R: Read + Seek>(
         name: manifest.name,
         publisher: manifest.publisher,
         version: manifest.version,
-        object_count: objects.len(),
+        object_count: SymbolPackage::declared_object_count(&objects),
         objects,
     })
 }
@@ -566,6 +566,29 @@ mod tests {
         assert_eq!(pkg.publisher, "Test Publisher");
         assert_eq!(pkg.version, "1.0.0.0");
         assert_eq!(pkg.objects.len(), 2); // 1 table + 1 codeunit
+    }
+
+    #[test]
+    fn object_count_leaves_out_the_synthetic_option_enums() {
+        let symbols = r#"{
+    "Tables": [
+        {
+            "Id": 50100,
+            "Name": "Test Table",
+            "Fields": [
+                { "Id": 1, "Name": "Status",
+                  "TypeDefinition": { "Name": "Option", "OptionMembers": ["Open", "Released"] } }
+            ]
+        }
+    ]
+}"#;
+        let pkg = read_app_bytes(&make_test_app(&test_manifest(), symbols)).unwrap();
+
+        assert!(
+            pkg.objects.iter().any(|entry| entry.synthetic),
+            "the Option field should produce a synthetic enum"
+        );
+        assert_eq!(pkg.object_count, 1, "one declared table");
     }
 
     #[test]

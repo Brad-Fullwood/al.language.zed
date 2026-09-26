@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-24 12:30 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-26 07:10 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -8,9 +8,40 @@ Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two 
 
 ## In flight
 
-Nothing. The three unmerged fix branches (`fix-formatter-idempotence`, `fix-ghost-diagnostics`,
-`slop-splits-2`) are merged. `campaign/ai-persisted-index` never reached origin, so the
-persisted index is queued again below.
+Session 2026-09-26 (interactive, Fable orchestrator, Opus subagents). The headless watchdog
+session that started 06:48 was stopped at 06:53 so two orchestrators do not edit the branch.
+Five agents dispatched at 07:05:
+
+- Security round 4 review (D): done 07:25, 14 findings (4 high, 4 medium, 6 low) in
+  `findings/r4-security.md`, committed f3ed5b6c. Fix agent dispatched 07:30 on worktree branch
+  `campaign/fix-r4-security`, highs first.
+- Persisted symbol index (G): worktree branch `campaign/ai-persisted-index`, writes
+  `findings/persisted-index.md` with before and after numbers.
+- `cargo mutants` on the shortlist (E): worktree branch `campaign/test-mutants`, writes
+  `findings/mutants.md`.
+- Blog (I): done 08:20. 18 commits on blog branch `campaign/2026-09-rewrite`: articles 2, 4, 5,
+  8 revised against binaries built at ba2cda14, article 9 (retrospective, 2,230 words) written,
+  fact pass and unsloppify on all nine, `pnpm validate` passes. Six new defects recorded in
+  `findings/blog-progress.md` ("New findings"); a fix agent has four of them on worktree
+  branch `campaign/fix-blog-findings` (dispatched 08:30), the docs agent has the
+  `native-test-runtime.md` drift, the seventh-answer miscount is fixed (f1db17c2). Left: re-read
+  articles 7, 8, 9 after the security round closes, then merge to `main` (Brad's call).
+- Docs review (H): worktree branch `campaign/docs-review`, dispatched 08:32. README, ROADMAP,
+  `Docs/`, plugin docs checked against the code, then unsloppify. Writes
+  `findings/docs-review.md`.
+- desloppify batch 10, async locking (C): done 07:55, merged d34ad3d2. Two real deadlocks in
+  al-lsp fixed (config/project lock order in diagnostics, bridge read lock taken twice), DAP
+  proxy stdout lock held for one frame, 15 dead `#[allow]` removed, SAFETY comments on every
+  unsafe block, 50 accepted guard sites recorded in `findings/async-locking.md`. Deferred:
+  `did_change_watched_files` reads files under the generation write guard on purpose. Gates
+  on the merge (62a4f85a): fmt, release build and clippy clean, 94 suites, 5065 passed,
+  1 failed: `no_ghost_diagnostics_after_close_during_debounce` fails 2 in 8 at load average 20
+  with the publish order clear, error, clear. Pushed at 08:50 so CI runs it on a quiet runner.
+  Debug agent dispatched 08:52 on worktree branch `campaign/fix-ghost-race-2`, told to find the
+  mechanism and whether it predates the merge before changing code.
+
+A fix branch on origin or in `.claude/worktrees/` with commits not in this branch and no live
+agent means the agent died: re-dispatch onto that branch.
 
 Remote branch cleanup: every `campaign/*` branch except this one is merged into it. Cloud
 sessions can push only to `campaign/2026-09-21`, so deleting them is left to Brad (the list is in
@@ -20,8 +51,6 @@ Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, 
 
 Queued:
 
-- Persisted symbol and source index on disk (cold start 54 s and 2.9 GB RSS), keyed by app id, version and content hash.
-- Rebuild `target/release` before measuring for articles (it predates `publish` and `free-ids`).
 - al-dap and al-publish post to different BC dev endpoints (needs a live server to settle).
 - desloppify fix batches (`findings/desloppify.md` section 4), file splits after the owning fix branch merges.
 - Workstream E (tests): coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis. Start when a build slot frees.

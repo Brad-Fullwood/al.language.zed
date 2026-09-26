@@ -77,30 +77,43 @@ pub(crate) async fn compute_diagnostics(
     uri: &Url,
     text: &str,
 ) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
-
-    {
-        let config_guard = server.workspace.config.read().await;
-        let project_root = server
-            .workspace
-            .project
-            .read()
-            .await
-            .as_ref()
-            .map(|project| project.root.clone());
-        let syntax_diags = al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
-            &server.workspace,
-            uri,
-            &config_guard,
-            project_root.as_deref(),
-        );
-        drop(config_guard);
-        diagnostics.extend(syntax_diags.iter().map(syntax_diag_to_lsp));
-    }
+    let mut diagnostics: Vec<Diagnostic> = syntax_diagnostics(server, uri)
+        .await
+        .iter()
+        .map(syntax_diag_to_lsp)
+        .collect();
 
     diagnostics.extend(run_semantic_analysis(server, uri, text).await);
 
     diagnostics
+}
+
+/// Phase 1 syntax and lint diagnostics for `uri`.
+///
+/// The project root is read and released before the config guard is taken, so
+/// no guard is held across an await. `did_change_configuration` holds the
+/// project write guard while it waits for the config write guard. A config
+/// read guard held across `project.read()` here waited on that writer while
+/// the writer waited on it, and the generation write guard the writer also
+/// holds then stalled every other request.
+async fn syntax_diagnostics(
+    server: &AlServer,
+    uri: &Url,
+) -> Vec<al_analysis::queries::diagnostics::SyntaxDiagnostic> {
+    let project_root = server
+        .workspace
+        .project
+        .read()
+        .await
+        .as_ref()
+        .map(|project| project.root.clone());
+    let config = server.workspace.config.read().await;
+    al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
+        &server.workspace,
+        uri,
+        &config,
+        project_root.as_deref(),
+    )
 }
 
 /// Compute project-scope diagnostics keyed by file for `workspace/diagnostic`.
@@ -386,21 +399,7 @@ pub(crate) async fn publish_diagnostics(
     // redundant parse on every did_open or did_change.
     {
         let parse_start = std::time::Instant::now();
-        let config_guard = server.workspace.config.read().await;
-        let project_root = server
-            .workspace
-            .project
-            .read()
-            .await
-            .as_ref()
-            .map(|project| project.root.clone());
-        let syntax_diags = al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
-            &server.workspace,
-            uri,
-            &config_guard,
-            project_root.as_deref(),
-        );
-        drop(config_guard);
+        let syntax_diags = syntax_diagnostics(server, uri).await;
         let parse_elapsed = parse_start.elapsed();
         let error_count = syntax_diags.len();
         tracing::debug!(uri = %uri, error_count, parse_us = parse_elapsed.as_micros() as u64, "publish_diagnostics: diagnostics from query");
@@ -535,6 +534,9 @@ pub(crate) fn snapshot_is_current(
 ///
 /// Shared between `compute_diagnostics` (pull) and `publish_diagnostics` (push Phase 2).
 async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<Diagnostic> {
+    // The analyzers below are loaded into this process, so they come from the
+    // trust decision as it stands now.
+    server.refresh_trust().await;
     let (
         enable_analysis,
         bg_analysis,
@@ -618,7 +620,14 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
     };
 
     let semantic_start = std::time::Instant::now();
-    match bridge.analyze(req).await {
+    let outcome = bridge.analyze(req).await;
+    // Release the bridge read guard before anything below takes the bridge
+    // lock again. `ensure_error_codes_loaded` goes back through
+    // `get_or_init_bridge`, and tokio's RwLock is fair: a second read from this
+    // task queues behind a restart or shutdown writer, which in turn waits for
+    // this task's first read to end.
+    drop(guard);
+    match outcome {
         Ok(results) => {
             let semantic_elapsed = semantic_start.elapsed();
             tracing::debug!(uri = %uri, count = results.len(), elapsed_us = semantic_elapsed.as_micros() as u64, "semantic analysis complete");
@@ -658,7 +667,6 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
             );
             let should_restart =
                 is_persistent || matches!(&error, crate::semantic::SemanticError::HostInit(_));
-            drop(guard);
             if should_restart {
                 if let Err(restart_error) =
                     al_workspace::restart_bridge_if_current(&server.workspace, bridge_generation)
@@ -932,24 +940,39 @@ pub fn semantic_to_diagnostic(entry: &crate::semantic::DiagnosticEntry) -> Diagn
 mod tests {
     use super::*;
 
+    /// The semantic bridge loads the resolved assemblies into the language
+    /// server itself, so a name the user wrote must not resolve to a DLL an
+    /// untrusted clone ships in `.netpackages` until the project is trusted.
     #[test]
-    fn semantic_analyzer_resolution_preserves_builtins_and_discovers_custom_names() {
+    #[serial_test::serial]
+    fn semantic_analyzer_resolution_preserves_builtins_and_needs_trust_for_project_copies() {
+        let config = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", config.path());
+
         let project = tempfile::tempdir().unwrap();
         let dll = project
             .path()
             .join(".netpackages/businesscentral.lintercop/1.0.0/BusinessCentral.LinterCop.dll");
         std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
         std::fs::write(&dll, b"analyzer").unwrap();
+        let requested = [
+            "CodeCop".to_string(),
+            "BusinessCentral.LinterCop".to_string(),
+        ];
 
-        let resolved = resolve_semantic_analyzer_entries(
-            &[
-                "CodeCop".to_string(),
-                "BusinessCentral.LinterCop".to_string(),
-            ],
-            project.path(),
-            &[],
-        )
-        .unwrap();
+        let untrusted = resolve_semantic_analyzer_entries(&requested, project.path(), &[]);
+        let granted = al_project::trust::grant(project.path()).map(|_| ());
+        let trusted = resolve_semantic_analyzer_entries(&requested, project.path(), &[]);
+        match previous {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+
+        let error = untrusted.expect_err("the clone's copy must not be loaded");
+        assert!(error.contains("not trusted"), "{error}");
+        granted.unwrap();
+        let resolved = trusted.unwrap();
         assert_eq!(resolved[0], "CodeCop");
         assert_eq!(
             resolved[1],

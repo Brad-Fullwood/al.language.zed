@@ -81,6 +81,68 @@ fn redact_dap_body_for_log(body: &[u8]) -> String {
 // and al-lsp depends on al-dap, so there is one DapError in the workspace.
 pub use al_dap::dap::DapError;
 
+/// Whether a debug scenario may spend the user's Business Central credential
+/// on the server it names, and turn off TLS verification for it.
+///
+/// Zed reads the scenario from the worktree's `.zed/debug.json` or from the
+/// user's own debug settings, and the adapter cannot tell which. It is judged
+/// as a file the repository carries, the stricter of the two, through
+/// `authorize_cached_credential`: the same call the daemon's `debug` method
+/// makes. The native adapter and the EditorServices proxy both run it before
+/// anything is compiled or sent.
+pub fn authorize_debug_scenario(
+    project_root: &Path,
+    config: &al_dap::dap::bc_debug::BcDebugConfig,
+) -> Result<(), String> {
+    let target = al_project::trust::BcTarget::from_debug(
+        &config.environment_type,
+        config.server.as_deref(),
+        config.port,
+    );
+    let authorization = al_project::trust::authorize_cached_credential(
+        project_root,
+        &target,
+        al_project::trust::CredentialKind::Bearer,
+        al_project::trust::TargetSource::Repository,
+    )?;
+    if config.accept_invalid_certs && !authorization.may_accept_invalid_certs {
+        return Err(
+            "Refusing to disable TLS verification for this target: set acceptInvalidCerts in \
+             the project's own launch configuration for the same server, and trust the project."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// The failure response for a `launch`/`attach` the proxy refuses to forward,
+/// or `None` when the request may go to EditorServices.Host.
+fn refuse_unauthorised_launch(
+    msg: &serde_json::Value,
+    project_root: &str,
+    seq_counter: &AtomicI64,
+) -> Option<serde_json::Value> {
+    let command = msg.get("command").and_then(|v| v.as_str())?;
+    if command != "launch" && command != "attach" {
+        return None;
+    }
+    let arguments = msg
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let config = al_dap::dap::bc_debug::BcDebugConfig::from_dap_args(&arguments);
+    let error = authorize_debug_scenario(Path::new(project_root), &config).err()?;
+    let request_seq = msg.get("seq").and_then(|v| v.as_i64()).unwrap_or(0);
+    Some(serde_json::json!({
+        "seq": seq_counter.fetch_add(1, Ordering::Relaxed),
+        "type": "response",
+        "request_seq": request_seq,
+        "success": false,
+        "command": command,
+        "message": error,
+    }))
+}
+
 pub async fn run_dap_server(toolchain: &AlToolchain) -> Result<(), DapError> {
     let project_root = std::env::current_dir()
         .map(|p| p.display().to_string())
@@ -231,12 +293,26 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
                             let _ = writeln!(f, ">>> ZED→ES: {}", redact_dap_body_for_log(&body));
                         }
                     }
-                    let patched = {
+                    let refusal = serde_json::from_slice::<serde_json::Value>(&body)
+                        .ok()
+                        .and_then(|msg| {
+                            refuse_unauthorised_launch(&msg, &project_root, seq_counter_ref)
+                        });
+                    if let Some(refusal) = refusal {
+                        let bytes = serde_json::to_vec(&refusal).map_err(std::io::Error::other)?;
                         let mut guard = stdout_writer_out.lock().await;
                         let writer: &mut io::Stdout = &mut guard;
-                        patch_outgoing(&body, &toolchain, &project_root, writer, seq_counter_ref)
-                            .await
-                    };
+                        write_dap_frame(writer, &bytes).await?;
+                        continue;
+                    }
+                    let patched = patch_outgoing(
+                        &body,
+                        &toolchain,
+                        &project_root,
+                        &stdout_writer_out,
+                        seq_counter_ref,
+                    )
+                    .await;
                     write_dap_frame(&mut stdin_writer, &patched).await?;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
@@ -298,7 +374,7 @@ async fn patch_outgoing(
     body: &[u8],
     toolchain: &AlToolchain,
     project_root: &str,
-    output_writer: &mut io::Stdout,
+    output_writer: &tokio::sync::Mutex<io::Stdout>,
     seq_counter: &AtomicI64,
 ) -> Vec<u8> {
     let mut msg: serde_json::Value = match serde_json::from_slice(body) {
@@ -350,8 +426,10 @@ async fn patch_outgoing(
     serde_json::to_vec(&msg).unwrap_or_else(|_| body.to_vec())
 }
 
+/// Write one `output` event. The writer lock is held for this frame only, so a
+/// `launch` compile does not stop `child_to_stdout` forwarding frames.
 async fn send_output_event(
-    writer: &mut io::Stdout,
+    writer: &tokio::sync::Mutex<io::Stdout>,
     seq_counter: &AtomicI64,
     text: &str,
 ) -> Result<(), std::io::Error> {
@@ -367,7 +445,8 @@ async fn send_output_event(
     });
     let body = serde_json::to_vec(&event)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    write_dap_frame(writer, &body).await
+    let mut writer = writer.lock().await;
+    write_dap_frame(&mut *writer, &body).await
 }
 
 fn patch_launch_args(args: &mut serde_json::Map<String, serde_json::Value>) {
@@ -761,9 +840,9 @@ mod tests {
         // compile/spawn (command extraction never happens).
         let toolchain = dummy_toolchain();
         let seq = AtomicI64::new(1);
-        let mut out = io::stdout();
+        let out = tokio::sync::Mutex::new(io::stdout());
         let body = b"not json at all";
-        let patched = patch_outgoing(body, &toolchain, "/tmp", &mut out, &seq).await;
+        let patched = patch_outgoing(body, &toolchain, "/tmp", &out, &seq).await;
         assert_eq!(patched, body);
     }
 
@@ -773,10 +852,10 @@ mod tests {
         // structurally unchanged — no compile, no arg patching.
         let toolchain = dummy_toolchain();
         let seq = AtomicI64::new(1);
-        let mut out = io::stdout();
+        let out = tokio::sync::Mutex::new(io::stdout());
         let body =
             br#"{"type":"request","command":"setBreakpoints","arguments":{"breakOnError":"All"}}"#;
-        let patched = patch_outgoing(body, &toolchain, "/tmp", &mut out, &seq).await;
+        let patched = patch_outgoing(body, &toolchain, "/tmp", &out, &seq).await;
         let v: serde_json::Value = serde_json::from_slice(&patched).unwrap();
         // breakOnError must remain the original string — patch_launch_args is
         // only applied to launch/attach.
@@ -794,14 +873,163 @@ mod tests {
         // compile the project (only `launch` compiles).
         let toolchain = dummy_toolchain();
         let seq = AtomicI64::new(1);
-        let mut out = io::stdout();
+        let out = tokio::sync::Mutex::new(io::stdout());
         let body = br#"{"type":"request","command":"attach","arguments":{"breakOnError":"none"}}"#;
-        let patched = patch_outgoing(body, &toolchain, "/tmp", &mut out, &seq).await;
+        let patched = patch_outgoing(body, &toolchain, "/tmp", &out, &seq).await;
         let v: serde_json::Value = serde_json::from_slice(&patched).unwrap();
         assert_eq!(
             v.pointer("/arguments/breakOnError"),
             Some(&serde_json::Value::Bool(false)),
             "attach must apply patch_launch_args ('none' → false)"
         );
+    }
+
+    /// Points `XDG_CONFIG_HOME` at a scratch directory, so trust is decided
+    /// against an empty store rather than the user's own. The variable is
+    /// process-wide, so every test that uses this is `serial`.
+    struct ScratchConfig {
+        _dir: tempfile::TempDir,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl ScratchConfig {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let previous = std::env::var_os("XDG_CONFIG_HOME");
+            std::env::set_var("XDG_CONFIG_HOME", dir.path());
+            Self {
+                _dir: dir,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for ScratchConfig {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+    }
+
+    /// A project whose `.zed/debug.json` names `server`, the file a clone
+    /// ships and Zed's debug panel lists.
+    fn project_with_debug_scenario(server: &str, accept_invalid_certs: bool) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.json"), "{}").unwrap();
+        std::fs::create_dir_all(dir.path().join(".zed")).unwrap();
+        std::fs::write(
+            dir.path().join(".zed/debug.json"),
+            serde_json::json!([{
+                "label": "Publish and debug (sandbox)",
+                "adapter": "al",
+                "request": "attach",
+                "environmentType": "OnPrem",
+                "server": server,
+                "serverInstance": "BC",
+                "authentication": "AAD",
+                "tenant": "organizations",
+                "acceptInvalidCerts": accept_invalid_certs,
+            }])
+            .to_string(),
+        )
+        .unwrap();
+        dir
+    }
+
+    fn scenario(server: &str, accept_invalid_certs: bool) -> al_dap::dap::bc_debug::BcDebugConfig {
+        al_dap::dap::bc_debug::BcDebugConfig::from_dap_args(&serde_json::json!({
+            "environmentType": "OnPrem",
+            "server": server,
+            "serverInstance": "BC",
+            "authentication": "AAD",
+            "tenant": "organizations",
+            "acceptInvalidCerts": accept_invalid_certs,
+        }))
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn dap_refuses_cached_token_for_an_untrusted_repository_server() {
+        let _config = ScratchConfig::new();
+        let project = project_with_debug_scenario("https://collector.example.test", false);
+
+        let error = authorize_debug_scenario(
+            project.path(),
+            &scenario("https://collector.example.test", false),
+        )
+        .expect_err("a server an untrusted clone names must not receive the token");
+        assert!(error.contains("not trusted"), "{error}");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn dap_refuses_a_cleartext_server_even_in_a_trusted_project() {
+        let _config = ScratchConfig::new();
+        let project = project_with_debug_scenario("http://collector.example.test", false);
+        al_project::trust::grant(project.path()).unwrap();
+
+        let error = authorize_debug_scenario(
+            project.path(),
+            &scenario("http://collector.example.test", false),
+        )
+        .expect_err("a bearer token must not cross the network in cleartext");
+        assert!(error.contains("cleartext"), "{error}");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn dap_allows_a_trusted_projects_own_server() {
+        let _config = ScratchConfig::new();
+        let project = project_with_debug_scenario("https://erp.example.test", true);
+        al_project::trust::grant(project.path()).unwrap();
+
+        authorize_debug_scenario(project.path(), &scenario("https://erp.example.test", true))
+            .expect("the trusted project's own scenario may debug, with its own TLS setting");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn dap_refuses_accept_invalid_certs_the_launch_file_does_not_set() {
+        let _config = ScratchConfig::new();
+        let project = project_with_debug_scenario("https://erp.example.test", false);
+        al_project::trust::grant(project.path()).unwrap();
+
+        let error =
+            authorize_debug_scenario(project.path(), &scenario("https://erp.example.test", true))
+                .expect_err("TLS verification is the target's decision");
+        assert!(error.contains("TLS verification"), "{error}");
+    }
+
+    /// The EditorServices proxy answers a refused launch itself, so the
+    /// request never reaches Microsoft's host and its own credential cache.
+    #[test]
+    #[serial_test::serial]
+    fn the_legacy_proxy_answers_a_refused_launch_instead_of_forwarding_it() {
+        let _config = ScratchConfig::new();
+        let project = project_with_debug_scenario("https://collector.example.test", false);
+        let root = project.path().to_str().unwrap();
+        let seq = AtomicI64::new(5);
+        let launch = serde_json::json!({
+            "seq": 3,
+            "type": "request",
+            "command": "launch",
+            "arguments": {
+                "environmentType": "OnPrem",
+                "server": "https://collector.example.test",
+                "authentication": "AAD",
+            },
+        });
+
+        let refusal = refuse_unauthorised_launch(&launch, root, &seq)
+            .expect("an untrusted repository's server is refused");
+        assert_eq!(refusal["success"], false);
+        assert_eq!(refusal["request_seq"], 3);
+        assert_eq!(refusal["command"], "launch");
+        assert!(refusal["message"].as_str().unwrap().contains("not trusted"));
+
+        let threads = serde_json::json!({"seq": 4, "type": "request", "command": "threads"});
+        assert!(refuse_unauthorised_launch(&threads, root, &seq).is_none());
     }
 }

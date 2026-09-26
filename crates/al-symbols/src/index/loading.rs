@@ -560,6 +560,30 @@ mod tests {
     }
 
     #[test]
+    fn availability_leaves_out_synthetic_entries() {
+        const APP_ID: &str = "11111111-0000-0000-0000-000000000000";
+        let mut pkg = package(APP_ID, "Utilities", "1.0.0.0", &["A"]);
+        let mut synthetic = make_entry(ObjectKind::Enum, -1, "Status");
+        synthetic.package = "Utilities".to_string();
+        synthetic.synthetic = true;
+        pkg.objects.push(synthetic);
+        let index = SymbolIndex::new();
+        index.index_loaded_package(pkg, None, false);
+
+        let total = |summary: crate::source_availability::SourceAvailabilitySummary| {
+            summary.workspace_source
+                + summary.embedded_source
+                + summary.generated_outline
+                + summary.metadata_only
+        };
+        assert_eq!(
+            total(index.package_source_availability_for(APP_ID, "Utilities")),
+            1
+        );
+        assert_eq!(total(index.package_source_availability("Utilities")), 1);
+    }
+
+    #[test]
     fn replace_with_rebuilds_every_lookup_and_completion_index() {
         let active = SymbolIndex::new();
         active.add_entries(&[make_entry(ObjectKind::Table, 50_100, "Old")]);

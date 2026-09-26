@@ -112,6 +112,11 @@ variable as one line (`1 "No.": Code[20]`, `AssistEdit(OldCust: Record "Customer
 instead of an object with every property: Base Application's Customer table goes from 113 KB to
 24 KB. MCP callers get it by default.
 
+A workspace object's fields and methods enter the symbol index when the call graph is built. `object`
+and `byId` do not wait for that build: until the graph is built, a workspace object answers with its
+identity and `partial: true`, and `partial_reason` says why. `waitForMembers: true` builds the graph
+first. A package object has its members from the symbol package and answers at once either way.
+
 MCP callers get `limit: 50` when they do not pass one, because a tool result goes straight into a
 context window. An explicit `limit` always wins, including `limit: 0` for a count.
 
@@ -145,6 +150,10 @@ default to `workspace`, because that is the code the project can change.
   `trace`, `impact` and `entrypoints` all wait for it. The daemon and the MCP server start it in
   the background at startup, and the build is single-flight, so concurrent and retried callers join
   one build rather than starting their own.
+- `status` reports `callGraph` as `{state, elapsedMs}` with the same four states. The call graph
+  builds after the source index is ready, and `trace`, `impact` and `entrypoints` wait for both.
+  A client whose request reaches its deadline keeps waiting while either one is `building`, up to
+  600 s.
 - `status` reports `launchConfigError` when the project's debug configuration file could not be
   read. Symbol queries are unaffected by that; the Business Central connection commands are the
   ones that need the file.

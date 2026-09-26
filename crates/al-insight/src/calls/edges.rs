@@ -40,6 +40,8 @@ pub fn populate_call_edges_for_procedure(
 /// `object_node`. In a file holding several objects, two of them can declare
 /// the same procedure name (an interface and its implementation); a
 /// whole-tree lookup found the first.
+// The same inputs as `populate_call_edges_for_procedure` plus the object node,
+// for the same reason.
 #[allow(clippy::too_many_arguments)]
 pub fn populate_call_edges_in_object(
     object_node: tree_sitter::Node<'_>,

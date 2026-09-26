@@ -506,10 +506,13 @@ impl BcDebugSession {
     /// resetting) `expecting_step` so a Break's reason reflects the most
     /// recent client action exactly once.
     async fn convert_event(&self, msg: &SignalRMessage) -> Option<BcEvent> {
-        let expecting_step = *self.expecting_step.lock().await;
-        let event = signalr_to_bc_event(msg, expecting_step);
+        // One guard for the read and the reset. With two, a step request that
+        // set the flag in between had it cleared by this older Break, and the
+        // step's own Break was then reported as a breakpoint.
+        let mut expecting_step = self.expecting_step.lock().await;
+        let event = signalr_to_bc_event(msg, *expecting_step);
         if matches!(event, Some(BcEvent::Break { .. })) {
-            *self.expecting_step.lock().await = false;
+            *expecting_step = false;
         }
         event
     }
@@ -571,6 +574,7 @@ impl BcDebugSession {
     /// - No race: the channel is unbounded, so a `Break` that arrives before
     ///   this method is called is buffered and returned on the first `recv`.
     pub async fn wait_for_break_event(&self) -> bool {
+        // Nothing else takes this receiver. The guard is how `&self` waits on it.
         let mut rx = self.break_event_rx.lock().await;
         rx.recv().await.unwrap_or(false)
     }

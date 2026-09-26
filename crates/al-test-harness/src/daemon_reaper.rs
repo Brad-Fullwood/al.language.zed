@@ -67,10 +67,13 @@ fn arm_at_exit() {
     // libtest returns from main and the runtime exits the process, which runs
     // C `atexit` handlers. Rust has no equivalent for a `static`, whose `Drop`
     // never runs.
+    // SAFETY: `reap_at_exit` is a plain `extern "C" fn()` with no captured
+    // state, which is all `atexit` requires. `ARMED` registers it once.
     #[cfg(unix)]
     unsafe {
         libc::atexit(reap_at_exit);
     }
+    // SAFETY: as above, with the C runtime's own `atexit`.
     #[cfg(windows)]
     unsafe {
         atexit(reap_at_exit);

@@ -123,11 +123,11 @@ struct DependencySourceProgress {
     started_at: std::sync::RwLock<Option<std::time::Instant>>,
 }
 
-/// What the dependency source index is doing right now.
+/// What the dependency source index, or the call graph, is doing right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DependencySourceState {
-    /// No query has needed the index yet.
+    /// No query has needed it yet.
     Idle,
     Building,
     Ready,
@@ -252,6 +252,96 @@ pub struct DependencySourceProgressSnapshot {
     pub elapsed_ms: u64,
 }
 
+/// Whether the call graph is being built, for `status`.
+///
+/// The build starts when the dependency source index is ready. On the medium
+/// benchmark project the index was ready at 23.5 s and a cold `trace`
+/// answered at 35.5 s, so a client that stopped waiting when the index
+/// reported ready gave up in the middle of the build.
+#[derive(Debug, Default)]
+struct CallGraphProgress {
+    /// Codes as in [`DependencySourceState`]. `ready` means the last build
+    /// finished: an edit since then makes the next query build again.
+    state: std::sync::atomic::AtomicU8,
+    /// Milliseconds the last finished build took.
+    elapsed_ms: std::sync::atomic::AtomicU64,
+    started_at: std::sync::RwLock<Option<std::time::Instant>>,
+}
+
+impl CallGraphProgress {
+    fn begin(&self) -> CallGraphBuildMark<'_> {
+        if let Ok(mut started) = self.started_at.write() {
+            *started = Some(std::time::Instant::now());
+        }
+        self.state.store(
+            DependencySourceState::Building.code(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        CallGraphBuildMark {
+            progress: self,
+            succeeded: false,
+        }
+    }
+
+    fn elapsed_now(&self) -> u64 {
+        self.started_at
+            .read()
+            .ok()
+            .and_then(|started| *started)
+            .map(|started| started.elapsed().as_millis().min(u64::MAX as u128) as u64)
+            .unwrap_or(0)
+    }
+
+    fn snapshot(&self) -> CallGraphProgressSnapshot {
+        use std::sync::atomic::Ordering::Relaxed;
+        let state = DependencySourceState::from_code(self.state.load(Relaxed));
+        let elapsed_ms = if state == DependencySourceState::Building {
+            self.elapsed_now()
+        } else {
+            self.elapsed_ms.load(Relaxed)
+        };
+        CallGraphProgressSnapshot { state, elapsed_ms }
+    }
+}
+
+/// Ends a call graph build in [`CallGraphProgress`] when dropped: `failed`
+/// unless [`Self::succeeded`] ran, so an error or a panic in the build does
+/// not leave `status` reporting `building`.
+struct CallGraphBuildMark<'a> {
+    progress: &'a CallGraphProgress,
+    succeeded: bool,
+}
+
+impl CallGraphBuildMark<'_> {
+    fn succeeded(mut self) {
+        self.succeeded = true;
+    }
+}
+
+impl Drop for CallGraphBuildMark<'_> {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.progress
+            .elapsed_ms
+            .store(self.progress.elapsed_now(), Relaxed);
+        let state = if self.succeeded {
+            DependencySourceState::Ready
+        } else {
+            DependencySourceState::Failed
+        };
+        self.progress.state.store(state.code(), Relaxed);
+    }
+}
+
+/// A snapshot of the call graph build, for `status`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CallGraphProgressSnapshot {
+    pub state: DependencySourceState,
+    /// Milliseconds the running build has taken so far, or the last one took.
+    pub elapsed_ms: u64,
+}
+
 /// A synchronization failure that makes workspace state unsafe to inspect.
 ///
 /// Rust lock poisoning means a writer panicked while it held the lock. Query
@@ -358,6 +448,10 @@ pub struct Workspace {
     pub package_info: std::sync::RwLock<Vec<PackageInfo>>,
     /// In-memory cache of builtin types indexed by name for O(1) lookups.
     pub semantic_cache: std::sync::RwLock<SemanticCache>,
+    /// The daemon's native debug session. Its methods take `&mut self`, so each
+    /// debug command holds this lock across its Business Central call. Each such
+    /// call ends at the SignalR invoke timeout, and nothing it awaits takes this
+    /// lock.
     pub debug_session: tokio::sync::Mutex<Option<al_dap::native_debug::NativeDebugSession>>,
     /// Optional callback for user-visible notifications (bridge failures, etc.).
     ///
@@ -421,6 +515,8 @@ pub struct Workspace {
     /// caller's only observation is a timeout, and the natural response to a
     /// timeout is a retry into the next one.
     dependency_source_progress: DependencySourceProgress,
+    /// Whether the call graph build is running, readable while it runs.
+    call_graph_progress: CallGraphProgress,
     /// How many times the call graph has actually been built.
     ///
     /// Exists so single-flight is testable: a cold build is 86 s on a project
@@ -503,6 +599,7 @@ impl Workspace {
             dependency_source_index: std::sync::RwLock::new(None),
             source_summary_cache: std::sync::OnceLock::new(),
             dependency_source_progress: DependencySourceProgress::default(),
+            call_graph_progress: CallGraphProgress::default(),
             call_graph_builds: std::sync::atomic::AtomicU64::new(0),
             profiler_session: std::sync::RwLock::new(None),
             test_results: std::sync::RwLock::new(None),
@@ -868,6 +965,33 @@ impl Workspace {
         self.dependency_source_progress.snapshot()
     }
 
+    /// Whether the call graph is being built, and how long it has taken.
+    /// Readable while the build runs.
+    pub fn call_graph_progress(&self) -> CallGraphProgressSnapshot {
+        self.call_graph_progress.snapshot()
+    }
+
+    /// Whether the cached call graph matches the current workspace files and
+    /// packages. Builds nothing and does not wait for a build in progress.
+    ///
+    /// Workspace objects' fields and methods enter the symbol index with the
+    /// graph, so a lookup that must answer at once asks this before it uses
+    /// them.
+    pub fn call_graph_is_current(&self) -> bool {
+        let (dependency_fingerprint, _) = self.dependency_package_fingerprint_reporting();
+        let revision = self.call_graph_revision_now();
+        let revision_matches = matches!(
+            self.call_graph_revision.try_read(),
+            Ok(built_at) if *built_at == Some(revision)
+        );
+        let built = matches!(self.call_graph.try_read(), Ok(graph) if graph.is_some());
+        let packages_match = matches!(
+            self.call_graph_dependency_fingerprint.try_read(),
+            Ok(built_from) if built_from.as_ref() == Some(&dependency_fingerprint)
+        );
+        revision_matches && built && packages_match
+    }
+
     /// How many times the call graph has been built since this workspace was
     /// created. Callers that join an in-flight build do not add to it.
     pub fn call_graph_build_count(&self) -> u64 {
@@ -1060,6 +1184,7 @@ impl Workspace {
         // re-check, and never reach here.
         self.call_graph_builds
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let build_mark = self.call_graph_progress.begin();
         let build = || {
             let mut graph = InsightGraph::new();
             graph.build_from_index(&self.symbols);
@@ -1126,6 +1251,7 @@ impl Workspace {
         drop(fingerprint_guard);
         drop(cg_guard);
         drop(ig_guard);
+        build_mark.succeeded();
 
         let guard = self
             .call_graph

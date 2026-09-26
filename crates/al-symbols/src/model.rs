@@ -540,11 +540,18 @@ pub struct SymbolPackage {
     /// `mem::take(&mut objects)` move into the index — callers reading
     /// `objects.len()` after loading saw 0 for every package (the
     /// `packages` command's OBJECTS column and the daemon's
-    /// "loaded symbol packages symbols=0" log line).
+    /// "loaded symbol packages symbols=0" log line). Synthetic Option
+    /// enums are left out, see [`SymbolPackage::declared_object_count`].
     pub object_count: usize,
 }
 
 impl SymbolPackage {
+    /// Number of objects the package declares: every entry except the
+    /// synthetic Option enums the loader adds for type resolution.
+    pub fn declared_object_count(objects: &[SymbolEntry]) -> usize {
+        objects.iter().filter(|entry| !entry.synthetic).count()
+    }
+
     /// Whether this package satisfies an `app.json` dependency.
     ///
     /// Dependency versions are minimums in AL. Identity is matched by app GUID,

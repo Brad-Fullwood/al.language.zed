@@ -43,6 +43,8 @@ impl TestResultStore {
 
     /// Append one record, pruning the oldest record in a full method bucket.
     pub async fn append(&self, record: TestRunRecord) -> Result<(), PersistenceError> {
+        // Held across the file I/O below: appends and rewrites of the one file
+        // must not interleave. `bucket_counts` is only ever taken inside it.
         let _guard = self.write_lock.lock().await;
 
         let key = (record.codeunit_id, record.method_name.clone());
@@ -539,6 +541,8 @@ mod tests {
         struct RestoreEnv(Option<std::ffi::OsString>);
         impl Drop for RestoreEnv {
             fn drop(&mut self) {
+                // SAFETY: runs while `_lock` still holds ENV_LOCK, the only
+                // guard of XDG_DATA_HOME in this test binary.
                 unsafe {
                     match self.0.take() {
                         Some(value) => std::env::set_var("XDG_DATA_HOME", value),
@@ -548,6 +552,7 @@ mod tests {
             }
         }
         let _restore = RestoreEnv(std::env::var_os("XDG_DATA_HOME"));
+        // SAFETY: ENV_LOCK is held, so no other test touches XDG_DATA_HOME.
         unsafe {
             std::env::set_var("XDG_DATA_HOME", "/tmp/al-lsp-test-xdg");
         }

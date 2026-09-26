@@ -319,7 +319,7 @@ engine is fast enough for an agent to call it in a loop.
 
 Output size is the problem. Five queries return more than 80,000 tokens, one
 returns 2.4 million, and the agent-facing question behind each of them has a
-one-line answer. Of the twenty, six produce output an agent can put in its
+one-line answer. Of the twenty, seven produce output an agent can put in its
 context unchanged (`search`, `trace`, `events`, `source --procedure`,
 `dead-code`, `deps-graph`, `diag`).
 
