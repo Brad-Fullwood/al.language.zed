@@ -411,7 +411,11 @@ impl DaemonClient {
         let stream = connect_stream(&endpoint).map_err(|error| {
             format!("No running daemon for {}: {error}", project_root.display())
         })?;
-        Self::from_stream(stream).map(|client| client.with_project_root(project_root))
+        let mut client = Self::from_stream(stream)?.with_project_root(project_root);
+        // Lifecycle tooling sends `shutdown` next, so a failed proof stops
+        // here. Which build answered does not matter to it.
+        let _identity = client.authenticate(project_root)?;
+        Ok(client)
     }
 
     /// Connect to the daemon for a project, auto-starting if needed.
@@ -457,10 +461,14 @@ impl DaemonClient {
     ) -> Result<Self, String> {
         let mut client = Self::connect_or_spawn(project_root, endpoint, lock_path, spawn)?;
 
+        // Who is answering is settled before which build it is, and a failure
+        // there is not a build difference: `AL_ALLOW_MISMATCHED_DAEMON` does
+        // not reach it, and no `shutdown` is sent to an endpoint that failed
+        // the proof.
+        let actual = client.authenticate(project_root)?;
         let Some(expected) = expected.cloned() else {
             return Ok(client);
         };
-        let actual = client.daemon_identity();
         if actual.as_ref().is_ok_and(|actual| *actual == expected) {
             return Ok(client);
         }
@@ -497,17 +505,44 @@ impl DaemonClient {
 
         let stream = spawn(project_root, endpoint)?;
         let mut client = Self::from_stream(stream)?.with_project_root(project_root);
-        // One replacement, never a loop. A second mismatch means the binary
-        // beside this executable is not the one answering on this endpoint,
-        // and restarting again would not change that.
+        // One replacement, never a loop. A second build mismatch means the
+        // binary beside this executable is not the one answering on this
+        // endpoint, and restarting again would not change that. A replacement
+        // started from this binary always carries the proof, so an answer
+        // without one, or with a wrong one, is refused rather than used.
         match client.daemon_identity() {
             Ok(actual) if actual == expected => {}
-            other => notify(&format!(
-                "the replacement daemon still reports a different build ({other:?}, this client \
+            Ok(actual) => notify(&format!(
+                "the replacement daemon still reports a different build ({actual}, this client \
                  expects {expected}); continuing with it"
             )),
+            Err(error) => return Err(unauthenticated_daemon(project_root, &error)),
         }
         Ok(client)
+    }
+
+    /// Check that the process on the endpoint holds this user's handshake
+    /// key, before anything but `handshake` is sent to it.
+    ///
+    /// `Ok(Ok(identity))` is a daemon that proved itself. `Ok(Err(reason))` is
+    /// one that gave no proof at all, which is what a daemon from before the
+    /// proof does. That is accepted only on Unix, where `connect_stream` has
+    /// already read the peer's uid from the kernel. On Windows the proof is the
+    /// only thing that says the pipe is this user's, so it is refused there.
+    /// `Err` is the refusal.
+    fn authenticate(
+        &mut self,
+        project_root: &Path,
+    ) -> Result<Result<BuildIdentity, HandshakeError>, String> {
+        match self.daemon_identity() {
+            Err(error @ HandshakeError::Unauthenticated(_)) => {
+                Err(unauthenticated_daemon(project_root, &error))
+            }
+            Err(error @ HandshakeError::Unproven(_)) if cfg!(windows) => {
+                Err(unauthenticated_daemon(project_root, &error))
+            }
+            other => Ok(other),
+        }
     }
 
     /// Connect to a running daemon, or serialise with other callers and start
@@ -548,13 +583,16 @@ impl DaemonClient {
     ///
     /// A daemon too old to know `handshake` answers "Unknown method", which is
     /// itself the answer the caller needs: it predates this check.
-    fn daemon_identity(&mut self) -> Result<BuildIdentity, String> {
+    fn daemon_identity(&mut self) -> Result<BuildIdentity, HandshakeError> {
         let challenge = identity::nonce();
         let params =
             (!challenge.is_empty()).then(|| serde_json::json!({ "nonce": challenge.clone() }));
-        let value = self.request_with_timeout("handshake", params, HANDSHAKE_TIMEOUT)?;
-        let identity: BuildIdentity = serde_json::from_value(value.clone())
-            .map_err(|error| format!("handshake did not carry a build identity: {error}"))?;
+        let value = self
+            .request_with_timeout("handshake", params, HANDSHAKE_TIMEOUT)
+            .map_err(HandshakeError::Unproven)?;
+        let identity: BuildIdentity = serde_json::from_value(value.clone()).map_err(|error| {
+            HandshakeError::Unproven(format!("handshake did not carry a build identity: {error}"))
+        })?;
         self.verify_handshake_proof(&challenge, &identity, &value)?;
         Ok(identity)
     }
@@ -567,32 +605,41 @@ impl DaemonClient {
     /// an HMAC over the nonce and the identity, keyed by a file only this user
     /// can read.
     ///
-    /// No secret and no nonce means no challenge to make. A daemon too old to
-    /// answer one reports no proof, and that is treated as a build mismatch
-    /// rather than as an authentication failure: the replace path stops it and
-    /// starts one from this binary, which is what a stale daemon needs anyway.
+    /// A proof that does not verify is [`HandshakeError::Unauthenticated`].
+    /// No proof at all is [`HandshakeError::Unproven`], which is what a daemon
+    /// too old to answer the challenge gives. No nonce or no secret means no
+    /// challenge can be made: that passes on Unix, where the kernel peer check
+    /// stands under it, and is refused on Windows, where the proof is the only
+    /// check there is.
     fn verify_handshake_proof(
         &self,
         challenge: &str,
         identity: &BuildIdentity,
         answer: &serde_json::Value,
-    ) -> Result<(), String> {
-        if challenge.is_empty() {
-            return Ok(());
-        }
-        let Some(secret) = handshake_secret() else {
+    ) -> Result<(), HandshakeError> {
+        let secret = handshake_secret().filter(|_| !challenge.is_empty());
+        let Some(secret) = secret else {
+            if cfg!(windows) {
+                return Err(HandshakeError::Unauthenticated(
+                    "no handshake challenge could be made (no randomness or no readable \
+                     handshake key), and on Windows it is the only check of who owns the pipe"
+                        .to_string(),
+                ));
+            }
             return Ok(());
         };
         let expected = identity::proof(&secret, challenge, identity);
         let actual = answer.get("proof").and_then(serde_json::Value::as_str);
         match actual {
             Some(actual) if identity::proofs_match(&expected, actual) => Ok(()),
-            Some(_) => Err(
+            Some(_) => Err(HandshakeError::Unauthenticated(
                 "the handshake proof did not match: whatever is answering on this project's \
                  daemon endpoint cannot read this user's runtime directory"
                     .to_string(),
-            ),
-            None => Err("the daemon answered the handshake without a proof".to_string()),
+            )),
+            None => Err(HandshakeError::Unproven(
+                "the daemon answered the handshake without a proof".to_string(),
+            )),
         }
     }
 
@@ -1156,6 +1203,36 @@ pub fn handshake_secret() -> Option<Vec<u8>> {
     #[cfg(not(unix))]
     std::fs::create_dir_all(&dir).ok()?;
     identity::shared_secret(&dir).ok()
+}
+
+/// Why a handshake did not establish that the daemon holds this user's key.
+#[derive(Debug)]
+enum HandshakeError {
+    /// A proof that does not verify, or no way to check one where the proof is
+    /// the only check. Something other than this user's daemon may be on the
+    /// endpoint.
+    Unauthenticated(String),
+    /// No proof and no identity to check one against: a daemon from before the
+    /// proof, or from before `handshake`.
+    Unproven(String),
+}
+
+impl std::fmt::Display for HandshakeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unauthenticated(reason) | Self::Unproven(reason) => formatter.write_str(reason),
+        }
+    }
+}
+
+/// The refusal for an endpoint that did not prove it is this user's daemon.
+fn unauthenticated_daemon(project_root: &Path, error: &HandshakeError) -> String {
+    format!(
+        "Refusing the daemon endpoint for {}: {error}. Nothing but the handshake was sent to \
+         it. If an al-lsp daemon from an older build is running for this project, stop that \
+         process and run the command again.",
+        project_root.display()
+    )
 }
 
 /// Connect to the daemon endpoint, refusing anything that is not this user's.
@@ -1834,6 +1911,16 @@ mod startup_error_tests {
         /// `None` models a daemon built before `handshake` existed: it answers
         /// the method it does not know with `METHOD_NOT_FOUND`.
         fn start_with(sock: &Path, identity: Option<BuildIdentity>) -> Self {
+            Self::start_inner(sock, identity, false)
+        }
+
+        /// A process that says the expected identity but cannot read this
+        /// user's handshake key, so its proof is keyed by something else.
+        fn start_forging(sock: &Path, identity: BuildIdentity) -> Self {
+            Self::start_inner(sock, Some(identity), true)
+        }
+
+        fn start_inner(sock: &Path, identity: Option<BuildIdentity>, forge: bool) -> Self {
             let listener = UnixListener::bind(sock).expect("bind fake daemon");
             listener
                 .set_nonblocking(true)
@@ -1878,7 +1965,12 @@ mod startup_error_tests {
                                     .and_then(serde_json::Value::as_str)
                                     .unwrap_or_default();
                                 if !nonce.is_empty() {
-                                    if let Some(secret) = handshake_secret() {
+                                    let secret = if forge {
+                                        Some(b"not this user's key".to_vec())
+                                    } else {
+                                        handshake_secret()
+                                    };
+                                    if let Some(secret) = secret {
                                         answer["proof"] = serde_json::json!(
                                             super::identity::proof(&secret, nonce, identity)
                                         );
@@ -2028,7 +2120,8 @@ mod startup_error_tests {
         let error = client
             .verify_handshake_proof(&challenge, &identity, &forged)
             .expect_err("an identity with no proof must not pass");
-        assert!(error.contains("without a proof"), "{error}");
+        assert!(matches!(error, HandshakeError::Unproven(_)), "{error}");
+        assert!(error.to_string().contains("without a proof"), "{error}");
 
         // Keyed by something else, which is what a process that cannot read
         // the secret would have to guess.
@@ -2038,7 +2131,11 @@ mod startup_error_tests {
         let error = client
             .verify_handshake_proof(&challenge, &identity, &wrong)
             .expect_err("a proof under another key must not pass");
-        assert!(error.contains("did not match"), "{error}");
+        assert!(
+            matches!(error, HandshakeError::Unauthenticated(_)),
+            "{error}"
+        );
+        assert!(error.to_string().contains("did not match"), "{error}");
 
         // The real answer.
         let mut real = forged;
@@ -2111,6 +2208,106 @@ mod startup_error_tests {
         drop(client);
         drop(running);
         let _ = std::fs::remove_file(&sock);
+    }
+
+    /// A wrong proof is not a build difference. It is refused with its own
+    /// error, `AL_ALLOW_MISMATCHED_DAEMON` does not reach it, and the endpoint
+    /// is sent nothing after the handshake, so a squatter never sees the
+    /// `shutdown` that would let it race the replacement.
+    #[test]
+    fn a_daemon_that_fails_the_proof_is_refused_and_never_asked_to_stop() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let previous = std::env::var_os(identity::ALLOW_MISMATCH_ENV);
+        let project = std::env::temp_dir();
+
+        for allow_mismatch in [false, true] {
+            if allow_mismatch {
+                std::env::set_var(identity::ALLOW_MISMATCH_ENV, "1");
+            } else {
+                std::env::remove_var(identity::ALLOW_MISMATCH_ENV);
+            }
+            let sock = unique_sock();
+            let lock = sock.with_extension("lock");
+            let squatter = FakeDaemon::start_forging(&sock, expected_for_test());
+            let spawned = AtomicU32::new(0);
+            let mut spawn = |_root: &Path, _endpoint: &Path| {
+                spawned.fetch_add(1, Ordering::SeqCst);
+                Err("a refused endpoint must not be replaced".to_string())
+            };
+
+            let result = DaemonClient::connect_checked(
+                &project,
+                &sock,
+                &lock,
+                Some(&expected_for_test()),
+                &mut spawn,
+            );
+            let asked_to_stop = squatter.was_asked_to_shut_down();
+            drop(squatter);
+            let _ = std::fs::remove_file(&sock);
+
+            let error = result.err().expect("a wrong proof must be refused");
+            assert!(error.contains("did not match"), "{error}");
+            assert!(!asked_to_stop, "the squatter was sent shutdown");
+            assert_eq!(spawned.load(Ordering::SeqCst), 0);
+        }
+
+        match previous {
+            Some(value) => std::env::set_var(identity::ALLOW_MISMATCH_ENV, value),
+            None => std::env::remove_var(identity::ALLOW_MISMATCH_ENV),
+        }
+    }
+
+    /// A client that cannot name its own build still checks who is answering.
+    #[test]
+    fn a_client_with_no_expected_identity_still_checks_the_proof() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let sock = unique_sock();
+        let lock = sock.with_extension("lock");
+        let squatter = FakeDaemon::start_forging(&sock, expected_for_test());
+        let mut spawn = |_root: &Path, _endpoint: &Path| Err("nothing to spawn".to_string());
+
+        let result =
+            DaemonClient::connect_checked(&std::env::temp_dir(), &sock, &lock, None, &mut spawn);
+        drop(squatter);
+        let _ = std::fs::remove_file(&sock);
+
+        assert!(result.is_err(), "a wrong proof must be refused");
+    }
+
+    /// The replacement is started from this binary, so it proves itself. One
+    /// that does not is something else on the endpoint, and the client stops
+    /// there instead of continuing with it.
+    #[test]
+    fn a_replacement_that_fails_the_proof_is_refused() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let sock = unique_sock();
+        let lock = sock.with_extension("lock");
+        let stale = FakeDaemon::start(&sock, test_identity("git:0000deadbeef"));
+
+        let replacement: std::sync::Mutex<Option<FakeDaemon>> = std::sync::Mutex::new(None);
+        let mut spawn = |_root: &Path, endpoint: &Path| {
+            *replacement.lock().expect("test") =
+                Some(FakeDaemon::start_forging(endpoint, expected_for_test()));
+            let stream = UnixStream::connect(endpoint).map_err(|e| e.to_string())?;
+            Ok(test_stream(stream))
+        };
+
+        let result = DaemonClient::connect_checked(
+            &std::env::temp_dir(),
+            &sock,
+            &lock,
+            Some(&expected_for_test()),
+            &mut spawn,
+        );
+        drop(replacement);
+        drop(stale);
+        let _ = std::fs::remove_file(&sock);
+
+        let error = result
+            .err()
+            .expect("the forging replacement must be refused");
+        assert!(error.contains("did not match"), "{error}");
     }
 
     /// A daemon built before this check existed answers "Unknown method", and
