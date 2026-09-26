@@ -377,6 +377,38 @@ fn validation_analyzers(requested: Option<&str>, project_setting: &[String]) -> 
     }
 }
 
+/// The analyzer entries `--validate` hands alc for the copy of `dir`.
+///
+/// Trust belongs to `dir`. The copy is a temporary directory no record names,
+/// so each custom entry is resolved here, against `dir`, and the copy's build
+/// gets its absolute path. An entry refused as untrusted is refused with `dir`
+/// in the message, the folder the user can review and trust. A built-in stays
+/// a name for the build to map to the toolchain, and an entry found nowhere is
+/// left for the build to report.
+fn validation_analyzer_entries(
+    dir: &std::path::Path,
+    requested: Option<&str>,
+    config: &al_project::config::AlConfig,
+) -> Result<Vec<String>, String> {
+    validation_analyzers(requested, &config.code_analyzers)
+        .into_iter()
+        .map(|entry| {
+            if al_project::analyzers::is_builtin_analyzer(&entry) {
+                return Ok(entry);
+            }
+            match al_project::analyzers::discover_custom_analyzer(
+                &entry,
+                dir,
+                &config.assembly_probing_paths,
+            ) {
+                Ok(Some(path)) => Ok(path.display().to_string()),
+                Ok(None) => Ok(entry),
+                Err(error) => Err(error.to_string()),
+            }
+        })
+        .collect()
+}
+
 /// Compile `dir` with the Microsoft AL compiler (alc) and, if it reports
 /// errors (or no toolchain is available), return an exit code so the caller
 /// refuses to emit. Returns `None` when validation passes and the native emit
@@ -408,8 +440,11 @@ fn validate_with_alc(
     }
     // An analyzer the untrusted repository ships is refused inside
     // `al_project::analyzers::discover_custom_analyzer`, which every compile
-    // path shares.
-    let analyzers = validation_analyzers(analyzers, &settings.config.code_analyzers);
+    // path shares. It runs here on the real folder, before the copy.
+    let analyzers = match validation_analyzer_entries(dir, analyzers, &settings.config) {
+        Ok(analyzers) => analyzers,
+        Err(error) => return Some(report_error(&error, json)),
+    };
     let toolchain = match al_project::toolchain::find_toolchain() {
         Ok(t) => t,
         Err(e) => {
@@ -736,5 +771,117 @@ mod tests {
     fn an_empty_value_runs_no_analyzer() {
         assert!(validation_analyzers(Some(""), &project_setting()).is_empty());
         assert!(validation_analyzers(Some(" , "), &project_setting()).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod validation_trust_tests {
+    use super::{copy_dir, validation_analyzer_entries};
+    use std::path::{Path, PathBuf};
+
+    /// Point the trust store at a scratch directory for one test.
+    struct ScratchConfig {
+        _dir: tempfile::TempDir,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl ScratchConfig {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let previous = std::env::var_os("XDG_CONFIG_HOME");
+            // SAFETY: the tests that touch XDG_CONFIG_HOME run serially.
+            unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
+            Self {
+                _dir: dir,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for ScratchConfig {
+        fn drop(&mut self) {
+            // SAFETY: as in `new`.
+            unsafe {
+                match self.previous.take() {
+                    Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                    None => std::env::remove_var("XDG_CONFIG_HOME"),
+                }
+            }
+        }
+    }
+
+    /// A project that ships LinterCop in `.netpackages`.
+    fn project_with_lintercop() -> (tempfile::TempDir, PathBuf) {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("app.json"), "{}").unwrap();
+        let dll = project
+            .path()
+            .join(".netpackages/businesscentral.lintercop/1.0.0/BusinessCentral.LinterCop.dll");
+        std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
+        std::fs::write(&dll, b"analyzer").unwrap();
+        let root = project.path().canonicalize().unwrap();
+        (project, root)
+    }
+
+    /// What alc's build does with each entry in the copy.
+    fn resolve_in_copy(entries: &[String], copy: &Path) -> Vec<PathBuf> {
+        entries
+            .iter()
+            .filter(|entry| !al_project::analyzers::is_builtin_analyzer(entry))
+            .map(|entry| {
+                al_project::analyzers::discover_custom_analyzer(entry, copy, &[])
+                    .unwrap_or_else(|error| panic!("{entry}: {error}"))
+                    .unwrap_or_else(|| panic!("{entry} was not found"))
+            })
+            .collect()
+    }
+
+    /// `--validate` compiles a copy in a temporary directory, which no trust
+    /// record names. Resolved there, a trusted project's own analyzer was
+    /// refused as untrusted.
+    #[test]
+    #[serial_test::serial]
+    fn a_trusted_project_s_own_analyzer_resolves_for_the_validation_copy() {
+        let _config = ScratchConfig::new();
+        let (project, root) = project_with_lintercop();
+        al_project::trust::grant(project.path()).unwrap();
+        let settings = al_project::trust::evaluate(project.path()).unwrap();
+        let copy = tempfile::tempdir().unwrap();
+        copy_dir(project.path(), copy.path()).unwrap();
+
+        let entries = validation_analyzer_entries(
+            project.path(),
+            Some("${CodeCop},BusinessCentral.LinterCop"),
+            &settings.config,
+        )
+        .unwrap();
+
+        assert_eq!(entries[0], "${CodeCop}");
+        for found in resolve_in_copy(&entries, copy.path()) {
+            assert!(found.starts_with(&root), "{found:?} is not under {root:?}");
+        }
+    }
+
+    /// The refusal names the folder the user can trust, not the copy that is
+    /// deleted when the command returns.
+    #[test]
+    #[serial_test::serial]
+    fn an_untrusted_project_s_refusal_names_the_real_folder() {
+        let _config = ScratchConfig::new();
+        let (project, root) = project_with_lintercop();
+        let settings = al_project::trust::evaluate(project.path()).unwrap();
+
+        let error = validation_analyzer_entries(
+            project.path(),
+            Some("BusinessCentral.LinterCop"),
+            &settings.config,
+        )
+        .expect_err("an untrusted project's analyzer is refused");
+
+        assert!(error.contains("not trusted"), "{error}");
+        assert!(
+            error.contains(&format!("--show {}", root.display())),
+            "{error}"
+        );
     }
 }
