@@ -164,6 +164,14 @@ which methods those are, and a test holds this list and that declaration togethe
 - `acceptInvalidCerts` from the project's own debug configuration is honoured only for the
   same target and only when the project is trusted.
 
+The Zed debug adapter (`al-lsp --dap`) and the EditorServices proxy (`al-lsp --dap-legacy`)
+run the same authorisation on every `launch` and `attach`, before anything is compiled or
+sent. Zed reads the debug scenario from the worktree's `.zed/debug.json` or from the user's
+own debug settings, and the adapter cannot tell which, so the scenario is judged as a file
+the repository carries: an on-premises server needs a trusted project, and
+`acceptInvalidCerts` is honoured only when the project's launch file sets it for the same
+server. A refused launch fails with the reason in the debug console.
+
 `publish` is in that list although it never reads the OAuth cache: it sends
 `BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`, from the environment. The environment
 is the user's own decision, but which server receives it is the repository's, so the target
