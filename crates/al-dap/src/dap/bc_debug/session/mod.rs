@@ -506,10 +506,13 @@ impl BcDebugSession {
     /// resetting) `expecting_step` so a Break's reason reflects the most
     /// recent client action exactly once.
     async fn convert_event(&self, msg: &SignalRMessage) -> Option<BcEvent> {
-        let expecting_step = *self.expecting_step.lock().await;
-        let event = signalr_to_bc_event(msg, expecting_step);
+        // One guard for the read and the reset. With two, a step request that
+        // set the flag in between had it cleared by this older Break, and the
+        // step's own Break was then reported as a breakpoint.
+        let mut expecting_step = self.expecting_step.lock().await;
+        let event = signalr_to_bc_event(msg, *expecting_step);
         if matches!(event, Some(BcEvent::Break { .. })) {
-            *self.expecting_step.lock().await = false;
+            *expecting_step = false;
         }
         event
     }
