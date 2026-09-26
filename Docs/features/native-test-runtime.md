@@ -30,8 +30,9 @@ cancellation and the deadline in loops. A test that exceeds the call cap fails w
 the limit belongs to the local runner and suggesting a live BC run.
 
 **Values (`interpreter/value.rs`):** Integer, BigInteger, Decimal, Boolean, Char, Text, Code,
-Date/Time/DateTime/Duration, Guid, Option, Variant, Record, RecordRef, Codeunit, Array, List, Dict,
-Blob, and Null/Empty/ErrorInfo. Variant ordering is stable because values can be map keys.
+TextBuilder, Date/Time/DateTime/Duration, Guid, Option, Variant, Record, RecordRef, Codeunit, Array,
+List, Dict, Blob, the four JSON types, and Null/Empty/ErrorInfo. Variant ordering is stable because
+values can be map keys. `Label` declarations bind to their text.
 
 **Statements (`interpreter/eval_stmt.rs`):** blocks, `if`/`else`, `while`, `for` (up/down), `foreach`,
 `repeat until`, `case of`, normal and compound assignment, expression statements, `exit`, `break`,
@@ -50,7 +51,10 @@ on the value the previous step returned.
 → real workspace procedures found through the file index. Calls work in statement and expression
 position, through explicit object receivers and `Codeunit <Subtype>` variables, with `var` scalar
 parameter write-back. The global builtin catalog covers `Error`/`Message`-class dialogs,
-`StrSubstNo`/`Format` (default and XML format 9, with the length argument), string functions
+`StrSubstNo`/`Format` (the default rendering, XML format 9, numbered standard formats 1 to 4 and
+picture strings such as `<Precision,2:2><Standard Format,0>` or `<Year4>-<Month,2>-<Day,2>`, with
+the length argument; numbers group thousands as BC's standard format does, so `Format(1234567)` is
+`1,234,567`), `CreateGuid`/`IsNullGuid`, string functions
 (`StrLen`, `CopyStr`, `StrPos`, `DelChr`, `DelStr`, `ConvertStr`, `PadStr`, `SelectStr`, `IncStr`,
 `LowerCase`/`UpperCase`, `IndexOf`, `MaxStrLen`), math (`Abs`, `Round` with the `'='`/`'<'`/`'>'`
 directions, where `'='` takes a midpoint away from zero as BC does, `Power`, `Maximum`,
@@ -69,6 +73,14 @@ Instance methods that run locally:
 - `List`: `Add`, `Get`, `Set`, `Insert`, `Remove`, `RemoveAt`, `Count`, `Contains`, `IndexOf`.
 - `Dictionary`: `Add`, `Get` (including `Get(key, var value)`), `Set`, `Remove`, `ContainsKey`,
   `Count`, `Keys`, `Values`.
+- `TextBuilder`: `Append`, `AppendLine` (CRLF), `Length`, `ToText`, `Clear`, `Insert`, `Remove`,
+  `Replace`, changing the builder in place.
+- JSON: `JsonObject`, `JsonArray`, `JsonToken` and `JsonValue` are references, as in AL (assigning
+  shares the object, and a token from `Get` changes its parent). Objects support `Add`, `Get`,
+  `Contains`, `Remove`, `Replace`, `Keys`, `Values` and the typed getters; arrays `Add`, `Get`
+  (0-based), `Count`, `Insert`, `Set`, `RemoveAt`, `IndexOf`; tokens `IsObject`/`AsObject` and the
+  like; values `AsText`, `AsInteger`, `AsDecimal`, `AsBoolean`, `IsNull`, `SetValue`. All four read
+  and write text (`ReadFrom`, compact `WriteTo`) and take `SelectToken` paths (`$.a.b[0]`).
 - Enums: an `Enum "Type"` variable starts at ordinal 0 and formats as that ordinal's member name.
   `AsInteger`, `Names` and `Ordinals` run on a value, and `FromInteger`, `Names` and `Ordinals` on
   the type (`Enum::Colour.FromInteger(3)`). The router keeps these calls local for workspace enums
@@ -107,6 +119,19 @@ Supported behavior:
 - CalcFields and automatic reads for Sum/Average/Min/Max/Count/Exist/Lookup FlowFields with
   CONST/FIELD/FILTER clauses (including Boolean CONST values), and CalcSums, which totals each
   named field over the rows the current filters select.
+- Rename (the full new primary key), TestField (empty, or a given value), IsTemporary.
+- Table code runs on its record, which is the implicit `Rec`: `Validate` assigns the field, checks
+  a plain TableRelation to a workspace table and runs the field's OnValidate with the record as it
+  was as `xRec`; `Insert(true)`, `Modify(true)` and `Delete(true)` run OnInsert, OnModify and
+  OnDelete first, and `Rename` runs OnRename; `Member.Deposit(7)` runs the table's procedure on
+  `Member`'s buffer. Inside table code a bare field name reads and writes `Rec`, and a bare record
+  method (`TestField(Name)`) acts on it.
+- Events: calling an `[IntegrationEvent]`, `[BusinessEvent]` or `[InternalEvent]` publisher runs
+  every workspace subscriber bound to it (by object name or ID), binding arguments by parameter
+  name with `var` values flowing back. Insert, Modify, Delete and Rename raise the table's
+  OnBefore/OnAfter events and Validate its OnBefore/OnAfterValidateEvent, whatever `RunTrigger`
+  says. Subscribers in an `EventSubscriberInstance = Manual` codeunit are skipped; a test that
+  calls `BindSubscription` routes to live BC.
 
 PureLogic and WithRecords are runtime modes the interpreter enforces. If routing misses a record
 access, PureLogic fails with a capability error instead of running it against the record store.
@@ -195,8 +220,10 @@ tests from blocked server tests.
 
 ## Limitations
 
-- Record execution requires workspace table definitions. Tables declaring triggers, FlowFilters,
-  Linked formulas, or permission behavior are detected before execution and routed to live BC.
+- Record execution requires workspace table definitions. Tables declaring FlowFilters, Linked
+  formulas, or permission behavior are detected before execution and routed to live BC. A table's
+  triggers and procedures run locally and are classified like any reachable code; `Validate` on a
+  field whose TableRelation is conditional or points outside the workspace routes to live BC.
   Transactions, locking, RecordRef/FieldRef, unsupported record APIs, and dependency-only table
   schemas likewise remain live-BC behavior. The native runtime does not approximate them.
 - MessageHandler, ConfirmHandler, StrMenuHandler, and HyperlinkHandler are native. ModalPageHandler,
@@ -205,8 +232,9 @@ tests from blocked server tests.
 - Workspace enum ordinals are exact. Dependency-only enum values route to live BC because package
   symbols do not provide executable source through the interpreter's source catalog.
 - Global functions outside `supports_global_builtin` route the test to live BC.
-  `Format` supports the default and XML (9) renderings plus the length argument. Custom
-  `<...>` format strings fail with an error instead of being ignored.
+  `Format` renders in the en-US culture the rest of the runtime uses (`MM/DD/YYYY`, `,` thousands).
+  A picture component it does not know, or one that does not fit the value's type, fails with an
+  error instead of being ignored.
 - `MaxStrLen` is exact for bounded `Text[N]` and `Code[N]` variables and parameters. Unbounded text
   and computed expressions have no finite declaration capacity in the native value model.
 - Live capture composes the native debug hub and live test runner, records explicitly configured
