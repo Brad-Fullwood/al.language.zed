@@ -22,16 +22,17 @@ Loop:
    "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json arch-lint
    ```
 
-   `lint` waits on the dependency source index and takes about 20 seconds on
-   the first call against a project with Base Application loaded. It can hit the
-   30-second client timeout; retry once before reporting a failure.
+   `lint` waits on the dependency source index, which takes about a minute on
+   the first call against a project with Base Application loaded. The client
+   keeps waiting while that index makes progress, so let the call finish;
+   `al-explorer --json diag | jq -c '.sourceIndex'` shows how far it has got.
 
 2. Apply the mechanical fixes before hand-editing anything. Each one takes
    `--dry-run`; run that first, read the plan, then run it for real.
 
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer add-application-area --value All --dry-run
-   "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer add-tooltips --from-table --dry-run
+   "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer add-tooltips --from-table 'Customer' --dry-run
    "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer add-data-classification --value CustomerContent --dry-run
    ```
 

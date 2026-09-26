@@ -16,7 +16,8 @@
 - [x] README section
 - [x] `plugin/TESTING.md` with seven Haiku runs recorded, all correct through the plugin
 - [x] Skills rewritten for `--limit`, `--offset`, `--fields`, `--scope`,
-      `--compact`, `source --list-procedures`, `location` and `free-ids`. The
+      `--compact`, `source --list-procedures`, `location` and `free-ids`, and
+      `bc-upgrade-impact` for `package-diff` and `obsolete --used`. The
       `jq` projections, the `trace`-instead-of-`subscribers` rule, the
       grep-for-the-file fallback, the hand-rolled ID allocator and the
       retry-a-timeout advice are gone.
@@ -54,7 +55,8 @@ Removed: the `jq` projection that every skill piped `by-id`, `composed` and
 ### Item 2, `scope` — done
 
 `scope` takes `workspace`, `packages` or `all` on `impact`, `tableImpact`,
-`entrypoints` and `eventMap`, and the result reports `outOfScopeCount`. MCP
+`entrypoints`, `eventMap` and `graphExport`, and the result reports
+`outOfScopeCount`. MCP
 callers default to `workspace`.
 
 Removed: the
@@ -134,6 +136,18 @@ and to watch `diag`'s `sourceIndex`.
 Indentation was 43% of the bytes of `by-id codeunit 80`.
 
 ## Still open
+
+### CLI search is not a summary
+
+The daemon's `search` returns every member of each hit unless the request
+carries `summary: true`. The MCP layer adds it, `al-explorer search` does not,
+so the skills pass `--fields kind,id,name,package,source_availability` on every
+`search`. Defaulting the CLI to a summary would let them drop the flag.
+
+### Workspace enums have no values in the index
+
+`object enum` and `composed enum` return no `enum_values` for an enum declared
+in the workspace, so `bc-symbol-lookup` sends the agent to `source` for those.
 
 ### Triggering
 
