@@ -176,8 +176,10 @@ live in [ROADMAP.md](../ROADMAP.md).
 - The extension cannot check a downloaded archive against `checksums.txt`,
   because `zed_extension_api` 0.7's `download_file` extracts a `.tar.gz`/`.zip`
   and does not keep the archive, and the API has no way to unpack a local file.
-  It checks the extracted `al-lsp` and `al-explorer` against the release's
-  `binary-checksums.txt` instead, before either is made executable.
+  It checks the extracted `al-lsp`, `al-explorer` and every file under
+  `bridge/` against the release's `binary-checksums.txt` instead, before either
+  executable is made executable. Releases made before the bridge was hashed list
+  no bridge file, and for those only the two executables are checked.
   `checksums.txt` still covers the archives for a manual `sha256sum -c` of a
   hand-downloaded asset.
 - That check shows a download arrived intact. It does not show who produced it.

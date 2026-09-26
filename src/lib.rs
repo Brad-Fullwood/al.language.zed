@@ -219,6 +219,100 @@ pub fn expected_sha256<'a>(listing: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
+/// Check the extracted `bridge/` files of `asset_name` against the listing.
+///
+/// al-lsp loads `bridge/AlBridge.dll` and the assemblies beside it into its own
+/// process, so a substituted bridge inside an otherwise good archive ran with
+/// the verified executable. Every file must be listed with a matching digest,
+/// and every listed file must be there. `Ok(false)` when the listing names
+/// nothing under `bridge/`, which is every release made before the bridge was
+/// hashed. The listing comes with the release over TLS, so that absence is the
+/// release's own, not something a tampered archive can arrange.
+pub fn check_bridge_files(
+    listing: &str,
+    asset_name: &str,
+    files: &[(String, Vec<u8>)],
+) -> std::result::Result<bool, String> {
+    let prefix = format!("{asset_name}/bridge/");
+    let listed: Vec<&str> = listing
+        .lines()
+        .filter_map(|line| {
+            let (_, rest) = line.trim().split_once(' ')?;
+            let name = rest.trim_start_matches([' ', '*']);
+            name.starts_with(&prefix).then_some(name)
+        })
+        .collect();
+    if listed.is_empty() {
+        return Ok(false);
+    }
+    for (relative, bytes) in files {
+        let key = format!("{asset_name}/{relative}");
+        let expected = expected_sha256(listing, &key).ok_or_else(|| {
+            format!(
+                "{key} is not in {BINARY_CHECKSUMS_ASSET}, so it cannot be verified and is not \
+                 loaded"
+            )
+        })?;
+        let actual = sha256_hex(bytes);
+        if actual != expected {
+            return Err(format!(
+                "Checksum mismatch for {relative} from {asset_name}: expected {expected}, got \
+                 {actual}."
+            ));
+        }
+    }
+    for name in listed {
+        if !files
+            .iter()
+            .any(|(relative, _)| format!("{asset_name}/{relative}") == name)
+        {
+            return Err(format!(
+                "{name} is listed in {BINARY_CHECKSUMS_ASSET} but was not extracted"
+            ));
+        }
+    }
+    Ok(true)
+}
+
+/// Every regular file below `dir`, as `(path relative to dir's parent, bytes)`,
+/// or nothing when `dir` does not exist.
+fn read_extracted_tree(dir: &str) -> std::result::Result<Vec<(String, Vec<u8>)>, String> {
+    let base = std::path::Path::new(dir);
+    let Some(parent) = base.parent() else {
+        return Ok(Vec::new());
+    };
+    let mut files = Vec::new();
+    let mut stack = vec![base.to_path_buf()];
+    while let Some(directory) = stack.pop() {
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("Failed to read {}: {error}", directory.display())),
+        };
+        for entry in entries {
+            let entry =
+                entry.map_err(|e| format!("Failed to read {}: {e}", directory.display()))?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|e| format!("Failed to inspect {}: {e}", path.display()))?;
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let relative = path
+                .strip_prefix(parent)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let bytes =
+                fs::read(&path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+            files.push((relative, bytes));
+        }
+    }
+    Ok(files)
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut hex = String::with_capacity(64);
@@ -343,6 +437,15 @@ impl AlExtension {
                 ));
             }
         }
+
+        let bridge = read_extracted_tree(&format!("{version_dir}/bridge"))?;
+        check_bridge_files(&listing, asset_name, &bridge).map_err(|error| {
+            format!(
+                "{error} The semantic bridge from {asset_name} does not match the digests \
+                 published with release {}. Nothing was made executable.",
+                release.version
+            )
+        })?;
         Ok(true)
     }
 
