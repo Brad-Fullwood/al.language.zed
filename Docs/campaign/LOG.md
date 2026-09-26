@@ -330,3 +330,19 @@ Append-only. Newest entry last.
 - Merged `campaign/ai-plugin-leftovers` (cf0f794c): `plugin/evals/` (12 cases, all with a `jq` or substring ground-truth check against `al-explorer`, `make plugin-evals` passes 12 of 12) and `plugin/scripts/al-fetch-release.sh`, called from the SessionStart hook when neither binary is found: https only, `binary-checksums.txt` verified before anything is executable, one line of output. Tested against a local server with the real v0.2.2 archive, a mismatched digest and an http URL. No tagged release publishes `binary-checksums.txt` yet, so the real download refuses until the next release. `make plugin-validate` passes.
 - Audit backlog triage done (`findings/audit-backlog-triage.md`): 253 rows, 249 fixed, 3 open (queued), 1 unclear. One Sonnet pass decided all of them, so round 9 spot-checks ten.
 - Three more agents: round 8 second batch (runtime and JSON), round 8 multi-object (lint and native DAP), grammar corpus round 2 in the submodule. The mutants agent resumed after its `lint.rs` run.
+
+## 2026-09-26 22:55 BST: merge of the second session's codeunit instances
+
+- Origin had three commits from the second session: codeunit variables are instances with their
+  own globals (9a9ce662: a helper's globals are kept between its calls and pushed under each call,
+  a `SingleInstance` codeunit has one instance for the run, an event subscriber gets a fresh one,
+  and the router now sends only a SingleInstance helper with globals to live BC), and a grammar
+  finding (`findings/grammar-attribute-after-var.md`: attributes after a `var` section are hidden),
+  handed to the grammar corpus agent.
+- Two conflicts with the round 8 labels fix, resolved for the second session's rule (6b4be394):
+  `globals_for_call` decides a call's globals and the "stateful codeunit requires live BC" refusal
+  is gone, so `object_has_global_variables` went with it. The router's reason names a SingleInstance
+  helper, so the `object_kind` field the labels fix added is gone too. The labels test now expects a
+  table with a real global variable to run locally. Open question for round 9: a table's globals get
+  a fresh frame per trigger call locally, where BC keeps them per record variable.
+- al-runtime 610 and al-test 163 tests pass on the merge, fmt and clippy clean. Full gates running.
