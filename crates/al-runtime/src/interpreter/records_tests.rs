@@ -4504,3 +4504,112 @@ fn json_object_getters_honour_default_if_not_found() {
         "{error}"
     );
 }
+
+const JSON_PATH_PROBE: &str = r#"codeunit 50279 "Json Path Probe"
+{
+    local procedure Company(var Doc: JsonObject)
+    begin
+        Doc.ReadFrom('{"company":{"boss":"Diana","employees":[{"id":"Marcy","salary":8.95},{"id":"John","salary":7,"bonus":1},{"id":"Diana","salary":10.95}]}}');
+    end;
+
+    procedure FilterFromTheLearnExample(): Decimal
+    var
+        Doc: JsonObject;
+        Token: JsonToken;
+        EmployeeId: Text;
+    begin
+        Company(Doc);
+        EmployeeId := 'John';
+        Doc.SelectToken('$.company.employees[?(@.id==''' + EmployeeId + ''')].salary', Token);
+        exit(Token.AsValue().AsDecimal());
+    end;
+
+    procedure RecursiveDescent(): Text
+    var
+        Doc: JsonObject;
+        Token: JsonToken;
+    begin
+        Doc.ReadFrom('{"a":{"b":{"c":"deep"}}}');
+        if not Doc.SelectToken('$..c', Token) then
+            exit('not found');
+        exit(Token.AsValue().AsText());
+    end;
+
+    procedure Filters(): Text
+    var
+        Doc: JsonObject;
+        Token: JsonToken;
+        Seen: Text;
+    begin
+        Company(Doc);
+        Doc.SelectToken('$.company.employees[?(@.salary > 8 && @.salary < 10)].id', Token);
+        Seen := Token.AsValue().AsText();
+        Doc.SelectToken('$.company.employees[?(@.bonus)].id', Token);
+        Seen += '|' + Token.AsValue().AsText();
+        Doc.SelectToken('$.company.employees[?(@.id == $.company.boss)].salary', Token);
+        Seen += '|' + Format(Token.AsValue().AsDecimal());
+        Doc.SelectToken('$.company.employees[?(@.id == ''Nobody'' || @.salary >= 10.95)].id', Token);
+        Seen += '|' + Token.AsValue().AsText();
+        Doc.SelectToken('$..employees[2].id', Token);
+        Seen += '|' + Token.AsValue().AsText();
+        if not Doc.SelectToken('$..id', Token) then
+            Seen += '|many';
+        if not Doc.SelectToken('$.company.employees[*].id', Token) then
+            Seen += '|wildcard many';
+        Doc.SelectToken('$.company.*[1].id', Token);
+        exit(Seen + '|' + Token.AsValue().AsText());
+    end;
+
+    procedure SeveralMatchesAsAStatement()
+    var
+        Doc: JsonObject;
+        Token: JsonToken;
+    begin
+        Company(Doc);
+        Doc.SelectToken('$..id', Token);
+    end;
+
+    procedure UnsupportedStep(): Text
+    var
+        Doc: JsonObject;
+        Token: JsonToken;
+    begin
+        Company(Doc);
+        if not Doc.SelectToken('$.company.employees[0:2]', Token) then
+            exit('not found');
+        exit('found');
+    end;
+}
+"#;
+
+/// SelectToken read only member and index steps: a filter failed as
+/// "not an array index" and `..` found nothing. Business Central selects
+/// with filters and recursive descent, and fails unless exactly one token
+/// matches.
+#[test]
+fn selecttoken_follows_filters_and_recursive_descent() {
+    let call = |proc: &str| {
+        run(
+            &[("/ws/JsonPath.al", JSON_PATH_PROBE)],
+            "Json Path Probe",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(
+        ok(call("FilterFromTheLearnExample")),
+        Value::Decimal(dec!(7))
+    );
+    assert_eq!(ok(call("RecursiveDescent")), Value::Text("deep".into()));
+    assert_eq!(
+        ok(call("Filters")),
+        Value::Text("Marcy|John|10.95|Diana|Diana|many|wildcard many|John".into())
+    );
+    let several = error_message(call("SeveralMatchesAsAStatement"));
+    assert!(several.contains("matches 3 tokens"), "{several}");
+    let unsupported = error_message(call("UnsupportedStep"));
+    assert!(
+        unsupported.contains("'[0:2]'") && unsupported.contains("not supported"),
+        "{unsupported}"
+    );
+}

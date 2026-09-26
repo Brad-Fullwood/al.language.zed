@@ -1420,6 +1420,71 @@ end;
     );
 }
 
+/// A SelectToken path the local runtime does not follow (a slice, a union)
+/// sends the test to live BC. Filters, recursive descent, wildcards and a
+/// path built at run time stay local.
+#[test]
+fn selecttoken_with_a_step_the_runtime_does_not_follow_routes_to_live_bc() {
+    let classify = |statement: &str| {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/JsonPath.Codeunit.al"),
+            format!(
+                r#"codeunit 50196 "Json Path Routing"
+{{
+Subtype = Test;
+
+[Test]
+procedure Selects()
+var
+    Doc: JsonObject;
+    Token: JsonToken;
+    Id: Text;
+begin
+    {statement}
+end;
+}}"#
+            ),
+        );
+        classify_all(&workspace).unwrap().remove(0)
+    };
+    for local in [
+        "Doc.SelectToken('$.items[?(@.id==''A'' && @.qty > 1)].price', Token);",
+        "Doc.SelectToken('$..price', Token);",
+        "Doc.SelectToken('$.items[*].price', Token);",
+        "Doc.SelectToken('$.items[?(@.id==''' + Id + ''')].price', Token);",
+        "Token.AsObject().SelectToken('$..price', Token);",
+    ] {
+        let result = classify(local);
+        assert_eq!(
+            result.decision,
+            RoutingDecision::Interp,
+            "{local}: {:?}",
+            result.reasons
+        );
+    }
+    for live in [
+        "Doc.SelectToken('$.items[0:2]', Token);",
+        "Doc.SelectToken('$.items[''a'',''b'']', Token);",
+        "Token.AsObject().SelectToken('$.items[0:2]', Token);",
+    ] {
+        let result = classify(live);
+        assert_eq!(
+            result.decision,
+            RoutingDecision::LiveBc,
+            "{live}: {:?}",
+            result.reasons
+        );
+        assert!(
+            result.reasons.iter().any(|reason| reason
+                .message
+                .contains("is not supported by the local runtime")),
+            "{live}: {:?}",
+            result.reasons
+        );
+    }
+}
+
 /// A relation to a workspace table with a composite key and no field named
 /// cannot be checked locally; the router used to keep it local, and the
 /// runtime then refused it.

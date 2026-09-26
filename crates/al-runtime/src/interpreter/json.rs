@@ -230,50 +230,105 @@ impl JsonArena {
         Ok(self.push(node))
     }
 
-    /// Follow a `SelectToken` path: `$.a.b[0]`, `a.b`, `['a b'].c`.
-    fn select(&self, from: usize, path: &str) -> Result<Option<usize>, String> {
-        let mut current = from;
-        let mut rest = path.trim().strip_prefix('$').unwrap_or(path.trim());
-        while !rest.is_empty() {
-            if let Some(after) = rest.strip_prefix('.') {
-                rest = after;
+    /// Every node `path` selects from `from`, in document order.
+    fn select(&self, from: usize, path: &str) -> Result<Vec<usize>, String> {
+        let steps = parse_path(path).map_err(PathError::into_message)?;
+        Ok(self.follow(from, &[from], &steps))
+    }
+
+    /// The nodes `steps` reach from `start`. `root` is what `$` names in a
+    /// filter.
+    fn follow(&self, root: usize, start: &[usize], steps: &[PathStep]) -> Vec<usize> {
+        let mut current = start.to_vec();
+        let mut descend = false;
+        for step in steps {
+            if matches!(step, PathStep::Descend) {
+                descend = true;
                 continue;
             }
-            if let Some(after) = rest.strip_prefix('[') {
-                let close = after
-                    .find(']')
-                    .ok_or_else(|| format!("unclosed '[' in path '{path}'"))?;
-                let inside = after[..close].trim();
-                rest = &after[close + 1..];
-                let next = if let Some(key) = inside
-                    .strip_prefix('\'')
-                    .and_then(|key| key.strip_suffix('\''))
-                {
-                    self.member(current, key)
-                } else {
-                    let index: usize = inside.parse().map_err(|_| {
-                        format!("'{inside}' is not an array index in path '{path}'")
-                    })?;
-                    match &self.nodes[&current] {
-                        Node::Array(items) => items.get(index).copied(),
-                        _ => None,
-                    }
-                };
-                match next {
-                    Some(next) => current = next,
-                    None => return Ok(None),
+            let scope = if std::mem::take(&mut descend) {
+                let mut all = Vec::new();
+                for node in current {
+                    self.self_and_descendants(node, &mut all);
                 }
-                continue;
+                all
+            } else {
+                current
+            };
+            current = scope
+                .into_iter()
+                .flat_map(|node| self.step(root, node, step))
+                .collect();
+        }
+        current
+    }
+
+    fn step(&self, root: usize, node: usize, step: &PathStep) -> Vec<usize> {
+        match (step, &self.nodes[&node]) {
+            (PathStep::Member(key), _) => self.member(node, key).into_iter().collect(),
+            (PathStep::Index(at), Node::Array(items)) => {
+                items.get(*at).copied().into_iter().collect()
             }
-            let end = rest.find(['.', '[']).unwrap_or(rest.len());
-            let key = &rest[..end];
-            rest = &rest[end..];
-            match self.member(current, key) {
-                Some(next) => current = next,
-                None => return Ok(None),
+            (PathStep::Wildcard, Node::Array(items)) => items.clone(),
+            (PathStep::Wildcard, Node::Object(entries)) => {
+                entries.iter().map(|(_, child)| *child).collect()
+            }
+            (PathStep::Filter(filter), Node::Array(items)) => items
+                .iter()
+                .copied()
+                .filter(|item| self.accepts(root, *item, filter))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn self_and_descendants(&self, node: usize, out: &mut Vec<usize>) {
+        out.push(node);
+        match &self.nodes[&node] {
+            Node::Object(entries) => {
+                for (_, child) in entries {
+                    self.self_and_descendants(*child, out);
+                }
+            }
+            Node::Array(items) => {
+                for child in items {
+                    self.self_and_descendants(*child, out);
+                }
+            }
+            Node::Scalar(_) => {}
+        }
+    }
+
+    /// Whether array element `item` passes `filter`. A path operand that
+    /// selects several nodes passes when any of them does.
+    fn accepts(&self, root: usize, item: usize, filter: &PathFilter) -> bool {
+        match filter {
+            PathFilter::Any(parts) => parts.iter().any(|part| self.accepts(root, item, part)),
+            PathFilter::All(parts) => parts.iter().all(|part| self.accepts(root, item, part)),
+            PathFilter::Exists(operand) => !self.operand(root, item, operand).is_empty(),
+            PathFilter::Compare(left, op, right) => {
+                let left = self.operand(root, item, left);
+                let right = self.operand(root, item, right);
+                left.iter()
+                    .any(|left| right.iter().any(|right| compare(left, *op, right)))
             }
         }
-        Ok(Some(current))
+    }
+
+    fn operand(&self, root: usize, item: usize, operand: &FilterOperand) -> Vec<Option<Scalar>> {
+        match operand {
+            FilterOperand::Literal(scalar) => vec![Some(scalar.clone())],
+            FilterOperand::Path { from_root, steps } => {
+                let start = if *from_root { root } else { item };
+                self.follow(root, &[start], steps)
+                    .into_iter()
+                    .map(|node| match &self.nodes[&node] {
+                        Node::Scalar(scalar) => Some(scalar.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            }
+        }
     }
 
     fn member(&self, object: usize, key: &str) -> Option<usize> {
@@ -284,6 +339,346 @@ impl JsonArena {
                 .map(|(_, child)| *child),
             _ => None,
         }
+    }
+}
+
+/// One step of a `SelectToken` path.
+#[derive(Debug, Clone)]
+enum PathStep {
+    /// `.name` or `['name']`.
+    Member(String),
+    /// `[n]`.
+    Index(usize),
+    /// `.*` or `[*]`: every child.
+    Wildcard,
+    /// `..`: the next step applies to every descendant as well.
+    Descend,
+    /// `[?(...)]`: the array elements the filter accepts.
+    Filter(Box<PathFilter>),
+}
+
+#[derive(Debug, Clone)]
+enum PathFilter {
+    /// `a || b`.
+    Any(Vec<PathFilter>),
+    /// `a && b`.
+    All(Vec<PathFilter>),
+    /// `@.name`: the path selects something.
+    Exists(FilterOperand),
+    Compare(FilterOperand, CompareOp, FilterOperand),
+}
+
+#[derive(Debug, Clone)]
+enum FilterOperand {
+    /// `@.a.b` from the element, `$.a.b` from the token queried.
+    Path {
+        from_root: bool,
+        steps: Vec<PathStep>,
+    },
+    Literal(Scalar),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CompareOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+/// Why a path does not parse.
+enum PathError {
+    /// Malformed, as Business Central would also report.
+    Invalid(String),
+    /// Valid JSONPath the local runtime does not follow: a slice, a union,
+    /// a regular expression, a grouped filter.
+    Unsupported(String),
+}
+
+impl PathError {
+    fn into_message(self) -> String {
+        match self {
+            PathError::Invalid(message) | PathError::Unsupported(message) => message,
+        }
+    }
+}
+
+/// The step of `path` the local runtime does not follow, as an error
+/// message, or `None` when it follows all of them (or the path is
+/// malformed, which Business Central rejects too). The test router asks
+/// this of a literal `SelectToken` path.
+pub fn unsupported_path_step(path: &str) -> Option<String> {
+    match parse_path(path) {
+        Err(PathError::Unsupported(message)) => Some(message),
+        _ => None,
+    }
+}
+
+fn unsupported(what: &str, text: &str, path: &str) -> PathError {
+    PathError::Unsupported(format!(
+        "the {what} '{text}' in path '{path}' is not supported by the local runtime"
+    ))
+}
+
+/// Parse a `SelectToken` path: `$.a.b[0]`, `a.b`, `['a b'].c`, `$..c`,
+/// `$.items[*].id`, `$.items[?(@.qty > 1 && @.id == 'A')].price`.
+fn parse_path(path: &str) -> Result<Vec<PathStep>, PathError> {
+    let text = path.trim();
+    let rest = text.strip_prefix('$').unwrap_or(text);
+    // A relative path starts with a name: `a.b`.
+    let relative = !text.starts_with('$') && !rest.is_empty() && !rest.starts_with(['.', '[']);
+    let (steps, rest) = parse_steps(rest, path, relative, false)?;
+    if !rest.is_empty() {
+        return Err(PathError::Invalid(format!(
+            "unexpected '{rest}' in path '{path}'"
+        )));
+    }
+    Ok(steps)
+}
+
+/// Read steps from the start of `rest` until one does not start there.
+/// `leading_name` reads a bare name first. In a filter a name also ends at
+/// white space and at an operator.
+fn parse_steps<'t>(
+    mut rest: &'t str,
+    path: &str,
+    leading_name: bool,
+    in_filter: bool,
+) -> Result<(Vec<PathStep>, &'t str), PathError> {
+    let name_end = |text: &str| {
+        text.find(|c: char| {
+            c == '.' || c == '[' || (in_filter && (c.is_whitespace() || "=!<>&|)".contains(c)))
+        })
+        .unwrap_or(text.len())
+    };
+    let mut steps = Vec::new();
+    if leading_name {
+        let end = name_end(rest);
+        steps.push(PathStep::Member(rest[..end].to_string()));
+        rest = &rest[end..];
+    }
+    loop {
+        if let Some(after) = rest.strip_prefix("..") {
+            steps.push(PathStep::Descend);
+            if after.starts_with('[') {
+                rest = after;
+                continue;
+            }
+            let (step, after) = dotted_step(after, path, name_end)?;
+            steps.push(step);
+            rest = after;
+        } else if let Some(after) = rest.strip_prefix('.') {
+            let (step, after) = dotted_step(after, path, name_end)?;
+            steps.push(step);
+            rest = after;
+        } else if rest.starts_with('[') {
+            let (step, after) = bracket_step(rest, path)?;
+            steps.push(step);
+            rest = after;
+        } else {
+            return Ok((steps, rest));
+        }
+    }
+}
+
+/// The step after a `.`: `*` or a name.
+fn dotted_step<'t>(
+    text: &'t str,
+    path: &str,
+    name_end: impl Fn(&str) -> usize,
+) -> Result<(PathStep, &'t str), PathError> {
+    if let Some(after) = text.strip_prefix('*') {
+        return Ok((PathStep::Wildcard, after));
+    }
+    let end = name_end(text);
+    if end == 0 {
+        return Err(PathError::Invalid(format!(
+            "a name is missing after '.' in path '{path}'"
+        )));
+    }
+    Ok((PathStep::Member(text[..end].to_string()), &text[end..]))
+}
+
+/// The step `[...]` at the start of `text`.
+fn bracket_step<'t>(text: &'t str, path: &str) -> Result<(PathStep, &'t str), PathError> {
+    let inner = &text[1..];
+    if let Some(after) = inner.strip_prefix("?(") {
+        let close = filter_end(after)
+            .ok_or_else(|| PathError::Invalid(format!("unclosed filter in path '{path}'")))?;
+        let expression = &after[..close];
+        let filter = parse_filter(expression, path)?;
+        return Ok((PathStep::Filter(Box::new(filter)), &after[close + 2..]));
+    }
+    if let Some(after) = inner.strip_prefix('\'') {
+        let close = after
+            .find('\'')
+            .ok_or_else(|| PathError::Invalid(format!("unclosed quote in path '{path}'")))?;
+        let key = &after[..close];
+        let after = after[close + 1..].trim_start();
+        return match after.strip_prefix(']') {
+            Some(rest) => Ok((PathStep::Member(key.to_string()), rest)),
+            None => {
+                let end = text.find(']').map_or(text.len(), |at| at + 1);
+                Err(unsupported("step", &text[..end], path))
+            }
+        };
+    }
+    let close = inner
+        .find(']')
+        .ok_or_else(|| PathError::Invalid(format!("unclosed '[' in path '{path}'")))?;
+    let step = &text[..close + 2];
+    let inside = inner[..close].trim();
+    let rest = &inner[close + 1..];
+    if inside == "*" {
+        return Ok((PathStep::Wildcard, rest));
+    }
+    if !inside.is_empty() && inside.chars().all(|c| c.is_ascii_digit()) {
+        return inside
+            .parse()
+            .map(|index| (PathStep::Index(index), rest))
+            .map_err(|_| {
+                PathError::Invalid(format!("index {inside} is too large in path '{path}'"))
+            });
+    }
+    Err(unsupported("step", step, path))
+}
+
+/// Where the filter that starts at `text` (after `[?(`) ends: the `)` that
+/// closes it, followed by `]`.
+fn filter_end(text: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut quoted = false;
+    for (at, c) in text.char_indices() {
+        match c {
+            '\'' => quoted = !quoted,
+            '(' if !quoted => depth += 1,
+            ')' if !quoted => {
+                depth -= 1;
+                if depth == 0 {
+                    return text[at + 1..].starts_with(']').then_some(at);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Parse the expression inside `[?(...)]`: comparisons and paths joined by
+/// `&&` and `||`.
+fn parse_filter(expression: &str, path: &str) -> Result<PathFilter, PathError> {
+    let refuse = || unsupported("filter", expression, path);
+    let mut any = Vec::new();
+    let mut all = Vec::new();
+    let mut rest = expression;
+    loop {
+        rest = rest.trim_start();
+        if rest.starts_with(['(', '!']) {
+            return Err(refuse());
+        }
+        let (left, after) = parse_operand(rest, path).ok_or_else(refuse)?;
+        rest = after.trim_start();
+        let op = [
+            ("==", CompareOp::Eq),
+            ("!=", CompareOp::Ne),
+            ("<=", CompareOp::Le),
+            (">=", CompareOp::Ge),
+            ("<", CompareOp::Lt),
+            (">", CompareOp::Gt),
+        ]
+        .into_iter()
+        .find(|(token, _)| rest.starts_with(token));
+        let part = match op {
+            Some((token, op)) => {
+                let (right, after) =
+                    parse_operand(rest[token.len()..].trim_start(), path).ok_or_else(refuse)?;
+                rest = after.trim_start();
+                PathFilter::Compare(left, op, right)
+            }
+            None if matches!(left, FilterOperand::Path { .. }) => PathFilter::Exists(left),
+            None => return Err(refuse()),
+        };
+        all.push(part);
+        if let Some(after) = rest.strip_prefix("&&") {
+            rest = after;
+        } else if let Some(after) = rest.strip_prefix("||") {
+            any.push(joined(std::mem::take(&mut all), PathFilter::All));
+            rest = after;
+        } else if rest.is_empty() {
+            any.push(joined(all, PathFilter::All));
+            return Ok(joined(any, PathFilter::Any));
+        } else {
+            return Err(refuse());
+        }
+    }
+}
+
+fn joined(mut parts: Vec<PathFilter>, join: fn(Vec<PathFilter>) -> PathFilter) -> PathFilter {
+    if parts.len() == 1 {
+        parts.remove(0)
+    } else {
+        join(parts)
+    }
+}
+
+/// One side of a filter comparison: `@.path`, `$.path`, `'text'`, a
+/// number, `true`, `false` or `null`. `None` for anything else.
+fn parse_operand<'t>(text: &'t str, path: &str) -> Option<(FilterOperand, &'t str)> {
+    let path_from = |rest: &'t str, from_root: bool| {
+        let (steps, rest) = parse_steps(rest, path, false, true).ok()?;
+        Some((FilterOperand::Path { from_root, steps }, rest))
+    };
+    if let Some(rest) = text.strip_prefix('@') {
+        return path_from(rest, false);
+    }
+    if let Some(rest) = text.strip_prefix('$') {
+        return path_from(rest, true);
+    }
+    if let Some(rest) = text.strip_prefix('\'') {
+        let close = rest.find('\'')?;
+        let literal = Scalar::Text(rest[..close].to_string());
+        return Some((FilterOperand::Literal(literal), &rest[close + 1..]));
+    }
+    for (word, scalar) in [
+        ("true", Scalar::Bool(true)),
+        ("false", Scalar::Bool(false)),
+        ("null", Scalar::Null),
+    ] {
+        if let Some(rest) = text.strip_prefix(word) {
+            return Some((FilterOperand::Literal(scalar), rest));
+        }
+    }
+    let end = text
+        .find(|c: char| !(c.is_ascii_digit() || "+-.eE".contains(c)))
+        .unwrap_or(text.len());
+    let number = &text[..end];
+    let value = Decimal::from_str(number)
+        .or_else(|_| Decimal::from_scientific(number))
+        .ok()?;
+    Some((FilterOperand::Literal(Scalar::Number(value)), &text[end..]))
+}
+
+/// A filter comparison of two values. Numbers compare by value and text
+/// ordinally. Values of different types are unequal and unordered, and an
+/// object or array (`None`) equals nothing.
+fn compare(left: &Option<Scalar>, op: CompareOp, right: &Option<Scalar>) -> bool {
+    use std::cmp::Ordering;
+    let order = match (left, right) {
+        (Some(Scalar::Number(a)), Some(Scalar::Number(b))) => Some(a.cmp(b)),
+        (Some(Scalar::Text(a)), Some(Scalar::Text(b))) => Some(a.cmp(b)),
+        (Some(Scalar::Bool(a)), Some(Scalar::Bool(b))) if a == b => Some(Ordering::Equal),
+        (Some(Scalar::Null), Some(Scalar::Null)) => Some(Ordering::Equal),
+        _ => None,
+    };
+    match op {
+        CompareOp::Eq => order == Some(Ordering::Equal),
+        CompareOp::Ne => order != Some(Ordering::Equal),
+        CompareOp::Lt => order == Some(Ordering::Less),
+        CompareOp::Le => matches!(order, Some(Ordering::Less | Ordering::Equal)),
+        CompareOp::Gt => order == Some(Ordering::Greater),
+        CompareOp::Ge => matches!(order, Some(Ordering::Greater | Ordering::Equal)),
     }
 }
 
@@ -586,9 +981,21 @@ fn run(
         }
         "selecttoken" => {
             let path = text_arg(args.first(), "the path")?;
-            let found = arena
-                .select(node, &path)?
-                .ok_or_else(|| JsonError::Failed(format!("no token matches the path '{path}'")))?;
+            // SelectToken fails unless exactly one token matches.
+            let found = match arena.select(node, &path)?.as_slice() {
+                [found] => *found,
+                [] => {
+                    return Err(JsonError::Failed(format!(
+                        "no token matches the path '{path}'"
+                    )))
+                }
+                several => {
+                    return Err(JsonError::Failed(format!(
+                        "the path '{path}' matches {} tokens",
+                        several.len()
+                    )))
+                }
+            };
             let token = arena.reference(JsonKind::Token, found);
             ctx.var_writebacks.push((1, token));
             return Ok(Value::Boolean(true));
@@ -803,4 +1210,43 @@ pub(crate) fn default_for(type_name: &str) -> Option<Value> {
         kind,
         handle: Some(fresh_id()),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unsupported_path_step;
+
+    #[test]
+    fn paths_the_runtime_follows_and_the_steps_it_refuses() {
+        for followed in [
+            "",
+            "$",
+            "a.b",
+            "$.a['b c'][0]",
+            "$..c",
+            "$..[0]",
+            "$.a.*",
+            "$.a[*]",
+            "$.a[?(@.id == 'x' && @.n >= -1.5 || @.flag)]",
+            "$.a[?(@.id == $.boss)]",
+            "$.a[?(@ != null)]",
+        ] {
+            assert_eq!(unsupported_path_step(followed), None, "{followed}");
+        }
+        for (refused, step) in [
+            ("$.a[0:2]", "[0:2]"),
+            ("$.a[-1]", "[-1]"),
+            ("$.a[0,1]", "[0,1]"),
+            ("$['a','b']", "['a','b']"),
+            ("$.a[?(@.id =~ /x/)]", "@.id =~ /x/"),
+            ("$.a[?((@.n > 1))]", "(@.n > 1)"),
+            ("$.a[?(!@.flag)]", "!@.flag"),
+        ] {
+            let message = unsupported_path_step(refused).unwrap_or_default();
+            assert!(
+                message.contains(&format!("'{step}'")),
+                "{refused}: {message}"
+            );
+        }
+    }
 }
