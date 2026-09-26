@@ -410,7 +410,7 @@ fn project_analyzer_copies(config: &AlConfig, project_root: &Path) -> Vec<Privil
                 .unwrap_or(&found)
                 .display()
                 .to_string();
-            let contents = file_sha256(&found).unwrap_or_else(|| "unreadable".to_string());
+            let contents = file_and_neighbours_sha256(&found, Beside::Assemblies);
             Some(PrivilegedSetting::new(
                 "al.codeAnalyzers",
                 &format!("{} resolves to {relative} ({contents})", entry.trim()),
@@ -686,14 +686,31 @@ fn render_paths(paths: &[PathBuf]) -> String {
         .join(", ")
 }
 
+/// What a file loads from the directory it sits in, which the record hashes
+/// with it.
+#[derive(Clone, Copy)]
+enum Beside {
+    /// An analyzer assembly. .NET resolves its references from its own
+    /// directory, so every `.dll` in that directory's tree is recorded.
+    Assemblies,
+    /// A `dotnet` muxer. It loads `host/fxr/<version>/` and
+    /// `shared/<framework>/<version>/` from its own directory, so every file
+    /// beside it and every file under `host` and `shared` is recorded.
+    DotnetRuntime,
+    /// A program whose neighbours are not recorded.
+    Nothing,
+}
+
 /// `value` with what it names folded in, when it is a path into the project.
 ///
 /// A path in a settings file names a file, and the file is what runs. The
 /// record used to cover the path text alone, so a later commit that replaced
 /// `tools/TeamCop.dll`, or a `dotnet` shipped in the tree, kept the record
-/// valid while the code under it changed. A path outside the project is the
-/// user's machine and stays as written.
-fn with_project_contents(value: &str, project_root: &Path) -> String {
+/// valid while the code under it changed. It then covered the named file
+/// alone, so a commit that replaced a DLL the analyzer references, or the
+/// runtime beside a `dotnet`, did the same. A path outside the project is
+/// the user's machine and stays as written.
+fn with_project_contents(value: &str, project_root: &Path, beside: Beside) -> String {
     let path = Path::new(value.trim());
     let is_path = path.is_absolute() || value.contains(['/', '\\']);
     if !is_path || !stays_inside_project(path, project_root) {
@@ -705,13 +722,26 @@ fn with_project_contents(value: &str, project_root: &Path) -> String {
         project_root.join(path)
     };
     let contents = match std::fs::metadata(&absolute) {
-        Ok(metadata) if metadata.is_file() => {
-            file_sha256(&absolute).unwrap_or_else(|| "unreadable".to_string())
-        }
+        Ok(metadata) if metadata.is_file() => file_and_neighbours_sha256(&absolute, beside),
         Ok(metadata) if metadata.is_dir() => dll_tree_sha256(&absolute),
         _ => "not present".to_string(),
     };
     format!("{value} ({contents})")
+}
+
+/// The hash of `file`, and of what it loads from beside it.
+fn file_and_neighbours_sha256(file: &Path, beside: Beside) -> String {
+    let own = file_sha256(file).unwrap_or_else(|| "unreadable".to_string());
+    let Some(directory) = file.parent() else {
+        return own;
+    };
+    match beside {
+        Beside::Nothing => own,
+        Beside::Assemblies => format!("{own}; its directory: {}", dll_tree_sha256(directory)),
+        Beside::DotnetRuntime => {
+            format!("{own}; its runtime: {}", runtime_tree_sha256(directory))
+        }
+    }
 }
 
 /// `sha256:<hex>` of a file's bytes.
@@ -729,7 +759,40 @@ const MAX_HASHED_ENTRIES: usize = 50_000;
 /// One hash over every `.dll` below `dir` that analyzer discovery could pick,
 /// by relative path and content, with the count.
 fn dll_tree_sha256(dir: &Path) -> String {
+    let is_dll = |path: &Path| {
+        path.extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
+    };
     let mut files = Vec::new();
+    if collect_files(dir, true, &is_dll, &mut files).is_err() {
+        return "too many files to hash".to_string();
+    }
+    format!("{} .dll files, {}", files.len(), files_sha256(dir, files))
+}
+
+/// One hash over every file beside a `dotnet` muxer and every file below its
+/// `host` and `shared` directories, with the count.
+fn runtime_tree_sha256(dir: &Path) -> String {
+    let any = |_: &Path| true;
+    let mut files = Vec::new();
+    let collected = collect_files(dir, false, &any, &mut files)
+        .and_then(|()| collect_files(&dir.join("host"), true, &any, &mut files))
+        .and_then(|()| collect_files(&dir.join("shared"), true, &any, &mut files));
+    if collected.is_err() {
+        return "too many files to hash".to_string();
+    }
+    format!("{} files, {}", files.len(), files_sha256(dir, files))
+}
+
+/// Push every regular file in `dir` that `keep` accepts onto `files`, below
+/// `dir` too when `recursive`. `Err` when the walk passes
+/// `MAX_HASHED_ENTRIES`. A directory that cannot be read adds nothing.
+fn collect_files(
+    dir: &Path,
+    recursive: bool,
+    keep: &dyn Fn(&Path) -> bool,
+    files: &mut Vec<PathBuf>,
+) -> Result<(), ()> {
     let mut stack = vec![dir.to_path_buf()];
     let mut inspected = 0usize;
     while let Some(directory) = stack.pop() {
@@ -739,33 +802,36 @@ fn dll_tree_sha256(dir: &Path) -> String {
         for entry in entries.flatten() {
             inspected += 1;
             if inspected > MAX_HASHED_ENTRIES {
-                return "too many files to hash".to_string();
+                return Err(());
             }
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
             let path = entry.path();
             if file_type.is_dir() {
-                stack.push(path);
-            } else if file_type.is_file()
-                && path
-                    .extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
-            {
+                if recursive {
+                    stack.push(path);
+                }
+            } else if file_type.is_file() && keep(&path) {
                 files.push(path);
             }
         }
     }
+    Ok(())
+}
+
+/// `sha256:<hex>` over each file's path relative to `base` and its content.
+fn files_sha256(base: &Path, mut files: Vec<PathBuf>) -> String {
     files.sort();
     let mut hasher = Sha256::new();
     for file in &files {
-        let relative = file.strip_prefix(dir).unwrap_or(file);
+        let relative = file.strip_prefix(base).unwrap_or(file);
         hasher.update(relative.as_os_str().as_encoded_bytes());
         hasher.update([0u8]);
         hasher.update(file_sha256(file).unwrap_or_default().as_bytes());
         hasher.update([0u8]);
     }
-    format!("{} .dll files, sha256:{:x}", files.len(), hasher.finalize())
+    format!("sha256:{:x}", hasher.finalize())
 }
 
 /// The privileged values `candidate` gained over `base`.
@@ -792,7 +858,7 @@ fn privileged_changes(
         let value = ask
             .analyzers
             .iter()
-            .map(|entry| with_project_contents(entry, project_root))
+            .map(|entry| with_project_contents(entry, project_root, Beside::Assemblies))
             .collect::<Vec<_>>()
             .join(", ");
         record(&mut ask, "al.codeAnalyzers", value);
@@ -831,7 +897,13 @@ fn privileged_changes(
         let value = ask
             .assembly_probing_paths
             .iter()
-            .map(|path| with_project_contents(&path.display().to_string(), project_root))
+            .map(|path| {
+                with_project_contents(
+                    &path.display().to_string(),
+                    project_root,
+                    Beside::Assemblies,
+                )
+            })
             .collect::<Vec<_>>()
             .join(", ");
         record(&mut ask, "al.assemblyProbingPaths", value);
@@ -1154,7 +1226,15 @@ fn executable_path_privileges(
         ask.executable_paths.push(path.to_string());
         ask.settings.push(PrivilegedSetting::new(
             key,
-            &with_project_contents(path, project_root),
+            &with_project_contents(
+                path,
+                project_root,
+                if key == "al.dotnetPath" {
+                    Beside::DotnetRuntime
+                } else {
+                    Beside::Nothing
+                },
+            ),
             source,
         ));
     }
@@ -2534,6 +2614,68 @@ mod tests {
         assert_a_replaced_file_makes_the_record_stale(
             r#"{"al.codeAnalyzers": ["TeamCop"]}"#,
             "packages/teamcop/1.0.0/TeamCop.dll",
+        );
+    }
+
+    /// The record covers what the named file loads from beside it, not only
+    /// the file itself.
+    fn assert_a_replaced_sibling_makes_the_record_stale(
+        settings: &str,
+        named: &str,
+        sibling: &str,
+    ) {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings(settings);
+        for file in [named, sibling] {
+            let path = project.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"reviewed build").unwrap();
+        }
+        grant(project.path()).unwrap();
+        assert_eq!(decide(project.path()).unwrap().state, TrustState::Trusted);
+
+        std::fs::write(project.path().join(sibling), b"replaced by a later commit").unwrap();
+
+        assert_eq!(
+            decide(project.path()).unwrap().state,
+            TrustState::Stale,
+            "{sibling} changed beside {named} under a record that still matched"
+        );
+    }
+
+    #[test]
+    fn a_replaced_dependency_beside_an_analyzer_path_makes_the_record_stale() {
+        assert_a_replaced_sibling_makes_the_record_stale(
+            r#"{"al.codeAnalyzers": ["./tools/TeamCop.dll"]}"#,
+            "tools/TeamCop.dll",
+            "tools/TeamCop.Rules.dll",
+        );
+    }
+
+    #[test]
+    fn a_replaced_dependency_beside_a_named_analyzer_makes_the_record_stale() {
+        assert_a_replaced_sibling_makes_the_record_stale(
+            r#"{"al.codeAnalyzers": ["TeamCop"]}"#,
+            "packages/teamcop/1.0.0/TeamCop.dll",
+            "packages/teamcop/1.0.0/TeamCop.Rules.dll",
+        );
+    }
+
+    #[test]
+    fn a_replaced_host_library_beside_a_dotnet_in_the_tree_makes_the_record_stale() {
+        assert_a_replaced_sibling_makes_the_record_stale(
+            r#"{"al.dotnetPath": "./tools/dotnet/dotnet"}"#,
+            "tools/dotnet/dotnet",
+            "tools/dotnet/host/fxr/8.0.0/libhostfxr.so",
+        );
+    }
+
+    #[test]
+    fn a_replaced_framework_file_beside_a_dotnet_in_the_tree_makes_the_record_stale() {
+        assert_a_replaced_sibling_makes_the_record_stale(
+            r#"{"al.dotnetPath": "./tools/dotnet/dotnet"}"#,
+            "tools/dotnet/dotnet",
+            "tools/dotnet/shared/Microsoft.NETCore.App/8.0.0/System.Private.CoreLib.dll",
         );
     }
 

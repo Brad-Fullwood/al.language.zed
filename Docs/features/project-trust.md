@@ -149,7 +149,11 @@ A privileged value that is a path into the project names a file the repository s
 the file is what runs. For an analyzer path, `al.dotnetPath`, `binary.path` and each
 analyzer name that resolves to a DLL under `.netpackages`, `packages` or a relative probing
 path, the recorded value carries the file's SHA-256, and for a probing directory inside the
-project one hash over every `.dll` below it. `trust --show` prints those hashes. A commit
+project one hash over every `.dll` below it. The record also covers what the file loads from
+beside it: for an analyzer, one hash over every `.dll` in its directory and below, since .NET
+resolves an analyzer's references from its own directory, and for `al.dotnetPath`, one hash
+over every file beside the muxer and every file under its `host` and `shared` directories,
+where it finds `hostfxr` and the framework. `trust --show` prints those hashes. A commit
 that replaces one of those files, or adds one where the record saw none, makes the record
 `stale`. A path outside the project is the user's machine and is recorded as written.
 
