@@ -158,11 +158,15 @@ fn confirmation_needed(
                     .to_string(),
             );
         };
+        // The current digest stays out of the message: a caller could pass it
+        // to a second call and record values nobody reviewed.
         if pinned.trim() != current_digest {
             return Err(format!(
-                "--digest {} does not match this project's privileged values ({current_digest}). \
-                 They changed since they were reviewed, and nothing was recorded.",
-                trust::one_line(pinned.trim())
+                "--digest {} does not match this project's privileged values, and nothing was \
+                 recorded. The values changed since that digest was reviewed. Run {} --show in \
+                 a terminal and review them.",
+                trust::one_line(pinned.trim()),
+                trust::TRUST_COMMAND
             ));
         }
         return Ok(true);
@@ -410,6 +414,22 @@ mod tests {
         )
         .expect_err("changed values must not be recorded");
         assert!(error.contains("changed since"), "{error}");
+    }
+
+    /// The refusal went on to print the current digest, which a second call
+    /// could pass to record values nobody reviewed.
+    #[test]
+    fn a_digest_mismatch_does_not_print_the_current_digest() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        let error = confirmation_needed(&root, DIGEST, unattended(root.to_str(), Some("0")), false)
+            .expect_err("a digest that does not match must be refused");
+        assert!(
+            !error.contains(DIGEST),
+            "the refusal prints the digest: {error}"
+        );
+        assert!(error.contains("nothing was recorded"), "{error}");
+        assert!(error.contains("trust --show"), "{error}");
     }
 
     #[test]

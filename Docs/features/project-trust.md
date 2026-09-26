@@ -121,7 +121,9 @@ moment.
 The refusal a call with no terminal receives does not name these flags. That call is by
 construction a script or an agent, and the refusal said how to make the same call succeed.
 The flags are a step a person puts into a CI configuration, not an answer to a refusal. Nothing
-in `plugin/` or `scripts/` runs this command, and nothing should.
+in `plugin/` or `scripts/` runs this command, and nothing should. For the same reason the refusal
+for a digest that no longer matches leaves out the current digest: it says nothing was recorded
+and asks for `al-explorer trust --show` in a terminal, where a person reads the new values.
 
 This is not a boundary against a program that already runs as the user: such a program can
 write `trusted-projects.json` itself. What the design controls is that no surface an agent
