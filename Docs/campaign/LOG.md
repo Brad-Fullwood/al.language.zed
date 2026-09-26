@@ -281,3 +281,4 @@ Append-only. Newest entry last.
   (`mock/record.rs`, `next` returning `Ok(1)`). Restored before the re-dispatch.
 - `target/debug` (30 GB) deleted, 31 GB free after.
 - Five agents dispatched at 18:40, listed in `STATE.md`.
+- Later the same evening: codeunit variables are instances with their own globals (stateful helpers run locally; only SingleInstance helpers route live), review fixes (XML format, `sender`, JSON sharing, Validate relation agreement between router and runtime), table events see the stored row as `xRec`. Found a grammar defect while testing subscribers: an attributed `local procedure` right after a var section loses its attribute (`findings/grammar-attribute-after-var.md`, with a tested scanner patch for the grammar repository). It hides such subscribers and publishers from the call graph, the router and the interpreter.
