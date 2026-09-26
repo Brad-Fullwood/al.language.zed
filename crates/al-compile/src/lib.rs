@@ -947,6 +947,41 @@ mod tests {
         );
     }
 
+    /// `al-explorer new`'s default `.vscode/settings.json` names its analyzers
+    /// as `${PerTenantExtensionCop}` (`al-project/src/scaffold.rs`,
+    /// `generate_vscode_settings`), and this is exactly the list
+    /// `pack-native --validate` passes through here as `analyzer_filter` when
+    /// no `--analyzers` flag overrides it. Before the fix, none of the four
+    /// token-spelled cops matched the `builtins` table (it compared against
+    /// `analyzer_name`, which stripped `.dll` but not `${...}`), so every one
+    /// fell through to `discover_custom_analyzer` and failed with "could not
+    /// be found" on a project that has none of them installed as files.
+    #[test]
+    fn requested_builtin_token_spelling_resolves_exact_toolchain_dll() {
+        let root = tempfile::tempdir().unwrap();
+        let toolchain = analyzer_test_toolchain(root.path());
+        std::fs::write(&toolchain.analyzers.code_cop, b"analyzer").unwrap();
+        std::fs::write(&toolchain.analyzers.app_source_cop, b"analyzer").unwrap();
+        std::fs::write(&toolchain.analyzers.ui_cop, b"analyzer").unwrap();
+        std::fs::write(&toolchain.analyzers.per_tenant_cop, b"analyzer").unwrap();
+
+        let cases = [
+            ("${CodeCop}", &toolchain.analyzers.code_cop),
+            ("${AppSourceCop}", &toolchain.analyzers.app_source_cop),
+            ("${UICop}", &toolchain.analyzers.ui_cop),
+            (
+                "${PerTenantExtensionCop}",
+                &toolchain.analyzers.per_tenant_cop,
+            ),
+        ];
+        for (token, expected) in cases {
+            let resolved =
+                resolve_analyzer_paths(&toolchain, Some(&[token.to_string()]), root.path(), &[])
+                    .unwrap_or_else(|e| panic!("{token} should resolve, got error: {e}"));
+            assert_eq!(resolved, [expected.display().to_string()], "{token}");
+        }
+    }
+
     #[test]
     fn parse_error_diagnostic() {
         let line = r#"src/MyTable.al(10,5): error AL0001: Variable 'x' is not defined"#;
