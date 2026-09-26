@@ -59,7 +59,7 @@ variable of another or unknown type, so check them before reporting.
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json deps-graph \
-  | jq -c '{root: .rootApp.name, edges: [.edges[] | {from, to, minVersion: .minimumVersion}], missing: [.nodes[]? | select(.present == false) | .name]}'
+  | jq -c '{root: .rootApp.name, edges: [.edges[] | {from, to, requiredVersion}], conflicts, missing}'
 ```
 
 7 KB unprojected, so this one is safe to read whole if the projection drops
@@ -76,18 +76,21 @@ release.
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json breaking \
   --baseline-app "output/Publisher_MyApp_1.4.0.0.app" \
-  | jq -c '{evaluated, n: (.changes | length), changes: [.changes[:20][] | {kind, symbol, detail}]}'
+  | jq -c '{n: length, changes: [.[:20][] | {kind, object, member, description, isBreaking}]}'
 ```
 
-Without `--baseline-app` it refuses rather than printing a clean-looking zero:
+With a baseline the result is the array of changes. Without `--baseline-app` it
+refuses rather than printing a clean-looking zero, and the result is an object:
 
 ```json
 {"analysis":"breaking","evaluated":false,
  "reason":"No --baseline-app supplied; breaking-change analysis was not evaluated","changes":[]}
 ```
 
-Check `evaluated` before you report anything. `upgrade --baseline-app <path>`
-has the same contract and returns `issues` instead of `changes`. Neither
+An object with `"evaluated": false` means nothing was compared, so check the
+shape before you report anything. `upgrade --baseline-app <path>` has the same
+contract: an array of issues with a baseline, an object with `evaluated: false`
+and an empty `issues` without one. Neither
 compares two versions of a dependency; that is `package-diff`.
 
 ## Subscribers pointing at events that no longer exist
@@ -97,8 +100,11 @@ never fires.
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json dead-code \
-  | jq -c '[.[] | select(.reason == "orphanedSubscriber")]'
+  | jq -c '[.[] | select(.kind == "subscriber")]'
 ```
+
+`reason` says why: `publisherRemoved` when the publishing object is gone,
+`eventRemoved` when the object is there and the event is not.
 
 Confirm each one by name:
 
@@ -146,7 +152,7 @@ with `--limit` only when the question is about the packages themselves.
 
 ## Do not
 
-- Report `breaking` or `upgrade` output without checking `evaluated`.
+- Report `breaking` or `upgrade` output without checking for `"evaluated": false`.
 - Diff `.app` files by hand or extract them to compare.
 - Assume a compiling subscriber still fires after an upgrade.
 
