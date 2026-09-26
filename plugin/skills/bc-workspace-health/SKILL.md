@@ -39,8 +39,10 @@ that would otherwise surface as a failed compile or a rejected deploy.
 ```
 
 `dead-code` covers unused procedures, unreferenced fields and orphaned
-subscribers. Read `confidence` and `note`: a public procedure with zero
-references may still be called from another extension.
+subscribers, one row each with short keys: `k` (`procedure`, `field`,
+`subscriber`), `n`, `obj`, `f`, `l`, `reason`, `confidence` and `note`. Read
+`confidence` and `note`: a public procedure with zero references may still be
+called from another extension.
 
 These are this toolchain's own `AL-NC*` and `AL-NL*` rules. They do not replace
 Microsoft's CodeCop, UICop, AppSourceCop or PerTenantExtensionCop, which need
@@ -63,11 +65,12 @@ first:
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer add-data-classification --value CustomerContent --dry-run
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer add-application-area --value All --dry-run
-"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer add-tooltips --from-table --dry-run
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer add-tooltips --from-table 'Customer' --dry-run
 ```
 
-`add-tooltips` copies the tooltip text from the base table's symbols, so page
-captions match Microsoft's wording rather than being invented.
+`add-tooltips` takes the table to copy from, and copies the tooltip text from
+that table's symbols, so page captions match Microsoft's wording rather than
+being invented.
 
 ## Permission set coverage
 
@@ -95,7 +98,7 @@ with the project.
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json duplicates \
-  | jq -c '[.[] | {a: .first.procedure, b: .second.procedure, lines: .lineCount}]'
+  | jq -c '[.[] | {a: .first.procedure, b: .second.procedure, similarity, tokens: .tokenCount}]'
 ```
 
 ## Diagnostics on one file

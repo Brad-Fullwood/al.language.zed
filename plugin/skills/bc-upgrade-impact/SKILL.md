@@ -100,7 +100,7 @@ never fires.
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json dead-code \
-  | jq -c '[.[] | select(.kind == "subscriber")]'
+  | jq -c '[.[] | select(.k == "subscriber") | {n, obj, f, l, reason}]'
 ```
 
 `reason` says why: `publisherRemoved` when the publishing object is gone,
