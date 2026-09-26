@@ -4244,3 +4244,99 @@ fn deleteall_and_modifyall_raise_the_table_events_for_each_row() {
     let refused = error_message(call("ModifyAllGuardRefuses"));
     assert!(refused.contains("P1 cannot be closed"), "{refused}");
 }
+
+const JSON_READFROM_PROBE: &str = r#"codeunit 50276 "Json ReadFrom Probe"
+{
+    procedure ReusedInALoop(): Text
+    var
+        Lines: List of [Text];
+        Line: Text;
+        LineObj: JsonObject;
+        Arr: JsonArray;
+        Out: Text;
+    begin
+        Lines.Add('{"n":1}');
+        Lines.Add('{"n":2}');
+        Lines.Add('{"n":3}');
+        foreach Line in Lines do begin
+            LineObj.ReadFrom(Line);
+            Arr.Add(LineObj);
+        end;
+        Arr.WriteTo(Out);
+        exit(Out);
+    end;
+
+    procedure LeavesTheParentAlone(): Text
+    var
+        Parent: JsonObject;
+        Child: JsonObject;
+        Out: Text;
+    begin
+        Parent.Add('child', Child);
+        Child.ReadFrom('{"x":1}');
+        Parent.WriteTo(Out);
+        exit(Out);
+    end;
+
+    procedure TokenFromGetLeavesTheParentAlone(): Text
+    var
+        Parent: JsonObject;
+        Token: JsonToken;
+        Out: Text;
+        Line: Text;
+    begin
+        Parent.ReadFrom('{"child":{"x":1}}');
+        Parent.Get('child', Token);
+        Token.ReadFrom('{"y":2}');
+        Parent.WriteTo(Out);
+        Token.WriteTo(Line);
+        exit(Out + Line);
+    end;
+
+    procedure AnAliasSeesTheNewValue(): Text
+    var
+        A: JsonObject;
+        B: JsonObject;
+        Out: Text;
+    begin
+        A.Add('old', 1);
+        B := A;
+        A.ReadFrom('{"new":2}');
+        B.WriteTo(Out);
+        exit(Out);
+    end;
+}
+"#;
+
+/// ReadFrom wrote the parsed value into the variable's node, which a parent
+/// object or array may hold, so a variable read again in a loop rewrote the
+/// rows already added. Business Central disconnects the variable from its
+/// tree and gives it the new value.
+#[test]
+fn readfrom_gives_the_variable_a_new_value_and_leaves_its_tree_alone() {
+    let call = |proc: &str| {
+        run(
+            &[("/ws/JsonReadFrom.al", JSON_READFROM_PROBE)],
+            "Json ReadFrom Probe",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(
+        ok(call("ReusedInALoop")),
+        Value::Text(r#"[{"n":1},{"n":2},{"n":3}]"#.into())
+    );
+    assert_eq!(
+        ok(call("LeavesTheParentAlone")),
+        Value::Text(r#"{"child":{}}"#.into())
+    );
+    assert_eq!(
+        ok(call("TokenFromGetLeavesTheParentAlone")),
+        Value::Text(r#"{"child":{"x":1}}{"y":2}"#.into())
+    );
+    // `B := A` shares A's reference, so B sees what A reads.
+    assert_eq!(
+        ok(call("AnAliasSeesTheNewValue")),
+        Value::Text(r#"{"new":2}"#.into())
+    );
+}

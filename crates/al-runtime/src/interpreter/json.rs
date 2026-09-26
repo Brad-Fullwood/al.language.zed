@@ -2,10 +2,14 @@
 //!
 //! AL's JSON types are references: `Obj2 := Obj1` shares one object, and a
 //! token from `Obj.Get('child', Token)` changes the child inside `Obj`. A
-//! JSON value is therefore a [`JsonRef`] into the [`JsonArena`] the dispatch
-//! context owns. A declared variable gets its node id when declared, so
-//! copies made before its first use still share one node; the node itself,
-//! an empty value of the declared type, is made on first use.
+//! JSON value is therefore a [`JsonRef`], a handle that the [`JsonArena`] the
+//! dispatch context owns maps to a node. `Obj2 := Obj1` copies the handle,
+//! and `Get` makes a new handle to the child's node. `ReadFrom` points the
+//! handle at a new node and leaves the old one in the tree that holds it,
+//! as BC disconnects the variable from its tree. A declared variable gets
+//! its handle when declared, so copies made before its first use still
+//! share one; the node, an empty value of the declared type, is made on
+//! first use.
 //!
 //! Text is written compactly (`{"a":1}`), as BC's `WriteTo` does. Numbers
 //! keep their exact decimal value. Dates and times are written in the XML
@@ -40,11 +44,11 @@ impl JsonKind {
     }
 }
 
-/// A JSON variable's value: its type and the node it refers to.
+/// A JSON variable's value: its type and the handle of the node it refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct JsonRef {
     pub kind: JsonKind,
-    pub node: Option<usize>,
+    pub handle: Option<usize>,
 }
 
 /// A scalar JSON value.
@@ -70,6 +74,8 @@ pub struct JsonArena {
     /// Whether each node already sits inside an object or array: adding it
     /// elsewhere then adds a copy, as BC does.
     attached: HashSet<usize>,
+    /// The node each [`JsonRef`] handle refers to.
+    targets: HashMap<usize, usize>,
 }
 
 impl JsonArena {
@@ -79,10 +85,25 @@ impl JsonArena {
         id
     }
 
-    /// Make sure node `id` exists: a variable's node is created on first
+    /// The node `handle` refers to. A variable's node is created on first
     /// use, as an empty value of its declared kind.
-    fn materialize(&mut self, id: usize, kind: JsonKind) {
-        self.nodes.entry(id).or_insert_with(|| empty_node(kind));
+    fn target(&mut self, handle: usize, kind: JsonKind) -> usize {
+        if let Some(node) = self.targets.get(&handle) {
+            return *node;
+        }
+        let node = self.push(empty_node(kind));
+        self.targets.insert(handle, node);
+        node
+    }
+
+    /// A new reference of `kind` to `node`.
+    fn reference(&mut self, kind: JsonKind, node: usize) -> Value {
+        let handle = fresh_id();
+        self.targets.insert(handle, node);
+        Value::Json(JsonRef {
+            kind,
+            handle: Some(handle),
+        })
     }
 
     fn set(&mut self, id: usize, node: Node) {
@@ -121,17 +142,17 @@ impl JsonArena {
     fn child_for(&mut self, value: &Value) -> Result<usize, String> {
         let id = match value {
             Value::Json(JsonRef {
-                node: Some(id),
+                handle: Some(handle),
                 kind,
             }) => {
-                self.materialize(*id, *kind);
-                if self.attached.contains(id) {
-                    self.deep_copy(*id)
+                let node = self.target(*handle, *kind);
+                if self.attached.contains(&node) {
+                    self.deep_copy(node)
                 } else {
-                    *id
+                    node
                 }
             }
-            Value::Json(JsonRef { kind, node: None }) => self.push(empty_node(*kind)),
+            Value::Json(JsonRef { kind, handle: None }) => self.push(empty_node(*kind)),
             other => self.push(Node::Scalar(scalar_of(other)?)),
         };
         self.attached.insert(id);
@@ -280,9 +301,9 @@ fn empty_node(kind: JsonKind) -> Node {
     }
 }
 
-/// Node ids are unique across every arena, so a variable can be given its
-/// id when declared, before any arena holds the node: copies of the variable
-/// then share it, as AL's reference semantics require.
+/// Node ids and handles are unique across every arena, so a variable can be
+/// given its handle when declared, before any arena maps it: copies of the
+/// variable then share it, as AL's reference semantics require.
 fn fresh_id() -> usize {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -371,36 +392,29 @@ pub fn supports_json_method(kind: JsonKind, method: &str) -> bool {
         }
 }
 
-/// The node behind the JSON variable `recv`, allocating an empty one on
-/// first use and storing it back on the variable.
+/// The handle and node behind the JSON variable `recv`, allocating both on
+/// first use and storing the handle back on the variable.
 fn node_of(
     recv: &str,
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
-) -> Result<(JsonKind, usize), String> {
+) -> Result<(JsonKind, usize, usize), String> {
     let json = match stack.lookup(recv) {
         Some(Value::Json(json)) => *json,
         _ => return Err(format!("'{recv}' is not a JSON variable")),
     };
-    let node = match json.node {
-        Some(node) => node,
+    let handle = match json.handle {
+        Some(handle) => handle,
         None => {
-            let node = fresh_id();
+            let handle = fresh_id();
             if let Some(Value::Json(slot)) = stack.lookup_mut(recv) {
-                slot.node = Some(node);
+                slot.handle = Some(handle);
             }
-            node
+            handle
         }
     };
-    ctx.json.materialize(node, json.kind);
-    Ok((json.kind, node))
-}
-
-fn reference(kind: JsonKind, node: usize) -> Value {
-    Value::Json(JsonRef {
-        kind,
-        node: Some(node),
-    })
+    let node = ctx.json.target(handle, json.kind);
+    Ok((json.kind, handle, node))
 }
 
 fn text_arg(value: Option<&Value>, what: &str) -> Result<String, String> {
@@ -488,7 +502,7 @@ fn run(
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Result<Value, String> {
-    let (kind, node) = node_of(recv, stack, ctx)?;
+    let (kind, handle, node) = node_of(recv, stack, ctx)?;
     let lower = method.to_ascii_lowercase();
     ctx.var_writebacks.clear();
     let arena = &mut ctx.json;
@@ -518,16 +532,15 @@ fn run(
                 return Ok(Value::Boolean(false));
             }
             let imported = arena.import(&parsed)?;
-            let imported = arena.nodes[&imported].clone();
-            arena.set(node, imported);
+            arena.targets.insert(handle, imported);
             return Ok(Value::Boolean(true));
         }
         "selecttoken" => {
             let path = text_arg(args.first(), "the path")?;
             return Ok(match arena.select(node, &path)? {
                 Some(found) => {
-                    ctx.var_writebacks
-                        .push((1, reference(JsonKind::Token, found)));
+                    let token = arena.reference(JsonKind::Token, found);
+                    ctx.var_writebacks.push((1, token));
                     Value::Boolean(true)
                 }
                 None => Value::Boolean(false),
@@ -535,9 +548,9 @@ fn run(
         }
         "clone" => {
             let copy = arena.deep_copy(node);
-            return Ok(reference(kind, copy));
+            return Ok(arena.reference(kind, copy));
         }
-        "astoken" => return Ok(reference(JsonKind::Token, node)),
+        "astoken" => return Ok(arena.reference(JsonKind::Token, node)),
         _ => {}
     }
     let current = arena.nodes[&node].clone();
@@ -551,9 +564,11 @@ fn run(
         (JsonKind::Token, "isvalue", current) => {
             Ok(Value::Boolean(matches!(current, Node::Scalar(_))))
         }
-        (JsonKind::Token, "asobject", Node::Object(_)) => Ok(reference(JsonKind::Object, node)),
-        (JsonKind::Token, "asarray", Node::Array(_)) => Ok(reference(JsonKind::Array, node)),
-        (JsonKind::Token, "asvalue", Node::Scalar(_)) => Ok(reference(JsonKind::Value, node)),
+        (JsonKind::Token, "asobject", Node::Object(_)) => {
+            Ok(arena.reference(JsonKind::Object, node))
+        }
+        (JsonKind::Token, "asarray", Node::Array(_)) => Ok(arena.reference(JsonKind::Array, node)),
+        (JsonKind::Token, "asvalue", Node::Scalar(_)) => Ok(arena.reference(JsonKind::Value, node)),
         (JsonKind::Token, "asobject" | "asarray" | "asvalue", _) => {
             Err(format!("the token is not a JSON {}", &lower[2..]))
         }
@@ -592,8 +607,8 @@ fn run(
             let key = text_arg(args.first(), "the key")?;
             Ok(match entries.iter().find(|(name, _)| *name == key) {
                 Some((_, child)) => {
-                    ctx.var_writebacks
-                        .push((1, reference(JsonKind::Token, *child)));
+                    let token = arena.reference(JsonKind::Token, *child);
+                    ctx.var_writebacks.push((1, token));
                     Value::Boolean(true)
                 }
                 None => Value::Boolean(false),
@@ -608,7 +623,7 @@ fn run(
         (JsonKind::Object, "values", Node::Object(entries)) => Ok(Value::List(
             entries
                 .into_iter()
-                .map(|(_, child)| reference(JsonKind::Token, child))
+                .map(|(_, child)| arena.reference(JsonKind::Token, child))
                 .collect(),
         )),
         (JsonKind::Object, getter, Node::Object(entries)) if getter.starts_with("get") => {
@@ -651,13 +666,19 @@ fn run(
         (JsonKind::Array, "count", Node::Array(items)) => Ok(Value::Integer(items.len() as i64)),
         (JsonKind::Array, "get", Node::Array(items)) => {
             let at = index_arg(args.first(), items.len(), false)?;
-            ctx.var_writebacks
-                .push((1, reference(JsonKind::Token, items[at])));
+            let token = arena.reference(JsonKind::Token, items[at]);
+            ctx.var_writebacks.push((1, token));
             Ok(Value::Boolean(true))
         }
         (JsonKind::Array, "indexof", Node::Array(items)) => {
             let wanted = match args.first() {
-                Some(Value::Json(JsonRef { node: Some(id), .. })) => arena.text_of(*id),
+                Some(Value::Json(JsonRef {
+                    handle: Some(handle),
+                    kind,
+                })) => {
+                    let node = arena.target(*handle, *kind);
+                    arena.text_of(node)
+                }
                 Some(other) => {
                     let probe = arena.child_for(other)?;
                     arena.text_of(probe)
@@ -712,6 +733,6 @@ pub(crate) fn default_for(type_name: &str) -> Option<Value> {
     };
     Some(Value::Json(JsonRef {
         kind,
-        node: Some(fresh_id()),
+        handle: Some(fresh_id()),
     }))
 }
