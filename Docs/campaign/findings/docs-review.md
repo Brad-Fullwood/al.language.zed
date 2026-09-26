@@ -58,11 +58,108 @@ in `crates/al-lsp/src/server/daemon/mod.rs` (95 methods), the MCP tool list in
   MCP defaults (`limit` 50, `scope` workspace, `signatures`).
 - `Docs/features/daemon-protocol.md`: changed: `-32002`, `build_dispatch/` file list, `nativeCheck`
   placement, the `dispatch_table!` capability list, the offloaded insight walks.
+- `Docs/features/language-server.md`: changed: LSP formatting reads `al.formatting.*`,
+  `al-explorer format` reads `.alformat.json`, the `**/*.al` watcher, module paths.
+- `Docs/features/analysis-and-insight.md`: changed: record operations raise the table's
+  OnBefore/OnAfter events whatever `RunTrigger` is, obsolete usage, package diff, free IDs and
+  native check in the catalog.
+- `Docs/features/symbol-and-package-engine.md`: changed: module paths, `location` and
+  `--list-procedures`, removed `BC_TENANT`.
+- `Docs/features/scaffolding-and-codegen.md`: changed: no LSP command scaffolds (the tasks do),
+  `generate` takes the first free ID when `--id` is omitted.
+- `Docs/features/xliff-translation.md`, `Docs/features/code-actions.md`: changed: module paths,
+  `suggest_translations`, `refresh` finds the `.g.xlf`, task names.
+- `Docs/features/language-assets.md`: changed: the build command is `al.compile`, 78 snippets.
+- `Docs/features/parsing-and-syntax.md`: changed: module directories, the source of the Record
+  method catalog.
+- `Docs/features/semantic-bridge.md`: changed: the bridge has no compile method, analyzer lookup
+  goes through `discover_custom_analyzer` and searches `al.assemblyProbingPaths` for both
+  backends (the page said probing paths apply to `alc` only).
+- `Docs/features/debugging-dap.md`: changed: module layout, 30 s step/continue wait, 4096-message
+  event channel.
+- `Docs/features/native-app-emitter.md`: changed: ALN2201 to ALN2501 codes listed, ALN1004 to
+  ALN1006 removed, module owners.
+- `Docs/current-limitations.md`, `Docs/testing-guide.md`, `Docs/benchmarks.md`, `Docs/index.md`:
+  changed: embedded package source in the call graph, the stale-binary guard, nightly property
+  tests, release stages 6 and 10, `impact --table`, links to project trust and the plugin roadmap.
+- `plugin/skills/*/SKILL.md`, `plugin/agents/*.md`, `plugin/ROADMAP.md`: changed: every command
+  and `jq` filter run against the release binaries and matched to the JSON they print
+  (`--fields` on search, `free-ids` keys, `breaking` and `dead-code` row shapes, `test-run` takes
+  the codeunit ID), and `object`/`by-id` fill workspace members only with `--wait-for-members`.
+- `tree-sitter-al/README.md` (grammar repository, branch `campaign/docs-review`): changed: names
+  `AL_EXTENSION_PATH`, one sentence per idea.
 
 ## Claims not verified, left as written
+
+- Benchmark figures in `README.md`, `Docs/benchmarks.md` and `benchmarks/`: dated measurements
+  with committed raw results. Not re-measured.
+- The evidence in `Docs/gaps-and-future-work.md` (runs at `a4e7d5fe`, CI run links, corpus
+  counts): a dated record of those runs. Not re-run. The 25/10 fixture counts were checked.
+- Live Business Central behaviour in `Docs/features/debugging-dap.md` and the live test runner:
+  no tenant was available.
+- The Microsoft column of `Docs/microsoft-comparison.md`: not checked against Microsoft's current
+  extension.
+- `Docs/features/project-trust.md`: written by the security workstream and out of this review's
+  scope. After the merge its ten credential methods, the `ADVISORY_KEYS`, `one_line`,
+  `escapes_untrusted_project`, `server_with_scheme` and `discover_custom_analyzer` names, the
+  six-`stat` fingerprint and the untrusted message were checked against the code and agree. Its
+  wording was not edited.
+- `plugin/TESTING.md`: a record of agent runs, left as recorded apart from one sentence split at
+  a semicolon.
 
 ## Code comments and help text that disagree with the code (not changed, code is out of scope)
 
 - `crates/al-runtime/src/interpreter/dispatch/mod.rs:13`: module doc says recursion depth is capped
   at 100. `MAX_RECURSION_DEPTH` is 512.
 - `al-explorer free-ids --help` examples say `al free-ids` where the binary is `al-explorer`.
+
+## Review complete
+
+Checked: every file under Files against the code, the CLI help of the release binaries, the
+dispatch table, the MCP tool list, the settings reader and the workflows, as recorded above.
+After `campaign/2026-09-21` was merged (the security round 4 and blog fixes), the docs the merge
+touched were read again against the new code: `Docs/features/project-trust.md`,
+`Docs/features/daemon-protocol.md`, `Docs/features/xliff-translation.md`,
+`Docs/current-limitations.md`, `Docs/reference/cli-commands.md`,
+`Docs/reference/daemon-methods.md`, `README.md` and `plugin/skills/bc-symbol-lookup/SKILL.md`.
+The merge was done before the wording pass so that pass also covers the merged text.
+`Docs/features/native-test-runtime.md` lists `Evaluate` and `CalcDate` as local builtins, and both
+are in `supports_global_builtin`.
+
+Changed after the merge, for drift against the code:
+
+- `object` and `byId` answer at once and fill workspace members only with `waitForMembers: true`
+  (97d7d98d). The daemon-methods waiter list, `bc-symbol-lookup` and `plugin/ROADMAP.md` said
+  they always wait.
+- The request deadline also keeps waiting while the call graph builds, up to 600 s in all
+  (a757fb13). The `--timeout-ms` row named the source index only.
+- `trust --yes` needs `--digest` (ef0d4e27). The CLI reference showed `--yes --root` only.
+- `al.assemblyProbingPaths` is also where the in-process bridge looks for a named analyzer DLL.
+  `semantic-bridge.md` and `settings.md` said it applies to `alc` only.
+
+Wording: every file under Files had an unsloppify pass. Em dashes are gone from `Docs/` (outside
+`Docs/campaign/`), `README.md`, `ROADMAP.md` and `plugin/`, and so are semicolons in prose, except
+one sentence in `Docs/features/project-trust.md` (see below). Em dashes in table cells meaning
+"none" became empty cells or `n/a`, and UTF middle dots used as separators became commas (CLI
+reference) or a list (the `Docs/microsoft-comparison.md` legend). Other edits: negation-then-reveal and history phrasing ("no
+longer", "now", "used to", "as before") where the positive statement carries the fact, gravitas
+and chat register ("Yes, this project includes", "honest", "first-class", "escape hatch",
+"control plane"), headings such as "Why this approach" and "Honest limitations", and improvised
+hyphen compounds. Technical claims were kept as they were.
+
+Left as written, and why:
+
+- Bold labels at the start of bullets in the feature pages: each names a stage, module or field
+  the reader looks up.
+- "gate" in `ROADMAP.md` and `Docs/gaps-and-future-work.md`: the project's name for its release
+  checks.
+- The `**Status:** ✅ shipped` headers of the feature pages: a shared badge format across the
+  pages.
+- `Docs/features/project-trust.md` wording, its one semicolon and the historical notes in it
+  ("used to"): owned by the security workstream, and the history explains why each rule exists.
+- `Docs/campaign/`, `AUDIT-BACKLOG.md`, `BENCHMARKS.md`, `benchmarks/*.md` and `.claude/skills/`:
+  outside this review's scope.
+- The two code comments under "Code comments and help text": code is outside this review's scope.
+
+`grep -niE 'advania|customers/' Docs README.md ROADMAP.md plugin` finds only the line in
+`Docs/campaign/README.md` that states this check. No doc names a customer.
