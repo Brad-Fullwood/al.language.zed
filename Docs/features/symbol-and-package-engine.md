@@ -12,7 +12,7 @@ concurrent in-memory maps.
 
 | Capability | File | Summary |
 | --- | --- | --- |
-| Symbol index | `index.rs` | Concurrent (DashMap) multi-package index with secondary indexes |
+| Symbol index | `index/` | Concurrent (DashMap) multi-package index with secondary indexes |
 | Symbol model | `model.rs` | `ObjectKind` (20+ kinds) + `SymbolEntry`; `SymbolReference.json` parsing |
 | Disk cache | `cache.rs` | mtime/size/schema-validated binary cache of parsed packages |
 | `.app` reader | `app_reader.rs` | NAVX header + ZIP → manifest + `SymbolReference.json` → entries |
@@ -24,12 +24,12 @@ concurrent in-memory maps.
 | Virtual files | `virtual_file.rs` | extract embedded source or render an outline for go-to-def |
 | NuGet | `nuget.rs` | resolve AL deps → NuGet package IDs; download `.nupkg`; extract `.app` |
 | BC server | `bc_server.rs` | download `.app` from the BC dev endpoint |
-| OAuth | `oauth.rs` | Microsoft Entra auth-code (PKCE) + device-code flows |
-| Language data | `language_data.rs` | object types + runtime enums from generated JSON |
+| OAuth | `oauth/` | Microsoft Entra auth-code (PKCE) + device-code flows |
+| Source availability | `source_availability.rs` | classify each object as workspace source, embedded source, generated outline or metadata only |
 
 ## How it works
 
-### The index (`index.rs`)
+### The index (`index/`)
 
 `SymbolIndex` stores shared `Arc<SymbolEntry>` and maintains parallel DashMap secondary indexes:
 by lowercase name, by kind+id, by kind, by extension target (`extends`), and a composed-object cache.
@@ -97,7 +97,7 @@ publication ensures a simultaneous navigation request never sees a partially-wri
 archive indexing is canonical-path deduped and bounded by package size, entry count, and a 32 MiB
 per-source extraction limit.
 
-### Symbol acquisition (`nuget.rs`, `bc_server.rs`, `oauth.rs`)
+### Symbol acquisition (`nuget.rs`, `bc_server.rs`, `oauth/`)
 
 Two download backends:
 
@@ -114,9 +114,9 @@ Two download backends:
   transport/429/502/503/504 failures, and a 200 MiB streaming cap. It verifies NAVX plus manifest
   identity/minimum-version before atomically publishing a publisher/name/version-qualified filename.
   It caches the access token in an `RwLock` and clears it on 401/403 before retrying.
-- **OAuth (`oauth.rs`):** Microsoft Entra authorization-code flow with **PKCE** (browser → localhost
+- **OAuth (`oauth/`):** Microsoft Entra authorization-code flow with **PKCE** (browser → localhost
   redirect) and a **device-code** fallback for headless environments, with disk-cached refresh
-  tokens, tenant/GUID validation, env-var overrides (`BC_CLIENT_ID`/`BC_ACCESS_TOKEN`/`BC_TENANT`),
+  tokens, tenant/GUID validation, env-var overrides (`BC_CLIENT_ID`/`BC_ACCESS_TOKEN`),
   and **zeroized** token memory on drop.
 
 Freshly downloaded symbols are loaded into the workspace **without a daemon restart**.
@@ -144,8 +144,10 @@ definitions, event discovery, and impact analysis — so all of those are fast f
 ## How to use
 
 - **CLI:** `al-explorer search <q> [--limit N]`, `object <type> <name>`, `by-id <type> <id>`,
-  `source <name> [--kind <type>] [--package <name>] [--procedure <name>|--trigger <name>]`,
-  `composed [<kind>] <name>`, `packages`, `deps`, `events <name>`, `subscribers <event>`.
+  `source <name> [--kind <type>] [--package <name>] [--procedure <name>|--trigger <name>|--list-procedures]`,
+  `location <name> [--kind <type>] [--package <name>]` (prints `path:line`, materialising a package
+  object as a virtual file), `composed [<kind>] <name>`, `packages`, `deps`, `events <name>`,
+  `subscribers <event>`.
 - **Download:** `al-explorer download-symbols --source server|nuget`;
   `al-explorer authenticate`; `al-explorer clear-cache`.
 - **LSP execute commands:** `al.downloadSymbols`, `al.downloadSymbolsServer`,
@@ -194,5 +196,6 @@ with the right filename but the wrong identity/version does not count as satisfi
     structured availability value and note. It reports `embedded_source` only after extraction
     succeeds; otherwise it returns `generated_outline` or `metadata_only`. Same-name ambiguities are
     rejected until `--kind` and/or `--package` identifies one object.
-  - Cross-package "who calls this" cannot be recovered from package symbols alone. Workspace source
-    fills this in; affected-test selection treats `.app`-only declarations as having no call sites.
+  - Cross-package "who calls this" cannot be recovered from package symbols alone. The call graph
+    reads it from workspace source and from the AL source a package embeds (the dependency source
+    index); affected-test selection treats declarations with neither as having no call sites.
