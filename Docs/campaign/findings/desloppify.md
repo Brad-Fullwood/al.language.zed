@@ -280,6 +280,88 @@ duplicate loader was found by the cross-module batch agent and again during the 
 5. Batch 10 last of the active work, once nothing else is moving the same control flow.
 6. Batch 12 only after the publish decision.
 
+## 5. Re-score, 2026-09-26
+
+A fresh `desloppify scan` ran at 2026-09-26T11:55:04Z (12:55 BST), the first rescan since the
+2026-09-21T10:09:03Z scan behind the "All scores" section below. `.desloppify/plan.json` and
+`.desloppify/state-rust.json` carry the result; this section writes down what the earlier agent
+left unrecorded, verified with `desloppify status` and `desloppify plan commit-log` in this
+session.
+
+### Headline
+
+| Score | 2026-09-21 (after the review import) | 2026-09-26 (this rescan) | Change |
+|---|---|---|---|
+| Overall (lenient) | 80.2 | 80.2 | 0.0 |
+| Objective (mechanical only) | 84.7 | 84.6 | -0.1 |
+| Strict (wontfix penalized) | 80.2 | 79.6 | -0.6 |
+| Verified (scan-confirmed only) | 84.7 | 84.6 | -0.1 |
+
+### Objective dimensions
+
+| Dimension | Health 09-21 -> 09-26 | Strict 09-21 -> 09-26 | Checks 09-21 -> 09-26 | Failing 09-21 -> 09-26 |
+|---|---|---|---|---|
+| Code quality | 90.5% -> 88.7% | 90.5% -> 85.2% | 3,215 -> 4,039 | 470 -> 686 |
+| Security | 100.0% -> 100.0% | 100.0% -> 100.0% | 273 -> 355 | 0 -> 0 |
+| File health | 62.2% -> 64.2% | 62.2% -> 59.9% | 273 -> 355 | 148 -> 182 |
+| Duplication | 97.3% -> 97.8% | 97.3% -> 96.6% | 7,760 -> 8,762 | 301 -> 280 |
+| Test health | 96.1% -> 92.5% | 96.1% -> 91.0% | 6,926 -> 8,693 | 46 -> 39 |
+
+Checks (the detectors' potential count) rose in every mechanical dimension because the codebase
+itself grew: more files, more functions, more tests. That is the scan surface `campaign/slop-review-queue`
+already flagged when its own merge moved strict from 80.2 to 79.9.
+
+### Subjective dimensions
+
+All 20 are unchanged from the 2026-09-21 import. `desloppify status` marks every one of them
+`[stale]` except the combined Elegance row, and `.desloppify/state-rust.json`'s `dimension_scores`
+holds the same 20 values as the "All scores" table below, digit for digit. No holistic review has
+run since 2026-09-21, so the subjective pool still averages 78.7% and still carries the same three
+weakest dimensions (Type safety 72.0, Stale migration 74.0, Contracts 75.0).
+
+### What moved the mechanical scores
+
+- **46 of the 112 imported review findings are already resolved in code** but not yet marked
+  committed in the desloppify plan (`desloppify plan commit-log` lists them as "Uncommitted").
+  The largest cluster, four findings, is the duplicate al-symbols language-data loader
+  (`symbols_duplicates_syntax_language_data`, `duplicate_language_data_loader_in_al_symbols`,
+  `stale_dependency_rule_keeps_duplicate_loader`, `two_snapshots_of_one_data_file`), closed when
+  `campaign/slop-syntax-symbols` removed the loader. Three more
+  (`al_core_residue_in_ownership_comments`, `al_core_names_in_live_docs`,
+  `pre_split_crate_names_in_docs`) closed when the docs review pass renamed the pre-split crate
+  names out of live docs, and `authorization_consistency::windows_auth_divergence` closed when
+  Windows auth credentials were unified across the three BC clients.
+- **File health rose at health (62.2% to 64.2%) but fell at strict (62.2% to 59.9%).** The
+  large-file splits in `campaign/slop-syntax-symbols` (`formatting.rs`, `symbols.rs`, `index.rs`,
+  `oauth.rs` into module directories) and the r6 session review pass (six large files lost their
+  test modules to a sibling `tests.rs`) close some "Large file" findings, but the merges also
+  brought in the biggest, most complex files in the repo untouched
+  (`al-lsp/src/server/daemon/build_dispatch/tests_dispatch.rs` at 4,216 lines,
+  `al-dap/src/dap/native_dap.rs` at 3,636), which is why section 4 batch 2 lists them. Checks rose
+  from 273 to 355 as the file count grew.
+- **Test health fell at both health and strict (96.1% to 92.5%, 96.1% to 91.0%) even though the
+  absolute failing count dropped (46 to 39).** `test_coverage`'s potential checks rose from 6,926
+  to 8,693 as the merges below added functions, and the detector weighs how much of a function's
+  logic goes untested rather than counting pass/fail (`weighted_failures` is 647.1 in the fresh
+  scan). More surface with the same coverage ratio still lowers the score.
+- **Duplication and Security barely moved** (Security steady at 100%, Duplication 97.3% to 97.8%
+  health, 97.3% to 96.6% strict), because the test-fixture and production-duplication batches
+  (5 to 9 in section 4) have not started.
+
+The merges behind this growth are listed by name in `Docs/campaign/STATE.md` under "Done". In
+summary: the seven original `campaign/fix-r1-*` branches and their b/c follow-ups all landed;
+`campaign/slop-syntax-symbols` split the four largest al-syntax/al-symbols files and removed the
+duplicate loader; `campaign/slop-review-queue` triaged the 112 imported findings (34 changed, 63
+deferred behind branches that have since merged, 7 deferred, 3 accepted, 15 skipped as false
+positives); security rounds r2 to r4 and the daemon lifecycle, ai-plugin, ai-free-ids and
+ai-daemon-projection work merged; `campaign/test-depth` added property tests that found 4 bugs; r5
+dogfood, the CI platform fixes and a dogfood pass against Base Application 26 merged; r6 session
+review split six more large files and drove rustdoc warnings to zero; the async-locking batch
+closed two deadlocks in al-lsp; and on 2026-09-26 itself the docs review, the persisted dependency
+source index, the blog findings and security round 4 merged. Five more agents were in flight in
+parallel worktrees when this rescan ran (r7 review, `cargo mutants`, the ghost-race-2 fix, the
+persisted-index-2 follow-up, the profile-extension fix), none merged into this branch yet.
+
 ## All scores
 
 ### Headline
