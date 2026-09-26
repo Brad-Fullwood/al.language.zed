@@ -343,6 +343,12 @@ fn the_key_follows_the_bytes_the_schema_and_the_grammar() {
     std::fs::write(&changed, &bytes).unwrap();
     let changed_key = PackageKey::of(&changed).unwrap();
     assert_ne!(changed_key.sha256, key.sha256);
+    assert_ne!(
+        cache.entry_path(&fixture.fixture_app, &changed_key),
+        cache.entry_path(&fixture.fixture_app, &key),
+        "other bytes name a different entry"
+    );
+    assert!(cache.load(&fixture.fixture_app, &changed_key).is_none());
 
     let other_schema = PackageKey {
         schema_version: key.schema_version + 1,
@@ -424,6 +430,7 @@ fn entries_other_users_could_write_are_not_read() {
     std::fs::set_permissions(&fixture.cache_dir, std::fs::Permissions::from_mode(0o777)).unwrap();
     let started = fixture.start();
     assert_eq!(started.from_disk, 0);
+    assert_eq!(started.summaries(), fresh.summaries());
     assert_eq!(
         std::fs::metadata(&fixture.cache_dir)
             .unwrap()

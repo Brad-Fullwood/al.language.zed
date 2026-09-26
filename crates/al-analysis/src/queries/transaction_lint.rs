@@ -132,8 +132,17 @@ pub fn transaction_lints(
 
     let mut effects = collect_effects(&workspace.file_index, &insight, true)?;
     effects.extend(collect_summary_effects(&dependency_files, &insight, false)?);
+    Ok(lint_effects(&effects, &call_graph))
+}
+
+/// Both rules over the effects of every procedure and the resolved graph,
+/// sorted by file and position.
+fn lint_effects(
+    effects: &[ProcedureEffects],
+    call_graph: &CallGraph,
+) -> Vec<WorkspaceLintDiagnostic> {
     if effects.is_empty() {
-        return Ok(Vec::new());
+        return Vec::new();
     }
     let by_node: HashMap<NodeId, &ProcedureEffects> =
         effects.iter().map(|effect| (effect.node, effect)).collect();
@@ -141,8 +150,8 @@ pub fn transaction_lints(
     let mut diagnostics = Vec::new();
     let mut seen: HashSet<(&'static str, PathBuf, u32, u32)> = HashSet::new();
 
-    lint_commits(&effects, &by_node, &call_graph, &mut diagnostics, &mut seen);
-    lint_try_stacks(&effects, &by_node, &call_graph, &mut diagnostics, &mut seen);
+    lint_commits(effects, &by_node, call_graph, &mut diagnostics, &mut seen);
+    lint_try_stacks(effects, &by_node, call_graph, &mut diagnostics, &mut seen);
 
     diagnostics.sort_by(|a, b| {
         a.file
@@ -151,7 +160,7 @@ pub fn transaction_lints(
             .then(a.range.start.character.cmp(&b.range.start.character))
             .then(a.code.cmp(b.code))
     });
-    Ok(diagnostics)
+    diagnostics
 }
 
 fn lint_commits(
@@ -524,6 +533,56 @@ mod tests {
     use super::*;
     use std::io::{Cursor, Write};
 
+    /// A project subscriber that commits after a dependency event.
+    const SUBSCRIBER_TO_DEPENDENCY: &str = r#"codeunit 50100 "Subscriber"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Dependency Publisher", 'OnAfterMutate', '', false, false)]
+    local procedure AfterDependencyMutation()
+    begin
+        Commit();
+    end;
+}"#;
+
+    /// Dependency source that writes and then raises the event above.
+    const DEPENDENCY_PUBLISHER: &str = r#"codeunit 70000 "Dependency Publisher"
+{
+    procedure Mutate()
+    var
+        Customer: Record Customer;
+    begin
+        Customer.Modify();
+        OnAfterMutate();
+    end;
+
+    [IntegrationEvent(false, false)]
+    local procedure OnAfterMutate()
+    begin
+    end;
+}"#;
+
+    /// A project try function that calls into dependency source.
+    const TRY_DEPENDENCY: &str = r#"codeunit 50100 "Try Dependency"
+{
+    [TryFunction]
+    procedure TryDependencyWrite()
+    var
+        Writer: Codeunit "Dependency Writer";
+    begin
+        Writer.WriteCustomer();
+    end;
+}"#;
+
+    /// Dependency source that writes.
+    const DEPENDENCY_WRITER: &str = r#"codeunit 70001 "Dependency Writer"
+{
+    procedure WriteCustomer()
+    var
+        Customer: Record Customer;
+    begin
+        Customer.Modify();
+    end;
+}"#;
+
     fn workspace(files: &[(&str, &str)]) -> Workspace {
         let ws = Workspace::new();
         for (name, source) in files {
@@ -717,37 +776,10 @@ mod tests {
 
     #[test]
     fn dependency_source_write_and_event_reach_project_commit() {
-        let ws = workspace(&[(
-            "Subscriber.al",
-            r#"codeunit 50100 "Subscriber"
-{
-    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Dependency Publisher", 'OnAfterMutate', '', false, false)]
-    local procedure AfterDependencyMutation()
-    begin
-        Commit();
-    end;
-}"#,
-        )]);
+        let ws = workspace(&[("Subscriber.al", SUBSCRIBER_TO_DEPENDENCY)]);
         let _package = install_dependency_source_package(
             &ws,
-            &[(
-                "src/DependencyPublisher.al",
-                r#"codeunit 70000 "Dependency Publisher"
-{
-    procedure Mutate()
-    var
-        Customer: Record Customer;
-    begin
-        Customer.Modify();
-        OnAfterMutate();
-    end;
-
-    [IntegrationEvent(false, false)]
-    local procedure OnAfterMutate()
-    begin
-    end;
-}"#,
-            )],
+            &[("src/DependencyPublisher.al", DEPENDENCY_PUBLISHER)],
         );
 
         let diagnostics = transaction_lints(&ws).unwrap();
@@ -761,33 +793,10 @@ mod tests {
 
     #[test]
     fn project_try_function_reports_write_inside_dependency_source() {
-        let ws = workspace(&[(
-            "TryDependency.al",
-            r#"codeunit 50100 "Try Dependency"
-{
-    [TryFunction]
-    procedure TryDependencyWrite()
-    var
-        Writer: Codeunit "Dependency Writer";
-    begin
-        Writer.WriteCustomer();
-    end;
-}"#,
-        )]);
+        let ws = workspace(&[("TryDependency.al", TRY_DEPENDENCY)]);
         let _package = install_dependency_source_package(
             &ws,
-            &[(
-                "src/DependencyWriter.al",
-                r#"codeunit 70001 "Dependency Writer"
-{
-    procedure WriteCustomer()
-    var
-        Customer: Record Customer;
-    begin
-        Customer.Modify();
-    end;
-}"#,
-            )],
+            &[("src/DependencyWriter.al", DEPENDENCY_WRITER)],
         );
 
         let diagnostics = transaction_lints(&ws).unwrap();
@@ -853,6 +862,83 @@ mod tests {
             }),
             "record event must reach subscriber body: {diagnostics:?}"
         );
+    }
+
+    /// The pipeline before dependency source was kept as summaries: the
+    /// dependency files parsed into a `FileIndex`, their edges and effects
+    /// read from the trees. `sources` are the package's embedded files.
+    fn lints_from_dependency_trees(
+        ws: &Workspace,
+        sources: &[(&str, &str)],
+    ) -> Vec<WorkspaceLintDiagnostic> {
+        let (insight, cached_call_graph) = ws.get_or_build_call_graph().unwrap();
+        drop(cached_call_graph);
+        let mut call_graph = CallGraph::build_from_insight(&insight);
+        al_insight::calls::resolve_all_workspace_call_edges(
+            &ws.file_index,
+            &ws.symbols,
+            &insight,
+            &mut call_graph,
+        )
+        .unwrap();
+        let summaries = ws.get_or_build_dependency_source_index().unwrap();
+        let trees = al_source::file_index::FileIndex::new();
+        for (path, file) in summaries.files() {
+            let (_, source) = sources
+                .iter()
+                .find(|(archive_path, _)| *archive_path == file.archive_path)
+                .expect("every summarized file comes from the fixture");
+            trees.add_file(path.to_path_buf(), source.to_string());
+        }
+        assert_eq!(trees.object_info.len(), sources.len());
+        al_insight::calls::resolve_all_workspace_call_edges(
+            &trees,
+            &ws.symbols,
+            &insight,
+            &mut call_graph,
+        )
+        .unwrap();
+        let mut effects = collect_effects(&ws.file_index, &insight, true).unwrap();
+        effects.extend(collect_effects(&trees, &insight, false).unwrap());
+        lint_effects(&effects, &call_graph)
+    }
+
+    #[test]
+    fn dependency_summaries_lint_like_dependency_trees() {
+        let fixtures: [(&str, &str, &[(&str, &str)]); 3] = [
+            (
+                "Subscriber.al",
+                SUBSCRIBER_TO_DEPENDENCY,
+                &[("src/DependencyPublisher.al", DEPENDENCY_PUBLISHER)],
+            ),
+            (
+                "TryDependency.al",
+                TRY_DEPENDENCY,
+                &[("src/DependencyWriter.al", DEPENDENCY_WRITER)],
+            ),
+            (
+                "TryDependency.al",
+                TRY_DEPENDENCY,
+                &[
+                    ("src/DependencyPublisher.al", DEPENDENCY_PUBLISHER),
+                    ("src/DependencyWriter.al", DEPENDENCY_WRITER),
+                ],
+            ),
+        ];
+        for (name, project_source, dependency_sources) in fixtures {
+            let ws = workspace(&[(name, project_source)]);
+            let _package = install_dependency_source_package(&ws, dependency_sources);
+            let from_summaries = transaction_lints(&ws).unwrap();
+            assert!(
+                !from_summaries.is_empty(),
+                "{name}: the fixture reports something"
+            );
+            assert_eq!(
+                from_summaries,
+                lints_from_dependency_trees(&ws, dependency_sources),
+                "{name}"
+            );
+        }
     }
 
     #[test]
