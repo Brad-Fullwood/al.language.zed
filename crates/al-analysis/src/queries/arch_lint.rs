@@ -311,6 +311,8 @@ fn legacy_naming_regex(pattern: &str) -> String {
 /// line it starts on in the file, so a line counted within `object_text` maps
 /// back. Node-based checks still read `file_text`, because the node's byte
 /// offsets are offsets into the whole file.
+// The file, the object and the rule each vary per call, and the one caller
+// already holds all of them as locals.
 #[allow(clippy::too_many_arguments)]
 fn apply_rule(
     file_path: &str,

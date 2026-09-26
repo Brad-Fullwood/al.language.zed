@@ -78,9 +78,6 @@ pub fn cmd_by_id(kind: &str, id: i32, json: bool) -> ExitCode {
     })
 }
 
-// One parameter per clap flag on `al-explorer source`. Grouping them would
-// mean a second struct shadowing the generated Args type.
-#[allow(clippy::too_many_arguments)]
 pub fn cmd_source(
     name: &str,
     kind: Option<&str>,

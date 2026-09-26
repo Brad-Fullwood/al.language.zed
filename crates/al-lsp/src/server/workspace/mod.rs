@@ -1335,6 +1335,8 @@ pub(crate) fn handle_workspace_symbol(
     for r in ws_results {
         if let Some(file_text_entry) = workspace.file_index.files.get(&r.file_path) {
             if let Ok(file_uri) = Url::from_file_path(&r.file_path) {
+                // `SymbolInformation::deprecated` is deprecated, but the
+                // struct literal has to name it.
                 #[allow(deprecated)]
                 results.push(SymbolInformation {
                     name: r.info.name.clone(),
@@ -1361,6 +1363,8 @@ pub(crate) fn handle_workspace_symbol(
             al_analysis::queries::search::workspace_search_children(workspace, query, remaining);
         for r in child_results {
             if let Ok(file_uri) = Url::from_file_path(&r.file_path) {
+                // `SymbolInformation::deprecated` is deprecated, but the
+                // struct literal has to name it.
                 #[allow(deprecated)]
                 results.push(SymbolInformation {
                     name: r.name,

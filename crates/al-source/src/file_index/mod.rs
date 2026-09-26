@@ -618,6 +618,8 @@ impl FileIndex {
     /// The objects `path` declares, as `(kind, id, name)` in lowercase, and
     /// its procedure names: what a change must alter before cross-file graphs
     /// built from this file are out of date.
+    // A private pair compared whole with `==`; a named alias would be read
+    // only here.
     #[allow(clippy::type_complexity)]
     fn topology_of(&self, path: &Path) -> (Vec<(String, Option<i64>, String)>, Vec<String>) {
         let objects = self
