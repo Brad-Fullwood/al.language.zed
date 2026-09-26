@@ -53,10 +53,11 @@ must never be used to hide actionable implementation or verification work.
   LSP, daemon, CLI/TUI, and MCP.
 - The generic MCP `al_call` exposes the complete daemon catalog; named aliases
   add discoverability without forming an allow-list.
-- Gallery-installed LSP, DAP, and MCP processes resolve the release sidecars
-  from the extension archive. Installed static tasks/runnables are intentionally
-  absent because stable Zed cannot address an extension-private sidecar path;
-  checkout-local contributor tasks are contract-tested instead.
+- Gallery-installed LSP, DAP, and MCP processes run `al-lsp` from `PATH` or
+  from the release archive the extension downloads and verifies. The language
+  package ships 55 tasks and inline runnables that run `al-explorer`, which has
+  to be on `PATH` because stable Zed task definitions cannot address a binary in
+  the extension's work directory.
 
 ### Debugging and test execution
 

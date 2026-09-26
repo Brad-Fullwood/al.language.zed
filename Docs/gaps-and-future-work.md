@@ -43,7 +43,7 @@ environment has not supplied its contract evidence.
 | Dependency and symbol engine | Package selection, exact build/index folders, both download backends, source availability/provenance, atomic extraction/index/graph publication, hot reload, invalidation, limits, and source-free declaration boundaries have focused and cross-surface coverage | Verified |
 | Symbol/package performance | Six-package/11,799-symbol cold and warm smoke passes; deterministic Criterion archive/index/lookup/completion/impact/trace/graph paths and owned-memory accounting pass; clean-commit raw symbol and semantically gated native/`alc` package measurements are published | Verified |
 | MCP contract | Generic `al_call` reaches the complete daemon catalog; named tools do not form an allow-list; schemas/results validate; errors distinguish symbols, BC configuration, semantic bridge, package source, graph state, and unsupported operations; test output carries classified/actual routing | Verified |
-| Zed commands and archive | Installed archive resolves LSP/DAP/MCP sidecars; every shipped task/runnable/CodeLens claim is cross-checked; stable-Zed private-sidecar restrictions are represented by intentionally absent installed static tasks rather than dead commands | Verified |
+| Zed commands and archive | Installed archive resolves LSP/DAP/MCP sidecars; every shipped task/runnable/CodeLens claim is cross-checked; the 55 shipped tasks and the inline runnables run `al-explorer` from `PATH`, and a repository test ties the README's task count and command to `languages/al/tasks.json` | Verified |
 | Zed and VS Code editor smoke | Current WASM component and grammar load in Zed; Microsoft AL extension loads in VS Code; LSP process and highlighting are visible in the isolated comparison harness; CLI archive smoke exercises binary resolution and shipped surfaces | Verified |
 | DAP protocol and schema | Native initialize/launch/attach configuration, shared compile/artifact selection, breakpoints, stack/scopes/variables, evaluate, stepping, continue, disconnect, unsupported capabilities, wire variants, and schema/runtime field parity pass self-contained contracts | Verified |
 | CLI and TUI parity | Every advertised top-level command is registered, reaches the shared daemon/build implementation, returns a validated structured success or failure shape, and is exercised by CLI/TUI smoke coverage | Verified |
@@ -73,10 +73,11 @@ registry. Uploading those libraries requires an explicit publication decision
 and credentials; the self-contained release gate still validates every local
 package manifest.
 
-## Evidence recorded during this completion run
+## Evidence recorded for the completion run at `a4e7d5fe` (2026-07-29)
 
 - Grammar crate tests: 2 passed. Generator tests: 4 passed. Repository runner:
-  23 valid fixtures, 9 invalid fixtures, BCApps 35,855/35,855,
+  23 valid fixtures, 9 invalid fixtures (two valid and one invalid fixture were
+  added on 2026-08-12), BCApps 35,855/35,855,
   ALAppExtensions 10,534/10,534, total 46,389/46,389.
 - `scripts/check-release-hygiene.sh --full-regenerate` regenerated from
   `ms-dynamics-smb.al` 17.0.2273547 and returned byte-stable output before
