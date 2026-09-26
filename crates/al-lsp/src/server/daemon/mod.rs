@@ -794,6 +794,12 @@ async fn refresh_trust(workspace: &Workspace) {
             if let Some(advisory) = evaluated.decision.advisory() {
                 tracing::warn!("daemon: {advisory}");
             }
+            // A `dotnet` host in the tree is part of the record, so a replaced
+            // one makes the project stale and is dropped here, not only at
+            // startup.
+            if let Some(advisory) = al_project::trust::enforce_dotnet_path(&project_root) {
+                tracing::warn!("daemon: {advisory}");
+            }
             *workspace.config.write().await = evaluated.config;
         }
         // A settings file that stopped parsing is not a reason to keep serving

@@ -114,7 +114,10 @@ fn discover(
         };
         let found = canonical_file(&path)
             .ok_or(AnalyzerDiscoveryError::MissingExplicitPath(path.clone()))?;
-        if !configured_path.is_absolute() && !search_project {
+        // A path into the project names a file the repository ships, however
+        // it is spelled. The trust record hashes that file, so a later commit
+        // that replaces it makes the project stale and lands here.
+        if !search_project && is_inside(&found, project_root) {
             return Err(untrusted(&found));
         }
         return Ok(Some(found));
@@ -129,16 +132,7 @@ fn discover(
         format!("{entry}.dll")
     };
 
-    // The directories inside the project, searched first when it is trusted
-    // and not at all when it is not. A relative probing path is one of them.
-    let mut project_roots = Vec::new();
-    for configured in assembly_probing_paths {
-        if !configured.is_absolute() {
-            project_roots.push(project_root.join(configured));
-        }
-    }
-    project_roots.push(project_root.join(".netpackages"));
-    project_roots.push(project_root.join("packages"));
+    let project_roots = project_search_roots(project_root, assembly_probing_paths);
 
     // Explicit probing paths have highest priority and are searched in the
     // order configured by the user.
@@ -211,6 +205,56 @@ fn discover(
     }
 
     Ok(None)
+}
+
+/// The directories inside the project that discovery searches for a bare
+/// analyzer name: each relative probing path, then `.netpackages` and
+/// `packages`. They are searched first when the project is trusted and not at
+/// all when it is not.
+fn project_search_roots(project_root: &Path, assembly_probing_paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = assembly_probing_paths
+        .iter()
+        .filter(|configured| !configured.is_absolute())
+        .map(|configured| project_root.join(configured))
+        .collect();
+    roots.push(project_root.join(".netpackages"));
+    roots.push(project_root.join("packages"));
+    roots
+}
+
+/// The file inside the project a bare analyzer name would resolve to when the
+/// project is trusted, for the trust record to hash.
+pub(crate) fn find_in_project(
+    entry: &str,
+    project_root: &Path,
+    assembly_probing_paths: &[PathBuf],
+) -> Option<PathBuf> {
+    let entry = entry.trim();
+    if entry.is_empty()
+        || is_builtin_analyzer(entry)
+        || Path::new(entry).is_absolute()
+        || entry.contains(['/', '\\'])
+    {
+        return None;
+    }
+    let file_name = if entry
+        .rsplit_once('.')
+        .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("dll"))
+    {
+        entry.to_string()
+    } else {
+        format!("{entry}.dll")
+    };
+    project_search_roots(project_root, assembly_probing_paths)
+        .iter()
+        .find_map(|root| find_best_below(root, &file_name, false).ok().flatten())
+}
+
+fn is_inside(path: &Path, project_root: &Path) -> bool {
+    let root = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf());
+    path.starts_with(&root)
 }
 
 fn canonical_file(path: &Path) -> Option<PathBuf> {
@@ -538,17 +582,39 @@ mod tests {
         );
     }
 
-    /// An absolute path is the user's own choice, wherever it points.
+    /// An absolute path outside the project is the user's own choice.
     #[test]
-    fn an_absolute_analyzer_path_resolves_without_trust() {
+    fn an_absolute_analyzer_path_outside_the_project_resolves_without_trust() {
         let project = tempfile::tempdir().unwrap();
-        let dll = project.path().join("Absolute.dll");
+        let elsewhere = tempfile::tempdir().unwrap();
+        let dll = elsewhere.path().join("Absolute.dll");
         std::fs::write(&dll, b"analyzer").unwrap();
 
         let found = discover(dll.to_str().unwrap(), project.path(), &[], false)
             .unwrap()
             .unwrap();
         assert_eq!(found, dll.canonicalize().unwrap());
+    }
+
+    /// An absolute path into the project still names the repository's file,
+    /// so it needs trust the way a relative one does.
+    #[test]
+    fn an_absolute_analyzer_path_into_the_project_needs_trust() {
+        let project = tempfile::tempdir().unwrap();
+        let dll = project.path().join("tools/TeamCop.dll");
+        std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
+        std::fs::write(&dll, b"analyzer").unwrap();
+
+        let error = discover(dll.to_str().unwrap(), project.path(), &[], false)
+            .expect_err("the file is the repository's");
+        assert!(
+            matches!(
+                error,
+                AnalyzerDiscoveryError::UntrustedProjectAnalyzer { .. }
+            ),
+            "{error}"
+        );
+        assert!(discover(dll.to_str().unwrap(), project.path(), &[], true).is_ok());
     }
 
     /// `read_dir` returns entries in whatever order the filesystem holds them,

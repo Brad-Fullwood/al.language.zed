@@ -348,10 +348,47 @@ fn read_repository(project_root: &Path) -> Result<(AlConfig, RepositoryAsk), Con
             });
         }
         ask.absorb(privileged_changes(&before, &config, project_root, relative));
-        ask.absorb(executable_path_privileges(&value, relative));
+        ask.absorb(executable_path_privileges(&value, relative, project_root));
     }
     ask.settings.extend(launch_privileges(project_root));
+    ask.settings
+        .extend(project_analyzer_copies(&config, project_root));
     Ok((config, ask))
+}
+
+/// The DLL inside the project each configured analyzer name resolves to when
+/// the project is trusted, with its hash.
+///
+/// Trust is what lets a name, the user's or the repository's, resolve to a
+/// file the repository ships under `.netpackages`, `packages` or a relative
+/// probing path. Recording the file's hash means a commit that replaces it
+/// makes the record stale, rather than loading new code under the old record.
+fn project_analyzer_copies(config: &AlConfig, project_root: &Path) -> Vec<PrivilegedSetting> {
+    let root = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf());
+    config
+        .code_analyzers
+        .iter()
+        .filter_map(|entry| {
+            let found = crate::analyzers::find_in_project(
+                entry,
+                project_root,
+                &config.assembly_probing_paths,
+            )?;
+            let relative = found
+                .strip_prefix(&root)
+                .unwrap_or(&found)
+                .display()
+                .to_string();
+            let contents = file_sha256(&found).unwrap_or_else(|| "unreadable".to_string());
+            Some(PrivilegedSetting::new(
+                "al.codeAnalyzers",
+                &format!("{} resolves to {relative} ({contents})", entry.trim()),
+                relative,
+            ))
+        })
+        .collect()
 }
 
 /// The trust state of `project_root` for the values `ask` holds.
@@ -429,7 +466,7 @@ pub fn deny_privileged(config: &mut AlConfig) {
 /// after the last request or never while an editor keeps it busy. Revocation
 /// is the user saying stop, so it has to take effect.
 ///
-/// This is four `stat` calls, so it can run per request. A change in any of
+/// This is six `stat` calls, so it can run per request. A change in any of
 /// them means the decision has to be made again.
 #[must_use]
 pub fn inputs_fingerprint(project_root: &Path) -> u64 {
@@ -466,6 +503,18 @@ pub fn inputs_fingerprint(project_root: &Path) -> u64 {
             .ok()
             .flatten()
             .map(|file| file.path),
+    );
+    // The `dotnet` host this process runs. One inside the project is hashed
+    // into the record, so replacing it has to trigger the decision again.
+    stamp(
+        std::env::var_os(crate::toolchain::DOTNET_PATH_ENV).map(|configured| {
+            let configured = PathBuf::from(configured);
+            if configured.is_absolute() {
+                configured
+            } else {
+                project_root.join(configured)
+            }
+        }),
     );
 
     let digest = hasher.finalize();
@@ -578,6 +627,88 @@ fn render_paths(paths: &[PathBuf]) -> String {
         .join(", ")
 }
 
+/// `value` with what it names folded in, when it is a path into the project.
+///
+/// A path in a settings file names a file, and the file is what runs. The
+/// record used to cover the path text alone, so a later commit that replaced
+/// `tools/TeamCop.dll`, or a `dotnet` shipped in the tree, kept the record
+/// valid while the code under it changed. A path outside the project is the
+/// user's machine and stays as written.
+fn with_project_contents(value: &str, project_root: &Path) -> String {
+    let path = Path::new(value.trim());
+    let is_path = path.is_absolute() || value.contains(['/', '\\']);
+    if !is_path || !stays_inside_project(path, project_root) {
+        return value.to_string();
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project_root.join(path)
+    };
+    let contents = match std::fs::metadata(&absolute) {
+        Ok(metadata) if metadata.is_file() => {
+            file_sha256(&absolute).unwrap_or_else(|| "unreadable".to_string())
+        }
+        Ok(metadata) if metadata.is_dir() => dll_tree_sha256(&absolute),
+        _ => "not present".to_string(),
+    };
+    format!("{value} ({contents})")
+}
+
+/// `sha256:<hex>` of a file's bytes.
+fn file_sha256(path: &Path) -> Option<String> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).ok()?;
+    Some(format!("sha256:{:x}", hasher.finalize()))
+}
+
+/// The most entries a probing directory is walked for, the same order of
+/// limit analyzer discovery applies.
+const MAX_HASHED_ENTRIES: usize = 50_000;
+
+/// One hash over every `.dll` below `dir` that analyzer discovery could pick,
+/// by relative path and content, with the count.
+fn dll_tree_sha256(dir: &Path) -> String {
+    let mut files = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    let mut inspected = 0usize;
+    while let Some(directory) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            inspected += 1;
+            if inspected > MAX_HASHED_ENTRIES {
+                return "too many files to hash".to_string();
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if file_type.is_dir() {
+                stack.push(path);
+            } else if file_type.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
+            {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    let mut hasher = Sha256::new();
+    for file in &files {
+        let relative = file.strip_prefix(dir).unwrap_or(file);
+        hasher.update(relative.as_os_str().as_encoded_bytes());
+        hasher.update([0u8]);
+        hasher.update(file_sha256(file).unwrap_or_default().as_bytes());
+        hasher.update([0u8]);
+    }
+    format!("{} .dll files, sha256:{:x}", files.len(), hasher.finalize())
+}
+
 /// The privileged values `candidate` gained over `base`.
 fn privileged_changes(
     base: &AlConfig,
@@ -599,7 +730,12 @@ fn privileged_changes(
         .cloned()
         .collect();
     if !ask.analyzers.is_empty() {
-        let value = ask.analyzers.join(", ");
+        let value = ask
+            .analyzers
+            .iter()
+            .map(|entry| with_project_contents(entry, project_root))
+            .collect::<Vec<_>>()
+            .join(", ");
         record(&mut ask, "al.codeAnalyzers", value);
     }
 
@@ -633,7 +769,12 @@ fn privileged_changes(
         .cloned()
         .collect();
     if !ask.assembly_probing_paths.is_empty() {
-        let value = render_paths(&ask.assembly_probing_paths);
+        let value = ask
+            .assembly_probing_paths
+            .iter()
+            .map(|path| with_project_contents(&path.display().to_string(), project_root))
+            .collect::<Vec<_>>()
+            .join(", ");
         record(&mut ask, "al.assemblyProbingPaths", value);
     }
 
@@ -917,7 +1058,11 @@ pub fn authorize_cached_credential(
 /// because it becomes the `AL_DOTNET_PATH` environment entry, and `binary.path`
 /// is Zed's own key. Both name a program to run, so both are read straight from
 /// the file.
-fn executable_path_privileges(value: &serde_json::Value, source: &str) -> RepositoryAsk {
+fn executable_path_privileges(
+    value: &serde_json::Value,
+    source: &str,
+    project_root: &Path,
+) -> RepositoryAsk {
     let mut ask = RepositoryAsk::default();
     let settings = value
         .pointer("/lsp/al-lsp/settings")
@@ -940,7 +1085,11 @@ fn executable_path_privileges(value: &serde_json::Value, source: &str) -> Reposi
             continue;
         }
         ask.executable_paths.push(path.to_string());
-        ask.settings.push(PrivilegedSetting::new(key, path, source));
+        ask.settings.push(PrivilegedSetting::new(
+            key,
+            &with_project_contents(path, project_root),
+            source,
+        ));
     }
 
     // The command line, the environment and the initialization options each
@@ -2074,6 +2223,116 @@ mod tests {
             Ok("/usr/bin/dotnet")
         );
         std::env::remove_var(crate::toolchain::DOTNET_PATH_ENV);
+    }
+
+    /// A project trusted while `tools/` held one binary must not stay trusted
+    /// once a commit replaces it: the record covers the file, not its name.
+    fn assert_a_replaced_file_makes_the_record_stale(settings: &str, file: &str) {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings(settings);
+        let path = project.path().join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"reviewed build").unwrap();
+        let granted = grant(project.path()).unwrap();
+        assert!(
+            granted
+                .privileged
+                .iter()
+                .any(|setting| setting.display_line().contains("sha256:")),
+            "trust --show must print the hash it records: {:?}",
+            granted.privileged
+        );
+        assert_eq!(decide(project.path()).unwrap().state, TrustState::Trusted);
+
+        std::fs::write(&path, b"replaced by a later commit").unwrap();
+
+        assert_eq!(
+            decide(project.path()).unwrap().state,
+            TrustState::Stale,
+            "{file} changed under a record that still matched"
+        );
+    }
+
+    #[test]
+    fn a_replaced_analyzer_file_makes_the_record_stale() {
+        assert_a_replaced_file_makes_the_record_stale(
+            r#"{"al.codeAnalyzers": ["${CodeCop}", "./tools/TeamCop.dll"]}"#,
+            "tools/TeamCop.dll",
+        );
+    }
+
+    #[test]
+    fn a_replaced_dotnet_in_the_tree_makes_the_record_stale() {
+        assert_a_replaced_file_makes_the_record_stale(
+            r#"{"al.dotnetPath": "./tools/dotnet"}"#,
+            "tools/dotnet",
+        );
+    }
+
+    #[test]
+    fn a_replaced_dll_under_a_probing_path_makes_the_record_stale() {
+        assert_a_replaced_file_makes_the_record_stale(
+            r#"{"al.assemblyProbingPaths": ["./tools"]}"#,
+            "tools/net8.0/Helper.dll",
+        );
+    }
+
+    /// Trust is what lets a bare name resolve to a DLL the repository ships
+    /// in `packages/`, so that DLL is part of the record too.
+    #[test]
+    fn a_replaced_project_copy_of_a_named_analyzer_makes_the_record_stale() {
+        assert_a_replaced_file_makes_the_record_stale(
+            r#"{"al.codeAnalyzers": ["TeamCop"]}"#,
+            "packages/teamcop/1.0.0/TeamCop.dll",
+        );
+    }
+
+    /// A file that appears after the project was trusted changes the record
+    /// as much as one that is replaced.
+    #[test]
+    fn an_analyzer_file_added_after_trust_makes_the_record_stale() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings(r#"{"al.codeAnalyzers": ["./tools/TeamCop.dll"]}"#);
+        grant(project.path()).unwrap();
+
+        std::fs::create_dir_all(project.path().join("tools")).unwrap();
+        std::fs::write(project.path().join("tools/TeamCop.dll"), b"new").unwrap();
+
+        assert_eq!(decide(project.path()).unwrap().state, TrustState::Stale);
+    }
+
+    /// The daemon re-decides only when this moves, so a `dotnet` host in the
+    /// tree that is replaced has to move it.
+    #[test]
+    fn a_replaced_dotnet_host_moves_the_inputs_fingerprint() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings(r#"{"al.dotnetPath": "./tools/dotnet"}"#);
+        std::fs::create_dir_all(project.path().join("tools")).unwrap();
+        std::fs::write(project.path().join("tools/dotnet"), b"reviewed").unwrap();
+        std::env::set_var(crate::toolchain::DOTNET_PATH_ENV, "./tools/dotnet");
+
+        let before = inputs_fingerprint(project.path());
+        std::fs::write(project.path().join("tools/dotnet"), b"replaced host").unwrap();
+        let after = inputs_fingerprint(project.path());
+        std::env::remove_var(crate::toolchain::DOTNET_PATH_ENV);
+
+        assert_ne!(before, after);
+    }
+
+    /// A path outside the project is the user's machine, so only its text is
+    /// recorded.
+    #[test]
+    fn a_path_outside_the_project_is_recorded_as_written() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings(r#"{"al.dotnetPath": "/usr/bin/dotnet"}"#);
+
+        let decision = decide(project.path()).unwrap();
+        let dotnet = decision
+            .privileged
+            .iter()
+            .find(|setting| setting.key == "al.dotnetPath")
+            .unwrap();
+        assert_eq!(dotnet.value, "/usr/bin/dotnet");
     }
 
     #[test]

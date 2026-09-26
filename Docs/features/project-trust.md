@@ -99,8 +99,8 @@ refused, so the caller spells out which project's values it means. Nothing in `p
 `scripts/` runs this command, and nothing should.
 
 A revoke takes effect on the next request. The daemon fingerprints the trust store, the
-user settings file, both repository settings files and the launch file before each request,
-five `stat` calls, and re-evaluates when any of them moved. It used to decide once at
+user settings file, both repository settings files, the launch file and the `dotnet` host it
+runs before each request, six `stat` calls, and re-evaluates when any of them moved. It used to decide once at
 startup and keep that configuration until it exited, which is up to `AL_DAEMON_IDLE_SECS`
 after the last request and never while an editor keeps it busy.
 
@@ -109,6 +109,14 @@ outside every repository, mode 0600, written through a temp file and a rename. E
 holds the canonical project root and a SHA-256 of the privileged values. Change one of those
 values in the repository and the digest stops matching, so the settings are ignored again
 until you run `trust` a second time. `al-explorer trust --show` reports that as `stale`.
+
+A privileged value that is a path into the project names a file the repository ships, and
+the file is what runs. For an analyzer path, `al.dotnetPath`, `binary.path` and each
+analyzer name that resolves to a DLL under `.netpackages`, `packages` or a relative probing
+path, the recorded value carries the file's SHA-256, and for a probing directory inside the
+project one hash over every `.dll` below it. `trust --show` prints those hashes. A commit
+that replaces one of those files, or adds one where the record saw none, makes the record
+`stale`. A path outside the project is the user's machine and is recorded as written.
 
 ## Settings you wrote yourself
 
