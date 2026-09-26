@@ -1,14 +1,13 @@
 # Native Test Runtime
 
 **Modules:** `crates/al-runtime/src/` (interpreter), `crates/al-test/src/` (routing/execution),
-`crates/al-snapshot/src/`. **Status:** 🟢 native execution shipped for pure logic and the supported
-workspace-record subset. Platform-dependent behavior deliberately falls back to live BC
+`crates/al-snapshot/src/`. **Status:** 🟢 pure logic and the supported workspace-record subset run
+natively. Platform-dependent behavior runs on live BC.
 
-This project includes a native AL interpreter that runs a supported subset of AL test codeunits with
-no .NET runtime and no live Business Central server. It is deliberately not a replacement for BC:
-tests that need platform semantics are routed to the authoritative live runtime.
+A native AL interpreter runs a supported subset of AL test codeunits with no .NET runtime and no
+live Business Central server. Tests that need platform semantics are routed to live BC.
 
-## The big picture
+## Pipeline
 
 ```
 discover [Test] tests ──► router classifies each test ──► backend executes ──► JUnit/Cobertura + history
@@ -30,9 +29,9 @@ call depth at 512 frames and statement and expression nesting at 2560 levels eac
 cancellation and the deadline in loops. A test that exceeds the call cap fails with a message saying
 the limit belongs to the local runner and suggesting a live BC run.
 
-**Values (`interpreter/value.rs`):** Integer, BigInteger, Decimal, Boolean, Char, Text, Code.
-Date/Time/DateTime/Duration. Guid, Option, Variant. Record, RecordRef, Codeunit, Array, List, Dict,
-Blob. Plus Null/Empty/ErrorInfo. Variant ordering is stable because values can be map keys.
+**Values (`interpreter/value.rs`):** Integer, BigInteger, Decimal, Boolean, Char, Text, Code,
+Date/Time/DateTime/Duration, Guid, Option, Variant, Record, RecordRef, Codeunit, Array, List, Dict,
+Blob, and Null/Empty/ErrorInfo. Variant ordering is stable because values can be map keys.
 
 **Statements (`interpreter/eval_stmt.rs`):** blocks, `if`/`else`, `while`, `for` (up/down), `foreach`,
 `repeat until`, `case of`, normal and compound assignment, expression statements, `exit`, `break`,
@@ -83,7 +82,7 @@ Randomness is seedable. Thread-local state is reset between test methods.
 
 ## Workspace-record runtime
 
-`Value::Record` handles are wired through `interpreter/records.rs` to the BTreeMap-backed
+`Value::Record` handles connect through `interpreter/records.rs` to the BTreeMap-backed
 `mock::MockRecord` store. Record variables for the same table share a physical table inside one
 test, while each variable keeps its own filter set, iteration cursor, and field buffer (BC's
 per-variable view semantics). The complete store is discarded before the next test. A temporary
@@ -92,8 +91,8 @@ copies the rows it holds.
 
 Supported behavior:
 
-- workspace table metadata supplies field numbers, field types, and primary keys. Never-assigned
-  fields read back as their typed zero value (0 / '' / false / 0D) and match zero filters.
+- Workspace table metadata supplies field numbers, field types, and primary keys. Fields never
+  assigned read back as their typed zero value (0 / '' / false / 0D) and match zero filters.
 - Init/Get/Insert/Modify/Delete, field reads/writes, Find/FindSet/FindFirst/FindLast/Next, with
   BC statement/expression semantics (a statement-position `Get`/`Find*` miss raises, `if Rec.Get`
   yields false, and `if Rec.Insert() then` takes the false branch on a duplicate key).
@@ -109,8 +108,8 @@ Supported behavior:
   CONST/FIELD/FILTER clauses (including Boolean CONST values), and CalcSums, which totals each
   named field over the rows the current filters select.
 
-PureLogic and WithRecords are enforced runtime modes. If routing misses a record access, PureLogic
-fails with a capability error instead of silently granting database behavior.
+PureLogic and WithRecords are runtime modes the interpreter enforces. If routing misses a record
+access, PureLogic fails with a capability error instead of running it against the record store.
 
 ## Orchestration (`crates/al-test`)
 
@@ -121,10 +120,10 @@ fails with a capability error instead of silently granting database behavior.
   trigger, interface, and event graph. Typed collection calls are not mistaken for record calls.
   Supported workspace records select InterpRecord. Dependency bodies without native stubs and all
   platform-bound behavior select LiveBc with file/line reasons.
-- **Codeunit integrity:** a codeunit runs locally only when every discovered test is local. Mixed
+- **Whole codeunits:** a codeunit runs locally only when every discovered test is local. Mixed
   Interp/InterpRecord codeunits use WithRecords. Any LiveBc method keeps the whole codeunit on BC.
 - **Entry points:** single-codeunit, batch, automatic/MCP, and TUI runs use the same router.
-- **Backends:** InterpMode executes real bodies with per-test deadlines and parallel codeunit support.
+- **Backends:** InterpMode executes the test bodies with per-test deadlines and parallel codeunit support.
   LiveBcMode calls `POST /dev/tests/{codeunit}/run` with basic/bearer/Windows authentication.
 - **Lifecycle/handlers:** initialize, test, and cleanup share one per-test record context. Cleanup
   always runs. MessageHandler, ConfirmHandler, StrMenuHandler, and HyperlinkHandler execute locally
@@ -140,11 +139,11 @@ fails with a capability error instead of silently granting database behavior.
 `queries/test_coverage.rs` provides conservative qualified, transitive call-graph coverage across
 direct calls, receiver-resolved member calls, events/triggers, `Codeunit.Run`, and interface
 dispatch. Same-named objects are tracked independently. An overload target that cannot be selected
-unambiguously is returned in `unresolvedCalls` and is not credited. Interpreter runs can additionally
+unambiguously is returned in `unresolvedCalls` and is not credited. Interpreter runs can also
 collect dynamic executed-statement and control-flow path coverage with `--coverage`: IF sides,
 individual CASE arms plus ELSE/no-match, loop entry/natural-exit decisions, and condition-level
 MC/DC for compound IF/WHILE/REPEAT decisions. Condition vectors and outcomes come from the original
-evaluation, so coverage never repeats calls or other side effects. Daemon JSON retains the observed
+evaluation, so coverage does not repeat calls or other side effects. Daemon JSON retains the observed
 vectors, and Cobertura includes per-condition MC/DC evidence and totals.
 
 Mutation testing targets executable bodies in test code and transitively covered production files.
@@ -152,7 +151,7 @@ It covers conditional boundaries and whole-condition negation, comparison/logica
 operator swaps, unary `not` removal, Boolean/text literals, and checked integer ±1. Mutants execute
 against the affected tests on both local interpreter tiers and run concurrently with stable result
 ordering when `--parallel` is set. Every survivor carries a reason. Mutants with no locally runnable
-affected test remain visible but are explicitly unscored.
+affected test are listed but not scored.
 
 ## Microsoft comparison
 
@@ -190,11 +189,11 @@ contain only selected methods and a filter that matches nothing does not contact
 MCP `al_runtests` maps to `tests.run_auto`: pure logic and supported workspace records run locally.
 Only the remaining tests require a launch configuration and live BC. Its result includes a
 `routing` entry per test method with the classifier decision, the actual codeunit backend,
-`runsLocally`, a concise execution note, and source-backed reasons. If live-BC configuration is
+`runsLocally`, a short execution note, and reasons with their source locations. If live-BC configuration is
 missing, the MCP error still includes the classifications so an agent can separate runnable local
 tests from blocked server tests.
 
-## Honest limitations
+## Limitations
 
 - Record execution requires workspace table definitions. Tables declaring triggers, FlowFilters,
   Linked formulas, or permission behavior are detected before execution and routed to live BC.
@@ -207,7 +206,7 @@ tests from blocked server tests.
   symbols do not provide executable source through the interpreter's source catalog.
 - Global functions outside `supports_global_builtin` route the test to live BC.
   `Format` supports the default and XML (9) renderings plus the length argument. Custom
-  `<...>` format strings fail explicitly rather than being silently ignored.
+  `<...>` format strings fail with an error instead of being ignored.
 - `MaxStrLen` is exact for bounded `Text[N]` and `Code[N]` variables and parameters. Unbounded text
   and computed expressions have no finite declaration capacity in the native value model.
 - Live capture composes the native debug hub and live test runner, records explicitly configured
@@ -218,11 +217,11 @@ tests from blocked server tests.
   than the debug server's session-local breakpoint IDs. Validation and file-to-file diff remain
   BC-free.
 
-Live BC fallback is a permanent correctness boundary, not a failure of the native runner: the project
-does not guess platform behavior it cannot reproduce safely.
+Routing to live BC is by design: the native runner does not guess platform behavior it cannot
+reproduce exactly.
 
-`make live-bc-contracts` verifies that boundary against an explicitly supplied
-tenant/environment and the repository-owned test fixture (or a complete custom
-project contract). It requires the CLI to report a `liveBc` route, executes the
-exact method through BC, and exercises snapshot capture, validation, replay,
-and diff. Its ignored harness test is never counted as a self-contained pass.
+`make live-bc-contracts` checks that routing against a tenant and environment you supply and the
+repository's test fixture (or a complete custom project contract). It requires the CLI to report a
+`liveBc` route, runs the exact method through BC, and exercises snapshot capture, validation,
+replay, and diff. Its harness test is marked ignored, so a plain `cargo test` run does not count it
+as a pass.
