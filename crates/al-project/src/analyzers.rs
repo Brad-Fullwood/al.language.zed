@@ -62,27 +62,27 @@ pub fn builtin_analyzer_path<'a>(
     name: &str,
 ) -> Option<&'a Path> {
     let path = match builtin_analyzer(name)? {
-        Builtin::CodeCop => &toolchain.code_cop,
-        Builtin::AppSourceCop => &toolchain.app_source_cop,
-        Builtin::UiCop => &toolchain.ui_cop,
-        Builtin::PerTenantCop => &toolchain.per_tenant_cop,
+        BuiltinCop::Code => &toolchain.code_cop,
+        BuiltinCop::AppSource => &toolchain.app_source_cop,
+        BuiltinCop::Ui => &toolchain.ui_cop,
+        BuiltinCop::PerTenant => &toolchain.per_tenant_cop,
     };
     Some(path)
 }
 
-enum Builtin {
-    CodeCop,
-    AppSourceCop,
-    UiCop,
-    PerTenantCop,
+enum BuiltinCop {
+    Code,
+    AppSource,
+    Ui,
+    PerTenant,
 }
 
-fn builtin_analyzer(name: &str) -> Option<Builtin> {
+fn builtin_analyzer(name: &str) -> Option<BuiltinCop> {
     match analyzer_name(name.trim()).to_ascii_lowercase().as_str() {
-        "codecop" => Some(Builtin::CodeCop),
-        "appsourcecop" => Some(Builtin::AppSourceCop),
-        "uicop" => Some(Builtin::UiCop),
-        "pertenantcop" | "pertenantextensioncop" => Some(Builtin::PerTenantCop),
+        "codecop" => Some(BuiltinCop::Code),
+        "appsourcecop" => Some(BuiltinCop::AppSource),
+        "uicop" => Some(BuiltinCop::Ui),
+        "pertenantcop" | "pertenantextensioncop" => Some(BuiltinCop::PerTenant),
         _ => None,
     }
 }
