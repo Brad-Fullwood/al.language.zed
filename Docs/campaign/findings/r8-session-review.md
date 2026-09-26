@@ -111,7 +111,7 @@ contains 1a081fbe..aa01cb97.
 - severity: medium
 - scenario: the JsonObject.SelectToken page on Learn shows the query `$.company.employees[?(@.id=='John')].salary` in its example. With `{"company":{"employees":[{"id":"Marcy","salary":8.95},{"id":"John","salary":7}]}}` BC returns 7. Locally the call fails with "SelectToken: '?(@.id=='John')' is not an array index in path ...". `Obj.ReadFrom('{"a":{"b":{"c":"deep"}}}'); if not Obj.SelectToken('$..c', Token) then exit('not found');` returns `deep` on BC (one match) and `not found` locally, with no error. Confirmed with scratch tests, and the router routes the filter test `Interp`.
 - fix: have `select` return an error for any step it does not model (`..`, `*`, `[?(...)]`, `[a,b]`, slices), and have the router send a `SelectToken` whose path is a literal with such a step, or is not a literal, to live BC.
-- status: open
+- status: fixed 0257c7df. `SelectToken` follows `[?(...)]` filters (comparisons, existence, `&&`, `||`, `@` and `$` paths), `..` and `*`, and fails unless exactly one token matches, as the Learn page says. A slice, a union, a regular expression, `!` or a grouped filter is refused with an error naming the step, and the router sends a literal path with such a step to live BC. A path built at run time stays local, so Microsoft's example runs here. Pinned by `selecttoken_follows_filters_and_recursive_descent`, `paths_the_runtime_follows_and_the_steps_it_refuses` and the router test `selecttoken_with_a_step_the_runtime_does_not_follow_routes_to_live_bc`.
 
 ### [R8-JSON-4] the JsonObject typed getters ignore `DefaultIfNotFound`
 - where: crates/al-runtime/src/interpreter/json.rs:614-625 (the `get*` arm reads the key only and errors when it is missing)
