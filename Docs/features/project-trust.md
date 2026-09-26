@@ -93,10 +93,22 @@ while the process still has a controlling terminal, and a pipe is what a task, a
 was not enough on its own: the command used to write the record with stdin closed and no
 terminal, so anything running as the user granted trust in one call.
 
-A scripted install whose settings you have read passes `--yes` together with
-`--root <project>`. `--yes` alone is refused, and `--root` naming a different path is
-refused, so the caller spells out which project's values it means. Nothing in `plugin/` or
-`scripts/` runs this command, and nothing should.
+A CI job has no terminal, so it answers with flags: `--yes --root <project> --digest
+<sha256>`. The digest is the one `al-explorer trust --show` printed when a person read the
+values, and it goes in the CI configuration. `--yes` without `--root` or `--digest` is
+refused, `--root` naming a different path is refused, and a digest the current values no
+longer match is refused, so a commit that changes a privileged value fails the job rather
+than being trusted by it. `--yes --root` used to record whatever the repository held at that
+moment.
+
+The refusal a call with no terminal receives does not name these flags. That call is by
+construction a script or an agent, and the refusal said how to make the same call succeed.
+The flags are a step a person puts into a CI configuration, not an answer to a refusal. Nothing
+in `plugin/` or `scripts/` runs this command, and nothing should.
+
+This is not a boundary against a program that already runs as the user: such a program can
+write `trusted-projects.json` itself. What the design controls is that no surface an agent
+reaches (the daemon, the MCP tools, a refusal, a skill) grants trust or tells it how to.
 
 A revoke takes effect on the next request. The daemon fingerprints the trust store, the
 user settings file, both repository settings files, the launch file and the `dotnet` host it

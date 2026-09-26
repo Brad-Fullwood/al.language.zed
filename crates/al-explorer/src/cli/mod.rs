@@ -383,12 +383,16 @@ pub fn run(cli: Cli) -> ExitCode {
             revoke,
             yes,
             root,
+            digest,
         } => commands::trust::cmd_trust(
             project.as_deref(),
             show,
             revoke,
-            yes,
-            root.as_deref(),
+            commands::trust::Unattended {
+                yes,
+                root: root.as_deref(),
+                digest: digest.as_deref(),
+            },
             cli.json,
         ),
     }

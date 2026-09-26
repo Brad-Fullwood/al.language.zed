@@ -827,7 +827,10 @@ Examples:
   al-explorer trust --show
   al-explorer trust
   al-explorer trust --revoke ~/src/SomeApp
-  al-explorer trust --yes --root ~/src/SomeApp   # scripted install, no terminal
+
+A CI job a person set up passes --yes with --root and --digest. The digest is the
+one a person read with --show, so a commit that changes a privileged value fails the
+job instead of being trusted.
 
 See Docs/features/project-trust.md.")]
     Trust {
@@ -839,12 +842,15 @@ See Docs/features/project-trust.md.")]
         /// Remove this project from the trusted list
         #[arg(long)]
         revoke: bool,
-        /// Answer the confirmation. Needs --root naming the same project
-        #[arg(long, requires = "root", conflicts_with_all = ["show", "revoke"])]
+        /// Answer the confirmation, for CI. Needs --root and --digest
+        #[arg(long, requires_all = ["root", "digest"], conflicts_with_all = ["show", "revoke"])]
         yes: bool,
         /// The project --yes applies to, spelled out
         #[arg(long, value_name = "PATH")]
         root: Option<String>,
+        /// The digest --yes records, as `trust --show` printed it
+        #[arg(long, value_name = "SHA256")]
+        digest: Option<String>,
     },
 }
 
