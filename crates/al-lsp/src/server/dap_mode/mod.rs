@@ -530,9 +530,53 @@ fn patch_incoming(body: &[u8], counter: &AtomicI64) -> Vec<u8> {
     serde_json::to_vec(&msg).unwrap_or_else(|_| body.to_vec())
 }
 
+/// The workspace file declaring the object BC names by `(object_type,
+/// object_id)`, for the native debugger's stack frames.
+///
+/// A file can declare several objects; every one is searched, so a frame
+/// inside a codeunit declared after a table in the same file still maps to
+/// its source.
+pub fn native_dap_object_path(
+    file_index: &al_source::file_index::FileIndex,
+    object_type: i32,
+    object_id: i32,
+) -> Option<std::path::PathBuf> {
+    al_insight::calls::indexed_objects(file_index)
+        .into_iter()
+        .find(|(_, info)| {
+            al_dap::dap::native_dap::kind_to_object_type(&info.kind) == object_type
+                && info.id == Some(i64::from(object_id))
+        })
+        .map(|(path, _)| path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The frame's codeunit is the second object of its file; only each
+    /// file's first object was searched, so the frame had no source.
+    #[test]
+    fn native_dap_object_path_finds_the_second_object_of_a_file() {
+        let file_index = al_source::file_index::FileIndex::new();
+        let path = std::path::PathBuf::from("/proj/Posting.al");
+        file_index.add_file(
+            path.clone(),
+            "table 50200 \"Posting Buffer\" { }\n\ncodeunit 50100 \"Posting Mgt\" { }\n"
+                .to_string(),
+        );
+        let codeunit = al_dap::dap::native_dap::kind_to_object_type("codeunit");
+        let table = al_dap::dap::native_dap::kind_to_object_type("table");
+        assert_eq!(
+            native_dap_object_path(&file_index, codeunit, 50100),
+            Some(path.clone())
+        );
+        assert_eq!(
+            native_dap_object_path(&file_index, table, 50200),
+            Some(path)
+        );
+        assert_eq!(native_dap_object_path(&file_index, table, 50100), None);
+    }
 
     #[test]
     fn redacts_password_in_launch_arguments() {

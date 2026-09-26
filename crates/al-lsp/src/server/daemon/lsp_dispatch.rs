@@ -466,7 +466,7 @@ fn resolve_unique_kind_by_name(
         .filter(|e| !e.synthetic)
         .map(|e| e.kind)
         .collect();
-    for info in workspace.file_index.object_info.iter() {
+    for info in workspace_file_objects(workspace) {
         if !info.name.eq_ignore_ascii_case(name) {
             continue;
         }
@@ -595,12 +595,11 @@ pub(super) fn dispatch_object(
     let name_lower = name.to_lowercase();
     let kind_lower = kind.to_string().to_lowercase();
     let mut workspace_objects = Vec::new();
-    for entry in workspace.file_index.object_info.iter() {
-        let info = entry.value();
+    for info in workspace_file_objects(workspace) {
         if info.name.eq_ignore_ascii_case(&name_lower)
             && info.kind.eq_ignore_ascii_case(&kind_lower)
         {
-            match workspace_object_to_json(info) {
+            match workspace_object_to_json(&info) {
                 Ok(object) => workspace_objects.push(object),
                 Err(error) => {
                     return rpc_error(
@@ -806,7 +805,7 @@ fn member_signatures(object: &mut serde_json::Value) {
 /// both the symbol index and the workspace file index.
 ///
 /// Workspace objects are indexed in `workspace.symbols` (package `"workspace"`)
-/// AND in `file_index.object_info` (package `"(workspace)"`), so the naive
+/// AND in `file_index.object_infos` (package `"(workspace)"`), so the naive
 /// merge in `dispatch_search`/`dispatch_object`/`dispatch_by_id` listed each
 /// workspace object twice. Object IDs are unique across an
 /// app plus its dependencies, so `(kind, id, name)` identifies an object
@@ -835,6 +834,18 @@ fn dedup_objects_by_identity(objects: &mut Vec<serde_json::Value>) -> Result<(),
     }
     *objects = deduplicated;
     Ok(())
+}
+
+/// Every object the workspace's files declare, one row per object.
+///
+/// A file can declare several objects. `object_info` holds only a file's
+/// first, so a codeunit declared after a table in the same file was missing
+/// from `object`, `byId` and bare-name kind resolution.
+fn workspace_file_objects(workspace: &Workspace) -> Vec<al_source::file_index::CachedObjectInfo> {
+    al_insight::calls::indexed_objects(&workspace.file_index)
+        .into_iter()
+        .map(|(_, info)| info)
+        .collect()
 }
 
 /// Convert a workspace CachedObjectInfo to JSON matching SymbolEntry shape.
@@ -899,9 +910,8 @@ pub(super) fn dispatch_by_id(
     // dispatch_object.
     let kind_lower = kind.to_string().to_lowercase();
     let mut workspace_objects = Vec::new();
-    for entry in workspace.file_index.object_info.iter() {
-        let info = entry.value();
-        let (workspace_kind, workspace_id) = match workspace_object_identity(info) {
+    for info in workspace_file_objects(workspace) {
+        let (workspace_kind, workspace_id) = match workspace_object_identity(&info) {
             Ok(identity) => identity,
             Err(error) => {
                 return rpc_error(
@@ -915,7 +925,7 @@ pub(super) fn dispatch_by_id(
             && workspace_kind == kind
             && info.kind.eq_ignore_ascii_case(&kind_lower)
         {
-            match workspace_object_to_json(info) {
+            match workspace_object_to_json(&info) {
                 Ok(object) => workspace_objects.push(object),
                 Err(error) => {
                     return rpc_error(id, error_codes::INTERNAL_ERROR, &error);
@@ -1105,11 +1115,9 @@ pub(super) fn dispatch_subscribers(
 /// same-named package object because the workspace copy is the one a developer
 /// can change.
 fn package_of_object(workspace: &Workspace, object_name: &str) -> String {
-    if workspace
-        .file_index
-        .object_info
+    if workspace_file_objects(workspace)
         .iter()
-        .any(|entry| entry.value().name.eq_ignore_ascii_case(object_name))
+        .any(|info| info.name.eq_ignore_ascii_case(object_name))
     {
         return WORKSPACE_PACKAGE.to_string();
     }
@@ -1601,22 +1609,41 @@ mod tests {
         );
     }
 
+    fn cached_object(kind: &str, id: i64, name: &str) -> al_source::file_index::CachedObjectInfo {
+        al_source::file_index::CachedObjectInfo {
+            kind: kind.to_string(),
+            id: Some(id),
+            name: name.to_string(),
+            range: tree_sitter::Range {
+                start_byte: 0,
+                end_byte: 0,
+                start_point: tree_sitter::Point { row: 0, column: 0 },
+                end_point: tree_sitter::Point { row: 0, column: 0 },
+            },
+        }
+    }
+
+    /// Index `objects` as the objects of one file, the way the file index
+    /// does: `object_info` holds the first, `object_infos` all of them.
+    fn index_file_objects(
+        ws: &al_workspace::Workspace,
+        path: &str,
+        objects: Vec<al_source::file_index::CachedObjectInfo>,
+    ) {
+        let path = std::path::PathBuf::from(path);
+        ws.file_index
+            .object_info
+            .insert(path.clone(), objects[0].clone());
+        ws.file_index.object_infos.insert(path, objects);
+    }
+
     #[test]
     fn dispatch_by_id_finds_workspace_objects() {
         let ws = al_workspace::Workspace::new();
-        ws.file_index.object_info.insert(
-            std::path::PathBuf::from("/proj/src/HelloWorld.al"),
-            al_source::file_index::CachedObjectInfo {
-                kind: "codeunit".to_string(),
-                id: Some(50_100),
-                name: "Hello World".to_string(),
-                range: tree_sitter::Range {
-                    start_byte: 0,
-                    end_byte: 0,
-                    start_point: tree_sitter::Point { row: 0, column: 0 },
-                    end_point: tree_sitter::Point { row: 0, column: 0 },
-                },
-            },
+        index_file_objects(
+            &ws,
+            "/proj/src/HelloWorld.al",
+            vec![cached_object("codeunit", 50_100, "Hello World")],
         );
         let resp = dispatch_by_id(
             &ws,
@@ -1633,6 +1660,74 @@ mod tests {
         assert_eq!(arr.len(), 1, "exactly the one workspace object: {arr:?}");
         assert_eq!(arr[0]["name"], "Hello World");
         assert_eq!(arr[0]["package"], WORKSPACE_PACKAGE);
+    }
+
+    /// The codeunit is the second object of its file; the merge walked each
+    /// file's first object only and answered "No codeunit with id".
+    #[test]
+    fn dispatch_by_id_finds_the_second_object_of_a_file() {
+        let ws = al_workspace::Workspace::new();
+        index_file_objects(
+            &ws,
+            "/proj/src/Posting.al",
+            vec![
+                cached_object("table", 50_200, "Posting Buffer"),
+                cached_object("codeunit", 50_100, "Posting Mgt"),
+            ],
+        );
+        let resp = dispatch_by_id(
+            &ws,
+            1,
+            &serde_json::json!({"kind": "codeunit", "id": 50_100}),
+        );
+        assert!(resp.error.is_none(), "by-id errored: {:?}", resp.error);
+        let value = resp.result.expect("result");
+        let arr = value.as_array().expect("array result");
+        assert_eq!(arr.len(), 1, "exactly the codeunit: {arr:?}");
+        assert_eq!(arr[0]["name"], "Posting Mgt");
+    }
+
+    /// `object` without a kind resolves the kind from the name before the
+    /// symbol index holds workspace objects; a codeunit declared after a
+    /// table in the same file was "not found in any package".
+    #[test]
+    fn dispatch_object_resolves_the_kind_of_a_second_object_by_name() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/src/Posting.al"),
+            "table 50200 \"Posting Buffer\"\n{\n}\n\ncodeunit 50100 \"Posting Mgt\"\n{\n    procedure Post()\n    begin\n    end;\n}\n"
+                .to_string(),
+        );
+        let resp = dispatch_object(&ws, 1, &serde_json::json!({"name": "Posting Mgt"}));
+        assert!(resp.error.is_none(), "object errored: {:?}", resp.error);
+        let value = resp.result.expect("result");
+        let arr = value.as_array().expect("array result");
+        assert_eq!(arr.len(), 1, "exactly the codeunit: {arr:?}");
+        assert_eq!(arr[0]["kind"], "Codeunit");
+    }
+
+    /// A workspace object wins over a same-named package object. The check
+    /// read each file's first object, so a codeunit declared second in its
+    /// file was credited to the package.
+    #[test]
+    fn package_of_object_sees_the_second_object_of_a_workspace_file() {
+        let ws = al_workspace::Workspace::new();
+        ws.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Codeunit,
+            id: 80,
+            name: "Posting Mgt".to_string(),
+            package: "Base".to_string(),
+            ..Default::default()
+        }]);
+        index_file_objects(
+            &ws,
+            "/proj/src/Posting.al",
+            vec![
+                cached_object("table", 50_200, "Posting Buffer"),
+                cached_object("codeunit", 50_100, "Posting Mgt"),
+            ],
+        );
+        assert_eq!(package_of_object(&ws, "Posting Mgt"), WORKSPACE_PACKAGE);
     }
 
     #[test]

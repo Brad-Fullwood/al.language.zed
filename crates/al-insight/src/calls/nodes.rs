@@ -140,7 +140,7 @@ pub fn register_dependency_source_nodes(
 /// Every object declaration the file index holds, one row per object: a file
 /// declaring a table and then a codeunit yields both. Snapshotted so no
 /// shard lock is held while the trees are walked.
-pub(super) fn indexed_objects(
+pub fn indexed_objects(
     file_index: &FileIndex,
 ) -> Vec<(std::path::PathBuf, al_source::file_index::CachedObjectInfo)> {
     let mut objects: Vec<_> = file_index
@@ -164,7 +164,7 @@ pub(super) fn indexed_objects(
 
 /// The `object_declaration` node `info` was read from, or the root when the
 /// range no longer names one.
-pub(super) fn object_node<'t>(
+pub fn object_node<'t>(
     tree: &'t tree_sitter::Tree,
     info: &al_source::file_index::CachedObjectInfo,
 ) -> tree_sitter::Node<'t> {

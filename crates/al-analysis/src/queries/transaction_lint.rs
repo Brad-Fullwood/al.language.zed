@@ -367,11 +367,10 @@ fn collect_effects(
     insight: &InsightGraph,
     reportable: bool,
 ) -> Result<Vec<ProcedureEffects>, al_insight::calls::SourceGraphError> {
-    let snapshot: Vec<(PathBuf, al_source::file_index::CachedObjectInfo)> = file_index
-        .object_info
-        .iter()
-        .map(|entry| (entry.key().clone(), entry.value().clone()))
-        .collect();
+    // One row per object declaration: a file declaring a table and then a
+    // codeunit yields both, and each object's walk stays inside its own
+    // declaration so the codeunit's procedures are not credited to the table.
+    let snapshot = al_insight::calls::indexed_objects(file_index);
     let mut effects = Vec::new();
 
     for (path, object) in snapshot {
@@ -380,7 +379,8 @@ fn collect_effects(
         let (source, tree) = file_index.get_cached_parse(&path).ok_or_else(|| {
             al_insight::calls::SourceGraphError::MissingCachedParse { path: path.clone() }
         })?;
-        for sites in al_insight::calls::file_effect_sites(&tree, &source) {
+        let scope = al_insight::calls::object_node(&tree, &object);
+        for sites in al_insight::calls::node_effect_sites(scope, &tree, &source) {
             effects.extend(procedure_effects(
                 &path,
                 &object.name,
@@ -660,6 +660,43 @@ mod tests {
                 .iter()
                 .any(|d| d.code == COMMIT_AFTER_DATABASE_CHANGE),
             "expected commit diagnostic, got {diagnostics:?}"
+        );
+    }
+
+    /// A file declaring a table and then a codeunit: the codeunit's
+    /// procedures were looked up under the table's name, found no graph node,
+    /// and its commit went unreported.
+    #[test]
+    fn commit_in_the_second_object_of_a_file_is_reported() {
+        let ws = workspace(&[(
+            "Posting.al",
+            r#"table 50200 "Posting Buffer"
+{
+    fields
+    {
+        field(1; "Entry No."; Integer) { }
+    }
+}
+
+codeunit 50100 "Local"
+{
+    procedure Post()
+    var
+        Customer: Record Customer;
+    begin
+        Customer.Modify();
+        Commit();
+    end;
+}"#,
+        )]);
+        let diagnostics = transaction_lints(&ws).unwrap();
+        let diagnostic = diagnostics
+            .iter()
+            .find(|d| d.code == COMMIT_AFTER_DATABASE_CHANGE)
+            .unwrap_or_else(|| panic!("expected commit diagnostic, got {diagnostics:?}"));
+        assert_eq!(
+            diagnostic.range.start.line, 15,
+            "on the codeunit's Commit()"
         );
     }
 

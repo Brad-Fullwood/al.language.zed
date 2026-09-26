@@ -23,7 +23,8 @@ fn optional_non_empty_string<'a>(
     Ok(Some(value))
 }
 
-/// Return the absolute file path (and line 1) for a workspace object by name.
+/// Return the absolute file path and the 1-based declaration line of a
+/// workspace object by name.
 /// Used by al-explorer to open objects in Zed via the `zed://file/path:line:col` URL scheme.
 pub(in crate::server::daemon) fn dispatch_location(
     workspace: &Workspace,
@@ -66,21 +67,29 @@ pub(in crate::server::daemon) fn dispatch_location(
     let workspace_requested = package_filter.is_none_or(|package| {
         package.eq_ignore_ascii_case("workspace") || package.eq_ignore_ascii_case("(workspace)")
     });
+    // One candidate per declaration named `name`: a file can declare several
+    // objects, so the filters apply to that declaration, not to the file's
+    // first object.
     let mut workspace_candidates = if workspace_requested {
-        workspace
-            .file_index
-            .object_paths(name)
+        let mut paths = workspace.file_index.object_paths(name);
+        paths.sort();
+        paths.dedup();
+        paths
             .into_iter()
-            .filter(|path| {
+            .flat_map(|path| {
                 workspace
                     .file_index
-                    .object_info
-                    .get(path)
-                    .is_some_and(|info| {
-                        kind_filter
-                            .is_none_or(|kind| info.kind.eq_ignore_ascii_case(&kind.to_string()))
+                    .object_infos_in(&path)
+                    .into_iter()
+                    .filter(|info| {
+                        info.name.eq_ignore_ascii_case(name)
+                            && kind_filter.is_none_or(|kind| {
+                                info.kind.eq_ignore_ascii_case(&kind.to_string())
+                            })
                             && id_filter.is_none_or(|object_id| info.id == Some(object_id))
                     })
+                    .map(move |info| (path.clone(), info.range.start_point.row + 1))
+                    .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>()
     } else {
@@ -94,12 +103,12 @@ pub(in crate::server::daemon) fn dispatch_location(
             &format!("Location lookup for '{name}' is ambiguous; specify 'kind' and/or 'id'"),
         );
     }
-    if let Some(path) = workspace_candidates.first() {
+    if let Some((path, line)) = workspace_candidates.first() {
         return Response {
             id,
             result: Some(serde_json::json!({
                 "path": path.to_string_lossy(),
-                "line": 1,
+                "line": line,
                 "source_availability": al_symbols::SourceAvailability::WorkspaceSource,
             })),
             error: None,
@@ -461,6 +470,27 @@ mod tests {
             table.result.expect("location")["path"],
             "/project/Customer.Table.al"
         );
+    }
+
+    /// The codeunit is the second object of its file. The kind filter was
+    /// applied to the file's first object, a table, and the line was always 1.
+    #[test]
+    fn location_finds_the_second_object_of_a_file_and_its_line() {
+        let ws = empty_ws();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/project/Posting.al"),
+            "table 50200 \"Posting Buffer\"\n{\n}\n\ncodeunit 50100 \"Posting Mgt\"\n{\n}\n"
+                .to_string(),
+        );
+        let response = dispatch_location(
+            &ws,
+            6,
+            &serde_json::json!({ "name": "Posting Mgt", "kind": "codeunit" }),
+        );
+        assert!(response.error.is_none(), "{:?}", response.error);
+        let location = response.result.expect("location");
+        assert_eq!(location["path"], "/project/Posting.al");
+        assert_eq!(location["line"], 5, "the codeunit's declaration line");
     }
 
     #[test]

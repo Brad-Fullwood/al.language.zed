@@ -1517,6 +1517,27 @@ impl Default for Workspace {
     }
 }
 
+/// The `(kind, id, name)` of every object `path` declares, in document order,
+/// lowercased. A file can declare several objects; comparing only the first
+/// missed an edit that renamed or renumbered a later one.
+fn file_object_identities(
+    workspace: &Workspace,
+    path: &std::path::Path,
+) -> Vec<(String, Option<i64>, String)> {
+    workspace
+        .file_index
+        .object_infos_in(path)
+        .iter()
+        .map(|info| {
+            (
+                info.kind.to_ascii_lowercase(),
+                info.id,
+                info.name.to_ascii_lowercase(),
+            )
+        })
+        .collect()
+}
+
 /// Update workspace index and document cache when a file is opened or changed.
 ///
 /// Parses the text exactly once, warms the document cache with the resulting
@@ -1537,13 +1558,7 @@ pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
     // Capture procedure names before re-indexing to distinguish topology
     // changes from body-only edits.
     let topology_change = if let Ok(path) = uri.to_file_path() {
-        let previous_identity = workspace.file_index.object_info.get(&path).map(|info| {
-            (
-                info.kind.to_ascii_lowercase(),
-                info.id,
-                info.name.to_ascii_lowercase(),
-            )
-        });
+        let previous_identity = file_object_identities(workspace, &path);
         let prev_procs: std::collections::HashSet<String> = workspace
             .file_index
             .procedures_snapshot(&path)
@@ -1554,20 +1569,11 @@ pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
             .file_index
             .add_file_with_tree(path.clone(), text.to_string(), result.tree);
 
-        let new_identity = workspace.file_index.object_info.get(&path).map(|info| {
-            (
-                info.kind.to_ascii_lowercase(),
-                info.id,
-                info.name.to_ascii_lowercase(),
-            )
-        });
-        if let Some((_, _, name)) = &previous_identity {
+        let new_identity = file_object_identities(workspace, &path);
+        for (_, _, name) in previous_identity.iter().chain(&new_identity) {
             workspace.symbols.invalidate_composed(name);
         }
-        if let Some((_, _, name)) = &new_identity {
-            workspace.symbols.invalidate_composed(name);
-        }
-        if previous_identity.is_none() && new_identity.is_none() {
+        if previous_identity.is_empty() && new_identity.is_empty() {
             workspace.symbols.invalidate_all_composed();
         }
 
@@ -1673,10 +1679,13 @@ fn forget_vanished_workspace_objects(workspace: &Workspace) {
 /// caller (`al-lsp`), which has access to config and transport concerns.
 pub fn on_document_close(workspace: &Workspace, uri: &url::Url) {
     if let Ok(path) = uri.to_file_path() {
-        if let Some(info) = workspace.file_index.object_info.get(&path) {
-            workspace.symbols.invalidate_composed(&info.name);
-        } else {
+        let objects = workspace.file_index.object_infos_in(&path);
+        if objects.is_empty() {
             workspace.symbols.invalidate_all_composed();
+        }
+        // Every object the file declares, not only the first.
+        for info in &objects {
+            workspace.symbols.invalidate_composed(&info.name);
         }
     } else {
         workspace.symbols.invalidate_all_composed();
