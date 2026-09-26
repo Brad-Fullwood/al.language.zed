@@ -362,6 +362,19 @@ source index, the blog findings and security round 4 merged. Five more agents we
 parallel worktrees when this rescan ran (r7 review, `cargo mutants`, the ghost-race-2 fix, the
 persisted-index-2 follow-up, the profile-extension fix), none merged into this branch yet.
 
+### `desloppify scan` is unreliable in this worktree right now
+
+A fresh `desloppify scan` returned 7 files, 0 LOC, 1 dir twice in this session (16:56 and 16:58
+UTC), each time collapsing the mechanical dimensions to near-100% because almost nothing was
+scanned. `/tmp/desloppify-scan-agent11.log` and `-b.log` show the previous agent hit the same
+failure twice (12:38 and 12:43 UTC) before a third attempt (`-c.log`, 12:55 UTC) scanned the full
+425 files and produced the state this section is built on. Both broken runs happened while five
+other agents were working in sibling `.claude/worktrees/` directories that share this repository's
+`.git`, which is the likely trigger. Each bad scan was caught before commit and reverted with
+`git restore -- .desloppify/plan.json .desloppify/state-rust.json`. Do not trust a `desloppify
+scan` result in this repository without checking the file and LOC count in `desloppify status`
+first; a real scan of this codebase reports 425 files and about 271K LOC.
+
 ## All scores
 
 ### Headline
