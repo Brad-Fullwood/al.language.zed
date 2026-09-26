@@ -211,6 +211,7 @@ pub async fn run_daemon(
 
     initialize_daemon_workspace(&workspace, &project_root).await?;
     let _ = SCAN_ROOT.set(project_root.clone());
+    persist_dependency_source_summaries(&workspace, &project_root);
 
     // Warm the dependency AL source index and the graphs built on it now,
     // rather than inside whichever query needs them first. The build takes
@@ -1643,6 +1644,9 @@ pub(crate) fn project_state_with_wait<T>(
 
 /// Get document text without blocking the async runtime, loading it from disk
 /// when the document store does not already contain the file.
+// Err is a ready-to-send JSON-RPC `Response` (cold path); see require_project_root.
+// Clippy flags this one only with the semantic feature on.
+#[allow(clippy::result_large_err)]
 pub(crate) async fn require_document_text(
     workspace: &Workspace,
     uri: &url::Url,
@@ -2050,6 +2054,24 @@ pub(crate) fn set_test_project_root(workspace: &Workspace, root: &Path) {
 pub(crate) enum DaemonWorkspaceInitError {
     #[error(transparent)]
     Core(#[from] al_workspace::CoreInitError),
+}
+
+/// Keep the dependency source summaries of `project_root` in its data
+/// directory, so the next daemon or MCP server on the same packages loads
+/// them instead of parsing every embedded file again.
+pub(crate) fn persist_dependency_source_summaries(workspace: &Workspace, project_root: &Path) {
+    match al_workspace::SourceSummaryCache::for_project(project_root) {
+        Some(cache) => {
+            tracing::info!(
+                dir = %cache.dir().display(),
+                "daemon: dependency source summaries persist here"
+            );
+            workspace.enable_source_summary_cache(cache);
+        }
+        None => tracing::info!(
+            "daemon: no per-user data directory, dependency source summaries are not persisted"
+        ),
+    }
 }
 
 pub(crate) async fn initialize_daemon_workspace(

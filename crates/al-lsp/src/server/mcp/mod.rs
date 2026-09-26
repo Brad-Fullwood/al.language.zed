@@ -1661,6 +1661,7 @@ pub async fn run_mcp(project_root: PathBuf) -> Result<(), Box<dyn std::error::Er
         tracing::warn!("mcp: {msg}");
     }));
     super::daemon::initialize_daemon_workspace(&workspace, &project_root).await?;
+    super::daemon::persist_dependency_source_summaries(&workspace, &project_root);
 
     // Same warm-up as the daemon. An MCP server owns its workspace in process,
     // so without this the first event or impact question pays the whole

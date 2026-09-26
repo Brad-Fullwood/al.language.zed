@@ -6,8 +6,10 @@ feature pages for implementation details and limitations.
 
 ## Legend
 
-✅ native here · 🟡 partial / phase-gated here · ❌ not provided · 🔷 Microsoft-authoritative (we
-delegate by design)
+- ✅ native here
+- 🟡 partial or phase-gated here
+- ❌ not provided
+- 🔷 Microsoft is the authority, and this project delegates to it
 
 ## Editing & language server
 
@@ -21,18 +23,18 @@ delegate by design)
 | Diagnostics | ✅ syntax native + 🔷 CodeAnalysis bridge | 🔷 CodeAnalysis |
 | Code actions / refactorings | ✅ curated native set | ✅ full compiler code-fix catalog |
 | Complexity metrics | ✅ | ❌ |
-| Delegate to Microsoft LSP | ✅ `al.useOfficialLsp` | — |
+| Delegate to Microsoft LSP | ✅ `al.useOfficialLsp` | n/a |
 
 ## Build, symbols, packaging
 
 | Capability | This project | Microsoft |
 | --- | --- | --- |
-| Produce `.app` | ✅ pure-Rust verified emitter for the documented subset; real-world packages can differ in symbols, path encoding, and bundled resources | 🔷 `alc` (parse→bind→type-check→emit) |
-| Compile-time validation | ✅ native syntax/project/declaration/declared-binding/integrity checks; optional `alc` compatibility gate | 🔷 `alc` (authoritative complete semantics) |
+| Produce `.app` | ✅ pure-Rust verified emitter for the documented subset. Real-world packages can differ in symbols, path encoding, and bundled resources | 🔷 `alc` (parse→bind→type-check→emit) |
+| Compile-time validation | ✅ native syntax/project/declaration/declared-binding/integrity checks, optional `alc` compatibility gate | 🔷 `alc` (authoritative complete semantics) |
 | `.app` reading / inspection | ✅ native NAVX/ZIP, cached, composed objects | internal |
 | Symbol download | ✅ NuGet + BC server, concurrent, deduped, no restart | ✅ download-symbols |
 | OAuth (Entra) | ✅ PKCE + device code, token zeroization | ✅ |
-| Force Microsoft compiler | ✅ `al.useOfficialCompiler` | — |
+| Force Microsoft compiler | ✅ `al.useOfficialCompiler` | n/a |
 
 ## Analysis (largely unique to this project)
 
@@ -73,13 +75,13 @@ delegate by design)
 | Pause-while-running | ❌ (BC limitation) | ❌ (BC limitation) |
 | Profiling / snapshots | ✅ start/stop/analyze, download | ✅ |
 | BC runtime execution | 🔷 BC server | 🔷 BC server |
-| Delegate to Microsoft adapter | ✅ `al.useOfficialDap` | — |
+| Delegate to Microsoft adapter | ✅ `al.useOfficialDap` | n/a |
 
 ## Surfaces & automation
 
 | Capability | This project | Microsoft |
 | --- | --- | --- |
-| Scriptable CLI (`--json`) for exposed query/analysis commands; complete daemon catalog through MCP `al_call` | ✅ | ❌ |
+| Scriptable CLI (`--json`) for exposed query/analysis commands, complete daemon catalog through MCP `al_call` | ✅ | ❌ |
 | Interactive terminal TUI | ✅ (5 views) | ❌ |
 | Shared daemon (JSON-RPC) | ✅ | ❌ |
 | MCP server | ✅ complete shared dispatcher via `al_call`, plus named aliases | ✅ AL agent tools |
@@ -89,14 +91,14 @@ delegate by design)
 
 ## Where Microsoft is still the authority (by design)
 
-The project does not pretend to replace these — it keeps the Microsoft path one setting away:
+The project does not replace these. The Microsoft path is one setting away:
 
-- **Compile-time semantic validation & analyzer behavior** — `alc` + CodeAnalysis
+- **Compile-time semantic validation & analyzer behavior:** `alc` + CodeAnalysis
   (`al.useOfficialCompiler`, and the semantic bridge for editor diagnostics).
-- **Authoritative AL runtime semantics** — the Business Central server executes AL; publish/runtime is
+- **Authoritative AL runtime semantics:** the Business Central server executes AL, and publish/runtime is
   the final compatibility validator for emitted `.app`s and for record/DB/HTTP/UI/report tests.
-- **Official AL Language Server** — `al.useOfficialLsp` delegates the whole editor session.
-- **Official debug adapter** — `al.useOfficialDap` uses `EditorServices.Host`.
+- **Official AL Language Server:** `al.useOfficialLsp` delegates the whole editor session.
+- **Official debug adapter:** `al.useOfficialDap` uses `EditorServices.Host`.
 
 ## Summary
 

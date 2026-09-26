@@ -549,14 +549,13 @@ pub fn grant(project_root: &Path) -> Result<TrustDecision, GrantError> {
 
 /// Whether `entry` names one of the analyzers the AL toolchain ships, in
 /// either the bare (`CodeCop`) or the token (`${CodeCop}`) spelling.
+///
+/// `analyzers::is_builtin_analyzer` unwraps the token spelling itself, so
+/// this only trims and delegates: one predicate, so the trust gate and every
+/// analyzer-resolution call site agree on what counts as builtin.
 #[must_use]
 pub(crate) fn is_builtin_analyzer_token(entry: &str) -> bool {
-    let entry = entry.trim();
-    let entry = entry
-        .strip_prefix("${")
-        .and_then(|rest| rest.strip_suffix('}'))
-        .unwrap_or(entry);
-    crate::analyzers::is_builtin_analyzer(entry)
+    crate::analyzers::is_builtin_analyzer(entry.trim())
 }
 
 /// Whether `path`, resolved against `project_root`, stays inside it.
@@ -597,7 +596,7 @@ fn stays_inside_project(path: &Path, project_root: &Path) -> bool {
 /// `.alpackages` is where symbols are read from and downloaded to, and a clone
 /// can commit it as a link to any directory. The gate already refuses that
 /// shape spelled as `"al.packageCachePath": "./cache"`, through
-/// [`stays_inside_project`]. This is the same decision for the default folder
+/// `stays_inside_project`. This is the same decision for the default folder
 /// and for every other folder path inside the project. A path written outside
 /// the project is the user's own and is not this function's business.
 #[must_use]
@@ -914,7 +913,7 @@ impl BcTarget {
     /// For a caller that passes one `serverUrl` string and nothing else, such
     /// as the daemon's `snapshot` and `profiling` methods. Their client
     /// connects to the URL as written, so the port is the URL's own or its
-    /// scheme's default. Leaving it unset let [`Self::endpoint`] fill in 7049,
+    /// scheme's default. Leaving it unset let `endpoint` fill in 7049,
     /// so `https://host/BC` was authorised as `host:7049` and connected to
     /// `host:443`.
     #[must_use]

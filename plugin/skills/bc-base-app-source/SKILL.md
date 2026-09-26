@@ -18,12 +18,15 @@ directory is not the project.
 2. `source` with `--procedure` for the one member you need.
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json search -- 'Sales-Post'
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --fields kind,id,name,package,source_availability search -- 'Sales-Post'
 ```
 
 ```json
-[{"kind":"Codeunit","id":80,"name":"Sales-Post","package":"Base Application","source_availability":"embedded_source"}]
+{"items":[{"kind":"Codeunit","id":80,"name":"Sales-Post","package":"Base Application","source_availability":"embedded_source"}],
+ "total":1,"returned":1,"offset":0,"truncated":false}
 ```
+
+Keep `--fields`: without it each row carries every method of the object.
 
 `source_availability` says what you will get back:
 

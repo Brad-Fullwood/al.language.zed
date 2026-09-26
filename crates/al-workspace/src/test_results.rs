@@ -158,18 +158,25 @@ impl TestResultStore {
 }
 
 fn canonical_path_for(project_root: &std::path::Path) -> Result<PathBuf, PersistenceError> {
-    let hash = short_hash(project_root.to_string_lossy().as_bytes());
-    let base = al_project::project::user_data_dir().ok_or_else(|| {
+    let mut path = project_data_dir(project_root).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "no per-user data directory: set XDG_DATA_HOME or HOME (LOCALAPPDATA on Windows)",
         )
     })?;
-    let mut path = base;
-    path.push("al-lsp");
-    path.push(hash);
     path.push("test-results.json");
     Ok(path)
+}
+
+/// The directory al-lsp keeps a project's state in:
+/// `<user data dir>/al-lsp/<FNV-1a hash of the project root>`.
+///
+/// `None` when the user has no data directory.
+pub fn project_data_dir(project_root: &std::path::Path) -> Option<PathBuf> {
+    let mut path = al_project::project::user_data_dir()?;
+    path.push("al-lsp");
+    path.push(short_hash(project_root.to_string_lossy().as_bytes()));
+    Some(path)
 }
 
 fn short_hash(bytes: &[u8]) -> String {

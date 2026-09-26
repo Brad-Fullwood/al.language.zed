@@ -12,8 +12,11 @@ directory is not the project.
 ## Who subscribes to an event
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json subscribers OnAfterPostSalesDoc
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --limit 20 subscribers -- 'OnAfterPostSalesDoc'
 ```
+
+Without `--limit`, `--offset` or `--fields` the CLI prints the bare array instead
+of the `items`/`total` wrapper shown here.
 
 ```json
 {"items":[{"objectKind":"Codeunit","objectName":"Booking Manager","methodName":"OnAfterPostSalesDoc",

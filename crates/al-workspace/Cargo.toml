@@ -17,12 +17,17 @@ al-project = { path = "../al-project", version = "0.1.0" }
 al-insight = { path = "../al-insight", version = "0.1.0" }
 al-dap = { path = "../al-dap", version = "0.1.0" }
 dashmap = { workspace = true }
+rayon = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
 
 [features]
 # Passthrough so the in-process .NET bridge can be enabled when building or

@@ -735,6 +735,21 @@ template writes `["${PerTenantExtensionCop}"]`, so every freshly scaffolded proj
 trusted. The message also names `--analyzers` when the list came from settings. Reproduced on the
 built binary. **Queue as a finding.**
 
+Fixed `c197451f`. `project_local_analyzers` no longer exists, removed the same day by `2d889e93`
+(merged in from `campaign/2026-09-21` ahead of this fix). The token spelling was still refused,
+now through `discover_custom_analyzer` reporting the analyzer as not found. `analyzer_name`
+(`crates/al-project/src/analyzers.rs`) now unwraps a `${Name}` token before stripping a `.dll`
+suffix, so `is_builtin_analyzer` and `al_compile::resolve_analyzer_paths` both accept it, and
+`trust::is_builtin_analyzer_token` delegates to it instead of keeping its own copy of the unwrap.
+The message-attribution half of this finding was already gone: the only place that ever hardcoded
+`--analyzers` into the refusal was inside `project_local_analyzers`, deleted by the same `2d889e93`.
+The current refusal ("analyzer '\<entry\>' resolves to '\<path\>' inside this project, and the
+project is not trusted, ...") names neither `--analyzers` nor a settings key. A test now pins that
+text. Verified by hand: `al-explorer new` then `pack-native --validate` on the untrusted, freshly
+scaffolded project (default and `appsource` templates) no longer fails on `${PerTenantExtensionCop}`,
+`${AppSourceCop}` or `${UICop}` alone. The `appsource` template still fails validation on its
+incomplete manifest (`AS0051`, `AS0084`, and others), which is correct and unrelated.
+
 Re-check before publishing: timings on a quieter machine (the article reports these with the load),
 and the `${CodeCop}` paragraph once the finding is fixed.
 
@@ -971,8 +986,10 @@ The public-repository grep from `Docs/campaign/README.md` over all nine articles
    (`lsp_dispatch.rs:527-535`) calls `get_or_build_call_graph()` on every request, so a first
    `by-id table 18` on a fresh daemon took 52.6 s, and through a fresh MCP process 35 to 65 s,
    while `search` answered in milliseconds.
-4. **`pack-native --validate` refuses the `${CodeCop}` token spelling** (details in the plan article 4
-   revision section above).
+4. **`pack-native --validate` refuses the `${CodeCop}` token spelling**, fixed `c197451f`:
+   `analyzer_name` now unwraps a `${Name}` token before comparing against a builtin cop name, so a
+   freshly scaffolded, untrusted project no longer fails on its own default `${PerTenantExtensionCop}`
+   setting (details in the plan article 4 revision section above).
 5. **Doc drift:** `Docs/features/native-test-runtime.md` says `Evaluate` and `CalcDate` route to live
    BC. Both are in the safe list since `15e7fd11`.
 6. **`ai-tooling-ideas.md:322`** still says six answers fit and lists seven.
@@ -1018,3 +1035,74 @@ and extension-settings material and would need cuts elsewhere to reach the plan'
 `pnpm validate` passes: lint 0 errors and 11 warnings (the same pre-existing site component
 warnings), `astro check` 0 errors across 176 files, build of 14 pages and the Pagefind index
 complete. `pnpm` is not on this machine's default `PATH`; it runs as `~/.npm-global/bin/pnpm`.
+
+### Re-read 2026-09-26 after the security round
+
+Binaries: `target/release/al-explorer` and `al-lsp`, built at 11:53 from the tree at `fec2cd6d`.
+Measurements ran on copies under `/tmp` of `benchmarks/projects/medium`, the fixture project, and
+projects made with `al-explorer new`. `XDG_CONFIG_HOME` pointed at a scratch directory, so the
+trust transcripts did not touch the user's trust store. Load average 1 to 5 throughout.
+
+Blog commits on `campaign/2026-09-rewrite`, pushed to origin:
+
+| Commit | Article | What changed |
+| --- | --- | --- |
+| `a351c07` | 1 `al-outside-vs-code` | new `packages` table, cold `trace` told as fixed, dispatcher capability sentence |
+| `2884ea8` | 2 `tree-sitter-grammar-for-al` | grammar rev `f211aef`, the two commits since `38368a0` are README only |
+| `7178260` | 3 `one-engine-four-transports` | deadline section rewritten with midday numbers, `object`/`by-id` fix, capability counts and `named` |
+| `32c0da5` | 4 `native-app-emitter` | analyzer lookup in `discover_custom_analyzer` for every compile path, `${CodeCop}` told as fixed |
+| `df3932f` | 6 `symbols-without-the-compiler` | new `packages` table, synthetic counts fixed, `by-id` timing, profile extension gap |
+| `2d3d9f3` | 7 `mcp-and-the-claude-code-plugin` | ten authorised methods, `trust.rs:1060`, DAP gate, what `trust --yes` and the store file allow |
+| `8c39a7e` | 8 `zed-extension-and-release-integrity` | counts and line refs, bridge verification, new trust transcripts, DAP gate, scheme-less `https` |
+| `ad27608` | 9 `what-an-ai-review-campaign-actually-looks-like` | security round 4 row, docs review, PR 30 and draft PR 32, two gate rows, six series defects |
+
+Article 5 is unchanged. On the release binary `test-run-all` still refuses with the same text, and
+its `Evaluate`/`CalcDate` sentence was already right.
+
+| Fact | Result | How verified |
+| --- | --- | --- |
+| `packages` on `medium` | 5 packages, 9,624 objects: Base Application `7968 7968/0/0`, System Application `1277 1275/1/1`, System `308 308/0/0` | ran it |
+| Base Application declared objects | 7,969 (33 `InternalsVisibleToModules` entries left out). The index loads 7,968. All 1,375 former outlines were synthetic: the morning's "1,374 of 1,375" was one off | parsed `SymbolReference.json`, compared with `packages` |
+| the object the index skips | profile extension `BlankExt`. `SymbolReferenceJson` (`crates/al-symbols/src/model.rs:630-652`) has no `ProfileExtensions` field. `search BlankExt` finds nothing | read, ran it |
+| cold `trace OnAfterPostSalesDoc`, default deadline | 21.0, 28.8, 18.3 s, three subscribers, load at start 3.7, 1.3, 2.6 | `date +%s%N` after `daemon-shutdown` |
+| cold `trace`, `--timeout-ms 5000` | answered at 21.0 s, load 3.9 | same |
+| warm `trace`, `entrypoints`, `dead-code` | 6 to 7 ms, 127 to 163 ms, 12 to 14 ms, five runs each, load 2.5 to 5.2 | same |
+| first `by-id table 18` on a fresh daemon | 694, 619, 670 ms, load 3.8, 3.8, 2.5, output 194,951 bytes | same |
+| MCP on a fresh `al-lsp mcp` | `initialize` 932 ms, `al_call` `byId` table 18 2.7 ms and 24,444 bytes, `al_symbolsearch` limit 3 487 bytes, load 0.8 | stdio session |
+| dispatch table | 95 methods at `daemon/mod.rs:1100`: 15 `read`, 3 `write`, 5 `named`, 10 `authorized`, 62 none | counted the arms |
+| credential refusal text | `crates/al-project/src/trust.rs:1060` | read |
+| subcommands | 86 | `--help` |
+| `${PerTenantExtensionCop}` before the fix | release binary: a fresh scaffold fails `pack-native --validate` with "requested analyzer '${PerTenantExtensionCop}' could not be found ...", trusted or untrusted. `--analyzers PerTenantExtensionCop` passes | ran it |
+| `${PerTenantExtensionCop}` after the fix | `c197451f`, merged `8431a2a3`. Not re-run: the release binaries predate it. The article cites the commit and `LOG.md` records the hand reproduction | read |
+| trust transcripts | `trust --show` prints `Digest:` and a SHA-256 beside a repository file. `pack-native` wrote 2,407 bytes. `trust < /dev/null` gives the new refusal. `--yes` without `--digest` is refused. After `--yes --root --digest`, replacing `tools/Payload.dll` makes the record `stale` | ran it |
+| extension source and tests | 1,504 lines (`lib.rs` 827, `dap.rs` 319, `settings.rs` 358), 1,704 test lines, 82 tests pass | `wc -l`, `cargo test -p zed-al` in a `git archive` export of `a14c1f07` with its own target directory |
+| `choose_release` tests | 10. The article said 13: the other three tests in `release_test.rs` cover checksum parsing | read |
+| moved line refs | `src/lib.rs:382`, `repo_consistency_test.rs:845`, `release.yml:329`, `extension.toml` rev `f211aef` | read |
+| test functions | 4,391 at `a8e54fb7`, 5,190 at `fa4fcf8f`, 5,218 at `a14c1f07` | `git grep -hE '^\s*#\[(tokio::)?test(\(.*\))?\]'` |
+| commits | 694 in `a8e54fb7..a14c1f07`, by day 316, 130, 0, 129, 1 (the PR 30 merge), 118 | `git log` |
+
+Blog `pnpm validate` passes: lint 0 errors and the same 11 warnings, `astro check` 0 errors across
+176 files, build of 14 pages and the Pagefind index complete. Unsloppify and humanizer ran over the
+changed passages. No em dashes, semicolons or middle dots were added to prose, and the public
+grep finds nothing new.
+
+`blog-plan.md` §1.2 and §1.4 now say the articles carry the 2026-09-26 numbers and the sections
+keep the 2026-09-21 baseline.
+
+New findings, not in any findings file:
+
+1. The symbol reader skips profile extensions (row above). Base Application declares one.
+2. `pack-native --validate` on a fresh scaffold prints the "not trusted" notice twice, both naming
+   `launch configuration server` (from the template's `.zed/debug.json`). Seen on the `fec2cd6d`
+   binary.
+
+Still open before publishing:
+
+- Timings on a quiet machine. Today's ran at a load average of 1 to 5, and the articles give the load.
+- The share of a real BC test suite that runs locally (article 5).
+- Prose word counts against the plan: 3 is 2,575 (1,800 to 2,200), 7 is 2,414 (1,800 to 2,200), 8
+  is 2,078 (1,200 to 1,600), 9 is 2,501 (2,000 to 2,500). Counted without code blocks and tables.
+- Article 9 describes the campaign up to midday on the 26th. The round 7 review, the ghost race,
+  `cargo mutants` and the persisted index were still running. Re-read it once the campaign ends.
+- `readTime` in the frontmatter was not recomputed.
+- All nine keep `draft: true`. Merging to `main` is Brad's call.

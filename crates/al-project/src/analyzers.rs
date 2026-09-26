@@ -43,7 +43,8 @@ pub enum AnalyzerDiscoveryError {
 }
 
 /// Whether `name` denotes one of Microsoft's analyzer assemblies shipped with
-/// the AL toolchain. The alias mirrors Microsoft's DLL name.
+/// the AL toolchain, in either the bare (`CodeCop`) or the `${Name}` token
+/// spelling AL settings use (`al.codeAnalyzers`, `app.json` `ruleSets`).
 #[must_use]
 pub fn is_builtin_analyzer(name: &str) -> bool {
     matches!(
@@ -52,9 +53,21 @@ pub fn is_builtin_analyzer(name: &str) -> bool {
     )
 }
 
-/// Return an analyzer entry without a case-insensitive trailing `.dll`.
+/// Return an analyzer entry in its bare form: unwrapped from a `${Name}`
+/// token, if it is one, then without a case-insensitive trailing `.dll`.
+///
+/// The token spelling is how `al.codeAnalyzers` names a built-in cop (the
+/// default project template writes `${PerTenantExtensionCop}`); the bare name
+/// and the `.dll` suffix are both accepted elsewhere. Every caller that needs
+/// to compare an entry against a builtin name, including a caller outside
+/// this crate that already stripped its own `.dll` suffix, goes through this
+/// one function.
 #[must_use]
 pub fn analyzer_name(name: &str) -> &str {
+    let name = name
+        .strip_prefix("${")
+        .and_then(|rest| rest.strip_suffix('}'))
+        .unwrap_or(name);
     name.get(..name.len().saturating_sub(4))
         .filter(|_| {
             name.get(name.len().saturating_sub(4)..)
@@ -684,6 +697,26 @@ mod tests {
         );
     }
 
+    /// `al-explorer new`'s default `.vscode/settings.json` writes
+    /// `${PerTenantExtensionCop}`, not the bare name (`scaffold.rs`,
+    /// `generate_vscode_settings`), and `trust::evaluate` leaves the token
+    /// spelling in an untrusted project's `code_analyzers` untouched because
+    /// it is never gated. `is_builtin_analyzer` has to recognise both
+    /// spellings, or a freshly scaffolded, untrusted project is refused on
+    /// its own default settings.
+    #[test]
+    fn is_builtin_analyzer_accepts_the_token_spelling() {
+        for name in ["CodeCop", "UICop", "PerTenantExtensionCop", "AppSourceCop"] {
+            assert!(is_builtin_analyzer(name), "bare {name:?} must be builtin");
+            let token = format!("${{{name}}}");
+            assert!(is_builtin_analyzer(&token), "{token:?} must be builtin");
+        }
+        // A token wrapping something that is not one of the four cops stays a
+        // custom (or unsafe) entry, not a builtin.
+        assert!(!is_builtin_analyzer("${LinterCop}"));
+        assert!(!is_builtin_analyzer("${../evil}"));
+    }
+
     /// An entry the toolchain resolves itself, or no entry at all, is not a custom
     /// analyzer — even when a file of that name sits in the project.
     #[test]
@@ -700,6 +733,59 @@ mod tests {
                 "{entry:?} must not resolve as a custom analyzer"
             );
         }
+    }
+
+    /// The token spelling is not a repository analyzer either: `discover_custom_analyzer`
+    /// must return `Ok(None)` for it immediately, in an untrusted project, without
+    /// searching the project's folders or reporting "could not be found".
+    #[test]
+    fn discover_custom_analyzer_treats_the_token_spelling_as_builtin() {
+        // The project ships a file that literally matches the file name a
+        // buggy, non-short-circuiting search would look for
+        // (`${CodeCop}.dll`), so this only passes if `is_builtin_analyzer`
+        // stops `discover_custom_analyzer` before it ever searches the
+        // project's own folders. Before the fix, the token spelling was not
+        // recognised as builtin, the project was untrusted, and the search
+        // found this file and refused it as an untrusted project analyzer
+        // instead of returning `Ok(None)`.
+        let project = tempfile::tempdir().unwrap();
+        let packages = project.path().join("packages");
+        std::fs::create_dir_all(&packages).unwrap();
+
+        for entry in [
+            "${CodeCop}",
+            "${UICop}",
+            "${PerTenantExtensionCop}",
+            "${AppSourceCop}",
+        ] {
+            std::fs::write(packages.join(format!("{entry}.dll")), b"decoy").unwrap();
+            assert_eq!(
+                discover_custom_analyzer(entry, project.path(), &[]).unwrap(),
+                None,
+                "{entry:?} must not be treated as a repository analyzer"
+            );
+        }
+    }
+
+    /// The refusal for an analyzer that resolves only inside an untrusted project
+    /// is worded without reference to any particular caller (the `--analyzers` flag
+    /// or a settings key): both `pack-native --validate --analyzers <name>` and a
+    /// future caller that reaches this from settings get the same, accurate text.
+    #[test]
+    fn untrusted_project_analyzer_message_names_no_specific_caller() {
+        let project = tempfile::tempdir().unwrap();
+        let packages = project.path().join("packages");
+        std::fs::create_dir_all(&packages).unwrap();
+        std::fs::write(packages.join("LinterCop.dll"), b"analyzer").unwrap();
+
+        let error = discover_custom_analyzer("LinterCop", project.path(), &[]).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            !message.contains("--analyzers"),
+            "message must not name the --analyzers flag when the caller may be settings: {message}"
+        );
+        assert!(message.contains("LinterCop"), "{message}");
+        assert!(message.contains("is not trusted"), "{message}");
     }
 
     #[test]
