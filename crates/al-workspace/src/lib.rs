@@ -8,6 +8,7 @@ use std::sync::Arc;
 mod dependency_sources;
 mod doctor;
 mod semantic_lifecycle;
+mod source_cache;
 mod test_results;
 pub use dependency_sources::{
     DependencySourceMemoryStats, DependencySources, PackageSourceSummary,
@@ -17,7 +18,8 @@ pub use semantic_lifecycle::{
     ensure_builtins_loaded, ensure_error_codes_loaded, get_or_init_bridge, restart_bridge,
     restart_bridge_if_current, set_builtins, shutdown_bridge,
 };
-pub use test_results::TestResultStore;
+pub use source_cache::{PackageKey, SourceSummaryCache};
+pub use test_results::{project_data_dir, TestResultStore};
 
 use al_project::project::AlProject;
 use al_project::toolchain::AlToolchain;
@@ -82,6 +84,26 @@ struct DependencySourceCache {
     skipped_packages: Vec<String>,
 }
 
+/// One package's summary and where it came from.
+struct LoadedPackageSummary {
+    summary: Arc<PackageSourceSummary>,
+    /// Read from the summary cache rather than built from the `.app`.
+    from_disk: bool,
+    /// The package's entry name in the summary cache, which the next garbage
+    /// collection must keep. `None` without a cache.
+    entry: Option<std::ffi::OsString>,
+}
+
+impl LoadedPackageSummary {
+    fn built(summary: Arc<PackageSourceSummary>) -> Self {
+        Self {
+            summary,
+            from_disk: false,
+            entry: None,
+        }
+    }
+}
+
 /// Live counters for the dependency AL source index build.
 ///
 /// Plain atomics rather than a lock: every reader is a status query that must
@@ -94,6 +116,8 @@ struct DependencySourceProgress {
     packages_done: std::sync::atomic::AtomicUsize,
     packages_total: std::sync::atomic::AtomicUsize,
     files_done: std::sync::atomic::AtomicUsize,
+    /// Packages read from the summary cache rather than built.
+    packages_from_disk: std::sync::atomic::AtomicUsize,
     /// Milliseconds the current or last build has taken.
     elapsed_ms: std::sync::atomic::AtomicU64,
     started_at: std::sync::RwLock<Option<std::time::Instant>>,
@@ -139,6 +163,7 @@ impl DependencySourceProgress {
         self.packages_total.store(packages_total, Relaxed);
         self.packages_done.store(0, Relaxed);
         self.files_done.store(0, Relaxed);
+        self.packages_from_disk.store(0, Relaxed);
         self.elapsed_ms.store(0, Relaxed);
         self.state
             .store(DependencySourceState::Building.code(), Relaxed);
@@ -152,7 +177,16 @@ impl DependencySourceProgress {
     }
 
     fn indexed_file(&self) {
+        self.indexed_files(1);
+    }
+
+    fn indexed_files(&self, count: usize) {
         self.files_done
+            .fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn loaded_package_from_disk(&self) {
+        self.packages_from_disk
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
@@ -196,6 +230,7 @@ impl DependencySourceProgress {
             packages_done: self.packages_done.load(Relaxed),
             packages_total: self.packages_total.load(Relaxed),
             files_done: self.files_done.load(Relaxed),
+            packages_from_disk: self.packages_from_disk.load(Relaxed),
             elapsed_ms,
         }
     }
@@ -211,6 +246,9 @@ pub struct DependencySourceProgressSnapshot {
     /// Files indexed so far. While building this only grows; there is no total
     /// because the file count of a package is not known until it is opened.
     pub files_done: usize,
+    /// Packages whose summaries were read from the summary cache instead of
+    /// being built from the `.app`.
+    pub packages_from_disk: usize,
     pub elapsed_ms: u64,
 }
 
@@ -368,11 +406,14 @@ pub struct Workspace {
     insight_graph_revision: std::sync::RwLock<Option<u64>>,
     /// The invalidation revision `call_graph` was built from.
     call_graph_revision: std::sync::RwLock<Option<u64>>,
-    /// Parsed Microsoft/third-party object sources extracted from loaded `.app`
-    /// packages. The fingerprint makes this cache independent from ordinary
-    /// workspace-file graph invalidation while still rebuilding after package
-    /// download/replacement.
+    /// Summarized Microsoft/third-party object sources extracted from loaded
+    /// `.app` packages. The fingerprint makes this cache independent from
+    /// ordinary workspace-file graph invalidation while still rebuilding after
+    /// package download/replacement.
     dependency_source_index: std::sync::RwLock<Option<DependencySourceCache>>,
+    /// Where package summaries are kept between daemon starts. Unset, the
+    /// index is built from the packages every time.
+    source_summary_cache: std::sync::OnceLock<SourceSummaryCache>,
     /// How far the dependency source index has got.
     ///
     /// The build takes about a minute on Base Application and every method
@@ -460,6 +501,7 @@ impl Workspace {
             insight_graph_revision: std::sync::RwLock::new(None),
             call_graph_revision: std::sync::RwLock::new(None),
             dependency_source_index: std::sync::RwLock::new(None),
+            source_summary_cache: std::sync::OnceLock::new(),
             dependency_source_progress: DependencySourceProgress::default(),
             call_graph_builds: std::sync::atomic::AtomicU64::new(0),
             profiler_session: std::sync::RwLock::new(None),
@@ -698,6 +740,14 @@ impl Workspace {
         let mut packages = Vec::with_capacity(fingerprint.len());
         let mut skipped_files = 0usize;
         let mut files_done = 0usize;
+        let mut from_disk = 0usize;
+        let mut entries = std::collections::HashSet::new();
+        // Decided once: a generation that finds the directory open to other
+        // users reads nothing from it, even after its own writes close it.
+        let disk_readable = self
+            .source_summary_cache
+            .get()
+            .is_some_and(SourceSummaryCache::is_readable);
         self.dependency_source_progress.begin(fingerprint.len());
         for (app_path, _, _) in &fingerprint {
             self.dependency_source_progress.finished_package(files_done);
@@ -705,11 +755,16 @@ impl Workspace {
             // `.app` whose embedded source trips a limit, or that was
             // rewritten mid-build, must not take call-graph and insight
             // features down for every other package.
-            match self.package_source_summary(app_path) {
-                Ok(summary) => {
-                    skipped_files += summary.skipped_files;
-                    files_done += summary.files.len();
-                    packages.push((app_path.clone(), summary));
+            match self.package_source_summary(app_path, disk_readable) {
+                Ok(loaded) => {
+                    skipped_files += loaded.summary.skipped_files;
+                    files_done += loaded.summary.files.len();
+                    if loaded.from_disk {
+                        from_disk += 1;
+                        self.dependency_source_progress.loaded_package_from_disk();
+                    }
+                    entries.extend(loaded.entry);
+                    packages.push((app_path.clone(), loaded.summary));
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -720,10 +775,14 @@ impl Workspace {
                 }
             }
         }
+        if let Some(disk) = self.source_summary_cache.get() {
+            disk.retain(&entries);
+        }
         let index = Arc::new(DependencySources::new(packages));
         self.dependency_source_progress.finish(index.len());
         tracing::info!(
             packages = fingerprint.len(),
+            packages_from_disk = from_disk,
             source_files = index.len(),
             skipped_files,
             skipped_packages = skipped_packages.len(),
@@ -738,13 +797,67 @@ impl Workspace {
         Ok((fingerprint, index))
     }
 
-    /// The summarized source of one package.
+    /// Keep package summaries in `cache` between starts. Returns `false` when
+    /// a cache was already set, which stays in use.
+    pub fn enable_source_summary_cache(&self, cache: SourceSummaryCache) -> bool {
+        self.source_summary_cache.set(cache).is_ok()
+    }
+
+    /// The summarized source of one package: its entry in the summary cache
+    /// when `disk_readable` and one matches, otherwise summarized from the
+    /// `.app` and written back.
     fn package_source_summary(
         &self,
         app_path: &Path,
-    ) -> Result<Arc<PackageSourceSummary>, DependencySourceError> {
-        PackageSourceSummary::build(app_path, || self.dependency_source_progress.indexed_file())
-            .map(Arc::new)
+        disk_readable: bool,
+    ) -> Result<LoadedPackageSummary, DependencySourceError> {
+        let build = || {
+            PackageSourceSummary::build(app_path, || self.dependency_source_progress.indexed_file())
+                .map(Arc::new)
+        };
+        let Some(disk) = self.source_summary_cache.get() else {
+            return build().map(LoadedPackageSummary::built);
+        };
+        let key = match PackageKey::of(app_path) {
+            Ok(key) => key,
+            Err(error) => {
+                tracing::debug!(
+                    package = %app_path.display(),
+                    %error,
+                    "source summary cache: cannot hash the package; building without the cache"
+                );
+                return build().map(LoadedPackageSummary::built);
+            }
+        };
+        let entry = disk.entry_name(app_path, &key);
+        if let Some(summary) = disk_readable.then(|| disk.load(app_path, &key)).flatten() {
+            self.dependency_source_progress
+                .indexed_files(summary.files.len());
+            return Ok(LoadedPackageSummary {
+                summary: Arc::new(summary),
+                from_disk: true,
+                entry: Some(entry),
+            });
+        }
+        let summary = build()?;
+        // A package without embedded source costs nothing to summarize again,
+        // and an entry for it would only take disk space.
+        if summary.files.is_empty() {
+            return Ok(LoadedPackageSummary::built(summary));
+        }
+        if let Err(error) = disk.save(app_path, &key, &summary) {
+            tracing::warn!(
+                package = %app_path.display(),
+                dir = %disk.dir().display(),
+                %error,
+                "source summary cache: could not write the entry"
+            );
+        }
+        Ok(LoadedPackageSummary {
+            summary,
+            from_disk: false,
+            entry: Some(entry),
+        })
     }
 
     /// How far the dependency AL source index has got.
@@ -1448,5 +1561,7 @@ pub fn on_document_close(workspace: &Workspace, uri: &url::Url) {
     workspace.mark_generation_changed();
 }
 
+#[cfg(test)]
+mod source_cache_tests;
 #[cfg(test)]
 mod tests;
