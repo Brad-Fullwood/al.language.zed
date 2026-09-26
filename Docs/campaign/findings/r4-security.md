@@ -70,7 +70,12 @@ Earlier rounds, not repeated here: `r1-extension-ci-security.md`, `r2-security.m
   check in al-dap (or pass an authoriser closure in from `al-lsp.rs` beside `acquire_token`) so
   every DAP entry point shares it. Add a DAP-level test that an untrusted project with an
   on-premises `http://` server gets a failed launch response and no request reaches the mock.
-- status: open
+- status: fixed 9961e25c. Both DAP entry points run `dap_mode::authorize_debug_scenario`
+  (`authorize_cached_credential`, scenario judged as a repository file, `acceptInvalidCerts`
+  only where granted) on launch and attach before any compile, token or request. Tests:
+  `dap_refuses_a_launch_the_authoriser_refuses_before_any_token_or_request`,
+  `dap_refuses_cached_token_for_an_untrusted_repository_server`,
+  `the_legacy_proxy_answers_a_refused_launch_instead_of_forwarding_it`.
 
 ### [SECURITY] high: `tests.run` and the Run Test code lens send the user's environment credentials to the repository's launch server, with an `http://` default
 
@@ -110,7 +115,10 @@ Earlier rounds, not repeated here: `r1-extension-ci-security.md`, `r2-security.m
   does when it parses the same string (`trust.rs` `BcTarget::endpoint`), so the check and the
   request agree on the scheme. Declare the three methods `[authorized]` and move them in
   `project-trust.md` from "caller brings its own credential" to the authorised list.
-- status: open
+- status: fixed 957d445c. `tests.run*` and the Run Test code lens call
+  `authorize_live_test_target` (`authorize_cached_credential`, `Environment`, `Repository`)
+  before any request, and the three methods are declared `[authorized]`. Test:
+  `tests_run_refuses_the_launch_server_of_an_untrusted_repository`.
 
 ### [SECURITY] medium: the authorisation reads a bare host as `https`, the request builders send to it as `http`
 
@@ -141,7 +149,11 @@ Earlier rounds, not repeated here: `r1-extension-ci-security.md`, `r2-security.m
   serve TLS in any deployment that sends credentials), and keep the check calling it so the two
   cannot drift again. Test: a trusted project with a bare non-loopback host is refused by
   `publish` and by `downloadSymbols` without the variable.
-- status: open
+- status: fixed e4fff85b. Decision: a scheme-less server is `https`. `server_with_scheme`
+  prepends `https://` and `BcTarget::endpoint`, the test runner and the debug session all read
+  the server through it, and a cleartext server is written `http://` with
+  `AL_ALLOW_INSECURE_BC_HTTP=1` off loopback (recorded in `project-trust.md`). Tests:
+  `a_bare_host_is_sent_as_https`, `a_bare_host_is_judged_as_the_https_url_the_request_uses`.
 
 ### [SECURITY] high: the four XLIFF methods take absolute paths with no containment, and `xlf.generate` writes through a repository symlink
 
@@ -180,7 +192,12 @@ Earlier rounds, not repeated here: `r1-extension-ci-security.md`, `r2-security.m
   anything that is not a regular file, rather than trusting `metadata.len()`. Extend the
   registry so a method that takes any path-valued parameter, not only `uri`/`file`, must
   declare it, and add these four to the containment test.
-- status: open
+- status: fixed dc8c6603. The XLIFF methods resolve `xlf`/`generated` through
+  `resolve_within_project` and read regular files capped on bytes read, `xlf.generate` takes
+  only the loaded project and writes by rename into a `Translations` inside it, and the
+  registry's new `[named]` capability puts them in a containment test. Tests:
+  `every_named_path_dispatcher_refuses_a_path_outside_the_project`,
+  `build_xliff_replaces_a_planted_link_instead_of_following_it`.
 
 ### [SECURITY] high: a user's own analyzer name resolves to a DLL the untrusted repository ships, on every compile path except `--validate`
 
@@ -222,7 +239,12 @@ Earlier rounds, not repeated here: `r1-extension-ci-security.md`, `r2-security.m
   `project_local_analyzers` in favour of the shared rule. Tests: an untrusted project with
   `packages/x/Foo.dll` and a user-level `Foo` resolves to the NuGet copy or to an error, from
   `al_compile::build` and from `resolve_semantic_analyzer_entries`.
-- status: open
+- status: fixed 2d889e93. `discover_custom_analyzer` decides trust itself and searches
+  `.netpackages`, `packages` and relative probing paths, or accepts a relative analyzer path,
+  only for a trusted project, and `project_local_analyzers` is gone. Tests:
+  `an_untrusted_project_cannot_supply_a_user_named_analyzer`,
+  `named_custom_analyzer_in_the_project_needs_trust`,
+  `semantic_analyzer_resolution_preserves_builtins_and_needs_trust_for_project_copies`.
 
 ### [SECURITY] medium: the trust digest covers the path of a repository-resident analyzer or `dotnet`, not the file, so a later commit swaps the code under an existing record
 
