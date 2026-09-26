@@ -644,8 +644,8 @@ fn compute_over_granted_rights(
 /// | `Modify`, `ModifyAll`, `Rename` | `M`   |
 /// | `Delete`, `DeleteAll`        | `D`   |
 ///
-/// `Insert`/`Modify`/`Delete` arrive as `CallSite::RecordOp`; the `*All` /
-/// `Rename` variants (not in `al_insight`'s `RecordOp`) arrive as
+/// `Insert`/`Modify`/`Delete`/`Rename` arrive as `CallSite::RecordOp`; the
+/// `*All` variants (not in `al_insight`'s `RecordOp`) arrive as
 /// `CallSite::MemberCall` and are classified here. `Validate` and read ops
 /// (`Get`/`Find*`) are not persistence writes and are ignored.
 ///
@@ -679,6 +679,7 @@ fn collect_observed_writes(scan_files: &[(String, tree_sitter::Tree)]) -> Observ
                         RecordOp::Insert => (variable, 'I'),
                         RecordOp::Modify => (variable, 'M'),
                         RecordOp::Delete => (variable, 'D'),
+                        RecordOp::Rename => (variable, 'M'),
                         // Validate sets a field + runs OnValidate; it is not a
                         // persistence write on its own.
                         RecordOp::Validate => continue,
@@ -713,12 +714,12 @@ fn collect_observed_writes(scan_files: &[(String, tree_sitter::Tree)]) -> Observ
 
 /// Map a record member-call method name to the RIMD write right it exercises.
 ///
-/// Covers the `*All` / `Rename` variants that `al_insight::calls::RecordOp`
-/// does not model (those surface as plain member calls). Plain `Insert`/
-/// `Modify`/`Delete` are handled via `RecordOp` and are not matched here.
+/// Covers the `*All` variants that `al_insight::calls::RecordOp` does not
+/// model (those surface as plain member calls). Plain `Insert`/`Modify`/
+/// `Delete`/`Rename` are handled via `RecordOp` and are not matched here.
 fn write_right_for_method(method: &str) -> Option<char> {
     match method.to_ascii_lowercase().as_str() {
-        "modifyall" | "rename" => Some('M'),
+        "modifyall" => Some('M'),
         "deleteall" => Some('D'),
         _ => None,
     }

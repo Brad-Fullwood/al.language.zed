@@ -179,14 +179,14 @@ pub(super) fn extract_primary_expression_name(
 ///   `Insert()`/`Modify()`/`Delete()`, polluting impact, trace and
 ///   affected-test results.
 /// - `Modify(RunTrigger)` / `Delete(RunTrigger)`: same as Insert.
-/// - `Validate(...)`: always fires the field's OnValidate (no RunTrigger
-///   parameter), so this returns `true`.
+/// - `Validate(...)` and `Rename(...)`: always run the field's OnValidate or
+///   the table's OnRename (no RunTrigger parameter), so this returns `true`.
 pub(super) fn parse_run_trigger_arg(
     member_call_suffix: tree_sitter::Node,
     source: &[u8],
     op: RecordOp,
 ) -> bool {
-    if op == RecordOp::Validate {
+    if matches!(op, RecordOp::Validate | RecordOp::Rename) {
         return true;
     }
 

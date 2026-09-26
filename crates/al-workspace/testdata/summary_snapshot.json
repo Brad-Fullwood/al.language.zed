@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "summary": {
     "files": [
       {
@@ -82,7 +82,7 @@
             "id": 50301,
             "name": "Fixture Dispatcher",
             "start_byte": 388,
-            "call_suffixes": 17,
+            "call_suffixes": 18,
             "procedures": [
               {
                 "name": "OnRun",
@@ -257,6 +257,13 @@
                   {
                     "RecordOp": {
                       "variable": "Entry",
+                      "op": "Rename",
+                      "run_trigger": true
+                    }
+                  },
+                  {
+                    "RecordOp": {
+                      "variable": "Entry",
                       "op": "Validate",
                       "run_trigger": true
                     }
@@ -298,7 +305,7 @@
             "kind": "table",
             "id": 50302,
             "name": "Fixture Entry",
-            "start_byte": 1890,
+            "start_byte": 1917,
             "call_suffixes": 0,
             "procedures": [
               {
@@ -321,9 +328,9 @@
             "name": "OnInsert",
             "attributes": [],
             "declaration_range": {
-              "start_line": 93,
+              "start_line": 94,
               "start_character": 12,
-              "end_line": 93,
+              "end_line": 94,
               "end_character": 20
             },
             "writes": [],
@@ -344,10 +351,10 @@
                   "start_line": 79,
                   "start_character": 14,
                   "end_line": 79,
-                  "end_character": 23
+                  "end_character": 20
                 },
                 "byte_start": 1772,
-                "label": "database write Entry.ModifyAll()"
+                "label": "database write Entry.Rename()"
               },
               {
                 "range": {
@@ -356,17 +363,27 @@
                   "end_line": 80,
                   "end_character": 23
                 },
-                "byte_start": 1815,
-                "label": "database write Entry.DeleteAll()"
+                "byte_start": 1799,
+                "label": "database write Entry.ModifyAll()"
               },
               {
                 "range": {
                   "start_line": 81,
-                  "start_character": 15,
+                  "start_character": 14,
                   "end_line": 81,
+                  "end_character": 23
+                },
+                "byte_start": 1842,
+                "label": "database write Entry.DeleteAll()"
+              },
+              {
+                "range": {
+                  "start_line": 82,
+                  "start_character": 15,
+                  "end_line": 82,
                   "end_character": 21
                 },
-                "byte_start": 1843,
+                "byte_start": 1870,
                 "label": "database write Target.Modify()"
               }
             ],

@@ -128,12 +128,13 @@ pub enum RecordOp {
     Modify,
     Delete,
     Validate,
+    Rename,
 }
 
 impl RecordOp {
     /// Parse from a method name (case-insensitive).
     ///
-    /// The four operations are the stable AL record-runtime tokens since
+    /// The five operations are the stable AL record-runtime tokens since
     /// NAV 2.0 — they're part of the BC record ABI (each fires OnBefore/OnAfter
     /// table events), not AL *language* keywords or built-in functions. This
     /// set is fixed by Microsoft and has not changed in
@@ -146,6 +147,7 @@ impl RecordOp {
             "modify" => Some(RecordOp::Modify),
             "delete" => Some(RecordOp::Delete),
             "validate" => Some(RecordOp::Validate),
+            "rename" => Some(RecordOp::Rename),
             _ => None,
         }
     }

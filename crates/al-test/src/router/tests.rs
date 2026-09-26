@@ -1560,3 +1560,136 @@ end;
         counted.reasons
     );
 }
+
+/// A workspace with table "R8 Plain", a subscriber to `event` on it that
+/// calls `Page.RunModal`, and one test codeunit whose test runs `test_body`.
+/// `field_trigger` is the body of field Name's OnValidate.
+fn classify_with_table_event_subscriber(
+    event: &str,
+    field_trigger: &str,
+    test_body: &str,
+) -> ClassifyResult {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Plain.Table.al"),
+        format!(
+            r#"table 50210 "R8 Plain"
+{{
+fields
+{{
+    field(1; "No."; Code[20]) {{ }}
+    field(2; Name; Text[50])
+    {{
+        trigger OnValidate()
+        begin
+            {field_trigger}
+        end;
+    }}
+}}
+keys {{ key(PK; "No.") {{ }} }}
+}}"#
+        ),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/PlainSub.Codeunit.al"),
+        format!(
+            r#"codeunit 50211 "R8 Plain Sub"
+{{
+[EventSubscriber(ObjectType::Table, Database::"R8 Plain", '{event}', '', false, false)]
+local procedure OnPlainEvent(var Rec: Record "R8 Plain"; var xRec: Record "R8 Plain"; RunTrigger: Boolean)
+begin
+    Page.RunModal(0);
+end;
+}}"#
+        ),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/PlainTests.Codeunit.al"),
+        format!(
+            r#"codeunit 50212 "R8 Plain Tests"
+{{
+Subtype = Test;
+[Test]
+procedure Runs()
+var P: Record "R8 Plain";
+begin
+    {test_body}
+end;
+}}"#
+        ),
+    );
+    classify_all(&workspace).unwrap().remove(0)
+}
+
+fn assert_reaches_the_subscriber(result: &ClassifyResult) {
+    assert_eq!(
+        result.decision,
+        RoutingDecision::LiveBc,
+        "{:?}",
+        result.reasons
+    );
+    assert!(
+        result.reasons.iter().any(|reason| reason
+            .message
+            .contains("reachable procedure calls Page.RunModal")),
+        "{:?}",
+        result.reasons
+    );
+}
+
+/// Rename raises OnBeforeRenameEvent and OnAfterRenameEvent, so the test
+/// reaches their subscribers.
+#[test]
+fn rename_reaches_the_rename_event_subscribers() {
+    let result = classify_with_table_event_subscriber(
+        "OnAfterRenameEvent",
+        "",
+        "P.\"No.\" := 'A'; P.Insert(); P.Rename('B');",
+    );
+    assert_reaches_the_subscriber(&result);
+}
+
+/// `Rec.Modify()` in table code modifies a row of the table itself and
+/// raises its OnAfterModifyEvent.
+#[test]
+fn rec_record_call_in_table_code_reaches_the_tables_event_subscribers() {
+    let result = classify_with_table_event_subscriber(
+        "OnAfterModifyEvent",
+        "Rec.Modify();",
+        "P.Validate(Name, 'x');",
+    );
+    assert_reaches_the_subscriber(&result);
+}
+
+/// `xRec` in table code is a record of the table itself.
+#[test]
+fn xrec_record_call_in_table_code_reaches_the_tables_event_subscribers() {
+    let result = classify_with_table_event_subscriber(
+        "OnAfterModifyEvent",
+        "xRec.Modify();",
+        "P.Validate(Name, 'x');",
+    );
+    assert_reaches_the_subscriber(&result);
+}
+
+/// A bare `Modify()` in table code acts on the implicit `Rec`.
+#[test]
+fn bare_record_method_in_table_code_reaches_the_tables_event_subscribers() {
+    let result = classify_with_table_event_subscriber(
+        "OnAfterModifyEvent",
+        "Modify();",
+        "P.Validate(Name, 'x');",
+    );
+    assert_reaches_the_subscriber(&result);
+}
+
+/// The same subscriber reached from a record call in the test itself.
+#[test]
+fn modify_in_the_test_reaches_the_tables_event_subscribers() {
+    let result = classify_with_table_event_subscriber(
+        "OnAfterModifyEvent",
+        "",
+        "P.\"No.\" := 'A'; P.Insert(); P.Modify();",
+    );
+    assert_reaches_the_subscriber(&result);
+}
