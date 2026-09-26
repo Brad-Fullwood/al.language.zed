@@ -79,7 +79,7 @@ then trying to reach the same outcome by another route. The result per finding i
 - severity: low
 - scenario: the MCP tool list is what an agent reads first. After 97d7d98d, an agent that follows this line on a daemon whose call graph is not built gets a workspace object back with `partial: true` and no `methods` or `fields`. The answer's `partial_reason` names `waitForMembers: true`, so a careful agent recovers with a second call, but the description it was given leads to the partial answer first. The CLI reference, the daemon method reference and the `bc-symbol-lookup` skill were updated. The MCP description was not.
 - fix: "fetch its members with al_call object or byId, passing waitForMembers: true for a workspace object".
-- status: open
+- status: fixed 5294b070. The `al_symbolsearch` description reads "fetch its members with al_call object or byId, passing waitForMembers: true for a workspace object". Test `a_description_that_sends_agents_to_by_id_names_wait_for_members` (al-lsp) checks every tool description that names `byId`, and fails without the change.
 
 ### [R7-DOC-1] the dispatch module doc says recursion is capped at 100, the cap is 512
 - where: crates/al-runtime/src/interpreter/dispatch/mod.rs:13 ("Recursion depth is capped at 100"), against :61 (`const MAX_RECURSION_DEPTH: usize = 512`) and crates/al-runtime/src/interpreter/dispatch/workspace_procedure.rs:40
