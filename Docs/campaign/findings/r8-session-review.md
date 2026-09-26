@@ -118,7 +118,7 @@ contains 1a081fbe..aa01cb97.
 - severity: medium
 - scenario: the Learn pages for JsonObject.GetText and JsonObject.GetInteger (runtime 15.0) give a second parameter: "If true and the key is not found on the object then the empty string should be returned" (0 for GetInteger). `Obj.Add('a', 'x'); exit('[' + Obj.GetText('missing', true) + ']');` returns `[]` on BC and fails locally with "GetText: the key 'missing' does not exist". Confirmed with a scratch test, and the router routes it `Interp`. JsonArray's getters take no such parameter, so they are not affected.
 - fix: when the second argument is `true` and the key is missing, return the type's default (`''`, 0, 0.0, false, `''` as Code) for GetText, GetCode, GetInteger, GetBigInteger, GetDecimal and GetBoolean.
-- status: open
+- status: fixed 96ac1f1c. The JsonObject typed getters read the second argument, and with true a missing key gives `''`, `''` as Code, 0, 0, 0 or false. Without it, or with false, a missing key is still an error. Pinned by `json_object_getters_honour_default_if_not_found`.
 
 ### [R8-MULTI-1] transaction lint still credits a summarized dependency file's effects to its first object, so writes and commits in a later object are dropped
 - where: crates/al-analysis/src/queries/transaction_lint.rs:399-422 (`collect_summary_effects` takes `file.objects.first()` and looks every procedure of the file up under that object), crates/al-insight/src/calls/summary.rs:19-24 (`SourceFileSummary::effects` is one list for the whole file, from `file_effect_sites`)
