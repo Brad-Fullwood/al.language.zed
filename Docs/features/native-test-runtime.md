@@ -25,8 +25,10 @@ discover [Test] tests ──► router classifies each test ──► backend ex
 
 ## The interpreter (`crates/al-runtime`)
 
-The tree-walking interpreter executes tree-sitter AL trees with expression-depth (256), AST-depth
-(1024), and recursion (100) guards plus cancellation/deadline checks in loops.
+The tree-walking interpreter executes tree-sitter AL trees on a thread with a 64 MiB stack. It caps
+call depth at 512 frames and statement and expression nesting at 2560 levels each, and checks for
+cancellation and the deadline in loops. A test that exceeds the call cap fails with a message saying
+the limit belongs to the local runner and suggesting a live BC run.
 
 **Values (`interpreter/value.rs`):** Integer, BigInteger, Decimal, Boolean, Char, Text, Code;
 Date/Time/DateTime/Duration; Guid, Option, Variant; Record, RecordRef, Codeunit, Array, List, Dict,
@@ -40,34 +42,53 @@ Blob; plus Null/Empty/ErrorInfo. Variant ordering is stable because values can b
 (case-insensitive), unary and binary operators with the documented AL precedence and left
 associativity, inclusive ranges and `in [...]` sets, workspace-enum scope access with declared
 ordinals, member calls, and string concatenation. `MaxStrLen` retains `Text[N]` / `Code[N]`
-declaration capacity.
+declaration capacity. Array variables (`array[N] of T`) are bound with N default elements, and
+`A[i]` reads and writes them with bounds checks. `Txt[i]` reads and writes one character of a Text
+or Code. A call chain such as `S.Trim().ToUpper()` or `S.Split(',').Count()` runs every step, each
+on the value the previous step returned.
 
-**Dispatch (`interpreter/dispatch.rs`):** receiver-specific stubs → catalog stubs → built-in globals
+**Dispatch (`interpreter/dispatch/`):** receiver-specific stubs → catalog stubs → built-in globals
 → real workspace procedures found through the file index. Calls work in statement and expression
 position, through explicit object receivers and `Codeunit <Subtype>` variables, with `var` scalar
 parameter write-back. The global builtin catalog covers `Error`/`Message`-class dialogs,
 `StrSubstNo`/`Format` (default and XML format 9, with the length argument), string functions
-(`StrLen`, `CopyStr`, `StrPos`, `DelChr`, `ConvertStr`, `PadStr`, `SelectStr`, `IncStr`,
+(`StrLen`, `CopyStr`, `StrPos`, `DelChr`, `DelStr`, `ConvertStr`, `PadStr`, `SelectStr`, `IncStr`,
 `LowerCase`/`UpperCase`, `IndexOf`, `MaxStrLen`), math (`Abs`, `Round` with the `'='`/`'<'`/`'>'`
-directions, where `'='` takes a midpoint away from zero as BC does, `Power`), date/time (`Today`, `Time`,
-`CurrentDateTime`, `CreateDateTime`, `Date2DMY`, `DMY2Date`, `DT2Date`, `DT2Time`, `WorkDate`
-with the session default of today), deterministic `Random`/`Randomize`, and
-`GetLastErrorText`/`ClearLastError` wired to `asserterror` capture.
-`supports_global_builtin` is the shared safe-list: the test router sends bare global calls
-outside it (for example `Evaluate` and `CalcDate`) to live BC. `Text` instance methods
-(`Contains`, `Split`, `Replace`, `Substring`, trims and casing) and `Dictionary` — both the
-mutating methods (`Add`/`Set`/`Remove`) and the read-only ones
-(`ContainsKey`/`Count`/`Keys`/`Values`) — also execute locally.
+directions, where `'='` takes a midpoint away from zero as BC does, `Power`, `Maximum`,
+`Minimum`), `ArrayLen`, date/time (`Today`, `Time`, `CurrentDateTime`, `CreateDateTime`,
+`Date2DMY`, `Date2DWY` with ISO week and year, `DMY2Date`, `DT2Date`, `DT2Time`, `CalcDate` with
+D/W/M/Q/Y terms, C periods and month-end clamping, `WorkDate` with the session default of today),
+`Evaluate` (writes back to its `var` argument, returns false in an expression and raises as a
+statement), deterministic `Random`/`Randomize`, and `GetLastErrorText`/`ClearLastError` wired to
+`asserterror` capture. `supports_global_builtin` is the shared safe list: the test router sends
+bare global calls outside it to live BC.
+
+Instance methods that run locally:
+
+- `Text`: `Contains`, `StartsWith`, `EndsWith`, `IndexOf`, `LastIndexOf`, `Replace`, `Split`,
+  `Substring`, `Trim`/`TrimStart`/`TrimEnd`, `ToLower`/`ToUpper`, `PadLeft`/`PadRight`, `Remove`.
+- `List`: `Add`, `Get`, `Set`, `Insert`, `Remove`, `RemoveAt`, `Count`, `Contains`, `IndexOf`.
+- `Dictionary`: `Add`, `Get` (including `Get(key, var value)`), `Set`, `Remove`, `ContainsKey`,
+  `Count`, `Keys`, `Values`.
+- Enums: an `Enum "Type"` variable starts at ordinal 0 and formats as that ordinal's member name.
+  `AsInteger`, `Names` and `Ordinals` run on a value, and `FromInteger`, `Names` and `Ordinals` on
+  the type (`Enum::Colour.FromInteger(3)`). The router keeps these calls local for workspace enums
+  and sends calls on enums declared only in a dependency to live BC.
 
 **Native test libraries (`stubs/`):** Library Assert, Library - Variable Storage, Library Random, and
-Any. Randomness is seedable; thread-local state is reset between test methods.
+Any. Library Assert covers `IsTrue`, `IsFalse`, `AreEqual`, `AreNotEqual`, `AreNearlyEqual`, `Fail`
+and `ExpectedError`, which checks the last error text after `asserterror`. `RecordIsEmpty`,
+`RecordIsNotEmpty` and `TableIsEmpty` need a RecordRef over the record store and route to live BC.
+Randomness is seedable. Thread-local state is reset between test methods.
 
 ## Workspace-record runtime
 
 `Value::Record` handles are wired through `interpreter/records.rs` to the BTreeMap-backed
 `mock::MockRecord` store. Record variables for the same table share a physical table inside one
 test, while each variable keeps its own filter set, iteration cursor, and field buffer (BC's
-per-variable view semantics); the complete store is discarded before the next test.
+per-variable view semantics); the complete store is discarded before the next test. A temporary
+record variable (`Record "Sales Line" temporary`) has a store of its own, and passing it by value
+copies the rows it holds.
 
 Supported behavior:
 
@@ -78,12 +99,15 @@ Supported behavior:
   yields false; `if Rec.Insert() then` takes the false branch on a duplicate key);
 - Code primary keys are caseless and Integer/Decimal key values unify;
 - SetRange/SetFilter (descending `%N` substitution so `%10` is safe), Count/CountApprox/IsEmpty,
-  Reset/SetCurrentKey, and single-pass DeleteAll;
+  Reset/SetCurrentKey, Ascending (reverse iteration over the current key, restored by Reset),
+  single-pass DeleteAll, and ModifyAll (the value is coerced to the field's type; primary-key
+  fields and `RunTrigger` are refused);
 - BC-style comparisons, ranges, union/intersection, wildcards, and BC filter case rules:
   unprefixed Text patterns match case-sensitively, the `@` prefix makes a pattern
   case-insensitive, and Code cells always compare caselessly;
 - CalcFields and automatic reads for Sum/Average/Min/Max/Count/Exist/Lookup FlowFields with
-  CONST/FIELD/FILTER clauses (including Boolean CONST values).
+  CONST/FIELD/FILTER clauses (including Boolean CONST values), and CalcSums, which totals each
+  named field over the rows the current filters select.
 
 PureLogic and WithRecords are enforced runtime modes. If routing misses a record access, PureLogic
 fails with a capability error instead of silently granting database behavior.
@@ -107,7 +131,9 @@ fails with a capability error instead of silently granting database behavior.
   (including `var Reply`/`var Choice` write-back), while handlers requiring real page, report,
   notification, request-page, or client state route to live BC.
 - **Results:** Pass/Fail/Skip, JUnit XML, Cobertura, and append-only NDJSON history capped at 1000
-  records per codeunit/method.
+  records per codeunit/method. The dynamic Cobertura document reports `lines-covered` but no
+  `line-rate` (it carries `line-coverage="unavailable"`), because the interpreter records the lines
+  that ran and not the lines that could have run. Branch and MC/DC rates have real denominators.
 
 ## Coverage and mutation testing
 
@@ -179,8 +205,7 @@ tests from blocked server tests.
   require live platform objects route to BC.
 - Workspace enum ordinals are exact. Dependency-only enum values route to live BC because package
   symbols do not provide executable source through the interpreter's source catalog.
-- `Evaluate` and `CalcDate` are not implemented natively (their full BC parsing rules are large);
-  the router sends tests that call them — like any other unimplemented global — to live BC.
+- Global functions outside `supports_global_builtin` route the test to live BC.
   `Format` supports the default and XML (9) renderings plus the length argument; custom
   `<...>` format strings fail explicitly rather than being silently ignored.
 - `MaxStrLen` is exact for bounded `Text[N]` and `Code[N]` variables and parameters. Unbounded text
