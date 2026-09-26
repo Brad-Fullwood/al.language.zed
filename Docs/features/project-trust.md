@@ -238,6 +238,13 @@ the repository carries: an on-premises server needs a trusted project, and
 `acceptInvalidCerts` is honoured only when the project's launch file sets it for the same
 server. A refused launch fails with the reason in the debug console.
 
+The EditorServices proxy forwards the scenario to Microsoft's host as Zed sent it, so it
+judges the scenario the way that host might read it. A scenario that names a `server` and no
+`environmentType` is judged as on-premises, since Microsoft's template for your own server
+has none. The proxy refuses a scenario with an `environmentType` other than `OnPrem`,
+`Sandbox` or `Production` (in any case), a target key such as `server` or `environmentType`
+spelled in another case, and a field it cannot read, such as a `port` written as a string.
+
 `publish` and `tests.run*` are in that list although they never read the OAuth cache: they
 send `BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`, from the environment. The
 environment is the user's own decision, but which server receives it is the repository's, so
