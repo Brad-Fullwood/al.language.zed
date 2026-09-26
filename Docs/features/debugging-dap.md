@@ -1,8 +1,9 @@
 # Debugging (DAP) & Business Central Runtime
 
-**Modules:** `crates/al-dap/src/dap/`, `native_debug.rs`, `bc_client.rs`, `http_auth.rs`,
-`profiling.rs`, `snapshot.rs` + `crates/al-lsp/src/server/daemon/debug_dispatch.rs` (CLI/MCP
-control plane) + `src/dap.rs` (Zed glue) + `debug_adapter_schemas/al.json` ·
+**Modules:** `crates/al-dap/src/dap/`, `crates/al-dap/src/native_debug.rs`, and
+`crates/al-bc/src/` (`bc_client.rs`, `http_auth.rs`, `launch.rs`, `profiling.rs`, `snapshot.rs`) +
+`crates/al-lsp/src/server/daemon/debug_dispatch.rs` (CLI/MCP control plane) + `src/dap.rs` (Zed
+glue) + `debug_adapter_schemas/al.json` ·
 **Status:** ✅ shipped (core flow); every field advertised by the native schema is
 consumed by Zed or the native adapter
 
@@ -23,7 +24,7 @@ runtime behavior does not fork into a second debugger.
 ## Architecture
 
 ```
-Zed ─────── DAP/stdio ──────► native_dap.rs ─────────► BC REST + SignalR
+Zed ─────── DAP/stdio ──────► native_dap/ ───────────► BC REST + SignalR
                                                          (/dev/apps, /dev/DebuggerHub)
 MCP client ── al_debug ─────► debug_dispatch.rs
                                   │
@@ -33,12 +34,12 @@ MCP client ── al_debug ─────► debug_dispatch.rs
 
 | Layer | File | Role |
 | --- | --- | --- |
-| Native DAP server | `dap/native_dap.rs` | the Zed-facing stdio DAP server; compile→publish→attach→drive |
+| Native DAP server | `dap/native_dap/` | the Zed-facing stdio DAP server; compile→publish→attach→drive |
 | DAP wire types & framing | `dap/protocol.rs`, `dap/framing.rs` | `Content-Length` framing (8 KiB header cap, 20 MB body cap), `seq` patching |
 | DAP subprocess client | `dap/client.rs` | (legacy path) spawn + route a DAP subprocess by `request_seq` |
-| BC debug session | `dap/bc_debug.rs` | SignalR (WebSocket) client to `/dev/DebuggerHub` |
+| BC debug session | `dap/bc_debug/` | SignalR (WebSocket) client to `/dev/DebuggerHub` |
 | Config | `dap/config.rs` | parse launch config (on-prem vs cloud, auth) |
-| JSONC helpers | `dap/json_util.rs` | strip comments/trailing commas from `launch.json` |
+| Launch config reading | `al-bc/src/launch.rs`, `al-types/src/jsonc.rs` | read `launch.json` with comments and trailing commas |
 | High-level session | `native_debug.rs` | wrap session, breakpoint registry, 10k-entry hit history |
 | MCP control plane | `server/daemon/debug_dispatch.rs` | stateful structured commands shared by CLI and MCP |
 | MCP tool | `server/mcp/mod.rs` (`al_debug`) | schema mapped to daemon method `debug` |
@@ -79,7 +80,7 @@ either feature until it can provide the full behavior itself.
 
 ## How launch/attach works
 
-**Launch** (`native_dap.rs`):
+**Launch** (`native_dap/`):
 1. **Compile** through the shared build service: verified native by default, or `alc` only when
    `al.useOfficialCompiler` is explicitly enabled in persisted project settings.
 2. **Authenticate** (OAuth callback / env token).
@@ -90,7 +91,7 @@ either feature until it can provide the full behavior itself.
 
 **Attach** skips compile/publish and connects to an existing session.
 
-## BC SignalR integration (`bc_debug.rs`)
+## BC SignalR integration (`bc_debug/`)
 
 A from-scratch SignalR (protocol v1) client: negotiates (`/negotiate?negotiateVersion=1`, validating
 the negotiated version and `connectionToken`), opens a WebSocket with the record-separator handshake,
@@ -112,11 +113,13 @@ and convert BC's 0-based line/column to DAP's 1-based ones.
 - **Breakpoint serialization:** the breakpoint mutex is held across remove→add→store so
   concurrent `setBreakpoints` can't orphan BC breakpoints; AL file paths resolve to (ObjectType,
   ObjectId) via the workspace index.
-- **Per-operation timeouts:** step/continue 10 s, IsAlive 5 s, variables/stack 30 s,
-  attach/config 120 s — instead of one blanket timeout.
+- **Per-operation timeouts:** `IsAlive` 5 s, `StopDebugging`/`TerminateSession` 10 s,
+  breakpoints and step/continue (`SetBreakpointResponse`) 30 s, stack and variables 30 s,
+  `Attach`/`DebugAdapterConfigurationDone` 120 s, any other hub method 60 s.
 - **Lock discipline:** clone the session `Arc` inside the lock, drop the lock, then await.
-- **Bounded event channel** (1024) with a dedicated unbounded channel for `Break` events so a paused
-  breakpoint is never dropped under back-pressure.
+- **Bounded event channel** (4096 messages, overflow dropped with a warning) with a dedicated
+  unbounded channel for `Break` events so a paused breakpoint is never dropped under back-pressure.
+  Completion replies to `invoke` have their own 32-entry channel.
 - **`configurationDone` retry:** current BC online rejects `DebugAdapterConfigurationDone` until
   `OnAttachedToConnection` fires — which for break-on-next web-client launches happens only after the
   browser attaches, i.e. often after the client already sent `configurationDone` once. The handler
