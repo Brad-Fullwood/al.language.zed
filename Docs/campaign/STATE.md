@@ -30,6 +30,10 @@ existing worktree under `.claude/worktrees/`:
   ran at 12:55 (code quality 88.7 strict 85.2, file health 64.2 strict 59.9, duplication 97.8
   strict 96.6, test health 92.5 strict 91.0, security 100) and was not written down. The agent
   records it as section 5 and works batch 11 in crates no other agent edits.
+- Profile extensions in the symbol reader (G, A), Sonnet, dispatched 16:57: new worktree branch
+  `campaign/fix-profile-extension`. `SymbolReferenceJson` has no `ProfileExtensions` vector, so
+  Base Application indexes 7,968 of 7,969 objects. Failing test first, then the field, then a
+  check for any other kind missing a vector.
 
 Merged 2026-09-26 before this session: `campaign/fix-r4-security` (14 of 14),
 `campaign/fix-blog-findings` (4 of 4 over two merges), `origin/dev`, `campaign/docs-review`,
@@ -52,7 +56,6 @@ Queued:
 - desloppify fix batches (`findings/desloppify.md` section 4), file splits after the owning fix branch merges.
 - Workstream E (tests): coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis. Start when a build slot frees.
 - Blog: done for now (re-read 13:10). Before publishing: timings on a quiet machine, article 9's final re-read when the campaign ends, `readTime`, four articles over the word range. Merge to `main` is Brad's call.
-- Symbol reader has no field for profile extensions (`crates/al-symbols/src/model.rs:630-652`), so Base Application indexes 7,968 of 7,969 objects (`findings/blog-progress.md`, re-read section).
 - `pack-native --validate` on a new untrusted project prints the "not trusted" notice twice.
 - Plugin leftovers: `plugin/evals/`, release binary download hook, test on a project with `.alpackages`.
 - Windows named pipe owner check (documented, no Windows machine in the campaign).
