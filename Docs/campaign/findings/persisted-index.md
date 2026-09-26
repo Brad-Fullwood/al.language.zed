@@ -367,9 +367,9 @@ entry name began with the package's file name. Two projects on the same packages
 full copy, and the second project summarized every package again on its first start.
 
 A summary depends on the package bytes, the schema version, the grammar and the summary builder,
-and the key covers all four. It holds archive paths inside the package and no path of the
-project or of the `.app`, and `parse_quick` takes no project setting, so two projects on the same
-bytes build the same summary. The per-project directory did two things besides keeping projects
+and the key covers all four. It holds archive paths inside the package and no path of the project
+or of the `.app`, and `parse_quick` takes no project setting, so two projects on the same bytes
+build the same summary. The directory for each project did two things besides keeping projects
 apart. Garbage collection deleted an unused entry when a kept entry had the same package file
 name, which is right only while one project uses the directory: in a shared store, two projects
 with a package of one name and version but other bytes, such as two localizations of Base
@@ -385,11 +385,11 @@ What changed:
 - Commit `98c818e4` makes `SourceSummaryCache::for_project` return
   `<user data dir>/al-lsp/source-index` for every project. It deletes the entries and temporary
   files of the project's old store, and the directory once it is empty, but only when that
-  directory is a real directory that this user alone owns and can write. Garbage collection no
-  longer has the same-name rule. An unused entry goes after 30 days without a load or a write,
-  or, least recently used first, once the store passes 1 GiB, which is now a limit for the user.
-  The 0700 directory, the 0600 entries, the owner checks and the fallback on a corrupt or foreign
-  entry are unchanged.
+  directory is a real directory that this user alone owns and can write. Garbage collection no longer deletes an entry
+  for sharing a package name with a kept one. An unused entry goes after 30 days without a load or
+  a write, or, least recently used first, once the store passes 1 GiB, which is now a limit for
+  the user. The 0700 directory, the 0600 entries, the owner checks and the fallback on a corrupt
+  or foreign entry are unchanged.
 
 Tests in `crates/al-workspace/src/source_cache_tests.rs`:
 
@@ -399,12 +399,12 @@ Tests in `crates/al-workspace/src/source_cache_tests.rs`:
 | Two projects with other bytes under one package name and version both keep their entry across alternating starts | `projects_with_other_bytes_under_one_package_name_keep_both_entries` |
 | An unused entry with the same package name as a kept one stays | `garbage_collection_keeps_entries_another_project_may_use` |
 | Past the size limit the least recently used unused entries go, and an entry in use stays | `garbage_collection_past_the_size_limit_drops_the_least_recently_used` |
-| The old per-project store is deleted, the project's other files stay | `the_store_a_project_kept_before_is_removed` |
+| A project's old store is deleted, the project's other files stay | `the_store_a_project_kept_before_is_removed` |
 | An old store that is a symbolic link is not followed | `a_linked_project_store_is_not_followed` |
 
-`a_rewritten_package_is_rebuilt_alone` now expects the entry of the old bytes to stay. Each test in
-the table except the size limit test fails with its part of the change put back: the
-per-project directory, the same-name rule, the removal of the old store, and the owner check
+`a_rewritten_package_is_rebuilt_alone` now expects the entry of the old bytes to stay. Each test
+in the table except the size limit test fails with its part of the change put back: the directory
+for each project, the rule on package names, the removal of the old store, and the owner check
 before that removal. The size limit test passes before and after. It pins the existing rule now
 that the limit covers every project.
 
