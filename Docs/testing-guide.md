@@ -30,6 +30,12 @@ artifact targets `wasm32-wasip2` and must be a WebAssembly component. Run its ho
 tests do not prove the behavior survives the real binary transport; that is what
 the native harness covers.
 
+Property tests (`proptest`) run inside the workspace suite at their default budget of 128 cases
+(32 in `al-emit`). The nightly `Property tests (deep)` workflow
+(`.github/workflows/property-nightly.yml`) runs them with `PROPTEST_CASES=8192` and uploads any
+`*.proptest-regressions` file a failure writes. Commit that file, so every later run replays the
+failing input first.
+
 ## 2. Native harness — the real binaries (`al-test-harness`)
 
 `cargo test -p al-test-harness` drives the **compiled** `al-lsp` and
@@ -41,6 +47,11 @@ is the minimum bar for parser/symbol/semantic/format/lint/metric changes and any
 cargo build -p al-lsp -p al-explorer        # the harness drives these
 cargo test  -p al-test-harness              # all default (non-env-gated) tests
 ```
+
+The harness fails a run whose `al-lsp` or `al-explorer` binary is older than the sources of the
+crates it links, because `cargo test -p al-test-harness` does not rebuild them and the run would
+describe the previous build. Set `AL_HARNESS_ALLOW_STALE_BINARY=1` to run against an older binary
+on purpose.
 
 Representative tests under `crates/al-test-harness/tests/` (run one with
 `--test <name>`):
@@ -301,8 +312,8 @@ publishes. Its numbered output is the authoritative order:
 3. Focused grammar fixtures and the pinned external repository corpus.
 4. Grammar package-manifest listing.
 5. Binary-download repository-slug consistency.
-6. ShellCheck over `scripts/`, the editor-e2e harness scripts and the grammar
-   test scripts, the same file set as the `test` job in `ci.yml`.
+6. ShellCheck over `scripts/`, `plugin/scripts/`, the editor-e2e harness scripts
+   and the grammar test scripts, the same file set as the `ci` job in `ci.yml`.
 7. Stale `crates/<name>` documentation-path rejection.
 8. Release hygiene: product-version alignment (root `zed-al` =
    `extension.toml` = `al-lsp` = `al-explorer` = their `Cargo.lock` entries),
@@ -310,7 +321,9 @@ publishes. Its numbered output is the authoritative order:
    action, required generated assets, and `languages/al` currency.
 9. `make repro-artifacts`, including language-package regeneration/diff and
    deterministic Zed-index generation.
-10. Workspace formatting plus `clippy -D warnings`.
+10. Workspace formatting, `clippy -D warnings` for the workspace and for
+    `zed-al`, and the benchmark harness contract tests
+    (`python3 -m unittest` over `benchmarks/scripts`).
 11. `cargo deny --workspace check`: the `deny.toml` license, advisory, source
     and banned-crate policy.
 12. Native workspace build plus the real semantic-feature `al-lsp` binary.
