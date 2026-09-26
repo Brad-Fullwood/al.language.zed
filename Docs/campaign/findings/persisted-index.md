@@ -345,3 +345,17 @@ only when it was written under another version, so the snapshot and the constant
 names another entry and that an entry whose header carries one is summarized again, and
 `the_builder_fingerprint_hashes_the_fixture_summary` in al-insight checks the hash. Commit
 `7d9c97c3`.
+
+### `entrypoints` and `impact` rows in one order
+
+Both queries listed rows in the order the symbol index hands out its entries. That is the
+iteration order of a `DashMap`, whose hasher is seeded per map, so two daemon starts over the same
+packages gave the same rows in a different order. `find_entry_points` in
+`crates/al-insight/src/search.rs` now sorts its rows by object kind, then object name and
+procedure name ignoring case, then as written. The impact dedupe in
+`crates/al-analysis/src/queries/impact.rs`, now `sort_and_dedupe`, sorts on every field of a row
+before it drops repeats, workspace rows first, so it also keeps the same one of two duplicates on
+every start. `entry_points_come_back_in_one_order_from_every_build` and
+`impact_rows_come_back_in_one_order_from_every_build` build the index several times, from the
+entries in order and reversed, and compare the serialized rows. Both fail with the sort removed.
+Commit `ffb4c65d`.
