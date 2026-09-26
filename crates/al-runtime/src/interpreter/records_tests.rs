@@ -167,6 +167,43 @@ fn stateful_cross_codeunit_call_fails_closed() {
     );
 }
 
+/// A label is a constant, so a helper codeunit whose only globals are labels
+/// runs from another codeunit with its labels bound.
+#[test]
+fn label_only_helper_codeunit_runs_from_another_codeunit() {
+    let helper = r#"codeunit 50183 "Label Helper"
+{
+    var
+        HelloLbl: Label 'Hello %1';
+
+    procedure Hello(Name: Text): Text
+    begin
+        exit(StrSubstNo(HelloLbl, Name));
+    end;
+}
+"#;
+    let caller = r#"codeunit 50184 "Label Caller"
+{
+    procedure Run(): Text
+    var
+        Helper: Codeunit "Label Helper";
+    begin
+        exit(Helper.Hello('Ann'));
+    end;
+}
+"#;
+    let result = run(
+        &[
+            ("/ws/LabelHelper.al", helper),
+            ("/ws/LabelCaller.al", caller),
+        ],
+        "Label Caller",
+        "Run",
+        vec![],
+    );
+    assert_eq!(ok(result), Value::Text("Hello Ann".into()));
+}
+
 #[test]
 fn unqualified_call_resolves_only_within_current_object() {
     let caller = r#"codeunit 50185 "Scoped Caller"

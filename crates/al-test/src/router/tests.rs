@@ -1430,3 +1430,133 @@ end;
         result.reasons
     );
 }
+
+/// A label is a constant: a table or helper codeunit whose only globals
+/// are labels has no state and runs locally. A table with a real global
+/// variable is named as a table in the reason.
+#[test]
+fn label_globals_are_not_object_state() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Labelled.Table.al"),
+        r#"table 50196 "R8 Labelled"
+{
+fields { field(1; "No."; Code[20]) { } }
+keys { key(PK; "No.") { } }
+var
+    NoRequiredErr: Label 'No. is required';
+trigger OnInsert()
+begin
+    if "No." = '' then
+        Error(NoRequiredErr);
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Counted.Table.al"),
+        r#"table 50197 "R8 Counted"
+{
+fields { field(1; "No."; Code[20]) { } }
+keys { key(PK; "No.") { } }
+var
+    Inserted: Integer;
+trigger OnInsert()
+begin
+    Inserted += 1;
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/LabelHelper.Codeunit.al"),
+        r#"codeunit 50198 "R8 Label Helper"
+{
+var
+    HelloLbl: Label 'Hello %1';
+
+procedure Hello(Name: Text): Text
+begin
+    exit(StrSubstNo(HelloLbl, Name));
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/LabelTests.Codeunit.al"),
+        r#"codeunit 50199 "R8 Label Tests"
+{
+Subtype = Test;
+[Test]
+procedure InsertsLabelled()
+var L: Record "R8 Labelled";
+begin
+    L."No." := 'A';
+    L.Insert(true);
+end;
+}"#
+        .to_string(),
+    );
+    // A codeunit keeps all its tests on one backend, so each case gets its
+    // own test codeunit.
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/GreetTests.Codeunit.al"),
+        r#"codeunit 50201 "R8 Greet Tests"
+{
+Subtype = Test;
+[Test]
+procedure GreetsWithLabel()
+var Helper: Codeunit "R8 Label Helper";
+begin
+    if Helper.Hello('x') <> 'Hello x' then
+        Error('wrong greeting');
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/CountedTests.Codeunit.al"),
+        r#"codeunit 50200 "R8 Counted Tests"
+{
+Subtype = Test;
+[Test]
+procedure InsertsCounted()
+var C: Record "R8 Counted";
+begin
+    C."No." := 'A';
+    C.Insert(true);
+end;
+}"#
+        .to_string(),
+    );
+    let results = classify_all(&workspace).unwrap();
+    let find = |name: &str| {
+        results
+            .iter()
+            .find(|result| result.method_name == name)
+            .unwrap_or_else(|| panic!("{name} classification"))
+    };
+    let labelled = find("InsertsLabelled");
+    assert_eq!(
+        labelled.decision,
+        RoutingDecision::InterpRecord,
+        "{:?}",
+        labelled.reasons
+    );
+    let greets = find("GreetsWithLabel");
+    assert_eq!(
+        greets.decision,
+        RoutingDecision::Interp,
+        "{:?}",
+        greets.reasons
+    );
+    let counted = find("InsertsCounted");
+    assert_eq!(counted.decision, RoutingDecision::LiveBc);
+    assert!(
+        counted.reasons.iter().any(|reason| reason
+            .message
+            .contains("reachable table 'R8 Counted' has object-level state")),
+        "{:?}",
+        counted.reasons
+    );
+}

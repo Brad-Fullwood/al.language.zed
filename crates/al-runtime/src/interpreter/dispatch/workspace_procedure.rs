@@ -88,7 +88,9 @@ pub(super) fn dispatch_workspace_procedure(
         };
         let needs_object_globals = object_has_global_declarations(root);
         let install_root_globals = needs_object_globals && !stack.has_object_globals(&object_name);
-        if install_root_globals && stack.depth() != 0 {
+        // Labels are constants: an object whose only globals are labels gets a
+        // fresh globals frame at any depth.
+        if install_root_globals && stack.depth() != 0 && object_has_global_variables(root) {
             return eval_error(format!(
                 "stateful codeunit '{}' requires live BC execution",
                 object_name
@@ -448,14 +450,37 @@ fn raise_published_event(
     Ok(())
 }
 
+/// Whether the object declares any global, a label included.
 pub(super) fn object_has_global_declarations(root: tree_sitter::Node<'_>) -> bool {
+    object_globals_match(root, |_| true)
+}
+
+/// Whether the object declares a global variable, which holds state between
+/// calls. Labels do not count.
+fn object_has_global_variables(root: tree_sitter::Node<'_>) -> bool {
+    object_globals_match(root, |kind| kind == "regular_variable_declaration")
+}
+
+/// Whether a declaration in the object's `var` section has a child whose kind
+/// satisfies `wanted`.
+fn object_globals_match(root: tree_sitter::Node<'_>, wanted: impl Fn(&str) -> bool) -> bool {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         if node.kind() == "object_var_section" {
             let mut cursor = node.walk();
             return node
                 .named_children(&mut cursor)
-                .any(|child| child.kind() == "object_variable_declaration");
+                .filter(|child| child.kind() == "object_variable_declaration")
+                .any(|declaration| {
+                    let mut declaration_cursor = declaration.walk();
+                    let mut children = declaration.named_children(&mut declaration_cursor);
+                    children.any(|child| {
+                        matches!(
+                            child.kind(),
+                            "regular_variable_declaration" | "label_declaration"
+                        ) && wanted(child.kind())
+                    })
+                });
         }
         if matches!(
             node.kind(),
