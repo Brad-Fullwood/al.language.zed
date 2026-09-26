@@ -15,16 +15,19 @@ work" from a project directory.
 
 A complete list lives in the [CLI command reference](../reference/cli-commands.md). By category:
 
-- **Setup/diagnostics:** `version`, `setup`, `doctor`, `diag`, `clear-cache`, `init-debug`.
-- **Symbols/objects:** `search`, `object`, `by-id`, `source`, `composed`, `packages`, `deps`, `deps-graph`,
+- **Setup/diagnostics:** `version`, `setup`, `doctor`, `diag`, `clear-cache`, `daemon-shutdown`,
+  `init-debug`, `trust`.
+- **Symbols/objects:** `search`, `object`, `by-id`, `source`, `location`, `composed`, `packages`, `deps`, `deps-graph`,
   `events`, `subscribers`, `event-source`, `builtins`, `rules`, `error-codes`,
   `generate-completions`.
 - **LSP-style queries:** `hover`, `definition`, `references`, `signature`, `completions`, `symbols`,
   `folding`, `tokens`, `parse`, `rename`, `hints`.
-- **Build/toolchain:** `compile`, `package`, `pack-native`, `download-symbols`, `authenticate`.
+- **Build/toolchain:** `compile`, `package`, `pack-native`, `publish`, `download-symbols`,
+  `authenticate`.
 - **Insight/analysis:** `trace`, `intercept`, `entrypoints`, `graph`, `insight-stats`, `impact`,
-  `suggest-event`, `metrics`, `dead-code`, `sql-scan`, `duplicates`, `arch-lint`, `breaking`,
-  `upgrade`, `obsolete`, `audit-data`, `permission-audit`, `profiler-hints`.
+  `suggest-event`, `metrics`, `dead-code`, `sql-scan`, `duplicates`, `arch-lint`, `native-check`,
+  `free-ids`, `breaking`, `upgrade`, `obsolete`, `package-diff`, `audit-data`, `permission-audit`,
+  `profiler-hints`.
 - **Format/refactor/codegen:** `format`, `lint`, `fix`, `permissions`, `generate`, `new`,
   `add-application-area`, `add-tooltips`, `add-data-classification`, `sort-members`, `organize-files`.
 - **Debug/profiling:** `debug {start|breakpoint|state|eval|continue|step|history|stop}`,
@@ -38,15 +41,15 @@ A complete list lives in the [CLI command reference](../reference/cli-commands.m
 Every command accepts the global `--json` flag. Human mode prints tables/indented text (status to
 stderr); JSON mode prints structured results to stdout, with errors as `{ "error": "…" }`. This is the
 contract that makes the whole toolchain CI- and agent-friendly. Example error when the daemon is
-unreachable: `{ "error": "Cannot connect to al-lsp daemon… Hint: al-lsp daemon --project ." }`.
+unreachable: `{ "error": "… Hint: Is the daemon running? Start it with: al-lsp daemon --project <dir>" }`.
 
 Human and JSON modes also share exit semantics. Exit `0` means the requested
-gate passed, exit `1` means an error or blocking findings, and exit `75` means
-the result is temporarily incomplete. Quality commands do not return success
-merely because they successfully produced a report: complexity hotspots,
-high-confidence dead code, SQL anti-patterns, duplicate/architecture/breaking
-findings, unclassified data, and permission-audit failures make the process
-non-zero in both output modes.
+gate passed, exit `1` means an error or blocking findings, and exit `75` is
+`doctor`'s answer while the daemon is still loading the workspace. Quality
+commands do not return success merely because they produced a report:
+complexity hotspots, any dead-code finding, SQL anti-patterns,
+duplicate/architecture/native-check/breaking findings, unclassified data, and
+permission-audit failures make the process non-zero in both output modes.
 
 ## TUI views
 
@@ -68,15 +71,14 @@ TUI renders immediately with a "Loading workspace…" status while symbols load 
 
 ## Zed integration
 
-The CLI is not exposed as static language tasks. Stable Zed task JSON cannot address the
-`al-explorer` binary inside an extension download directory, and the gallery installer does not add
-that directory to the user's shell `PATH`. Shipping bare CLI commands would therefore produce
-non-working actions for fresh installs.
+The language package ships 55 tasks in `languages/al/tasks.json` and inline runnables in
+`languages/al/runnables.scm`, and every one runs `al-explorer`. Stable Zed task JSON cannot address
+the `al-explorer` binary inside the extension's download directory, so the tasks need `al-explorer`
+on `PATH`. See [Language assets](language-assets.md#al-explorer-must-be-on-path) for the install step.
 
-Editor-integrated equivalents run through the resolved `al-lsp` binary: LSP execute commands provide
-editor actions, while the **AL Tools** MCP server exposes named operations and the complete shared
-dispatcher through `al_call`. The standalone CLI/TUI remains available when `al-explorer` is
-installed or invoked directly; its commands are documented in the
+Without that install, the resolved `al-lsp` binary covers the same ground: LSP execute commands
+provide editor actions, and the **AL Tools** MCP server exposes named operations and the complete
+shared dispatcher through `al_call`. The commands are documented in the
 [CLI reference](../reference/cli-commands.md).
 
 ## Microsoft comparison
@@ -124,5 +126,5 @@ cross-compiling it. See [Testing guide — daemon IPC](../testing-guide.md#daemo
   diff/validation/live replay, `deps-graph`, XLIFF refresh/untranslated/suggestions, and table
   impact; smoke tests validate the complete clap argument contracts of both files. The replay task
   reads the required runtime identity from `AL_BC_VERSION`.
-- Event-subscriber/call-site coverage in the CLI/TUI is workspace-source-only (package `.app` symbols
-  have no method bodies).
+- Call sites and event subscribers come from workspace source and from the AL source embedded in
+  loaded packages. A package without embedded source contributes declarations and no bodies.
