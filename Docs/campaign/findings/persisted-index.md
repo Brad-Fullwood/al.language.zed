@@ -191,3 +191,135 @@ built from its `.app`.
 A second start loads summaries instead of parsing 9,743 files (27 s) and filling a `FileIndex`
 (8 s). Edge resolution (about 10 s of the 14 s graph step) still runs. Resident memory should
 fall by the size of the trees, about 2.4 GB. Step 4 measures both.
+
+## 3. Result
+
+### Setup
+
+The same project copy, the same commands and the same environment as section 1: `XDG_DATA_HOME`
+and `XDG_CACHE_HOME` in a scratch directory, `AL_REQUEST_TIMEOUT_MS=600000`, wall time around
+the `al-explorer --json` process, and peak RSS as `VmHWM` of the daemon.
+
+Before is the campaign branch at `a8bb710e`, which holds everything on this branch except the
+summary work. After is this branch at `1c9b3e44`. Both were built in the same session and run
+one after the other, before then after, for each row. Each run stops the daemon and waits for it
+to exit, runs the query, reads `VmHWM` at the answer, waits for the log line that says the
+background warm-up finished, waits another 10 s (60 s for `packages`), and reads `VmHWM` again.
+
+The 1-minute load average was 0.6 to 7.7 during these runs, against 12 to 25 in section 1. At
+this load the before binary answers the first start in 17.2 s, where section 1 measured 38.7 s,
+so the before column is measured again here instead of copied from section 1.
+
+### Numbers
+
+| Run | Query | Wall, before | Wall, after | Peak RSS, before | Peak RSS, after |
+| --- | --- | --- | --- | --- | --- |
+| First start, empty caches | `impact "Sales-Post"` | 17.2 s | 4.6 s | 2,857 MB | 526 MB |
+| Second start | `impact "Sales-Post"` | 23.6 s | 1.25 s | 2,834 MB | 371 MB |
+| Third start | `impact "Sales-Post"` | 25.0 s | 1.55 s | 2,836 MB | 372 MB |
+| Fourth start | `packages` | 0.88 s | 1.31 s | 135 MB at the answer, 2,833 MB 60 s later | 135 MB at the answer, 372 MB 60 s later |
+
+Load average at the start and end of each run:
+
+| Run | Before | After |
+| --- | --- | --- |
+| First start | 0.56 to 0.56 | 0.56 to 1.25 |
+| Second start | 1.55 to 2.50 | 2.50 to 2.46 |
+| Third start | 2.46 to 5.09 | 5.09 to 4.91 |
+| Fourth start | 5.00 to 7.31 | 7.31 to 7.68 |
+
+Phases from the daemon log, with the source index time confirmed by `diag`:
+
+| Phase | Before, first | Before, second | Before, third | After, first | After, second | After, third |
+| --- | --- | --- | --- | --- | --- | --- |
+| Package symbol load | 0.79 s | 0.74 s | 0.65 s | 0.75 s | 0.62 s | 0.80 s |
+| Dependency source index | 11.13 s | 15.62 s | 16.04 s | 3.48 s | 0.31 s | 0.37 s |
+| Call graph build | 5.27 s | 7.17 s | 8.27 s | 0.35 s | 0.29 s | 0.34 s |
+| Packages read from disk | | | | 0 of 5 | 4 of 5 | 4 of 5 |
+
+The fifth package, Application, embeds no source, so it has no entry and costs nothing
+to summarize again. The `packages` query does not wait for the index, and its 0.4 s difference
+follows the load: the package phase is the same code in both builds.
+
+In one process, with `crates/al-workspace/examples/dep_profile.rs` at load 6 to 9:
+
+| Run | Package symbols | Source index | Call graph | Call edges | Peak RSS |
+| --- | --- | --- | --- | --- | --- |
+| No cache directory | 1.06 s | 4.94 s | 0.40 s | 88,827 | 503 MB |
+| Empty cache directory, build and write | 1.06 s | 5.29 s | 0.37 s | 88,827 | 515 MB |
+| Filled cache directory, load | 1.01 s | 0.32 s | 0.33 s | 88,827 | 384 MB |
+
+The summaries take 71 MB in memory. On disk they take 59 MB for this package set, 57 MB of it
+for Base Application.
+
+### Same answers
+
+- `diag` reports the same graph sizes to the byte from both builds: 30,253,681 tracked bytes for
+  the insight graph and 28,325,746 for the call graph. The log reports 62,369 nodes and 59,118
+  insight edges from both. The harness counts 88,827 call edges, as in section 1.
+- `impact "Sales-Post"` and `insight-stats` return the same bytes from both builds.
+- `impact "Customer" --scope packages` (760 rows) and `entrypoints --scope packages` (34,420 rows)
+  return the same rows from the before build, from the after build building its summaries, and
+  from the after build loading them. The before build also returns these rows in a different
+  order on each start, so they were compared as sets.
+
+### Against the expected effect
+
+Section 2 expected a second start to skip the parse (27 s) and the `FileIndex` fill (8 s), to
+keep about 10 s of edge resolution, and to hold about 2.4 GB less.
+
+- The index step on a second start takes 0.31 to 0.37 s, where the before build takes 15.6 to
+  16.0 s at the same load. It hashes each `.app` and decodes four JSON entries.
+- The call graph step takes 0.3 s, against 5.3 to 8.3 s before, where section 2 expected about
+  10 s to remain. The resolver is the same function with the same inputs and gives the same
+  edges. What the step no longer does is read trees: find each procedure's declaration in its
+  object and walk its body for calls and variable types. The summary build does that once per
+  file, on the rayon pool, and a loaded summary skips it.
+- Peak RSS is 371 MB against 2,834 MB, 2.46 GB less, because no trees are kept.
+- The first start also gains: 4.6 s instead of 17.2 s, because files are parsed on every core,
+  and 526 MB instead of 2,857 MB, because each tree is dropped once its file is summarized.
+
+### What fell short
+
+The second start meets every target in section 2. Three limits remain:
+
+- A first start still parses every embedded file. Here that is 3.5 s on 12 threads at load 0.6.
+  It grows with fewer cores or more load: section 1 took 27 s on one thread at load 25.
+- The package phase is unchanged at 0.6 to 1.3 s and is now half of a second start.
+- The before and after figures come from one session at load 0.6 to 7.7. Section 1 ran at 12 to
+  25, and its figures are about twice these.
+
+### What is left
+
+- The key does not cover the code that builds a summary (`SourceFileSummary::from_tree` and
+  `file_effect_sites` in `al-insight`). A change there without a bump of `SCHEMA_VERSION` in
+  `crates/al-workspace/src/source_cache.rs` leaves every existing entry in use, and the daemon
+  answers from summaries the old code built until the package changes. A test that compares
+  the summary of a fixture file with a snapshot kept in the repository, and fails with a message
+  that names the constant, would catch it.
+- Entries are kept per project, so two projects on the same Base Application each store 57 MB. A
+  directory keyed by the package hash alone would share them, with the same ownership checks.
+- The header scan in the package phase could use the same key and directory, as section 2 says.
+- `entrypoints` and `impact` return their rows in a different order on each daemon start. Sorting
+  them would let a client compare two answers byte for byte.
+
+### Tests
+
+| Design item | Test |
+| --- | --- |
+| The key changes with the schema constant, the grammar fingerprint and one byte of the `.app` | `the_key_follows_the_bytes_the_schema_and_the_grammar` |
+| Rewriting one of two packages rebuilds that package and loads the other | `a_rewritten_package_is_rebuilt_alone` |
+| Summaries built equal summaries loaded, and the graphs built on them match | `a_second_start_loads_every_package_and_equals_the_fresh_build` |
+| The graph from summaries equals the graph from trees, node for node and edge for edge | `summary_graph_equals_tree_graph_node_for_node_and_edge_for_edge` |
+| A corrupt entry rebuilds to the same index | `a_corrupt_or_truncated_entry_falls_back_to_a_rebuild` |
+| An entry with a foreign header rebuilds to the same index | `an_entry_written_for_other_bytes_is_refused` |
+| An entry or directory others can write, or a linked entry, is not read | `entries_other_users_could_write_are_not_read` |
+| Transaction lint gives the same diagnostics from summaries as from trees | `dependency_summaries_lint_like_dependency_trees` |
+
+The graph test is in `crates/al-insight/src/calls/summary_tests.rs`, the lint test in
+`crates/al-analysis/src/queries/transaction_lint.rs` and the rest in
+`crates/al-workspace/src/source_cache_tests.rs`. Step 4 added the lint test. It runs the
+dependency fixtures through transaction lint once from the summaries and once from a `FileIndex`
+over the same embedded files, and compares the diagnostics. It fails when the summary path drops
+the effects of one procedure. Step 4 also added two assertions: a directory others can write
+rebuilds to the same summaries, and one changed byte of the `.app` names a different entry.
