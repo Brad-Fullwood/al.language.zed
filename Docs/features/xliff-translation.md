@@ -1,6 +1,6 @@
 # XLIFF & Translation
 
-**Module:** `crates/al-analysis/src/xliff.rs` · **Status:** ✅ shipped
+**Module:** `crates/al-analysis/src/xliff/` · **Status:** ✅ shipped
 
 Business Central apps are translated via XLIFF 1.2 files. This toolchain extracts translatable text
 from AL source, generates and refreshes XLIFF files, tracks translation state, and lists untranslated
@@ -45,7 +45,7 @@ existing `.g.xlf`/language files stay compatible.
   longer present in the base are **kept** with state `final` (they are not deleted), appended in
   sorted-ID order so the rewritten file is byte-stable across runs.
 - **Untranslated:** lists units with no target.
-- **Suggest** (`suggest_translations_with_memory`): indexes translated/final units already present in
+- **Suggest** (`suggest_translations`): indexes translated/final units already present in
   the language file, then tries an exact normalized-source match, a fuzzy token-overlap match, and
   finally workspace object/table-field names. Results include an origin (`tm-exact`, `tm-fuzzy`, or
   `name`) and confidence score. This is deterministic translation-memory reuse, not machine
@@ -78,13 +78,14 @@ one CLI command (and CI-automatable) without leaving the toolchain.
 
 ```
 al-explorer xlf generate [--project <dir>]      # write the .g.xlf base (Zed: AL: XLIFF Generate)
-al-explorer xlf refresh <lang.xlf> --generated <base.g.xlf>
+al-explorer xlf refresh <lang.xlf> [--generated <base.g.xlf>]   # finds the .g.xlf when omitted
 al-explorer xlf untranslated <lang.xlf>
 al-explorer xlf suggest <lang.xlf>              # translation-memory and symbol suggestions
 ```
 
-These are shared daemon workflows. The CLI exposes dedicated `xlf` subcommands, Zed exposes
-generation, refresh, untranslated, and suggestion tasks, and MCP can invoke every XLIFF method
+These are shared daemon workflows. The CLI exposes dedicated `xlf` subcommands. The language
+package has an *AL: XLIFF Generate Translation File* task, and this repository's contributor
+`.zed/tasks.json` adds refresh, untranslated and suggestion tasks. MCP can invoke every XLIFF method
 through `al_call` (for example, `method: "xlf.refresh"`).
 
 ## Limitations
