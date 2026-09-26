@@ -17,6 +17,7 @@ limitations, and the maintained release contract in [ROADMAP.md](../ROADMAP.md).
 | [Completion roadmap](../ROADMAP.md) | Candidate scope, invariants, and release gates |
 | [Completion evidence ledger](./gaps-and-future-work.md) | Blocking implementation, release, and publication evidence |
 | [Benchmarks](./benchmarks.md) | Criterion micro-benchmark methodology, hot paths, and how to run them |
+| [Claude Code plugin roadmap](../plugin/ROADMAP.md) | The `al-bc` plugin's skills, the workarounds they dropped, and what is left |
 | [Zed vs VS Code comparison](./comparison-zed-vs-vscode.md) | Workflow-by-workflow comparison with Microsoft's AL extension |
 
 ## Feature guides
@@ -38,6 +39,7 @@ limitations, and the maintained release contract in [ROADMAP.md](../ROADMAP.md).
 | [XLIFF](./features/xliff-translation.md) | Translation generation, refresh, and suggestions |
 | [Scaffolding](./features/scaffolding-and-codegen.md) | Projects, object generators, and permission sets |
 | [Language assets](./features/language-assets.md) | Generated Zed assets, themes, and schemas |
+| [Project trust](./features/project-trust.md) | Repository settings that need `al-explorer trust` before they apply |
 
 ## References
 
