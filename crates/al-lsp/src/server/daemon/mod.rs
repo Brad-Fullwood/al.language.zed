@@ -1643,6 +1643,9 @@ pub(crate) fn project_state_with_wait<T>(
 
 /// Get document text without blocking the async runtime, loading it from disk
 /// when the document store does not already contain the file.
+// Err is a ready-to-send JSON-RPC `Response` (cold path); see require_project_root.
+// Clippy flags this one only with the semantic feature on.
+#[allow(clippy::result_large_err)]
 pub(crate) async fn require_document_text(
     workspace: &Workspace,
     uri: &url::Url,
