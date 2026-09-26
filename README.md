@@ -105,11 +105,11 @@ The practical benefit is a safer and usually faster-feeling development loop: th
 
 ## MCP Automation
 
-The extension registers a Zed context server named `AL Tools`, which launches `al-lsp mcp` from the
-extension's resolved cache or downloads the current release when the cache is empty. If LSP or DAP
-already resolved an explicit/PATH binary, that cached path is reused. The MCP server speaks
-newline-delimited JSON-RPC over stdio and forwards tool calls into the same daemon dispatcher used by
-the CLI.
+The extension registers a Zed context server named `AL Tools`, which launches `al-lsp mcp`. It uses
+the binary LSP or DAP already resolved in this Zed session (which may be the one on `PATH`),
+otherwise a downloaded release, the same way as step 3 of the resolution order under
+[Zed Integration](#zed-integration). The MCP server speaks newline-delimited JSON-RPC over stdio and
+forwards tool calls into the same daemon dispatcher used by the CLI.
 
 Current MCP tools:
 
@@ -192,8 +192,10 @@ the answer instead of the payload, which matters because several of these calls
 return hundreds of kilobytes today. `bc-cop-fixer` drives lint diagnostics to
 zero on a named set of files.
 
-One `SessionStart` hook. It emits a short routing note when the working
-directory holds an AL `app.json`, and nothing at all anywhere else.
+Two hooks. `SessionStart` emits a short routing note when the working
+directory holds an AL `app.json`, and nothing anywhere else. `SessionEnd` runs
+`al-explorer daemon-shutdown` in the same kind of directory, so the daemon and
+its dependency source index do not outlive the session.
 
 ### Notes
 
@@ -214,7 +216,7 @@ The local runner interprets a supported subset of AL test bodies directly from t
 
 - A defined subset of statement execution for blocks, `if`, `while`, `for`, `foreach`, `repeat`, `case`, assignment, expression statements, `exit`, and `asserterror`.
 - A defined subset of expression evaluation for literals, identifiers, unary and binary operators, arithmetic, comparisons, boolean logic, string concatenation, and parenthesized expressions.
-- A small set of built-ins and stubs such as `Error`, `Message`, `StrSubstNo`, `Format`, `StrLen`, `CopyStr`, `LowerCase`, `UpperCase`, `IndexOf`, `Library Assert`, `Library - Variable Storage`, `Library Random`, and `Any`.
+- A listed set of built-ins (`Error`, `Message`, `StrSubstNo`, `Format`, string, math and date functions including `CalcDate` and `Evaluate`), `Text`, `List`, `Dictionary` and enum methods, arrays, and the `Library Assert`, `Library - Variable Storage`, `Library Random` and `Any` test libraries. [Native test runtime](Docs/features/native-test-runtime.md) has the full list.
 - Static, BC-free test discovery. Codeunits are discovered by `Subtype = Test` or contained `[Test]` procedures, but only `[Test]` methods are returned as executable tests; lifecycle methods are not listed as tests.
 - JUnit XML, default static-call-graph Cobertura, and opt-in dynamic executed-line/decision coverage from interpreter runs.
 - Interpreter-backed mutation testing over both local tiers, including stable parallel mutant execution; mutants without interpreter-runnable coverage are reported as survived.
@@ -253,6 +255,11 @@ The native engine enables workflows that are difficult to get from a generic edi
 - Breaking-change and upgrade analysis: compare public surfaces, obsolete metadata, permissions,
   and upgrade risk against a previous `.app` supplied with `--baseline-app`. Without a baseline the
   commands report that the analysis was not evaluated.
+- Dependency upgrades: `package-diff <old.app> <new.app>` lists the changes between two versions
+  of a dependency that this workspace's code uses (`--all` lists every change), and
+  `obsolete --used` lists the workspace's calls to obsolete procedures.
+- ID allocation: `free-ids` returns the next free object ID, table field number or enum ordinal
+  inside the `app.json` `idRanges`, counting workspace and dependency objects in the same range.
 - Permission and data audits: inspect permission sets, table data classification, and missing metadata.
 - XLIFF tooling: generate, refresh, inspect untranslated entries, and suggest translations from workspace symbols.
 - Bulk fixes: add application areas, tooltips, data classification, organize files, and sort members.
@@ -281,9 +288,11 @@ The Zed extension resolves `al-lsp` in this order:
 
 1. An in-memory cache from an earlier resolution in the same Zed session.
 2. `al-lsp` on `PATH`.
-3. A previously downloaded extension binary already on disk, reused without any
-   network access — this is what lets a cached install start fully offline.
-4. The latest GitHub release asset for the current platform (requires network).
+3. The latest GitHub release. The extension looks up the latest release version,
+   uses the downloaded copy of that version if one is on disk (and removes older
+   downloads), and otherwise downloads the asset for the current platform. When
+   the lookup fails, as it does offline, it starts the newest download already on
+   disk.
 
 `lsp.al-lsp.binary.path`, `lsp.al-lsp.binary.arguments` and the debug adapter path
 are not in that list. Zed hands the extension one value with a worktree's
@@ -311,13 +320,11 @@ LSP execute commands include:
 
 Code actions include quick fixes plus source actions such as add doc comment, wrap in region, add using, convert `if` to `case`, eliminate `with`, make method local, implement interface stubs, add parentheses to bare calls, convert event subscriber literals, move `ToolTip` to table field, convert promoted actions to `actionRef`, set `ApplicationArea`, and fix report layout.
 
-CodeLens currently emits lenses with these command IDs:
+CodeLens emits lenses with three more execute commands, which the same dispatcher handles:
 
 - `al.findReferences`
 - `al.showProfiler`
 - `al.runTest`
-
-Those CodeLens IDs are separate from the native execute-command dispatcher above.
 
 ### Commands that need no `PATH` install
 
@@ -344,7 +351,7 @@ The CLI command surface includes:
 - LSP-style queries: `hover`, `definition`, `references`, `signature`, `completions`, `symbols`, `folding`, `tokens`, `parse`, `rename`, `hints`.
 - Symbols and objects: `search`, `object`, `by-id`, `source`, `location`, `composed`, `builtins`, `rules`, `error-codes`, `generate-completions`, `version`.
 - Events and insight: `events`, `subscribers`, `event-source`, `trace`, `intercept`, `entrypoints`, `graph`, `impact`, `suggest-event`, `insight-stats`.
-- Analysis: `metrics`, `dead-code`, `sql-scan`, `duplicates`, `arch-lint`, `native-check`, `free-ids`, `breaking`, `upgrade`, `obsolete`, `audit-data`, `permission-audit`, `profiler-hints`.
+- Analysis: `metrics`, `dead-code`, `sql-scan`, `duplicates`, `arch-lint`, `native-check`, `free-ids`, `breaking`, `upgrade`, `obsolete`, `package-diff`, `audit-data`, `permission-audit`, `profiler-hints`.
 - Formatting/refactoring/codegen: `format`, `lint`, `fix`, `permissions`, `generate`, `add-application-area`, `add-tooltips`, `add-data-classification`, `sort-members`, `organize-files`.
 - Debug/profiling: `debug`, `snapshot`, `profile`.
 - Tests: `tests`, `test-run`, `test-run-all`, `test-coverage`, `test-mutate`, `test-affected`, `test-classify`, `test-snapshot`, `test-results`.
@@ -410,7 +417,7 @@ Several directories are generated or synchronized output. This matters because m
 Release-critical invariants:
 
 - `extension.toml` `[grammars.al].rev` must match the submodule commit recorded in the superproject gitlink for the release commit. A leading `+` in `git submodule status` is a release blocker.
-- Product versions for `zed-al`, `extension.toml`, `al-lsp`, and their lockfile entries move
+- Product versions for `zed-al`, `extension.toml`, `al-lsp`, `al-explorer`, and their lockfile entries move
   together. Library crates keep independent semantic versions.
 - `zed_extension_api` must stay pinned to a released crates.io API in committed release state.
 - Release asset names in `src/lib.rs` must stay aligned with `.github/workflows/release.yml`.
