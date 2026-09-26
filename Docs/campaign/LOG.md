@@ -191,3 +191,21 @@ Append-only. Newest entry last.
 - Test modules moved out of six large files (`tests_dispatch.rs` 4182, `lsp.rs` 4043, `daemon/mod.rs` 3645, `workspace.rs`, `mcp.rs`, `client.rs`); code unchanged, test counts unchanged.
 - All 46 rustdoc warnings fixed; CI now runs `cargo doc` with `-D warnings`.
 - Gates: full suite 93 suites, 5026 passed, 1 failed (root-only) before the r6 fixes; CI green on every push since.
+
+## 2026-09-25: pull request 30 merged
+
+- Brad merged PR 30 into `dev` at 94700cf7 (merge commit afec75d1). CI runs on pushes to `main` and `dev` and on pull requests, so later pushes to the campaign branch ran no CI. A new draft PR from the campaign branch to `dev` takes over.
+
+## 2026-09-26 07:00 BST: interactive session, five agents
+
+- Merged the async locking batch (d34ad3d2): two deadlocks in al-lsp fixed (the diagnostics pass took the config lock before the project lock, the bridge read lock was taken twice), the DAP proxy stdout lock is held for one frame instead of a compile, 15 dead `#[allow]` attributes removed, a SAFETY comment on every unsafe block. Gates on the merge: 94 suites, 5065 passed, 1 failed (`no_ghost_diagnostics_after_close_during_debounce`, 2 in 8 at load average 20).
+- Round 4 security review over the final diff: 14 findings (4 high, 4 medium, 6 low) in `findings/r4-security.md`. The highs: the Zed debug adapter and `tests.run` sent the cached credential to any server a repository file named, the XLIFF methods took absolute paths with no containment, and a user's own analyzer name resolved to a DLL the repository shipped.
+- Blog: 18 commits on `campaign/2026-09-rewrite`. Articles 2, 4, 5 and 8 revised against binaries built at ba2cda14, article 9 written, fact pass and unsloppify on all nine, `pnpm validate` passes. Six new defects recorded in `findings/blog-progress.md`.
+- Agents for the security fixes, the persisted symbol index, `cargo mutants`, the docs review, the blog defects and the ghost race started. The session ended at a usage limit with all of them in flight.
+
+## 2026-09-26 11:50 BST: headless session, security round 4 merged
+
+- Six agent branches had unmerged commits and no live agent. Merged `campaign/fix-r4-security`, 14 of 14 fixed: both DAP entry points and the test runners pass the trust gate before a credential leaves the machine, a scheme-less server means `https`, the XLIFF methods go through containment, analyzer discovery decides trust itself, the trust digest hashes a repository-resident analyzer or `dotnet` instead of naming its path, the handshake proof is checked before the build identity, a linked `.alpackages` counts as an untrusted package cache, the semantic bridge is in the release digests, the scaffold and the native build refuse symlinks, `trust --yes` is pinned to a reviewed digest, and the language server re-gates its settings when the trust inputs move.
+- Merged `campaign/fix-blog-findings`, 3 of 4: `packages` counts leave out synthetic Option enums, the client keeps waiting while the call graph builds, `object` and `byId` answer without the graph.
+- Merge damage: the lock batch made `gate_repository_settings` synchronous and the security branch still awaited it at two sites. Fixed in a8bb710e. Merged `origin/dev` (the PR 30 merge commit) so the branch contains `dev`.
+- Re-dispatched five agents: docs review (35 commits plus an uncommitted prose pass), `cargo mutants` (3 of 10 files done, three proptest seeds written under mutants to check against clean code), persisted index (step 4, the measurement), ghost race debug (nothing committed), the `${CodeCop}` token refusal (blog finding 4).
