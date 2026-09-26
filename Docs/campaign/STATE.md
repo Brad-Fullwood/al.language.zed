@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-26 13:20 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-26 13:40 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -15,9 +15,6 @@ branches the 07:00 session left, each in its existing worktree under `.claude/wo
   42 mutants 2 missed, `http_auth.rs` 26 and 3, `sort.rs` 107 and 20, tests added for the misses).
   Three uncommitted proptest seeds in `property_formatting.proptest-regressions` were written while
   mutants were active and are checked against clean code first. Seven files left.
-- Persisted symbol index (G): worktree branch `campaign/ai-persisted-index`, five commits (baseline,
-  design, call graph from source summaries, summaries instead of trees, persisted summaries per
-  package). Step 4, the after measurement, and the merge of today's campaign branch remain.
 - Ghost race (A): worktree branch `campaign/fix-ghost-race-2`, nothing committed by the first agent.
   Told to name the mechanism and whether it predates the lock batch before changing code, and to
   write `findings/ghost-race-2.md`.
@@ -29,7 +26,7 @@ branches the 07:00 session left, each in its existing worktree under `.claude/wo
   `campaign/fix-r7-review`, highs first.
 
 Merged this session: `campaign/fix-r4-security` (14 of 14), `campaign/fix-blog-findings` (3 of 4),
-`origin/dev`, `campaign/docs-review` (done, 12:20), `campaign/fix-blog-findings` again for finding 4 (12:50). Gate result on the merge is in `LOG.md`.
+`origin/dev`, `campaign/docs-review` (done, 12:20), `campaign/fix-blog-findings` again for finding 4 (12:50), `campaign/ai-persisted-index` (13:40). Gate result on the merge is in `LOG.md`.
 
 PR 30 was merged into `dev` on 2026-09-25 (afec75d1). CI runs on pushes to `main` and `dev` and on
 pull requests, so draft PR 32 (https://github.com/Brad-Fullwood/al.language.zed/pull/32, base `dev`)
@@ -48,6 +45,10 @@ Queued:
 - desloppify fix batches (`findings/desloppify.md` section 4), file splits after the owning fix branch merges.
 - Workstream E (tests): coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis. Start when a build slot frees.
 - Blog: done for now (re-read 13:10). Before publishing: timings on a quiet machine, article 9's final re-read when the campaign ends, `readTime`, four articles over the word range. Merge to `main` is Brad's call.
+- Persisted index follow-ups: the cache key does not cover the summary builder's code (add a
+  fixture summary snapshot test or fold a builder version into the key), per-project storage
+  duplicates shared packages, the package header scan could use the cache, `entrypoints` and
+  `impact` row order differs per start (sort).
 - Symbol reader has no field for profile extensions (`crates/al-symbols/src/model.rs:630-652`), so Base Application indexes 7,968 of 7,969 objects (`findings/blog-progress.md`, re-read section).
 - `pack-native --validate` on a new untrusted project prints the "not trusted" notice twice.
 - Plugin leftovers: `plugin/evals/`, release binary download hook, test on a project with `.alpackages`.
@@ -74,7 +75,7 @@ whichever ones pay off most. Record progress per workstream below so gaps are vi
 | D | Security: credentials, archive parsing, MCP and daemon input, extension binary download, supply chain | Four review rounds (8, 19, 10, 14 findings), all fixed and merged. Project trust, dispatcher capability registry, peer-checked endpoint, trust digest over analyzer and dotnet file hashes, credential authorisation on every DAP and test path | Windows named pipe owner check. A fifth round over what changed after 2026-09-26 |
 | E | Tests: coverage by crate, property tests, `cargo mutants` | First pass merged: 4 bugs found by property tests, coverage table, CI job proposal | Nightly property job added (`property-nightly.yml`, 8192 cases; the per-PR run already covers 128). Next: `cargo mutants` on the 10 file shortlist in `findings/test-depth.md`, make `al-test/backends/snapshot.rs` testable |
 | F | Grammar: corpus tests, query drift between `languages/al` and `tree-sitter-al/queries` | R1 review running | From R1 findings |
-| G | AI tooling: make this project speed up and sharpen AI work on Business Central (see below) | Inventory, measurements and design done (`findings/ai-tooling-ideas.md`): latency is 4 to 150 ms warm, but 14 of 20 measured answers are too large for an agent (up to 9.4 MB). Plugin build running | Daemon projection work after the LSP fix branch merges |
+| G | AI tooling: make this project speed up and sharpen AI work on Business Central (see below) | Plugin, daemon projection, free-ids, compact answers merged. Persisted dependency source index merged 2026-09-26: second start 23.6 s to 1.25 s, peak memory 2.8 GB to 371 MB (`findings/persisted-index.md`) | Cache key to cover the summary builder, shared package storage, sorted rows; plugin leftovers (`plugin/evals/`, binary download hook) |
 | H | Docs: `Docs/`, `README.md`, `ROADMAP.md` match the code, then unsloppify | Done 2026-09-26: every user doc checked against the code and given a plain-wording pass (`findings/docs-review.md`) | Re-check the docs each later merge touches |
 | I | Blog: replace the six articles with a new series on the current project, unsloppify each | Nine articles written, fact-passed, unsloppified and re-read after the security round on blog branch `campaign/2026-09-rewrite` (pushed), `pnpm validate` passes, all `draft: true` | Article 9 final re-read at campaign end, quiet-machine timings, `readTime`, then merge to `main` (Brad) |
 
@@ -103,6 +104,7 @@ round on the areas with the most findings.
 
 ## Done
 
+- 2026-09-26 persisted dependency source index merged (`findings/persisted-index.md`): summaries instead of trees, persisted per package, second daemon start 23.6 s to 1.25 s for `impact`, peak memory 2.8 GB to 371 MB, identical answers.
 - 2026-09-26 docs review merged (`findings/docs-review.md`): every user doc checked against the code, four drift items fixed, plain-wording pass over `Docs/`, `README.md`, `ROADMAP.md` and `plugin/`.
 - 2026-09-26 security round 4 merged: 14 of 14 fixed (`findings/r4-security.md`). Every DAP and test-run path authorises the target before a credential leaves the machine, a scheme-less server is `https`, XLIFF methods are contained, the trust digest hashes repository-resident analyzers and `dotnet`, the handshake proof is checked before the build identity, a linked `.alpackages` is an untrusted package cache, the semantic bridge is in the release digests, the scaffold and native build refuse symlinks, `trust --yes` is pinned to a reviewed digest, the language server re-gates settings when trust inputs move.
 - 2026-09-26 blog findings 1 to 4 merged: `packages` counts skip synthetic Option enums, the client deadline extends while the call graph builds, `object` and `byId` answer without the graph, the `${Name}` analyzer token spelling is a builtin so a fresh untrusted scaffold passes `pack-native --validate`.
