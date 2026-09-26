@@ -27,7 +27,7 @@ dependencies, workspace diagnostics). Execute commands.
 `textDocument/codeAction` honours `context.only`: a request restricted to `quickfix` does not
 receive the `source` actions (*AL: Format File*, *AL: Lint File*).
 
-## Client capability gating
+## Client capabilities the server reads
 
 | Client capability | Effect |
 | --- | --- |

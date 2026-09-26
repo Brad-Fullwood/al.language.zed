@@ -22,14 +22,11 @@ its own value.
 > `al-explorer` runs on Linux, macOS, and Windows. Most commands auto-start the daemon for the
 > current project using the platform's local IPC transport.
 
-Exit status is part of the command contract and is identical in human and
-`--json` modes: `0` means the requested gate passed, `1` means a request error
-or a completed gate with blocking findings, and `75` is what `doctor` returns
-while the daemon has not finished its first workspace and package load.
-Finding-producing commands such as `metrics`, `dead-code`,
-`sql-scan`, `duplicates`, `arch-lint`, `breaking`, `upgrade`, `audit-data`, and
-`permission-audit` therefore print their findings and exit non-zero. A
-non-empty report is not silently treated as success.
+Exit status is the same in human and `--json` modes. `0` means the requested check passed, `1`
+means a request error or a completed check with blocking findings, and `75` is what `doctor`
+returns while the daemon has not finished its first workspace and package load. Commands that
+report findings, such as `metrics`, `dead-code`, `sql-scan`, `duplicates`, `arch-lint`, `breaking`,
+`upgrade`, `audit-data`, and `permission-audit`, print their findings and exit non-zero.
 
 Daemon-backed commands use the same dispatcher as MCP and checkout-local contributor tasks. From
 MCP, call the corresponding daemon method through `al_call` with the same parameter object.
@@ -63,7 +60,7 @@ they are confined to: the daemon changes files only inside the project it has lo
 | `search <query>` | global `--limit N` (20) | Fuzzy symbol search across packages + workspace |
 | `object <type> <name>` | `--wait-for-members` | Look up object by kind + name, with members for workspace and package objects alike. A workspace object answers without members and with `partial: true` until the call graph is built, unless `--wait-for-members` is given |
 | `by-id <type> <id>` | `--wait-for-members` | Look up object by kind + numeric id, with members, on the same terms as `object` |
-| `source <name>` | `--kind <type>`, `--package <name>`, `--procedure <name>` or `--trigger <name>`, `--list-procedures` | Return the strongest actual source representation. Ambiguous names require kind/package selection. `--list-procedures` returns signatures and line ranges without bodies, and a wrong `--procedure` name lists the ones that exist |
+| `source <name>` | `--kind <type>`, `--package <name>`, `--procedure <name>` or `--trigger <name>`, `--list-procedures` | Return the object's best available source: workspace source, embedded package source, a generated outline, or metadata only, in that order. Ambiguous names require kind/package selection. `--list-procedures` returns signatures and line ranges without bodies, and a wrong `--procedure` name lists the ones that exist |
 | `location <name>` | `--kind <type>`, `--package <name>` | Print `path:line` for an object's declaration. A package object is materialised as a virtual `.al` file |
 | `composed [<kind>] <name>` | `--name <name>` | Base object + all extensions merged. `--name` spells out a name that could be read as a kind |
 | `packages` | | List loaded packages with version, publisher, object count, and embedded/outline/metadata-only source counts |
@@ -150,9 +147,9 @@ they are confined to: the daemon changes files only inside the project it has lo
 
 | Command | Subcommands / flags | Purpose |
 | --- | --- | --- |
-| `debug` | `start [--config] · breakpoint <file> <line> [--condition] · state · eval <expr> · continue · step [over\|into\|out] · history [--var] · stop` | Drive a debug session |
-| `snapshot` | `start [--description] · list · download <id>` (+ `--company` (required) `--server --username --password --output-dir`) | Snapshot debugging |
-| `profile` | `start · stop [--session-id] · analyze <path> [--top N]` (+ server/auth flags) | CPU profiling |
+| `debug` | `start [--config]`, `breakpoint <file> <line> [--condition]`, `state`, `eval <expr>`, `continue`, `step [over\|into\|out]`, `history [--var]`, `stop` | Drive a debug session |
+| `snapshot` | `start [--description]`, `list`, `download <id>`, all with `--company` (required) and `--server --username --password --output-dir` | Snapshot debugging |
+| `profile` | `start`, `stop [--session-id]`, `analyze <path> [--top N]`, with the server and auth flags | CPU profiling |
 
 ## Tests
 
@@ -161,15 +158,15 @@ they are confined to: the daemon changes files only inside the project it has lo
 | `tests` | | Discover `[Test]` codeunits/methods |
 | `test-run <id>` | `--name --method --config` | Run one codeunit/method using the selected native or live-BC backend |
 | `test-run-all` | `--parallel --timeout-ms N --junit-out P --cobertura-out P --filter G --coverage` | Run all (router decides backend) |
-| `test-coverage` | | Qualified/transitive static coverage summary. Ambiguous overloads remain uncredited and explicit |
+| `test-coverage` | | Qualified/transitive static coverage summary. A call to an overload that cannot be picked is listed in `unresolvedCalls` and not credited |
 | `test-classify` | | Routing decision per test |
 | `test-affected <files…>` | | Tests affected by changed files |
 | `test-results` | `--codeunit --method` | Persisted result history |
 | `test-mutate` | `--files … --parallel --timeout-ms N` | Mutation testing |
-| `test-snapshot` | `capture <id> <codeunit-name> <method> … · validate <path> · replay <path> --bc-version V · diff <a> <b>` | Capture, validate, live-replay, or compare test snapshots |
+| `test-snapshot` | `capture <id> <codeunit-name> <method> …`, `validate <path>`, `replay <path> --bc-version V`, `diff <a> <b>` | Capture, validate, live-replay, or compare test snapshots |
 
 ## Translation
 
 | Command | Subcommands | Purpose |
 | --- | --- | --- |
-| `xlf` | `generate [--project] · refresh <lang.xlf> [--generated <g.xlf>] · untranslated <lang.xlf> · suggest <lang.xlf>` | XLIFF workflows (`refresh` finds the `.g.xlf` when `--generated` is omitted) |
+| `xlf` | `generate [--project]`, `refresh <lang.xlf> [--generated <g.xlf>]`, `untranslated <lang.xlf>`, `suggest <lang.xlf>` | XLIFF workflows (`refresh` finds the `.g.xlf` when `--generated` is omitted) |
