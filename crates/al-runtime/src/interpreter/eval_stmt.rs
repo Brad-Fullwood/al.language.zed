@@ -911,6 +911,21 @@ pub(crate) fn eval_call_parts(
                 }
                 return records::dispatch_dict_method(&recv, &proc_name, args, stack);
             }
+            Some(Value::Json(json))
+                if crate::interpreter::json::supports_json_method(json.kind, &proc_name) =>
+            {
+                let recv = recv.to_string();
+                let args = match eval_args_opt(args_node, source, stack, ctx) {
+                    Ok(v) => v,
+                    Err(ArgsShort::Error(e)) => return Eval::Error(e),
+                    Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
+                };
+                let result = crate::interpreter::json::dispatch_json_method(
+                    &recv, &proc_name, args, stack, ctx,
+                );
+                apply_var_writebacks(args_node, source, stack, ctx);
+                return result;
+            }
             Some(Value::TextBuilder(_)) if records::supports_textbuilder_method(&proc_name) => {
                 let recv = recv.to_string();
                 let args = match eval_args_opt(args_node, source, stack, ctx) {

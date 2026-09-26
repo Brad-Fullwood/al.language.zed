@@ -251,6 +251,18 @@ pub(super) fn classify_type_reference(
     }
 }
 
+/// The JSON type a lowercased type keyword names.
+pub(super) fn json_kind(type_name: &str) -> Option<al_runtime::interpreter::json::JsonKind> {
+    use al_runtime::interpreter::json::JsonKind;
+    match type_name {
+        "jsonobject" => Some(JsonKind::Object),
+        "jsonarray" => Some(JsonKind::Array),
+        "jsontoken" => Some(JsonKind::Token),
+        "jsonvalue" => Some(JsonKind::Value),
+        _ => None,
+    }
+}
+
 /// Why `Validate(Field, ...)` on table `table` must run on live BC: the
 /// field's TableRelation is conditional, or relates to a table outside the
 /// workspace, so the local runtime cannot check the value exists.
@@ -714,6 +726,21 @@ pub(super) fn classify_call(
                     } else {
                         subtype
                     }
+                ),
+                file,
+                member_node,
+                reachable,
+            );
+        }
+    } else if let Some(kind) = json_kind(&type_name) {
+        if !al_runtime::interpreter::json::supports_json_method(kind, &method) {
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::LiveBc,
+                &format!(
+                    "calls unsupported {}.{method} (requires BC semantics)",
+                    decl.type_name
                 ),
                 file,
                 member_node,

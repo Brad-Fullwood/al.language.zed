@@ -40,7 +40,7 @@ pub use workspace_procedure::object_declaration_named;
 
 pub(crate) use datetime::{clock_current_datetime, clock_time, clock_today};
 pub(crate) use frames::declared_text_length;
-pub(crate) use render::{render_value, substitute_placeholders_with};
+pub(crate) use render::{render_value, render_value_xml, substitute_placeholders_with};
 pub(crate) use routing::dispatch_call_scoped;
 
 use std::collections::HashMap;
@@ -185,6 +185,9 @@ pub struct DispatchCtx {
     /// The workspace's event subscribers, indexed on first raise.
     #[doc(hidden)]
     pub event_subscribers: Option<Arc<events::SubscriberIndex>>,
+    /// Every JSON node the running code has made; JSON values refer into it.
+    #[doc(hidden)]
+    pub json: crate::interpreter::json::JsonArena,
 }
 
 /// Fixed default seed for the deterministic `Random` builtin.
@@ -211,6 +214,7 @@ impl DispatchCtx {
             random_state: DEFAULT_RANDOM_SEED,
             expr_fragment_cache: HashMap::new(),
             event_subscribers: None,
+            json: Default::default(),
         }
     }
 

@@ -357,15 +357,15 @@ end;
 fn unsupported_structured_type_method_routes_to_live_bc() {
     let workspace = Workspace::new();
     workspace.file_index.add_file(
-        std::path::PathBuf::from("/tmp/JsonRoutingTests.Codeunit.al"),
-        r#"codeunit 50167 "JSON Routing Tests"
+        std::path::PathBuf::from("/tmp/BigTextRoutingTests.Codeunit.al"),
+        r#"codeunit 50167 "BigText Routing Tests"
 {
 Subtype = Test;
 [Test]
-procedure ReadsJson()
-var Payload: JsonObject;
+procedure AddsText()
+var Payload: BigText;
 begin
-    Payload.ReadFrom('{}');
+    Payload.AddText('x');
 end;
 }"#
         .to_string(),
@@ -1330,5 +1330,42 @@ end;
             .any(|reason| reason.message.contains("calls table procedure Card.Renew")),
         "{:?}",
         local.reasons
+    );
+}
+
+/// JSON types were outside the router's capability set, so any use of
+/// them sent a test to live BC.
+#[test]
+fn json_types_and_their_chains_stay_local() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/JsonRouting.Codeunit.al"),
+        r#"codeunit 50192 "Json Routing"
+{
+Subtype = Test;
+
+[Test]
+procedure ReadsJson()
+var
+    Doc: JsonObject;
+    Token: JsonToken;
+    Out: Text;
+    ok: Boolean;
+begin
+    Doc.Add('name', 'x');
+    ok := Doc.Get('name', Token);
+    Out := Token.AsValue().AsText();
+    Doc.WriteTo(Out);
+    ok := Doc.SelectToken('$.name', Token);
+end;
+}"#
+        .to_string(),
+    );
+    let result = classify_all(&workspace).unwrap().remove(0);
+    assert_eq!(
+        result.decision,
+        RoutingDecision::Interp,
+        "JSON runs locally: {:?}",
+        result.reasons
     );
 }

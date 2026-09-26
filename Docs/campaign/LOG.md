@@ -251,7 +251,7 @@ Append-only. Newest entry last.
   index agent had not started, the desloppify agent had run its scan and written nothing down.
 - All five re-dispatched onto their branches (see `STATE.md`).
 
-## 2026-09-26 18:45 BST: local interpreter runs ordinary AL tests (second session)
+## 2026-09-26 18:36 BST: local interpreter runs ordinary AL tests (second session)
 
 - A second session worked on the local test interpreter and router beside the orchestrator, pushing to this branch (4859b011 to 826b06a9). Driven by two bench test codeunits, a language tour (8 tests) and a second one with a table that has triggers, labels, TextBuilder and Guids (4 tests): at the start of the day every test in both needed live BC; now all 12 run locally except one JSON test, and a changed assertion fails where it should.
 - Interpreter: arrays and `Txt[i]`; chained calls run every step (`S.Trim().ToUpper()` had returned `' A,B '`, only the last call ran); enums (variables, `AsInteger`, `Names`, `FromInteger`); TextBuilder; `CalcDate`, `Date2DWY`, `Evaluate`, `DelStr`, `Maximum`, `ArrayLen`, `CreateGuid`, `IsNullGuid`; `Rename`, `TestField`, `ModifyAll`, `Ascending`, `IsTemporary`; `Format` picture strings, and numbers group thousands as BC's standard format does (`1,234,567`).

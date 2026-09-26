@@ -210,6 +210,7 @@ fn call_on(
         Value::Codeunit { .. } => true,
         Value::Option { .. } => enums::supports_enum_method(&method),
         Value::TextBuilder(_) => records::supports_textbuilder_method(&method),
+        Value::Json(json) => crate::interpreter::json::supports_json_method(json.kind, &method),
         _ => false,
     };
     if !supported {

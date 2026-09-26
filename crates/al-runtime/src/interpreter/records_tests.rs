@@ -3231,3 +3231,92 @@ codeunit 50196 "Greeter"
         Value::Text("Hello Ann, it's Monday".into())
     );
 }
+
+const JSON_PROBE: &str = r#"codeunit 50197 "Json Probe"
+{
+    procedure BuildAndWrite(): Text
+    var
+        Customer: JsonObject;
+        Address: JsonObject;
+        Lines: JsonArray;
+        Out: Text;
+    begin
+        Customer.Add('name', 'Ann');
+        Customer.Add('balance', 12.5);
+        Customer.Add('vip', true);
+        Address.Add('city', 'Oslo');
+        Customer.Add('address', Address);
+        Lines.Add(1);
+        Lines.Add('two');
+        Customer.Add('lines', Lines);
+        // Address was added by reference: later changes show in Customer.
+        Address.Add('zip', '0150');
+        Customer.WriteTo(Out);
+        exit(Out);
+    end;
+
+    procedure ReadAndNavigate(): Text
+    var
+        Doc: JsonObject;
+        Token: JsonToken;
+        Items: JsonArray;
+        Total: Decimal;
+        i: Integer;
+    begin
+        if not Doc.ReadFrom('{"order":{"no":"SO1","items":[{"qty":2,"price":1.25},{"qty":1,"price":10}]}}') then
+            exit('unreadable');
+        Doc.SelectToken('$.order.items', Token);
+        Items := Token.AsArray();
+        for i := 0 to Items.Count() - 1 do begin
+            Items.Get(i, Token);
+            Total += Token.AsObject().GetDecimal('qty') * Token.AsObject().GetDecimal('price');
+        end;
+        Doc.SelectToken('order.no', Token);
+        exit(Token.AsValue().AsText() + '|' + Format(Total) + '|' + Format(Doc.Contains('order')));
+    end;
+
+    procedure SharedReference(): Integer
+    var
+        A: JsonObject;
+        B: JsonObject;
+        Token: JsonToken;
+    begin
+        A.Add('n', 1);
+        B := A;
+        B.Replace('n', 2);
+        A.Get('n', Token);
+        exit(Token.AsValue().AsInteger());
+    end;
+
+    procedure DuplicateKey()
+    var
+        A: JsonObject;
+    begin
+        A.Add('n', 1);
+        A.Add('n', 2);
+    end;
+}
+"#;
+
+/// JSON types were unsupported, so any test using them went to live BC.
+#[test]
+fn json_objects_arrays_and_tokens_run_locally() {
+    let call = |proc: &str| run(&[("/ws/Json.al", JSON_PROBE)], "Json Probe", proc, vec![]);
+    assert_eq!(
+        ok(call("BuildAndWrite")),
+        Value::Text(
+            r#"{"name":"Ann","balance":12.5,"vip":true,"address":{"city":"Oslo","zip":"0150"},"lines":[1,"two"]}"#
+                .into()
+        )
+    );
+    assert_eq!(
+        ok(call("ReadAndNavigate")),
+        Value::Text("SO1|12.5|Yes".into())
+    );
+    assert_eq!(ok(call("SharedReference")), Value::Integer(2));
+    let duplicate = error_message(call("DuplicateKey"));
+    assert!(
+        duplicate.contains("the key 'n' already exists"),
+        "{duplicate}"
+    );
+}

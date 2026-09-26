@@ -102,6 +102,9 @@ pub enum Value {
     Code(String),
     /// AL `TextBuilder` — a string its methods change in place.
     TextBuilder(String),
+    /// `JsonObject`, `JsonArray`, `JsonToken` or `JsonValue`: a reference
+    /// into the dispatch context's JSON arena.
+    Json(crate::interpreter::json::JsonRef),
     /// AL `Date` — days since AL epoch (0001-01-01).
     Date(AlDate),
     /// AL `Time` — milliseconds since midnight.
@@ -220,6 +223,7 @@ impl Ord for Value {
                 Codeunit { .. } => 22,
                 Range { .. } => 23,
                 TextBuilder(_) => 24,
+                Json(_) => 25,
             }
         }
         let mine = variant_index(self);
@@ -237,6 +241,7 @@ impl Ord for Value {
             (Date(a), Date(b)) | (Time(a), Time(b)) | (DateTime(a), DateTime(b)) => a.cmp(b),
             (Duration(a), Duration(b)) => a.cmp(b),
             (Guid(a), Guid(b)) => a.cmp(b),
+            (Json(a), Json(b)) => a.cmp(b),
             (
                 Option {
                     type_name: at,
@@ -407,7 +412,7 @@ impl Value {
             "guid" => Some(Value::Guid("{00000000-0000-0000-0000-000000000000}".into())),
             "char" => Some(Value::Char('\0')),
             "textbuilder" => Some(Value::TextBuilder(String::new())),
-            _ => None,
+            other => crate::interpreter::json::default_for(other),
         }
     }
 
@@ -425,6 +430,12 @@ impl Value {
             Value::Text(_) => "Text",
             Value::Code(_) => "Code",
             Value::TextBuilder(_) => "TextBuilder",
+            Value::Json(json) => match json.kind {
+                crate::interpreter::json::JsonKind::Object => "JsonObject",
+                crate::interpreter::json::JsonKind::Array => "JsonArray",
+                crate::interpreter::json::JsonKind::Token => "JsonToken",
+                crate::interpreter::json::JsonKind::Value => "JsonValue",
+            },
             Value::Date(_) => "Date",
             Value::Time(_) => "Time",
             Value::DateTime(_) => "DateTime",

@@ -84,7 +84,7 @@ pub(super) fn builtin_format(args: &[Value]) -> Eval {
 }
 
 /// Render a value with Format's XML format (format number 9).
-pub(super) fn render_value_xml(v: &Value) -> String {
+pub(crate) fn render_value_xml(v: &Value) -> String {
     match v {
         Value::Boolean(b) => b.to_string(),
         Value::Date(0) | Value::Time(0) | Value::DateTime(0) => String::new(),
