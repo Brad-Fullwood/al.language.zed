@@ -468,6 +468,19 @@ impl From<&str> for JsonError {
     }
 }
 
+/// What `JsonObject.Get<type>(Key, true)` returns for a missing key.
+fn default_for_getter(as_type: &str) -> Option<Value> {
+    Some(match as_type {
+        "text" => Value::Text(String::new()),
+        "code" => Value::Code(String::new()),
+        "integer" => Value::Integer(0),
+        "biginteger" => Value::BigInteger(0),
+        "decimal" => Value::Decimal(Decimal::ZERO),
+        "boolean" => Value::Boolean(false),
+        _ => return None,
+    })
+}
+
 /// `value.AsInteger()` and the typed getters: the scalar converted to `as`.
 fn scalar_as(scalar: &Scalar, as_type: &str) -> Result<Value, String> {
     let number = |scalar: &Scalar| match scalar {
@@ -661,11 +674,27 @@ fn run(
         )),
         (JsonKind::Object, getter, Node::Object(entries)) if getter.starts_with("get") => {
             let key = text_arg(args.first(), "the key")?;
-            let child = entries
+            let found = entries
                 .iter()
                 .find(|(name, _)| *name == key)
-                .map(|(_, child)| *child)
-                .ok_or_else(|| format!("the key '{key}' does not exist"))?;
+                .map(|(_, child)| *child);
+            let default_if_not_found = match args.get(1) {
+                None => false,
+                Some(Value::Boolean(flag)) => *flag,
+                Some(other) => {
+                    return Err(format!(
+                        "DefaultIfNotFound must be a Boolean, got {}",
+                        other.type_name()
+                    )
+                    .into())
+                }
+            };
+            let Some(child) = found else {
+                return match default_for_getter(&getter[3..]) {
+                    Some(default) if default_if_not_found => Ok(default),
+                    _ => Err(format!("the key '{key}' does not exist").into()),
+                };
+            };
             match &arena.nodes[&child] {
                 Node::Scalar(scalar) => Ok(scalar_as(scalar, &getter[3..])?),
                 _ => Err(format!("the value of '{key}' is not a JSON value").into()),

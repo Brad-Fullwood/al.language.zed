@@ -4458,3 +4458,49 @@ fn json_failures_raise_as_statements_and_return_false_as_expressions() {
         Value::Text("caught".into())
     );
 }
+
+const JSON_DEFAULT_PROBE: &str = r#"codeunit 50278 "Json Default Probe"
+{
+    procedure MissingKeysGiveDefaults(): Text
+    var
+        Obj: JsonObject;
+    begin
+        Obj.Add('a', 'x');
+        exit('[' + Obj.GetText('missing', true) + '|' + Obj.GetCode('missing', true) + '|' +
+            Format(Obj.GetInteger('missing', true)) + '|' + Format(Obj.GetBigInteger('missing', true)) + '|' +
+            Format(Obj.GetDecimal('missing', true)) + '|' + Format(Obj.GetBoolean('missing', true)) + '|' +
+            Obj.GetText('a', true) + ']');
+    end;
+
+    procedure MissingKeyWithoutDefault(): Text
+    var
+        Obj: JsonObject;
+    begin
+        exit(Obj.GetText('missing', false));
+    end;
+}
+"#;
+
+/// JsonObject's typed getters take DefaultIfNotFound (runtime 15.0): with
+/// true, a missing key gives the type's default value. The local runtime
+/// raised an error.
+#[test]
+fn json_object_getters_honour_default_if_not_found() {
+    let call = |proc: &str| {
+        run(
+            &[("/ws/JsonDefault.al", JSON_DEFAULT_PROBE)],
+            "Json Default Probe",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(
+        ok(call("MissingKeysGiveDefaults")),
+        Value::Text("[||0|0|0|No|x]".into())
+    );
+    let error = error_message(call("MissingKeyWithoutDefault"));
+    assert!(
+        error.contains("the key 'missing' does not exist"),
+        "{error}"
+    );
+}
