@@ -34,7 +34,8 @@ Merged this session: `campaign/fix-r4-security` (14 of 14), `campaign/fix-blog-f
 `origin/dev`. Gate result on the merge is in `LOG.md`.
 
 PR 30 was merged into `dev` on 2026-09-25 (afec75d1). CI runs on pushes to `main` and `dev` and on
-pull requests, so the campaign branch needs a new draft PR to `dev` for CI to run on its pushes.
+pull requests, so draft PR 32 (https://github.com/Brad-Fullwood/al.language.zed/pull/32, base `dev`)
+now runs CI on every push of this branch.
 
 A fix branch on origin or in `.claude/worktrees/` with commits not in this branch and no live
 agent means the agent died: re-dispatch onto that branch.
