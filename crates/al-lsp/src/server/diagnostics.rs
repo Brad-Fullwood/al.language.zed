@@ -77,30 +77,43 @@ pub(crate) async fn compute_diagnostics(
     uri: &Url,
     text: &str,
 ) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
-
-    {
-        let config_guard = server.workspace.config.read().await;
-        let project_root = server
-            .workspace
-            .project
-            .read()
-            .await
-            .as_ref()
-            .map(|project| project.root.clone());
-        let syntax_diags = al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
-            &server.workspace,
-            uri,
-            &config_guard,
-            project_root.as_deref(),
-        );
-        drop(config_guard);
-        diagnostics.extend(syntax_diags.iter().map(syntax_diag_to_lsp));
-    }
+    let mut diagnostics: Vec<Diagnostic> = syntax_diagnostics(server, uri)
+        .await
+        .iter()
+        .map(syntax_diag_to_lsp)
+        .collect();
 
     diagnostics.extend(run_semantic_analysis(server, uri, text).await);
 
     diagnostics
+}
+
+/// Phase 1 syntax and lint diagnostics for `uri`.
+///
+/// The project root is read and released before the config guard is taken, so
+/// no guard is held across an await. `did_change_configuration` holds the
+/// project write guard while it waits for the config write guard. A config
+/// read guard held across `project.read()` here waited on that writer while
+/// the writer waited on it, and the generation write guard the writer also
+/// holds then stalled every other request.
+async fn syntax_diagnostics(
+    server: &AlServer,
+    uri: &Url,
+) -> Vec<al_analysis::queries::diagnostics::SyntaxDiagnostic> {
+    let project_root = server
+        .workspace
+        .project
+        .read()
+        .await
+        .as_ref()
+        .map(|project| project.root.clone());
+    let config = server.workspace.config.read().await;
+    al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
+        &server.workspace,
+        uri,
+        &config,
+        project_root.as_deref(),
+    )
 }
 
 /// Compute project-scope diagnostics keyed by file for `workspace/diagnostic`.
@@ -386,21 +399,7 @@ pub(crate) async fn publish_diagnostics(
     // redundant parse on every did_open or did_change.
     {
         let parse_start = std::time::Instant::now();
-        let config_guard = server.workspace.config.read().await;
-        let project_root = server
-            .workspace
-            .project
-            .read()
-            .await
-            .as_ref()
-            .map(|project| project.root.clone());
-        let syntax_diags = al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
-            &server.workspace,
-            uri,
-            &config_guard,
-            project_root.as_deref(),
-        );
-        drop(config_guard);
+        let syntax_diags = syntax_diagnostics(server, uri).await;
         let parse_elapsed = parse_start.elapsed();
         let error_count = syntax_diags.len();
         tracing::debug!(uri = %uri, error_count, parse_us = parse_elapsed.as_micros() as u64, "publish_diagnostics: diagnostics from query");

@@ -1625,7 +1625,9 @@ impl LanguageServer for AlServer {
 
             // Both guards are taken before the first swap, so the publication
             // sequence below has no await point that a cancelled handler could
-            // unwind from with the indexes and the project disagreeing.
+            // unwind from with the indexes and the project disagreeing. The
+            // order is project, then config: a task that holds a config guard
+            // while it waits for the project deadlocks against this one.
             let mut published_project = self.workspace.project.write().await;
             let mut published_config = self.workspace.config.write().await;
             self.workspace.symbols.replace_with(&symbols);
