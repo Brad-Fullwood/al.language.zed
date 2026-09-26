@@ -25,6 +25,7 @@ pub mod numeric;
 pub mod random;
 pub mod render;
 pub mod routing;
+pub mod table_code;
 pub mod text;
 pub mod workspace_procedure;
 

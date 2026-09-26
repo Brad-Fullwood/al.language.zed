@@ -788,17 +788,20 @@ fn unknown_table_field_fails_instead_of_getting_a_synthetic_id() {
     assert!(message.contains("is not declared"), "got: {message}");
 }
 
+/// Insert(true) runs the table's OnInsert trigger; a table that declares
+/// none inserts exactly as Insert() does.
 #[test]
-fn requested_record_trigger_fails_instead_of_running_as_a_noop() {
+fn insert_true_without_an_oninsert_trigger_inserts() {
     let cu = r#"codeunit 50101 "Item Tests"
 {
-    procedure InsertWithTrigger()
+    procedure InsertWithTrigger(): Boolean
     var
         Item: Record "Item";
     begin
         Item.Init();
         Item."No." := 'X';
         Item.Insert(true);
+        exit(Item.Get('X'));
     end;
 }
 "#;
@@ -808,11 +811,7 @@ fn requested_record_trigger_fails_instead_of_running_as_a_noop() {
         "InsertWithTrigger",
         vec![],
     );
-    let message = error_message(result);
-    assert!(
-        message.contains("requires live Business Central"),
-        "got: {message}"
-    );
+    assert_eq!(ok(result), Value::Boolean(true));
 }
 
 #[test]
@@ -2873,5 +2872,196 @@ fn textbuilder_guids_rename_and_testfield_run_locally() {
     assert!(
         wrong.contains("Description must be equal to 'Table' in Item. Current value is 'Chair'."),
         "{wrong}"
+    );
+}
+
+const MEMBER_TABLE: &str = r#"table 50180 "Tour Member"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Name; Text[50])
+        {
+            trigger OnValidate()
+            begin
+                "Search Name" := UpperCase(Name);
+                if Name <> xRec.Name then
+                    Changes += 1;
+            end;
+        }
+        field(3; "Search Name"; Code[50]) { }
+        field(4; Balance; Decimal) { }
+        field(5; Changes; Integer) { }
+        field(6; "Item No."; Code[20]) { TableRelation = Item; }
+        field(7; "Last Balance"; Decimal) { }
+    }
+    keys
+    {
+        key(PK; "No.") { Clustered = true; }
+    }
+
+    trigger OnInsert()
+    begin
+        if Balance = 0 then
+            Balance := 100;
+    end;
+
+    trigger OnModify()
+    begin
+        "Last Balance" := xRec.Balance;
+    end;
+
+    trigger OnDelete()
+    begin
+        if Balance > 0 then
+            Error('Cannot delete %1 with a balance', "No.");
+    end;
+
+    procedure Deposit(Amount: Decimal): Decimal
+    begin
+        Balance += Amount;
+        Touch();
+        exit(Balance);
+    end;
+
+    local procedure Touch()
+    begin
+        TestField(Name);
+    end;
+}
+"#;
+
+const MEMBER_PROBE: &str = r#"codeunit 50194 "Member Probe"
+{
+    procedure ValidateRunsOnValidate(): Text
+    var
+        Member: Record "Tour Member";
+    begin
+        Member.Init();
+        Member."No." := 'M1';
+        Member.Validate(Name, 'alice');
+        Member.Validate(Name, 'alice');
+        Member.Validate(Name, 'bob');
+        exit(Member."Search Name" + '|' + Format(Member.Changes));
+    end;
+
+    procedure InsertTrueRunsOnInsert(): Text
+    var
+        Member: Record "Tour Member";
+        Plain: Record "Tour Member";
+    begin
+        Member."No." := 'M1';
+        Member.Insert(true);
+        Plain."No." := 'M2';
+        Plain.Insert();
+        Member.Get('M1');
+        Plain.Get('M2');
+        exit(Format(Member.Balance) + '|' + Format(Plain.Balance));
+    end;
+
+    procedure ModifyTrueSeesStoredRow(): Decimal
+    var
+        Member: Record "Tour Member";
+    begin
+        Member."No." := 'M1';
+        Member.Balance := 10;
+        Member.Insert();
+        Member.Balance := 25;
+        Member.Modify(true);
+        Member.Get('M1');
+        exit(Member."Last Balance");
+    end;
+
+    procedure DeleteTrueCanRefuse()
+    var
+        Member: Record "Tour Member";
+    begin
+        Member."No." := 'M1';
+        Member.Insert(true);
+        Member.Delete(true);
+    end;
+
+    procedure TableProcedure(): Decimal
+    var
+        Member: Record "Tour Member";
+    begin
+        Member."No." := 'M1';
+        Member.Name := 'x';
+        Member.Balance := 5;
+        exit(Member.Deposit(7) + Member.Balance);
+    end;
+
+    procedure TableProcedureRaises(): Decimal
+    var
+        Member: Record "Tour Member";
+    begin
+        exit(Member.Deposit(1));
+    end;
+
+    procedure RelationChecked(): Text
+    var
+        Item: Record Item;
+        Member: Record "Tour Member";
+    begin
+        Item."No." := 'CHAIR';
+        Item.Insert();
+        Member.Validate("Item No.", 'CHAIR');
+        Member.Validate("Item No.", '');
+        exit('ok');
+    end;
+
+    procedure RelationRefused()
+    var
+        Member: Record "Tour Member";
+    begin
+        Member.Validate("Item No.", 'TABLE');
+    end;
+}
+"#;
+
+/// Tables with triggers were refused outright and none of their code ran
+/// locally: no OnValidate, no Insert(true) trigger, no table procedures,
+/// and bare field names in table code were unbound identifiers.
+#[test]
+fn table_triggers_validate_and_procedures_run_on_the_record() {
+    let call = |proc: &str| {
+        run(
+            &[
+                ("/ws/Member.al", MEMBER_TABLE),
+                ("/ws/Probe.al", MEMBER_PROBE),
+                ("/ws/Item.al", ITEM_TABLE),
+            ],
+            "Member Probe",
+            proc,
+            vec![],
+        )
+    };
+    // alice (a change from blank), alice again (no change), bob (a change).
+    assert_eq!(
+        ok(call("ValidateRunsOnValidate")),
+        Value::Text("BOB|2".into())
+    );
+    assert_eq!(
+        ok(call("InsertTrueRunsOnInsert")),
+        Value::Text("100|0".into())
+    );
+    assert_eq!(
+        ok(call("ModifyTrueSeesStoredRow")),
+        Value::Decimal(dec!(10))
+    );
+    let refused = error_message(call("DeleteTrueCanRefuse"));
+    assert!(
+        refused.contains("Cannot delete M1 with a balance"),
+        "{refused}"
+    );
+    // Deposit returns 12 and leaves Balance at 12 on the caller's record.
+    assert_eq!(ok(call("TableProcedure")), Value::Decimal(dec!(24)));
+    let untested = error_message(call("TableProcedureRaises"));
+    assert!(untested.contains("Name must have a value"), "{untested}");
+    assert_eq!(ok(call("RelationChecked")), Value::Text("ok".into()));
+    let missing = error_message(call("RelationRefused"));
+    assert!(
+        missing.contains("cannot be found in the related table (Item)"),
+        "{missing}"
     );
 }

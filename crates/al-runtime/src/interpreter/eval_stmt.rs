@@ -649,6 +649,9 @@ fn eval_assignment(
             Ok(value) => *slot = value,
             Err(message) => return Eval::Error(error_info(&message)),
         }
+    } else if let Some(result) = records::implicit_field_set(&lhs_name, &rhs_val, stack, ctx) {
+        // Table code: a bare field name of the implicit record.
+        return result;
     } else {
         // AL has no implicit declaration: assigning to an unknown name is a
         // compile error in BC, so a typo'd LHS must fail loudly instead of
@@ -822,7 +825,13 @@ pub(crate) fn eval_call_parts(
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Eval {
-    let receiver = receiver.map(str::to_string);
+    // In table code a bare record method (`Modify()`, `TestField(Name)`)
+    // acts on the implicit record.
+    let receiver = receiver.map(str::to_string).or_else(|| {
+        (stack.top().is_some_and(|frame| frame.implicit_record)
+            && records::supports_record_method(proc_name))
+        .then(|| records::IMPLICIT_RECORD.to_string())
+    });
     let proc_name = proc_name.to_string();
     // Argument evaluation clears the statement marker; builtins whose failure
     // differs by position (a statement `Evaluate(...)` raises) need it back.

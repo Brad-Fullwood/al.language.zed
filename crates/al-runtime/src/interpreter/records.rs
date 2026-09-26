@@ -419,7 +419,7 @@ fn parse_table_meta(
 }
 
 /// Find the `object_declaration` for a `table` whose name matches `want`.
-fn find_table_object<'a>(root: Node<'a>, source: &[u8], want: &str) -> Option<Node<'a>> {
+pub(crate) fn find_table_object<'a>(root: Node<'a>, source: &[u8], want: &str) -> Option<Node<'a>> {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         if node.kind() == "object_declaration" {
@@ -451,14 +451,14 @@ fn find_table_object<'a>(root: Node<'a>, source: &[u8], want: &str) -> Option<No
 /// The name lives on the `name:` field as
 /// `(name_or_keyword (name (identifier | quoted_identifier)))`. Reading the
 /// field text and stripping any surrounding quotes recovers the identifier.
-fn object_name_of(obj: Node<'_>, source: &[u8]) -> Option<String> {
+pub(crate) fn object_name_of(obj: Node<'_>, source: &[u8]) -> Option<String> {
     obj.child_by_field_name("name")
         .and_then(|n| n.utf8_text(source).ok())
         .map(|t| t.unquote_identifier().into_owned())
 }
 
 /// Get the `body` object_body of the `object_section` whose keyword equals `kw`.
-fn section_body<'a>(body: Node<'a>, kw: &str, source: &[u8]) -> Option<Node<'a>> {
+pub(crate) fn section_body<'a>(body: Node<'a>, kw: &str, source: &[u8]) -> Option<Node<'a>> {
     let mut cursor = body.walk();
     for child in body.named_children(&mut cursor) {
         if child.kind() != "object_section" {
@@ -472,7 +472,7 @@ fn section_body<'a>(body: Node<'a>, kw: &str, source: &[u8]) -> Option<Node<'a>>
 }
 
 /// All `object_section` children of `body` whose keyword equals `kw`.
-fn sections_with_keyword<'a>(body: Node<'a>, kw: &str, source: &[u8]) -> Vec<Node<'a>> {
+pub(crate) fn sections_with_keyword<'a>(body: Node<'a>, kw: &str, source: &[u8]) -> Vec<Node<'a>> {
     let mut out = Vec::new();
     let mut cursor = body.walk();
     for child in body.named_children(&mut cursor) {
@@ -522,7 +522,7 @@ fn section_keyword(section: Node<'_>, source: &[u8]) -> Option<String> {
 /// (field_no, name, declared_type_text, flow_calc_formula).
 /// The last element is `Some(formula)` only when the field is a FlowField.
 /// Malformed FlowField metadata is an error.
-fn parse_field_def(
+pub(crate) fn parse_field_def(
     section: Node<'_>,
     source: &[u8],
 ) -> Result<(FieldNo, String, Option<String>, Option<CalcFormula>), String> {
@@ -790,6 +790,7 @@ pub fn supports_record_method(method: &str) -> bool {
             | "ascending"
             | "rename"
             | "testfield"
+            | "validate"
     )
 }
 
@@ -830,6 +831,10 @@ pub(crate) fn dispatch_record_method(
     // view's filters select, into the buffer.
     if lower == "calcsums" {
         return dispatch_calcsums(table, handle, &nodes, source, ctx);
+    }
+    // Validate(Field[, Value]): the first argument names a field.
+    if lower == "validate" {
+        return dispatch_validate(table, handle, &nodes, source, stack, ctx);
     }
     // TestField(Field[, Value]): the first argument names a field.
     if lower == "testfield" {
@@ -882,6 +887,37 @@ pub(crate) fn dispatch_record_method(
             Eval::Exit(v) => return Eval::Exit(v),
             // Expressions can't legally produce break/continue statements.
             cf @ (Eval::Break | Eval::Continue) => return cf,
+        }
+    }
+
+    // Insert(true), Modify(true) and Delete(true) run the table's trigger
+    // first, on this record; Rename always runs OnRename. The operation
+    // itself then runs without triggers.
+    let trigger = match lower.as_str() {
+        "insert" | "modify" | "delete" if matches!(values.first(), Some(Value::Boolean(true))) => {
+            values[0] = Value::Boolean(false);
+            Some(match lower.as_str() {
+                "insert" => "OnInsert",
+                "modify" => "OnModify",
+                _ => "OnDelete",
+            })
+        }
+        "rename" => Some("OnRename"),
+        _ => None,
+    };
+    if let Some(trigger) = trigger {
+        let x_rec = x_rec_of(table, handle, lower != "insert", ctx);
+        if let Some(result) = crate::interpreter::dispatch::table_code::run_table_code(
+            record_value_on(table, handle),
+            x_rec,
+            crate::interpreter::dispatch::table_code::TableCode::Trigger(trigger),
+            Vec::new(),
+            stack,
+            ctx,
+        ) {
+            if matches!(result, Eval::Error(_)) {
+                return result;
+            }
         }
     }
 
@@ -1235,6 +1271,186 @@ pub(crate) fn field_get(
     Eval::Normal(read_buffer_field(store, handle, f))
 }
 
+/// The record on `table`'s view `handle`, as table code's implicit `Rec`.
+fn record_value_on(table: &TableRef, handle: u64) -> Value {
+    Value::Record(RecordValue {
+        table_name: table.name.clone(),
+        table_id: 0,
+        handle: Some(handle),
+        temporary: table.temp_owner.is_some(),
+    })
+}
+
+/// `xRec` for table code on view `handle`: a copy of the record on its own
+/// view, holding the buffer as it is now or, with `stored`, the row as the
+/// table holds it.
+fn x_rec_of(table: &TableRef, handle: u64, stored: bool, ctx: &mut DispatchCtx) -> Value {
+    let Value::Record(mut copy) = record_value_on(table, handle) else {
+        unreachable!("record_value_on builds a record");
+    };
+    fork_record_for_by_value(ctx, &mut copy);
+    if stored {
+        if let Some(copy_handle) = copy.handle {
+            let copy_table = TableRef {
+                name: copy.table_name.clone(),
+                temp_owner: copy.temporary.then_some(copy_handle),
+            };
+            if let Ok(key) = ensure_store(ctx, &copy_table) {
+                let store = ctx.records.get_mut(&key).expect("store just ensured");
+                let mut view = store.take_view(copy_handle);
+                store.record.reload_stored_in(&mut view);
+                store.put_view(copy_handle, view);
+            }
+        }
+    }
+    Value::Record(copy)
+}
+
+/// `Rec.Validate(Field[, Value])` — assign the field (when a value is given),
+/// check its TableRelation, then run its OnValidate trigger with the record
+/// as it was before as `xRec`.
+fn dispatch_validate(
+    table: &TableRef,
+    handle: u64,
+    nodes: &[Node<'_>],
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    let (field_node, value_node) = match nodes {
+        [field] => (*field, None),
+        [field, value] => (*field, Some(*value)),
+        _ => return eval_error("Validate expects (Field[, Value])"),
+    };
+    let field_name = node_text(field_node, source)
+        .unquote_identifier()
+        .into_owned();
+    let value = match value_node.map(|node| eval_expr(node, source, stack, ctx)) {
+        None => None,
+        Some(Eval::Normal(value)) => Some(value),
+        Some(other) => return other,
+    };
+    let key = match ensure_store(ctx, table) {
+        Ok(k) => k,
+        Err(e) => return eval_error(e),
+    };
+    let field_no = match ctx.records[&key].resolve_field(&field_name) {
+        Ok(field_no) => field_no,
+        Err(error) => return eval_error(format!("Validate: {error}")),
+    };
+    let x_rec = x_rec_of(table, handle, false, ctx);
+    let store = ctx.records.get_mut(&key).expect("store just ensured");
+    if let Some(value) = value {
+        let coerced = match store.coerce_to_field(field_no, value) {
+            Ok(value) => value,
+            Err(error) => return eval_error(format!("Validate: {error}")),
+        };
+        let mut view = store.take_view(handle);
+        store.record.field_set_in(&mut view, field_no, coerced);
+        store.put_view(handle, view);
+    }
+    let store = ctx.records.get(&key).expect("store just ensured");
+    let current = read_buffer_field(store, handle, field_no);
+    let blank = store
+        .field_defaults
+        .get(&field_no)
+        .is_some_and(|default| *default == current);
+    if !blank {
+        if let Err(error) = check_table_relation(&table.name, &field_name, &current, ctx) {
+            return eval_error(error);
+        }
+    }
+    match crate::interpreter::dispatch::table_code::run_table_code(
+        record_value_on(table, handle),
+        x_rec,
+        crate::interpreter::dispatch::table_code::TableCode::FieldTrigger {
+            field: &field_name,
+            trigger: "OnValidate",
+        },
+        Vec::new(),
+        stack,
+        ctx,
+    ) {
+        Some(error @ Eval::Error(_)) => error,
+        _ => Eval::Normal(Value::Empty),
+    }
+}
+
+/// BC's Validate refuses a value its field's `TableRelation` does not
+/// contain. A plain relation to a workspace table (`TableRelation = Item;`
+/// or `Item."No."`) is checked against that table's rows; a conditional or
+/// filtered relation, or one to a table outside the workspace, cannot be
+/// checked locally and is an error.
+fn check_table_relation(
+    table_name: &str,
+    field_name: &str,
+    value: &Value,
+    ctx: &mut DispatchCtx,
+) -> Result<(), String> {
+    let Some(relation) =
+        crate::interpreter::dispatch::table_code::field_table_relation(ctx, table_name, field_name)
+    else {
+        return Ok(());
+    };
+    // Keywords outside quoted names: `"Gift Card"` is a table, not an `if`.
+    let unquoted: String = relation
+        .split('"')
+        .step_by(2)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    let conditional = unquoted.contains('(')
+        || unquoted
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| matches!(word, "where" | "if" | "else"));
+    if conditional {
+        return Err(format!(
+            "Validate: the TableRelation of {field_name} ('{relation}') needs live Business Central to check"
+        ));
+    }
+    let (target, target_field) = match relation.split_once('.') {
+        Some((target, field)) => (
+            target.trim(),
+            Some(field.trim().unquote_identifier().into_owned()),
+        ),
+        None => (relation.trim(), None),
+    };
+    let target = target.unquote_identifier().into_owned();
+    let target_ref = TableRef::persistent(target.clone());
+    let key = ensure_store(ctx, &target_ref).map_err(|_| {
+        format!(
+            "Validate: {field_name} relates to table '{target}', which is not in the workspace;              checking it needs live Business Central"
+        )
+    })?;
+    let store = ctx.records.get(&key).expect("store just ensured");
+    let related_field = match &target_field {
+        Some(name) => store.resolve_field(name)?,
+        None => match store.record.primary_key_fields() {
+            [single] => *single,
+            _ => {
+                return Err(format!(
+                    "Validate: {field_name} relates to table '{target}' by a composite key;                      checking it needs live Business Central"
+                ))
+            }
+        },
+    };
+    let related_value = store.coerce_to_field(related_field, value.clone())?;
+    let mut view = store.record.new_view();
+    store.record.set_range_in(
+        &mut view,
+        related_field,
+        related_value.clone(),
+        related_value,
+    );
+    if store.record.count_in(&view) == 0 {
+        return Err(format!(
+            "The field {field_name} of table {table_name} contains a value ({}) that cannot be found in the related table ({target}).",
+            crate::interpreter::dispatch::render_value(value)
+        ));
+    }
+    Ok(())
+}
+
 /// `Rec.TestField(Field[, Value])` — raise unless `Field` has a value (is
 /// not its type's zero) or, with `Value`, equals it.
 fn dispatch_testfield(
@@ -1563,7 +1779,19 @@ pub(crate) fn try_field_assign(
     ctx: &mut DispatchCtx,
 ) -> Option<Eval> {
     let (recv, field_name) = record_field_access(lhs_node, source)?;
-    let (table, handle) = record_binding(&recv, stack, ctx)?;
+    set_record_field(&recv, &field_name, rhs_val, stack, ctx)
+}
+
+/// Write `value` to field `field_name` of the record variable `recv`,
+/// coerced to the field's type. `None` when `recv` is not a record variable.
+fn set_record_field(
+    recv: &str,
+    field_name: &str,
+    rhs_val: &Value,
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Option<Eval> {
+    let (table, handle) = record_binding(recv, stack, ctx)?;
     if !records_enabled(ctx) {
         return Some(records_disabled_error());
     }
@@ -1572,7 +1800,7 @@ pub(crate) fn try_field_assign(
         Err(e) => return Some(eval_error(e)),
     };
     let store = ctx.records.get_mut(&key).expect("store just ensured");
-    let f = match store.resolve_field(&field_name) {
+    let f = match store.resolve_field(field_name) {
         Ok(field_no) => field_no,
         Err(error) => return Some(eval_error(error)),
     };
@@ -1584,6 +1812,45 @@ pub(crate) fn try_field_assign(
     store.record.field_set_in(&mut view, f, coerced);
     store.put_view(handle, view);
     Some(Eval::Normal(Value::Empty))
+}
+
+/// The name table code binds its record to.
+pub(crate) const IMPLICIT_RECORD: &str = "Rec";
+
+/// In table code, the field of the implicit record that a bare `name`
+/// denotes. `None` outside table code or when `name` is not a field.
+fn implicit_field(name: &str, stack: &mut ScopeStack, ctx: &mut DispatchCtx) -> Option<String> {
+    if !stack.top().is_some_and(|frame| frame.implicit_record) {
+        return None;
+    }
+    let field = name.unquote_identifier().into_owned();
+    let (table, _) = record_binding(IMPLICIT_RECORD, stack, ctx)?;
+    let key = ensure_store(ctx, &table).ok()?;
+    ctx.records.get(&key)?.resolve_field(&field).ok()?;
+    Some(field)
+}
+
+/// Read a bare field name in table code (`"Search Name"` for
+/// `Rec."Search Name"`).
+pub(crate) fn implicit_field_get(
+    name: &str,
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Option<Eval> {
+    let field = implicit_field(name, stack, ctx)?;
+    let (table, handle) = record_binding(IMPLICIT_RECORD, stack, ctx)?;
+    Some(field_get(&table, handle, &field, ctx))
+}
+
+/// Assign a bare field name in table code.
+pub(crate) fn implicit_field_set(
+    name: &str,
+    value: &Value,
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Option<Eval> {
+    let field = implicit_field(name, stack, ctx)?;
+    set_record_field(IMPLICIT_RECORD, &field, value, stack, ctx)
 }
 
 /// If `node` is a `postfix_expression` of the shape `primary . member` with a

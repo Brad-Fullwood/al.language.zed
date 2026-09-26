@@ -298,6 +298,11 @@ pub(crate) fn dispatch_call_scoped(
         }
     }
 
+    let args =
+        match super::table_code::dispatch_table_procedure(receiver, procedure, args, stack, ctx) {
+            Ok(result) => return result,
+            Err(args) => args,
+        };
     dispatch_workspace_procedure(receiver, procedure, args, stack, ctx)
 }
 

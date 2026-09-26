@@ -118,153 +118,24 @@ pub(super) fn dispatch_workspace_procedure(
         let Some((proc_node, params, return_decl)) = found_proc else {
             continue;
         };
-
-        if args.len() != params.len() {
-            return eval_error(format!(
-                "procedure '{}' expects {} argument(s), got {}",
-                procedure,
-                params.len(),
-                args.len()
-            ));
-        }
-
-        for (i, param) in params.iter().enumerate() {
-            let arg = &args[i];
-            if let Some(err) = check_param_type(arg, &param.type_name) {
-                return Eval::Error(ErrorInfo {
-                    message: format!("type mismatch for parameter '{}': {}", param.name, err),
-                    error_type: None,
-                    source: None,
-                });
-            }
-        }
-
-        // NB: cursor must outlive the iterator, so we use an explicit loop.
-        let body_node = {
-            let mut cursor = proc_node.walk();
-            let mut found_body = None;
-            for child in proc_node.named_children(&mut cursor) {
-                if child.kind() == "begin_end_block" || child.kind() == "statement_list" {
-                    found_body = Some(child);
-                    break;
-                }
-            }
-            found_body
-        };
-
-        let Some(body) = body_node else {
-            return eval_error(format!("procedure '{}' has no body", procedure));
-        };
-
-        let mut frame = CallFrame::new(object_name.as_str(), procedure);
-        for (i, param) in params.iter().enumerate() {
-            let mut val = args.get(i).cloned().unwrap_or(Value::Empty);
-            // A by-value record parameter is the callee's own copy: BC gives
-            // it the caller's buffer but its own filters/cursor. `RecordValue`
-            // is `Clone` and carries the caller's view `handle`, so keeping it
-            // would alias the caller's view and let the callee's SetRange/Next
-            // corrupt the caller's filters. Fork a fresh view seeded with the
-            // caller's buffer instead; `var` parameters keep the shared handle
-            // (by-reference semantics).
-            if !param.is_var {
-                if let Value::Record(rv) = &mut val {
-                    crate::interpreter::records::fork_record_for_by_value(ctx, rv);
-                }
-            }
-            // Coerce an integer argument to the parameter's declared width so a
-            // `BigInteger` parameter keeps i64 semantics even when passed a small
-            // Integer literal and vice versa, matching BC's fixed parameter types.
-            let val = coerce_int_width(val, &param.type_name);
-            frame.bind(&param.name, val);
-            if let Some(length) = declared_text_length(&param.type_name) {
-                frame.bind_declared_text_length(&param.name, length);
-            }
-        }
-        // A named return value (`procedure F() Result: Integer`) is an ordinary
-        // local initialised to the return type's default. It is what the call
-        // yields when the body falls off the end or runs a bare `exit`.
-        let return_default = return_decl
-            .as_ref()
-            .and_then(|r| default_for_declared_type(&r.type_name))
-            .unwrap_or(Value::Empty);
-        if let Some(r) = &return_decl {
-            if let Some(name) = &r.name {
-                frame.bind(name, return_default.clone());
-                if let Some(length) = declared_text_length(&r.type_name) {
-                    frame.bind_declared_text_length(name, length);
-                }
-            }
-        }
-        // Bind the procedure's local `var` section to default values so a
-        // variable can be read before its first assignment. Handles
-        // multi-name declarations (`A, B, C : Integer;`) — every name on the
-        // line gets its own default-initialised slot. Scalar and simple types;
-        // complex types are skipped here.
-        bind_local_vars(proc_node, source, &mut frame);
-        // Then pre-bind structured local variables (`Record`/`Codeunit`/
-        // `List of [T]`) to their handle defaults so member calls / field
-        // access resolution, complementing bind_local_vars.
-        bind_structured_locals(proc_node, source, &mut frame);
-
-        ctx.recursion_depth += 1;
-        if install_root_globals {
-            let mut globals = CallFrame::new(&object_name, "<globals>");
-            bind_object_globals(root, source, &mut globals);
-            stack.push(globals);
-        }
-        stack.push(frame);
-        // Attribute this procedure's statements to the file
-        // it is defined in (which may differ from the caller's file), then
-        // restore the caller's file when the call returns.
-        let cov_prev_file = ctx.cov_enter_file(&path.to_string_lossy());
-        let result = crate::interpreter::eval_stmt::eval_stmt(body, source, stack, ctx);
-        ctx.cov_restore_file(cov_prev_file);
-        ctx.recursion_depth -= 1;
-
-        // Record final values of `var` (by-reference) parameters so the caller
-        // can write them back into its own argument variables. Read from
-        // the still-live callee frame before it is dropped. Nested calls during
-        // the body already cleared/consumed the channel via their own
-        // `dispatch_call`, so populating it here (after the body) is safe.
-        ctx.var_writebacks.clear();
-        for (i, param) in params.iter().enumerate() {
-            if param.is_var {
-                if let Some(val) = stack.top().and_then(|f| f.get(&param.name)).cloned() {
-                    ctx.var_writebacks.push((i, val));
-                }
-            }
-        }
-        // The value a fall-through or a bare `exit` yields: the named return
-        // variable if the declaration has one, otherwise the return type's
-        // default. Read before the frame is dropped.
-        let fallthrough_value = match return_decl.as_ref().and_then(|r| r.name.as_deref()) {
-            Some(name) => stack
-                .top()
-                .and_then(|f| f.get(name))
-                .cloned()
-                .unwrap_or(return_default),
-            None => return_default,
-        };
-        stack.pop();
-        if install_root_globals {
-            stack.pop();
-        }
-
-        // Unwrap Exit into Normal (exit only unwinds the current procedure).
-        // A break/continue that reached here escaped all loops — a runtime
-        // error in AL, not silent success.
-        //
-        // A body that ends without `exit` does not return its last statement's
-        // value: BC gives the caller the return type's default, so a Boolean
-        // function whose last statement is `Rec.Insert()` returns false.
-        return match result {
-            Eval::Exit(Value::Empty) => Eval::Normal(fallthrough_value),
-            Eval::Exit(v) => Eval::Normal(v),
-            Eval::Normal(_) => Eval::Normal(fallthrough_value),
-            Eval::Break => eval_error("break statement not inside a loop"),
-            Eval::Continue => eval_error("continue statement not inside a loop"),
-            other => other,
-        };
+        return run_declaration(
+            Declaration {
+                node: proc_node,
+                name: procedure,
+                params,
+                return_decl,
+            },
+            DeclarationSite {
+                path,
+                source,
+                object_name: &object_name,
+                globals_root: install_root_globals.then_some(root),
+                implicit_record: None,
+            },
+            args,
+            stack,
+            ctx,
+        );
     }
 
     eval_error(format!(
@@ -274,7 +145,206 @@ pub(super) fn dispatch_workspace_procedure(
     ))
 }
 
-fn object_has_global_declarations(root: tree_sitter::Node<'_>) -> bool {
+/// A procedure or trigger declaration ready to run.
+pub(super) struct Declaration<'t> {
+    pub(super) node: tree_sitter::Node<'t>,
+    pub(super) name: &'t str,
+    pub(super) params: Vec<ParamDecl>,
+    pub(super) return_decl: Option<ReturnDecl>,
+}
+
+/// Where a declaration runs: its file, its object, and the frame state the
+/// object brings.
+pub(super) struct DeclarationSite<'t> {
+    pub(super) path: &'t std::path::Path,
+    pub(super) source: &'t [u8],
+    pub(super) object_name: &'t str,
+    /// The object node whose globals a fresh globals frame binds, when one
+    /// must be installed for this call.
+    pub(super) globals_root: Option<tree_sitter::Node<'t>>,
+    /// Table code runs with its record as the implicit `Rec` (and `xRec`):
+    /// bare field names read and write that record.
+    pub(super) implicit_record: Option<(Value, Value)>,
+}
+
+/// Bind `args` to the declaration's parameters, run its body and return what
+/// it yields. `ctx.var_writebacks` carries the final values of `var`
+/// parameters.
+pub(super) fn run_declaration(
+    declaration: Declaration<'_>,
+    site: DeclarationSite<'_>,
+    args: Vec<Value>,
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    let Declaration {
+        node: proc_node,
+        name: procedure,
+        params,
+        return_decl,
+    } = declaration;
+    let DeclarationSite {
+        path,
+        source,
+        object_name,
+        globals_root,
+        implicit_record,
+    } = site;
+
+    if args.len() != params.len() {
+        return eval_error(format!(
+            "procedure '{}' expects {} argument(s), got {}",
+            procedure,
+            params.len(),
+            args.len()
+        ));
+    }
+
+    for (i, param) in params.iter().enumerate() {
+        let arg = &args[i];
+        if let Some(err) = check_param_type(arg, &param.type_name) {
+            return Eval::Error(ErrorInfo {
+                message: format!("type mismatch for parameter '{}': {}", param.name, err),
+                error_type: None,
+                source: None,
+            });
+        }
+    }
+
+    // NB: cursor must outlive the iterator, so we use an explicit loop.
+    let body_node = {
+        let mut cursor = proc_node.walk();
+        let mut found_body = None;
+        for child in proc_node.named_children(&mut cursor) {
+            if child.kind() == "begin_end_block" || child.kind() == "statement_list" {
+                found_body = Some(child);
+                break;
+            }
+        }
+        found_body
+    };
+
+    let Some(body) = body_node else {
+        return eval_error(format!("procedure '{}' has no body", procedure));
+    };
+
+    let mut frame = CallFrame::new(object_name, procedure);
+    for (i, param) in params.iter().enumerate() {
+        let mut val = args.get(i).cloned().unwrap_or(Value::Empty);
+        // A by-value record parameter is the callee's own copy: BC gives
+        // it the caller's buffer but its own filters/cursor. `RecordValue`
+        // is `Clone` and carries the caller's view `handle`, so keeping it
+        // would alias the caller's view and let the callee's SetRange/Next
+        // corrupt the caller's filters. Fork a fresh view seeded with the
+        // caller's buffer instead; `var` parameters keep the shared handle
+        // (by-reference semantics).
+        if !param.is_var {
+            if let Value::Record(rv) = &mut val {
+                crate::interpreter::records::fork_record_for_by_value(ctx, rv);
+            }
+        }
+        // Coerce an integer argument to the parameter's declared width so a
+        // `BigInteger` parameter keeps i64 semantics even when passed a small
+        // Integer literal and vice versa, matching BC's fixed parameter types.
+        let val = coerce_int_width(val, &param.type_name);
+        frame.bind(&param.name, val);
+        if let Some(length) = declared_text_length(&param.type_name) {
+            frame.bind_declared_text_length(&param.name, length);
+        }
+    }
+    // A named return value (`procedure F() Result: Integer`) is an ordinary
+    // local initialised to the return type's default. It is what the call
+    // yields when the body falls off the end or runs a bare `exit`.
+    let return_default = return_decl
+        .as_ref()
+        .and_then(|r| default_for_declared_type(&r.type_name))
+        .unwrap_or(Value::Empty);
+    if let Some(r) = &return_decl {
+        if let Some(name) = &r.name {
+            frame.bind(name, return_default.clone());
+            if let Some(length) = declared_text_length(&r.type_name) {
+                frame.bind_declared_text_length(name, length);
+            }
+        }
+    }
+    // Bind the procedure's local `var` section to default values so a
+    // variable can be read before its first assignment. Handles
+    // multi-name declarations (`A, B, C : Integer;`) — every name on the
+    // line gets its own default-initialised slot. Scalar and simple types;
+    // complex types are skipped here.
+    bind_local_vars(proc_node, source, &mut frame);
+    // Then pre-bind structured local variables (`Record`/`Codeunit`/
+    // `List of [T]`) to their handle defaults so member calls / field
+    // access resolution, complementing bind_local_vars.
+    bind_structured_locals(proc_node, source, &mut frame);
+    if let Some((rec, x_rec)) = implicit_record {
+        frame.bind("Rec", rec);
+        frame.bind("xRec", x_rec);
+        frame.implicit_record = true;
+    }
+
+    ctx.recursion_depth += 1;
+    if let Some(root) = globals_root {
+        let mut globals = CallFrame::new(object_name, "<globals>");
+        bind_object_globals(root, source, &mut globals);
+        stack.push(globals);
+    }
+    stack.push(frame);
+    // Attribute this procedure's statements to the file
+    // it is defined in (which may differ from the caller's file), then
+    // restore the caller's file when the call returns.
+    let cov_prev_file = ctx.cov_enter_file(&path.to_string_lossy());
+    let result = crate::interpreter::eval_stmt::eval_stmt(body, source, stack, ctx);
+    ctx.cov_restore_file(cov_prev_file);
+    ctx.recursion_depth -= 1;
+
+    // Record final values of `var` (by-reference) parameters so the caller
+    // can write them back into its own argument variables. Read from
+    // the still-live callee frame before it is dropped. Nested calls during
+    // the body already cleared/consumed the channel via their own
+    // `dispatch_call`, so populating it here (after the body) is safe.
+    ctx.var_writebacks.clear();
+    for (i, param) in params.iter().enumerate() {
+        if param.is_var {
+            if let Some(val) = stack.top().and_then(|f| f.get(&param.name)).cloned() {
+                ctx.var_writebacks.push((i, val));
+            }
+        }
+    }
+    // The value a fall-through or a bare `exit` yields: the named return
+    // variable if the declaration has one, otherwise the return type's
+    // default. Read before the frame is dropped.
+    let fallthrough_value = match return_decl.as_ref().and_then(|r| r.name.as_deref()) {
+        Some(name) => stack
+            .top()
+            .and_then(|f| f.get(name))
+            .cloned()
+            .unwrap_or(return_default),
+        None => return_default,
+    };
+    stack.pop();
+    if globals_root.is_some() {
+        stack.pop();
+    }
+
+    // Unwrap Exit into Normal (exit only unwinds the current procedure).
+    // A break/continue that reached here escaped all loops — a runtime
+    // error in AL, not silent success.
+    //
+    // A body that ends without `exit` does not return its last statement's
+    // value: BC gives the caller the return type's default, so a Boolean
+    // function whose last statement is `Rec.Insert()` returns false.
+    match result {
+        Eval::Exit(Value::Empty) => Eval::Normal(fallthrough_value),
+        Eval::Exit(v) => Eval::Normal(v),
+        Eval::Normal(_) => Eval::Normal(fallthrough_value),
+        Eval::Break => eval_error("break statement not inside a loop"),
+        Eval::Continue => eval_error("continue statement not inside a loop"),
+        other => other,
+    }
+}
+
+pub(super) fn object_has_global_declarations(root: tree_sitter::Node<'_>) -> bool {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         if node.kind() == "object_var_section" {
