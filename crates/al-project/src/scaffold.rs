@@ -236,6 +236,7 @@ pub fn create_project(dir: &Path, config: &ScaffoldConfig) -> Result<ScaffoldRes
             generate_vscode_settings(config)?.into_bytes(),
         ));
     }
+    refuse_linked_destinations(dir, planned.iter().map(|(name, _)| name.as_str()))?;
     refuse_existing_destinations(dir, planned.iter().map(|(name, _)| name.as_str()))?;
 
     let mut files = Vec::with_capacity(planned.len());
@@ -349,7 +350,11 @@ fn refuse_existing_destinations<'a>(
     dir: &Path,
     names: impl Iterator<Item = &'a str>,
 ) -> Result<(), String> {
-    let existing: Vec<&str> = names.filter(|name| dir.join(name).exists()).collect();
+    // `symlink_metadata`, because `exists` follows a link and is false for a
+    // dangling one.
+    let existing: Vec<&str> = names
+        .filter(|name| std::fs::symlink_metadata(dir.join(name)).is_ok())
+        .collect();
     if existing.is_empty() {
         return Ok(());
     }
@@ -358,6 +363,39 @@ fn refuse_existing_destinations<'a>(
         dir.display(),
         existing.join(", ")
     ))
+}
+
+/// Fail when a symbolic link sits anywhere between `dir` and a planned
+/// destination.
+///
+/// The daemon contains `dir` itself, but a repository can ship
+/// `tools/newapp/.vscode` as a link to a directory outside the project, and
+/// `create_dir_all` and the write then follow it. The scaffold only ever
+/// creates real directories, so any link on the way is refused.
+fn refuse_linked_destinations<'a>(
+    dir: &Path,
+    names: impl Iterator<Item = &'a str>,
+) -> Result<(), String> {
+    for name in names {
+        let mut walked = dir.to_path_buf();
+        for component in Path::new(name).components() {
+            walked.push(component);
+            match std::fs::symlink_metadata(&walked) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(format!(
+                        "Refusing to scaffold into {}: {} is a symbolic link, and the scaffold \
+                         would write through it",
+                        dir.display(),
+                        walked.strip_prefix(dir).unwrap_or(&walked).display()
+                    ));
+                }
+                // Nothing there yet, so nothing deeper exists either.
+                Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Write `content` to `path` atomically.
@@ -376,7 +414,12 @@ fn atomic_write(path: &Path, content: &[u8], label: &str) -> Result<(), String> 
         None => return Err(format!("Failed to derive tempfile name for {label}")),
     };
 
-    let mut file = std::fs::File::create(&tmp_path)
+    // `create_new`, so a file or link planted at the predictable temp name
+    // fails the write instead of being followed.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp_path)
         .map_err(|e| format!("Failed to open tempfile for {label}: {e}"))?;
     if let Err(e) = file.write_all(content) {
         let _ = std::fs::remove_file(&tmp_path);
@@ -623,6 +666,7 @@ fn materialize_custom_template(
             files_root.display()
         ));
     }
+    refuse_linked_destinations(dir, planned.iter().map(|(name, _, _)| name.as_str()))?;
     refuse_existing_destinations(dir, planned.iter().map(|(name, _, _)| name.as_str()))?;
 
     std::fs::create_dir_all(dir).map_err(|e| format!("Failed to create project directory: {e}"))?;
@@ -1287,6 +1331,58 @@ mod tests {
                 "nothing may be written when the scaffold is refused"
             );
         }
+    }
+
+    /// A repository can ship a subdirectory of the scaffold target as a link
+    /// out of the project. The scaffold used to create `launch.json` and
+    /// `settings.json` through it.
+    #[cfg(unix)]
+    #[test]
+    fn scaffold_refuses_to_write_through_a_linked_subdirectory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("newapp");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join(".vscode")).unwrap();
+
+        let error = create_project(&dir, &ScaffoldConfig::default())
+            .expect_err("a linked .vscode must be refused");
+        assert!(error.contains("symbolic link"), "{error}");
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        assert!(!dir.join("app.json").exists(), "nothing may be written");
+    }
+
+    /// A dangling link is a destination that exists, even though
+    /// `Path::exists` says otherwise.
+    #[cfg(unix)]
+    #[test]
+    fn scaffold_refuses_a_dangling_link_at_a_destination() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("newapp");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("nowhere"), dir.join(".gitignore")).unwrap();
+
+        let error = create_project(&dir, &ScaffoldConfig::default())
+            .expect_err("a dangling link must be refused");
+        assert!(error.contains(".gitignore"), "{error}");
+        assert!(!tmp.path().join("nowhere").exists());
+    }
+
+    /// The temp name is predictable, so one planted there must fail the write
+    /// rather than be followed.
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_does_not_follow_a_planted_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = dir.path().join("foo.al");
+        let pid = std::process::id();
+        let planted = outside.path().join("captured");
+        std::os::unix::fs::symlink(&planted, dir.path().join(format!("foo.al.{pid}.tmp"))).unwrap();
+
+        assert!(atomic_write(&target, b"hello", "foo.al").is_err());
+        assert!(!planted.exists(), "the write followed the planted link");
     }
 
     /// AL object names are limited to 30 characters (AL0305). A template that

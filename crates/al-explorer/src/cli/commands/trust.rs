@@ -10,9 +10,13 @@
 //! the user granted trust in one call: a `.zed/tasks.json` target, a `build.rs`,
 //! an agent's Bash tool. It now asks, and it reads the answer from the terminal
 //! (`/dev/tty`, `CONIN$` on Windows) rather than from stdin, so a pipe cannot
-//! answer for the user. A scripted install that genuinely has no terminal
-//! passes `--yes` together with `--root <project>`, which makes the caller
-//! spell out the project it meant.
+//! answer for the user.
+//!
+//! A CI job has no terminal. It passes `--yes` with `--root <project>` and
+//! `--digest <sha256>`, the digest a person read with `trust --show`, so the
+//! job records only the values that person reviewed and fails when a commit
+//! changes one. No refusal names those flags: a refusal addressed to a caller
+//! with no terminal is addressed to a script or an agent.
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -25,12 +29,19 @@ use super::{print_json, report_error};
 /// What a person types to record the trust.
 const CONFIRMATION: &str = "yes";
 
+/// The flags a CI job answers the confirmation with.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Unattended<'a> {
+    pub yes: bool,
+    pub root: Option<&'a str>,
+    pub digest: Option<&'a str>,
+}
+
 pub fn cmd_trust(
     project: Option<&str>,
     show: bool,
     revoke: bool,
-    yes: bool,
-    explicit_root: Option<&str>,
+    unattended: Unattended<'_>,
     json: bool,
 ) -> ExitCode {
     let root = match super::project_root(project) {
@@ -43,7 +54,7 @@ pub fn cmd_trust(
     if revoke {
         return revoke_trust(&root, json);
     }
-    grant_trust(&root, yes, explicit_root, json)
+    grant_trust(&root, unattended, json)
 }
 
 fn canonical(root: &Path) -> PathBuf {
@@ -72,6 +83,7 @@ fn show_trust(root: &Path, json: bool) -> ExitCode {
     }
     println!("Project: {}", decision.root.display());
     println!("Trust:   {state}");
+    println!("Digest:  {}", decision.digest);
     if decision.privileged.is_empty() {
         println!("This project supplies no settings that need trust.");
         return ExitCode::SUCCESS;
@@ -108,8 +120,8 @@ fn revoke_trust(root: &Path, json: bool) -> ExitCode {
     }
 }
 
-/// Whether `--yes` and `--root` stand in for the terminal, or the terminal
-/// must be asked, or the call is refused.
+/// Whether `--yes`, `--root` and `--digest` stand in for the terminal, or the
+/// terminal must be asked, or the call is refused.
 ///
 /// `Ok(true)` means the caller already answered. `Ok(false)` means ask the
 /// terminal. `Err` is the refusal to print.
@@ -118,18 +130,13 @@ fn revoke_trust(root: &Path, json: bool) -> ExitCode {
 /// is exactly the condition it is about.
 fn confirmation_needed(
     project_root: &Path,
-    yes: bool,
-    explicit_root: Option<&str>,
+    current_digest: &str,
+    unattended: Unattended<'_>,
     stdin_is_terminal: bool,
 ) -> Result<bool, String> {
-    if yes {
-        let Some(named) = explicit_root else {
-            return Err(format!(
-                "--yes needs --root <path> naming the project it applies to. {} records that \
-                 someone read the values above; naming the project is how a scripted caller \
-                 says which ones.",
-                trust::TRUST_COMMAND
-            ));
+    if unattended.yes {
+        let Some(named) = unattended.root else {
+            return Err("--yes needs --root <path> naming the project it applies to.".to_string());
         };
         let named = Path::new(named)
             .canonicalize()
@@ -141,15 +148,32 @@ fn confirmation_needed(
                 project_root.display()
             ));
         }
+        // `--yes` records trust with nobody reading the values, so it records
+        // only the values a person already read: the digest pins them. A
+        // commit that changes one makes this fail rather than be trusted.
+        let Some(pinned) = unattended.digest else {
+            return Err(
+                "--yes records trust without asking, so it needs --digest pinning the values a \
+                 person reviewed in a terminal. See Docs/features/project-trust.md."
+                    .to_string(),
+            );
+        };
+        if pinned.trim() != current_digest {
+            return Err(format!(
+                "--digest {} does not match this project's privileged values ({current_digest}). \
+                 They changed since they were reviewed, and nothing was recorded.",
+                trust::one_line(pinned.trim())
+            ));
+        }
         return Ok(true);
     }
 
     if !stdin_is_terminal {
         return Err(format!(
             "{} asks before it writes, and this call has no terminal to ask. It is a command \
-             the user runs: a task, a hook, a skill or an agent's shell must not run it. If \
-             you are scripting an install whose settings you have read, pass --yes together \
-             with --root <project>.",
+             the user runs in a terminal: a task, a hook, a skill or an agent's shell must not \
+             run it, and this refusal is not a prompt to find another way. The values it would \
+             record are listed above for the user to read.",
             trust::TRUST_COMMAND
         ));
     }
@@ -204,7 +228,7 @@ fn open_terminal() -> std::io::Result<std::fs::File> {
     ))
 }
 
-fn grant_trust(root: &Path, yes: bool, explicit_root: Option<&str>, json: bool) -> ExitCode {
+fn grant_trust(root: &Path, unattended: Unattended<'_>, json: bool) -> ExitCode {
     let decision = match trust::decide(root) {
         Ok(decision) => decision,
         Err(error) => return report_error(&format!("cannot read project settings: {error}"), json),
@@ -243,8 +267,8 @@ fn grant_trust(root: &Path, yes: bool, explicit_root: Option<&str>, json: bool) 
 
     match confirmation_needed(
         &decision.root,
-        yes,
-        explicit_root,
+        &decision.digest,
+        unattended,
         std::io::stdin().is_terminal(),
     ) {
         Err(refusal) => return report_error(&refusal, json),
@@ -296,13 +320,24 @@ fn grant_trust(root: &Path, yes: bool, explicit_root: Option<&str>, json: bool) 
 mod tests {
     use super::*;
 
+    const DIGEST: &str = "sha256:reviewed";
+
+    fn unattended<'a>(root: Option<&'a str>, digest: Option<&'a str>) -> Unattended<'a> {
+        Unattended {
+            yes: true,
+            root,
+            digest,
+        }
+    }
+
     /// The finding's own reproduction: the command wrote the record with stdin
     /// closed and no terminal, so a task, a hook, a `build.rs` or an agent's
     /// Bash tool granted trust in one call.
     #[test]
     fn a_call_with_no_terminal_is_refused() {
-        let error = confirmation_needed(Path::new("/tmp/proj"), false, None, false)
-            .expect_err("a call with no terminal must be refused");
+        let error =
+            confirmation_needed(Path::new("/tmp/proj"), DIGEST, Unattended::default(), false)
+                .expect_err("a call with no terminal must be refused");
         assert!(error.contains("no terminal"), "{error}");
         assert!(
             error.contains("agent's shell"),
@@ -310,29 +345,81 @@ mod tests {
         );
     }
 
-    /// `--yes` on its own is the flag a script reaches for first, and the one
-    /// an agent would copy out of an error message. Naming the project is what
-    /// makes it a decision about a specific set of values.
+    /// A refusal sent to a caller with no terminal reaches a script or an
+    /// agent, so it must not name the flags that would make the same call
+    /// succeed.
+    #[test]
+    fn the_refusal_does_not_name_the_flags_that_bypass_it() {
+        let error =
+            confirmation_needed(Path::new("/tmp/proj"), DIGEST, Unattended::default(), false)
+                .unwrap_err();
+        for flag in ["--yes", "--root", "--digest"] {
+            assert!(!error.contains(flag), "the refusal names {flag}: {error}");
+        }
+    }
+
+    /// `--yes` on its own is the flag a script reaches for first. Naming the
+    /// project is what makes it a decision about a specific set of values.
     #[test]
     fn yes_without_root_is_refused() {
-        let error = confirmation_needed(Path::new("/tmp/proj"), true, None, false)
-            .expect_err("--yes alone must be refused");
+        let error = confirmation_needed(
+            Path::new("/tmp/proj"),
+            DIGEST,
+            unattended(None, Some(DIGEST)),
+            false,
+        )
+        .expect_err("--yes alone must be refused");
         assert!(error.contains("--root"), "{error}");
     }
 
     #[test]
     fn yes_with_a_different_root_is_refused() {
-        let error = confirmation_needed(Path::new("/tmp/proj"), true, Some("/tmp/other"), false)
-            .expect_err("--root naming another project must be refused");
+        let error = confirmation_needed(
+            Path::new("/tmp/proj"),
+            DIGEST,
+            unattended(Some("/tmp/other"), Some(DIGEST)),
+            false,
+        )
+        .expect_err("--root naming another project must be refused");
         assert!(error.contains("/tmp/other"), "{error}");
     }
 
+    /// `--yes --root` used to record whatever the repository held at that
+    /// moment, reviewed or not.
     #[test]
-    fn yes_with_the_matching_root_answers_for_the_caller() {
+    fn yes_without_the_reviewed_digest_is_refused() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        let error = confirmation_needed(&root, DIGEST, unattended(root.to_str(), None), false)
+            .expect_err("--yes needs the reviewed digest");
+        assert!(error.contains("--digest"), "{error}");
+    }
+
+    #[test]
+    fn yes_with_a_digest_the_values_no_longer_match_is_refused() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        let error = confirmation_needed(
+            &root,
+            DIGEST,
+            unattended(root.to_str(), Some("sha256:before-the-commit")),
+            false,
+        )
+        .expect_err("changed values must not be recorded");
+        assert!(error.contains("changed since"), "{error}");
+    }
+
+    #[test]
+    fn yes_with_the_matching_root_and_digest_answers_for_the_caller() {
         let project = tempfile::tempdir().unwrap();
         let root = project.path().canonicalize().unwrap();
         assert_eq!(
-            confirmation_needed(&root, true, root.to_str(), false),
+            confirmation_needed(
+                &root,
+                DIGEST,
+                unattended(root.to_str(), Some(DIGEST)),
+                false
+            ),
             Ok(true)
         );
     }
@@ -342,7 +429,7 @@ mod tests {
     #[test]
     fn a_terminal_is_asked_rather_than_taken_as_consent() {
         assert_eq!(
-            confirmation_needed(Path::new("/tmp/proj"), false, None, true),
+            confirmation_needed(Path::new("/tmp/proj"), DIGEST, Unattended::default(), true),
             Ok(false)
         );
     }

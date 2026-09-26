@@ -26,6 +26,9 @@ pub struct CallFrame {
     /// Source location of the call site (file + line) for stack traces.
     /// `None` for the synthetic top frame.
     pub call_site: Option<(String, u32)>,
+    /// Table code: bare names that are not variables are fields of `Rec`,
+    /// and bare record methods (`Modify()`, `TestField(...)`) act on it.
+    pub implicit_record: bool,
 }
 
 impl CallFrame {
@@ -36,6 +39,7 @@ impl CallFrame {
             locals: HashMap::new(),
             declared_text_lengths: HashMap::new(),
             call_site: None,
+            implicit_record: false,
         }
     }
 

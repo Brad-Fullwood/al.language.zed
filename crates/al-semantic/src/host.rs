@@ -64,6 +64,8 @@ pub(crate) struct DotNetHost;
 // Concurrent calls are serialized by std::sync::Mutex in SemanticBridge::call().
 #[cfg(feature = "semantic")]
 unsafe impl Send for DotNetHost {}
+// SAFETY: as for `Send`. The bridge keeps the host in a `std::sync::Mutex`,
+// so no two threads call through a shared reference at once.
 #[cfg(feature = "semantic")]
 unsafe impl Sync for DotNetHost {}
 

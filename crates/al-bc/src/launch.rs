@@ -250,7 +250,7 @@ const MAX_LAUNCH_FILE_BYTES: u64 = 1_048_576;
 /// or untrusted config could use `file:///etc/passwd` or `gopher://...` and
 /// that URL would be handed unchanged to the BC HTTP client. Restrict to
 /// http(s):// (the only two schemes the BC dev API uses) or bare hostnames
-/// (e.g. `localhost`, where the BC client default-prepends http://).
+/// (e.g. `localhost`, which [`server_with_scheme`] reads as https).
 pub fn is_safe_http_server(server: &str) -> bool {
     let s = server.trim();
     if s.is_empty() {
@@ -273,10 +273,14 @@ pub fn is_safe_http_server(server: &str) -> bool {
 
 /// `server` with a scheme, or `None` when it is not an acceptable BC server.
 ///
-/// Both URL builders need this: `build_base_url` prepends `http://` to a bare
-/// host, and `dev_packages_url` used not to, so a `launch.json` with
-/// `"server": "bc.example.com"` published fine and then failed symbol download
-/// with `url::Url` reading `bc.example.com` as the scheme.
+/// A bare host is `https`. Every request builder and the credential
+/// authorisation in `al_project::trust` read the server through this one
+/// function, so the scheme the authorisation judges is the scheme the request
+/// uses. It used to prepend `http://`, while the authorisation read the same
+/// bare host as `https`, so a trusted `"server": "bc.corp.example"` passed the
+/// cleartext rule and then sent Basic credentials over plain HTTP. A server that
+/// really is cleartext is written with `http://`, and one that is not loopback
+/// also needs `AL_ALLOW_INSECURE_BC_HTTP=1`.
 pub fn server_with_scheme(server: &str) -> Option<String> {
     let server = server.trim();
     if !is_safe_http_server(server) {
@@ -286,18 +290,12 @@ pub fn server_with_scheme(server: &str) -> Option<String> {
         );
         return None;
     }
-    if server.starts_with("http://") || server.starts_with("https://") {
+    // `is_safe_http_server` has already required the scheme, in any case, to
+    // be http or https.
+    if server.contains("://") {
         return Some(server.to_string());
     }
-    // Not silent: defaulting to http:// here means Basic (UserPassword/Windows)
-    // credentials go out Base64-in-cleartext. Say so, so an operator who wanted
-    // TLS notices a plain hostname was misread as http.
-    warn!(
-        server = %server,
-        "BC server URL has no scheme — defaulting to http:// (cleartext); Basic/Windows \
-         credentials will be sent unencrypted. Use an explicit https:// URL to avoid this."
-    );
-    Some(format!("http://{server}"))
+    Some(format!("https://{server}"))
 }
 
 fn read_launch_file_capped(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
@@ -812,7 +810,7 @@ mod tests {
 
     #[test]
     fn dev_packages_url_adds_a_scheme_to_a_bare_host() {
-        // `build_base_url` prepended `http://` and this did not, so publishing
+        // `build_base_url` prepended a scheme and this did not, so publishing
         // worked and symbol download from the same config failed with
         // `url::Url` reading `bc.example.com` as the scheme.
         let mut cfg = onprem_config();
@@ -820,10 +818,35 @@ mod tests {
         cfg.port = Some(7049);
         let url = cfg.dev_packages_url(&make_dep()).unwrap();
         assert!(
-            url.starts_with("http://bc.example.com:7049/BC/dev/packages?"),
+            url.starts_with("https://bc.example.com:7049/BC/dev/packages?"),
             "unexpected URL: {url}"
         );
-        assert_eq!(url::Url::parse(&url).unwrap().scheme(), "http");
+        assert_eq!(url::Url::parse(&url).unwrap().scheme(), "https");
+    }
+
+    /// The credential authorisation reads a bare host as `https`, so the
+    /// request has to go there as `https` too. Sending it as `http` put Basic
+    /// credentials on the wire for a server the cleartext rule had passed.
+    #[test]
+    fn a_bare_host_is_sent_as_https() {
+        assert_eq!(
+            server_with_scheme("bc.corp.example").as_deref(),
+            Some("https://bc.corp.example")
+        );
+        assert_eq!(
+            server_with_scheme("bc.corp.example:7049").as_deref(),
+            Some("https://bc.corp.example:7049")
+        );
+        assert_eq!(
+            server_with_scheme("http://bc.corp.example").as_deref(),
+            Some("http://bc.corp.example"),
+            "an explicit http:// is the user's choice and stays"
+        );
+        assert_eq!(
+            server_with_scheme("HTTP://bc.corp.example").as_deref(),
+            Some("HTTP://bc.corp.example"),
+            "an upper-case scheme is a scheme, not part of a bare host"
+        );
     }
 
     #[test]

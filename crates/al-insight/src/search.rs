@@ -495,11 +495,16 @@ fn recurse_subscriber(
 /// is where direct/indirect/trigger call edges actually live — a procedure with
 /// any incoming call edge is excluded. Without it the result degenerates to
 /// "every procedure", which is why the daemon passes its call graph.
+///
+/// Rows are sorted by object kind, object name and procedure name. Node
+/// order is the order the symbol index hands out its entries, the iteration
+/// order of a `DashMap`, and it differs between two builds over the same
+/// packages.
 pub fn find_entry_points<'g>(
     graph: &'g InsightGraph,
     call_graph: Option<&CallGraph>,
 ) -> Vec<&'g InsightNode> {
-    graph
+    let mut rows: Vec<&InsightNode> = graph
         .graph
         .node_indices()
         .filter(|&idx| {
@@ -520,7 +525,32 @@ pub fn find_entry_points<'g>(
             }
         })
         .map(|idx| &graph.graph[idx])
-        .collect()
+        .collect();
+    rows.sort_by_cached_key(|node| entry_point_order(node));
+    rows
+}
+
+/// The sort key of an `entrypoints` row: object kind, then object and
+/// procedure name ignoring case, then as written. Only procedures are rows.
+fn entry_point_order(
+    node: &InsightNode,
+) -> Option<(al_symbols::ObjectKind, String, String, String, String, bool)> {
+    match node {
+        InsightNode::Procedure {
+            object_kind,
+            object_name,
+            name,
+            is_local,
+        } => Some((
+            *object_kind,
+            object_name.to_lowercase(),
+            object_name.clone(),
+            name.to_lowercase(),
+            name.clone(),
+            *is_local,
+        )),
+        _ => None,
+    }
 }
 
 pub fn export_dot(graph: &InsightGraph) -> String {
@@ -1335,6 +1365,36 @@ mod tests {
             if child.node_type == "event" {
                 assert!(child.cycle, "re-entry into root EventA must be cycle=true");
             }
+        }
+    }
+
+    /// The graph adds nodes in the order the symbol index hands out its
+    /// entries, which is the iteration order of a `DashMap` and differs
+    /// between two indexes over the same entries. `entrypoints` listed its
+    /// rows in node order, so two daemon starts gave the same rows in a
+    /// different order.
+    #[test]
+    fn entry_points_come_back_in_one_order_from_every_build() {
+        let entries: Vec<SymbolEntry> = (0..40)
+            .map(|id| make_codeunit_with_procs(id, &format!("CU {id:02}"), vec!["Run", "Post"]))
+            .collect();
+        let rows = |entries: &[SymbolEntry]| -> Vec<String> {
+            let index = SymbolIndex::new();
+            index.add_entries(entries);
+            let mut insight = InsightGraph::new();
+            insight.build_from_index(&index);
+            let cg = CallGraph::build_from_insight(&insight);
+            find_entry_points(&insight, Some(&cg))
+                .into_iter()
+                .map(|node| serde_json::to_string(node).unwrap())
+                .collect()
+        };
+        let first = rows(&entries);
+        assert_eq!(first.len(), 80);
+        let reversed: Vec<SymbolEntry> = entries.iter().rev().cloned().collect();
+        for _ in 0..3 {
+            assert_eq!(rows(&entries), first);
+            assert_eq!(rows(&reversed), first);
         }
     }
 

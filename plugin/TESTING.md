@@ -67,7 +67,7 @@ its context, summed across the run.
 | 7 | Audit this extension before I deploy it. What problems does it have? | `bc-workspace-health` | `native-check`, `sql-scan`, `dead-code`, `arch-lint`, `audit-data`, `permission-audit`, `metrics --all`, `duplicates` | `native-check`, `sql-scan`, `dead-code`, `arch-lint` | 14,286 | 9,111 |
 
 All seven correct in both rounds. The Round 3 byte counts are reconstructed
-from the commands each run made against the same fixture; the Round 4 counts
+from the commands each run made against the same fixture. The Round 4 counts
 are measured from the session streams.
 
 What changed in the answers, not only their size:

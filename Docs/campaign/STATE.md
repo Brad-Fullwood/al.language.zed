@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-24 12:30 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-26 16:55 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -8,26 +8,69 @@ Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two 
 
 ## In flight
 
-Nothing. The three unmerged fix branches (`fix-formatter-idempotence`, `fix-ghost-diagnostics`,
-`slop-splits-2`) are merged. `campaign/ai-persisted-index` never reached origin, so the
-persisted index is queued again below.
+Session 2026-09-26 18:32 BST (headless, Fable orchestrator). At the start origin was five commits
+ahead of the local checkout (4859b011..901586e2): a cloud session had pushed runtime and test
+router work straight to the campaign branch (table code runs on its record, event subscribers run,
+TextBuilder, Guids, Rename and TestField run locally, labels bind, a codeunit declared after a table
+in one file runs as itself). Pulled. Three agent branches were complete with no live agent and were
+merged: `campaign/fix-ghost-race-2` (3c2f2e12), `campaign/fix-profile-extension` (900e2174),
+`campaign/ai-persisted-index-2` (a10e5eea). Gates on a10e5eea started 18:40, results go in `LOG.md`.
+
+Five agents dispatched at 18:40:
+
+- Round 7 fixes (A, D), Opus: worktree `.claude/worktrees/agent-fix-r7`, branch
+  `campaign/fix-r7-review`. 9 of 15 fixed by the earlier agents (SEC-1 to SEC-5, SEC-8, PERF-1,
+  BLOG-1, BUG-1). This one finishes the uncommitted SEC-7 fix (`SessionGate` in
+  `server/lsp/mod.rs`), merges the campaign branch, then SEC-6, BLOG-2, BLOG-3, DOC-1, DOC-2.
+- `cargo mutants` (E), Sonnet: worktree `.claude/worktrees/agent-a34708a3121ce8ac2`, branch
+  `campaign/test-mutants`. 5 of 10 files recorded in `findings/mutants.md`. Left: the formatting
+  module, `lint.rs`, `mock/record.rs`, `composition.rs`, `cobertura.rs`. A killed `--in-place` run
+  leaves the mutation in the source file: check `git status` in that worktree before re-dispatching.
+- Round 8 review (A), Opus: detached worktree `.claude/worktrees/agent-r8-review` at 901586e2,
+  writes `findings/r8-session-review.md` in the main checkout. Scope `git diff 0027bf80..901586e2
+  -- crates`: the five cloud commits first, then the persisted index, then merge damage.
+- desloppify batch 11 (C), Sonnet: worktree `.claude/worktrees/agent-slop-11`, branch
+  `campaign/slop-batch-11`, restricted to al-source, al-emit, al-types, al-protocol, al-analysis,
+  al-insight and zed-al so it does not cross the other agents.
+- Audit backlog triage (B), Sonnet: detached worktree `.claude/worktrees/agent-audit-triage` at
+  a10e5eea, writes `findings/audit-backlog-triage.md` in the main checkout: one row per
+  `AUDIT-BACKLOG.md` finding (fixed, open, not a defect, moot), then a queue for workstream A.
+
+A second session (interactive, not the watchdog's) works on the local test interpreter and the
+test router and pushes straight to this branch (`LOG.md`, 18:45 entry). The orchestrator fetches
+and merges `origin/campaign/2026-09-21` before every push and runs the gates on the merge. Its
+commits get a reviewer in the next review round.
+
+A review or triage file in the main checkout without its `## ... complete` line means the agent died:
+commit what it wrote and re-dispatch from the last entry.
+
+Merged earlier on 2026-09-26: `campaign/fix-r4-security` (14 of 14), `campaign/fix-blog-findings`
+(4 of 4 over two merges), `origin/dev`, `campaign/docs-review`, `campaign/ai-persisted-index`.
+Gate results are in `LOG.md`.
+
+PR 30 was merged into `dev` on 2026-09-25 (afec75d1). CI runs on pushes to `main` and `dev` and on
+pull requests, so draft PR 32 (https://github.com/Brad-Fullwood/al.language.zed/pull/32, base `dev`)
+now runs CI on every push of this branch.
+
+A fix branch on origin or in `.claude/worktrees/` with commits not in this branch and no live
+agent means the agent died: re-dispatch onto that branch.
 
 Remote branch cleanup: every `campaign/*` branch except this one is merged into it. Cloud
 sessions can push only to `campaign/2026-09-21`, so deleting them is left to Brad (the list is in
 `LOG.md`, 2026-09-24).
 
-Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, CI runs on every push).
-
 Queued:
 
-- Persisted symbol and source index on disk (cold start 54 s and 2.9 GB RSS), keyed by app id, version and content hash.
-- Rebuild `target/release` before measuring for articles (it predates `publish` and `free-ids`).
 - al-dap and al-publish post to different BC dev endpoints (needs a live server to settle).
 - desloppify fix batches (`findings/desloppify.md` section 4), file splits after the owning fix branch merges.
 - Workstream E (tests): coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis. Start when a build slot frees.
-- Workstream D (security): dedicated review after round 1 fixes are in, covering what changed.
-- Blog: article 1 repeats a wrong diagnosis of the `trace` timeout (it is the cold call-graph build, 86 s with Base Application). Rewrite that paragraph. Articles 2, 4, 5, 8 after the daemon work and fix branches merge, then article 9, then the fact pass list in `findings/blog-progress.md`.
+- Blog: done for now (re-read 13:10). Before publishing: timings on a quiet machine, article 9's final re-read when the campaign ends, `readTime`, four articles over the word range. Merge to `main` is Brad's call.
+- `pack-native --validate` on a new untrusted project prints the "not trusted" notice twice.
 - Plugin leftovers: `plugin/evals/`, release binary download hook, test on a project with `.alpackages`.
+- Windows named pipe owner check (documented, no Windows machine in the campaign).
+- A wedged daemon request can hold a daemon past its idle window (warns every 60 s).
+- `DotNetPackages` in `SymbolReference.json` is not read by the symbol reader (`ObjectKind::DotNet` exists). Decide whether those entries should index.
+- Ghost race, left open in `findings/ghost-race-2.md`: a project pass can publish a cross-file result for a URI whose own input did not change, and the clears at the top of the publish step have no currency check.
 
 A review file without a `## Review complete` line means the agent died. Re-dispatch it to
 continue from the unticked coverage items. A fix branch on origin with findings still `open`
@@ -43,15 +86,15 @@ whichever ones pay off most. Record progress per workstream below so gaps are vi
 
 | # | Workstream | Progress | Next step |
 |---|------------|----------|-----------|
-| A | Correctness: review rounds, triage, fixes with a failing test first | R1 reviews running | Triage each `findings/r1-*.md` as it completes, dispatch fix agents per crate group |
-| B | Old audit: mark each of the 227 `AUDIT-BACKLOG.md` findings fixed or open | R1 reviewers report still-open ones | Collect `[STILL-OPEN]` tags, queue them under A |
+| A | Correctness: review rounds, triage, fixes with a failing test first | Rounds 1 to 7 fixed or queued. Round 7: 9 of 15 fixed, 6 with an agent. Round 8 review running over the five cloud commits and the persisted index | Triage `findings/r8-session-review.md` as it completes, dispatch a fix agent |
+| B | Old audit: mark each of the 227 `AUDIT-BACKLOG.md` findings fixed or open | Triage agent running 2026-09-26 18:40, writes `findings/audit-backlog-triage.md` | Queue the open ones under A |
 | C | Slop and simplification: desloppify plan, per-crate simplify pass | Batch 3 (four file splits) and the 112 item review queue merged. Strict 79.9. 2026-09-24: test modules split out of six large files, rustdoc warnings 46 to 0 (CI gated), bulk-fix errors typed | Fresh `desloppify review` to re-score, then the 63 deferred items (typed RPC boundary is the largest), batches 10 (async locking) and 11 (docs and API hygiene), remaining file splits (`resolution.rs` 2754 lines, `dispatch.rs` 3243, `tests_dispatch.rs` 4216, `lsp.rs` 3415, `native_dap.rs` 3636) |
-| D | Security: credentials, archive parsing, MCP and daemon input, extension binary download, supply chain | Three review rounds (8, 19, 10 findings), all fixed and merged. Project trust, dispatcher capability registry, peer-checked endpoint | Windows named pipe owner check. A fourth round late in the week over the final diff |
-| E | Tests: coverage by crate, property tests, `cargo mutants` | First pass merged: 4 bugs found by property tests, coverage table, CI job proposal | Nightly property job added (`property-nightly.yml`, 8192 cases; the per-PR run already covers 128). Next: `cargo mutants` on the 10 file shortlist in `findings/test-depth.md`, make `al-test/backends/snapshot.rs` testable |
+| D | Security: credentials, archive parsing, MCP and daemon input, extension binary download, supply chain | Four review rounds (8, 19, 10, 14 findings), all fixed and merged. Project trust, dispatcher capability registry, peer-checked endpoint, trust digest over analyzer and dotnet file hashes, credential authorisation on every DAP and test path | Windows named pipe owner check. A fifth round over what changed after 2026-09-26 |
+| E | Tests: coverage by crate, property tests, `cargo mutants` | First pass merged: 4 bugs found by property tests, coverage table, CI job proposal. `cargo mutants` 5 of 10 files on `campaign/test-mutants` (agent running) | Nightly property job added (`property-nightly.yml`, 8192 cases; the per-PR run already covers 128). Next: `cargo mutants` on the 10 file shortlist in `findings/test-depth.md`, make `al-test/backends/snapshot.rs` testable |
 | F | Grammar: corpus tests, query drift between `languages/al` and `tree-sitter-al/queries` | R1 review running | From R1 findings |
-| G | AI tooling: make this project speed up and sharpen AI work on Business Central (see below) | Inventory, measurements and design done (`findings/ai-tooling-ideas.md`): latency is 4 to 150 ms warm, but 14 of 20 measured answers are too large for an agent (up to 9.4 MB). Plugin build running | Daemon projection work after the LSP fix branch merges |
-| H | Docs: `Docs/`, `README.md`, `ROADMAP.md` match the code, then unsloppify | R1 docs review running | From R1 findings |
-| I | Blog: replace the six articles with a new series on the current project, unsloppify each | On blog branch `campaign/2026-09-rewrite`: six posts deleted, site cleaned, `pnpm validate` passes (it failed on `main`), fact sheet and nine-article plan in `findings/blog-plan.md`, articles 1 to 8 drafted (8 of 9), article 9 (the campaign retrospective) is written last, article 1 `trace` paragraph corrected | Articles 2, 4, 5, 8 after the fix branches settle, article 9 last, final fact pass, merge to `main` |
+| G | AI tooling: make this project speed up and sharpen AI work on Business Central (see below) | Plugin, daemon projection, free-ids, compact answers merged. Persisted dependency source index merged 2026-09-26: second start 23.6 s to 1.25 s, peak memory 2.8 GB to 371 MB (`findings/persisted-index.md`) | Cache key to cover the summary builder, shared package storage, sorted rows; plugin leftovers (`plugin/evals/`, binary download hook) |
+| H | Docs: `Docs/`, `README.md`, `ROADMAP.md` match the code, then unsloppify | Done 2026-09-26: every user doc checked against the code and given a plain-wording pass (`findings/docs-review.md`) | Re-check the docs each later merge touches |
+| I | Blog: replace the six articles with a new series on the current project, unsloppify each | Nine articles written, fact-passed, unsloppified and re-read after the security round on blog branch `campaign/2026-09-rewrite` (pushed), `pnpm validate` passes, all `draft: true` | Article 9 final re-read at campaign end, quiet-machine timings, `readTime`, then merge to `main` (Brad) |
 
 ### G: AI tooling detail
 
@@ -78,6 +121,11 @@ round on the areas with the most findings.
 
 ## Done
 
+- 2026-09-26 persisted dependency source index merged (`findings/persisted-index.md`): summaries instead of trees, persisted per package, second daemon start 23.6 s to 1.25 s for `impact`, peak memory 2.8 GB to 371 MB, identical answers.
+- 2026-09-26 docs review merged (`findings/docs-review.md`): every user doc checked against the code, four drift items fixed, plain-wording pass over `Docs/`, `README.md`, `ROADMAP.md` and `plugin/`.
+- 2026-09-26 security round 4 merged: 14 of 14 fixed (`findings/r4-security.md`). Every DAP and test-run path authorises the target before a credential leaves the machine, a scheme-less server is `https`, XLIFF methods are contained, the trust digest hashes repository-resident analyzers and `dotnet`, the handshake proof is checked before the build identity, a linked `.alpackages` is an untrusted package cache, the semantic bridge is in the release digests, the scaffold and native build refuse symlinks, `trust --yes` is pinned to a reviewed digest, the language server re-gates settings when trust inputs move.
+- 2026-09-26 blog findings 1 to 4 merged: `packages` counts skip synthetic Option enums, the client deadline extends while the call graph builds, `object` and `byId` answer without the graph, the `${Name}` analyzer token spelling is a builtin so a fresh untrusted scaffold passes `pack-native --validate`.
+- 2026-09-26 async locking batch merged (`findings/async-locking.md`): two deadlocks in al-lsp, DAP proxy stdout lock per frame, dead allow attributes removed, SAFETY comments on every unsafe block.
 - 2026-09-24 r6 session review: 14 of 14 fixed (`findings/r6-session-review.md`). File-index re-index race closed, typed bulk-fix errors, six large files lost their test modules to `tests.rs`, rustdoc at zero warnings and gated in CI.
 - 2026-09-24 r5 dogfood closed: 31 of 32 findings fixed, 1 partly (`findings/r5-dogfood.md`). Table and table-extension changes reach their tests, plain Insert/Modify/Delete raise table events in the call graph, `graph --scope workspace`, `impact` call/write/read, LSP-shaped JSON and readable text for completions/hints/symbols/folding, suggest-event says why a trace is partial.
 - 2026-09-24 features and CI: all six CI jobs green on PR 30 (first time this campaign; ubuntu ShellCheck, Windows data directory and output-pipe inheritance, macOS `/var` and `/tmp` symlinks). `package-diff <old.app> <new.app>` (Base Application 25 to 26: 1,137 changes, 7 s, only the ones the workspace uses), `obsolete --used`, a `.al` file watcher in the LSP server, a text outline for `symbols`, and the `bc-upgrade-impact` skill rewritten around them (it had told agents `obsolete` lists workspace uses and `breaking` diffs dependencies; neither did).

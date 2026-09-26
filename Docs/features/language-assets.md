@@ -1,13 +1,13 @@
 # Language Assets & Schemas
 
-**Locations:** `languages/al/`, `snippets/`, `themes/`, `schemas/` · **Status:** ✅ shipped
-(all of `languages/al/` and `themes/` are **generated** — see warning)
+**Locations:** `languages/al/`, `snippets/`, `themes/`, `schemas/`. **Status:** ✅ shipped
+(all of `languages/al/` and `themes/` are **generated**, see the warning)
 
 These are the static assets Zed loads to make AL feel native: the language config, tree-sitter query
 files, snippets, themes, and JSON schemas for project files.
 
 > ⚠️ **Generated, do not hand-edit.** Everything in `languages/al/` is generated output (canonical
-> `.scm` queries are copied from `tree-sitter-al/queries`; Zed-specific config and supplemental queries
+> `.scm` queries are copied from `tree-sitter-al/queries`. Zed-specific config and supplemental queries
 > come from generator templates), and `themes/bc-themes.json` is generated from Business Central VS
 > Code theme data. Edit the generators or templates. Run `make language` for `languages/al/`, and
 > run `make grammar` for grammar data or themes. The generator rejects unknown files under
@@ -20,7 +20,7 @@ files, snippets, themes, and JSON schemas for project files.
 | `config.toml` | Zed language registration: name "AL", grammar "al", `.al` suffix, `//` comments, bracket pairs, word chars, `al-lsp` server |
 | `highlights.scm` | syntax highlighting captures (keywords, types, functions, comments, strings, numbers, operators) derived for parity with the VS Code AL grammar |
 | `outline.scm` | document outline (objects, procedures/triggers, events, keys, enum values, and the executable scopes nested under a callable: `begin`, `if`, `case`, `for`, `foreach`, `while`, `repeat`, `with`, each named after its own expression) |
-| `locals.scm` | local variable scope & resolution (scopes for blocks/case/events/loops/objects; definitions for objects/methods/vars/parameters) |
+| `locals.scm` | local variable scope & resolution (scopes for blocks/case/events/loops/objects, definitions for objects/methods/vars/parameters) |
 | `textobjects.scm` | text-object selection (objects, procedures, triggers, events, statements) |
 | `folds.scm` | folding regions (objects, procedures, blocks, control statements, attribute lists) |
 | `indents.scm` | auto-indentation rules |
@@ -29,7 +29,7 @@ files, snippets, themes, and JSON schemas for project files.
 | `injections.scm` | language injection points |
 | `overrides.scm` | tree-sitter quirk overrides |
 | `semantic_token_rules.json` | maps the LSP semantic token types (from `al-lsp`) to Zed theme classes (e.g. `builtinType→@type.builtin`, `tableField→@property`, `excludedCode→@comment.unused`) |
-| `tasks.json` | the AL task list Zed's task picker shows: compile, package, download symbols, authenticate, lint/format/fix, symbol and dependency queries, analysis reports, workspace fixups, and test runs — all `al-explorer` subcommands |
+| `tasks.json` | the AL task list Zed's task picker shows: compile, package, download symbols, authenticate, lint/format/fix, symbol and dependency queries, analysis reports, workspace fixups, and test runs, all `al-explorer` subcommands |
 | `runnables.scm` | inline run buttons next to `[Test]`, `[TestPermissions]`, `[HandlerFunctions]`, `[EventSubscriber]`, `[IntegrationEvent]` and `[BusinessEvent]` procedures, tagged `al-test` / `al-event-subscriber` / `al-event-publisher` |
 
 ### `al-explorer` must be on `PATH`
@@ -40,7 +40,7 @@ one needs a task in the other or the inline run button resolves to nothing. The 
 `every_runnable_tag_has_a_task_that_subscribes_to_it` enforces that.
 
 Both invoke a bare `al-explorer`. Stable Zed task JSON cannot address a binary inside the extension
-work directory, so the extension's own downloaded sidecar is not reachable from a task — the tasks
+work directory, so the extension's own downloaded copy is not reachable from a task. The tasks
 resolve only once `al-explorer` is on `PATH`. Install it from the release archive, or symlink the
 copy the extension already downloaded:
 
@@ -50,15 +50,15 @@ ln -sf "$(ls -d ~/.local/share/zed/extensions/work/al/al-lsp-*/al-explorer | tai
 
 Until that is done the task entries appear in the picker and fail with "command not found". The
 same operations are also available without `PATH` through LSP commands (`al.downloadSymbols`,
-`al.build`, …) and the resolved **AL Tools** MCP server, neither of which needs the sidecar.
+`al.compile`, …) and the resolved **AL Tools** MCP server, neither of which needs the sidecar.
 
 ## Snippets
 
-- `snippets/al.json` — 50+ AL code snippets with tab stops: procedures, triggers, events and event
+- `snippets/al.json`: 78 AL code snippets with tab stops: procedures, triggers, events and event
   subscribers, control flow (if/case/for/foreach/while/repeat), assertions, `with…do`, error handling,
   test attributes, integration/business events, test setup/teardown.
-- `snippets/json.json` — launch/attach debug configurations for on-premises and cloud Business
-  Central environments; every emitted field is checked against `debug_adapter_schemas/al.json`.
+- `snippets/json.json`: launch/attach debug configurations for on-premises and cloud Business
+  Central environments. Every emitted field is checked against `debug_adapter_schemas/al.json`.
 
 ## Themes
 
@@ -72,7 +72,7 @@ via `json.schemas`, see [`examples/zed-settings.jsonc`](../../examples/zed-setti
 
 | Schema | Validates | Highlights |
 | --- | --- | --- |
-| `app.json` | the app manifest | required id/name/publisher/version; runtime, target, dependencies, features, idRanges, resourceExposurePolicy, launch, marketplace metadata |
+| `app.json` | the app manifest | required id/name/publisher/version. Runtime, target, dependencies, features, idRanges, resourceExposurePolicy, launch, marketplace metadata |
 | `settings.json` | `al.*` LSP settings | every setting (also drives in-editor autocomplete on Zed 0.8+) |
 | `ruleset.json` | `*.ruleset.json` | per-code severity overrides (Error/Warning/Hidden/Info/None) |
 | `alarch.json` | `.alarch.json` | native architecture lint rules, object-kind scopes, and literal/regex matching |
@@ -100,7 +100,7 @@ keeps Zed's parse view in sync with the native parser.
 These load automatically when the extension is installed. To get project-file autocomplete/validation,
 add the `json.schemas` block from `examples/zed-settings.jsonc`. Use `make language` after changing
 Zed templates or canonical queries. Use `make grammar` after changing grammar, extracted language
-data, or theme inputs; it requires the Microsoft AL extension and tree-sitter CLI.
+data, or theme inputs. It requires the Microsoft AL extension and tree-sitter CLI.
 
 ## Compatibility boundaries
 

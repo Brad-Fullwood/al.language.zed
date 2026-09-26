@@ -650,7 +650,7 @@ pub(super) async fn run_test(
         None => None,
     };
 
-    let Some(config) = config else {
+    let Some(mut config) = config else {
         server
             .client
             .show_message(
@@ -664,6 +664,22 @@ pub(super) async fn run_test(
             .await;
         return serde_json::json!({ "status": "noServer", "target": target });
     };
+    // The server comes from the repository's launch file, and the run sends
+    // the user's own credentials to it, so it is authorised the way
+    // `tests.run` and `publish` are.
+    if let Some(root) = project_root.as_deref() {
+        if let Err(error) = crate::server::daemon::authorize_live_test_target(root, &mut config) {
+            server
+                .client
+                .show_message(MessageType::ERROR, format!("Cannot run test: {error}"))
+                .await;
+            return serde_json::json!({
+                "status": "unauthorized",
+                "target": target,
+                "error": error,
+            });
+        }
+    }
 
     let config_name = config.name.clone();
     server

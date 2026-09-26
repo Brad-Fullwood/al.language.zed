@@ -195,3 +195,84 @@ mod cross_platform_tests {
         assert!(!is_timeout_message("Connection closed by daemon (EOF)"));
     }
 }
+
+/// What a request does at its deadline, for the `status` answers a cold
+/// `trace` sees in turn: the source index building, then the call graph
+/// building on top of it, then both ready.
+mod deadline_extension_tests {
+    use super::{after_deadline, DeadlineAction, IndexProgress, MAX_INDEX_WAIT};
+    use serde_json::json;
+    use std::time::Duration;
+
+    fn decide(status: &serde_json::Value, waited: Duration, last: &mut usize) -> DeadlineAction {
+        after_deadline(
+            "trace",
+            IndexProgress::from_status(status).as_ref(),
+            waited,
+            last,
+        )
+    }
+
+    #[test]
+    fn the_deadline_extends_until_the_call_graph_is_built() {
+        let source_building = json!({
+            "sourceIndex": {"state": "building", "packagesDone": 3, "packagesTotal": 6,
+                            "filesDone": 4211, "elapsedMs": 20000},
+            "callGraph": {"state": "idle", "elapsedMs": 0},
+        });
+        let graph_building = json!({
+            "sourceIndex": {"state": "ready", "packagesDone": 6, "packagesTotal": 6,
+                            "filesDone": 9000, "elapsedMs": 23500},
+            "callGraph": {"state": "building", "elapsedMs": 6500},
+        });
+        let both_ready = json!({
+            "sourceIndex": {"state": "ready", "packagesDone": 6, "packagesTotal": 6,
+                            "filesDone": 9000, "elapsedMs": 23500},
+            "callGraph": {"state": "ready", "elapsedMs": 12000},
+        });
+        let mut last = 0;
+        let waited = Duration::from_secs(30);
+
+        assert_eq!(
+            decide(&source_building, waited, &mut last),
+            DeadlineAction::KeepWaiting
+        );
+        assert_eq!(
+            decide(&graph_building, waited, &mut last),
+            DeadlineAction::KeepWaiting,
+            "the call graph is still building after the source index is ready"
+        );
+        assert_eq!(
+            decide(&both_ready, waited, &mut last),
+            DeadlineAction::TimeOut
+        );
+    }
+
+    #[test]
+    fn a_call_graph_build_past_the_ceiling_gives_up_and_names_it() {
+        let graph_building = json!({
+            "sourceIndex": {"state": "ready", "filesDone": 9000},
+            "callGraph": {"state": "building", "elapsedMs": 590000},
+        });
+        let mut last = 9000;
+        match decide(&graph_building, MAX_INDEX_WAIT, &mut last) {
+            DeadlineAction::GiveUp(message) => {
+                assert!(message.contains("call graph"), "{message}");
+                assert!(message.contains("590 s"), "{message}");
+            }
+            other => panic!("expected GiveUp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_daemon_without_call_graph_progress_keeps_the_source_index_rule() {
+        let older_daemon = json!({
+            "sourceIndex": {"state": "ready", "filesDone": 9000},
+        });
+        let mut last = 0;
+        assert_eq!(
+            decide(&older_daemon, Duration::from_secs(30), &mut last),
+            DeadlineAction::TimeOut
+        );
+    }
+}

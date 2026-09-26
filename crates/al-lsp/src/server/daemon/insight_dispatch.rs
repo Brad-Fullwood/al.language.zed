@@ -413,11 +413,13 @@ enum SymbolResolution {
 fn resolve_impact_symbol(workspace: &Workspace, symbol: &str) -> SymbolResolution {
     let (object, member) = split_object_member(symbol);
     let entries = workspace.symbols.get_by_name(&object);
-    let in_workspace_files = workspace
-        .file_index
-        .object_info
-        .iter()
-        .any(|entry| entry.value().name.eq_ignore_ascii_case(&object));
+    // Every object of every file, not only each file's first.
+    let in_workspace_files = workspace.file_index.object_infos.iter().any(|entry| {
+        entry
+            .value()
+            .iter()
+            .any(|info| info.name.eq_ignore_ascii_case(&object))
+    });
     if entries.is_empty() && !in_workspace_files {
         let candidates = unknown_symbol_candidates(workspace, &object);
         return SymbolResolution::UnknownObject {
@@ -582,6 +584,23 @@ pub(super) fn dispatch_event_map(workspace: &Workspace, id: u64) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `impact` checks the name against workspace files before the symbol
+    /// index holds workspace objects. A codeunit declared after a table in
+    /// the same file was reported as an unknown object.
+    #[test]
+    fn impact_knows_the_second_object_of_a_workspace_file() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/ws/Posting.al"),
+            "table 50200 \"Posting Buffer\" { }\n\ncodeunit 50100 \"Posting Mgt\" { procedure Post() begin end; }\n"
+                .to_string(),
+        );
+        assert!(matches!(
+            resolve_impact_symbol(&workspace, "Posting Mgt"),
+            SymbolResolution::Found
+        ));
+    }
 
     /// A procedure called only from a low-fanout file had no resolved
     /// incoming edge, so `entrypoints` listed it as never called.

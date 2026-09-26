@@ -85,6 +85,36 @@ This repository is public. No customer names, paths, tenant IDs or object names 
 - `tests/fixtures/valid/` and `invalid/` grew past what `gaps-and-future-work.md` records. Worth a
   generated count rather than a written one, the same way the daemon method catalog works.
 
+
+### Revision 2026-09-26 (plan article 2)
+
+Binaries rebuilt from `campaign/2026-09-21` at `ba2cda14` (`cargo build --release -p al-explorer
+-p al-lsp`). Blog commit `a0e7e9a`.
+
+| Fact | Result today | How verified |
+| --- | --- | --- |
+| grammar submodule and `extension.toml` rev | both `38368a0f5a0565d7b42a71e0578deff46ce384e0`, unchanged | `git submodule status`, `git ls-files -s tree-sitter-al`, `extension.toml:39` |
+| 412 keywords, 180/53/21/8/17/133 | unchanged | re-ran the `json.load` one-liner |
+| `grammar.js` 1,229 lines, `parser.c` 2,058,185 B, `scanner.c` 37,150 B | unchanged | `wc -l`, `ls -la` |
+| 25 valid and 10 invalid fixtures | unchanged | `ls tests/fixtures/{valid,invalid}/*.al` |
+| corpus 46,389 files, both pins | unchanged, counted independently again | `find BCApps ALAppExtensions -type f ...`, both checkouts at the pinned revisions |
+| `scanner.c:907`, `:1163`, `:257` excerpts | verbatim at those lines | read |
+| `al-gen/src/main.rs:746` bucketing | verbatim; the article now ends the excerpt at the `metadata` branch instead of inventing a closing brace | read |
+| corpus count check | starts at `main.rs:1997`, not 1998; excerpt now verbatim with one argument per line | read |
+| `main.rs:2088` invalid-fixture bail | unchanged | read |
+| ROADMAP node-shape sentence | now `ROADMAP.md:18` (the article cites no line) | read |
+| `check-release-hygiene.sh:241` | unchanged | read |
+| `tests/test_repos.toml` | has a `description` line per repo that the article's excerpt leaves out | read; excerpt kept, not marked as the whole file in prose |
+
+Corrections applied: the parenthetical saying `Docs/gaps-and-future-work.md` still records 23 and 9
+fixtures is gone. `gaps-and-future-work.md:33` says 25 and 10 since `01734b8d`. Line 79 still says
+23 and 9, inside a dated "evidence recorded during this completion run" block, which is history
+rather than a claim.
+
+Re-check before publishing: the rev if the submodule moves, and the corpus if either pin moves. The
+corpus was not re-run today. The last recorded run (`LOG.md`, 2026-09-21 11:50) is on the same
+submodule revision.
+
 ---
 
 ## 2. `symbols-without-the-compiler`
@@ -489,6 +519,42 @@ fixed this week, the article's "A bug I found writing this" section needs rewrit
 - Snapshot capture and replay have no transcript in this article, because they need a tenant.
   Should the series get one article with real live-BC output, or stay entirely reproducible?
 
+
+### Revision 2026-09-26 (plan article 5)
+
+Blog commit `a4c87ce`. Binaries from `ba2cda14`. The scratch fixture was rebuilt from the article's
+own transcripts, since the originals were never committed: table 50140 `Rate Line` (`Currency Code`
+Code[10] key, `Rate` Decimal), codeunit 50141 `Rate Test` (`TestMidpointRounding` asserts
+`Round(2.5, 1) = 3` and `Round(0.125, 0.01) = 0.13`, `TestRateLookup` does Init/Insert/Get),
+codeunit 50142 `Staging Test` (Count, Init, Validate, Insert on `Work Order Staging`). A second copy
+added `Lie Test` 50143 (Round, fall-off-the-end `false`, two temporary variables) and
+`Sibling Test` 50144. A negative control with every assertion inverted failed all three `Lie Test`
+methods, so the passes are not vacuous.
+
+| Fact | Result today | How verified |
+| --- | --- | --- |
+| `al-runtime` 24,256 lines, `al-test` 10,705 | was 22,046 and 9,960 | `find crates/<c>/src -name '*.rs' \| xargs cat \| wc -l` |
+| `test-classify` output | reasons are now listed once each (`b75d772f`), so the doubled `Record.Count` and `Rate Line` are gone | ran it, quoted verbatim |
+| `test-run 50141` summary | names the codeunit, `Codeunit "Rate Test"` | ran it |
+| warm `test-run 50141` | median 12 ms of seven, 8 to 18 ms, load average about 11 | `date +%s%N` around the process |
+| cold `test-run 50141` | 115, 116, 120 ms after `daemon-shutdown` | same |
+| `test-run-all` refusal | unchanged text | ran it |
+| router module doc | now `crates/al-test/src/router/mod.rs:5-10`, text unchanged | read |
+| global builtin safe list | 42 names in `supports_global_builtin` (`al-runtime/src/interpreter/dispatch/routing.rs`), `Evaluate` and `CalcDate` included since `15e7fd11`; a test pins every name to a dispatch arm and keeps `GlobalLanguage` and `ApplicationPath` off | read, counted |
+| runtime additions on 24 September | arrays, text indexing, `CalcSums`, enum variables and methods, chained calls: `15e7fd11`, `8676b701`, `94700cf7`, `afe0d475` | `git log` |
+| `Round` directions | `dispatch/numeric.rs:86-89`: `MidpointAwayFromZero`, `ToZero`, `AwayFromZero` | read |
+| Cobertura header | `branch-rate="0.0" ... lines-covered="7" line-coverage="unavailable"` from `test-run-all --filter TestRateLookup --coverage` | generated and quoted |
+| `test-run <id>` sibling bug | fixed by `3145440d` at 03:02 on 2026-09-22, 42 minutes after blog commit `b84a8c5`; test `test_run_by_id_alone_resolves_a_sibling_call` | `git show`, and `test-run 50144` passes |
+| three interpreter fixes on the built binary | pass | `test-run 50143` |
+| "Business Central remains authoritative" | three places now, worded differently: `README.md:523`, `Docs/features/debugging-dap.md:207`, `Docs/current-limitations.md:60`. The article no longer counts them | grep |
+
+Drift found in the repository: `Docs/features/native-test-runtime.md` still says the router sends
+`Evaluate` and `CalcDate` to live BC ("for example `Evaluate` and `CalcDate`"). Both are in the safe
+list since `15e7fd11`. The `Round` wording in the same file was fixed.
+
+Re-check before publishing: timings on a quieter machine, and the share of a real suite that runs
+locally, which is still not measured.
+
 ---
 
 ## Update to the cross-article items
@@ -632,6 +698,61 @@ settings file gives the same 29 errors until it sets the list. Re-measure before
   packages built by different compilers sees a large diff for no behavioural change. Worth a note
   in `Docs/features/native-app-emitter.md`.
 
+
+### Revision 2026-09-26 (plan article 4)
+
+Blog commit `22e21d3`. Binaries from `ba2cda14`. `alc` 17.0.34.45391 from the dotnet tool store,
+now run on the .NET 8.0.30 runtime (no roll-forward needed).
+
+| Fact | Result today | How verified |
+| --- | --- | --- |
+| manifest diff | the `<Build>` line only, timestamps 2026-09-26 06:10:47 | built both, `difflib` over `NavxManifest.xml` |
+| entry sizes | unchanged (819 / 264 / 3,261 / 60,526 / 143 / 9,978 / 47,300 / 295, 40 source entries) | `zipfile` after skipping 40 bytes |
+| byte-identical files | source, `SymbolReference.json`, `DocComments.xml`, `MediaIdListing.xml`, `[Content_Types].xml`, entitlement, XLIFF, when the directory lists files in ID order | byte compare |
+| discovery order | in a tmpfs copy (lists newest first) `alc` wrote all 60 permissions in descending ID order (types 0, 1 and 8), and `SymbolReference.json` top-level groups in another order; equal after sorting. A copy listing files in ID order gives byte-identical files | three builds from three copies, `ls -f`, parsed |
+| `navigation.xml` | 21 `ControlGUID`s; same line multiset after masking, different order | parsed |
+| 60 permissions, 100 trans-units | unchanged | parsed |
+| differential tests | 3 of 3 pass, `xliff_id_contract` 3 of 3 | `cargo test -p al-test-harness --test emit_differential -- --ignored` with `AL_TOOL_PATH` and a scratch `AL_PACKAGE_CACHE_PATH` holding the five `Microsoft_*.app` files |
+| corpus | 19 declarations, recounted by kind | `CORPUS` in `emit_differential.rs:31` |
+| timings, five alternating runs | native 614/818/573/732/623 ms, alc 9,742/6,821/7,836/8,213/8,408 ms, load average 6.7 to 8.8 | `date +%s%N` |
+| phase breakdown | dependency index 748.7 of 820.3 ms total | `pack-native --json` |
+| `.alpackages` size | 66,331,964 bytes over six files (the article said 64 MB) | `ls -la` |
+| `write_artifact_atomically` | now quoted in full, `package.rs:123-137` | read |
+| `--validate`, default | still 29 errors (20 PTE0004, 1 AS0015, 6 AS0051, 1 AS0052, 1 AS0084), exit 1, no `.app` | ran it |
+| `--validate --analyzers CodeCop,UICop` | passes, writes 30,069 bytes | ran it |
+| `--validate --analyzers ""` | passes, writes 30,072 bytes | ran it |
+| untrusted repository analyzer | `findings/r4-session-review.md`, SEC-VALIDATE-ANALYZER, fixed | read |
+
+New finding, not in any findings file: `pack-native --validate` refuses the `${CodeCop}` token
+spelling as a repository analyzer. `project_local_analyzers`
+(`crates/al-explorer/src/cli/commands/build.rs:384`) filters with
+`al_project::analyzers::is_builtin_analyzer` (`crates/al-project/src/analyzers.rs:33`), which knows
+only bare names, while `al_project::trust::is_builtin_analyzer_token` (`trust.rs:502`) accepts both.
+`trust::evaluate` keeps `${CodeCop}` in `code_analyzers` (`trust.rs:1310`), so a settings file with
+`"al.codeAnalyzers": ["${CodeCop}", "${UICop}"]` is refused with "--analyzers ${CodeCop},${UICop}
+would load an analyzer from this untrusted repository's own folders". The default `al-explorer new`
+template writes `["${PerTenantExtensionCop}"]`, so every freshly scaffolded project is refused until
+trusted. The message also names `--analyzers` when the list came from settings. Reproduced on the
+built binary. **Queue as a finding.**
+
+Fixed `c197451f`. `project_local_analyzers` no longer exists, removed the same day by `2d889e93`
+(merged in from `campaign/2026-09-21` ahead of this fix). The token spelling was still refused,
+now through `discover_custom_analyzer` reporting the analyzer as not found. `analyzer_name`
+(`crates/al-project/src/analyzers.rs`) now unwraps a `${Name}` token before stripping a `.dll`
+suffix, so `is_builtin_analyzer` and `al_compile::resolve_analyzer_paths` both accept it, and
+`trust::is_builtin_analyzer_token` delegates to it instead of keeping its own copy of the unwrap.
+The message-attribution half of this finding was already gone: the only place that ever hardcoded
+`--analyzers` into the refusal was inside `project_local_analyzers`, deleted by the same `2d889e93`.
+The current refusal ("analyzer '\<entry\>' resolves to '\<path\>' inside this project, and the
+project is not trusted, ...") names neither `--analyzers` nor a settings key. A test now pins that
+text. Verified by hand: `al-explorer new` then `pack-native --validate` on the untrusted, freshly
+scaffolded project (default and `appsource` templates) no longer fails on `${PerTenantExtensionCop}`,
+`${AppSourceCop}` or `${UICop}` alone. The `appsource` template still fails validation on its
+incomplete manifest (`AS0051`, `AS0084`, and others), which is correct and unrelated.
+
+Re-check before publishing: timings on a quieter machine (the article reports these with the load),
+and the `${CodeCop}` paragraph once the finding is fixed.
+
 ---
 
 ## 7. `zed-extension-and-release-integrity`
@@ -701,3 +822,287 @@ project outside both repositories.
 - The `PATH` constraint on the 55 tasks is the oldest unresolved item in the extension. Is a setup
   hook that symlinks the downloaded `al-explorer` into a user bin directory acceptable, or does
   that put the extension back in the business of writing outside its work directory?
+
+
+### Revision 2026-09-26 (plan article 8)
+
+Blog commit `2663297`. Binaries from `ba2cda14`.
+
+| Fact | Result today | How verified |
+| --- | --- | --- |
+| extension source | 1,401 lines (`lib.rs` 724, `dap.rs` 319, `settings.rs` 358), tests 1,630 | `wc -l src/*.rs` |
+| extension tests | 77 pass | `cargo test -p zed-al` |
+| `al-lsp` release binary | 40,338,888 bytes | `ls -la target/release/al-lsp` |
+| resolution order | four steps: session cache, `PATH`, cached release, GitHub; `binary.path` ignored since `68d90f75` (2026-09-22 07:32) | `src/lib.rs:350-420`, `src/lib.rs:518-556` |
+| location rule | `d4445c20`, 2026-09-22 02:28; broken by the `/bin/sh` payload in `r3-security.md` (critical) | `git log`, read |
+| the flat rule | `src/settings.rs:128-134` quoted | read |
+| worktree comment | `src/settings.rs:227-234` quoted | read |
+| replacement test | `settings_cannot_choose_the_language_server_program_or_its_arguments`, `src/settings_test.rs:170` | read |
+| `dotnetPath` | still filtered by location (`src/lib.rs:540`), and al-lsp applies `trust::enforce_dotnet_path` (`crates/al-project/src/trust.rs:989`) | read |
+| install hint | says to use `PATH` (`src/lib.rs:57-64`) | read |
+| verify-before-executable test | now `repo_consistency_test.rs:836` | read |
+| no-signature assertion | removed; comment at `repo_consistency_test.rs:739-743` gives the reason | read |
+| attestation subjects | include `binary-checksums.txt` since `33bb4881` (`release.yml:332-337`) | read |
+| advisory | names keys only | ran `pack-native` untrusted |
+| `trust` with no terminal | refused, quoted | `al-explorer trust < /dev/null` |
+| Restricted Mode, GHSA-29cp-2hmh-hcxj | advisory: affected below v0.218.2-pre including stable v0.217.2, patched v0.218.2-pre; Zed docs: Restricted Mode stops `.zed/settings.json` being parsed and language servers being spawned | fetched `github.com/zed-industries/zed/security/advisories/GHSA-29cp-2hmh-hcxj` and `zed.dev/docs/worktree-trust` |
+| 55 tasks, all `al-explorer` | unchanged | parsed `languages/al/tasks.json` |
+
+The trust transcripts ran in the scratchpad, whose path is 125 characters and gets cut by
+`trust::one_line` (120-character limit). The article prints `/home/you/src/trustdemo` in its place,
+which is short enough not to be cut. Settings file: `{"al.codeAnalyzers": ["${CodeCop}",
+"./tools/Payload.dll"], "al.compilationOptions": ["/analyzer:/tmp/x.dll"]}` (`compilationOptions`
+is a string array; a plain string is not reported at all).
+
+Re-check before publishing: `Docs/campaign/findings/r4-security.md` (in progress on 2026-09-26) has
+an open high finding that the Zed debug adapter sends the cached BC token to a server named in a
+repository's `.zed/debug.json`. The article does not claim `debug.json` servers are gated, but if
+the fix lands, the "other half" section could say so.
+
+---
+
+## Fact pass 2026-09-26, all nine articles
+
+Binaries rebuilt from `campaign/2026-09-21` at `ba2cda14` with `cargo build --release -p al-explorer
+-p al-lsp`. Measurements ran in the scratchpad against copies of `benchmarks/projects/medium` and
+`crates/al-test-harness/data/test_al_project`, with a load average between 6 and 19 from other agents'
+builds throughout. Plan articles 2, 4, 5 and 8 are recorded in their own sections above.
+
+### Plan article 1, `al-outside-vs-code` (blog commit `6e3b35c`)
+
+| Fact | Result | How verified |
+| --- | --- | --- |
+| `search Customer --limit 6` | 11 ms warm (was 31) | `time`, seven runs 11 to 12 ms after the first |
+| `test-run-all` on the unmodified fixture | 107 ms cold (was 106) | `daemon-shutdown`, then `time`, three runs 107 to 110 ms |
+| `packages` | 5 packages, 11,270 objects, `System 529 308/221/0` | ran it |
+| subcommands | 86 (was 83) | variants of `pub enum Commands` in `args.rs`, and `--help` |
+| daemon methods | 95 (was 92): 15 `read`, 3 `write`, 5 `authorized`, 72 none | arms of `dispatch_table!` in `daemon/mod.rs:1081` |
+| catalog tests | read `DISPATCHERS`, both directions (`tests.rs:280`, `the_reference_catalogue_lists_only_methods_that_dispatch`) | read |
+| `al-types` 707, `al-test` 10,705, `al-analysis` 56,758 lines | recounted | `find ... \| xargs cat \| wc -l` |
+| commits | 2,012 reachable from `fa4fcf8f`, first commit 2026-03-08, 583 of them in `dev..fa4fcf8f` | `git rev-list --count` |
+| background single-flight graph build | `daemon/mod.rs:220`, `mcp/mod.rs:1669` | read |
+| cold `trace` | default deadline: error at 35.5 s; `--timeout-ms 180000`: answered at 35.5 s; warm 9 ms | measured twice on `medium` |
+| README native/Microsoft table | still `README.md:35-46` | read |
+
+Corrections: the `SOURCE E/O/M` paragraph said Base Application ships source for 7,968 of 9,343
+objects and `System` for none of 529. Both packages ship source for every declared object; the
+outline counts are synthetic Option enums (new finding below). The series list says eight usage
+limits, to match article 9.
+
+### Plan article 3, `one-engine-four-transports` (blog commit `fc0c104`)
+
+| Fact | Result | How verified |
+| --- | --- | --- |
+| MCP `al_symbolsearch` limit 3 | 487 bytes, 9.6 ms as the first call of a fresh process (was 208,862) | MCP stdio session |
+| `search --limit 3 --json` | 223,559 bytes | `wc -c` |
+| MCP agent defaults | `apply_agent_defaults`, `mcp/mod.rs:1301-1324`: `limit` 50, `scope` workspace, `summary` on `search`, `signatures` on `object`/`byId` | read |
+| MCP forward | `mcp/mod.rs:1445-1446`, comment at `:1443` | read |
+| `dispatch_request` | refreshes trust and files, dispatches, path advice, scope, projection (`daemon/mod.rs:878-902`) | read |
+| `package_revision` excerpt | now `al-workspace/src/lib.rs:298` | read |
+| hover excerpt | now `hover.rs:11-13`, reformatted by rustfmt | read |
+| socket excerpt | unchanged at `socket.rs:39` | read |
+| `rename` skipped containment | `LOG.md` 2026-09-22 05:40 review B; test comment in `daemon/tests.rs` | read |
+| cold trace, entrypoints, dead-code | 35.5 s cold with raised deadline, 9 ms warm, `entrypoints` 272 ms, `dead-code` 25 ms | measured |
+| client deadline extension | follows `sourceIndex.state == "building"` only (`al-protocol/src/client/mod.rs:716-731`, `:780`) | read |
+| MCP cold/warm trace | 36.8 s / 8.3 ms (was 599.7 s / 12.9 s) | fresh `al-lsp mcp` |
+| crate lines | `al-syntax` 16,340, `al-symbols` 16,508 | recounted |
+| `publish = false` | unchanged: 4 crates plus root | grep |
+
+### Plan article 6, `symbols-without-the-compiler` (blog commit `8eaa80c`)
+
+| Fact | Result | How verified |
+| --- | --- | --- |
+| duplicate `System` rows | fixed by `50aa3bdd` (2026-09-24), `newest_per_identity` in `index/loading.rs:29-38` | read, `packages` |
+| `System` 28.0 contents | 362 `.al` entries, 308 objects declared in `SymbolReference.json`, all with `ReferenceSourceFileName` | parsed the `.app` |
+| Base Application | 7,969 objects declared, all with a source file name; `packages` says 9,343 and `7968/1375/0` | parsed, ran it |
+| synthetic entries in counts | `object_count: objects.len()` after `synthesize_option_enums` (`app_reader.rs:156`, `model.rs:917`, `:1022`, comment at `:1053`); `package_source_availability_for` classifies every entry (`index/caches.rs:146`) | read |
+| generated outline example | only reproducible from the 27.0 `System.app` loaded alone: `0/502/1`, `source Session` gives the outline | scratch project with that one package |
+| search output | 11 ms | `time` |
+| `source Customer` | 5,075 lines, 231,348 bytes, 38 ms; `--procedure AssistEdit` 558 bytes, 63 ms | `wc`, `time` |
+| `search --json` limit 3 | 223,559 bytes (was 208,863) | `wc -c` |
+| `by-id table 18` | 194,951 pretty, 119,609 `--compact`, 82,412 `--fields fields --compact`, 24,444 via MCP with `signatures` | measured |
+| table 18 parts | 165 fields (86,086 B), 134 methods (33,860 B), 47 variables (3,988 B), 19 keys, 6 properties | parsed, same method as the draft |
+| first `by-id` on a fresh daemon | 52.6 s (a second attempt failed at 30.8 s under heavier load); `search` 1.4 s | measured |
+| `fold_name` | `index/mod.rs:28-34` | read |
+| nine DashMaps | still nine | read `index/mod.rs:72-97` |
+| `MAX_CONCURRENT_DOWNLOADS` | now `nuget.rs:347` | read |
+| cache schema comment | unchanged at `cache.rs:21-26` | read |
+
+### Plan article 7, `mcp-and-the-claude-code-plugin` (blog commit `8ca3269`)
+
+| Fact | Result | How verified |
+| --- | --- | --- |
+| `location`, `free-ids` on the fixture | 8 ms and 9 ms medians of seven, load average about 17 | `date +%s%N` |
+| projection sizes | 1,437 / 184 / 5,547 / 977 bytes (entrypoints were 6,006 and 965) | `wc -c` |
+| `free-ids --kind table` | used 2, free 98, 150 bytes compact | ran it on the unmodified fixture |
+| 19 tools, `instructions` text | unchanged | real `tools/list` |
+| path refusal | now ends with advice to send `text` | MCP `al_call` |
+| `parse` with `text` | `{"errors":0,"nodeCount":10,...}` | MCP `al_call` |
+| `format` with `text` | refusal text unchanged | MCP `al_call` |
+| token refusal | `trust.rs:884` text, quoted with `<endpoint>` | read |
+| plugin | 8 skills, 2 subagents, `SessionStart` and `SessionEnd` hooks, `.mcp.json` unchanged | `ls plugin/`, `hooks.json` |
+| still untested | `plugin/ROADMAP.md` "Left for the next agent" unchanged | read |
+| daemon memory | `diag` `process.residentBytes` 2,983,649,280 on `medium` after the graph build | ran it |
+
+Corrections: the "fourteen of the twenty" count is gone from the description and the body. Its only
+source is commit `fd97ced3`; `ai-tooling-ideas.md:322` still says six answers fit and lists seven.
+The article now states the sizes of the eight largest answers instead. The launch.json paragraph now
+describes the merged trust gate. "Every credential-spending method" was narrowed to the five methods
+declared `authorized`, because `r4-security.md` (in progress) reports `tests.run*` spending
+environment credentials without the gate.
+
+### Plan article 9, `what-an-ai-review-campaign-actually-looks-like` (blog commit `3045834`)
+
+Written 2026-09-26. 2,229 words of prose excluding tables and code, plan target 2,000 to 2,500.
+
+| Fact | Source |
+| --- | --- |
+| plan wording, orchestrator rule, small-commits rule, model choice, gates, harness gate wording | `Docs/campaign/README.md` |
+| 583 commits, 37 merges, per-day counts 316 / 130 / 0 / 129 / 0 / 8 | `git log dev..fa4fcf8f` |
+| review round table | `LOG.md`, `STATE.md`, `r2-review-a.md` (14 statuses, all fixed), `r4-session-review.md`, `r5-dogfood.md`, `r6-session-review.md` |
+| four rejections, two settled with alc | `LOG.md` day one totals, `STATE.md` emit entry |
+| test table | `LOG.md` 01:50, 18:00, 22:40, 03:00, 04:10, 06:30, 12:30; `STATE.md` for review B |
+| 4,391 and 5,190 `#[test]` functions | `git grep` over `a8e54fb7` (merge base with `dev`) and `fa4fcf8f` |
+| Specifies finding excerpt | `r2-review-a.md:93-113`, trimmed with `[...]` |
+| seven session limits, times, agents killed | `LOG.md` |
+| weekly limit from 12:59 on 2026-09-22, reset 22:00 on 2026-09-26, 1,066 failed headless launches | `.campaign/headless-*.log` (git-ignored; the article says so) |
+| series going stale: 12 and 42 minutes | blog `f0491e3` 07:19:42 vs `68d90f75` 07:32:08; blog `b84a8c5` 02:20:59 vs `3145440d` 03:02:46 |
+
+The public-repository grep from `Docs/campaign/README.md` over all nine articles: no matches.
+
+### New findings, not yet in any findings file
+
+1. **The `packages` table counts synthetic Option enums as objects and as outlines.** `app_reader.rs:156`
+   sets `object_count` to the entry list length after `synthesize_option_enums` adds its fabricated
+   enums, and `package_source_availability_for` (`index/caches.rs:146`) classifies every entry.
+   Search hides these entries (`index/query.rs:80`, `:126`). On the medium benchmark project Base
+   Application shows 9,343 objects and 1,375 outlines for 7,969 declared objects, and `System` 529 and
+   221 for 308. Suggested fix: skip `synthetic` entries in both counts.
+2. **The client's deadline extension ends when the source index is ready, before the call graph is
+   built.** `index_progress` (`al-protocol/src/client/mod.rs:780`) reads only `sourceIndex`. A cold
+   `trace` on the medium project failed at 35.5 s with the default deadline and answered at 35.5 s
+   with `--timeout-ms 180000`; the index reported ready at 23.5 s.
+3. **`object` and `byId` wait for the whole call graph.** `enrich_workspace_members`
+   (`lsp_dispatch.rs:527-535`) calls `get_or_build_call_graph()` on every request, so a first
+   `by-id table 18` on a fresh daemon took 52.6 s, and through a fresh MCP process 35 to 65 s,
+   while `search` answered in milliseconds.
+4. **`pack-native --validate` refuses the `${CodeCop}` token spelling**, fixed `c197451f`:
+   `analyzer_name` now unwraps a `${Name}` token before comparing against a builtin cop name, so a
+   freshly scaffolded, untrusted project no longer fails on its own default `${PerTenantExtensionCop}`
+   setting (details in the plan article 4 revision section above).
+5. **Doc drift:** `Docs/features/native-test-runtime.md` says `Evaluate` and `CalcDate` route to live
+   BC. Both are in the safe list since `15e7fd11`.
+6. **`ai-tooling-ideas.md:322`** still says six answers fit and lists seven.
+
+### Facts that could not be verified, left out of the articles
+
+- The share of a real BC test suite that runs locally. Still not measured; article 5 says so.
+- "Fourteen of the twenty" too-large answers (see article 7 above).
+- Timings on a quiet machine. Every timing in this pass ran with a load average of 6 to 19. The
+  articles give the load with the number.
+- The corpus parse was not re-run; article 2 cites the recorded run on the same submodule revision.
+- `BENCHMARKS.md` medians (2026-07-26) were not re-run; articles 1, 3 and 4 cite them with their date.
+- Why the weekly limit left the 24th workable from a cloud session and not from the watchdog. Article
+  9 states only that the 24th ran as a cloud session.
+
+### Before publishing
+
+- `r4-security.md` was in progress on 2026-09-26 with two open high findings: the Zed debug adapter
+  and `tests.run*` send credentials to repository-named servers without the trust gate. Articles 7
+  and 8 make no claim that those paths are gated, and article 9 mentions the round only as running.
+  Re-read all three once the round closes.
+- Re-check the four new findings above; each article that mentions one says it is open.
+- `blog-plan.md` §1.2 and §1.4 still carry the 2026-09-21 numbers (crate lines, 92 methods, 83
+  commands, the six-package table). The articles use the numbers above.
+
+### Unsloppify pass and validation, 2026-09-26
+
+One commit per article on `campaign/2026-09-rewrite`: `b5d1007` (9), `6977279` (4), `f3c67ad` (8),
+`853ac25` (5), `a0d8efe` (2), `21b89ee` (3), `3a7add6` (6), `e2a6318` (7), `ba4ebca` (1). What changed
+beyond wording: article 9 no longer says the security rounds found the most (review B and the dogfood
+sweep found more), article 8 drops the unverifiable "a good half of those tests", article 7 describes
+the measured workspace as "a private workspace" (it said "private customer workspace") and narrows
+"project trust closed that" to the `al_debug` path, and articles 6 and 7 tell fixed bugs as the
+tool's history instead of the article's drafts. No em dashes, semicolons or middle dots remain in
+prose outside code and quotes. All nine keep `draft: true`.
+
+Prose word counts excluding code and tables, against the plan: 1 1,889 (1,800 to 2,200), 2 1,626
+(1,600 to 2,000), 3 2,354 (1,800 to 2,200, over), 4 2,409 (2,000 to 2,400), 5 2,063 (1,800 to
+2,200), 6 about 1,690 (1,500 to 1,900), 7 2,338 (1,800 to 2,200, over), 8 about 1,790 (1,200 to
+1,600, over), 9 about 2,230 (2,000 to 2,500). Articles 3, 7 and 8 carry the new trace, MCP-default
+and extension-settings material and would need cuts elsewhere to reach the plan's range.
+
+`pnpm validate` passes: lint 0 errors and 11 warnings (the same pre-existing site component
+warnings), `astro check` 0 errors across 176 files, build of 14 pages and the Pagefind index
+complete. `pnpm` is not on this machine's default `PATH`; it runs as `~/.npm-global/bin/pnpm`.
+
+### Re-read 2026-09-26 after the security round
+
+Binaries: `target/release/al-explorer` and `al-lsp`, built at 11:53 from the tree at `fec2cd6d`.
+Measurements ran on copies under `/tmp` of `benchmarks/projects/medium`, the fixture project, and
+projects made with `al-explorer new`. `XDG_CONFIG_HOME` pointed at a scratch directory, so the
+trust transcripts did not touch the user's trust store. Load average 1 to 5 throughout.
+
+Blog commits on `campaign/2026-09-rewrite`, pushed to origin:
+
+| Commit | Article | What changed |
+| --- | --- | --- |
+| `a351c07` | 1 `al-outside-vs-code` | new `packages` table, cold `trace` told as fixed, dispatcher capability sentence |
+| `2884ea8` | 2 `tree-sitter-grammar-for-al` | grammar rev `f211aef`, the two commits since `38368a0` are README only |
+| `7178260` | 3 `one-engine-four-transports` | deadline section rewritten with midday numbers, `object`/`by-id` fix, capability counts and `named` |
+| `32c0da5` | 4 `native-app-emitter` | analyzer lookup in `discover_custom_analyzer` for every compile path, `${CodeCop}` told as fixed |
+| `df3932f` | 6 `symbols-without-the-compiler` | new `packages` table, synthetic counts fixed, `by-id` timing, profile extension gap |
+| `2d3d9f3` | 7 `mcp-and-the-claude-code-plugin` | ten authorised methods, `trust.rs:1060`, DAP gate, what `trust --yes` and the store file allow |
+| `8c39a7e` | 8 `zed-extension-and-release-integrity` | counts and line refs, bridge verification, new trust transcripts, DAP gate, scheme-less `https` |
+| `ad27608` | 9 `what-an-ai-review-campaign-actually-looks-like` | security round 4 row, docs review, PR 30 and draft PR 32, two gate rows, six series defects |
+
+Article 5 is unchanged. On the release binary `test-run-all` still refuses with the same text, and
+its `Evaluate`/`CalcDate` sentence was already right.
+
+| Fact | Result | How verified |
+| --- | --- | --- |
+| `packages` on `medium` | 5 packages, 9,624 objects: Base Application `7968 7968/0/0`, System Application `1277 1275/1/1`, System `308 308/0/0` | ran it |
+| Base Application declared objects | 7,969 (33 `InternalsVisibleToModules` entries left out). The index loads 7,968. All 1,375 former outlines were synthetic: the morning's "1,374 of 1,375" was one off | parsed `SymbolReference.json`, compared with `packages` |
+| the object the index skips | profile extension `BlankExt`. `SymbolReferenceJson` (`crates/al-symbols/src/model.rs:630-652`) has no `ProfileExtensions` field. `search BlankExt` finds nothing | read, ran it |
+| cold `trace OnAfterPostSalesDoc`, default deadline | 21.0, 28.8, 18.3 s, three subscribers, load at start 3.7, 1.3, 2.6 | `date +%s%N` after `daemon-shutdown` |
+| cold `trace`, `--timeout-ms 5000` | answered at 21.0 s, load 3.9 | same |
+| warm `trace`, `entrypoints`, `dead-code` | 6 to 7 ms, 127 to 163 ms, 12 to 14 ms, five runs each, load 2.5 to 5.2 | same |
+| first `by-id table 18` on a fresh daemon | 694, 619, 670 ms, load 3.8, 3.8, 2.5, output 194,951 bytes | same |
+| MCP on a fresh `al-lsp mcp` | `initialize` 932 ms, `al_call` `byId` table 18 2.7 ms and 24,444 bytes, `al_symbolsearch` limit 3 487 bytes, load 0.8 | stdio session |
+| dispatch table | 95 methods at `daemon/mod.rs:1100`: 15 `read`, 3 `write`, 5 `named`, 10 `authorized`, 62 none | counted the arms |
+| credential refusal text | `crates/al-project/src/trust.rs:1060` | read |
+| subcommands | 86 | `--help` |
+| `${PerTenantExtensionCop}` before the fix | release binary: a fresh scaffold fails `pack-native --validate` with "requested analyzer '${PerTenantExtensionCop}' could not be found ...", trusted or untrusted. `--analyzers PerTenantExtensionCop` passes | ran it |
+| `${PerTenantExtensionCop}` after the fix | `c197451f`, merged `8431a2a3`. Not re-run: the release binaries predate it. The article cites the commit and `LOG.md` records the hand reproduction | read |
+| trust transcripts | `trust --show` prints `Digest:` and a SHA-256 beside a repository file. `pack-native` wrote 2,407 bytes. `trust < /dev/null` gives the new refusal. `--yes` without `--digest` is refused. After `--yes --root --digest`, replacing `tools/Payload.dll` makes the record `stale` | ran it |
+| extension source and tests | 1,504 lines (`lib.rs` 827, `dap.rs` 319, `settings.rs` 358), 1,704 test lines, 82 tests pass | `wc -l`, `cargo test -p zed-al` in a `git archive` export of `a14c1f07` with its own target directory |
+| `choose_release` tests | 10. The article said 13: the other three tests in `release_test.rs` cover checksum parsing | read |
+| moved line refs | `src/lib.rs:382`, `repo_consistency_test.rs:845`, `release.yml:329`, `extension.toml` rev `f211aef` | read |
+| test functions | 4,391 at `a8e54fb7`, 5,190 at `fa4fcf8f`, 5,218 at `a14c1f07` | `git grep -hE '^\s*#\[(tokio::)?test(\(.*\))?\]'` |
+| commits | 694 in `a8e54fb7..a14c1f07`, by day 316, 130, 0, 129, 1 (the PR 30 merge), 118 | `git log` |
+
+Blog `pnpm validate` passes: lint 0 errors and the same 11 warnings, `astro check` 0 errors across
+176 files, build of 14 pages and the Pagefind index complete. Unsloppify and humanizer ran over the
+changed passages. No em dashes, semicolons or middle dots were added to prose, and the public
+grep finds nothing new.
+
+`blog-plan.md` §1.2 and §1.4 now say the articles carry the 2026-09-26 numbers and the sections
+keep the 2026-09-21 baseline.
+
+New findings, not in any findings file:
+
+1. The symbol reader skips profile extensions (row above). Base Application declares one.
+2. `pack-native --validate` on a fresh scaffold prints the "not trusted" notice twice, both naming
+   `launch configuration server` (from the template's `.zed/debug.json`). Seen on the `fec2cd6d`
+   binary.
+
+Still open before publishing:
+
+- Timings on a quiet machine. Today's ran at a load average of 1 to 5, and the articles give the load.
+- The share of a real BC test suite that runs locally (article 5).
+- Prose word counts against the plan: 3 is 2,575 (1,800 to 2,200), 7 is 2,414 (1,800 to 2,200), 8
+  is 2,078 (1,200 to 1,600), 9 is 2,501 (2,000 to 2,500). Counted without code blocks and tables.
+- Article 9 describes the campaign up to midday on the 26th. The round 7 review, the ghost race,
+  `cargo mutants` and the persisted index were still running. Re-read it once the campaign ends.
+- `readTime` in the frontmatter was not recomputed.
+- All nine keep `draft: true`. Merging to `main` is Brad's call.

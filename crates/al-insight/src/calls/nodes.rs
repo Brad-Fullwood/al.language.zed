@@ -140,7 +140,7 @@ pub fn register_dependency_source_nodes(
 /// Every object declaration the file index holds, one row per object: a file
 /// declaring a table and then a codeunit yields both. Snapshotted so no
 /// shard lock is held while the trees are walked.
-pub(super) fn indexed_objects(
+pub fn indexed_objects(
     file_index: &FileIndex,
 ) -> Vec<(std::path::PathBuf, al_source::file_index::CachedObjectInfo)> {
     let mut objects: Vec<_> = file_index
@@ -164,7 +164,7 @@ pub(super) fn indexed_objects(
 
 /// The `object_declaration` node `info` was read from, or the root when the
 /// range no longer names one.
-pub(super) fn object_node<'t>(
+pub fn object_node<'t>(
     tree: &'t tree_sitter::Tree,
     info: &al_source::file_index::CachedObjectInfo,
 ) -> tree_sitter::Node<'t> {
@@ -198,20 +198,58 @@ pub(super) fn register_procedures_from_tree(
     obj_idx: petgraph::graph::NodeIndex,
     insight: &mut InsightGraph,
 ) {
+    for decl in procedure_decls_in_node(node, source) {
+        register_procedure_decl(&decl, object_kind, object_name, obj_idx, insight);
+    }
+}
+
+/// What the graph records about one procedure or trigger declaration, kept
+/// without the tree it came from.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ProcedureDecl {
+    /// The declared name, unquoted, with its original casing.
+    pub name: String,
+    /// `(attribute name, full attribute text)` pairs, as written.
+    pub attributes: Vec<(String, String)>,
+    /// Whether the declaration carries the `local` modifier.
+    pub is_local: bool,
+}
+
+impl ProcedureDecl {
+    /// `None` for a declaration without a readable, non-empty name, which the
+    /// graph does not register.
+    pub fn from_node(proc_node: tree_sitter::Node, source: &[u8]) -> Option<Self> {
+        let name = proc_node
+            .child_by_field_name("name")?
+            .utf8_text(source)
+            .ok()?
+            .unquote_identifier()
+            .into_owned();
+        if name.is_empty() {
+            return None;
+        }
+        Some(Self {
+            name,
+            attributes: collect_procedure_attributes(proc_node, source),
+            is_local: has_local_modifier(proc_node, source),
+        })
+    }
+}
+
+/// Every procedure and trigger declared under `node`, in the order the graph
+/// registers them.
+///
+/// The walk does not descend into a declaration: AL has no nested procedures.
+/// `collect_procedure_names_from_tree` walks in the same order.
+pub fn procedure_decls_in_node(node: tree_sitter::Node, source: &[u8]) -> Vec<ProcedureDecl> {
+    let mut decls = Vec::new();
     let mut stack = vec![node];
     while let Some(current) = stack.pop() {
         let mut cursor = current.walk();
         for child in current.children(&mut cursor) {
             match child.kind() {
                 "procedure_declaration" | "trigger_declaration" => {
-                    register_single_procedure(
-                        child,
-                        source,
-                        object_kind,
-                        object_name,
-                        obj_idx,
-                        insight,
-                    );
+                    decls.extend(ProcedureDecl::from_node(child, source));
                 }
                 _ => {
                     stack.push(child);
@@ -219,31 +257,20 @@ pub(super) fn register_procedures_from_tree(
             }
         }
     }
+    decls
 }
 
-pub(super) fn register_single_procedure(
-    proc_node: tree_sitter::Node,
-    source: &[u8],
+/// Register one declaration as an event, subscriber or procedure node of the
+/// object at `obj_idx`, with the edge from the object.
+pub(super) fn register_procedure_decl(
+    decl: &ProcedureDecl,
     object_kind: ObjectKind,
     object_name: &str,
     obj_idx: petgraph::graph::NodeIndex,
     insight: &mut InsightGraph,
 ) {
-    let name_node = match proc_node.child_by_field_name("name") {
-        Some(n) => n,
-        None => return,
-    };
-
-    let proc_name = match name_node.utf8_text(source).ok() {
-        Some(t) => t.unquote_identifier().into_owned(),
-        None => return,
-    };
-
-    if proc_name.is_empty() {
-        return;
-    }
-
-    let attributes = collect_procedure_attributes(proc_node, source);
+    let proc_name = decl.name.clone();
+    let attributes = &decl.attributes;
 
     // AL attributes are case-insensitive at the language level — `[eventsubscriber(...)]`,
     // `[EventSubscriber(...)]`, and `[EVENTSUBSCRIBER(...)]` are all valid. Attribute
@@ -258,7 +285,7 @@ pub(super) fn register_single_procedure(
     let is_subscriber = attributes
         .iter()
         .any(|(name, _)| name.eq_ignore_ascii_case(crate::attr_names::EVENT_SUBSCRIBER));
-    let is_local = has_local_modifier(proc_node, source);
+    let is_local = decl.is_local;
 
     if is_integration_event || is_business_event {
         let event_type = if is_business_event {
@@ -282,8 +309,8 @@ pub(super) fn register_single_procedure(
         );
         insight.add_edge(obj_idx, evt_idx, InsightEdge::Publishes);
     } else if is_subscriber {
-        let (target_object, target_event) = parse_subscriber_target_from_attrs(&attributes);
-        let target_kind = subscriber_target_kind(&attributes);
+        let (target_object, target_event) = parse_subscriber_target_from_attrs(attributes);
+        let target_kind = subscriber_target_kind(attributes);
         let key = NodeKey::Subscriber(
             object_kind,
             object_name.to_lowercase(),

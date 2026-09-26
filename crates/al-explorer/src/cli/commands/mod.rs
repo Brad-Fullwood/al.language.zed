@@ -344,6 +344,9 @@ pub fn print_symbol_entries(result: &serde_json::Value) {
         {
             println!("  source: {}", availability.replace('_', " "));
         }
+        if let Some(reason) = e.get("partial_reason").and_then(|value| value.as_str()) {
+            println!("  partial: {reason}");
+        }
 
         if let Some(extends) = e.get("extends").and_then(|v| v.as_str()) {
             println!("  extends: {extends}");

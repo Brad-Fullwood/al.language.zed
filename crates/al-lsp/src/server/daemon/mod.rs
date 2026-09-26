@@ -23,6 +23,7 @@ mod process_memory;
 mod projection;
 mod scope;
 
+pub(crate) use debug_dispatch::authorize_live_test_target;
 pub(crate) use projection::list_target;
 pub(crate) use scope::accepts_scope;
 
@@ -210,6 +211,7 @@ pub async fn run_daemon(
 
     initialize_daemon_workspace(&workspace, &project_root).await?;
     let _ = SCAN_ROOT.set(project_root.clone());
+    persist_dependency_source_summaries(&workspace, &project_root);
 
     // Warm the dependency AL source index and the graphs built on it now,
     // rather than inside whichever query needs them first. The build takes
@@ -793,6 +795,12 @@ async fn refresh_trust(workspace: &Workspace) {
             if let Some(advisory) = evaluated.decision.advisory() {
                 tracing::warn!("daemon: {advisory}");
             }
+            // A `dotnet` host in the tree is part of the record, so a replaced
+            // one makes the project stale and is dropped here, not only at
+            // startup.
+            if let Some(advisory) = al_project::trust::enforce_dotnet_path(&project_root) {
+                tracing::warn!("daemon: {advisory}");
+            }
             *workspace.config.write().await = evaluated.config;
         }
         // A settings file that stopped parsing is not a reason to keep serving
@@ -921,7 +929,7 @@ fn path_refusal_advice(declared: Option<&Dispatcher>, mut response: Response) ->
                     "; this method rewrites the file it names, so it takes a path inside the \
                      project and nothing else",
                 ),
-                PathUse::None => {}
+                PathUse::Named | PathUse::None => {}
             }
         }
     }
@@ -949,6 +957,12 @@ pub(crate) enum PathUse {
     /// Rewrites the file its `uri`/`file` names, through
     /// [`file_uri_from_params`], which takes no `text`.
     Write,
+    /// Reads or writes a path named by another parameter (`xlf`, `generated`,
+    /// `from`, `to`, `dir`), each resolved through
+    /// `containment::resolve_within_project`. The XLIFF methods took any
+    /// absolute path for a release because the registry had no way to say
+    /// they took one at all.
+    Named,
 }
 
 impl PathUse {
@@ -997,6 +1011,9 @@ macro_rules! declared_path {
     (write) => {
         PathUse::Write
     };
+    (named) => {
+        PathUse::Named
+    };
     (authorized) => {
         PathUse::None
     };
@@ -1009,6 +1026,9 @@ macro_rules! declared_credential {
     (write) => {
         CredentialUse::Caller
     };
+    (named) => {
+        CredentialUse::Caller
+    };
     (authorized) => {
         CredentialUse::Authorized
     };
@@ -1017,7 +1037,7 @@ macro_rules! declared_credential {
 /// Build [`DISPATCHERS`] and the method match from one list of arms.
 ///
 /// The capabilities in brackets are the ones [`PathUse`] and [`CredentialUse`]
-/// define: `read`, `write`, `authorized`. An arm that declares none reaches
+/// define: `read`, `write`, `named`, `authorized`. An arm that declares none reaches
 /// neither a caller-named path nor a credential.
 macro_rules! dispatch_table {
     (
@@ -1195,7 +1215,7 @@ dispatch_table! {
         "compile" [] => build_dispatch::dispatch_compile(workspace, id).await,
         "package" [] => build_dispatch::dispatch_package(workspace, id).await,
         "publish" [authorized] => build_dispatch::dispatch_publish(workspace, id, &params).await,
-        "newProject" [] => build_dispatch::dispatch_new_project(workspace, id, &params),
+        "newProject" [named] => build_dispatch::dispatch_new_project(workspace, id, &params),
         "errorCodes" [] => build_dispatch::dispatch_error_codes(workspace, id).await,
         "builtinTypes" [] => build_dispatch::dispatch_builtin_types(workspace, id).await,
         "setup" [] => build_dispatch::dispatch_setup(workspace, id),
@@ -1205,17 +1225,17 @@ dispatch_table! {
             build_dispatch::dispatch_download_symbols(workspace, id, &params).await
         },
         "debug" [authorized] => debug_dispatch::dispatch_debug(workspace, id, &params).await,
-        "snapshot" [] => build_dispatch::dispatch_snapshot(workspace, id, &params).await,
-        "profiling" [] => build_dispatch::dispatch_profiling(workspace, id, &params).await,
+        "snapshot" [authorized] => build_dispatch::dispatch_snapshot(workspace, id, &params).await,
+        "profiling" [authorized] => build_dispatch::dispatch_profiling(workspace, id, &params).await,
         "xlf.generate" [] => build_dispatch::dispatch_xlf_generate(workspace, id, &params).await,
-        "xlf.refresh" [] => build_dispatch::dispatch_xlf_refresh(workspace, id, &params).await,
-        "xlf.untranslated" [] => build_dispatch::dispatch_xlf_untranslated(id, &params),
-        "xlf.suggest" [] => build_dispatch::dispatch_xlf_suggest(workspace, id, &params).await,
+        "xlf.refresh" [named] => build_dispatch::dispatch_xlf_refresh(workspace, id, &params).await,
+        "xlf.untranslated" [named] => build_dispatch::dispatch_xlf_untranslated(workspace, id, &params),
+        "xlf.suggest" [named] => build_dispatch::dispatch_xlf_suggest(workspace, id, &params).await,
         "tests.discover" [] => build_dispatch::dispatch_tests_discover(workspace, id),
-        "tests.run" [] => build_dispatch::dispatch_tests_run(workspace, id, &params).await,
+        "tests.run" [authorized] => build_dispatch::dispatch_tests_run(workspace, id, &params).await,
         "tests.coverage" [] => build_dispatch::dispatch_tests_coverage(workspace, id),
-        "tests.run_batch" [] => build_dispatch::dispatch_tests_run_batch(workspace, id, &params).await,
-        "tests.run_auto" [] => build_dispatch::dispatch_tests_run_auto(workspace, id, &params).await,
+        "tests.run_batch" [authorized] => build_dispatch::dispatch_tests_run_batch(workspace, id, &params).await,
+        "tests.run_auto" [authorized] => build_dispatch::dispatch_tests_run_auto(workspace, id, &params).await,
         "tests.last_results" [] => {
             build_dispatch::dispatch_tests_last_results(workspace, id, &params).await
         },
@@ -1237,7 +1257,7 @@ dispatch_table! {
         "generate" [] => build_dispatch::dispatch_generate(workspace, id, &params),
         "obsolete" [] => build_dispatch::dispatch_obsolete(workspace, id),
         "obsoleteUsages" [] => build_dispatch::dispatch_obsolete_usages(workspace, id),
-        "packageDiff" [] => build_dispatch::dispatch_package_diff(workspace, id, &params),
+        "packageDiff" [named] => build_dispatch::dispatch_package_diff(workspace, id, &params),
         "audit.dataClassification" [] => {
             build_dispatch::dispatch_audit_data_classification(workspace, id)
         },
@@ -1346,6 +1366,10 @@ dispatch_table! {
                 // `impact` and `entrypoints` all wait for this. A client that
                 // sees `building` should keep waiting rather than retry.
                 "sourceIndex": workspace.dependency_source_progress(),
+                // The call graph those methods wait on builds after the
+                // source index is ready, so `ready` above is not the end of
+                // the wait.
+                "callGraph": workspace.call_graph_progress(),
                 // What the process costs the machine, which the per-structure
                 // totals in `diag` do not show.
                 "memory": process_memory::ResidentMemory::read().to_json(),
@@ -1562,6 +1586,8 @@ pub(crate) fn serialized_response<T: serde::Serialize>(
 /// perfectly healthy workspace into "No project loaded".
 pub(crate) const LOCK_WAIT: Duration = Duration::from_millis(500);
 
+// Err is a ready-to-send JSON-RPC `Response` (cold path). Boxing it would only
+// scatter `*` derefs across every caller.
 #[allow(clippy::result_large_err)]
 pub(crate) fn require_project_root(workspace: &Workspace, id: u64) -> Result<PathBuf, Response> {
     match project_root_with_wait(workspace) {
@@ -1618,6 +1644,8 @@ pub(crate) fn project_state_with_wait<T>(
 
 /// Get document text without blocking the async runtime, loading it from disk
 /// when the document store does not already contain the file.
+// Err is a ready-to-send JSON-RPC `Response` (cold path); see require_project_root.
+// Clippy flags this one only with the semantic feature on.
 #[allow(clippy::result_large_err)]
 pub(crate) async fn require_document_text(
     workspace: &Workspace,
@@ -1674,6 +1702,7 @@ pub(crate) fn blocking<T>(work: impl FnOnce() -> T) -> T {
 
 /// Ensure a file is loaded in the document store. If not found, read it through
 /// the same bounded, regular-file-only ingestion path used by workspace scans.
+// Err is a ready-to-send JSON-RPC `Response` (cold path); see require_project_root.
 #[allow(clippy::result_large_err)]
 pub(crate) fn ensure_document(
     workspace: &Workspace,
@@ -1911,6 +1940,7 @@ pub(crate) fn reads_document(method: &str) -> bool {
 /// 2. a document already open in the store, which the editor put there. No
 ///    filesystem access, so containment has nothing to guard.
 /// 3. the path itself, contained in the project and read from disk.
+// Err is a ready-to-send JSON-RPC `Response` (cold path); see require_project_root.
 #[allow(clippy::result_large_err)]
 pub(crate) fn read_document_from_params<'a>(
     workspace: &'a Workspace,
@@ -2024,6 +2054,24 @@ pub(crate) fn set_test_project_root(workspace: &Workspace, root: &Path) {
 pub(crate) enum DaemonWorkspaceInitError {
     #[error(transparent)]
     Core(#[from] al_workspace::CoreInitError),
+}
+
+/// Keep the dependency source summaries of `project_root` in its data
+/// directory, so the next daemon or MCP server on the same packages loads
+/// them instead of parsing every embedded file again.
+pub(crate) fn persist_dependency_source_summaries(workspace: &Workspace, project_root: &Path) {
+    match al_workspace::SourceSummaryCache::for_project(project_root) {
+        Some(cache) => {
+            tracing::info!(
+                dir = %cache.dir().display(),
+                "daemon: dependency source summaries persist here"
+            );
+            workspace.enable_source_summary_cache(cache);
+        }
+        None => tracing::info!(
+            "daemon: no per-user data directory, dependency source summaries are not persisted"
+        ),
+    }
 }
 
 pub(crate) async fn initialize_daemon_workspace(

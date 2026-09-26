@@ -195,6 +195,19 @@ pub fn configured_symbol_packages(
             .iter()
             .map(|path| resolve_project_path(project_root, path)),
     );
+    // A folder written inside the project that a repository link carries
+    // outside it is read only once the project is trusted.
+    folders.retain(|folder| {
+        let escapes = crate::trust::escapes_untrusted_project(project_root, folder);
+        if escapes {
+            tracing::warn!(
+                path = %folder.display(),
+                "a symbol folder resolves outside the project and the project is not trusted, \
+                 so its packages are not read"
+            );
+        }
+        !escapes
+    });
     let packages = scan_package_folders(&folders)?;
     Ok(SymbolPackageSelection {
         packages_dir,
@@ -351,7 +364,16 @@ fn try_load_project(dir: &Path) -> Result<Option<AlProject>, DiscoveryError> {
     let manifest = load_app_manifest(dir)?;
 
     let packages_dir = dir.join(".alpackages");
-    let packages = scan_packages(&packages_dir)?;
+    let packages = if crate::trust::escapes_untrusted_project(dir, &packages_dir) {
+        tracing::warn!(
+            path = %packages_dir.display(),
+            "the project's .alpackages resolves outside it and the project is not trusted, so its \
+             packages are not read"
+        );
+        Vec::new()
+    } else {
+        scan_packages(&packages_dir)?
+    };
     let (server_configs, launch_config_error) = match al_bc::launch::find_launch_config(dir) {
         Ok(found) => (found.map(|lf| lf.configs).unwrap_or_default(), None),
         Err(error) => {
@@ -653,6 +675,26 @@ mod tests {
         let project = find_project(&project_dir).unwrap();
         assert_eq!(project.root, project_dir);
         assert_eq!(project.app_json.name, "Test");
+    }
+
+    /// A clone that commits `.alpackages` as a link to a directory outside it
+    /// would have that directory's packages indexed and served to an agent.
+    /// Containment already stopped trusting such a root for path parameters.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_alpackages_is_not_read_for_an_untrusted_project() {
+        let tmp = tempdir();
+        let project_dir = tmp.join("project");
+        let outside = tmp.join("outside");
+        write_valid_manifest(&project_dir, "Test");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("Other_Private_1.0.0.0.app"), b"package").unwrap();
+        std::os::unix::fs::symlink(&outside, project_dir.join(".alpackages")).unwrap();
+
+        let project = find_project(&project_dir).unwrap();
+        assert!(project.packages.is_empty(), "{:?}", project.packages);
+        let selection = configured_symbol_packages(&project_dir, &AlConfig::default()).unwrap();
+        assert!(selection.packages.is_empty(), "{:?}", selection.packages);
     }
 
     fn write_valid_manifest(dir: &Path, name: &str) {

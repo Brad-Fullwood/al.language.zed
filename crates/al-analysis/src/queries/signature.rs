@@ -34,7 +34,7 @@ pub struct SignatureHelpResult {
     pub active_parameter: Option<u32>,
 }
 
-/// per-overload primitive; callers collect a Vec<SignatureInfo> across all overloads
+/// per-overload primitive; callers collect a `Vec<SignatureInfo>` across all overloads
 /// matching a name, then assemble the SignatureHelpResult themselves.
 fn build_signature_info_from_method(
     method: &al_symbols::MethodSymbol,

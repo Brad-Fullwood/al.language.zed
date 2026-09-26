@@ -15,8 +15,11 @@ context.
 
 Rules:
 
-1. Search for the exact object name before any other call. A name that does not
-   exist comes back as an error naming the closest matches.
+1. Search for the exact object name before any other call, with
+   `--fields kind,id,name,package,source_availability` so each hit is one short
+   row. An empty `items` list means nothing matched. `object`, `by-id`, `source`
+   and `location` answer a wrong name with a not-found error, and `impact` also
+   names the closest matches.
 2. Put `--fields` and `--limit` on any call that returns a list. `by-id
    codeunit 80` is 552 KB whole and a few hundred bytes with
    `--fields kind,id,name,package`. The result reports `total` and `truncated`,
@@ -29,7 +32,7 @@ Rules:
 5. `location "<name>"` gives the file and line. Do not grep or `find` for a
    declaration.
 6. A slow first call means the dependency source index is still building. Let it
-   finish; `al-explorer --json diag | jq -c '.sourceIndex'` shows how far it has
+   finish. `al-explorer --json diag | jq -c '.sourceIndex'` shows how far it has
    got. Do not retry into a second wait.
 7. Never unzip, extract or decompile a `.app` file.
 

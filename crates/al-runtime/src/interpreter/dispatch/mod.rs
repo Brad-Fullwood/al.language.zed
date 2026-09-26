@@ -20,11 +20,14 @@
 
 pub mod datetime;
 pub mod dialog;
+pub mod events;
 pub mod frames;
 pub mod numeric;
+pub mod picture;
 pub mod random;
 pub mod render;
 pub mod routing;
+pub mod table_code;
 pub mod text;
 pub mod workspace_procedure;
 
@@ -33,10 +36,11 @@ pub(crate) mod test_support;
 
 pub use frames::{bind_object_globals, bind_procedure_locals};
 pub use routing::{dispatch_call, supports_global_builtin};
+pub use workspace_procedure::object_declaration_named;
 
 pub(crate) use datetime::{clock_current_datetime, clock_time, clock_today};
 pub(crate) use frames::declared_text_length;
-pub(crate) use render::{render_value, substitute_placeholders_with};
+pub(crate) use render::{render_value, render_value_xml, substitute_placeholders_with};
 pub(crate) use routing::dispatch_call_scoped;
 
 use std::collections::HashMap;
@@ -178,6 +182,12 @@ pub struct DispatchCtx {
     /// instead of reallocating the string.
     #[doc(hidden)]
     pub expr_fragment_cache: HashMap<String, (Arc<str>, tree_sitter::Tree)>,
+    /// The workspace's event subscribers, indexed on first raise.
+    #[doc(hidden)]
+    pub event_subscribers: Option<Arc<events::SubscriberIndex>>,
+    /// Every JSON node the running code has made; JSON values refer into it.
+    #[doc(hidden)]
+    pub json: crate::interpreter::json::JsonArena,
 }
 
 /// Fixed default seed for the deterministic `Random` builtin.
@@ -203,6 +213,8 @@ impl DispatchCtx {
             work_date: None,
             random_state: DEFAULT_RANDOM_SEED,
             expr_fragment_cache: HashMap::new(),
+            event_subscribers: None,
+            json: Default::default(),
         }
     }
 

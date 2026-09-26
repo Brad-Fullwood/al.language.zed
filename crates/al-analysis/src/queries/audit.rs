@@ -731,7 +731,6 @@ fn write_right_for_method(method: &str) -> Option<char> {
 /// `Permissions` properties) is an `AuditError`: those leave the audit unable
 /// to say what the set grants at all, where a single bad clause leaves the rest
 /// of the set readable.
-#[allow(clippy::type_complexity)]
 fn extract_permission_grants(
     source: &WorkspaceSource,
     object: &crate::workspace_sources::WorkspaceObjectDeclaration,

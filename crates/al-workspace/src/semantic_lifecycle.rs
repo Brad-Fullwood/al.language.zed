@@ -166,6 +166,12 @@ async fn init_bridge_inner(
 
 /// Get the semantic bridge, initializing it lazily if needed.
 ///
+/// Callers hold the returned read guard across their bridge call, which keeps
+/// the bridge alive for it. Drop the guard before calling this function again,
+/// or `restart_bridge*`, from the same task: tokio's `RwLock` is fair, so a
+/// second read queues behind a waiting restart or shutdown writer, and that
+/// writer waits for the first read to end.
+///
 /// Returns None if:
 /// - No toolchain is available
 /// - Bridge init fails
@@ -185,6 +191,7 @@ pub async fn get_or_init_bridge(
         }
     }
 
+    // Held across the CLR init below, so concurrent callers start one bridge.
     let _lifecycle_guard = workspace.semantic_lifecycle_lock.lock().await;
 
     // Another caller may have initialized while this task waited for the

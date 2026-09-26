@@ -137,6 +137,8 @@ pub enum TestEvent {
 /// `&self` (not `&mut self`) so the implementor manages internal state via
 /// interior mutability — keeps the trait object usable behind `Arc` without
 /// an external `Mutex`.
+// Callers hold the concrete backends, never a generic `T: TestSession`, so the
+// returned futures need no `Send` bound written on the trait.
 #[allow(async_fn_in_trait)]
 pub trait TestSession: Send + Sync {
     async fn run(

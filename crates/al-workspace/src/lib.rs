@@ -2,19 +2,24 @@
 //!
 //! Per-project documents, symbols, configuration, and semantic state.
 
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+mod dependency_sources;
 mod doctor;
 mod semantic_lifecycle;
+mod source_cache;
 mod test_results;
+pub use dependency_sources::{
+    DependencySourceMemoryStats, DependencySources, PackageSourceSummary,
+};
 pub use doctor::{doctor, DoctorReport, ProjectInfo, ToolchainInfo};
 pub use semantic_lifecycle::{
     ensure_builtins_loaded, ensure_error_codes_loaded, get_or_init_bridge, restart_bridge,
     restart_bridge_if_current, set_builtins, shutdown_bridge,
 };
-pub use test_results::TestResultStore;
+pub use source_cache::{PackageKey, SourceSummaryCache};
+pub use test_results::{project_data_dir, TestResultStore};
 
 use al_project::project::AlProject;
 use al_project::toolchain::AlToolchain;
@@ -66,7 +71,7 @@ type DependencyFingerprint = Vec<(PathBuf, u64, std::time::SystemTime)>;
 struct DependencySourceCache {
     /// `(canonical app path, byte length, modified time)` in stable order.
     fingerprint: DependencyFingerprint,
-    index: Arc<FileIndex>,
+    index: Arc<DependencySources>,
     /// Embedded `.al` files this generation had to skip — one that did not
     /// parse cleanly, or one without an object declaration. Indexing degrades
     /// per file, so a non-zero count is the only signal that dependency-backed
@@ -77,6 +82,26 @@ struct DependencySourceCache {
     /// Their objects are missing from dependency-backed navigation, so the
     /// list travels with the generation rather than only reaching the log.
     skipped_packages: Vec<String>,
+}
+
+/// One package's summary and where it came from.
+struct LoadedPackageSummary {
+    summary: Arc<PackageSourceSummary>,
+    /// Read from the summary cache rather than built from the `.app`.
+    from_disk: bool,
+    /// The package's entry name in the summary cache, which the next garbage
+    /// collection must keep. `None` without a cache.
+    entry: Option<std::ffi::OsString>,
+}
+
+impl LoadedPackageSummary {
+    fn built(summary: Arc<PackageSourceSummary>) -> Self {
+        Self {
+            summary,
+            from_disk: false,
+            entry: None,
+        }
+    }
 }
 
 /// Live counters for the dependency AL source index build.
@@ -91,16 +116,18 @@ struct DependencySourceProgress {
     packages_done: std::sync::atomic::AtomicUsize,
     packages_total: std::sync::atomic::AtomicUsize,
     files_done: std::sync::atomic::AtomicUsize,
+    /// Packages read from the summary cache rather than built.
+    packages_from_disk: std::sync::atomic::AtomicUsize,
     /// Milliseconds the current or last build has taken.
     elapsed_ms: std::sync::atomic::AtomicU64,
     started_at: std::sync::RwLock<Option<std::time::Instant>>,
 }
 
-/// What the dependency source index is doing right now.
+/// What the dependency source index, or the call graph, is doing right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DependencySourceState {
-    /// No query has needed the index yet.
+    /// No query has needed it yet.
     Idle,
     Building,
     Ready,
@@ -136,6 +163,7 @@ impl DependencySourceProgress {
         self.packages_total.store(packages_total, Relaxed);
         self.packages_done.store(0, Relaxed);
         self.files_done.store(0, Relaxed);
+        self.packages_from_disk.store(0, Relaxed);
         self.elapsed_ms.store(0, Relaxed);
         self.state
             .store(DependencySourceState::Building.code(), Relaxed);
@@ -149,7 +177,16 @@ impl DependencySourceProgress {
     }
 
     fn indexed_file(&self) {
+        self.indexed_files(1);
+    }
+
+    fn indexed_files(&self, count: usize) {
         self.files_done
+            .fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn loaded_package_from_disk(&self) {
+        self.packages_from_disk
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
@@ -193,6 +230,7 @@ impl DependencySourceProgress {
             packages_done: self.packages_done.load(Relaxed),
             packages_total: self.packages_total.load(Relaxed),
             files_done: self.files_done.load(Relaxed),
+            packages_from_disk: self.packages_from_disk.load(Relaxed),
             elapsed_ms,
         }
     }
@@ -208,6 +246,99 @@ pub struct DependencySourceProgressSnapshot {
     /// Files indexed so far. While building this only grows; there is no total
     /// because the file count of a package is not known until it is opened.
     pub files_done: usize,
+    /// Packages whose summaries were read from the summary cache instead of
+    /// being built from the `.app`.
+    pub packages_from_disk: usize,
+    pub elapsed_ms: u64,
+}
+
+/// Whether the call graph is being built, for `status`.
+///
+/// The build starts when the dependency source index is ready. On the medium
+/// benchmark project the index was ready at 23.5 s and a cold `trace`
+/// answered at 35.5 s, so a client that stopped waiting when the index
+/// reported ready gave up in the middle of the build.
+#[derive(Debug, Default)]
+struct CallGraphProgress {
+    /// Codes as in [`DependencySourceState`]. `ready` means the last build
+    /// finished: an edit since then makes the next query build again.
+    state: std::sync::atomic::AtomicU8,
+    /// Milliseconds the last finished build took.
+    elapsed_ms: std::sync::atomic::AtomicU64,
+    started_at: std::sync::RwLock<Option<std::time::Instant>>,
+}
+
+impl CallGraphProgress {
+    fn begin(&self) -> CallGraphBuildMark<'_> {
+        if let Ok(mut started) = self.started_at.write() {
+            *started = Some(std::time::Instant::now());
+        }
+        self.state.store(
+            DependencySourceState::Building.code(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        CallGraphBuildMark {
+            progress: self,
+            succeeded: false,
+        }
+    }
+
+    fn elapsed_now(&self) -> u64 {
+        self.started_at
+            .read()
+            .ok()
+            .and_then(|started| *started)
+            .map(|started| started.elapsed().as_millis().min(u64::MAX as u128) as u64)
+            .unwrap_or(0)
+    }
+
+    fn snapshot(&self) -> CallGraphProgressSnapshot {
+        use std::sync::atomic::Ordering::Relaxed;
+        let state = DependencySourceState::from_code(self.state.load(Relaxed));
+        let elapsed_ms = if state == DependencySourceState::Building {
+            self.elapsed_now()
+        } else {
+            self.elapsed_ms.load(Relaxed)
+        };
+        CallGraphProgressSnapshot { state, elapsed_ms }
+    }
+}
+
+/// Ends a call graph build in [`CallGraphProgress`] when dropped: `failed`
+/// unless [`Self::succeeded`] ran, so an error or a panic in the build does
+/// not leave `status` reporting `building`.
+struct CallGraphBuildMark<'a> {
+    progress: &'a CallGraphProgress,
+    succeeded: bool,
+}
+
+impl CallGraphBuildMark<'_> {
+    fn succeeded(mut self) {
+        self.succeeded = true;
+    }
+}
+
+impl Drop for CallGraphBuildMark<'_> {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.progress
+            .elapsed_ms
+            .store(self.progress.elapsed_now(), Relaxed);
+        let state = if self.succeeded {
+            DependencySourceState::Ready
+        } else {
+            DependencySourceState::Failed
+        };
+        self.progress.state.store(state.code(), Relaxed);
+    }
+}
+
+/// A snapshot of the call graph build, for `status`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CallGraphProgressSnapshot {
+    pub state: DependencySourceState,
+    /// Milliseconds the running build has taken so far, or the last one took.
     pub elapsed_ms: u64,
 }
 
@@ -317,6 +448,10 @@ pub struct Workspace {
     pub package_info: std::sync::RwLock<Vec<PackageInfo>>,
     /// In-memory cache of builtin types indexed by name for O(1) lookups.
     pub semantic_cache: std::sync::RwLock<SemanticCache>,
+    /// The daemon's native debug session. Its methods take `&mut self`, so each
+    /// debug command holds this lock across its Business Central call. Each such
+    /// call ends at the SignalR invoke timeout, and nothing it awaits takes this
+    /// lock.
     pub debug_session: tokio::sync::Mutex<Option<al_dap::native_debug::NativeDebugSession>>,
     /// Optional callback for user-visible notifications (bridge failures, etc.).
     ///
@@ -365,11 +500,14 @@ pub struct Workspace {
     insight_graph_revision: std::sync::RwLock<Option<u64>>,
     /// The invalidation revision `call_graph` was built from.
     call_graph_revision: std::sync::RwLock<Option<u64>>,
-    /// Parsed Microsoft/third-party object sources extracted from loaded `.app`
-    /// packages. The fingerprint makes this cache independent from ordinary
-    /// workspace-file graph invalidation while still rebuilding after package
-    /// download/replacement.
+    /// Summarized Microsoft/third-party object sources extracted from loaded
+    /// `.app` packages. The fingerprint makes this cache independent from
+    /// ordinary workspace-file graph invalidation while still rebuilding after
+    /// package download/replacement.
     dependency_source_index: std::sync::RwLock<Option<DependencySourceCache>>,
+    /// Where package summaries are kept between daemon starts. Unset, the
+    /// index is built from the packages every time.
+    source_summary_cache: std::sync::OnceLock<SourceSummaryCache>,
     /// How far the dependency source index has got.
     ///
     /// The build takes about a minute on Base Application and every method
@@ -377,6 +515,8 @@ pub struct Workspace {
     /// caller's only observation is a timeout, and the natural response to a
     /// timeout is a retry into the next one.
     dependency_source_progress: DependencySourceProgress,
+    /// Whether the call graph build is running, readable while it runs.
+    call_graph_progress: CallGraphProgress,
     /// How many times the call graph has actually been built.
     ///
     /// Exists so single-flight is testable: a cold build is 86 s on a project
@@ -457,7 +597,9 @@ impl Workspace {
             insight_graph_revision: std::sync::RwLock::new(None),
             call_graph_revision: std::sync::RwLock::new(None),
             dependency_source_index: std::sync::RwLock::new(None),
+            source_summary_cache: std::sync::OnceLock::new(),
             dependency_source_progress: DependencySourceProgress::default(),
+            call_graph_progress: CallGraphProgress::default(),
             call_graph_builds: std::sync::atomic::AtomicU64::new(0),
             profiler_session: std::sync::RwLock::new(None),
             test_results: std::sync::RwLock::new(None),
@@ -625,7 +767,7 @@ impl Workspace {
             == Some(&current))
     }
 
-    /// Return a coherent parsed index of every AL object body embedded in the
+    /// Return a coherent summary of every AL object body embedded in the
     /// currently loaded Microsoft/third-party packages.
     ///
     /// Package source is immutable during normal editing, so it is cached
@@ -633,7 +775,7 @@ impl Workspace {
     /// fingerprint forces a rebuild when a package is downloaded or replaced.
     pub fn get_or_build_dependency_source_index(
         &self,
-    ) -> Result<Arc<FileIndex>, DependencySourceError> {
+    ) -> Result<Arc<DependencySources>, DependencySourceError> {
         self.get_or_build_dependency_source_generation()
             .map(|(_, index)| index)
     }
@@ -666,7 +808,7 @@ impl Workspace {
 
     fn get_or_build_dependency_source_generation(
         &self,
-    ) -> Result<(DependencyFingerprint, Arc<FileIndex>), DependencySourceError> {
+    ) -> Result<(DependencyFingerprint, Arc<DependencySources>), DependencySourceError> {
         let (fingerprint, mut skipped_packages) = self.dependency_package_fingerprint_reporting();
         {
             let cache = self
@@ -692,116 +834,127 @@ impl Workspace {
             return Ok((fingerprint, Arc::clone(&existing.index)));
         }
 
-        let index = Arc::new(FileIndex::new());
+        let mut packages = Vec::with_capacity(fingerprint.len());
         let mut skipped_files = 0usize;
+        let mut files_done = 0usize;
+        let mut from_disk = 0usize;
+        let mut entries = std::collections::HashSet::new();
+        // Decided once: a generation that finds the directory open to other
+        // users reads nothing from it, even after its own writes close it.
+        let disk_readable = self
+            .source_summary_cache
+            .get()
+            .is_some_and(SourceSummaryCache::is_readable);
         self.dependency_source_progress.begin(fingerprint.len());
         for (app_path, _, _) in &fingerprint {
-            self.dependency_source_progress
-                .finished_package(index.len());
-            // Degrade per package the way the loader degrades per file: one
+            self.dependency_source_progress.finished_package(files_done);
+            // Degrade per package the way the build degrades per file: one
             // `.app` whose embedded source trips a limit, or that was
             // rewritten mid-build, must not take call-graph and insight
             // features down for every other package.
-            let source_index = match al_symbols::source_index::get_or_build(app_path) {
-                Ok(source_index) => source_index,
-                Err(source) => {
+            match self.package_source_summary(app_path, disk_readable) {
+                Ok(loaded) => {
+                    skipped_files += loaded.summary.skipped_files;
+                    files_done += loaded.summary.files.len();
+                    if loaded.from_disk {
+                        from_disk += 1;
+                        self.dependency_source_progress.loaded_package_from_disk();
+                    }
+                    entries.extend(loaded.entry);
+                    packages.push((app_path.clone(), loaded.summary));
+                }
+                Err(error) => {
                     tracing::warn!(
-                        package = %app_path.display(),
-                        %source,
-                        "dependency source index: skipping a package that cannot be indexed"
+                        %error,
+                        "dependency source index: skipping a package whose source cannot be summarized"
                     );
-                    skipped_packages.push(
-                        DependencySourceError::IndexPackage {
-                            path: app_path.clone(),
-                            source,
-                        }
-                        .to_string(),
-                    );
-                    continue;
+                    skipped_packages.push(error.to_string());
                 }
-            };
-            let sources = match source_index.extract_all_sources() {
-                Ok(sources) => sources,
-                Err(source) => {
-                    tracing::warn!(
-                        package = %app_path.display(),
-                        %source,
-                        "dependency source index: skipping a package whose source cannot be extracted"
-                    );
-                    skipped_packages.push(
-                        DependencySourceError::ExtractPackage {
-                            path: app_path.clone(),
-                            source,
-                        }
-                        .to_string(),
-                    );
-                    continue;
-                }
-            };
-            for (archive_path, source) in sources {
-                // Degrade per file: one odd embedded `.al` (a grammar gap for
-                // a newer AL construct, a namespace-only file, a vendor's
-                // scratch file) must not permanently disable call-graph and
-                // insight features for the whole workspace. Skip it with a
-                // warning and index the rest.
-                let parsed = al_syntax::AlParser::parse_quick(&source);
-                if !parsed.errors.is_empty() {
-                    let details = parsed
-                        .errors
-                        .iter()
-                        .take(3)
-                        .map(|error| {
-                            format!(
-                                "{} at {}:{}",
-                                error.message,
-                                error.range.start_point.row + 1,
-                                error.range.start_point.column + 1
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join("; ");
-                    tracing::warn!(
-                        package = %app_path.display(),
-                        archive_path = %archive_path,
-                        details = %details,
-                        "dependency source index: skipping embedded AL that does not parse cleanly"
-                    );
-                    skipped_files += 1;
-                    continue;
-                }
-                if al_syntax::find_object_declaration(&parsed.tree, &source).is_none() {
-                    tracing::debug!(
-                        package = %app_path.display(),
-                        archive_path = %archive_path,
-                        "dependency source index: skipping declaration-free embedded AL"
-                    );
-                    skipped_files += 1;
-                    continue;
-                }
-                index.add_file_with_tree(
-                    dependency_virtual_path(app_path, &archive_path),
-                    source,
-                    parsed.tree,
-                );
-                self.dependency_source_progress.indexed_file();
             }
         }
+        if let Some(disk) = self.source_summary_cache.get() {
+            disk.retain(&entries);
+        }
+        let index = Arc::new(DependencySources::new(packages));
         self.dependency_source_progress.finish(index.len());
         tracing::info!(
             packages = fingerprint.len(),
+            packages_from_disk = from_disk,
             source_files = index.len(),
             skipped_files,
             skipped_packages = skipped_packages.len(),
             "dependency AL source index ready"
         );
-        let index_for_return = Arc::clone(&index);
         *cache = Some(DependencySourceCache {
             fingerprint: fingerprint.clone(),
-            index,
+            index: Arc::clone(&index),
             skipped_files,
             skipped_packages,
         });
-        Ok((fingerprint, index_for_return))
+        Ok((fingerprint, index))
+    }
+
+    /// Keep package summaries in `cache` between starts. Returns `false` when
+    /// a cache was already set, which stays in use.
+    pub fn enable_source_summary_cache(&self, cache: SourceSummaryCache) -> bool {
+        self.source_summary_cache.set(cache).is_ok()
+    }
+
+    /// The summarized source of one package: its entry in the summary cache
+    /// when `disk_readable` and one matches, otherwise summarized from the
+    /// `.app` and written back.
+    fn package_source_summary(
+        &self,
+        app_path: &Path,
+        disk_readable: bool,
+    ) -> Result<LoadedPackageSummary, DependencySourceError> {
+        let build = || {
+            PackageSourceSummary::build(app_path, || self.dependency_source_progress.indexed_file())
+                .map(Arc::new)
+        };
+        let Some(disk) = self.source_summary_cache.get() else {
+            return build().map(LoadedPackageSummary::built);
+        };
+        let key = match PackageKey::of(app_path) {
+            Ok(key) => key,
+            Err(error) => {
+                tracing::debug!(
+                    package = %app_path.display(),
+                    %error,
+                    "source summary cache: cannot hash the package; building without the cache"
+                );
+                return build().map(LoadedPackageSummary::built);
+            }
+        };
+        let entry = disk.entry_name(&key);
+        if let Some(summary) = disk_readable.then(|| disk.load(&key)).flatten() {
+            self.dependency_source_progress
+                .indexed_files(summary.files.len());
+            return Ok(LoadedPackageSummary {
+                summary: Arc::new(summary),
+                from_disk: true,
+                entry: Some(entry),
+            });
+        }
+        let summary = build()?;
+        // A package without embedded source costs nothing to summarize again,
+        // and an entry for it would only take disk space.
+        if summary.files.is_empty() {
+            return Ok(LoadedPackageSummary::built(summary));
+        }
+        if let Err(error) = disk.save(&key, &summary) {
+            tracing::warn!(
+                package = %app_path.display(),
+                dir = %disk.dir().display(),
+                %error,
+                "source summary cache: could not write the entry"
+            );
+        }
+        Ok(LoadedPackageSummary {
+            summary,
+            from_disk: false,
+            entry: Some(entry),
+        })
     }
 
     /// How far the dependency AL source index has got.
@@ -810,6 +963,33 @@ impl Workspace {
     /// time the answer matters.
     pub fn dependency_source_progress(&self) -> DependencySourceProgressSnapshot {
         self.dependency_source_progress.snapshot()
+    }
+
+    /// Whether the call graph is being built, and how long it has taken.
+    /// Readable while the build runs.
+    pub fn call_graph_progress(&self) -> CallGraphProgressSnapshot {
+        self.call_graph_progress.snapshot()
+    }
+
+    /// Whether the cached call graph matches the current workspace files and
+    /// packages. Builds nothing and does not wait for a build in progress.
+    ///
+    /// Workspace objects' fields and methods enter the symbol index with the
+    /// graph, so a lookup that must answer at once asks this before it uses
+    /// them.
+    pub fn call_graph_is_current(&self) -> bool {
+        let (dependency_fingerprint, _) = self.dependency_package_fingerprint_reporting();
+        let revision = self.call_graph_revision_now();
+        let revision_matches = matches!(
+            self.call_graph_revision.try_read(),
+            Ok(built_at) if *built_at == Some(revision)
+        );
+        let built = matches!(self.call_graph.try_read(), Ok(graph) if graph.is_some());
+        let packages_match = matches!(
+            self.call_graph_dependency_fingerprint.try_read(),
+            Ok(built_from) if built_from.as_ref() == Some(&dependency_fingerprint)
+        );
+        revision_matches && built && packages_match
     }
 
     /// How many times the call graph has been built since this workspace was
@@ -1004,6 +1184,7 @@ impl Workspace {
         // re-check, and never reach here.
         self.call_graph_builds
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let build_mark = self.call_graph_progress.begin();
         let build = || {
             let mut graph = InsightGraph::new();
             graph.build_from_index(&self.symbols);
@@ -1012,7 +1193,8 @@ impl Workspace {
                 &self.symbols,
                 &mut graph,
             )?;
-            al_insight::calls::register_dependency_source_nodes(&dependency_sources, &mut graph)?;
+            let dependency_files = dependency_sources.files();
+            al_insight::calls::register_dependency_summary_nodes(&dependency_files, &mut graph)?;
             let insight = Arc::new(graph);
 
             let mut cg = CallGraph::build_from_insight(&insight);
@@ -1022,8 +1204,8 @@ impl Workspace {
                 &insight,
                 &mut cg,
             )?;
-            al_insight::calls::populate_workspace_call_edges(
-                &dependency_sources,
+            al_insight::calls::populate_summary_call_edges(
+                &dependency_files,
                 &self.symbols,
                 &insight,
                 &mut cg,
@@ -1069,6 +1251,7 @@ impl Workspace {
         drop(fingerprint_guard);
         drop(cg_guard);
         drop(ig_guard);
+        build_mark.succeeded();
 
         let guard = self
             .call_graph
@@ -1164,23 +1347,6 @@ fn reset_optional_cache<T>(lock: &std::sync::RwLock<Option<T>>, component: &'sta
     }
 }
 
-fn dependency_virtual_path(app_path: &Path, archive_path: &str) -> PathBuf {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    app_path.hash(&mut hasher);
-    let mut path = PathBuf::from("/__al_dependency_sources__");
-    path.push(format!("{:016x}", hasher.finish()));
-    let component_count_before = path.components().count();
-    for component in Path::new(archive_path).components() {
-        if let std::path::Component::Normal(component) = component {
-            path.push(component);
-        }
-    }
-    if path.components().count() == component_count_before {
-        path.push("source.al");
-    }
-    path
-}
-
 /// Approximate memory statistics for diagnostic/observability.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1196,11 +1362,9 @@ pub struct WorkspaceMemoryStats {
     pub document_store_memory: al_source::documents::DocumentStoreMemoryStats,
     pub file_index_memory: al_source::file_index::FileIndexMemoryStats,
     pub package_metadata_bytes: usize,
-    /// The parsed AL source of every loaded package, when that index is built.
-    /// It holds one text plus one tree-sitter tree per embedded `.al`, so for
-    /// a source-bearing Base Application it is the largest single allocation
-    /// in the process.
-    pub dependency_source_index_memory: Option<al_source::file_index::FileIndexMemoryStats>,
+    /// The summarized AL source of every loaded package, when that index is
+    /// built.
+    pub dependency_source_index_memory: Option<DependencySourceMemoryStats>,
     pub dependency_source_files: usize,
     pub insight_graph_memory: Option<al_insight::graph::InsightGraphMemoryStats>,
     pub call_graph_memory: Option<al_insight::index::CallGraphMemoryStats>,
@@ -1353,6 +1517,27 @@ impl Default for Workspace {
     }
 }
 
+/// The `(kind, id, name)` of every object `path` declares, in document order,
+/// lowercased. A file can declare several objects; comparing only the first
+/// missed an edit that renamed or renumbered a later one.
+fn file_object_identities(
+    workspace: &Workspace,
+    path: &std::path::Path,
+) -> Vec<(String, Option<i64>, String)> {
+    workspace
+        .file_index
+        .object_infos_in(path)
+        .iter()
+        .map(|info| {
+            (
+                info.kind.to_ascii_lowercase(),
+                info.id,
+                info.name.to_ascii_lowercase(),
+            )
+        })
+        .collect()
+}
+
 /// Update workspace index and document cache when a file is opened or changed.
 ///
 /// Parses the text exactly once, warms the document cache with the resulting
@@ -1373,13 +1558,7 @@ pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
     // Capture procedure names before re-indexing to distinguish topology
     // changes from body-only edits.
     let topology_change = if let Ok(path) = uri.to_file_path() {
-        let previous_identity = workspace.file_index.object_info.get(&path).map(|info| {
-            (
-                info.kind.to_ascii_lowercase(),
-                info.id,
-                info.name.to_ascii_lowercase(),
-            )
-        });
+        let previous_identity = file_object_identities(workspace, &path);
         let prev_procs: std::collections::HashSet<String> = workspace
             .file_index
             .procedures_snapshot(&path)
@@ -1390,20 +1569,11 @@ pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
             .file_index
             .add_file_with_tree(path.clone(), text.to_string(), result.tree);
 
-        let new_identity = workspace.file_index.object_info.get(&path).map(|info| {
-            (
-                info.kind.to_ascii_lowercase(),
-                info.id,
-                info.name.to_ascii_lowercase(),
-            )
-        });
-        if let Some((_, _, name)) = &previous_identity {
+        let new_identity = file_object_identities(workspace, &path);
+        for (_, _, name) in previous_identity.iter().chain(&new_identity) {
             workspace.symbols.invalidate_composed(name);
         }
-        if let Some((_, _, name)) = &new_identity {
-            workspace.symbols.invalidate_composed(name);
-        }
-        if previous_identity.is_none() && new_identity.is_none() {
+        if previous_identity.is_empty() && new_identity.is_empty() {
             workspace.symbols.invalidate_all_composed();
         }
 
@@ -1509,10 +1679,13 @@ fn forget_vanished_workspace_objects(workspace: &Workspace) {
 /// caller (`al-lsp`), which has access to config and transport concerns.
 pub fn on_document_close(workspace: &Workspace, uri: &url::Url) {
     if let Ok(path) = uri.to_file_path() {
-        if let Some(info) = workspace.file_index.object_info.get(&path) {
-            workspace.symbols.invalidate_composed(&info.name);
-        } else {
+        let objects = workspace.file_index.object_infos_in(&path);
+        if objects.is_empty() {
             workspace.symbols.invalidate_all_composed();
+        }
+        // Every object the file declares, not only the first.
+        for info in &objects {
+            workspace.symbols.invalidate_composed(&info.name);
         }
     } else {
         workspace.symbols.invalidate_all_composed();
@@ -1523,5 +1696,7 @@ pub fn on_document_close(workspace: &Workspace, uri: &url::Url) {
     workspace.mark_generation_changed();
 }
 
+#[cfg(test)]
+mod source_cache_tests;
 #[cfg(test)]
 mod tests;

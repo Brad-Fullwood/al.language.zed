@@ -851,8 +851,18 @@ mod tests {
         }
     }
 
+    /// A name the user wrote resolves to the project's own `.netpackages` copy
+    /// only once the project is trusted. Before, a clone that shipped a DLL of
+    /// that name had it passed to alc as `/analyzer:` on every build.
+    ///
+    /// The only test in this crate that points `XDG_CONFIG_HOME` somewhere
+    /// else, and every other one reads an untrusted store either way.
     #[test]
-    fn named_custom_analyzer_is_discovered_for_official_compile() {
+    fn named_custom_analyzer_in_the_project_needs_trust() {
+        let config = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", config.path());
+
         let root = tempfile::tempdir().unwrap();
         let dll = root.path().join(
             ".netpackages/businesscentral.lintercop/1.0.0/lib/net8.0/BusinessCentral.LinterCop.dll",
@@ -860,16 +870,21 @@ mod tests {
         std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
         std::fs::write(&dll, b"analyzer").unwrap();
         let toolchain = analyzer_test_toolchain(root.path());
+        let requested = ["BusinessCentral.LinterCop".to_string()];
 
-        let resolved = resolve_analyzer_paths(
-            &toolchain,
-            Some(&["BusinessCentral.LinterCop".to_string()]),
-            root.path(),
-            &[],
-        )
-        .unwrap();
+        let untrusted = resolve_analyzer_paths(&toolchain, Some(&requested), root.path(), &[]);
+        let granted = al_project::trust::grant(root.path()).map(|_| ());
+        let trusted = resolve_analyzer_paths(&toolchain, Some(&requested), root.path(), &[]);
+        match previous {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+
+        let error = untrusted.expect_err("an untrusted project's copy must not reach alc");
+        assert!(error.to_string().contains("not trusted"), "{error}");
+        granted.unwrap();
         assert_eq!(
-            resolved,
+            trusted.unwrap(),
             [dll.canonicalize().unwrap().display().to_string()]
         );
     }
@@ -930,6 +945,41 @@ mod tests {
             resolved,
             [toolchain.analyzers.code_cop.display().to_string()]
         );
+    }
+
+    /// `al-explorer new`'s default `.vscode/settings.json` names its analyzers
+    /// as `${PerTenantExtensionCop}` (`al-project/src/scaffold.rs`,
+    /// `generate_vscode_settings`), and this is exactly the list
+    /// `pack-native --validate` passes through here as `analyzer_filter` when
+    /// no `--analyzers` flag overrides it. Before the fix, none of the four
+    /// token-spelled cops matched the `builtins` table (it compared against
+    /// `analyzer_name`, which stripped `.dll` but not `${...}`), so every one
+    /// fell through to `discover_custom_analyzer` and failed with "could not
+    /// be found" on a project that has none of them installed as files.
+    #[test]
+    fn requested_builtin_token_spelling_resolves_exact_toolchain_dll() {
+        let root = tempfile::tempdir().unwrap();
+        let toolchain = analyzer_test_toolchain(root.path());
+        std::fs::write(&toolchain.analyzers.code_cop, b"analyzer").unwrap();
+        std::fs::write(&toolchain.analyzers.app_source_cop, b"analyzer").unwrap();
+        std::fs::write(&toolchain.analyzers.ui_cop, b"analyzer").unwrap();
+        std::fs::write(&toolchain.analyzers.per_tenant_cop, b"analyzer").unwrap();
+
+        let cases = [
+            ("${CodeCop}", &toolchain.analyzers.code_cop),
+            ("${AppSourceCop}", &toolchain.analyzers.app_source_cop),
+            ("${UICop}", &toolchain.analyzers.ui_cop),
+            (
+                "${PerTenantExtensionCop}",
+                &toolchain.analyzers.per_tenant_cop,
+            ),
+        ];
+        for (token, expected) in cases {
+            let resolved =
+                resolve_analyzer_paths(&toolchain, Some(&[token.to_string()]), root.path(), &[])
+                    .unwrap_or_else(|e| panic!("{token} should resolve, got error: {e}"));
+            assert_eq!(resolved, [expected.display().to_string()], "{token}");
+        }
     }
 
     #[test]
@@ -1228,14 +1278,17 @@ Build failed.";
         let _g = COMPILE_TIMEOUT_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "0");
         }
         assert_eq!(compile_timeout().unwrap(), None);
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "-1");
         }
         assert_eq!(compile_timeout().unwrap(), None);
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
         unsafe {
             std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
         }
@@ -1246,6 +1299,7 @@ Build failed.";
         let _g = COMPILE_TIMEOUT_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "30");
         }
@@ -1253,6 +1307,7 @@ Build failed.";
             compile_timeout().unwrap(),
             Some(std::time::Duration::from_secs(30))
         );
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
         unsafe {
             std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
         }
@@ -1263,10 +1318,12 @@ Build failed.";
         let _g = COMPILE_TIMEOUT_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "not-a-number");
         }
         assert!(compile_timeout().is_err());
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
         unsafe {
             std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
         }

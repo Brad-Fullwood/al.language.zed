@@ -392,6 +392,7 @@ mod tests {
             cancel_rx,
             dap_event_tx,
             project_root: "/proj".to_string(),
+            authorize_target: allow_every_target(),
             acquire_token: no_token,
             resolve_object: resolve_foo_al,
             resolve_path: |_: i32, _: i32| -> Option<PathBuf> { None },

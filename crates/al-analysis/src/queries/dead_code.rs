@@ -154,8 +154,6 @@ pub fn dead_code(workspace: &Workspace) -> Result<Vec<UnusedSymbol>, super::Work
     Ok(results)
 }
 
-// Four pre-built lookup sets are distinct membership targets; bundling into one struct would obscure intent.
-#[allow(clippy::too_many_arguments)]
 fn find_unused_procedures(
     file_path: &str,
     file_text: &str,

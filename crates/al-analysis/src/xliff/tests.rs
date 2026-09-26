@@ -1390,3 +1390,58 @@ on run</note>
         Some("Codeunit Hello - NamedType GreetingMsg")
     );
 }
+
+/// A project with one translatable caption and an `app.json` naming the app
+/// `Victim`, so the generated file is `Translations/Victim.g.xlf`.
+#[cfg(unix)]
+fn translatable_project(root: &std::path::Path) -> Workspace {
+    std::fs::create_dir_all(root).unwrap();
+    std::fs::write(
+        root.join("app.json"),
+        r#"{"id":"00000000-0000-0000-0000-000000000001","name":"Victim","publisher":"P","version":"1.0.0.0"}"#,
+    )
+    .unwrap();
+    let ws = Workspace::new();
+    ws.file_index.add_file(
+        root.join("src/T.al"),
+        "table 50100 \"Thing\"\n{\n    Caption = 'Thing';\n}\n".to_string(),
+    );
+    ws
+}
+
+/// A clone that ships `Translations` as a symlink to a directory outside the
+/// project gets no file written there.
+#[cfg(unix)]
+#[test]
+fn build_xliff_refuses_a_translations_directory_that_leaves_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("project");
+    let outside = dir.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let ws = translatable_project(&root);
+    std::os::unix::fs::symlink(&outside, root.join("Translations")).unwrap();
+
+    let error = build_xliff(&ws, &root).expect_err("the link leaves the project");
+    assert!(error.to_string().contains("outside the project"), "{error}");
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+}
+
+/// A dangling `<App>.g.xlf` link inside a real `Translations` directory is
+/// replaced by the generated file rather than written through.
+#[cfg(unix)]
+#[test]
+fn build_xliff_replaces_a_planted_link_instead_of_following_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("project");
+    let target = dir.path().join("outside").join("autostart.desktop");
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    let ws = translatable_project(&root);
+    std::fs::create_dir_all(root.join("Translations")).unwrap();
+    std::os::unix::fs::symlink(&target, root.join("Translations/Victim.g.xlf")).unwrap();
+
+    let (path, units) = build_xliff(&ws, &root).unwrap().expect("one caption");
+    assert_eq!(units, 1);
+    assert!(!target.exists(), "the write followed the planted link");
+    let written = std::fs::symlink_metadata(&path).unwrap();
+    assert!(written.file_type().is_file(), "{path:?} is still a link");
+}

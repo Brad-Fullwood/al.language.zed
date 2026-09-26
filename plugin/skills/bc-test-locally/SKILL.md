@@ -26,7 +26,6 @@ directory is not the project.
 - `interp`: runs on the local Rust interpreter, seconds, no server.
 - `interpRecord`: runs locally with the record backend, where supported.
 - `liveBc`: needs a published app on a BC tenant.
-- `snapshot`: replays a recorded snapshot.
 
 Read `reasons` on any `liveBc` row before telling the user a test cannot run
 locally. This step decides whether the answer is seconds away or needs a tenant.
@@ -37,8 +36,8 @@ locally. This step decides whether the answer is seconds away or needs a tenant.
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json test-run-all
 ```
 
-One codeunit: `test-run "Pure Logic Test"`. History of past runs:
-`test-results`.
+One codeunit, by object ID: `test-run 50110`, or `test-run 50110 --method
+TestAddition` for one method. History of past runs: `test-results`.
 
 ## What the tests cover
 

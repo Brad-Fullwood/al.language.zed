@@ -77,30 +77,43 @@ pub(crate) async fn compute_diagnostics(
     uri: &Url,
     text: &str,
 ) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
-
-    {
-        let config_guard = server.workspace.config.read().await;
-        let project_root = server
-            .workspace
-            .project
-            .read()
-            .await
-            .as_ref()
-            .map(|project| project.root.clone());
-        let syntax_diags = al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
-            &server.workspace,
-            uri,
-            &config_guard,
-            project_root.as_deref(),
-        );
-        drop(config_guard);
-        diagnostics.extend(syntax_diags.iter().map(syntax_diag_to_lsp));
-    }
+    let mut diagnostics: Vec<Diagnostic> = syntax_diagnostics(server, uri)
+        .await
+        .iter()
+        .map(syntax_diag_to_lsp)
+        .collect();
 
     diagnostics.extend(run_semantic_analysis(server, uri, text).await);
 
     diagnostics
+}
+
+/// Phase 1 syntax and lint diagnostics for `uri`.
+///
+/// The project root is read and released before the config guard is taken, so
+/// no guard is held across an await. `did_change_configuration` holds the
+/// project write guard while it waits for the config write guard. A config
+/// read guard held across `project.read()` here waited on that writer while
+/// the writer waited on it, and the generation write guard the writer also
+/// holds then stalled every other request.
+async fn syntax_diagnostics(
+    server: &AlServer,
+    uri: &Url,
+) -> Vec<al_analysis::queries::diagnostics::SyntaxDiagnostic> {
+    let project_root = server
+        .workspace
+        .project
+        .read()
+        .await
+        .as_ref()
+        .map(|project| project.root.clone());
+    let config = server.workspace.config.read().await;
+    al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
+        &server.workspace,
+        uri,
+        &config,
+        project_root.as_deref(),
+    )
 }
 
 /// Compute project-scope diagnostics keyed by file for `workspace/diagnostic`.
@@ -176,13 +189,59 @@ pub(crate) async fn compute_workspace_diagnostics(
     Ok(reports)
 }
 
+/// What the project pass read for one URI while staging its report: the file
+/// index entry and, when the document is open, its text and client version.
+///
+/// Every write to either one stores a new `Arc`, and this input holds the
+/// staged `Arc`s, so pointer equality tells whether either was replaced.
+struct StagedInput {
+    /// The file index key the report was computed from.
+    path: std::path::PathBuf,
+    source: Option<Arc<(String, tree_sitter::Tree)>>,
+    document: Option<(Arc<String>, i32)>,
+}
+
+impl StagedInput {
+    fn read(workspace: &al_workspace::Workspace, path: std::path::PathBuf, uri: &Url) -> Self {
+        Self {
+            source: workspace.file_index.cached_parse_entry(&path),
+            document: workspace.documents.get_text_and_client_version(uri),
+            path,
+        }
+    }
+
+    fn client_version(&self) -> Option<i32> {
+        self.document.as_ref().map(|(_, version)| *version)
+    }
+
+    /// Whether the file index entry and the document text and version for
+    /// `uri` are still the ones this input was read from.
+    fn is_current(&self, workspace: &al_workspace::Workspace, uri: &Url) -> bool {
+        let source = workspace.file_index.cached_parse_entry(&self.path);
+        let same_source = match (&self.source, &source) {
+            (Some(staged), Some(current)) => Arc::ptr_eq(staged, current),
+            (None, None) => true,
+            _ => false,
+        };
+        let document = workspace.documents.get_text_and_client_version(uri);
+        let same_document = match (&self.document, &document) {
+            (Some((staged, staged_version)), Some((current, current_version))) => {
+                staged_version == current_version && Arc::ptr_eq(staged, current)
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        same_source && same_document
+    }
+}
+
 /// Compute the bridge-free project diagnostic generation used by push
 /// diagnostics. Cached semantic diagnostics are merged only when they belong
 /// to the exact current open-document `Arc` and client version.
 async fn compute_workspace_push_diagnostics(
     workspace: std::sync::Arc<al_workspace::Workspace>,
     semantic_cache: &tokio::sync::Mutex<std::collections::HashMap<Url, CachedSemanticDiagnostics>>,
-) -> Result<Vec<(Url, Option<i32>, Vec<Diagnostic>)>, WorkspaceDiagnosticError> {
+) -> Result<Vec<(Url, StagedInput, Vec<Diagnostic>)>, WorkspaceDiagnosticError> {
     let config = workspace.config.read().await.clone();
     let project_root = workspace
         .project
@@ -205,22 +264,23 @@ async fn compute_workspace_push_diagnostics(
     let semantic_cache = semantic_cache.lock().await;
     let mut reports = Vec::new();
     for (path, diagnostics) in native {
-        let uri = Url::from_file_path(&path)
-            .map_err(|()| WorkspaceDiagnosticError::InvalidFilePath(path))?;
+        let Ok(uri) = Url::from_file_path(&path) else {
+            return Err(WorkspaceDiagnosticError::InvalidFilePath(path));
+        };
         if is_cache_path(&uri) {
             continue;
         }
         let mut diagnostics: Vec<Diagnostic> = diagnostics.iter().map(syntax_diag_to_lsp).collect();
-        let snapshot = workspace.documents.get_text_and_client_version(&uri);
-        let version = snapshot.as_ref().map(|(_, version)| *version);
-        if let (Some((text, version)), Some(cached)) = (snapshot.as_ref(), semantic_cache.get(&uri))
+        let input = StagedInput::read(&workspace, path, &uri);
+        if let (Some((text, version)), Some(cached)) =
+            (input.document.as_ref(), semantic_cache.get(&uri))
         {
             if *version == cached.client_version && Arc::ptr_eq(text, &cached.text) {
                 diagnostics.extend(cached.diagnostics.clone());
             }
         }
         if !diagnostics.is_empty() {
-            reports.push((uri, version, diagnostics));
+            reports.push((uri, input, diagnostics));
         }
     }
     Ok(reports)
@@ -273,8 +333,10 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
     // gaps an unbounded loop recomputed forever and published nothing: with
     // `diagnosticsScope: "project"` the user saw no diagnostics at all while
     // typing. After MAX_STAGING_ATTEMPTS the newest computed result is
-    // published against the versions it was computed from, and the debounced
-    // pass that the last keystroke armed corrects it.
+    // published for every URI whose input is unchanged since staging. A URI
+    // that changed is left to whatever changed it: the document's own
+    // publish, the pass `did_close` runs, or the debounced pass that the last
+    // keystroke or file change on disk armed.
     const MAX_STAGING_ATTEMPTS: u32 = 3;
     for attempt in 1..=MAX_STAGING_ATTEMPTS {
         if session.is_cancelled() {
@@ -317,8 +379,8 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
         }
 
         let mut current = std::collections::BTreeMap::new();
-        for (uri, version, diagnostics) in reports {
-            current.insert(uri, (version, diagnostics));
+        for (uri, input, diagnostics) in reports {
+            current.insert(uri, (input, diagnostics));
         }
         let mut published = published_uris.lock().await;
         let mut stale: Vec<Url> = published
@@ -339,12 +401,22 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
             let version = workspace.documents.get_client_version(&uri);
             client.publish_diagnostics(uri, Vec::new(), version).await;
         }
-        for (uri, (version, diagnostics)) in &current {
+        for (uri, (input, diagnostics)) in &current {
             if session.is_cancelled() {
                 return false;
             }
+            // On the last attempt the revision may have moved since staging.
+            // A URI whose document or file index entry changed in between
+            // gets no report from this pass: `did_close` may already have
+            // sent its clear, and a report staged before the close would land
+            // after it. The URI stays in `published`, so a later pass clears
+            // it if it has no diagnostics by then.
+            if !input.is_current(&workspace, uri) {
+                tracing::debug!(uri = %uri, "project diagnostics: input changed after staging, report skipped");
+                continue;
+            }
             client
-                .publish_diagnostics(uri.clone(), diagnostics.clone(), *version)
+                .publish_diagnostics(uri.clone(), diagnostics.clone(), input.client_version())
                 .await;
         }
         *published = current.into_keys().collect();
@@ -386,21 +458,7 @@ pub(crate) async fn publish_diagnostics(
     // redundant parse on every did_open or did_change.
     {
         let parse_start = std::time::Instant::now();
-        let config_guard = server.workspace.config.read().await;
-        let project_root = server
-            .workspace
-            .project
-            .read()
-            .await
-            .as_ref()
-            .map(|project| project.root.clone());
-        let syntax_diags = al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
-            &server.workspace,
-            uri,
-            &config_guard,
-            project_root.as_deref(),
-        );
-        drop(config_guard);
+        let syntax_diags = syntax_diagnostics(server, uri).await;
         let parse_elapsed = parse_start.elapsed();
         let error_count = syntax_diags.len();
         tracing::debug!(uri = %uri, error_count, parse_us = parse_elapsed.as_micros() as u64, "publish_diagnostics: diagnostics from query");
@@ -535,6 +593,9 @@ pub(crate) fn snapshot_is_current(
 ///
 /// Shared between `compute_diagnostics` (pull) and `publish_diagnostics` (push Phase 2).
 async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<Diagnostic> {
+    // The analyzers below are loaded into this process, so they come from the
+    // trust decision as it stands now.
+    server.refresh_trust().await;
     let (
         enable_analysis,
         bg_analysis,
@@ -618,7 +679,14 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
     };
 
     let semantic_start = std::time::Instant::now();
-    match bridge.analyze(req).await {
+    let outcome = bridge.analyze(req).await;
+    // Release the bridge read guard before anything below takes the bridge
+    // lock again. `ensure_error_codes_loaded` goes back through
+    // `get_or_init_bridge`, and tokio's RwLock is fair: a second read from this
+    // task queues behind a restart or shutdown writer, which in turn waits for
+    // this task's first read to end.
+    drop(guard);
+    match outcome {
         Ok(results) => {
             let semantic_elapsed = semantic_start.elapsed();
             tracing::debug!(uri = %uri, count = results.len(), elapsed_us = semantic_elapsed.as_micros() as u64, "semantic analysis complete");
@@ -658,7 +726,6 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
             );
             let should_restart =
                 is_persistent || matches!(&error, crate::semantic::SemanticError::HostInit(_));
-            drop(guard);
             if should_restart {
                 if let Err(restart_error) =
                     al_workspace::restart_bridge_if_current(&server.workspace, bridge_generation)
@@ -932,24 +999,39 @@ pub fn semantic_to_diagnostic(entry: &crate::semantic::DiagnosticEntry) -> Diagn
 mod tests {
     use super::*;
 
+    /// The semantic bridge loads the resolved assemblies into the language
+    /// server itself, so a name the user wrote must not resolve to a DLL an
+    /// untrusted clone ships in `.netpackages` until the project is trusted.
     #[test]
-    fn semantic_analyzer_resolution_preserves_builtins_and_discovers_custom_names() {
+    #[serial_test::serial]
+    fn semantic_analyzer_resolution_preserves_builtins_and_needs_trust_for_project_copies() {
+        let config = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", config.path());
+
         let project = tempfile::tempdir().unwrap();
         let dll = project
             .path()
             .join(".netpackages/businesscentral.lintercop/1.0.0/BusinessCentral.LinterCop.dll");
         std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
         std::fs::write(&dll, b"analyzer").unwrap();
+        let requested = [
+            "CodeCop".to_string(),
+            "BusinessCentral.LinterCop".to_string(),
+        ];
 
-        let resolved = resolve_semantic_analyzer_entries(
-            &[
-                "CodeCop".to_string(),
-                "BusinessCentral.LinterCop".to_string(),
-            ],
-            project.path(),
-            &[],
-        )
-        .unwrap();
+        let untrusted = resolve_semantic_analyzer_entries(&requested, project.path(), &[]);
+        let granted = al_project::trust::grant(project.path()).map(|_| ());
+        let trusted = resolve_semantic_analyzer_entries(&requested, project.path(), &[]);
+        match previous {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+
+        let error = untrusted.expect_err("the clone's copy must not be loaded");
+        assert!(error.contains("not trusted"), "{error}");
+        granted.unwrap();
+        let resolved = trusted.unwrap();
         assert_eq!(resolved[0], "CodeCop");
         assert_eq!(
             resolved[1],

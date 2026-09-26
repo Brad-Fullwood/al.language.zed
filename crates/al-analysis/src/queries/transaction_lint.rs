@@ -5,7 +5,6 @@
 //! event, trigger, interface, and dependency graph. A file-local token scan
 //! cannot see the transaction stack that gives either operation its meaning.
 
-use al_syntax::IdentifierText;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
@@ -77,6 +76,16 @@ struct EffectSite {
     label: String,
 }
 
+impl From<&al_insight::calls::EffectSite> for EffectSite {
+    fn from(site: &al_insight::calls::EffectSite) -> Self {
+        Self {
+            range: al_syntax::types::SyntaxRange::from(site.range).into(),
+            byte_start: site.byte_start,
+            label: site.label.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ProcedureEffects {
     node: NodeId,
@@ -113,17 +122,27 @@ pub fn transaction_lints(
         &mut call_graph,
     )?;
     let dependency_sources = workspace.get_or_build_dependency_source_index()?;
-    al_insight::calls::resolve_all_workspace_call_edges(
-        &dependency_sources,
+    let dependency_files = dependency_sources.files();
+    al_insight::calls::resolve_all_summary_call_edges(
+        &dependency_files,
         &workspace.symbols,
         &insight,
         &mut call_graph,
     )?;
 
     let mut effects = collect_effects(&workspace.file_index, &insight, true)?;
-    effects.extend(collect_effects(&dependency_sources, &insight, false)?);
+    effects.extend(collect_summary_effects(&dependency_files, &insight, false)?);
+    Ok(lint_effects(&effects, &call_graph))
+}
+
+/// Both rules over the effects of every procedure and the resolved graph,
+/// sorted by file and position.
+fn lint_effects(
+    effects: &[ProcedureEffects],
+    call_graph: &CallGraph,
+) -> Vec<WorkspaceLintDiagnostic> {
     if effects.is_empty() {
-        return Ok(Vec::new());
+        return Vec::new();
     }
     let by_node: HashMap<NodeId, &ProcedureEffects> =
         effects.iter().map(|effect| (effect.node, effect)).collect();
@@ -131,8 +150,8 @@ pub fn transaction_lints(
     let mut diagnostics = Vec::new();
     let mut seen: HashSet<(&'static str, PathBuf, u32, u32)> = HashSet::new();
 
-    lint_commits(&effects, &by_node, &call_graph, &mut diagnostics, &mut seen);
-    lint_try_stacks(&effects, &by_node, &call_graph, &mut diagnostics, &mut seen);
+    lint_commits(effects, &by_node, call_graph, &mut diagnostics, &mut seen);
+    lint_try_stacks(effects, &by_node, call_graph, &mut diagnostics, &mut seen);
 
     diagnostics.sort_by(|a, b| {
         a.file
@@ -141,7 +160,7 @@ pub fn transaction_lints(
             .then(a.range.start.character.cmp(&b.range.start.character))
             .then(a.code.cmp(b.code))
     });
-    Ok(diagnostics)
+    diagnostics
 }
 
 fn lint_commits(
@@ -348,106 +367,89 @@ fn collect_effects(
     insight: &InsightGraph,
     reportable: bool,
 ) -> Result<Vec<ProcedureEffects>, al_insight::calls::SourceGraphError> {
-    let snapshot: Vec<(PathBuf, al_source::file_index::CachedObjectInfo)> = file_index
-        .object_info
-        .iter()
-        .map(|entry| (entry.key().clone(), entry.value().clone()))
-        .collect();
+    // One row per object declaration: a file declaring a table and then a
+    // codeunit yields both, and each object's walk stays inside its own
+    // declaration so the codeunit's procedures are not credited to the table.
+    let snapshot = al_insight::calls::indexed_objects(file_index);
     let mut effects = Vec::new();
 
     for (path, object) in snapshot {
-        let object_kind = object.kind.parse::<ObjectKind>().map_err(|_| {
-            al_insight::calls::SourceGraphError::InvalidObjectKind {
-                path: path.clone(),
-                kind: object.kind.clone(),
-            }
-        })?;
-        object_kind
-            .normalize_declaration_id(object.id)
-            .map_err(|error| match error {
-                al_symbols::DeclarationIdError::Missing { .. } => {
-                    al_insight::calls::SourceGraphError::MissingObjectId { path: path.clone() }
-                }
-                al_symbols::DeclarationIdError::OutOfRange { id, .. } => {
-                    al_insight::calls::SourceGraphError::ObjectIdOutOfRange {
-                        path: path.clone(),
-                        id,
-                    }
-                }
-                al_symbols::DeclarationIdError::Unexpected { id, .. } => {
-                    al_insight::calls::SourceGraphError::UnexpectedObjectId {
-                        path: path.clone(),
-                        id,
-                    }
-                }
-            })?;
+        let object_kind = al_insight::calls::declared_object_kind(&path, &object.kind)?;
+        al_insight::calls::declared_object_id(&path, object.id, object_kind)?;
         let (source, tree) = file_index.get_cached_parse(&path).ok_or_else(|| {
             al_insight::calls::SourceGraphError::MissingCachedParse { path: path.clone() }
         })?;
-        let mut stack = vec![tree.root_node()];
-        while let Some(node) = stack.pop() {
-            if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
-                if let Some(effect) = effects_for_procedure(
-                    &path,
-                    &object.name,
-                    object_kind,
-                    node,
-                    &tree,
-                    &source,
-                    insight,
-                    reportable,
-                ) {
-                    effects.push(effect);
-                }
-                continue;
-            }
-            let mut cursor = node.walk();
-            stack.extend(node.children(&mut cursor));
+        let scope = al_insight::calls::object_node(&tree, &object);
+        for sites in al_insight::calls::node_effect_sites(scope, &tree, &source) {
+            effects.extend(procedure_effects(
+                &path,
+                &object.name,
+                object_kind,
+                &sites,
+                insight,
+                reportable,
+            ));
         }
     }
     Ok(effects)
 }
 
-// The file path, object identity and reportable flag identify the caller,
-// while the node, tree, source and insight graph are the walk inputs. Each
-// varies independently per call, so a bundling struct would be built at the
-// call site and destructured here for no reduction.
-#[allow(clippy::too_many_arguments)]
-fn effects_for_procedure(
+/// [`collect_effects`] for summarized dependency files, whose effect sites
+/// were read from the tree when the summary was built.
+fn collect_summary_effects(
+    files: &[al_insight::calls::SummarizedFile<'_>],
+    insight: &InsightGraph,
+    reportable: bool,
+) -> Result<Vec<ProcedureEffects>, al_insight::calls::SourceGraphError> {
+    let mut effects = Vec::new();
+    for (path, file) in files {
+        // A parsed file's effects belong to its first object, as above.
+        let Some(object) = file.objects.first() else {
+            continue;
+        };
+        let object_kind = al_insight::calls::declared_object_kind(path, &object.kind)?;
+        al_insight::calls::declared_object_id(path, object.id, object_kind)?;
+        for sites in &file.effects {
+            effects.extend(procedure_effects(
+                path,
+                &object.name,
+                object_kind,
+                sites,
+                insight,
+                reportable,
+            ));
+        }
+    }
+    Ok(effects)
+}
+
+/// Resolve one procedure's effect sites against the graph. `None` when the
+/// graph has no callable node for it.
+fn procedure_effects(
     path: &std::path::Path,
     object_name: &str,
     object_kind: ObjectKind,
-    procedure: tree_sitter::Node<'_>,
-    tree: &tree_sitter::Tree,
-    source: &str,
+    sites: &al_insight::calls::ProcedureEffectSites,
     insight: &InsightGraph,
     reportable: bool,
 ) -> Option<ProcedureEffects> {
-    let bytes = source.as_bytes();
-    let name_node = procedure.child_by_field_name("name")?;
-    let name = name_node
-        .utf8_text(bytes)
-        .ok()?
-        .unquote_identifier()
-        .to_string();
-    let attributes = procedure_attributes(procedure, bytes);
-    let node_key = callable_key(object_kind, object_name, &name, &attributes);
+    let attributes = &sites.attributes;
+    let node_key = callable_key(object_kind, object_name, &sites.name, attributes);
     let node = CallGraph::node_id_for(insight, &node_key)?;
     let is_try_function = attributes
         .iter()
         .any(|(attr, _)| attr.eq_ignore_ascii_case("TryFunction"));
-    let subscriber_target = subscriber_target(&attributes)
+    let subscriber_target = subscriber_target(attributes)
         .filter(|(object, event)| subscriber_event_is_resolved(insight, object, event));
-    let (writes, commits) = collect_effect_sites(procedure, tree, source);
 
     Some(ProcedureEffects {
         node,
         file: path.to_path_buf(),
-        declaration_range: al_syntax::ts_range_to_syntax(&name_node.range(), bytes).into(),
+        declaration_range: al_syntax::types::SyntaxRange::from(sites.declaration_range).into(),
         reportable,
         is_try_function,
-        writes,
-        commits,
+        writes: sites.writes.iter().map(EffectSite::from).collect(),
+        commits: sites.commits.iter().map(EffectSite::from).collect(),
         subscriber_target,
     })
 }
@@ -473,32 +475,6 @@ fn callable_key(
     } else {
         NodeKey::Procedure(object_kind, object, procedure)
     }
-}
-
-/// Attributes normally belong to the procedure node in the current grammar.
-/// Keep the preceding-sibling fallback for older grammar trees and malformed
-/// but recoverable source, where decorators can be emitted as member siblings.
-fn procedure_attributes(procedure: tree_sitter::Node<'_>, source: &[u8]) -> Vec<(String, String)> {
-    let mut attrs = al_insight::calls::collect_procedure_attributes(procedure, source);
-    if attrs.is_empty() {
-        let mut sibling = procedure.prev_named_sibling();
-        while let Some(node) = sibling {
-            if node.kind() != "attribute" {
-                break;
-            }
-            let name = node
-                .child_by_field_name("name")
-                .and_then(|n| n.utf8_text(source).ok())
-                .unwrap_or("")
-                .to_string();
-            let raw = node.utf8_text(source).unwrap_or("").to_string();
-            if !name.is_empty() {
-                attrs.push((name, raw));
-            }
-            sibling = node.prev_named_sibling();
-        }
-    }
-    attrs
 }
 
 fn subscriber_target(attributes: &[(String, String)]) -> Option<(String, String)> {
@@ -537,137 +513,6 @@ fn subscriber_event_is_resolved(insight: &InsightGraph, object: &str, event: &st
     })
 }
 
-fn collect_effect_sites(
-    procedure: tree_sitter::Node<'_>,
-    tree: &tree_sitter::Tree,
-    source: &str,
-) -> (Vec<EffectSite>, Vec<EffectSite>) {
-    let bytes = source.as_bytes();
-    let resolver = al_syntax::TypeResolver::new(tree, source);
-    let mut writes = Vec::new();
-    let mut commits = Vec::new();
-    let mut stack = vec![procedure];
-    while let Some(node) = stack.pop() {
-        if node.kind() == "postfix_expression" {
-            let mut cursor = node.walk();
-            let children: Vec<_> = node.children(&mut cursor).collect();
-            let Some(last) = children.last().copied() else {
-                continue;
-            };
-            match last.kind() {
-                "call_suffix" => {
-                    let Some(primary) = children.first().copied() else {
-                        continue;
-                    };
-                    let name = primary.utf8_text(bytes).unwrap_or("").trim();
-                    if name.eq_ignore_ascii_case("Commit") {
-                        commits.push(effect_site(primary, bytes, "Commit()"));
-                    }
-                }
-                "member_call_suffix" | "scope_call_suffix" => {
-                    let Some(member) = last.child_by_field_name("member") else {
-                        continue;
-                    };
-                    let method = member.utf8_text(bytes).unwrap_or("").unquote_identifier();
-                    if !is_database_write_method(&method) {
-                        continue;
-                    }
-                    let Some(receiver_node) = children.first().copied() else {
-                        continue;
-                    };
-                    let receiver = receiver_node
-                        .utf8_text(bytes)
-                        .unwrap_or("")
-                        .unquote_identifier();
-                    let pos = syntax_position(source, receiver_node.start_position());
-                    let Some(decl) = resolver.resolve_type(&receiver, pos) else {
-                        continue;
-                    };
-                    if !matches!(
-                        decl.type_name.to_ascii_lowercase().as_str(),
-                        "record" | "recordref"
-                    ) || declaration_is_temporary(tree, source, &decl)
-                    {
-                        continue;
-                    }
-                    writes.push(effect_site(
-                        member,
-                        bytes,
-                        &format!("database write {receiver}.{method}()"),
-                    ));
-                }
-                _ => {}
-            }
-            // A postfix expression owns its nested suffixes; do not descend and
-            // accidentally report the same call twice.
-            continue;
-        }
-        let mut cursor = node.walk();
-        stack.extend(node.children(&mut cursor));
-    }
-    writes.sort_by_key(|site| site.byte_start);
-    commits.sort_by_key(|site| site.byte_start);
-    (writes, commits)
-}
-
-fn effect_site(node: tree_sitter::Node<'_>, source: &[u8], label: &str) -> EffectSite {
-    EffectSite {
-        range: al_syntax::ts_range_to_syntax(&node.range(), source).into(),
-        byte_start: node.start_byte(),
-        label: label.to_string(),
-    }
-}
-
-fn syntax_position(source: &str, point: tree_sitter::Point) -> al_syntax::SyntaxPosition {
-    let line = source.lines().nth(point.row).unwrap_or("");
-    al_syntax::SyntaxPosition {
-        line: point.row as u32,
-        character: al_syntax::byte_col_to_utf16_col(line, point.column),
-    }
-}
-
-fn declaration_is_temporary(
-    tree: &tree_sitter::Tree,
-    source: &str,
-    decl: &al_syntax::VariableDecl,
-) -> bool {
-    let point = decl.range.start_point;
-    let Some(mut node) = tree.root_node().descendant_for_point_range(point, point) else {
-        return false;
-    };
-    loop {
-        if matches!(
-            node.kind(),
-            "regular_variable_declaration"
-                | "variable_declaration"
-                | "object_variable_declaration"
-                | "parameter"
-        ) && node.utf8_text(source.as_bytes()).is_ok_and(|text| {
-            text.split(|ch: char| !ch.is_alphanumeric())
-                .any(|word| word.eq_ignore_ascii_case("temporary"))
-        }) {
-            return true;
-        }
-        if matches!(
-            node.kind(),
-            "var_section" | "object_var_section" | "procedure_declaration" | "trigger_declaration"
-        ) {
-            return false;
-        }
-        let Some(parent) = node.parent() else {
-            return false;
-        };
-        node = parent;
-    }
-}
-
-fn is_database_write_method(method: &str) -> bool {
-    matches!(
-        method.to_ascii_lowercase().as_str(),
-        "insert" | "insertifnotexists" | "modify" | "modifyall" | "delete" | "deleteall" | "rename"
-    )
-}
-
 fn is_post_database_event(event: &str) -> bool {
     let lower = event.to_ascii_lowercase();
     ["insert", "modify", "delete", "rename"]
@@ -687,6 +532,56 @@ fn capitalize(text: &str) -> String {
 mod tests {
     use super::*;
     use std::io::{Cursor, Write};
+
+    /// A project subscriber that commits after a dependency event.
+    const SUBSCRIBER_TO_DEPENDENCY: &str = r#"codeunit 50100 "Subscriber"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Dependency Publisher", 'OnAfterMutate', '', false, false)]
+    local procedure AfterDependencyMutation()
+    begin
+        Commit();
+    end;
+}"#;
+
+    /// Dependency source that writes and then raises the event above.
+    const DEPENDENCY_PUBLISHER: &str = r#"codeunit 70000 "Dependency Publisher"
+{
+    procedure Mutate()
+    var
+        Customer: Record Customer;
+    begin
+        Customer.Modify();
+        OnAfterMutate();
+    end;
+
+    [IntegrationEvent(false, false)]
+    local procedure OnAfterMutate()
+    begin
+    end;
+}"#;
+
+    /// A project try function that calls into dependency source.
+    const TRY_DEPENDENCY: &str = r#"codeunit 50100 "Try Dependency"
+{
+    [TryFunction]
+    procedure TryDependencyWrite()
+    var
+        Writer: Codeunit "Dependency Writer";
+    begin
+        Writer.WriteCustomer();
+    end;
+}"#;
+
+    /// Dependency source that writes.
+    const DEPENDENCY_WRITER: &str = r#"codeunit 70001 "Dependency Writer"
+{
+    procedure WriteCustomer()
+    var
+        Customer: Record Customer;
+    begin
+        Customer.Modify();
+    end;
+}"#;
 
     fn workspace(files: &[(&str, &str)]) -> Workspace {
         let ws = Workspace::new();
@@ -765,6 +660,43 @@ mod tests {
                 .iter()
                 .any(|d| d.code == COMMIT_AFTER_DATABASE_CHANGE),
             "expected commit diagnostic, got {diagnostics:?}"
+        );
+    }
+
+    /// A file declaring a table and then a codeunit: the codeunit's
+    /// procedures were looked up under the table's name, found no graph node,
+    /// and its commit went unreported.
+    #[test]
+    fn commit_in_the_second_object_of_a_file_is_reported() {
+        let ws = workspace(&[(
+            "Posting.al",
+            r#"table 50200 "Posting Buffer"
+{
+    fields
+    {
+        field(1; "Entry No."; Integer) { }
+    }
+}
+
+codeunit 50100 "Local"
+{
+    procedure Post()
+    var
+        Customer: Record Customer;
+    begin
+        Customer.Modify();
+        Commit();
+    end;
+}"#,
+        )]);
+        let diagnostics = transaction_lints(&ws).unwrap();
+        let diagnostic = diagnostics
+            .iter()
+            .find(|d| d.code == COMMIT_AFTER_DATABASE_CHANGE)
+            .unwrap_or_else(|| panic!("expected commit diagnostic, got {diagnostics:?}"));
+        assert_eq!(
+            diagnostic.range.start.line, 15,
+            "on the codeunit's Commit()"
         );
     }
 
@@ -881,37 +813,10 @@ mod tests {
 
     #[test]
     fn dependency_source_write_and_event_reach_project_commit() {
-        let ws = workspace(&[(
-            "Subscriber.al",
-            r#"codeunit 50100 "Subscriber"
-{
-    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Dependency Publisher", 'OnAfterMutate', '', false, false)]
-    local procedure AfterDependencyMutation()
-    begin
-        Commit();
-    end;
-}"#,
-        )]);
+        let ws = workspace(&[("Subscriber.al", SUBSCRIBER_TO_DEPENDENCY)]);
         let _package = install_dependency_source_package(
             &ws,
-            &[(
-                "src/DependencyPublisher.al",
-                r#"codeunit 70000 "Dependency Publisher"
-{
-    procedure Mutate()
-    var
-        Customer: Record Customer;
-    begin
-        Customer.Modify();
-        OnAfterMutate();
-    end;
-
-    [IntegrationEvent(false, false)]
-    local procedure OnAfterMutate()
-    begin
-    end;
-}"#,
-            )],
+            &[("src/DependencyPublisher.al", DEPENDENCY_PUBLISHER)],
         );
 
         let diagnostics = transaction_lints(&ws).unwrap();
@@ -925,33 +830,10 @@ mod tests {
 
     #[test]
     fn project_try_function_reports_write_inside_dependency_source() {
-        let ws = workspace(&[(
-            "TryDependency.al",
-            r#"codeunit 50100 "Try Dependency"
-{
-    [TryFunction]
-    procedure TryDependencyWrite()
-    var
-        Writer: Codeunit "Dependency Writer";
-    begin
-        Writer.WriteCustomer();
-    end;
-}"#,
-        )]);
+        let ws = workspace(&[("TryDependency.al", TRY_DEPENDENCY)]);
         let _package = install_dependency_source_package(
             &ws,
-            &[(
-                "src/DependencyWriter.al",
-                r#"codeunit 70001 "Dependency Writer"
-{
-    procedure WriteCustomer()
-    var
-        Customer: Record Customer;
-    begin
-        Customer.Modify();
-    end;
-}"#,
-            )],
+            &[("src/DependencyWriter.al", DEPENDENCY_WRITER)],
         );
 
         let diagnostics = transaction_lints(&ws).unwrap();
@@ -1017,6 +899,85 @@ mod tests {
             }),
             "record event must reach subscriber body: {diagnostics:?}"
         );
+    }
+
+    /// The pipeline before dependency source was kept as summaries: the
+    /// dependency files parsed into a `FileIndex`, their edges and effects
+    /// read from the trees. `sources` are the package's embedded files.
+    fn lints_from_dependency_trees(
+        ws: &Workspace,
+        sources: &[(&str, &str)],
+    ) -> Vec<WorkspaceLintDiagnostic> {
+        let (insight, cached_call_graph) = ws.get_or_build_call_graph().unwrap();
+        drop(cached_call_graph);
+        let mut call_graph = CallGraph::build_from_insight(&insight);
+        al_insight::calls::resolve_all_workspace_call_edges(
+            &ws.file_index,
+            &ws.symbols,
+            &insight,
+            &mut call_graph,
+        )
+        .unwrap();
+        let summaries = ws.get_or_build_dependency_source_index().unwrap();
+        let trees = al_source::file_index::FileIndex::new();
+        for (path, file) in summaries.files() {
+            let (_, source) = sources
+                .iter()
+                .find(|(archive_path, _)| *archive_path == file.archive_path)
+                .expect("every summarized file comes from the fixture");
+            trees.add_file(path.to_path_buf(), source.to_string());
+        }
+        assert_eq!(trees.object_info.len(), sources.len());
+        al_insight::calls::resolve_all_workspace_call_edges(
+            &trees,
+            &ws.symbols,
+            &insight,
+            &mut call_graph,
+        )
+        .unwrap();
+        let mut effects = collect_effects(&ws.file_index, &insight, true).unwrap();
+        effects.extend(collect_effects(&trees, &insight, false).unwrap());
+        lint_effects(&effects, &call_graph)
+    }
+
+    #[test]
+    fn dependency_summaries_lint_like_dependency_trees() {
+        // (project file name, its source, the dependency package's files)
+        type Fixture<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)]);
+        let fixtures: [Fixture<'_>; 3] = [
+            (
+                "Subscriber.al",
+                SUBSCRIBER_TO_DEPENDENCY,
+                &[("src/DependencyPublisher.al", DEPENDENCY_PUBLISHER)],
+            ),
+            (
+                "TryDependency.al",
+                TRY_DEPENDENCY,
+                &[("src/DependencyWriter.al", DEPENDENCY_WRITER)],
+            ),
+            (
+                "TryDependency.al",
+                TRY_DEPENDENCY,
+                &[
+                    ("src/DependencyPublisher.al", DEPENDENCY_PUBLISHER),
+                    ("src/DependencyWriter.al", DEPENDENCY_WRITER),
+                ],
+            ),
+        ];
+        for (name, project_source, dependency_sources) in fixtures {
+            let ws = workspace(&[(name, project_source)]);
+            let _package = install_dependency_source_package(&ws, dependency_sources);
+            let from_summaries = transaction_lints(&ws).unwrap();
+            assert!(
+                !from_summaries.is_empty(),
+                "{name}: the fixture reports something"
+            );
+            assert_eq!(
+                from_summaries,
+                lints_from_dependency_trees(&ws, dependency_sources),
+                "{name}"
+            );
+        }
     }
 
     #[test]
