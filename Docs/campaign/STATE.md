@@ -19,9 +19,16 @@ Five agents dispatched at 07:05:
   `findings/persisted-index.md` with before and after numbers.
 - `cargo mutants` on the shortlist (E): worktree branch `campaign/test-mutants`, writes
   `findings/mutants.md`.
-- Blog (I): articles 2, 4, 5, 8 revised against current code, article 9 written, fact pass,
-  unsloppify, `pnpm validate`. Commits on blog branch `campaign/2026-09-rewrite`. Rebuilds
-  `target/release` first.
+- Blog (I): done 08:20. 18 commits on blog branch `campaign/2026-09-rewrite`: articles 2, 4, 5,
+  8 revised against binaries built at ba2cda14, article 9 (retrospective, 2,230 words) written,
+  fact pass and unsloppify on all nine, `pnpm validate` passes. Six new defects recorded in
+  `findings/blog-progress.md` ("New findings"); a fix agent has four of them on worktree
+  branch `campaign/fix-blog-findings` (dispatched 08:30), the docs agent has the
+  `native-test-runtime.md` drift, the seventh-answer miscount is fixed (f1db17c2). Left: re-read
+  articles 7, 8, 9 after the security round closes, then merge to `main` (Brad's call).
+- Docs review (H): worktree branch `campaign/docs-review`, dispatched 08:32. README, ROADMAP,
+  `Docs/`, plugin docs checked against the code, then unsloppify. Writes
+  `findings/docs-review.md`.
 - desloppify batch 10, async locking (C): done 07:55, merged d34ad3d2. Two real deadlocks in
   al-lsp fixed (config/project lock order in diagnostics, bridge read lock taken twice), DAP
   proxy stdout lock held for one frame, 15 dead `#[allow]` removed, SAFETY comments on every
