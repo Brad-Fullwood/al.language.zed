@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-26 13:05 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-26 13:10 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -24,9 +24,6 @@ branches the 07:00 session left, each in its existing worktree under `.claude/wo
 - Round 7 fixes (A, D): review done 13:00 (`findings/r7-session-review.md`, 15 findings: 1 high,
   5 medium, 9 low, 6 of the 14 round 4 fixes have a gap). Fix agent on worktree branch
   `campaign/fix-r7-review`, highs first.
-- Blog re-read (I), dispatched 12:13: articles 7, 8, 9 against the closed security round and the
-  merged blog fixes, `blog-plan.md` numbers, unsloppify and humanizer, `pnpm validate`. Appends
-  `### Re-read 2026-09-26 after the security round` to `findings/blog-progress.md`.
 
 Merged this session: `campaign/fix-r4-security` (14 of 14), `campaign/fix-blog-findings` (3 of 4),
 `origin/dev`, `campaign/docs-review` (done, 12:20), `campaign/fix-blog-findings` again for finding 4 (12:50). Gate result on the merge is in `LOG.md`.
@@ -47,7 +44,9 @@ Queued:
 - al-dap and al-publish post to different BC dev endpoints (needs a live server to settle).
 - desloppify fix batches (`findings/desloppify.md` section 4), file splits after the owning fix branch merges.
 - Workstream E (tests): coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis. Start when a build slot frees.
-- Blog: re-read articles 7, 8 and 9 now that the security round is closed, then merge to `main` (Brad's call). The fact pass list is in `findings/blog-progress.md`.
+- Blog: done for now (re-read 13:10). Before publishing: timings on a quiet machine, article 9's final re-read when the campaign ends, `readTime`, four articles over the word range. Merge to `main` is Brad's call.
+- Symbol reader has no field for profile extensions (`crates/al-symbols/src/model.rs:630-652`), so Base Application indexes 7,968 of 7,969 objects (`findings/blog-progress.md`, re-read section).
+- `pack-native --validate` on a new untrusted project prints the "not trusted" notice twice.
 - Plugin leftovers: `plugin/evals/`, release binary download hook, test on a project with `.alpackages`.
 - Windows named pipe owner check (documented, no Windows machine in the campaign).
 - A wedged daemon request can hold a daemon past its idle window (warns every 60 s).
@@ -74,7 +73,7 @@ whichever ones pay off most. Record progress per workstream below so gaps are vi
 | F | Grammar: corpus tests, query drift between `languages/al` and `tree-sitter-al/queries` | R1 review running | From R1 findings |
 | G | AI tooling: make this project speed up and sharpen AI work on Business Central (see below) | Inventory, measurements and design done (`findings/ai-tooling-ideas.md`): latency is 4 to 150 ms warm, but 14 of 20 measured answers are too large for an agent (up to 9.4 MB). Plugin build running | Daemon projection work after the LSP fix branch merges |
 | H | Docs: `Docs/`, `README.md`, `ROADMAP.md` match the code, then unsloppify | Done 2026-09-26: every user doc checked against the code and given a plain-wording pass (`findings/docs-review.md`) | Re-check the docs each later merge touches |
-| I | Blog: replace the six articles with a new series on the current project, unsloppify each | On blog branch `campaign/2026-09-rewrite`: six posts deleted, site cleaned, `pnpm validate` passes (it failed on `main`), fact sheet and nine-article plan in `findings/blog-plan.md`, articles 1 to 8 drafted (8 of 9), article 9 (the campaign retrospective) is written last, article 1 `trace` paragraph corrected | Articles 2, 4, 5, 8 after the fix branches settle, article 9 last, final fact pass, merge to `main` |
+| I | Blog: replace the six articles with a new series on the current project, unsloppify each | Nine articles written, fact-passed, unsloppified and re-read after the security round on blog branch `campaign/2026-09-rewrite` (pushed), `pnpm validate` passes, all `draft: true` | Article 9 final re-read at campaign end, quiet-machine timings, `readTime`, then merge to `main` (Brad) |
 
 ### G: AI tooling detail
 
