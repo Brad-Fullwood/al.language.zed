@@ -2783,3 +2783,95 @@ fn enum_variables_and_methods_run_locally() {
         Value::Text("Red|Blue".into())
     );
 }
+
+const MISC_PROBE: &str = r#"codeunit 50193 "Misc Probe"
+{
+    procedure Builder(): Text
+    var
+        B: TextBuilder;
+    begin
+        B.Append('ab');
+        B.AppendLine('c');
+        B.Insert(1, '>');
+        B.Replace('b', 'B');
+        B.Remove(2, 1);
+        exit(Format(B.Length()) + '|' + B.ToText().TrimEnd());
+    end;
+
+    procedure Guids(): Text
+    var
+        Id: Guid;
+        Seen: Text;
+    begin
+        if IsNullGuid(Id) then
+            Seen := 'null';
+        Id := CreateGuid();
+        if not IsNullGuid(Id) then
+            Seen += '|created';
+        exit(Seen);
+    end;
+
+    procedure RenameAndTest(): Text
+    var
+        Item: Record Item;
+    begin
+        Item.Init();
+        Item."No." := 'A';
+        Item.Description := 'Chair';
+        Item.Insert();
+        Item.Rename('B');
+        if Item.Get('A') then
+            exit('old key still there');
+        Item.Get('B');
+        Item.TestField(Description);
+        Item.TestField(Description, 'Chair');
+        exit(Item."No.");
+    end;
+
+    procedure TestFieldEmpty()
+    var
+        Item: Record Item;
+    begin
+        Item.Init();
+        Item."No." := 'C';
+        Item.TestField("Unit Price");
+    end;
+
+    procedure TestFieldValue()
+    var
+        Item: Record Item;
+    begin
+        Item.Init();
+        Item.Description := 'Chair';
+        Item.TestField(Description, 'Table');
+    end;
+}
+"#;
+
+/// TextBuilder, CreateGuid, IsNullGuid, Rename and TestField were
+/// unsupported, so tests using them were routed to live BC.
+#[test]
+fn textbuilder_guids_rename_and_testfield_run_locally() {
+    let call = |proc: &str| {
+        run(
+            &[("/ws/Misc.al", MISC_PROBE), ("/ws/Item.al", ITEM_TABLE)],
+            "Misc Probe",
+            proc,
+            vec![],
+        )
+    };
+    // '>' + 'aBc' + CRLF, then the 'a' at position 2 removed: '>Bc' + CRLF.
+    assert_eq!(ok(call("Builder")), Value::Text("5|>Bc".into()));
+    assert_eq!(ok(call("Guids")), Value::Text("null|created".into()));
+    assert_eq!(ok(call("RenameAndTest")), Value::Code("B".into()));
+    let empty = error_message(call("TestFieldEmpty"));
+    assert!(
+        empty.contains("Unit Price must have a value in Item"),
+        "{empty}"
+    );
+    let wrong = error_message(call("TestFieldValue"));
+    assert!(
+        wrong.contains("Description must be equal to 'Table' in Item. Current value is 'Chair'."),
+        "{wrong}"
+    );
+}

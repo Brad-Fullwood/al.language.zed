@@ -209,6 +209,7 @@ fn call_on(
         Value::Record(_) => records::supports_record_method(&method),
         Value::Codeunit { .. } => true,
         Value::Option { .. } => enums::supports_enum_method(&method),
+        Value::TextBuilder(_) => records::supports_textbuilder_method(&method),
         _ => false,
     };
     if !supported {

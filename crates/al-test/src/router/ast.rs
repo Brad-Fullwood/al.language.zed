@@ -549,6 +549,18 @@ pub(super) fn classify_call(
                 reachable,
             );
         }
+    } else if type_name == "textbuilder" {
+        if !al_runtime::interpreter::records::supports_textbuilder_method(&method) {
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::LiveBc,
+                &format!("calls unsupported TextBuilder.{method} (requires BC semantics)"),
+                file,
+                member_node,
+                reachable,
+            );
+        }
     } else if type_name.starts_with("text") || type_name.starts_with("code") {
         if !al_runtime::interpreter::records::supports_text_method(&method) {
             promote(

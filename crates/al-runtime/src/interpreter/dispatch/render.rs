@@ -128,7 +128,7 @@ pub(crate) fn render_value(v: &Value) -> String {
         Value::Decimal(n) => n.normalize().to_string(),
         Value::Boolean(true) => "Yes".to_string(),
         Value::Boolean(false) => "No".to_string(),
-        Value::Text(s) | Value::Code(s) => s.clone(),
+        Value::Text(s) | Value::Code(s) | Value::TextBuilder(s) => s.clone(),
         Value::Date(0) | Value::Time(0) | Value::DateTime(0) => String::new(),
         Value::Date(d) => {
             let (y, m, day) = crate::interpreter::value::ymd_from_al_days(*d);

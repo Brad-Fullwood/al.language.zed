@@ -902,6 +902,15 @@ pub(crate) fn eval_call_parts(
                 }
                 return records::dispatch_dict_method(&recv, &proc_name, args, stack);
             }
+            Some(Value::TextBuilder(_)) if records::supports_textbuilder_method(&proc_name) => {
+                let recv = recv.to_string();
+                let args = match eval_args_opt(args_node, source, stack, ctx) {
+                    Ok(v) => v,
+                    Err(ArgsShort::Error(e)) => return Eval::Error(e),
+                    Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
+                };
+                return records::dispatch_textbuilder_method(&recv, &proc_name, args, stack);
+            }
             Some(Value::Option { .. })
                 if crate::interpreter::enums::supports_enum_method(&proc_name) =>
             {

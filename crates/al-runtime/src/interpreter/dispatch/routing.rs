@@ -240,6 +240,15 @@ pub(crate) fn dispatch_call_scoped(
             "maximum" => return builtin_extreme(&args, true),
             "minimum" => return builtin_extreme(&args, false),
             "arraylen" => return builtin_arraylen(&args),
+            "createguid" if args.is_empty() => return crate::stubs::any::guid_value(&args),
+            "isnullguid" => {
+                return match args.as_slice() {
+                    [Value::Guid(guid)] => Eval::Normal(Value::Boolean(
+                        guid.chars().all(|c| matches!(c, '0' | '-' | '{' | '}')),
+                    )),
+                    _ => eval_error("IsNullGuid expects a Guid"),
+                }
+            }
             "evaluate" => {
                 // A failed Evaluate as a statement is a runtime error in BC;
                 // in an expression (`if Evaluate(...)`) it is `false`.
@@ -351,6 +360,8 @@ pub fn supports_global_builtin(name: &str) -> bool {
             | "maximum"
             | "minimum"
             | "arraylen"
+            | "createguid"
+            | "isnullguid"
             | "evaluate"
             | "dmy2date"
             | "dt2date"
@@ -483,6 +494,8 @@ mod tests {
             "Maximum",
             "Minimum",
             "ArrayLen",
+            "CreateGuid",
+            "IsNullGuid",
             "Evaluate",
             "DMY2Date",
             "DT2Date",

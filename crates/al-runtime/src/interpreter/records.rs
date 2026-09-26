@@ -788,6 +788,8 @@ pub fn supports_record_method(method: &str) -> bool {
             | "calcsums"
             | "modifyall"
             | "ascending"
+            | "rename"
+            | "testfield"
     )
 }
 
@@ -828,6 +830,10 @@ pub(crate) fn dispatch_record_method(
     // view's filters select, into the buffer.
     if lower == "calcsums" {
         return dispatch_calcsums(table, handle, &nodes, source, ctx);
+    }
+    // TestField(Field[, Value]): the first argument names a field.
+    if lower == "testfield" {
+        return dispatch_testfield(table, handle, &nodes, source, stack, ctx);
     }
     // ModifyAll(Field, Value[, RunTrigger]): the first argument names a field.
     if lower == "modifyall" {
@@ -1019,6 +1025,29 @@ fn run_record_method(
                 Err(_) => Eval::Normal(Value::Boolean(false)),
             }
         }
+        // `Rename(key values…)`: the new primary key, all parts.
+        "rename" => {
+            if values.len() != store.record.primary_key_len() {
+                return eval_error(format!(
+                    "Rename: requires all {} primary-key values (got {})",
+                    store.record.primary_key_len(),
+                    values.len()
+                ));
+            }
+            let pk_fields: Vec<FieldNo> = store.record.primary_key_fields().to_vec();
+            let mut new_key = Vec::with_capacity(values.len());
+            for (field, value) in pk_fields.into_iter().zip(values) {
+                match store.coerce_to_field(field, value) {
+                    Ok(coerced) => new_key.push((field, coerced)),
+                    Err(error) => return eval_error(format!("Rename: {error}")),
+                }
+            }
+            match store.record.rename_in(view, new_key) {
+                Ok(()) => Eval::Normal(Value::Boolean(true)),
+                Err(error) if stmt_position => eval_error(format!("Rename: {error}")),
+                Err(_) => Eval::Normal(Value::Boolean(false)),
+            }
+        }
         "setrange" => {
             let f = field_no.unwrap();
             match values.len() {
@@ -1204,6 +1233,68 @@ pub(crate) fn field_get(
     }
     let store = ctx.records.get(&key).expect("store just ensured");
     Eval::Normal(read_buffer_field(store, handle, f))
+}
+
+/// `Rec.TestField(Field[, Value])` — raise unless `Field` has a value (is
+/// not its type's zero) or, with `Value`, equals it.
+fn dispatch_testfield(
+    table: &TableRef,
+    handle: u64,
+    nodes: &[Node<'_>],
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    let (field_node, expected_node) = match nodes {
+        [field] => (*field, None),
+        [field, expected] => (*field, Some(*expected)),
+        _ => return eval_error("TestField expects (Field[, Value])"),
+    };
+    let expected = match expected_node.map(|node| eval_expr(node, source, stack, ctx)) {
+        None => None,
+        Some(Eval::Normal(value)) => Some(value),
+        Some(other) => return other,
+    };
+    let key = match ensure_store(ctx, table) {
+        Ok(k) => k,
+        Err(e) => return eval_error(e),
+    };
+    let store = ctx.records.get_mut(&key).expect("store just ensured");
+    let field_name = node_text(field_node, source)
+        .unquote_identifier()
+        .into_owned();
+    let field_no = match store.resolve_field(&field_name) {
+        Ok(field_no) => field_no,
+        Err(error) => return eval_error(format!("TestField: {error}")),
+    };
+    let default = store
+        .field_defaults
+        .get(&field_no)
+        .cloned()
+        .unwrap_or(Value::Empty);
+    let view = store.take_view(handle);
+    let current = store
+        .record
+        .field_get_in(&view, field_no)
+        .cloned()
+        .unwrap_or_else(|| default.clone());
+    store.put_view(handle, view);
+    let table_name = store.record.table_name.clone();
+    match expected {
+        None if current == default || matches!(current, Value::Empty | Value::Null) => eval_error(
+            format!("{field_name} must have a value in {table_name}. It cannot be zero or empty."),
+        ),
+        None => Eval::Normal(Value::Empty),
+        Some(expected) => match store.coerce_to_field(field_no, expected) {
+            Ok(expected) if expected == current => Eval::Normal(Value::Empty),
+            Ok(expected) => eval_error(format!(
+                "{field_name} must be equal to '{}' in {table_name}. Current value is '{}'.",
+                crate::interpreter::dispatch::render_value(&expected),
+                crate::interpreter::dispatch::render_value(&current)
+            )),
+            Err(error) => eval_error(format!("TestField: {error}")),
+        },
+    }
 }
 
 /// `Rec.ModifyAll(Field, Value[, RunTrigger])` — set `Field` on every row the
@@ -1901,6 +1992,111 @@ pub(crate) fn dispatch_text_method(
             ))
         }
         other => eval_error(format!("unsupported Text method: {other}")),
+    }
+}
+
+/// True if `method` is a `TextBuilder` method implemented by the local
+/// runtime.
+pub fn supports_textbuilder_method(method: &str) -> bool {
+    matches!(
+        method.to_ascii_lowercase().as_str(),
+        "append" | "appendline" | "length" | "totext" | "clear" | "insert" | "remove" | "replace"
+    )
+}
+
+/// Execute a `TextBuilder` method on the builder bound to `recv`, changing
+/// it in place.
+pub(crate) fn dispatch_textbuilder_method(
+    recv: &str,
+    method: &str,
+    args: Vec<Value>,
+    stack: &mut ScopeStack,
+) -> Eval {
+    let Some(Value::TextBuilder(text)) = stack.lookup_mut(recv) else {
+        return eval_error(format!("'{recv}' is not a TextBuilder"));
+    };
+    let as_text = |value: &Value| match value {
+        Value::Text(t) | Value::Code(t) | Value::TextBuilder(t) => t.clone(),
+        Value::Char(c) => c.to_string(),
+        other => crate::interpreter::dispatch::render_value(other),
+    };
+    // Positions are 1-based character indexes, as in BC.
+    let byte_at = |text: &str, index: i64| -> Option<usize> {
+        let zero = usize::try_from(index.checked_sub(1)?).ok()?;
+        if zero == text.chars().count() {
+            return Some(text.len());
+        }
+        text.char_indices().nth(zero).map(|(at, _)| at)
+    };
+    let lower = method.to_ascii_lowercase();
+    match (lower.as_str(), args.as_slice()) {
+        ("append", [value]) => {
+            text.push_str(&as_text(value));
+            Eval::Normal(Value::Boolean(true))
+        }
+        ("appendline", []) => {
+            text.push_str("\r\n");
+            Eval::Normal(Value::Boolean(true))
+        }
+        ("appendline", [value]) => {
+            text.push_str(&as_text(value));
+            text.push_str("\r\n");
+            Eval::Normal(Value::Boolean(true))
+        }
+        ("length", []) => Eval::Normal(Value::Integer(text.chars().count() as i64)),
+        ("totext", []) => Eval::Normal(Value::Text(text.clone())),
+        ("totext", [Value::Integer(start), Value::Integer(count)]) => {
+            let chars: Vec<char> = text.chars().collect();
+            let from = usize::try_from(start - 1)
+                .ok()
+                .filter(|from| *from <= chars.len());
+            let to = from
+                .zip(usize::try_from(*count).ok())
+                .map(|(from, count)| from + count)
+                .filter(|to| *to <= chars.len());
+            match from.zip(to) {
+                Some((from, to)) => Eval::Normal(Value::Text(chars[from..to].iter().collect())),
+                None => eval_error(format!(
+                    "TextBuilder.ToText: {count} characters from {start} are outside the {}-character text",
+                    chars.len()
+                )),
+            }
+        }
+        ("clear", []) => {
+            text.clear();
+            Eval::Normal(Value::Empty)
+        }
+        ("insert", [Value::Integer(index), value]) => match byte_at(text, *index) {
+            Some(at) => {
+                text.insert_str(at, &as_text(value));
+                Eval::Normal(Value::Boolean(true))
+            }
+            None => eval_error(format!("TextBuilder.Insert: index {index} is out of range")),
+        },
+        ("remove", [Value::Integer(index), Value::Integer(count)]) => {
+            let start = byte_at(text, *index);
+            let end = start.and_then(|_| byte_at(text, index + count));
+            match start.zip(end).filter(|_| *count >= 0) {
+                Some((start, end)) => {
+                    text.replace_range(start..end, "");
+                    Eval::Normal(Value::Boolean(true))
+                }
+                None => eval_error(format!(
+                    "TextBuilder.Remove: {count} characters from {index} are out of range"
+                )),
+            }
+        }
+        ("replace", [old, new]) => {
+            let (old, new) = (as_text(old), as_text(new));
+            if old.is_empty() {
+                return eval_error("TextBuilder.Replace: the old value cannot be empty");
+            }
+            *text = text.replace(&old, &new);
+            Eval::Normal(Value::Boolean(true))
+        }
+        _ => eval_error(format!(
+            "TextBuilder.{method} with these arguments is not supported by the local runtime"
+        )),
     }
 }
 

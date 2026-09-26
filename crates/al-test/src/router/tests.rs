@@ -1090,3 +1090,39 @@ end;
         package.reasons
     );
 }
+
+/// A `TextBuilder` was typed as Text (its type name starts with "text"), so
+/// `Builder.Append(...)` was reported as an unsupported Text.Append.
+#[test]
+fn textbuilder_and_guid_builtins_stay_local() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/BuilderRouting.Codeunit.al"),
+        r#"codeunit 50184 "Builder Routing"
+{
+Subtype = Test;
+
+[Test]
+procedure Builds()
+var
+    Builder: TextBuilder;
+    Id: Guid;
+    ok: Boolean;
+begin
+    Builder.Append('a');
+    Builder.AppendLine('b');
+    ok := Builder.ToText().StartsWith('a');
+    Id := CreateGuid();
+    ok := IsNullGuid(Id);
+end;
+}"#
+        .to_string(),
+    );
+    let result = classify_all(&workspace).unwrap().remove(0);
+    assert_eq!(
+        result.decision,
+        RoutingDecision::Interp,
+        "TextBuilder and Guid builtins run locally: {:?}",
+        result.reasons
+    );
+}
