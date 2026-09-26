@@ -13,7 +13,8 @@ path does **not** use the daemon — it uses LSP handlers directly. See
 
 - **Wire format:** newline-delimited JSON-RPC 2.0 (`Request { jsonrpc, id, method, params? }`,
   `Response { jsonrpc, id, result? , error? }`, `RpcError { code, message }`). Standard error codes
-  plus `-32000` (code analysis) and `-32001` (file not found).
+  plus `-32000` (code analysis), `-32001` (file not found) and `-32002` (a path outside the loaded
+  project).
 - **Request ids:** string, number, and `null` ids are all accepted per the spec, and the response
   echoes the id exactly as received. A message with **no** `id` is a notification: it is dispatched
   but never answered. Text that is not valid JSON returns `-32700` (parse error) with a `null` id;
@@ -96,18 +97,24 @@ focused submodules:
 - `lsp_dispatch.rs` — the LSP-style queries (hover, definition, references, implementations,
   completions, signatureHelp, rename, documentSymbols, foldingRanges, semanticTokens, inlayHints,
   codeActions, search, object, byId, events, subscribers, composed, packages, deps).
-- `build_dispatch/` — build, analysis, codegen, fixes, symbol/auth, tests, and XLIFF
-  (`mod.rs`, `build.rs`, `codegen.rs`, `symbols_auth.rs`, `tests_dispatch/`, `fixes.rs`, `xliff.rs`).
-- `insight_dispatch.rs` — trace, traceChain, entrypoints, graphExport, insightStats, deadCode, impact,
-  tableImpact, suggestEvent, eventMap.
+- `build_dispatch/` — build, analysis, codegen, fixes, ID allocation, symbol/auth, tests, and XLIFF
+  (`mod.rs`, `build/`, `codegen.rs`, `fixes.rs`, `free_ids.rs`, `symbols_auth.rs`, `tests_dispatch/`,
+  `xliff.rs`).
+- `insight_dispatch.rs` — trace, traceChain, entrypoints, graphExport, insightStats, deadCode,
+  nativeCheck, impact, tableImpact, suggestEvent, eventMap.
+- `mod.rs` itself answers `diag`, `ping`, `status`, `handshake` and `shutdown`. The
+  `dispatch_table!` list there declares, for every method, whether it reads or rewrites a path the
+  caller names and whether it can spend a Business Central credential, and generates the dispatch
+  match from that list.
 - `debug_dispatch.rs` — stateful `debug` session control (start, breakpoint, stack/variables/globals,
   expand/eval, continue/step, history, stop), used by both CLI and MCP `al_debug`.
 
 The complete method list is in the [daemon method reference](../reference/daemon-methods.md). Notable
 hardening: duplicate-detection `minTokens`/`minSimilarity` are clamped to safe ranges;
 graph export is capped at 50k nodes+edges; trace depth is bounded; JSON-RPC `null` results are
-serialized explicitly. Workspace-scale walks (`deadCode`, `trace`, `entrypoints`, `graphExport`,
-`impact`, `suggestEvent`) run on the blocking pool so they cannot stall the async worker driving
+serialized explicitly. Workspace-scale walks (`deadCode`, `trace`, `traceChain`, `entrypoints`,
+`graphExport`, `insightStats`, `impact`, `tableImpact`, `suggestEvent`, `eventMap`) run on the
+blocking pool so they cannot stall the async worker driving
 every connection's I/O.
 
 ## One dispatcher, three front ends
