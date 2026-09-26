@@ -14,14 +14,16 @@ both package symbols and your code contribute.
 | Component | File | Role |
 | --- | --- | --- |
 | Graph model | `graph.rs` | petgraph `DiGraph` of `InsightNode` (Object/Procedure/Event/Subscriber) and `InsightEdge` (Extends/Calls/Publishes/SubscribesTo/Contains/RelatesTo/Triggers); O(1) node lookup and edge dedup |
-| Call graph | `calls.rs`, `index.rs` | adjacency lists with **both** outgoing and incoming edges (so "callers of X" is O(deg) not O(\|E\|)); edge kinds DirectCall/EventSubscription/RecordTrigger/IndirectCall |
+| Call graph | `calls/`, `index.rs` | adjacency lists with **both** outgoing and incoming edges (so "callers of X" is O(deg) not O(\|E\|)); edge kinds DirectCall/EventSubscription/RecordTrigger/IndirectCall |
 | Traversal/search | `search.rs` | event tracing, entry-point discovery, DOT/JSON export |
 | Helpers | `analysis.rs` | table-impact, TableRelation parsing, record-type matching |
 | Discovery | `discovery.rs` | full publisher/subscriber map + orphan subscribers |
 
-Record operations produce `OnBefore/OnAfterInsertEvent` trigger edges according to AL's `RunTrigger`
-semantics: `Rec.Insert(true)` fires the triggers, a bare `Rec.Insert()` does **not** (AL's documented
-default is `false`), and a non-literal argument is conservatively treated as firing. Member calls
+`Insert`, `Modify` and `Delete` on a record variable produce edges to the table's
+`OnBefore/OnAfter{Op}Event` and on to their subscribers whatever the `RunTrigger` argument is.
+Business Central raises those events either way. `RunTrigger` decides only whether the table's own
+`OnInsert`/`OnModify`/`OnDelete` code runs, which is why subscribers test `if not RunTrigger then
+exit`. `Validate` produces edges to `OnBefore/OnAfterValidateEvent` the same way. Member calls
 resolve the receiver's declared object type before lookup, and workspace subscribers are connected
 after the graph is built. Attribute names are matched case-insensitively, as AL defines them.
 Objects from different packages that share a `(kind, name)` each get their own graph node.
@@ -46,6 +48,10 @@ Event traversal detects cycles and enforces a 10,000-node global bound.
 | **Breaking changes** | `queries/breaking_changes.rs` | Cross-version public-surface diff: removed objects/procedures/fields/enum values, signature/return-type changes. |
 | **Upgrade report** | `queries/upgrade.rs` | Breaking changes + data-migration hints + obsolete-symbol warnings, with guidance. |
 | **Obsolescence** | `queries/obsolescence.rs` | Inventory of `[Obsolete]` symbols with state/reason/tag and caller counts. |
+| **Obsolete usage** | `queries/obsolete_usage.rs` | `obsolete --used`: the workspace's calls to obsolete procedures, each with file, range, reason and tag. A call on a package object's variable is matched to its overloads by argument count and argument types. |
+| **Package diff** | `queries/package_diff.rs` | `package-diff <old.app> <new.app>`: the changes between two versions of a dependency, kept to the ones the workspace's code uses (`--all` for every change), each with its consumers in `impact`'s row shape. |
+| **Free IDs** | `queries/free_ids.rs` | `free-ids`: the next free object ID, table field number or enum ordinal inside `app.json` `idRanges`, counting every workspace object and the package objects inside the same range. |
+| **Native check** | `queries/native_check.rs` | `native-check`: duplicate object IDs, IDs outside `idRanges` and duplicate object names, as `AL-NC*` diagnostics. |
 | **Data-classification audit** | `queries/audit.rs` | GDPR posture: every table field's `DataClassification` and a risk level. |
 | **Permission audit** | `queries/audit.rs` | Permission-set coverage plus unused object grants (`overBroad`) and granted I/M/D rights without a corresponding observed write (`overGrantedRights`). |
 | **Dependency graph** | `queries/deps.rs` | GUID-keyed transitive tree from the typed current `app.json` and loaded `.app` manifests; implicit dependencies, missing packages, duplicate versions, unsatisfied minimum versions, deterministic JSON/DOT export. |
@@ -125,7 +131,9 @@ al-explorer suggest-event --object|--procedure|--table|--field|--event <x>
 al-explorer entrypoints      al-explorer intercept      al-explorer graph --format json|dot
 al-explorer sql-scan         al-explorer arch-lint      al-explorer duplicates
 al-explorer breaking --baseline-app <old.app>
-al-explorer upgrade --baseline-app <old.app>             al-explorer obsolete
+al-explorer upgrade --baseline-app <old.app>             al-explorer obsolete [--used]
+al-explorer package-diff <old.app> <new.app> [--all]     al-explorer free-ids [--kind K | --object NAME]
+al-explorer native-check
 al-explorer audit-data       al-explorer permission-audit
 al-explorer deps             al-explorer deps-graph     al-explorer metrics [--all]
 al-explorer profiler-hints [Object.Procedure ...]
@@ -142,7 +150,8 @@ an MCP allow-list. The TUI surfaces event chains, call-graph/impact, and profile
 
 - `breaking` and `upgrade` require `--baseline-app <old.app>` for a cross-version result. Without a
   baseline they explicitly report that the comparison was not evaluated.
-- Package-only call sites cannot be recovered because `.app` symbols do not contain method bodies.
+- Call sites inside a package come from the AL source the package embeds. A package without
+  embedded source contributes declarations and no call sites.
 - Four conservative table/page layering rules are enabled by default; `.alarch.json` adds
   project-specific literal or regex-backed rules.
 - Permission over-grant analysis cannot prove dynamic `RecordRef`/`FieldRef` writes, unresolved
