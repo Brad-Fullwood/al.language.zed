@@ -1,3 +1,10 @@
+//! Zed WASM extension for the AL language.
+//!
+//! Downloads and verifies the platform build of `al-lsp` from GitHub releases,
+//! merges the extension's bundled LSP settings with a worktree's own, and
+//! configures the debug adapter (`dap`) that runs `al-lsp` with `--dap` or
+//! `--dap-legacy`.
+
 mod dap;
 mod settings;
 
