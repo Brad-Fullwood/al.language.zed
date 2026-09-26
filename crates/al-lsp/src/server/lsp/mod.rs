@@ -329,26 +329,37 @@ impl AlServer {
             Err(_) => true,
         };
 
-        if let Some(guard) = self.get_or_init_bridge().await {
-            if let Some(bridge) = guard.as_ref() {
-                match bridge.builtin_types().await {
-                    Ok(types) => {
-                        tracing::info!(count = types.len(), "Loaded built-in types via bridge");
-                        let version = bridge.version().to_string();
-                        crate::semantic::set_builtins(&self.workspace, types, &version);
-                        return Ok(());
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "Failed to load built-in types via bridge");
-                        self.client
-                            .show_message(
-                                MessageType::WARNING,
-                                format!("Failed to load AL built-in types: {error}"),
-                            )
-                            .await;
-                    }
-                }
+        // The bridge read guard ends with this match arm, before the warning
+        // below waits on the client: a bridge restart must not queue behind a
+        // user notification.
+        let fetched = match self.get_or_init_bridge().await {
+            Some(guard) => match guard.as_ref() {
+                Some(bridge) => Some(
+                    bridge
+                        .builtin_types()
+                        .await
+                        .map(|types| (types, bridge.version().to_string())),
+                ),
+                None => None,
+            },
+            None => None,
+        };
+        match fetched {
+            Some(Ok((types, version))) => {
+                tracing::info!(count = types.len(), "Loaded built-in types via bridge");
+                crate::semantic::set_builtins(&self.workspace, types, &version);
+                return Ok(());
             }
+            Some(Err(error)) => {
+                tracing::warn!(%error, "Failed to load built-in types via bridge");
+                self.client
+                    .show_message(
+                        MessageType::WARNING,
+                        format!("Failed to load AL built-in types: {error}"),
+                    )
+                    .await;
+            }
+            None => {}
         }
         if poisoned {
             return Err(internal_error(
@@ -363,28 +374,34 @@ impl AlServer {
             return;
         }
 
-        if let Some(guard) = self.get_or_init_bridge().await {
-            if let Some(bridge) = guard.as_ref() {
-                match bridge.error_codes().await {
-                    Ok(codes) => {
-                        tracing::info!(count = codes.len(), "Loaded error codes via bridge");
-                        for ec in codes {
-                            self.workspace
-                                .error_codes
-                                .insert(ec.code.clone(), ec.message.clone());
-                        }
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "Failed to load error codes via bridge");
-                        self.client
-                            .show_message(
-                                MessageType::WARNING,
-                                format!("Failed to load AL error codes: {error}"),
-                            )
-                            .await;
-                    }
+        // As in `ensure_builtins_loaded`, the bridge read guard ends with the
+        // match arm, before the warning waits on the client.
+        let fetched = match self.get_or_init_bridge().await {
+            Some(guard) => match guard.as_ref() {
+                Some(bridge) => Some(bridge.error_codes().await),
+                None => None,
+            },
+            None => None,
+        };
+        match fetched {
+            Some(Ok(codes)) => {
+                tracing::info!(count = codes.len(), "Loaded error codes via bridge");
+                for ec in codes {
+                    self.workspace
+                        .error_codes
+                        .insert(ec.code.clone(), ec.message.clone());
                 }
             }
+            Some(Err(error)) => {
+                tracing::warn!(%error, "Failed to load error codes via bridge");
+                self.client
+                    .show_message(
+                        MessageType::WARNING,
+                        format!("Failed to load AL error codes: {error}"),
+                    )
+                    .await;
+            }
+            None => {}
         }
     }
 

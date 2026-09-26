@@ -617,7 +617,14 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
     };
 
     let semantic_start = std::time::Instant::now();
-    match bridge.analyze(req).await {
+    let outcome = bridge.analyze(req).await;
+    // Release the bridge read guard before anything below takes the bridge
+    // lock again. `ensure_error_codes_loaded` goes back through
+    // `get_or_init_bridge`, and tokio's RwLock is fair: a second read from this
+    // task queues behind a restart or shutdown writer, which in turn waits for
+    // this task's first read to end.
+    drop(guard);
+    match outcome {
         Ok(results) => {
             let semantic_elapsed = semantic_start.elapsed();
             tracing::debug!(uri = %uri, count = results.len(), elapsed_us = semantic_elapsed.as_micros() as u64, "semantic analysis complete");
@@ -657,7 +664,6 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
             );
             let should_restart =
                 is_persistent || matches!(&error, crate::semantic::SemanticError::HostInit(_));
-            drop(guard);
             if should_restart {
                 if let Err(restart_error) =
                     al_workspace::restart_bridge_if_current(&server.workspace, bridge_generation)
