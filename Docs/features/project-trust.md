@@ -117,11 +117,18 @@ This is not a boundary against a program that already runs as the user: such a p
 write `trusted-projects.json` itself. What the design controls is that no surface an agent
 reaches (the daemon, the MCP tools, a refusal, a skill) grants trust or tells it how to.
 
-A revoke takes effect on the next request. The daemon fingerprints the trust store, the
-user settings file, both repository settings files, the launch file and the `dotnet` host it
-runs before each request, six `stat` calls, and re-evaluates when any of them moved. It used to decide once at
-startup and keep that configuration until it exited, which is up to `AL_DAEMON_IDLE_SECS`
-after the last request and never while an editor keeps it busy.
+A revoke takes effect on the next request, in every process that applies these settings.
+The daemon, and the MCP server through it, fingerprint the trust store, the user settings
+file, both repository settings files, the launch file and the `dotnet` host they run before
+each request, six `stat` calls, and re-evaluate when any of them moved. They used to decide
+once at startup and keep that configuration until they exited, which is up to
+`AL_DAEMON_IDLE_SECS` after the last request and never while an editor keeps them busy.
+
+The language server Zed runs takes the same fingerprint before every command (build, Run
+Test, symbol download) and before semantic analysis resolves analyzers, and gates the
+editor's settings again when it moved. Gating only removes values, so a project trusted
+while the language server runs takes effect at the next settings change or restart. The
+debug adapter is a new process for each session and decides at launch.
 
 The record lives in `~/.config/al-lsp/trusted-projects.json` (or `$XDG_CONFIG_HOME/al-lsp/`),
 outside every repository, mode 0600, written through a temp file and a rename. Each entry

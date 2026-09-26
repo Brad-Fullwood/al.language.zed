@@ -535,6 +535,9 @@ pub(crate) fn snapshot_is_current(
 ///
 /// Shared between `compute_diagnostics` (pull) and `publish_diagnostics` (push Phase 2).
 async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<Diagnostic> {
+    // The analyzers below are loaded into this process, so they come from the
+    // trust decision as it stands now.
+    server.refresh_trust().await;
     let (
         enable_analysis,
         bg_analysis,
