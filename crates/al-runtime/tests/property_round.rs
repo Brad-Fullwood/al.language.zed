@@ -22,6 +22,9 @@ impl al_types::ProcedureSource for NoSource {
     fn find_by_object_name(&self, _name: &str) -> Option<PathBuf> {
         None
     }
+    fn find_object_of_kind(&self, _name: &str, _kinds: &[&str]) -> Option<PathBuf> {
+        None
+    }
     fn iter_paths(&self) -> Vec<PathBuf> {
         Vec::new()
     }

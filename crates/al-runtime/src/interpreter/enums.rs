@@ -16,7 +16,7 @@ pub(crate) fn workspace_enum_members(
     ctx: &DispatchCtx,
     type_name: &str,
 ) -> Option<Vec<(String, i64)>> {
-    let path = ctx.source.find_by_object_name(type_name)?;
+    let path = ctx.source.find_object_of_kind(type_name, &["enum"])?;
     let (text, tree) = ctx.source.get_cached_parse(&path)?;
     let bytes = text.as_bytes();
     let mut cursor = tree.root_node().walk();

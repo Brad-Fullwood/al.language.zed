@@ -284,12 +284,14 @@ fn load_table_meta(
     table_name: &str,
 ) -> Result<TableMeta, String> {
     let want = table_name.unquote_identifier();
-    let path = source.find_by_object_name(&want).ok_or_else(|| {
-        format!(
-            "record table '{want}' not found in workspace (native record ops require a workspace \
-             table definition; base-app tables are not modelled)"
-        )
-    })?;
+    let path = source
+        .find_object_of_kind(&want, &["table"])
+        .ok_or_else(|| {
+            format!(
+                "record table '{want}' not found in workspace (native record ops require a \
+                 workspace table definition; base-app tables are not modelled)"
+            )
+        })?;
     let (text, tree) = source.get_cached_parse(&path).ok_or_else(|| {
         format!(
             "record table '{want}' at {} has no cached syntax tree",
@@ -698,7 +700,7 @@ fn enum_member_with_ordinal_zero(
     workspace: &dyn al_types::ProcedureSource,
     type_name: &str,
 ) -> Option<String> {
-    let path = workspace.find_by_object_name(type_name)?;
+    let path = workspace.find_object_of_kind(type_name, &["enum"])?;
     let (text, tree) = workspace.get_cached_parse(&path)?;
     let bytes = text.as_bytes();
     let mut stack = vec![tree.root_node()];
@@ -1704,15 +1706,17 @@ pub fn validate_relation(
     table_name: &str,
     field_name: &str,
 ) -> Result<Option<(String, Option<String>)>, String> {
-    let relation = source.find_by_object_name(table_name).and_then(|path| {
-        let (text, tree) = source.get_cached_parse(&path)?;
-        crate::interpreter::dispatch::table_code::table_relation_in(
-            tree.root_node(),
-            text.as_bytes(),
-            table_name,
-            field_name,
-        )
-    });
+    let relation = source
+        .find_object_of_kind(table_name, &["table"])
+        .and_then(|path| {
+            let (text, tree) = source.get_cached_parse(&path)?;
+            crate::interpreter::dispatch::table_code::table_relation_in(
+                tree.root_node(),
+                text.as_bytes(),
+                table_name,
+                field_name,
+            )
+        });
     let Some(relation) = relation else {
         return Ok(None);
     };

@@ -49,7 +49,14 @@ pub(super) fn dispatch_workspace_procedure(
         .map(str::to_string)
         .or_else(|| stack.top().map(|frame| frame.object.clone()));
     let candidate_paths: Vec<std::path::PathBuf> = if let Some(target_object) = &target_object {
-        match ctx.source.find_by_object_name(target_object) {
+        // A codeunit can share its name with a page or a table. The target
+        // here is a codeunit in all but odd cases (table procedures are
+        // dispatched before this), so a codeunit of that name comes first.
+        let path = ctx
+            .source
+            .find_object_of_kind(target_object, &["codeunit"])
+            .or_else(|| ctx.source.find_by_object_name(target_object));
+        match path {
             Some(path) => vec![path],
             None => {
                 return eval_error(format!("object '{}' not found in workspace", target_object));

@@ -1262,6 +1262,9 @@ impl al_types::ProcedureSource for FileIndex {
     fn find_by_object_name(&self, name: &str) -> Option<std::path::PathBuf> {
         FileIndex::find_by_object_name(self, name)
     }
+    fn find_object_of_kind(&self, name: &str, kinds: &[&str]) -> Option<std::path::PathBuf> {
+        self.object_path_of_kind(name, kinds)
+    }
     fn iter_paths(&self) -> Vec<std::path::PathBuf> {
         self.files.iter().map(|e| e.key().clone()).collect()
     }

@@ -3781,3 +3781,129 @@ fn json_objects_arrays_and_tokens_run_locally() {
         "{duplicate}"
     );
 }
+
+const SAME_NAME_SETUP_PAGE: &str = r#"page 50300 "My Setup"
+{
+    SourceTable = "My Setup";
+
+    layout
+    {
+        area(Content)
+        {
+            field(Stamp; Rec.Stamp) { }
+        }
+    }
+}
+"#;
+
+const SAME_NAME_SETUP_TABLE: &str = r#"table 50300 "My Setup"
+{
+    fields
+    {
+        field(1; "Primary Key"; Code[10]) { }
+        field(2; Stamp; Text[30]) { }
+        field(3; Status; Enum "Setup Status") { }
+    }
+    keys
+    {
+        key(PK; "Primary Key") { }
+    }
+
+    trigger OnInsert()
+    begin
+        Stamp := 'inserted';
+    end;
+}
+"#;
+
+const SAME_NAME_STATUS_TABLE: &str = r#"table 50301 "Setup Status"
+{
+    fields
+    {
+        field(1; Code; Code[10]) { }
+    }
+    keys
+    {
+        key(PK; Code) { }
+    }
+}
+"#;
+
+const SAME_NAME_STATUS_ENUM: &str = r#"enum 50302 "Setup Status"
+{
+    value(0; Draft) { }
+    value(1; Ready) { }
+}
+"#;
+
+const SAME_NAME_HELPER_PAGE: &str = r#"page 50303 "Setup Helper"
+{
+    layout
+    {
+        area(Content)
+        {
+        }
+    }
+}
+"#;
+
+const SAME_NAME_HELPER_CODEUNIT: &str = r#"codeunit 50303 "Setup Helper"
+{
+    procedure Describe(): Text
+    begin
+        exit('helper');
+    end;
+}
+"#;
+
+const SAME_NAME_PROBE: &str = r#"codeunit 50304 "Same Name Probe"
+{
+    procedure InsertRunsTheTablesTrigger(): Text
+    var
+        Setup: Record "My Setup";
+        Helper: Codeunit "Setup Helper";
+    begin
+        Setup.Init();
+        Setup.Insert(true);
+        Setup.FindFirst();
+        exit(Setup.Stamp + '|' + Format(Setup.Status) + '|' + Helper.Describe());
+    end;
+
+    procedure EnumMembersComeFromTheEnum(): Integer
+    var
+        Setup: Record "My Setup";
+    begin
+        Setup.Status := "Setup Status"::Ready;
+        exit(Setup.Status.AsInteger());
+    end;
+}
+"#;
+
+/// A setup table and its card page share a name, and so can a table and an
+/// enum, or a page and a codeunit. The runtime found objects by name alone,
+/// so whichever file was indexed first won: with the page first, every
+/// record operation on the table failed.
+#[test]
+fn objects_are_found_by_kind_when_another_kind_shares_the_name() {
+    let call = |proc: &str| {
+        run(
+            &[
+                ("/ws/MySetup.Page.al", SAME_NAME_SETUP_PAGE),
+                ("/ws/MySetup.Table.al", SAME_NAME_SETUP_TABLE),
+                ("/ws/SetupStatus.Table.al", SAME_NAME_STATUS_TABLE),
+                ("/ws/SetupStatus.Enum.al", SAME_NAME_STATUS_ENUM),
+                ("/ws/SetupHelper.Page.al", SAME_NAME_HELPER_PAGE),
+                ("/ws/SetupHelper.Codeunit.al", SAME_NAME_HELPER_CODEUNIT),
+                ("/ws/SameNameProbe.al", SAME_NAME_PROBE),
+            ],
+            "Same Name Probe",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(
+        ok(call("InsertRunsTheTablesTrigger")),
+        Value::Text("inserted|Draft|helper".into())
+    );
+    assert_eq!(ok(call("EnumMembersComeFromTheEnum")), Value::Integer(1));
+}

@@ -973,6 +973,79 @@ mod tests {
         );
     }
 
+    /// A setup table and its card page share a name. With the page indexed
+    /// first, the runtime found the page and failed every record operation
+    /// on the table.
+    #[tokio::test]
+    async fn table_that_shares_its_name_with_a_page_indexed_first_runs_locally() {
+        let page_source = r#"page 50132 "My Setup"
+{
+    SourceTable = "My Setup";
+}
+"#;
+        let table_source = r#"table 50132 "My Setup"
+{
+    fields
+    {
+        field(1; "Primary Key"; Code[10]) { }
+        field(2; Stamp; Text[30]) { }
+    }
+    keys
+    {
+        key(PK; "Primary Key") { }
+    }
+
+    trigger OnInsert()
+    begin
+        Stamp := 'inserted';
+    end;
+}
+"#;
+        let test_source = r#"codeunit 50133 "Setup Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure InsertRunsTrigger()
+    var
+        Setup: Record "My Setup";
+    begin
+        Setup.Init();
+        Setup.Insert(true);
+        Setup.FindFirst();
+        if Setup.Stamp <> 'inserted' then
+            Error('stamp was %1', Setup.Stamp);
+    end;
+}
+"#;
+        let workspace = Workspace::new();
+        for (path, source) in [
+            ("/tmp/MySetup.Page.al", page_source),
+            ("/tmp/MySetup.Table.al", table_source),
+            ("/tmp/SetupTests.Codeunit.al", test_source),
+        ] {
+            workspace
+                .file_index
+                .add_file(std::path::PathBuf::from(path), source.to_string());
+        }
+        let events = collect_events(
+            &InterpMode::with_records(Arc::new(workspace)),
+            vec![TestId {
+                codeunit_id: 50133,
+                codeunit_name: "Setup Tests".to_string(),
+                method_name: Some("InsertRunsTrigger".to_string()),
+            }],
+            RunOptions::default(),
+        )
+        .await;
+        assert!(
+            events.iter().any(|event| {
+                matches!(event, TestEvent::CaseResult { result, .. } if result.status == TestStatus::Pass)
+            }),
+            "the table's record operations must run: {events:?}"
+        );
+    }
+
     #[tokio::test]
     async fn uninitialized_local_uses_default_value() {
         let source = r#"codeunit 50120 "Uninit Tests"
