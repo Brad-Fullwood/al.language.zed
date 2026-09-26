@@ -492,7 +492,14 @@ fn run_procedure_interp(
     };
 
     let source = text.as_bytes();
-    let root = tree.root_node();
+    // The codeunit's own declaration: the file may declare other objects
+    // (a table first), whose globals and procedures are not the codeunit's.
+    let root = al_runtime::interpreter::dispatch::object_declaration_named(
+        tree.root_node(),
+        source,
+        codeunit_name,
+    )
+    .unwrap_or_else(|| tree.root_node());
     let test_handlers = match configured_handlers(cu, root, source, proc_name, codeunit_name) {
         Ok(handlers) => handlers,
         Err(message) => {

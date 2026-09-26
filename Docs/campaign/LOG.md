@@ -239,3 +239,85 @@ Append-only. Newest entry last.
 - Merged `campaign/ai-persisted-index` (workstream G, `findings/persisted-index.md` section 3). Dependency source is kept as per-procedure summaries instead of syntax trees, the call graph is built from the summaries, and the summaries are persisted per package under the user's data directory (0700, owner-checked, keyed by schema version, grammar fingerprint and the `.app` bytes). On the medium benchmark project, alternating before and after runs at load 0.6 to 7.7: first start `impact "Sales-Post"` 17.2 s to 4.6 s, second start 23.6 s to 1.25 s, peak memory 2,857 MB to 526 MB on the first start and 2,834 MB to 371 MB after. Graph sizes identical, `impact` (760 rows) and `entrypoints` (34,420 rows) equal as sets. 59 MB of summaries per project. Tests: key, invalidation, equality of summaries and graphs built and loaded, corrupt and foreign and open-permission entries fall back to a rebuild, transaction lint equality. A documented example `crates/al-workspace/examples/dep_profile.rs` times each phase.
 - Left, queued: the cache key does not cover the summary builder's code, so a change in al-insight without a `SCHEMA_VERSION` bump answers from stale entries (a checked-in summary snapshot of a fixture would catch it); entries are per project, so two projects on one Base Application store it twice; the package header scan could use the same cache; `entrypoints` and `impact` rows come back in a different order per start.
 - Gates on the merge (0d11fc88): fmt, release build, both clippy runs clean. Rustdoc failed on one intra-doc link to a private item in `al-insight/src/calls/nodes.rs`, fixed. 92 suites, 5135 passed, 1 failed (the ghost publish, `test_completeness_d03_close_file_clears_diagnostics`), 10 ignored. Pushed.
+
+## 2026-09-26 16:48 BST: headless session after an hour of usage limits
+
+- Every headless start from 15:40 to 16:40 exited at once with a session limit on both models
+  (`.campaign/watchdog.log`). This session started at the 16:47 tick.
+- Five agent worktrees, three with unmerged commits and none with a live agent: `campaign/fix-r7-review`
+  (9 commits, 6 findings fixed, 9 open), `campaign/fix-ghost-race-2` (the mechanism written up, the
+  test uncommitted), `campaign/test-mutants` (8 commits, 4 of 10 files, `filter.rs` tests uncommitted).
+  `campaign/ai-persisted-index-2` and `campaign/slop-batch-11` had nothing committed: the persisted
+  index agent had not started, the desloppify agent had run its scan and written nothing down.
+- All five re-dispatched onto their branches (see `STATE.md`).
+
+## 2026-09-26 18:36 BST: local interpreter runs ordinary AL tests (second session)
+
+- A second session worked on the local test interpreter and router beside the orchestrator, pushing to this branch (4859b011 to 826b06a9). Driven by two bench test codeunits, a language tour (8 tests) and a second one with a table that has triggers, labels, TextBuilder and Guids (4 tests): at the start of the day every test in both needed live BC; now all 12 run locally, and a changed assertion fails where it should.
+- Interpreter: JSON types (references, as in AL); arrays and `Txt[i]`; chained calls run every step (`S.Trim().ToUpper()` had returned `' A,B '`, only the last call ran); enums (variables, `AsInteger`, `Names`, `FromInteger`); TextBuilder; `CalcDate`, `Date2DWY`, `Evaluate`, `DelStr`, `Maximum`, `ArrayLen`, `CreateGuid`, `IsNullGuid`; `Rename`, `TestField`, `ModifyAll`, `Ascending`, `IsTemporary`; `Format` picture strings, and numbers group thousands as BC's standard format does (`1,234,567`).
+- Table code runs on its record: `Validate` with OnValidate and a TableRelation check, `Insert/Modify/Delete(true)` triggers, `Rename`'s OnRename, table procedures, bare field names and bare record methods in table code.
+- Event subscribers run: integration, business and internal events, and table events (OnBefore/OnAfter Insert, Modify, Delete, Rename, Validate). Before this the router followed a publisher to its subscribers and kept the test local while the interpreter never ran them, so such a test failed locally and passed on BC.
+- Router: a table with triggers is no longer refused; its code is classified as reachable. `Validate` on a conditional TableRelation or one to a table outside the workspace routes live. TextBuilder was typed as Text.
+- Multi-object files: the stopped audit agent's uncommitted work (17 files: definition, hover, object/byId, debugger breakpoints, transaction lint, symbol invalidation) merged as 87ff59eb; the interpreter's own dispatch and the local test runner took a file's first object as the callee (a codeunit after a table failed as "stateful codeunit 'Tour Member'"), fixed in 901586e2.
+- Left: Manual subscribers and `BindSubscription`; whether List and Dictionary should share on assignment (the interpreter copies them) is unverified.
+
+## 2026-09-26 18:32 BST: headless session, three merges, five agents
+
+- Origin was five commits ahead of the local checkout: a cloud session had pushed runtime and test
+  router work straight to the campaign branch between 16:57 and 17:30 UTC (4859b011..901586e2,
+  39 files, 3,502 insertions): table code runs on its record, event subscribers run, TextBuilder,
+  Guids, Rename and TestField run locally, labels bind, a codeunit declared after a table in one
+  file runs as itself. CI on PR 32 passed on each push. No reviewer has read them, so the round 8
+  review starts with them.
+- The 17:35 headless session left an empty log and no commits.
+- Merged three complete agent branches: `campaign/fix-ghost-race-2` (3c2f2e12: the project pass
+  skips a report whose input changed after staging, `findings/ghost-race-2.md`, both harness tests
+  0 of 16 failures at load 22 to 26), `campaign/fix-profile-extension` (900e2174:
+  `ProfileExtensions` read from `SymbolReference.json`, so Base Application indexes 7,969 of
+  7,969 objects) and `campaign/ai-persisted-index-2` (a10e5eea: the summary key covers the builder
+  through a fixture hash and a checked-in snapshot, `entrypoints` and `impact` rows come back in
+  one order, entries are shared across projects under one store with a 1 GiB limit per user).
+- The mutants worktree held a mutation that `cargo mutants --in-place` left when its agent died
+  (`mock/record.rs`, `next` returning `Ok(1)`). Restored before the re-dispatch.
+- `target/debug` (30 GB) deleted, 31 GB free after.
+- Five agents dispatched at 18:40, listed in `STATE.md`.
+
+## 2026-09-26 19:17 BST: headless session, round 8 queued, five agents again
+
+- The 18:32 session's five agents were dead at the start: no live process, an empty session log,
+  no commits from the mutants and triage agents, five findings from the round 8 reviewer
+  (`findings/r8-session-review.md`, committed as 32ca741f), and the fix-r7 worktree still holding
+  its uncommitted SEC-7 fix, now 296 lines.
+- Origin was six commits ahead (1a081fbe..aa01cb97), pushed by the second session between 18:30 and
+  19:08 BST: JSON types run in the interpreter (`json.rs`, reference semantics through an arena),
+  table events get the stored row as `xRec`, a subscriber's `sender` parameter is passed, one
+  `validate_relation` decides Validate routing for the router and the runtime, XML `Format` no
+  longer groups thousands. Its own review fixed two of the five round 8 findings before the
+  reviewer wrote them up (RT-3, and the `xRec` half of RT-1). CI on PR 32 passed on every push
+  except the ubuntu job still running at 19:20. Fast-forwarded.
+- Merged `campaign/slop-batch-11` (2b7bce37): the desloppify re-score (overall 80.2 unchanged,
+  strict 79.6, the scan surface grew with the merges, section 5 of `findings/desloppify.md`),
+  the `get_` prefix dropped from three al-dap hub accessors, a crate doc for zed-al. The agent
+  found `desloppify scan` returns 7 files and 0 lines while sibling worktrees are busy and wrote
+  down how to spot it.
+- Five agents dispatched at 19:30 (`STATE.md`): round 7 fixes, round 8 review continuation, round 8
+  fixes on a new branch `campaign/fix-r8-review`, the audit backlog triage, `cargo mutants`.
+
+## 2026-09-26 21:44 BST: headless session after two hours of limits, mutants merged, six agents
+
+- The 19:17 session hit its session limit at 19:53 (reset 21:40). Every headless start from 19:53
+  to 21:34 exited at once on both models. Ten commits were unpushed (d1afbef3..79dc5087, the
+  slop batch 11 merge and the round 8 findings), pushed now. The five agents were dead: the triage
+  and plugin agents had written nothing, the reviewer left 430 lines of scratch tests, the fix-r7
+  worktree still held the 317-line SEC-7 diff. All three saved as patches under `.campaign/`.
+- Merged `campaign/test-mutants` (7e4c02f3): 12 commits, tests only, for five of the ten shortlist
+  files (`method_id.rs`, `http_auth.rs`, `sort.rs`, `documents.rs`, `filter.rs`) and
+  `findings/mutants.md` with the setup, the per-file runs and the survivors marked equivalent.
+- `.campaign/run-gates.sh` now runs the semantic clippy and rustdoc lines too. Gates on 7e4c02f3
+  started in the background. The `slop-11` worktree removed, 35 GB free.
+- Six agents dispatched at 21:50 (`STATE.md`): round 7 fixes, round 8 fixes, round 8 review
+  continuation, audit triage (third attempt, writes every five items), `cargo mutants` (the last
+  five files), plugin leftovers (third attempt).
+- Gates on the mutants merge (7e4c02f3): fmt, release build, both clippy runs and rustdoc clean.
+  94 suites, 5209 passed, 0 failed, 10 ignored, at load average 9 with six agents starting.
+  Pushed.

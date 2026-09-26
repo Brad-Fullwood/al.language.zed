@@ -70,8 +70,18 @@ pub struct ProcedureEffectSites {
 /// The effects of every procedure and trigger in the file, in the order a
 /// depth-first walk from the root meets them.
 pub fn file_effect_sites(tree: &tree_sitter::Tree, source: &str) -> Vec<ProcedureEffectSites> {
+    node_effect_sites(tree.root_node(), tree, source)
+}
+
+/// The effects of every procedure and trigger under `scope`, such as one
+/// object of a file that declares several.
+pub fn node_effect_sites(
+    scope: tree_sitter::Node<'_>,
+    tree: &tree_sitter::Tree,
+    source: &str,
+) -> Vec<ProcedureEffectSites> {
     let mut effects = Vec::new();
-    let mut stack = vec![tree.root_node()];
+    let mut stack = vec![scope];
     while let Some(node) = stack.pop() {
         if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
             effects.extend(procedure_effect_sites(node, tree, source));

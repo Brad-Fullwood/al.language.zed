@@ -173,8 +173,12 @@ pub fn definition(
     if let Some(file_path) = object_owner {
         let is_current = current_path.as_ref().is_some_and(|cp| *cp == file_path);
         if !is_current {
-            if let Some(obj_info_entry) = workspace.file_index.object_info.get(&file_path) {
-                let obj_info = obj_info_entry.value();
+            // The declaration named `clean_name`, not the file's first
+            // object: a file can declare a table and then a codeunit.
+            if let Some(obj_info) = workspace
+                .file_index
+                .object_info_named(&file_path, clean_name, None)
+            {
                 if let Some(file_text_entry) = workspace.file_index.files.get(&file_path) {
                     if let Ok(file_uri) = Url::from_file_path(&file_path) {
                         return Ok(Some(vec![Location {
@@ -562,6 +566,105 @@ mod tests {
         );
         let locs = result.unwrap();
         assert_eq!(locs[0].uri, Url::from_file_path(&table_path).unwrap());
+    }
+
+    /// The table is the second object of its file. The typed scan read only
+    /// each file's first object and missed it, and the name-only fallback
+    /// then answered with the first object's range, the codeunit's.
+    #[test]
+    fn a_record_type_resolves_to_a_table_declared_second_in_its_file() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        let table_path = std::path::PathBuf::from("/test/src/MyTable.al");
+        ws.file_index.add_file(
+            table_path.clone(),
+            "codeunit 50110 \"My Table Mgt\"\n{\n}\n\ntable 50100 \"My Table\"\n{\n    fields\n    {\n        field(1; \"No.\"; Code[20]) { }\n    }\n}\n"
+                .to_string(),
+        );
+        open_doc(
+            &ws,
+            &uri,
+            r#"codeunit 50101 "Test"
+{
+    procedure Foo()
+    var
+        Rec: Record "My Table";
+    begin
+    end;
+}"#,
+        );
+        let locs = definition(
+            &ws,
+            &uri,
+            Position {
+                line: 4,
+                character: 24,
+            },
+        )
+        .expect("the workspace table resolves");
+        assert_eq!(locs[0].uri, Url::from_file_path(&table_path).unwrap());
+        assert_eq!(locs[0].range.start.line, 4, "the table's declaration");
+    }
+
+    /// A quoted object name with no type keyword goes through the name-only
+    /// resolver, which answered with the file's first object.
+    #[test]
+    fn a_quoted_object_name_resolves_to_its_own_declaration_in_a_multi_object_file() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        let path = std::path::PathBuf::from("/test/src/Posting.al");
+        ws.file_index.add_file(
+            path.clone(),
+            "table 50200 \"Posting Buffer\"\n{\n}\n\ncodeunit 50110 \"Posting Mgt\"\n{\n}\n"
+                .to_string(),
+        );
+        open_doc(
+            &ws,
+            &uri,
+            "codeunit 50101 \"Test\"\n{\n    procedure Foo()\n    begin\n        Codeunit.Run(Codeunit::\"Posting Mgt\");\n    end;\n}\n",
+        );
+        // Line 4: `        Codeunit.Run(Codeunit::"Posting Mgt");`, the name at 31.
+        let locs = definition(
+            &ws,
+            &uri,
+            Position {
+                line: 4,
+                character: 33,
+            },
+        )
+        .expect("the workspace codeunit resolves");
+        assert_eq!(locs[0].uri, Url::from_file_path(&path).unwrap());
+        assert_eq!(locs[0].range.start.line, 4, "the codeunit's declaration");
+    }
+
+    /// A bare object name reaches the file-index owner lookup, which placed
+    /// the location on the file's first object.
+    #[test]
+    fn a_bare_object_name_resolves_to_its_own_declaration_in_a_multi_object_file() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        let path = std::path::PathBuf::from("/test/src/Posting.al");
+        ws.file_index.add_file(
+            path.clone(),
+            "table 50200 PostingBuffer\n{\n}\n\ncodeunit 50110 PostingMgt\n{\n}\n".to_string(),
+        );
+        open_doc(
+            &ws,
+            &uri,
+            "codeunit 50101 \"Test\"\n{\n    procedure Foo()\n    begin\n        Codeunit.Run(Codeunit::PostingMgt);\n    end;\n}\n",
+        );
+        // Line 4: `        Codeunit.Run(Codeunit::PostingMgt);`, the name at 31.
+        let locs = definition(
+            &ws,
+            &uri,
+            Position {
+                line: 4,
+                character: 33,
+            },
+        )
+        .expect("the workspace codeunit resolves");
+        assert_eq!(locs[0].uri, Url::from_file_path(&path).unwrap());
+        assert_eq!(locs[0].range.start.line, 4, "the codeunit's declaration");
     }
 
     #[test]

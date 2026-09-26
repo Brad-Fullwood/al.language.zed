@@ -1800,4 +1800,118 @@ mod tests {
         assert_eq!(internal_version, 1);
         assert_eq!(store.get_client_version(&uri), Some(9));
     }
+
+    #[test]
+    fn memory_stats_counts_text_and_every_map_entry() {
+        let store = DocumentStore::new();
+        let empty = store.memory_stats();
+        assert_eq!(empty.document_text_bytes, 0);
+        assert_eq!(empty.document_index_bytes, 0);
+        assert_eq!(empty.cached_tree_count, 0);
+        assert_eq!(empty.tracked_bytes, 0);
+
+        let a = test_uri("stats_a");
+        let b = test_uri("stats_b_longer_name");
+        let a_text = "codeunit 50100 A { }";
+        store.open(a.clone(), a_text.to_string()).unwrap();
+        store.open(b.clone(), "xy".to_string()).unwrap();
+        store.cache_tree(&a, 0, parse_al(a_text));
+        let _lock = store.parse_lock(&a);
+
+        let url = std::mem::size_of::<Url>();
+        let document = |uri: &Url| url + uri.as_str().len() + std::mem::size_of::<Document>();
+        let tree = url + a.as_str().len() + std::mem::size_of::<CachedTree>();
+        let lock =
+            url + a.as_str().len() + std::mem::size_of::<std::sync::Arc<std::sync::Mutex<()>>>();
+
+        let stats = store.memory_stats();
+        assert_eq!(stats.document_text_bytes, a_text.len() + 2);
+        assert_eq!(
+            stats.document_index_bytes,
+            document(&a) + document(&b) + tree + lock
+        );
+        assert_eq!(stats.cached_tree_count, 1);
+        assert_eq!(
+            stats.tracked_bytes,
+            stats.document_text_bytes + stats.document_index_bytes
+        );
+    }
+
+    #[test]
+    fn prospective_cap_equal_to_an_open_document_is_accepted() {
+        let store = DocumentStore::new();
+        store
+            .open(test_uri("prospective_equal"), "ninebytes".to_string())
+            .unwrap();
+        assert_eq!(store.validate_max_doc_bytes(Some(9)), Ok(()));
+    }
+
+    #[test]
+    fn validate_document_text_applies_the_cap_without_storing() {
+        let store = DocumentStore::new();
+        store.set_max_doc_bytes(Some(4));
+        let uri = test_uri("validate_text");
+        assert_eq!(store.validate_document_text(&uri, "four"), Ok(()));
+        assert_eq!(
+            store.validate_document_text(&uri, "fives"),
+            Err(DocumentMutationError::TooLarge {
+                uri: uri.clone(),
+                bytes: 5,
+                cap: 4,
+            })
+        );
+        assert!(!store.contains(&uri));
+    }
+
+    #[test]
+    fn replace_or_open_bumps_the_version_of_an_open_document() {
+        let store = DocumentStore::new();
+        let uri = test_uri("replace_or_open");
+        let (_, opened) = store
+            .replace_or_open(uri.clone(), "one".to_string())
+            .unwrap();
+        assert_eq!(opened, 0);
+        let (text, first) = store
+            .replace_or_open(uri.clone(), "two".to_string())
+            .unwrap();
+        assert_eq!((text.as_str(), first), ("two", 1));
+        let (_, second) = store
+            .replace_or_open(uri.clone(), "three".to_string())
+            .unwrap();
+        assert_eq!(second, 2);
+        assert_eq!(store.get_version(&uri), Some(2));
+    }
+
+    #[test]
+    fn get_text_and_client_version_reads_one_snapshot() {
+        let store = DocumentStore::new();
+        let uri = test_uri("text_and_client_version");
+        assert_eq!(store.get_text_and_client_version(&uri), None);
+        store
+            .open_with_client_version(uri.clone(), "body".to_string(), 7)
+            .unwrap();
+        let (text, client_version) = store.get_text_and_client_version(&uri).unwrap();
+        assert_eq!((text.as_str(), client_version), ("body", 7));
+    }
+
+    #[test]
+    fn len_is_empty_and_open_uris_follow_open_and_close() {
+        let store = DocumentStore::new();
+        assert_eq!(store.len(), 0);
+        assert!(store.is_empty());
+        assert!(store.open_uris().is_empty());
+
+        let a = test_uri("count_a");
+        let b = test_uri("count_b");
+        store.open(a.clone(), String::new()).unwrap();
+        store.open(b.clone(), String::new()).unwrap();
+        assert_eq!(store.len(), 2);
+        assert!(!store.is_empty());
+        let mut uris = store.open_uris();
+        uris.sort();
+        assert_eq!(uris, vec![a.clone(), b]);
+
+        assert!(store.close(&a));
+        assert_eq!(store.len(), 1);
+    }
 }

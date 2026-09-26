@@ -179,10 +179,19 @@ pub(crate) fn clock_current_datetime() -> i64 {
 }
 
 /// Monday = 1 … Sunday = 7 for an AL day count.
-fn weekday_of(date: i64) -> i64 {
+pub(super) fn weekday_of(date: i64) -> i64 {
     // 1970-01-01, day AL_EPOCH_TO_UNIX_DAYS, was a Thursday.
     let unix = date - crate::interpreter::value::AL_EPOCH_TO_UNIX_DAYS;
     (unix.rem_euclid(7) + 3) % 7 + 1
+}
+
+/// The ISO week number of an AL day count and the year that week belongs
+/// to: the year of its Thursday.
+pub(super) fn iso_week(date: i64) -> (i64, i64) {
+    let thursday = date - weekday_of(date) + 4;
+    let (year, _, _) = crate::interpreter::value::ymd_from_al_days(thursday);
+    let week = (thursday - crate::interpreter::value::al_days_from_ymd(year, 1, 1)) / 7 + 1;
+    (week, year)
 }
 
 /// `Date2DWY(date, what)` — 1: weekday (Monday = 1), 2: ISO week number,
@@ -196,10 +205,7 @@ pub(super) fn builtin_date2dwy(args: &[Value]) -> Eval {
         return eval_error("Date2DWY is undefined for 0D");
     }
     let weekday = weekday_of(date);
-    // ISO: the week belongs to the year of its Thursday.
-    let thursday = date - weekday + 4;
-    let (year, _, _) = crate::interpreter::value::ymd_from_al_days(thursday);
-    let week = (thursday - crate::interpreter::value::al_days_from_ymd(year, 1, 1)) / 7 + 1;
+    let (week, year) = iso_week(date);
     match what {
         1 => Eval::Normal(Value::Integer(weekday)),
         2 => Eval::Normal(Value::Integer(week)),

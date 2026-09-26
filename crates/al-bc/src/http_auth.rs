@@ -236,6 +236,99 @@ mod tests {
         assert!(client.is_ok(), "max timeout should still build: {client:?}");
     }
 
+    /// Collects everything a `tracing_subscriber::fmt` subscriber writes.
+    #[derive(Clone, Default)]
+    struct CapturedLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLog {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLog {
+        type Writer = CapturedLog;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn log_of(f: impl FnOnce()) -> String {
+        let log = CapturedLog::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(log.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        let bytes = log.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn build_http_client_logs_a_warning_only_when_certificates_are_not_checked() {
+        let insecure = log_of(|| {
+            build_http_client(true, 30).unwrap();
+        });
+        assert!(
+            insecure.contains("WARN") && insecure.contains("BC HTTP client"),
+            "the warning must reach the log and name the surface: {insecure}"
+        );
+
+        let secure = log_of(|| {
+            build_http_client(false, 30).unwrap();
+        });
+        assert!(secure.is_empty(), "no warning expected: {secure}");
+    }
+
+    #[tokio::test]
+    async fn build_http_client_gives_up_after_the_timeout() {
+        // A server that accepts the connection and never answers.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+
+        let client = build_http_client(false, 1).unwrap();
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            client.get(format!("http://{addr}/")).send(),
+        )
+        .await
+        .expect("the client's own timeout must end the request");
+        let err = outcome.expect_err("the server never answers");
+        assert!(err.is_timeout(), "expected a timeout, got {err}");
+    }
+
+    /// A username without a password, or the reverse, is not a Basic
+    /// credential, so the bearer override still applies.
+    #[test]
+    #[serial_test::serial]
+    fn apply_snapshot_auth_with_half_the_basic_credentials_uses_the_bearer_override() {
+        std::env::remove_var("BC_TOKEN");
+        std::env::set_var("BC_ACCESS_TOKEN", "env-token-123");
+        let username_only = authorization_header(apply_snapshot_auth(
+            get_request(),
+            &Some("admin".to_string()),
+            &None,
+        ));
+        let password_only = authorization_header(apply_snapshot_auth(
+            get_request(),
+            &None,
+            &Some("password".to_string()),
+        ));
+        std::env::remove_var("BC_ACCESS_TOKEN");
+        assert_eq!(username_only.as_deref(), Some("Bearer env-token-123"));
+        assert_eq!(password_only.as_deref(), Some("Bearer env-token-123"));
+    }
+
     /// Before this, snapshot and profiling modelled auth as optional Basic and
     /// documented a Windows-integrated fallback that does not exist, so a
     /// headless run with only `BC_ACCESS_TOKEN` set sent no credentials at all

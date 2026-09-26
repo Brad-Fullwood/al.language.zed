@@ -36,10 +36,11 @@ live in [ROADMAP.md](../ROADMAP.md).
 
 ## Native test runtime
 
-- Local execution supports pure logic and a bounded workspace-record subset.
-  Field and table triggers, transactions, permissions, locking,
-  `RecordRef`/`FieldRef`, package-only table schemas, UI, HTTP, reports, sessions,
-  and other platform behavior route to live Business Central.
+- Local execution supports pure logic, a bounded workspace-record subset, table
+  triggers and procedures, and workspace event subscribers. Transactions,
+  permissions, locking, `RecordRef`/`FieldRef`, package-only table schemas, manual
+  event subscriptions, UI, HTTP, reports, sessions, and other platform behavior
+  route to live Business Central.
 - Routing remains conservative, but production classification now walks resolved syntax bodies
   across the transitive call/event graph and includes lifecycle, configured handlers, and
   codeunit-shared state. The enforced runtime capability boundary still prevents a missed record

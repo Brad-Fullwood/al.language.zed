@@ -9,6 +9,8 @@ use super::*;
 /// - `MemberCall` → resolves object against `symbols`, then finds method in `insight`.
 /// - `RecordOp` (any `RunTrigger`) → resolves variable to table via `var_types`,
 ///   then finds the table's `OnBefore{Op}Event` / `OnAfter{Op}Event` in `insight`.
+///   In table code `Rec`, `xRec` and a bare record method (`Modify()`) are
+///   records of the table itself.
 // Tree-walk inputs (tree / source / current object) plus three lookup tables
 // (symbols / insight graph / call graph) plus variable-type map plus the
 // procedure node ID. All independent. A bundling struct doesn't shrink the
@@ -135,6 +137,8 @@ pub fn resolve_procedure_calls(
         Some(id) => id,
         None => return,
     };
+    // Table code runs on a record of the table itself.
+    let own_table = (object_kind == ObjectKind::Table).then_some(object_name);
 
     for site in &calls.call_sites {
         match site {
@@ -153,6 +157,10 @@ pub fn resolve_procedure_calls(
                         call_graph.add_direct_call(caller_id, event_id);
                         // Firing the event also runs every subscriber.
                         link_event_subscribers(caller_id, event_id, call_graph);
+                    } else if let Some((table, op)) =
+                        own_table.zip(RecordOp::from_method_name(name))
+                    {
+                        link_record_op_events(caller_id, table, op, insight, call_graph);
                     }
                 }
             }
@@ -215,27 +223,18 @@ pub fn resolve_procedure_calls(
             // them as surely as `Cust.Modify(true)`.
             CallSite::RecordOp { variable, op, .. } => {
                 let table_name = match var_types.get(&variable.to_lowercase()) {
-                    Some(t) => t.clone(),
-                    None => continue,
+                    Some(table) => table.as_str(),
+                    None => match own_table {
+                        Some(table)
+                            if variable.eq_ignore_ascii_case("Rec")
+                                || variable.eq_ignore_ascii_case("xRec") =>
+                        {
+                            table
+                        }
+                        _ => continue,
+                    },
                 };
-
-                let (before_event, after_event) = record_op_event_names(*op);
-
-                for event_name in &[before_event, after_event] {
-                    let event_key = NodeKey::Event(
-                        ObjectKind::Table,
-                        table_name.to_lowercase(),
-                        event_name.to_lowercase(),
-                    );
-                    if let Some(event_id) = CallGraph::node_id_for(insight, &event_key) {
-                        call_graph.add_trigger(caller_id, event_id);
-                        // Record-trigger events execute subscribers just like
-                        // explicitly published events. Previously the graph
-                        // stopped at the implicit OnBefore/OnAfter event node,
-                        // dropping the rest of the event stack.
-                        link_event_subscribers(caller_id, event_id, call_graph);
-                    }
-                }
+                link_record_op_events(caller_id, table_name, *op, insight, call_graph);
             }
             CallSite::CodeunitRun { target } => {
                 // `Codeunit.Run(Codeunit::"X")` dispatches to X.OnRun.
@@ -248,6 +247,33 @@ pub fn resolve_procedure_calls(
                     call_graph.add_indirect_call(caller_id, onrun_id);
                 }
             }
+        }
+    }
+}
+
+/// Add edges from `caller_id` to table `table`'s OnBefore/OnAfter event of
+/// `op` and to every subscriber of those events.
+fn link_record_op_events(
+    caller_id: NodeId,
+    table: &str,
+    op: RecordOp,
+    insight: &InsightGraph,
+    call_graph: &mut CallGraph,
+) {
+    let (before_event, after_event) = record_op_event_names(op);
+    for event_name in &[before_event, after_event] {
+        let event_key = NodeKey::Event(
+            ObjectKind::Table,
+            table.to_lowercase(),
+            event_name.to_lowercase(),
+        );
+        if let Some(event_id) = CallGraph::node_id_for(insight, &event_key) {
+            call_graph.add_trigger(caller_id, event_id);
+            // Record-trigger events execute subscribers just like
+            // explicitly published events. Previously the graph
+            // stopped at the implicit OnBefore/OnAfter event node,
+            // dropping the rest of the event stack.
+            link_event_subscribers(caller_id, event_id, call_graph);
         }
     }
 }
@@ -336,6 +362,7 @@ pub(super) fn record_op_event_names(op: RecordOp) -> (String, String) {
         RecordOp::Modify => "Modify",
         RecordOp::Delete => "Delete",
         RecordOp::Validate => "Validate",
+        RecordOp::Rename => "Rename",
     };
     (
         format!("OnBefore{}Event", op_str),

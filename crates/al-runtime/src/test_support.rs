@@ -16,19 +16,22 @@ use al_types::ProcedureSource;
 
 #[derive(Default)]
 pub struct MockFileIndex {
-    /// (path, source text, object name)
-    entries: Mutex<Vec<(PathBuf, String, String)>>,
+    /// (path, source text, the names of every object the file declares)
+    entries: Mutex<Vec<(PathBuf, String, Vec<String>)>>,
 }
 
 impl MockFileIndex {
     /// Mirrors `FileIndex::add_file(&self, PathBuf, String)`: stores the source
-    /// and scrapes the object name from the object-header line.
+    /// and the name of every object it declares, as the file index does.
     pub fn add_file(&self, path: PathBuf, content: String) {
-        let object_name = scrape_object_name(&content);
+        let mut object_names = declared_object_names(&content);
+        if object_names.is_empty() {
+            object_names.push(scrape_object_name(&content));
+        }
         self.entries
             .lock()
             .unwrap()
-            .push((path, content, object_name));
+            .push((path, content, object_names));
     }
 }
 
@@ -51,7 +54,7 @@ impl ProcedureSource for MockSource {
             .lock()
             .unwrap()
             .iter()
-            .find(|(_, _, obj)| obj.eq_ignore_ascii_case(name))
+            .find(|(_, _, objects)| objects.iter().any(|obj| obj.eq_ignore_ascii_case(name)))
             .map(|(p, _, _)| p.clone())
     }
 
@@ -79,8 +82,23 @@ impl ProcedureSource for MockSource {
             .unwrap()
             .iter()
             .find(|(path, _, _)| path == p)
-            .map(|(_, _, obj)| obj.clone())
+            .and_then(|(_, _, objects)| objects.first().cloned())
     }
+}
+
+/// The name of every object declaration in `src`, in order.
+fn declared_object_names(src: &str) -> Vec<String> {
+    let parsed = al_syntax::parser::AlParser::parse_quick(src);
+    let root = parsed.tree.root_node();
+    let mut cursor = root.walk();
+    let names = root
+        .named_children(&mut cursor)
+        .filter(|node| node.kind() == "object_declaration")
+        .filter_map(|node| node.child_by_field_name("name"))
+        .filter_map(|name| name.utf8_text(src.as_bytes()).ok())
+        .map(|name| name.unquote_identifier().into_owned())
+        .collect();
+    names
 }
 
 /// Extract the object name from an AL object header (e.g. `codeunit 50999 "Helper"`).

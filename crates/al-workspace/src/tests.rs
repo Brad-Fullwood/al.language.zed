@@ -247,6 +247,94 @@ mod workspace_lifecycle_tests {
         assert!(workspace.generation_revision() > revision_before);
     }
 
+    /// The renamed codeunit is the file's second object. Only the first
+    /// object's identity was compared, so the rename kept the stale composed
+    /// entries and the insight graph.
+    #[test]
+    fn identity_change_of_a_second_object_invalidates_its_composition_and_graph() {
+        let workspace = make_workspace();
+        workspace.symbols.add_entries(&[
+            al_symbols::SymbolEntry {
+                kind: al_symbols::ObjectKind::Codeunit,
+                id: 50_100,
+                name: "Old Name".to_string(),
+                package: "Test".to_string(),
+                ..Default::default()
+            },
+            al_symbols::SymbolEntry {
+                kind: al_symbols::ObjectKind::Codeunit,
+                id: 50_101,
+                name: "New Name".to_string(),
+                package: "Test".to_string(),
+                ..Default::default()
+            },
+        ]);
+        let uri = Url::from_file_path("/tmp/second_object_identity_change/Posting.al").unwrap();
+        let old = "table 50200 \"Posting Buffer\" { }\ncodeunit 50100 \"Old Name\" { procedure Run() begin end; }";
+        let new = "table 50200 \"Posting Buffer\" { }\ncodeunit 50101 \"New Name\" { procedure Run() begin end; }";
+        workspace
+            .documents
+            .open(uri.clone(), old.to_string())
+            .unwrap();
+        on_document_change(&workspace, &uri, old);
+
+        let _ = workspace
+            .symbols
+            .get_composed_cached(al_symbols::ObjectKind::Codeunit, "Old Name");
+        let _ = workspace
+            .symbols
+            .get_composed_cached(al_symbols::ObjectKind::Codeunit, "New Name");
+        assert!(!workspace.symbols.is_composed_cache_empty());
+        let graph_before = workspace.get_or_build_insight_graph().unwrap();
+
+        workspace
+            .documents
+            .replace_or_open(uri.clone(), new.to_string())
+            .unwrap();
+        on_document_change(&workspace, &uri, new);
+
+        assert!(
+            workspace.symbols.is_composed_cache_empty(),
+            "both identities of the second object must be invalidated"
+        );
+        let graph_after = workspace.get_or_build_insight_graph().unwrap();
+        assert!(
+            !Arc::ptr_eq(&graph_before, &graph_after),
+            "renaming a file's second object is a topology change"
+        );
+    }
+
+    /// Closing a file drops the composed view of every object it declares,
+    /// not only its first.
+    #[test]
+    fn on_document_close_invalidates_the_composition_of_a_second_object() {
+        let workspace = make_workspace();
+        workspace.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Codeunit,
+            id: 50_100,
+            name: "Posting Mgt".to_string(),
+            package: "Test".to_string(),
+            ..Default::default()
+        }]);
+        let uri = Url::from_file_path("/tmp/second_object_close/Posting.al").unwrap();
+        let text = "table 50200 \"Posting Buffer\" { }\ncodeunit 50100 \"Posting Mgt\" { }";
+        workspace
+            .documents
+            .open(uri.clone(), text.to_string())
+            .unwrap();
+        on_document_change(&workspace, &uri, text);
+        let _ = workspace
+            .symbols
+            .get_composed_cached(al_symbols::ObjectKind::Codeunit, "Posting Mgt");
+        assert!(!workspace.symbols.is_composed_cache_empty());
+
+        on_document_close(&workspace, &uri);
+        assert!(
+            workspace.symbols.is_composed_cache_empty(),
+            "the second object's composed view must be dropped"
+        );
+    }
+
     #[test]
     fn on_document_change_non_file_uri_does_not_panic() {
         let workspace = make_workspace();

@@ -18,6 +18,8 @@ tree-sitter = { workspace = true }
 getrandom = { workspace = true }
 # Value::Decimal is an exact 96-bit decimal (BC System.Decimal semantics, C3).
 rust_decimal = { workspace = true }
+# JsonObject.ReadFrom parses JSON text.
+serde_json = { workspace = true }
 
 [dev-dependencies]
 al-types = { path = "../al-types", version = "0.1.0" }

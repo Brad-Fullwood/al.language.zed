@@ -135,11 +135,29 @@ pub struct ClassifyResult {
 struct ProcedureLocation {
     file: PathBuf,
     object: String,
+    /// The object's kind as the object index names it (`codeunit`, `table`).
+    object_kind: String,
     name: String,
     has_object_globals: bool,
 }
 
-type ProcedureCatalog = HashMap<(String, String), ProcedureLocation>;
+/// The workspace's procedures by lowercased `(object, procedure)`, and the
+/// table relations a rename follows.
+#[derive(Debug)]
+struct ProcedureCatalog {
+    procedures: HashMap<(String, String), ProcedureLocation>,
+    relations: al_runtime::interpreter::records::RelationIndex,
+}
+
+impl ProcedureCatalog {
+    fn get(&self, key: &(String, String)) -> Option<&ProcedureLocation> {
+        self.procedures.get(key)
+    }
+
+    fn contains_key(&self, key: &(String, String)) -> bool {
+        self.procedures.contains_key(key)
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 struct LocalHandlerSupport {
@@ -228,8 +246,13 @@ pub fn classify_codeunits(
                 ));
                 continue;
             };
-            let (mut decision, mut reasons) =
-                classify_reachable(workspace, &graph, &catalog, root, handler_support);
+            let (mut decision, mut reasons) = classify_reachable(
+                workspace,
+                (&graph, &insight),
+                &catalog,
+                root,
+                handler_support,
+            );
             for reason in handler_reasons {
                 decision = RoutingDecision::LiveBc;
                 push_reason(&mut reasons, reason);
@@ -257,7 +280,7 @@ pub fn classify_codeunits(
                 };
                 let (lifecycle_decision, lifecycle_reasons) = classify_reachable(
                     workspace,
-                    &graph,
+                    (&graph, &insight),
                     &catalog,
                     lifecycle_root,
                     handler_support,
@@ -287,8 +310,13 @@ pub fn classify_codeunits(
                     );
                     continue;
                 };
-                let (handler_decision, handler_reasons) =
-                    classify_reachable(workspace, &graph, &catalog, handler_root, handler_support);
+                let (handler_decision, handler_reasons) = classify_reachable(
+                    workspace,
+                    (&graph, &insight),
+                    &catalog,
+                    handler_root,
+                    handler_support,
+                );
                 decision = decision.max(handler_decision);
                 for reason in handler_reasons {
                     push_reason(&mut reasons, reason);
@@ -387,7 +415,7 @@ pub(super) fn object_scope<'t>(
 
 fn build_procedure_catalog(workspace: &Workspace) -> ProcedureCatalog {
     let mut catalog = HashMap::new();
-    let objects: Vec<(PathBuf, String)> = workspace
+    let objects: Vec<(PathBuf, String, String)> = workspace
         .file_index
         .object_infos
         .iter()
@@ -396,11 +424,11 @@ fn build_procedure_catalog(workspace: &Workspace) -> ProcedureCatalog {
             entry
                 .value()
                 .iter()
-                .map(|info| (path.clone(), info.name.clone()))
+                .map(|info| (path.clone(), info.name.clone(), info.kind.clone()))
                 .collect::<Vec<_>>()
         })
         .collect();
-    for (path, object_name) in objects {
+    for (path, object_name, object_kind) in objects {
         let object = object_name.to_ascii_lowercase();
         let Some((text, tree)) = workspace.file_index.get_cached_parse(&path) else {
             continue;
@@ -424,6 +452,7 @@ fn build_procedure_catalog(workspace: &Workspace) -> ProcedureCatalog {
                         ProcedureLocation {
                             file: path.clone(),
                             object: object_name.clone(),
+                            object_kind: object_kind.clone(),
                             name: clean,
                             has_object_globals,
                         },
@@ -435,12 +464,15 @@ fn build_procedure_catalog(workspace: &Workspace) -> ProcedureCatalog {
             stack.extend(node.named_children(&mut cursor));
         }
     }
-    catalog
+    ProcedureCatalog {
+        procedures: catalog,
+        relations: al_runtime::interpreter::records::RelationIndex::build(&*workspace.file_index),
+    }
 }
 
 fn classify_reachable(
     workspace: &Workspace,
-    graph: &CallGraph,
+    (graph, insight): (&CallGraph, &al_insight::graph::InsightGraph),
     catalog: &ProcedureCatalog,
     root: NodeId,
     handler_support: LocalHandlerSupport,
@@ -452,7 +484,40 @@ fn classify_reachable(
     let root_object = graph
         .node_info(root)
         .map(|info| info.object.to_ascii_lowercase());
-    while let Some(node) = queue.pop_front() {
+    // Workspace tables with triggers or procedures that reachable code uses:
+    // their code runs locally (Validate, Insert(true), Rec.Proc()), so every
+    // declaration is classified and its callees followed.
+    let mut tables: Vec<String> = Vec::new();
+    let mut classified_tables: HashSet<String> = HashSet::new();
+    loop {
+        while let Some(table) = tables.pop() {
+            if !classified_tables.insert(table.to_ascii_lowercase()) {
+                continue;
+            }
+            classify_table_code(
+                workspace,
+                catalog,
+                &table,
+                (&mut decision, &mut reasons),
+                handler_support,
+                &mut tables,
+                |name| {
+                    let key = NodeKey::Procedure(
+                        ObjectKind::Table,
+                        table.to_ascii_lowercase(),
+                        name.to_ascii_lowercase(),
+                    );
+                    if let Some(id) = CallGraph::node_id_for(insight, &key) {
+                        if visited.insert(id) {
+                            queue.push_back(id);
+                        }
+                    }
+                },
+            );
+        }
+        let Some(node) = queue.pop_front() else {
+            break;
+        };
         let Some(info) = graph.node_info(node) else {
             decision = RoutingDecision::LiveBc;
             push_reason(
@@ -483,8 +548,8 @@ fn classify_reachable(
                     &mut reasons,
                     RoutingReason {
                         message: format!(
-                            "reachable helper codeunit '{}' has object-level state that requires live BC execution",
-                            location.object
+                            "reachable {} '{}' has object-level state that requires live BC execution",
+                            location.object_kind, location.object
                         ),
                         file: Some(location.file.to_string_lossy().into_owned()),
                         line: None,
@@ -499,6 +564,7 @@ fn classify_reachable(
                 &mut reasons,
                 node != root,
                 handler_support,
+                &mut tables,
             );
         } else if !matches!(info.node_type.as_str(), "event" | "object")
             && !al_runtime::stubs::is_supported(&info.object, &info.name)
@@ -527,6 +593,52 @@ fn classify_reachable(
         }
     }
     (decision, reasons)
+}
+
+/// Classify every trigger and procedure of workspace table `table` as
+/// reachable code, reporting each declaration's name to `enqueue` so its
+/// call-graph node's callees are followed.
+fn classify_table_code(
+    workspace: &Workspace,
+    catalog: &ProcedureCatalog,
+    table: &str,
+    (decision, reasons): (&mut RoutingDecision, &mut Vec<RoutingReason>),
+    handler_support: LocalHandlerSupport,
+    tables: &mut Vec<String>,
+    mut enqueue: impl FnMut(&str),
+) {
+    let Some(path) = workspace.file_index.object_path_of_kind(table, &["table"]) else {
+        return;
+    };
+    let Some((text, tree)) = workspace.file_index.get_cached_parse(&path) else {
+        return;
+    };
+    let scope = object_scope(workspace, &path, &tree, table);
+    let location = ProcedureLocation {
+        file: path.clone(),
+        object: table.to_string(),
+        object_kind: "table".to_string(),
+        name: String::new(),
+        has_object_globals: false,
+    };
+    for declaration in ast::table_code_declarations(scope) {
+        ast::classify_declaration(
+            workspace,
+            catalog,
+            &location,
+            (&tree, &text, declaration),
+            (&mut *decision, &mut *reasons),
+            true,
+            handler_support,
+            tables,
+        );
+        if let Some(name) = declaration
+            .child_by_field_name("name")
+            .and_then(|name| name.utf8_text(text.as_bytes()).ok())
+        {
+            enqueue(&name.unquote_identifier());
+        }
+    }
 }
 
 fn local_handler_support(
@@ -648,12 +760,21 @@ fn callable_has_attribute(callable: tree_sitter::Node<'_>, source: &[u8], wanted
     false
 }
 
+/// Whether the object declares a global variable. Labels are constants and
+/// do not count.
 fn has_object_global_declarations(root: tree_sitter::Node<'_>) -> bool {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         if node.kind() == "object_var_section" {
             let mut cursor = node.walk();
-            return node.named_children(&mut cursor).next().is_some();
+            return node
+                .named_children(&mut cursor)
+                .filter(|child| child.kind() == "object_variable_declaration")
+                .any(|declaration| {
+                    let mut declaration_cursor = declaration.walk();
+                    let mut children = declaration.named_children(&mut declaration_cursor);
+                    children.any(|child| child.kind() == "regular_variable_declaration")
+                });
         }
         if matches!(
             node.kind(),
