@@ -1,26 +1,26 @@
 # Completion Evidence Ledger
 
-This is the blocking ledger for the active completion goal. It is not a parking
-place for vague future work. Every internal contract below must be implemented
-and verified, every release gate must pass from a clean checkout, and both owned
-repositories must be published before the project can be declared release-ready.
+This ledger lists what has to hold before the project is release-ready. Every
+internal contract below must be implemented and verified, every release gate
+must pass from a clean checkout, and both repositories this project owns must be
+published.
 
-Confirmed compatibility boundaries belong in
-[Current Limitations](./current-limitations.md), where the native product must
-fail closed or route explicitly to the authoritative Microsoft or Business
-Central backend. A boundary is not allowed to hide an internal implementation
-gap.
+Known compatibility limits belong in
+[Current Limitations](./current-limitations.md). At each one the native product
+must refuse the operation or route it to the Microsoft or Business Central
+backend. A limit listed there must not hide a gap in this project's own
+implementation.
 
 ## Evidence states
 
-- **Open** — implementation or required coverage is missing.
-- **Audit** — implementation exists, but the required current gate has not yet
-  established the complete contract.
-- **Blocked externally** — a strict validation profile needs an explicit
-  external service or credential. The unavailable profile must return non-zero.
-  It is never counted as passed.
-- **Verified** — current implementation and the contract-specific focused and
-  end-to-end gates agree.
+- **Open**: implementation or required coverage is missing.
+- **Audit**: implementation exists, but the required gate has not yet shown the
+  complete contract holds.
+- **Blocked externally**: a strict validation profile needs an external service
+  or credential. The unavailable profile must return non-zero and does not
+  count as passed.
+- **Verified**: the current implementation passes the focused and end-to-end
+  gates for its contract.
 
 Overall release readiness remains blocked while any internal row is **Open** or
 **Audit**, while publication is incomplete, or while a required deployment
@@ -34,11 +34,11 @@ environment has not supplied its contract evidence.
 | Generated assets and schemas | Generator-owned grammar, queries, language metadata, themes, and Zed package reproduce without drift. Schema/snippet/settings/DAP consumers are cross-checked by repository tests. Ordinary and full-regeneration CI profiles exist | Verified |
 | Shared build architecture | Daemon `compile`/`package`, LSP compile, CLI, publish, and DAP route through `al_compile::build`/`BuildRequest`. Artifact selection, exact package staging, diagnostics, cancellation, timeout, and atomic handoff regressions pass | Verified |
 | Compiler settings | Official-only rulesets, probing paths, analyzer statistics, incremental mode, raw options, analyzers, and `AL_DOTNET_PATH` are mapped and tested. Native behavior and backend-specific limits are explicit in settings/schema documentation | Verified |
-| Native verifier | Release-binary accuracy corpus catches 14/14 isolated syntax, binding, type, and project defects with zero clean-control false positives. Malformed or incomplete workspace input fails closed | Verified |
+| Native verifier | Release-binary accuracy corpus catches 14/14 isolated syntax, binding, type, and project defects with zero clean-control false positives. Malformed or incomplete workspace input is rejected | Verified |
 | Native package emission | Self-contained, dependency, 19-object-kind, small-through-XL Base Application, extension, permission/profile, XLIFF, navigation, report-layout, logo, control-add-in, and resource contracts pass structural comparison against `alc` 17 | Verified |
 | Native package validation | Both strict `pack-native --validate` cases pass. Official-compiler selection is explicit. Intentional provenance/GUID/discovery-order normalization is narrow, documented, and contract-tested | Verified |
 | Test routing and local runtime | Classification walks resolved transitive calls/events plus lifecycle, handlers, and shared state. Unsupported platform behavior routes to `liveBc`. Pure logic and the declared workspace-record subset enforce runtime capabilities end to end | Verified |
-| Coverage, snapshots, and mutation | Statement/path/CASE/loop/MC/DC accounting uses actual evaluation. File snapshot validate/diff contracts pass. Live capture/replay orchestration is explicit. Mutation runs 19 variants, reports survivors/unrunnable variants honestly, and does not turn graph failure into “no affected tests” | Verified |
+| Coverage, snapshots, and mutation | Statement/path/CASE/loop/MC/DC accounting uses actual evaluation. File snapshot validate/diff contracts pass. Live capture/replay orchestration is explicit. Mutation runs 19 variants, reports survivors and variants it could not run, and reports a graph failure as a failure instead of “no affected tests” | Verified |
 | Native diagnostics and analysis | `SetLoadFields`, ApplicationArea, tooltip, obsolete usage, architecture, transaction, audit, bulk-fix, dead-code, dependency, impact, and related whole-workspace queries are source-labelled and reject incomplete snapshots | Verified |
 | Dependency and symbol engine | Package selection, exact build/index folders, both download backends, source availability/provenance, atomic extraction/index/graph publication, hot reload, invalidation, limits, and source-free declaration boundaries have focused and cross-surface coverage | Verified |
 | Symbol/package performance | Six-package/11,799-symbol cold and warm smoke passes. Deterministic Criterion archive/index/lookup/completion/impact/trace/graph paths and owned-memory accounting pass. Clean-commit raw symbol and semantically gated native/`alc` package measurements are published | Verified |
@@ -47,8 +47,8 @@ environment has not supplied its contract evidence.
 | Zed and VS Code editor smoke | Current WASM component and grammar load in Zed. Microsoft AL extension loads in VS Code. LSP process and highlighting are visible in the isolated comparison harness. CLI archive smoke exercises binary resolution and shipped surfaces | Verified |
 | DAP protocol and schema | Native initialize/launch/attach configuration, shared compile/artifact selection, breakpoints, stack/scopes/variables, evaluate, stepping, continue, disconnect, unsupported capabilities, wire variants, and schema/runtime field parity pass self-contained contracts | Verified |
 | CLI and TUI parity | Every advertised top-level command is registered, reaches the shared daemon/build implementation, returns a validated structured success or failure shape, and is exercised by CLI/TUI smoke coverage | Verified |
-| LSP correctness | Document mutation/version/generation handling, diagnostics, navigation, edits, commands, shutdown, malformed input, stale state, and long-runtime daemon transport regressions pass. Previously aspirational hover/definition cases now assert concrete results | Verified |
-| Repository honesty | README, feature pages, settings, schemas, CLI/daemon/MCP catalogs, benchmarks, and limitations have been swept against current registrations and runtime wiring. Benchmark claims now link clean raw evidence and distinguish phase-one diagnostics, semantic readiness, and forced Microsoft teardown | Verified |
+| LSP correctness | Document mutation/version/generation handling, diagnostics, navigation, edits, commands, shutdown, malformed input, stale state, and long-runtime daemon transport regressions pass. Hover and definition cases assert concrete results | Verified |
+| Documentation accuracy | README, feature pages, settings, schemas, CLI/daemon/MCP catalogs, benchmarks, and limitations have been checked against current registrations and runtime wiring. Benchmark claims link clean raw evidence and distinguish phase-one diagnostics, semantic readiness, and forced Microsoft teardown | Verified |
 | Dependency and automation policy | `cargo-deny` advisories/bans/licenses/sources pass. All repository shell scripts pass ShellCheck. Root and grammar workflows pass Actionlint/YAML parsing | Verified |
 | Clean release hygiene | The current implementation series passed full Microsoft-extension regeneration with zero drift, Microsoft contracts, policy checks, deterministic performance audit, aliased-root platform regression coverage, and isolated editor comparison. Exact clean pushed root head `a4e7d5fe` then passed all 13 stages of `make release-dryrun` and all six jobs in [GitHub Actions run 30429227486](https://github.com/Brad-Fullwood/al.language.zed/actions/runs/30429227486) | Verified |
 | Publication | Grammar head `f26b067` and superproject head `a4e7d5fe` are clean, pushed, remotely reachable, mergeable, and green in [AL-Tree-Sitter#2](https://github.com/Brad-Fullwood/AL-Tree-Sitter/pull/2) and [al.language.zed#26](https://github.com/Brad-Fullwood/al.language.zed/pull/26), respectively | Verified |
@@ -59,19 +59,18 @@ environment has not supplied its contract evidence.
 |---|---|---|
 | Live Business Central | One declared tenant/environment must complete repository-fixture package upload/install, native DAP attach and control loop, an exact `liveBc`-routed test, and snapshot capture/validate/replay/diff through `make live-bc-contracts` | Blocked externally |
 
-The live profile is implemented and strict. It owns a deterministic publishable
-test project and derives the exact test/breakpoint inputs. Callers may still
-override it with a complete custom project contract. With no tenant,
-environment, version, and bearer token supplied, it prints `UNAVAILABLE` and
-exits 2 before Cargo starts. That is correct unavailability reporting, not
-successful deployment evidence.
+The live profile is implemented and strict. It carries a deterministic
+publishable test project and derives the exact test and breakpoint inputs from
+it. Callers may override it with a complete custom project contract. With no
+tenant, environment, version, and bearer token supplied, it prints `UNAVAILABLE`
+and exits 2 before Cargo starts. Exit 2 reports the profile as unavailable and
+is no evidence of a deployment.
 
-Independent crates.io publication is a separate distribution operation, not a
-Zed extension release gate. `make crates-publish-dryrun` remains strict and will
-not pretend unpublished dependency-ordered workspace crates resolve from the
-registry. Uploading those libraries requires an explicit publication decision
-and credentials. The self-contained release gate still validates every local
-package manifest.
+Publishing the library crates to crates.io is separate from the Zed extension
+release and is not one of its gates. `make crates-publish-dryrun` stays strict
+and fails for a crate whose workspace dependencies are not yet on the registry.
+Uploading those libraries needs a publication decision and credentials. The
+self-contained release gate still validates every local package manifest.
 
 ## Evidence recorded for the completion run at `a4e7d5fe` (2026-07-29)
 
@@ -130,10 +129,10 @@ package manifest.
   passed at `a4e7d5fe` but was not reproducible from an arbitrary environment.
   It aborted at `check-record-methods` whenever `AL_TOOL_PATH` named the
   `microsoft.dynamics.businesscentral.development.tools` dotnet tool rather than
-  the VS Code extension — provenance read as `unknown` and an identical 81-method
-  catalog was reported as drift — and `semantic_bridge` measured whichever
+  the VS Code extension (provenance read as `unknown` and an identical 81-method
+  catalog was reported as drift), and `semantic_bridge` measured whichever
   `al-lsp` an earlier `cargo test --workspace` had left resident, so it failed
-  from a warm working tree. Both are fixed and covered. The profile now passes
+  from a warm working tree. Both are fixed and covered by tests. The profile now passes
   end to end, including the Base Application differential against `alc`
   17.0.2273547 with an external BC 28.2 symbol set.
 

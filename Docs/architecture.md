@@ -1,18 +1,18 @@
-# Architecture diagrams — crates & request flow
+# Architecture diagrams: crates & request flow
 
-Every edge below is **derived from the real `crates/*/Cargo.toml` `[dependencies]`
-tables** (direct Cargo path-dependencies) — nothing is invented. `default`,
-optional, dev-only and external edges are called out where they differ from a
-plain production dependency.
+Every edge below comes from the **`[dependencies]` tables in `crates/*/Cargo.toml`**
+(direct Cargo path dependencies), and `crates/al-test-harness/tests/architecture_doc.rs`
+fails when a solid arrow and the manifests disagree. `default`, optional, dev-only and
+external edges are called out where they differ from a plain production dependency.
 
-> Re-derive at any time with `cargo metadata --no-deps` (or read the manifests).
-> The tier grouping is presentational. The arrows are the source of truth.
+> Derive them again with `cargo metadata --no-deps` (or read the manifests).
+> The tier grouping is for layout only. The arrows follow the manifests.
 
 ## Library crate layering
 
 The engine crates and their **production** path-dependencies. Solid arrows are
 normal `[dependencies]`. The dashed `nuget` arrow is the optional
-`al-symbols → al-bc` edge (gated by the default `nuget` feature). The dashed
+`al-symbols → al-bc` edge (enabled by the default `nuget` feature). The dashed
 `al-syntax → tree-sitter-al` arrow is the external grammar submodule (a path
 dependency on a separate publishable crate, not a workspace member). The four
 product/transport crates (`al-lsp`, `al-explorer`, `zed-al`, `al-test-harness`)
@@ -116,13 +116,13 @@ Notes on edges that are **not** plain production dependencies (so they are
 omitted above or drawn dashed):
 
 - `al-symbols → al-bc` is **optional**, enabled by the default `nuget` feature
-  (it gates the NuGet/BC-server download path). `al-workspace`, `al-analysis`
+  (it turns on the NuGet/BC-server download path). `al-workspace`, `al-analysis`
   and `al-insight` depend on `al-symbols` with `default-features = false`, so
   they do **not** pull `al-bc` transitively.
 - `al-syntax → tree-sitter-al` is the one path dependency on the grammar
   submodule, which has its own release cadence and is excluded from the
   workspace. Every other crate reaches the grammar through `al-syntax`.
-- Dev-only `al-*` edges are intentionally **not** drawn: `al-dap` and
+- Dev-only `al-*` edges are left out: `al-dap` and
   `al-source` reference `al-syntax` under `[dev-dependencies]` (test fixtures).
   `al-source` and `al-runtime` also depend on it in production, so those arrows
   are drawn. `al-dap → al-syntax` is dev-only and is not.
@@ -131,15 +131,16 @@ omitted above or drawn dashed):
 
 ## Product and transport crates
 
-The crates users actually run, and the library layers each one links. `al-lsp`
+The crates users run, and the library layers each one links. `al-lsp`
 is the single binary that re-exports the whole engine (LSP server + daemon + MCP
 + native DAP), so it depends on every library crate directly. `zed-al` (the WASM
 extension) has **no** Cargo dependency on the engine and drives the compiled
 binaries at runtime (dashed). `al-test-harness` drives the binaries the same
 way. Its one production dependency is `al-protocol`, the client it uses to
-identify and stop the daemons it starts. It also dev-depends on eight engine crates (`al-analysis`, `al-bc`, `al-compile`,
-`al-emit`, `al-project`, `al-publish`, `al-test`, `al-workspace`) for
-in-process assertions, so those edges are dev-only and are not drawn.
+identify and stop the daemons it starts. It also has dev-dependencies on eight
+engine crates (`al-analysis`, `al-bc`, `al-compile`, `al-emit`, `al-project`,
+`al-publish`, `al-test`, `al-workspace`) for in-process assertions, and those
+edges are not drawn.
 
 ```mermaid
 graph TD
@@ -236,11 +237,11 @@ flowchart TD
   end
 
   subgraph Engine
-    analysis["al-analysis — completions / hover / defs / refs / diagnostics / lenses / generators"]
-    ws["al-workspace — DocumentStore / SymbolIndex / FileIndex / call graph"]
-    symbols["al-symbols — .app / NuGet / BC symbols"]
-    build["al-compile / al-emit — native .app + alc"]
-    test["al-test / al-runtime — test execution"]
+    analysis["al-analysis: completions / hover / defs / refs / diagnostics / lenses / generators"]
+    ws["al-workspace: DocumentStore / SymbolIndex / FileIndex / call graph"]
+    symbols["al-symbols: .app / NuGet / BC symbols"]
+    build["al-compile / al-emit: native .app + alc"]
+    test["al-test / al-runtime: test execution"]
   end
 
   subgraph Ext["Microsoft / Business Central (external)"]
@@ -275,11 +276,11 @@ flowchart TD
   dap --> bc
 ```
 
-The four client transports are thin shells over one engine. CLI requests enter through the local IPC
-daemon transport, while MCP calls the same command dispatcher in-process. `al_call` makes every
-dispatcher method available and named tools are discovery shortcuts. `al-analysis` answers queries
-against the `al-workspace` state hub. The Microsoft `.NET CodeAnalysis` bridge and the BC Dev API are
-reached only on the dashed/optional edges, which is why native parse / symbols / analysis all work
-with no Microsoft toolchain present.
+The four client transports are thin layers over one engine. CLI requests enter through the local
+IPC daemon transport, and MCP calls the same command dispatcher in-process. `al_call` makes every
+dispatcher method available, and the named tools are shortcuts to common ones. `al-analysis`
+answers queries against the state `al-workspace` holds. The Microsoft `.NET CodeAnalysis` bridge
+and the BC Dev API are reached only on the dashed, optional edges, so native parsing, symbols and
+analysis work with no Microsoft toolchain installed.
 
 See [testing-guide.md](./testing-guide.md) for how to verify each of these layers.
