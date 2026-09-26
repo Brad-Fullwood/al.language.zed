@@ -120,6 +120,16 @@ that by reading the repository's own settings files and removing exactly the val
 contribute. A privileged value written only in user settings survives; one the repository also
 asks for is gated until the project is trusted.
 
+An analyzer name you write yourself, such as `BusinessCentral.LinterCop`, is looked up in the
+project's own folders (`.netpackages`, `packages`, a relative `al.assemblyProbingPaths`
+entry) only when the project is trusted. Otherwise it resolves from the NuGet cache, an
+absolute probing path or the editor extension folders, and a name found only inside the
+project is refused with a message saying so. A relative analyzer path names a file the
+repository ships and is refused the same way. The name was the user's, but the repository
+chose which file answered to it, and that file is loaded into alc and into the language
+server's semantic bridge. The rule sits in `al_project::analyzers::discover_custom_analyzer`,
+which every build, publish, debug launch and semantic analysis goes through.
+
 A credential you supply yourself is the same: `BC_USERNAME`, `BC_PASSWORD` and
 `BC_ACCESS_TOKEN` apply without trust. What still needs trust is the *server* those
 credentials are sent to when the repository's launch file chose it. See
