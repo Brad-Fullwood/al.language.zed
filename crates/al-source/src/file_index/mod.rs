@@ -435,6 +435,19 @@ impl FileIndex {
         Some((pair.0.clone(), pair.1.clone()))
     }
 
+    /// The shared `(text, tree)` entry for `path`, without copying it.
+    ///
+    /// Each re-index of `path` stores a new `Arc`, so `Arc::ptr_eq` on two
+    /// results tells whether the file was re-indexed in between.
+    pub fn cached_parse_entry(
+        &self,
+        path: &Path,
+    ) -> Option<std::sync::Arc<(String, tree_sitter::Tree)>> {
+        self.file_trees
+            .get(path)
+            .map(|entry| std::sync::Arc::clone(entry.value()))
+    }
+
     /// Returns the symbols extracted at index time.
     pub fn get_cached_symbols(
         &self,
