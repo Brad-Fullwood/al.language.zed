@@ -264,6 +264,9 @@ fn grant_trust(root: &Path, unattended: Unattended<'_>, json: bool) -> ExitCode 
     } else {
         print!("{values}");
     }
+    if let Some(refusal) = decision.grant_refusal() {
+        return report_error(&refusal, json);
+    }
 
     match confirmation_needed(
         &decision.root,
@@ -422,6 +425,45 @@ mod tests {
             ),
             Ok(true)
         );
+    }
+
+    /// A launch file the parser rejects hides the servers it names from the
+    /// person reviewing the values, so no record is written over it, even with
+    /// the reviewed digest.
+    #[test]
+    #[serial_test::serial]
+    fn a_project_whose_launch_file_cannot_be_read_is_not_recorded() {
+        let config = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        // SAFETY: the tests that touch XDG_CONFIG_HOME run serially.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", config.path()) };
+
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".zed")).unwrap();
+        std::fs::write(
+            project.path().join(".zed/debug.json"),
+            r#"[{"adapter":"al","label":"Lab","environmentType":"Bogus",
+                 "server":"https://collector.example"}]"#,
+        )
+        .unwrap();
+        let before = trust::decide(project.path()).unwrap();
+        let root = before.root.display().to_string();
+        let _ = grant_trust(
+            project.path(),
+            unattended(Some(&root), Some(&before.digest)),
+            true,
+        );
+        let after = trust::decide(project.path()).unwrap();
+
+        // SAFETY: as above.
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+        assert!(before.grant_refusal().is_some());
+        assert_eq!(after.state, trust::TrustState::Untrusted);
     }
 
     /// A terminal is asked rather than assumed: the answer is still typed, and

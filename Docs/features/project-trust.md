@@ -26,6 +26,7 @@ else applies as it always has.
 | `al.nugetFeeds` | Every symbol package, including Base Application, comes from these URLs |
 | `al.useOnlyCustomFeeds` | Removes Microsoft's feeds, leaving only the configured ones |
 | `launch.json` / `debug.json` on-premises `server` | Receives the cached Business Central token and, with `acceptInvalidCerts`, decides whether TLS is verified |
+| A `launch.json` or `debug.json` the parser rejects | Zed can still offer its scenarios to the debug adapter, so its servers are unknown to the record |
 | `al.dotnetPath` | Names the `dotnet` host the toolchain spawns |
 | `lsp.al-lsp.binary.path`, `.arguments`, `.env` | Name a program, its command line and its environment |
 | `lsp.al-lsp.initialization_options` | Reaches the language server as configuration |
@@ -35,9 +36,17 @@ ignores `binary.path` and `binary.arguments` outright (see Limits). They are in 
 a record made while `binary.path` said `/bin/sh` goes stale when the arguments change, and so
 a future extension API that exposes `binary.env` does not widen an existing record silently.
 
+The servers of both `.zed/debug.json` and `.vscode/launch.json` are in the record, because
+Zed offers the scenarios of both. `environmentType` and `authentication` are read without
+regard to case, as the debug adapter reads them. A launch file that still fails to parse is
+recorded by its hash, so an existing record goes stale when the file changes, and
+`al-explorer trust` refuses to record trust until the file is fixed: the servers it names
+cannot be listed for review.
+
 `${CodeCop}`, `${AppSourceCop}`, `${UICop}`, `${PerTenantExtensionCop}` and their bare
 spellings are built-in tokens: the toolchain resolves them to Microsoft's own assemblies, so
-they are not gated.
+they are not gated. Every caller passes the toolchain's file for them, never the name, so a
+file of that name in the project is not loaded.
 
 A repository can also point outside itself without a setting, by committing `.alpackages`
 as a symbolic link. A symbol folder written inside the project that resolves outside it is

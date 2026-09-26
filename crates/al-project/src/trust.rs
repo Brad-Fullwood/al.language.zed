@@ -48,6 +48,7 @@ pub const ADVISORY_KEYS: &[&str] = &[
     "al.packageCachePath",
     "al.ruleSetPath",
     "al.useOnlyCustomFeeds",
+    UNREADABLE_LAUNCH_KEY,
     "lsp.al-lsp.binary.arguments",
     "lsp.al-lsp.binary.env",
     "lsp.al-lsp.binary.path",
@@ -57,6 +58,14 @@ pub const ADVISORY_KEYS: &[&str] = &[
 /// The class of a launch configuration key, which carries the configuration's
 /// own name and so cannot be printed as written.
 const LAUNCH_SERVER_KEY: &str = "launch configuration server";
+
+/// The key of the value that stands in for a launch file the parser rejects.
+///
+/// The record cannot list the servers of a file it cannot read, and Zed may
+/// still offer that file's scenarios to the debug adapter. The file's hash is
+/// recorded under this key, so a record goes stale when the file changes, and
+/// [`TrustDecision::grant_refusal`] refuses a new record until the file is fixed.
+const UNREADABLE_LAUNCH_KEY: &str = "unreadable launch file";
 
 /// The name a message prints for `key`.
 #[must_use]
@@ -165,6 +174,26 @@ impl TrustDecision {
     #[must_use]
     pub fn is_trusted(&self) -> bool {
         self.state.is_trusted()
+    }
+
+    /// Why this project cannot be trusted as its files stand, or `None` when
+    /// it can.
+    ///
+    /// A launch file the parser rejects names servers that a person reviewing
+    /// the values cannot see, so a record over it would vouch for them unread.
+    #[must_use]
+    pub fn grant_refusal(&self) -> Option<String> {
+        let unreadable = self
+            .privileged
+            .iter()
+            .find(|setting| setting.key == UNREADABLE_LAUNCH_KEY)?;
+        Some(format!(
+            "{} could not be read ({}), so the Business Central servers it names cannot be \
+             listed for review. Nothing was recorded. Fix the file, then run {TRUST_COMMAND} \
+             again.",
+            one_line(&unreadable.source),
+            one_line(&unreadable.value)
+        ))
     }
 
     /// Whether anything was actually ignored, which is what makes the advisory
@@ -498,12 +527,11 @@ pub fn inputs_fingerprint(project_root: &Path) -> u64 {
     stamp(AlConfig::default_settings_path());
     stamp(Some(project_root.join(".vscode/settings.json")));
     stamp(Some(project_root.join(".zed/settings.json")));
-    stamp(
-        al_bc::launch::find_launch_config(project_root)
-            .ok()
-            .flatten()
-            .map(|file| file.path),
-    );
+    // Both files, parsed or not: an edit to a file the parser rejects changes
+    // the record too.
+    for path in al_bc::launch::launch_file_paths(project_root) {
+        stamp(Some(path));
+    }
     // The `dotnet` host this process runs. One inside the project is hashed
     // into the record, so replacing it has to trigger the decision again.
     stamp(
@@ -534,6 +562,9 @@ pub enum GrantError {
     Config(#[from] ConfigLoadError),
     #[error(transparent)]
     Store(#[from] TrustStoreError),
+    /// [`TrustDecision::grant_refusal`]'s message.
+    #[error("{0}")]
+    UnreadableLaunchFile(String),
 }
 
 /// Record `project_root` as trusted at the privileged values it holds now.
@@ -543,6 +574,9 @@ pub enum GrantError {
 /// rather than reaching past the gate.
 pub fn grant(project_root: &Path) -> Result<TrustDecision, GrantError> {
     let decision = decide(project_root)?;
+    if let Some(refusal) = decision.grant_refusal() {
+        return Err(GrantError::UnreadableLaunchFile(refusal));
+    }
     trust_project(&decision.root, &decision.digest)?;
     Ok(decision)
 }
@@ -1040,12 +1074,13 @@ pub fn authorize_cached_credential(
         });
     }
 
+    // Every server the record lists, from either launch file.
     let launch_targets: Vec<al_bc::launch::BcServerConfig> =
-        al_bc::launch::find_launch_config(project_root)
-            .ok()
+        al_bc::launch::launch_files(project_root)
+            .into_iter()
             .flatten()
-            .map(|file| file.configs)
-            .unwrap_or_default();
+            .flat_map(|file| file.configs)
+            .collect();
     let matching: Vec<&al_bc::launch::BcServerConfig> = launch_targets
         .iter()
         .filter(|candidate| {
@@ -1201,16 +1236,37 @@ pub fn enforce_dotnet_path(project_root: &Path) -> Option<String> {
 /// Each one is a place a cached token could be sent, so each is privileged and
 /// each belongs in the digest: adding a server to `launch.json` after the
 /// project was trusted invalidates the record.
+///
+/// Both launch files count, since Zed offers the scenarios of both. A file the
+/// parser rejects is recorded as [`UNREADABLE_LAUNCH_KEY`] with its hash. It
+/// used to add nothing, so one entry in a spelling the parser refused hid
+/// every server in the file while the debug adapter still read them.
 fn launch_privileges(project_root: &Path) -> Vec<PrivilegedSetting> {
-    let Ok(Some(file)) = al_bc::launch::find_launch_config(project_root) else {
-        return Vec::new();
+    let relative = |path: &Path| {
+        path.strip_prefix(project_root)
+            .unwrap_or(path)
+            .display()
+            .to_string()
     };
-    let source = file
-        .path
-        .strip_prefix(project_root)
-        .unwrap_or(&file.path)
-        .display()
-        .to_string();
+    let mut privileged = Vec::new();
+    for file in al_bc::launch::launch_files(project_root) {
+        match file {
+            Ok(file) => privileged.extend(launch_servers(&file, relative(&file.path))),
+            Err(error) => {
+                let contents = file_sha256(&error.path).unwrap_or_else(|| "unreadable".to_string());
+                privileged.push(PrivilegedSetting::new(
+                    UNREADABLE_LAUNCH_KEY,
+                    &format!("{} ({contents})", error.message),
+                    relative(&error.path),
+                ));
+            }
+        }
+    }
+    privileged
+}
+
+/// The on-premises servers one parsed launch file names.
+fn launch_servers(file: &al_bc::launch::DebugConfigFile, source: String) -> Vec<PrivilegedSetting> {
     file.configs
         .iter()
         .filter(|config| {
@@ -2015,6 +2071,138 @@ mod tests {
             "{:?}",
             decision.privileged
         );
+    }
+
+    fn write_zed_debug(project: &Path, scenarios: &str) {
+        std::fs::create_dir_all(project.join(".zed")).unwrap();
+        std::fs::write(project.join(".zed/debug.json"), scenarios).unwrap();
+    }
+
+    const CLOUD_SCENARIO: &str = r#"{"adapter":"al","label":"Cloud","request":"launch",
+        "environmentType":"Sandbox","environmentName":"dev"}"#;
+
+    /// The debug adapter reads `onprem` as on-premises. The record's parser
+    /// rejected it, returned no server for the whole file, and so a trusted
+    /// record stayed trusted after a commit added a server in that spelling.
+    #[test]
+    fn a_launch_server_in_another_case_makes_the_record_stale() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings("{}");
+        write_zed_debug(project.path(), &format!("[{CLOUD_SCENARIO}]"));
+        std::fs::write(
+            project.path().join(".vscode/settings.json"),
+            r#"{"al.codeAnalyzers": ["./tools/TeamCop.dll"]}"#,
+        )
+        .unwrap();
+        grant(project.path()).unwrap();
+        assert!(decide(project.path()).unwrap().is_trusted());
+
+        write_zed_debug(
+            project.path(),
+            &format!(
+                r#"[{CLOUD_SCENARIO},{{"adapter":"al","label":"Attach","request":"attach",
+                    "environmentType":"onprem","server":"https://collector.example",
+                    "serverInstance":"BC","authentication":"AAD","tenant":"organizations"}}]"#
+            ),
+        );
+
+        let decision = decide(project.path()).unwrap();
+        assert_eq!(decision.state, TrustState::Stale);
+        assert!(
+            decision
+                .privileged
+                .iter()
+                .any(|setting| setting.value.contains("collector.example")),
+            "{:?}",
+            decision.privileged
+        );
+        let refusal = authorize_cached_credential(
+            project.path(),
+            &BcTarget::from_debug("onprem", Some("https://collector.example"), 7049),
+            CredentialKind::Bearer,
+            TargetSource::Repository,
+        )
+        .unwrap_err();
+        assert!(refusal.contains("not trusted"), "{refusal}");
+    }
+
+    /// One entry the parser rejects used to fail the whole file and leave the
+    /// record with no server at all, while the adapter still read the other
+    /// entries. The file now stands in the record as unreadable, which makes
+    /// an existing record stale and refuses a new one until the file is fixed.
+    #[test]
+    fn a_launch_file_the_parser_rejects_stales_the_record_and_blocks_a_grant() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings("{}");
+        let good = r#"{"adapter":"al","label":"Lab","request":"launch","environmentType":"OnPrem",
+            "server":"https://lab.example","serverInstance":"BC","authentication":"AAD"}"#;
+        write_zed_debug(project.path(), &format!("[{good}]"));
+        grant(project.path()).unwrap();
+        assert!(decide(project.path()).unwrap().is_trusted());
+
+        write_zed_debug(
+            project.path(),
+            &format!(
+                r#"[{good},{{"adapter":"al","label":"Other","environmentType":"Bogus",
+                    "server":"https://collector.example"}}]"#
+            ),
+        );
+
+        let decision = decide(project.path()).unwrap();
+        assert_eq!(decision.state, TrustState::Stale);
+        let refusal = decision
+            .grant_refusal()
+            .expect("an unreadable launch file blocks trust");
+        assert!(refusal.contains(".zed/debug.json"), "{refusal}");
+        assert!(refusal.contains("Bogus"), "{refusal}");
+        let error = grant(project.path()).expect_err("no record over an unreadable file");
+        assert!(
+            matches!(error, GrantError::UnreadableLaunchFile(_)),
+            "{error}"
+        );
+        assert_eq!(decide(project.path()).unwrap().state, TrustState::Stale);
+        assert!(authorize_cached_credential(
+            project.path(),
+            &onprem("https://lab.example"),
+            CredentialKind::Bearer,
+            TargetSource::Repository,
+        )
+        .is_err());
+    }
+
+    /// Zed reads debug scenarios from `.vscode/launch.json` as well as from
+    /// `.zed/debug.json`, so the record lists the servers of both.
+    #[test]
+    fn the_servers_of_both_launch_files_are_part_of_the_digest() {
+        let _config = ScratchConfig::new();
+        let project = project_with_launch(
+            r#"[{"name":"Lab","type":"al","request":"launch","environmentType":"OnPrem",
+                 "server":"https://collector.example","serverInstance":"BC"}]"#,
+        );
+        write_zed_debug(project.path(), &format!("[{CLOUD_SCENARIO}]"));
+
+        let decision = decide(project.path()).unwrap();
+        assert!(
+            decision
+                .privileged
+                .iter()
+                .any(|setting| setting.value.contains("collector.example")
+                    && setting.source.ends_with("launch.json")),
+            "{:?}",
+            decision.privileged
+        );
+    }
+
+    /// A launch file the parser rejects still has to move the fingerprint when
+    /// it changes, or a running server keeps the decision it made before.
+    #[test]
+    fn an_edit_to_an_unreadable_launch_file_moves_the_fingerprint() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings("{}");
+        write_zed_debug(project.path(), "[{not json");
+        let before = inputs_fingerprint(project.path());
+        write_zed_debug(project.path(), "[{still not json, and longer");
+        assert_ne!(before, inputs_fingerprint(project.path()));
     }
 
     fn project_with_launch(configurations: &str) -> tempfile::TempDir {
