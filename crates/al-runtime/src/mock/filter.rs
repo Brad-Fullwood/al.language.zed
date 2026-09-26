@@ -923,6 +923,16 @@ mod tests {
         assert!(matches(&parse("<B").unwrap(), &Value::Empty));
         assert!(!matches(&parse(">B").unwrap(), &Value::Empty));
     }
+
+    #[test]
+    fn value_to_filter_string_renders_an_option_by_its_member_name() {
+        let open = Value::Option {
+            type_name: "Status".to_string(),
+            member: "Open".to_string(),
+            ordinal: 1,
+        };
+        assert_eq!(value_to_filter_string(&open), "Open");
+    }
 }
 
 #[cfg(test)]
