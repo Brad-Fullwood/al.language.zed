@@ -1694,6 +1694,39 @@ fn modify_in_the_test_reaches_the_tables_event_subscribers() {
     assert_reaches_the_subscriber(&result);
 }
 
+/// DeleteAll raises OnBeforeDeleteEvent and OnAfterDeleteEvent for each row.
+#[test]
+fn deleteall_reaches_the_delete_event_subscribers() {
+    let result = classify_with_table_event_subscriber(
+        "OnAfterDeleteEvent",
+        "",
+        "P.\"No.\" := 'A'; P.Insert(); P.DeleteAll();",
+    );
+    assert_reaches_the_subscriber(&result);
+}
+
+/// ModifyAll raises OnBeforeModifyEvent and OnAfterModifyEvent for each row.
+#[test]
+fn modifyall_reaches_the_modify_event_subscribers() {
+    let result = classify_with_table_event_subscriber(
+        "OnBeforeModifyEvent",
+        "",
+        "P.\"No.\" := 'A'; P.Insert(); P.ModifyAll(Name, 'x', false);",
+    );
+    assert_reaches_the_subscriber(&result);
+}
+
+/// A bare `DeleteAll()` in table code acts on the implicit `Rec`.
+#[test]
+fn bare_deleteall_in_table_code_reaches_the_tables_event_subscribers() {
+    let result = classify_with_table_event_subscriber(
+        "OnAfterDeleteEvent",
+        "DeleteAll();",
+        "P.Validate(Name, 'x');",
+    );
+    assert_reaches_the_subscriber(&result);
+}
+
 /// A workspace with table "R8 Renamed", a table whose field relates to it
 /// through `relation`, and a test codeunit whose test runs `test_body`.
 /// "R8 Renamed" has a procedure `RenameTo` that renames the record itself.
