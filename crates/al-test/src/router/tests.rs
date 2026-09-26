@@ -1430,3 +1430,354 @@ end;
         result.reasons
     );
 }
+
+/// A label is a constant: a table or helper codeunit whose only globals
+/// are labels has no state and runs locally. A table with a real global
+/// variable is named as a table in the reason.
+#[test]
+fn label_globals_are_not_object_state() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Labelled.Table.al"),
+        r#"table 50196 "R8 Labelled"
+{
+fields { field(1; "No."; Code[20]) { } }
+keys { key(PK; "No.") { } }
+var
+    NoRequiredErr: Label 'No. is required';
+trigger OnInsert()
+begin
+    if "No." = '' then
+        Error(NoRequiredErr);
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Counted.Table.al"),
+        r#"table 50197 "R8 Counted"
+{
+fields { field(1; "No."; Code[20]) { } }
+keys { key(PK; "No.") { } }
+var
+    Inserted: Integer;
+trigger OnInsert()
+begin
+    Inserted += 1;
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/LabelHelper.Codeunit.al"),
+        r#"codeunit 50198 "R8 Label Helper"
+{
+var
+    HelloLbl: Label 'Hello %1';
+
+procedure Hello(Name: Text): Text
+begin
+    exit(StrSubstNo(HelloLbl, Name));
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/LabelTests.Codeunit.al"),
+        r#"codeunit 50199 "R8 Label Tests"
+{
+Subtype = Test;
+[Test]
+procedure InsertsLabelled()
+var L: Record "R8 Labelled";
+begin
+    L."No." := 'A';
+    L.Insert(true);
+end;
+}"#
+        .to_string(),
+    );
+    // A codeunit keeps all its tests on one backend, so each case gets its
+    // own test codeunit.
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/GreetTests.Codeunit.al"),
+        r#"codeunit 50201 "R8 Greet Tests"
+{
+Subtype = Test;
+[Test]
+procedure GreetsWithLabel()
+var Helper: Codeunit "R8 Label Helper";
+begin
+    if Helper.Hello('x') <> 'Hello x' then
+        Error('wrong greeting');
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/CountedTests.Codeunit.al"),
+        r#"codeunit 50200 "R8 Counted Tests"
+{
+Subtype = Test;
+[Test]
+procedure InsertsCounted()
+var C: Record "R8 Counted";
+begin
+    C."No." := 'A';
+    C.Insert(true);
+end;
+}"#
+        .to_string(),
+    );
+    let results = classify_all(&workspace).unwrap();
+    let find = |name: &str| {
+        results
+            .iter()
+            .find(|result| result.method_name == name)
+            .unwrap_or_else(|| panic!("{name} classification"))
+    };
+    let labelled = find("InsertsLabelled");
+    assert_eq!(
+        labelled.decision,
+        RoutingDecision::InterpRecord,
+        "{:?}",
+        labelled.reasons
+    );
+    let greets = find("GreetsWithLabel");
+    assert_eq!(
+        greets.decision,
+        RoutingDecision::Interp,
+        "{:?}",
+        greets.reasons
+    );
+    let counted = find("InsertsCounted");
+    assert_eq!(counted.decision, RoutingDecision::LiveBc);
+    assert!(
+        counted.reasons.iter().any(|reason| reason
+            .message
+            .contains("reachable table 'R8 Counted' has object-level state")),
+        "{:?}",
+        counted.reasons
+    );
+}
+
+/// A workspace with table "R8 Plain", a subscriber to `event` on it that
+/// calls `Page.RunModal`, and one test codeunit whose test runs `test_body`.
+/// `field_trigger` is the body of field Name's OnValidate.
+fn classify_with_table_event_subscriber(
+    event: &str,
+    field_trigger: &str,
+    test_body: &str,
+) -> ClassifyResult {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Plain.Table.al"),
+        format!(
+            r#"table 50210 "R8 Plain"
+{{
+fields
+{{
+    field(1; "No."; Code[20]) {{ }}
+    field(2; Name; Text[50])
+    {{
+        trigger OnValidate()
+        begin
+            {field_trigger}
+        end;
+    }}
+}}
+keys {{ key(PK; "No.") {{ }} }}
+}}"#
+        ),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/PlainSub.Codeunit.al"),
+        format!(
+            r#"codeunit 50211 "R8 Plain Sub"
+{{
+[EventSubscriber(ObjectType::Table, Database::"R8 Plain", '{event}', '', false, false)]
+local procedure OnPlainEvent(var Rec: Record "R8 Plain"; var xRec: Record "R8 Plain"; RunTrigger: Boolean)
+begin
+    Page.RunModal(0);
+end;
+}}"#
+        ),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/PlainTests.Codeunit.al"),
+        format!(
+            r#"codeunit 50212 "R8 Plain Tests"
+{{
+Subtype = Test;
+[Test]
+procedure Runs()
+var P: Record "R8 Plain";
+begin
+    {test_body}
+end;
+}}"#
+        ),
+    );
+    classify_all(&workspace).unwrap().remove(0)
+}
+
+fn assert_reaches_the_subscriber(result: &ClassifyResult) {
+    assert_eq!(
+        result.decision,
+        RoutingDecision::LiveBc,
+        "{:?}",
+        result.reasons
+    );
+    assert!(
+        result.reasons.iter().any(|reason| reason
+            .message
+            .contains("reachable procedure calls Page.RunModal")),
+        "{:?}",
+        result.reasons
+    );
+}
+
+/// Rename raises OnBeforeRenameEvent and OnAfterRenameEvent, so the test
+/// reaches their subscribers.
+#[test]
+fn rename_reaches_the_rename_event_subscribers() {
+    let result = classify_with_table_event_subscriber(
+        "OnAfterRenameEvent",
+        "",
+        "P.\"No.\" := 'A'; P.Insert(); P.Rename('B');",
+    );
+    assert_reaches_the_subscriber(&result);
+}
+
+/// `Rec.Modify()` in table code modifies a row of the table itself and
+/// raises its OnAfterModifyEvent.
+#[test]
+fn rec_record_call_in_table_code_reaches_the_tables_event_subscribers() {
+    let result = classify_with_table_event_subscriber(
+        "OnAfterModifyEvent",
+        "Rec.Modify();",
+        "P.Validate(Name, 'x');",
+    );
+    assert_reaches_the_subscriber(&result);
+}
+
+/// `xRec` in table code is a record of the table itself.
+#[test]
+fn xrec_record_call_in_table_code_reaches_the_tables_event_subscribers() {
+    let result = classify_with_table_event_subscriber(
+        "OnAfterModifyEvent",
+        "xRec.Modify();",
+        "P.Validate(Name, 'x');",
+    );
+    assert_reaches_the_subscriber(&result);
+}
+
+/// A bare `Modify()` in table code acts on the implicit `Rec`.
+#[test]
+fn bare_record_method_in_table_code_reaches_the_tables_event_subscribers() {
+    let result = classify_with_table_event_subscriber(
+        "OnAfterModifyEvent",
+        "Modify();",
+        "P.Validate(Name, 'x');",
+    );
+    assert_reaches_the_subscriber(&result);
+}
+
+/// The same subscriber reached from a record call in the test itself.
+#[test]
+fn modify_in_the_test_reaches_the_tables_event_subscribers() {
+    let result = classify_with_table_event_subscriber(
+        "OnAfterModifyEvent",
+        "",
+        "P.\"No.\" := 'A'; P.Insert(); P.Modify();",
+    );
+    assert_reaches_the_subscriber(&result);
+}
+
+/// A workspace with table "R8 Renamed", a table whose field relates to it
+/// through `relation`, and a test codeunit whose test runs `test_body`.
+/// "R8 Renamed" has a procedure `RenameTo` that renames the record itself.
+fn classify_rename_with_relation(relation: &str, test_body: &str) -> ClassifyResult {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Renamed.Table.al"),
+        r#"table 50220 "R8 Renamed"
+{
+fields { field(1; "No."; Code[20]) { } }
+keys { key(PK; "No.") { } }
+procedure RenameTo(NewNo: Code[20])
+begin
+    Rename(NewNo);
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/RenamedUse.Table.al"),
+        format!(
+            r#"table 50221 "R8 Renamed Use"
+{{
+fields
+{{
+    field(1; "Entry No."; Integer) {{ }}
+    field(2; Kind; Option) {{ OptionMembers = Renamed,Other; }}
+    field(3; "Renamed No."; Code[20]) {{ TableRelation = {relation}; }}
+}}
+keys {{ key(PK; "Entry No.") {{ }} }}
+}}"#
+        ),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/RenameTests.Codeunit.al"),
+        format!(
+            r#"codeunit 50222 "R8 Rename Tests"
+{{
+Subtype = Test;
+[Test]
+procedure Renames()
+var R: Record "R8 Renamed";
+begin
+    {test_body}
+end;
+}}"#
+        ),
+    );
+    classify_all(&workspace).unwrap().remove(0)
+}
+
+/// The local rename updates a field whose plain TableRelation names the
+/// renamed table, so the test stays local.
+#[test]
+fn rename_with_a_plain_relation_to_the_table_runs_locally() {
+    let result = classify_rename_with_relation(
+        "\"R8 Renamed\"",
+        "R.\"No.\" := 'A'; R.Insert(); R.Rename('B');",
+    );
+    assert_eq!(
+        result.decision,
+        RoutingDecision::InterpRecord,
+        "{:?}",
+        result.reasons
+    );
+}
+
+/// A conditional relation to the renamed table is one the local rename
+/// does not follow, whether the rename is in the test or in table code.
+#[test]
+fn rename_with_a_conditional_relation_to_the_table_routes_to_live_bc() {
+    let relation = "if (Kind = const(Renamed)) \"R8 Renamed\"";
+    for body in [
+        "R.\"No.\" := 'A'; R.Insert(); R.Rename('B');",
+        "R.\"No.\" := 'A'; R.Insert(); R.RenameTo('B');",
+    ] {
+        let result = classify_rename_with_relation(relation, body);
+        assert_eq!(result.decision, RoutingDecision::LiveBc, "{body}");
+        assert!(
+            result.reasons.iter().any(|reason| reason
+                .message
+                .contains("Rename: field Renamed No. of table R8 Renamed Use has TableRelation")),
+            "{body}: {:?}",
+            result.reasons
+        );
+    }
+}

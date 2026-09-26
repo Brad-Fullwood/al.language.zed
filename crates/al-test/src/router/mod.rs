@@ -135,11 +135,29 @@ pub struct ClassifyResult {
 struct ProcedureLocation {
     file: PathBuf,
     object: String,
+    /// The object's kind as the object index names it (`codeunit`, `table`).
+    object_kind: String,
     name: String,
     has_object_globals: bool,
 }
 
-type ProcedureCatalog = HashMap<(String, String), ProcedureLocation>;
+/// The workspace's procedures by lowercased `(object, procedure)`, and the
+/// table relations a rename follows.
+#[derive(Debug)]
+struct ProcedureCatalog {
+    procedures: HashMap<(String, String), ProcedureLocation>,
+    relations: al_runtime::interpreter::records::RelationIndex,
+}
+
+impl ProcedureCatalog {
+    fn get(&self, key: &(String, String)) -> Option<&ProcedureLocation> {
+        self.procedures.get(key)
+    }
+
+    fn contains_key(&self, key: &(String, String)) -> bool {
+        self.procedures.contains_key(key)
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 struct LocalHandlerSupport {
@@ -397,7 +415,7 @@ pub(super) fn object_scope<'t>(
 
 fn build_procedure_catalog(workspace: &Workspace) -> ProcedureCatalog {
     let mut catalog = HashMap::new();
-    let objects: Vec<(PathBuf, String)> = workspace
+    let objects: Vec<(PathBuf, String, String)> = workspace
         .file_index
         .object_infos
         .iter()
@@ -406,11 +424,11 @@ fn build_procedure_catalog(workspace: &Workspace) -> ProcedureCatalog {
             entry
                 .value()
                 .iter()
-                .map(|info| (path.clone(), info.name.clone()))
+                .map(|info| (path.clone(), info.name.clone(), info.kind.clone()))
                 .collect::<Vec<_>>()
         })
         .collect();
-    for (path, object_name) in objects {
+    for (path, object_name, object_kind) in objects {
         let object = object_name.to_ascii_lowercase();
         let Some((text, tree)) = workspace.file_index.get_cached_parse(&path) else {
             continue;
@@ -434,6 +452,7 @@ fn build_procedure_catalog(workspace: &Workspace) -> ProcedureCatalog {
                         ProcedureLocation {
                             file: path.clone(),
                             object: object_name.clone(),
+                            object_kind: object_kind.clone(),
                             name: clean,
                             has_object_globals,
                         },
@@ -445,7 +464,10 @@ fn build_procedure_catalog(workspace: &Workspace) -> ProcedureCatalog {
             stack.extend(node.named_children(&mut cursor));
         }
     }
-    catalog
+    ProcedureCatalog {
+        procedures: catalog,
+        relations: al_runtime::interpreter::records::RelationIndex::build(&*workspace.file_index),
+    }
 }
 
 fn classify_reachable(
@@ -526,8 +548,8 @@ fn classify_reachable(
                     &mut reasons,
                     RoutingReason {
                         message: format!(
-                            "reachable helper codeunit '{}' has object-level state that requires live BC execution",
-                            location.object
+                            "reachable {} '{}' has object-level state that requires live BC execution",
+                            location.object_kind, location.object
                         ),
                         file: Some(location.file.to_string_lossy().into_owned()),
                         line: None,
@@ -595,6 +617,7 @@ fn classify_table_code(
     let location = ProcedureLocation {
         file: path.clone(),
         object: table.to_string(),
+        object_kind: "table".to_string(),
         name: String::new(),
         has_object_globals: false,
     };
@@ -737,12 +760,21 @@ fn callable_has_attribute(callable: tree_sitter::Node<'_>, source: &[u8], wanted
     false
 }
 
+/// Whether the object declares a global variable. Labels are constants and
+/// do not count.
 fn has_object_global_declarations(root: tree_sitter::Node<'_>) -> bool {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         if node.kind() == "object_var_section" {
             let mut cursor = node.walk();
-            return node.named_children(&mut cursor).next().is_some();
+            return node
+                .named_children(&mut cursor)
+                .filter(|child| child.kind() == "object_variable_declaration")
+                .any(|declaration| {
+                    let mut declaration_cursor = declaration.walk();
+                    let mut children = declaration.named_children(&mut declaration_cursor);
+                    children.any(|child| child.kind() == "regular_variable_declaration")
+                });
         }
         if matches!(
             node.kind(),

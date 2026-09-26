@@ -77,6 +77,7 @@ codeunit 50301 "Fixture Dispatcher"
         Card: Page "Fixture Card";
     begin
         Entry.Validate("No.", 'A');
+        Entry.Rename('C');
         Entry.ModifyAll("No.", 'B', true);
         Entry.DeleteAll();
         Target.Modify();

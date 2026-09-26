@@ -789,6 +789,7 @@ fn record_op_from_method_name() {
         RecordOp::from_method_name("Validate"),
         Some(RecordOp::Validate)
     );
+    assert_eq!(RecordOp::from_method_name("Rename"), Some(RecordOp::Rename));
     assert_eq!(RecordOp::from_method_name("Post"), None);
 }
 
@@ -1085,6 +1086,91 @@ end;
     assert!(
         reaches_handler,
         "DoWork → subscriber indirect edge expected"
+    );
+}
+
+/// In table code `Rec`, `xRec` and a bare record method act on the table
+/// itself, and `Rename` raises the rename events, so each reaches the
+/// subscribers of the table's events.
+#[test]
+fn table_code_record_calls_and_rename_reach_table_event_subscribers() {
+    let table = r#"table 50310 "Plain"
+{
+fields { field(1; "No."; Code[20]) { } }
+keys { key(PK; "No.") { } }
+procedure ByRec()
+begin
+    Rec.Modify();
+end;
+
+procedure ByXRec()
+begin
+    xRec.Modify();
+end;
+
+procedure Bare()
+begin
+    Modify();
+end;
+
+procedure Renames()
+begin
+    Rename('B');
+end;
+}
+"#;
+    let subscriber = r#"codeunit 50311 "Plain Sub"
+{
+[EventSubscriber(ObjectType::Table, Database::"Plain", 'OnAfterModifyEvent', '', false, false)]
+local procedure AfterModify(var Rec: Record "Plain"; var xRec: Record "Plain"; RunTrigger: Boolean)
+begin
+end;
+
+[EventSubscriber(ObjectType::Table, Database::"Plain", 'OnAfterRenameEvent', '', false, false)]
+local procedure AfterRename(var Rec: Record "Plain"; var xRec: Record "Plain"; RunTrigger: Boolean)
+begin
+end;
+}
+"#;
+    let caller = r#"codeunit 50312 "Plain Caller"
+{
+procedure RenameIt()
+var
+    P: Record "Plain";
+begin
+    P.Rename('B');
+end;
+}
+"#;
+    let (insight, cg) = build_resolved_call_graph(&[
+        ("/ws/Plain.Table.al", table),
+        ("/ws/PlainSub.Codeunit.al", subscriber),
+        ("/ws/PlainCaller.Codeunit.al", caller),
+    ]);
+    let subscriber_node = |name: &str| {
+        CallGraph::node_id_for(
+            &insight,
+            &NodeKey::Subscriber(ObjectKind::Codeunit, "plain sub".into(), name.into()),
+        )
+        .unwrap_or_else(|| panic!("subscriber node {name}"))
+    };
+    let after_modify = subscriber_node("aftermodify");
+    let after_rename = subscriber_node("afterrename");
+    let reaches = |from: NodeId, to: NodeId| cg.callees_of(from).iter().any(|e| e.to == to);
+    for method in ["ByRec", "ByXRec", "Bare"] {
+        let node = proc_node(&insight, ObjectKind::Table, "Plain", method);
+        assert!(reaches(node, after_modify), "{method} reaches AfterModify");
+        assert!(!reaches(node, after_rename), "{method} does not rename");
+    }
+    let renames = proc_node(&insight, ObjectKind::Table, "Plain", "Renames");
+    assert!(
+        reaches(renames, after_rename),
+        "a bare Rename reaches AfterRename"
+    );
+    let rename_it = proc_node(&insight, ObjectKind::Codeunit, "Plain Caller", "RenameIt");
+    assert!(
+        reaches(rename_it, after_rename),
+        "P.Rename reaches AfterRename"
     );
 }
 

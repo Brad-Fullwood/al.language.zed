@@ -167,6 +167,43 @@ fn stateful_cross_codeunit_call_fails_closed() {
     );
 }
 
+/// A label is a constant, so a helper codeunit whose only globals are labels
+/// runs from another codeunit with its labels bound.
+#[test]
+fn label_only_helper_codeunit_runs_from_another_codeunit() {
+    let helper = r#"codeunit 50183 "Label Helper"
+{
+    var
+        HelloLbl: Label 'Hello %1';
+
+    procedure Hello(Name: Text): Text
+    begin
+        exit(StrSubstNo(HelloLbl, Name));
+    end;
+}
+"#;
+    let caller = r#"codeunit 50184 "Label Caller"
+{
+    procedure Run(): Text
+    var
+        Helper: Codeunit "Label Helper";
+    begin
+        exit(Helper.Hello('Ann'));
+    end;
+}
+"#;
+    let result = run(
+        &[
+            ("/ws/LabelHelper.al", helper),
+            ("/ws/LabelCaller.al", caller),
+        ],
+        "Label Caller",
+        "Run",
+        vec![],
+    );
+    assert_eq!(ok(result), Value::Text("Hello Ann".into()));
+}
+
 #[test]
 fn unqualified_call_resolves_only_within_current_object() {
     let caller = r#"codeunit 50185 "Scoped Caller"
@@ -3221,6 +3258,360 @@ fn events_run_their_automatic_subscribers() {
     assert!(changed.contains("changed 10 to 25"), "{changed}");
     let refused = error_message(call("ValidateRaisesFieldEvent"));
     assert!(refused.contains("A name is required"), "{refused}");
+}
+
+const RENAMED_MEMBER_TABLE: &str = r#"table 50260 "Renamed Member"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; "Renamed From"; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+
+    trigger OnRename()
+    var
+        Logger: Codeunit "Rename Logger";
+    begin
+        if StrLen("No.") < 3 then
+            Error('%1 is too short', "No.");
+        Logger.Add('OnRename', "No.", xRec."No.");
+        "Renamed From" := xRec."No.";
+    end;
+}
+"#;
+
+const RENAME_LOG_TABLE: &str = r#"table 50261 "Rename Log"
+{
+    fields
+    {
+        field(1; "Entry No."; Integer) { }
+        field(2; Step; Text[30]) { }
+        field(3; "Rec No."; Code[20]) { }
+        field(4; "xRec No."; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; "Entry No.") { }
+    }
+}
+"#;
+
+const RENAME_LOGGER: &str = r#"codeunit 50262 "Rename Logger"
+{
+    procedure Add(Step: Text; RecNo: Code[20]; XRecNo: Code[20])
+    var
+        Log: Record "Rename Log";
+    begin
+        Log."Entry No." := Log.Count() + 1;
+        Log.Step := Step;
+        Log."Rec No." := RecNo;
+        Log."xRec No." := XRecNo;
+        Log.Insert();
+    end;
+
+    procedure Read(): Text
+    var
+        Log: Record "Rename Log";
+        Seen: Text;
+    begin
+        if Log.FindSet() then
+            repeat
+                Seen += Log.Step + ':' + Log."Rec No." + '<-' + Log."xRec No." + '|';
+            until Log.Next() = 0;
+        exit(Seen);
+    end;
+}
+"#;
+
+const RENAME_SUBSCRIBERS: &str = r#"codeunit 50263 "Rename Subscribers"
+{
+    [EventSubscriber(ObjectType::Table, Database::"Renamed Member", 'OnBeforeRenameEvent', '', false, false)]
+    local procedure BeforeRename(var Rec: Record "Renamed Member"; var xRec: Record "Renamed Member"; RunTrigger: Boolean)
+    var
+        Logger: Codeunit "Rename Logger";
+    begin
+        Logger.Add('Before', Rec."No.", xRec."No.");
+    end;
+
+    [EventSubscriber(ObjectType::Table, Database::"Renamed Member", 'OnAfterRenameEvent', '', false, false)]
+    local procedure AfterRename(var Rec: Record "Renamed Member"; var xRec: Record "Renamed Member"; RunTrigger: Boolean)
+    var
+        Logger: Codeunit "Rename Logger";
+    begin
+        Logger.Add('After', Rec."No.", xRec."No.");
+    end;
+}
+"#;
+
+const RENAME_PROBE: &str = r#"codeunit 50264 "Rename Probe"
+{
+    procedure RenameSeesBothKeys(): Text
+    var
+        Member: Record "Renamed Member";
+        Logger: Codeunit "Rename Logger";
+    begin
+        Member."No." := 'OLD';
+        Member.Insert();
+        Member.Rename('NEW');
+        Member.Get('NEW');
+        exit(Logger.Read() + Member."Renamed From");
+    end;
+
+    procedure RenameToShortKey()
+    var
+        Member: Record "Renamed Member";
+    begin
+        Member."No." := 'LONGKEY';
+        Member.Insert();
+        Member.Rename('AB');
+    end;
+
+    procedure FailedRenameKeepsTheOldKey(): Text
+    var
+        Member: Record "Renamed Member";
+        Other: Record "Renamed Member";
+    begin
+        Other."No." := 'TAKEN';
+        Other.Insert();
+        Member."No." := 'OLD';
+        Member.Insert();
+        if Member.Rename('TAKEN') then
+            exit('renamed onto an existing key');
+        exit(Member."No.");
+    end;
+}
+"#;
+
+/// In Business Central `Rec` holds the new key and `xRec` the row as stored
+/// in OnBeforeRenameEvent, OnRename and OnAfterRenameEvent, and Rename
+/// writes what OnRename sets on `Rec`. OnRename ran before the key changed,
+/// so `Rec` held the old key there and in OnBeforeRenameEvent.
+#[test]
+fn rename_code_sees_the_new_key_as_rec_and_the_stored_row_as_xrec() {
+    let call = |proc: &str| {
+        run(
+            &[
+                ("/ws/RenamedMember.al", RENAMED_MEMBER_TABLE),
+                ("/ws/RenameLog.al", RENAME_LOG_TABLE),
+                ("/ws/RenameLogger.al", RENAME_LOGGER),
+                ("/ws/RenameSubscribers.al", RENAME_SUBSCRIBERS),
+                ("/ws/RenameProbe.al", RENAME_PROBE),
+            ],
+            "Rename Probe",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(
+        ok(call("RenameSeesBothKeys")),
+        Value::Text("Before:NEW<-OLD|OnRename:NEW<-OLD|After:NEW<-OLD|OLD".into())
+    );
+    let refused = error_message(call("RenameToShortKey"));
+    assert!(refused.contains("AB is too short"), "{refused}");
+    assert_eq!(
+        ok(call("FailedRenameKeepsTheOldKey")),
+        Value::Code("OLD".into())
+    );
+}
+
+const PLAIN_TABLE: &str = r#"table 50270 "Plain"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; "Parent No."; Code[20]) { TableRelation = Plain; }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+}
+"#;
+
+const PLAIN_ENTRY_TABLE: &str = r#"table 50271 "Plain Entry"
+{
+    fields
+    {
+        field(1; "Entry No."; Integer) { }
+        field(2; "Plain No."; Code[20]) { TableRelation = "Plain"; }
+    }
+    keys
+    {
+        key(PK; "Entry No.") { }
+    }
+}
+"#;
+
+const PLAIN_LINE_TABLE: &str = r#"table 50272 "Plain Line"
+{
+    fields
+    {
+        field(1; "Plain No."; Code[20]) { TableRelation = "Plain"."No."; }
+        field(2; "Line No."; Integer) { }
+    }
+    keys
+    {
+        key(PK; "Plain No.", "Line No.") { }
+    }
+}
+"#;
+
+const PLAIN_PROBE: &str = r#"codeunit 50273 "Plain Probe"
+{
+    procedure RenameCascades(): Text
+    var
+        P: Record "Plain";
+        Child: Record "Plain";
+        Entry: Record "Plain Entry";
+        Line: Record "Plain Line";
+        Other: Record "Plain Entry";
+    begin
+        P."No." := 'OLD';
+        P.Insert();
+        Child."No." := 'CHILD';
+        Child."Parent No." := 'OLD';
+        Child.Insert();
+        Entry."Entry No." := 1;
+        Entry."Plain No." := 'OLD';
+        Entry.Insert();
+        Other."Entry No." := 2;
+        Other."Plain No." := 'ELSE';
+        Other.Insert();
+        Line."Plain No." := 'OLD';
+        Line."Line No." := 10000;
+        Line.Insert();
+        P.Rename('NEW');
+        Entry.Get(1);
+        Other.Get(2);
+        Child.Get('CHILD');
+        if Line.Get('OLD', 10000) then
+            exit('the line kept the old key');
+        Line.Get('NEW', 10000);
+        exit(Entry."Plain No." + '|' + Other."Plain No." + '|' + Child."Parent No." + '|' + Line."Plain No.");
+    end;
+
+    procedure RenameLine()
+    var
+        Line: Record "Plain Line";
+    begin
+        Line."Plain No." := 'A';
+        Line."Line No." := 1;
+        Line.Insert();
+        Line.Rename('A', 2);
+    end;
+
+    procedure TemporaryRenameStaysLocal(): Text
+    var
+        P: Record "Plain" temporary;
+        Entry: Record "Plain Entry";
+    begin
+        P."No." := 'OLD';
+        P.Insert();
+        Entry."Entry No." := 1;
+        Entry."Plain No." := 'OLD';
+        Entry.Insert();
+        P.Rename('NEW');
+        Entry.Get(1);
+        exit(Entry."Plain No.");
+    end;
+}
+"#;
+
+/// Rename "updates the primary key value in all related tables": every
+/// field whose plain TableRelation names the renamed key gets the new value,
+/// and a row whose key holds it moves. A temporary record has no related
+/// rows.
+#[test]
+fn rename_updates_the_fields_that_relate_to_the_key() {
+    let call = |proc: &str| {
+        run(
+            &[
+                ("/ws/Plain.al", PLAIN_TABLE),
+                ("/ws/PlainEntry.al", PLAIN_ENTRY_TABLE),
+                ("/ws/PlainLine.al", PLAIN_LINE_TABLE),
+                ("/ws/PlainProbe.al", PLAIN_PROBE),
+            ],
+            "Plain Probe",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(
+        ok(call("RenameCascades")),
+        Value::Text("NEW|ELSE|NEW|NEW".into())
+    );
+    assert_eq!(
+        ok(call("TemporaryRenameStaysLocal")),
+        Value::Code("OLD".into())
+    );
+}
+
+/// A relation the local rename cannot follow makes the rename an error that
+/// names it, where a silent rename would leave the related rows behind.
+#[test]
+fn rename_refuses_a_relation_it_cannot_follow() {
+    let conditional = r#"table 50274 "Plain Usage"
+{
+    fields
+    {
+        field(1; "Entry No."; Integer) { }
+        field(2; Kind; Option) { OptionMembers = Plain,Other; }
+        field(3; "No."; Code[20]) { TableRelation = if (Kind = const(Plain)) Plain; }
+    }
+    keys
+    {
+        key(PK; "Entry No.") { }
+    }
+}
+"#;
+    let result = run(
+        &[
+            ("/ws/Plain.al", PLAIN_TABLE),
+            ("/ws/PlainEntry.al", PLAIN_ENTRY_TABLE),
+            ("/ws/PlainLine.al", PLAIN_LINE_TABLE),
+            ("/ws/PlainUsage.al", conditional),
+            ("/ws/PlainProbe.al", PLAIN_PROBE),
+        ],
+        "Plain Probe",
+        "RenameCascades",
+        vec![],
+    );
+    let refused = error_message(result);
+    assert!(
+        refused.contains("field No. of table Plain Usage") && refused.contains("cannot follow"),
+        "{refused}"
+    );
+    let line_ref = r#"table 50275 "Line Ref"
+{
+    fields
+    {
+        field(1; "Entry No."; Integer) { }
+        field(2; "Line No."; Integer) { TableRelation = "Plain Line"."Line No."; }
+    }
+    keys
+    {
+        key(PK; "Entry No.") { }
+    }
+}
+"#;
+    let result = run(
+        &[
+            ("/ws/Plain.al", PLAIN_TABLE),
+            ("/ws/PlainEntry.al", PLAIN_ENTRY_TABLE),
+            ("/ws/PlainLine.al", PLAIN_LINE_TABLE),
+            ("/ws/LineRef.al", line_ref),
+            ("/ws/PlainProbe.al", PLAIN_PROBE),
+        ],
+        "Plain Probe",
+        "RenameLine",
+        vec![],
+    );
+    let refused = error_message(result);
+    assert!(refused.contains("composite primary key"), "{refused}");
 }
 
 /// A table then a codeunit in one file: the codeunit's calls took the

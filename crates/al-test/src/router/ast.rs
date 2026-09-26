@@ -280,6 +280,24 @@ fn validate_blocker(
         .map(|reason| format!("Validate: {reason}"))
 }
 
+/// Why `Rename` on table `table` must run on live BC: a field relates to it
+/// in a way the local rename does not follow (the runtime's own
+/// [`al_runtime::interpreter::records::RelationIndex`] decides).
+fn rename_blocker(
+    workspace: &Workspace,
+    catalog: &ProcedureCatalog,
+    table: &str,
+) -> Option<String> {
+    workspace
+        .file_index
+        .object_path_of_kind(table, &["table"])?;
+    catalog
+        .relations
+        .rename_cascades(&*workspace.file_index, table)
+        .err()
+        .map(|reason| format!("Rename: {reason}"))
+}
+
 /// The first comma-separated argument, outside quotes.
 fn first_argument(arguments: &str) -> &str {
     let mut quote: Option<char> = None;
@@ -488,19 +506,24 @@ pub(super) fn classify_call(
                 .object_path_of_kind(object, &["table"])
                 .is_some()
         {
-            if receiver.eq_ignore_ascii_case("validate") {
-                if let Some(blocker) = validate_blocker(workspace, object, suffix, source) {
-                    promote(
-                        decision,
-                        reasons,
-                        RoutingDecision::LiveBc,
-                        &blocker,
-                        file,
-                        primary,
-                        reachable,
-                    );
-                    return;
-                }
+            let blocker = if receiver.eq_ignore_ascii_case("validate") {
+                validate_blocker(workspace, object, suffix, source)
+            } else if receiver.eq_ignore_ascii_case("rename") {
+                rename_blocker(workspace, catalog, object)
+            } else {
+                None
+            };
+            if let Some(blocker) = blocker {
+                promote(
+                    decision,
+                    reasons,
+                    RoutingDecision::LiveBc,
+                    &blocker,
+                    file,
+                    primary,
+                    reachable,
+                );
+                return;
             }
             promote(
                 decision,
@@ -607,9 +630,16 @@ pub(super) fn classify_call(
         return;
     };
     let type_name = decl.type_name.to_ascii_lowercase();
-    if type_name == "record" && method.eq_ignore_ascii_case("validate") {
+    if type_name == "record" {
         let table = decl.type_subtype.as_deref().unwrap_or("");
-        if let Some(blocker) = validate_blocker(workspace, table, suffix, source) {
+        let blocker = if method.eq_ignore_ascii_case("validate") {
+            validate_blocker(workspace, table, suffix, source)
+        } else if method.eq_ignore_ascii_case("rename") {
+            rename_blocker(workspace, catalog, table)
+        } else {
+            None
+        };
+        if let Some(blocker) = blocker {
             promote(
                 decision,
                 reasons,
