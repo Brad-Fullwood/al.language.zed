@@ -79,8 +79,16 @@ pub fn run(cli: Cli) -> ExitCode {
             lsp::cmd_download_symbols(project.as_deref(), source.as_deref(), cli.json)
         }
         Commands::Search { query } => lsp::cmd_search(&query, cli.limit, cli.json),
-        Commands::Object { kind, name } => lsp::cmd_object(&kind, &name, cli.json),
-        Commands::ById { kind, id } => lsp::cmd_by_id(&kind, id, cli.json),
+        Commands::Object {
+            kind,
+            name,
+            wait_for_members,
+        } => lsp::cmd_object(&kind, &name, wait_for_members, cli.json),
+        Commands::ById {
+            kind,
+            id,
+            wait_for_members,
+        } => lsp::cmd_by_id(&kind, id, wait_for_members, cli.json),
         Commands::Source {
             name,
             kind,

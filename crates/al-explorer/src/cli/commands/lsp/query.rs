@@ -64,15 +64,23 @@ pub fn cmd_search(query: &str, limit: Option<usize>, json: bool) -> ExitCode {
     }
 }
 
-pub fn cmd_object(kind: &str, name: &str, json: bool) -> ExitCode {
-    let params = serde_json::json!({ "kind": kind, "name": name });
+pub fn cmd_object(kind: &str, name: &str, wait_for_members: bool, json: bool) -> ExitCode {
+    let params = serde_json::json!({
+        "kind": kind,
+        "name": name,
+        "waitForMembers": wait_for_members,
+    });
     run_command("object", Some(params), json, None, |result| {
         print_symbol_entries(result);
     })
 }
 
-pub fn cmd_by_id(kind: &str, id: i32, json: bool) -> ExitCode {
-    let params = serde_json::json!({ "kind": kind, "id": id });
+pub fn cmd_by_id(kind: &str, id: i32, wait_for_members: bool, json: bool) -> ExitCode {
+    let params = serde_json::json!({
+        "kind": kind,
+        "id": id,
+        "waitForMembers": wait_for_members,
+    });
     run_command("byId", Some(params), json, None, |result| {
         print_symbol_entries(result);
     })

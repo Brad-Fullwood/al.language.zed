@@ -61,6 +61,9 @@ impl App {
             Some(serde_json::json!({
                 "kind": format!("{:?}", kind),
                 "name": name,
+                // This call exists to load the members, so it waits for
+                // the call graph that carries a workspace object's.
+                "waitForMembers": true,
             })),
         );
         let val = match result {

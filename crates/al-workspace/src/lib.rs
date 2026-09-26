@@ -915,6 +915,27 @@ impl Workspace {
         self.call_graph_progress.snapshot()
     }
 
+    /// Whether the cached call graph matches the current workspace files and
+    /// packages. Builds nothing and does not wait for a build in progress.
+    ///
+    /// Workspace objects' fields and methods enter the symbol index with the
+    /// graph, so a lookup that must answer at once asks this before it uses
+    /// them.
+    pub fn call_graph_is_current(&self) -> bool {
+        let (dependency_fingerprint, _) = self.dependency_package_fingerprint_reporting();
+        let revision = self.call_graph_revision_now();
+        let revision_matches = matches!(
+            self.call_graph_revision.try_read(),
+            Ok(built_at) if *built_at == Some(revision)
+        );
+        let built = matches!(self.call_graph.try_read(), Ok(graph) if graph.is_some());
+        let packages_match = matches!(
+            self.call_graph_dependency_fingerprint.try_read(),
+            Ok(built_from) if built_from.as_ref() == Some(&dependency_fingerprint)
+        );
+        revision_matches && built && packages_match
+    }
+
     /// How many times the call graph has been built since this workspace was
     /// created. Callers that join an in-flight build do not add to it.
     pub fn call_graph_build_count(&self) -> u64 {
