@@ -49,9 +49,9 @@ uses:
              "uses":["Uses Removed"],"possible":[]}]}
 ```
 
-Base Application 25 to 26 is over a thousand changes; this answers which of
+Base Application 25 to 26 is over a thousand changes. This answers which of
 them matter here in about 7 seconds. `uses` are confirmed (the receiver
-resolves to the changed object); `possibleUses` are name matches on a
+resolves to the changed object). `possibleUses` are name matches on a
 variable of another or unknown type, so check them before reporting.
 `--all` returns every change, used or not.
 
@@ -91,7 +91,7 @@ An object with `"evaluated": false` means nothing was compared, so check the
 shape before you report anything. `upgrade --baseline-app <path>` has the same
 contract: an array of issues with a baseline, an object with `evaluated: false`
 and an empty `issues` without one. Neither
-compares two versions of a dependency; that is `package-diff`.
+compares two versions of a dependency. That is `package-diff`.
 
 ## Subscribers pointing at events that no longer exist
 
@@ -137,7 +137,7 @@ literals: `Crypto.SetEncryptionData(KeyText, ...)` with a `Text` key is
 reported, the `SecretText` call next to it is not. Any other call is reported
 only when every definition of the name is obsolete, so this errs towards
 silence. Plain `obsolete` without `--used` lists every pending
-obsoletion in every loaded package (over 1,500 on Base Application); use it
+obsoletion in every loaded package (over 1,500 on Base Application). Use it
 with `--limit` only when the question is about the packages themselves.
 
 ## Order of work

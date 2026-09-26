@@ -48,7 +48,7 @@ extension answers with `"mode":"value"` and the next free ordinal.
 
 Pass a table, tableextension, enum or enumextension name. A table extension's
 field numbers must sit inside the app's `idRanges`, and must avoid the base
-table and every other visible extension of it; `free-ids` accounts for all of
+table and every other visible extension of it. `free-ids` accounts for all of
 that. An enum extension's ordinals work the same way. Add `--kind` when the name
 exists as more than one kind.
 

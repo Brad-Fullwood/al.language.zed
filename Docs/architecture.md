@@ -6,13 +6,13 @@ optional, dev-only and external edges are called out where they differ from a
 plain production dependency.
 
 > Re-derive at any time with `cargo metadata --no-deps` (or read the manifests).
-> The tier grouping is presentational; the arrows are the source of truth.
+> The tier grouping is presentational. The arrows are the source of truth.
 
 ## Library crate layering
 
 The engine crates and their **production** path-dependencies. Solid arrows are
-normal `[dependencies]`; the dashed `nuget` arrow is the optional
-`al-symbols → al-bc` edge (gated by the default `nuget` feature); the dashed
+normal `[dependencies]`. The dashed `nuget` arrow is the optional
+`al-symbols → al-bc` edge (gated by the default `nuget` feature). The dashed
 `al-syntax → tree-sitter-al` arrow is the external grammar submodule (a path
 dependency on a separate publishable crate, not a workspace member). The four
 product/transport crates (`al-lsp`, `al-explorer`, `zed-al`, `al-test-harness`)
@@ -125,7 +125,7 @@ omitted above or drawn dashed):
 - Dev-only `al-*` edges are intentionally **not** drawn: `al-dap` and
   `al-source` reference `al-syntax` under `[dev-dependencies]` (test fixtures).
   `al-source` and `al-runtime` also depend on it in production, so those arrows
-  are drawn; `al-dap → al-syntax` is dev-only and is not.
+  are drawn. `al-dap → al-syntax` is dev-only and is not.
 - `al-snapshot` has no `al-*` dependency at all. It is drawn as a node with no
   outgoing arrow, which is what its manifest says.
 
@@ -203,19 +203,19 @@ graph TD
 ```
 
 - `al-analysis` is linked by `al-lsp` with the `lsp` feature on (the
-  `tower-lsp` wire conversions); `al-explorer` does not enable it.
+  `tower-lsp` wire conversions). `al-explorer` does not enable it.
 - `al-lsp` is built **twice**: a plain `cargo build` links the no-op semantic
   stub, and `--features semantic` links the real in-process .NET CodeAnalysis
   bridge (see `make rust` and `make install`).
 - `zed-al`, `al-explorer`, `al-lsp`, `al-protocol` and `al-test-harness` are
-  `publish = false`; the remaining 17 library crates are publishable to
+  `publish = false`. The remaining 17 library crates are publishable to
   crates.io.
 
 ## Request flow (editor → al-lsp → analysis / semantic)
 
 How a request travels from a client through the `al-lsp` process into the engine
 and out to the Microsoft/BC backends. The semantic-bridge edges are dashed
-because they exist only in an `al-lsp` built `--features semantic`; without it
+because they exist only in an `al-lsp` built `--features semantic`. Without it
 those calls hit the in-memory stub and the native paths.
 
 ```mermaid
@@ -276,9 +276,9 @@ flowchart TD
 ```
 
 The four client transports are thin shells over one engine. CLI requests enter through the local IPC
-daemon transport, while MCP calls the same command dispatcher in-process; `al_call` makes every
+daemon transport, while MCP calls the same command dispatcher in-process. `al_call` makes every
 dispatcher method available and named tools are discovery shortcuts. `al-analysis` answers queries
-against the `al-workspace` state hub; the Microsoft `.NET CodeAnalysis` bridge and the BC Dev API are
+against the `al-workspace` state hub. The Microsoft `.NET CodeAnalysis` bridge and the BC Dev API are
 reached only on the dashed/optional edges, which is why native parse / symbols / analysis all work
 with no Microsoft toolchain present.
 

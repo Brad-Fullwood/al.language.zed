@@ -1,6 +1,6 @@
 # XLIFF & Translation
 
-**Module:** `crates/al-analysis/src/xliff/` · **Status:** ✅ shipped
+**Module:** `crates/al-analysis/src/xliff/`. **Status:** ✅ shipped
 
 Business Central apps are translated via XLIFF 1.2 files. This toolchain extracts translatable text
 from AL source, generates and refreshes XLIFF files, tracks translation state, and lists untranslated
@@ -58,7 +58,7 @@ Defensive bound: `MAX_XLF_FILE_BYTES = 64 MiB`.
 
 | Aspect | This project | Microsoft AL extension |
 | --- | --- | --- |
-| Generate `.g.xlf` | ✅ native | ✅ (via `alc`/extension; `GenerateCaptions` feature) |
+| Generate `.g.xlf` | ✅ native | ✅ (via `alc`/extension, `GenerateCaptions` feature) |
 | Refresh/merge translations | ✅ native | partial (3rd-party tools commonly used) |
 | List untranslated | ✅ | ❌ (3rd-party) |
 | Suggest translations | ✅ translation-memory and symbol-name matching | ❌ |
@@ -92,4 +92,4 @@ through `al_call` (for example, `method: "xlf.refresh"`).
 
 - `suggest` reuses translations already present in the supplied language file and workspace symbol
   names. It does not call a machine-translation service or an external translation-memory database.
-- Suggestions are reported for review; this command does not rewrite the language file.
+- Suggestions are reported for review. This command does not rewrite the language file.

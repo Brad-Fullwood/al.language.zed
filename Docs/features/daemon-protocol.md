@@ -1,11 +1,11 @@
 # Daemon Protocol
 
-**Modules:** `crates/al-lsp/src/server/daemon/` + `crates/al-protocol/` · **Status:** ✅ shipped
+**Modules:** `crates/al-lsp/src/server/daemon/` + `crates/al-protocol/`. **Status:** ✅ shipped
 (Linux, macOS, and Windows)
 
 `al-lsp daemon --project <path>` is the shared backend whose dispatcher is reused by the CLI,
 contributor tasks, and the MCP bridge. Daemon mode serves JSON-RPC 2.0 over a Unix-domain socket on
-Linux/macOS and a named pipe on Windows; MCP mode calls that same dispatcher in-process over stdio. (The editor LSP
+Linux/macOS and a named pipe on Windows. MCP mode calls that same dispatcher in-process over stdio. (The editor LSP
 path does **not** use the daemon — it uses LSP handlers directly. See
 [architecture](../architecture.md).)
 
@@ -17,23 +17,23 @@ path does **not** use the daemon — it uses LSP handlers directly. See
   project).
 - **Request ids:** string, number, and `null` ids are all accepted per the spec, and the response
   echoes the id exactly as received. A message with **no** `id` is a notification: it is dispatched
-  but never answered. Text that is not valid JSON returns `-32700` (parse error) with a `null` id;
-  valid JSON that is not a valid request object returns `-32600` (invalid request), echoing the id
+  but never answered. Text that is not valid JSON returns `-32700` (parse error) with a `null` id.
+  Valid JSON that is not a valid request object returns `-32600` (invalid request), echoing the id
   when one is present.
 - **Endpoint name (`socket.rs`):** deterministic — an FNV-1a hash of the canonicalized project root.
-  Linux uses `$XDG_RUNTIME_DIR/al-lsp/{hash}.sock` with a `/run/user/{uid}` fallback; macOS uses its
-  per-user `$TMPDIR` when XDG is unset; Windows uses
+  Linux uses `$XDG_RUNTIME_DIR/al-lsp/{hash}.sock` with a `/run/user/{uid}` fallback. MacOS uses its
+  per-user `$TMPDIR` when XDG is unset. Windows uses
   `\\.\pipe\al-lsp-{user-scope-hash}-{project-hash}`. Unix directories are `0700` and sockets `0600`.
 - **Auto-start and locking (`client/mod.rs`):** `DaemonClient::connect` tries the local endpoint,
   else takes a per-project filesystem `.lock` (atomic `create_new`) and spawns the daemon while
-  losers wait; stale locks
+  losers wait. Stale locks
   (>30 s) are reclaimed. Client timeouts: 2 s socket poll (not the request deadline), 30 s default
   request timeout, 60 s init wait with 250 ms retries while the daemon reports "initializing".
   When a request deadline expires the client remembers that id and drains the daemon's late answer
   before reading the next response, so one slow request does not skew the connection.
 - **Build identity (`identity.rs`, `handshake`):** a daemon outlives the command that started it, so
   `connect` asks a daemon it did not start which build it came from and compares that with its own.
-  A mismatch, or a daemon too old to answer `handshake`, is asked to shut down; the client waits for
+  A mismatch, or a daemon too old to answer `handshake`, is asked to shut down. The client waits for
   the endpoint to stop accepting, starts the `al-lsp` beside its own executable, and retries once,
   never in a loop. `AL_ALLOW_MISMATCHED_DAEMON` keeps the running daemon instead. The identity is the
   `al-lsp` version plus the git commit with a dirty marker, and a hash of the `al-lsp` executable's
@@ -48,9 +48,9 @@ path does **not** use the daemon — it uses LSP handlers directly. See
   user's before a byte is sent.
 
   Within that, the answer is still bound to a process that can read this user's runtime
-  directory. The client sends a nonce; the daemon answers with an HMAC-SHA256 over the nonce
+  directory. The client sends a nonce. The daemon answers with an HMAC-SHA256 over the nonce
   and the identity, keyed by `handshake.key` in that directory (32 random bytes, mode 0600,
-  created with `create_new` by whichever side looks first); the client verifies it. Without
+  created with `create_new` by whichever side looks first). The client verifies it. Without
   that, every input to the identity is world-readable — the commit is in the binary and the
   file tag hashes a length and an mtime anyone can `stat` — and a one-line answer passed as
   a matching build. A daemon that answers without a proof is treated as a mismatch and
@@ -62,7 +62,7 @@ path does **not** use the daemon — it uses LSP handlers directly. See
   which is what the client runs for the check.
 - **Lifecycle (`daemon/mod.rs`):** ≤64 concurrent connections (semaphore) — a connection over the
   limit receives a JSON-RPC "server busy" error frame before the socket is closed, rather than being
-  dropped silently; graceful 10 s drain on shutdown; 64 MB max request line. A lifecycle task polls
+  dropped silently. Graceful 10 s drain on shutdown. 64 MB max request line. A lifecycle task polls
   once a second and stops the daemon in two cases:
   - **Idle:** 30 minutes by default, measured from the *start* as well as the end of each request and
     suspended entirely while any request is in flight, so a long build/download/live-BC capture
@@ -76,16 +76,16 @@ path does **not** use the daemon — it uses LSP handlers directly. See
     momentary filesystem failure does not stop a live daemon.
 - **Memory:** `status` reports `memory.residentBytes` and `memory.peakResidentBytes`, and
   `diag/summary` the same pair under `process`. The per-structure totals beside them count
-  allocations the workspace owns; these are what the operating system sees, which is the number that
+  allocations the workspace owns. These are what the operating system sees, which is the number that
   decides whether a daemon is worth restarting. Current resident size comes from `/proc/self/status`
-  on Linux and is null elsewhere; the peak comes from `getrusage` on every Unix.
+  on Linux and is null elsewhere. The peak comes from `getrusage` on every Unix.
 - **Startup resilience:** a workspace file the document store rejects (over `maxDocumentSizeBytes`,
-  unreadable, or without a file URI) is skipped with a warning; it no longer aborts daemon and MCP
+  unreadable, or without a file URI) is skipped with a warning. It no longer aborts daemon and MCP
   startup.
 - **Per-connection ordering:** requests on one connection are served one at a time, in order, which
   matches the shipped synchronous client (`DaemonClient` sends one request and waits for its
   response). A client that wants concurrent work — or wants to keep issuing cheap queries while a
-  build runs — opens a second connection; up to 64 are served simultaneously. There is no
+  build runs — opens a second connection. Up to 64 are served simultaneously. There is no
   per-request cancellation, so a request already dispatched runs to completion even if its client
   gives up waiting.
 
@@ -110,8 +110,8 @@ focused submodules:
   expand/eval, continue/step, history, stop), used by both CLI and MCP `al_debug`.
 
 The complete method list is in the [daemon method reference](../reference/daemon-methods.md). Notable
-hardening: duplicate-detection `minTokens`/`minSimilarity` are clamped to safe ranges;
-graph export is capped at 50k nodes+edges; trace depth is bounded; JSON-RPC `null` results are
+hardening: duplicate-detection `minTokens`/`minSimilarity` are clamped to safe ranges.
+Graph export is capped at 50k nodes+edges. Trace depth is bounded. JSON-RPC `null` results are
 serialized explicitly. Workspace-scale walks (`deadCode`, `trace`, `traceChain`, `entrypoints`,
 `graphExport`, `insightStats`, `impact`, `tableImpact`, `suggestEvent`, `eventMap`) run on the
 blocking pool so they cannot stall the async worker driving
@@ -120,8 +120,8 @@ every connection's I/O.
 ## One dispatcher, three front ends
 
 This is the architectural point of the daemon: **CLI, MCP, and contributor tasks converge here.**
-`al-explorer` sends these methods directly; MCP's `al_call` forwards any method and parameter object
-to the same dispatcher, with named aliases for common agent workflows; checkout-local `.zed` tasks
+`al-explorer` sends these methods directly. MCP's `al_call` forwards any method and parameter object
+to the same dispatcher, with named aliases for common agent workflows. Checkout-local `.zed` tasks
 shell out to `al-explorer`.
 There is therefore exactly one implementation of each operation, and its answer is identical
 regardless of who asked. The generic MCP bridge also prevents a new dispatcher method from becoming
@@ -139,7 +139,7 @@ A persistent daemon amortizes the expensive indexing/graph-building work across 
 which is what makes both the CLI and the TUI feel instant after the first call. Centralizing dispatch
 guarantees consistency across surfaces and gives one place to enforce limits (concurrency, request
 size, idle shutdown) and one place to add a new capability. MCP receives it immediately through
-`al_call`; CLI commands and Zed task shortcuts can then add purpose-built argument UX where useful.
+`al_call`. CLI commands and Zed task shortcuts can then add purpose-built argument UX where useful.
 
 ## How to use
 
@@ -179,6 +179,6 @@ commands and platform matrix.
   pipes on Windows.
 - Build boundary: daemon `compile` and `package` are JSON-RPC transport aliases over the shared
   `al_compile` service and return the same normalized build envelope. LSP `al.compile` stays a
-  direct handler because it must publish and clear editor diagnostics; it calls the same service
+  direct handler because it must publish and clear editor diagnostics. It calls the same service
   and backend selection rather than forwarding through daemon IPC. Publish and native DAP use the
   returned artifact path from that service, never a newest-file scan.

@@ -8,11 +8,11 @@ be flat, dotted (`"al.enableCodeAnalysis"`, recommended), or nested under an `"a
 are accepted. The machine-readable schema is [`schemas/settings.json`](../../schemas/settings.json),
 kept in lockstep with the keys the server reads by a repo test.
 
-Status: ✅ honored · 🟡 honored, partial · ⛔ parsed but inert.
+Status: ✅ honored. 🟡 honored, partial. ⛔ parsed but inert.
 
 🔒 marks a setting that needs project trust when it comes from the repository's own
 `.vscode/settings.json` or `.zed/settings.json`. Written in your user settings it applies as
-it always has; written in the clone it is dropped, with one message naming it, until you run
+it always has. Written in the clone it is dropped, with one message naming it, until you run
 `al-explorer trust` on that project. See [project trust](../features/project-trust.md).
 
 ## Semantic analysis
@@ -24,10 +24,10 @@ it always has; written in the clone it is dropped, with one message naming it, u
 | `al.diagnosticsScope` | `project`\|`openFiles` | `project` | ✅ |
 | `al.diagnosticsTrigger` | `continuous`\|`onSave` | `continuous` | ✅ |
 | `al.codeAnalyzers` | string[] | `["CodeCop","AppSourceCop","UICop","PerTenantCop"]` | ✅ (incl. 3rd-party DLL paths), 🔒 entries that are not built-in tokens |
-| `al.enableExternalRulesets` | boolean | `false` | ✅ official `alc` backend; not the in-process bridge |
-| `al.ruleSetPath` | string\|null | `null` | ✅ official `alc` backend; not the in-process bridge, 🔒 outside the project |
-| `al.assemblyProbingPaths` | string[] | `[]` | ✅ official `alc` backend; not the in-process bridge, 🔒 |
-| `al.outputAnalyzerStatistics` | boolean | `false` | ✅ official `alc` backend; not the in-process bridge |
+| `al.enableExternalRulesets` | boolean | `false` | ✅ official `alc` backend. Not the in-process bridge |
+| `al.ruleSetPath` | string\|null | `null` | ✅ official `alc` backend. Not the in-process bridge, 🔒 outside the project |
+| `al.assemblyProbingPaths` | string[] | `[]` | ✅ official `alc` backend. Not the in-process bridge, 🔒 |
+| `al.outputAnalyzerStatistics` | boolean | `false` | ✅ official `alc` backend. Not the in-process bridge |
 
 ## Editor features
 
@@ -74,7 +74,7 @@ takes the same four keys plus `tabSize`, `insertSpaces` and `keywordCasing`.
 | `al.compilationOptions` | string[] | `[]` | ✅ official `alc` backend only, 🔒 |
 | `al.incrementalBuild` | boolean | `false` | ✅ official `alc` backend only |
 | `al.useOfficialCompiler` | boolean | `false` | ✅ escape hatch → `dotnet alc` |
-| `al.dotnetPath` | string\|null | `null` | ✅ extension-side executable override for all spawned .NET/`alc` processes; replaces environment-only `AL_DOTNET_PATH` configuration, 🔒 when it names a program inside the project |
+| `al.dotnetPath` | string\|null | `null` | ✅ extension-side executable override for all spawned .NET/`alc` processes. Replaces environment-only `AL_DOTNET_PATH` configuration, 🔒 when it names a program inside the project |
 
 ## Resource limits & escape hatches
 
@@ -108,11 +108,11 @@ Daemon and client:
 
 BC credentials (secrets, prefer OAuth/keyring): `BC_CLIENT_ID`, canonical `BC_ACCESS_TOKEN`
 (`BC_TOKEN` is a compatibility alias), and `BC_USERNAME`/`BC_PASSWORD`. When both bearer-token
-variables are set they must match; a blank, non-UTF-8, or conflicting override is rejected before
+variables are set they must match. A blank, non-UTF-8, or conflicting override is rejected before
 network access.
 
 ## Project-file schemas
 
 Associate `schemas/{app,ruleset,alarch,appsourcecop,migration}.json` with Zed's bundled JSON LS via
-`json.schemas` for autocomplete/validation on every channel today; see
+`json.schemas` for autocomplete/validation on every channel today. See
 [language-assets](../features/language-assets.md).

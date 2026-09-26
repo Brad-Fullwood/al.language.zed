@@ -32,7 +32,7 @@ Rules:
 5. `location "<name>"` gives the file and line. Do not grep or `find` for a
    declaration.
 6. A slow first call means the dependency source index is still building. Let it
-   finish; `al-explorer --json diag | jq -c '.sourceIndex'` shows how far it has
+   finish. `al-explorer --json diag | jq -c '.sourceIndex'` shows how far it has
    got. Do not retry into a second wait.
 7. Never unzip, extract or decompile a `.app` file.
 

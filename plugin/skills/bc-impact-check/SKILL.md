@@ -39,7 +39,7 @@ so a wrong name costs one call rather than a silent empty list.
 Read three fields on every row:
 
 - `type`. `declares` is the object that defines the member, which is where to
-  make the change, not something the change breaks; if that object also uses
+  make the change, not something the change breaks. If that object also uses
   the member itself, it gets a second row (`call`, `write`, ...). `display` is
   a page or report bound to the table through `SourceTable`. `write` assigns
   the field (`:=`, `Validate`, `ModifyAll`), `filter` filters on it

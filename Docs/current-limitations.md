@@ -54,14 +54,14 @@ live in [ROADMAP.md](../ROADMAP.md).
 - `test-snapshot capture` records explicit breakpoint samples from a live BC test. `replay`
   re-runs that exact indexed test method against an explicitly identified current BC runtime,
   recreates its breakpoint conditions, and compares samples by stable source location. Capture and
-  replay require a reachable configured BC environment; `validate` and `diff` remain BC-free.
+  replay require a reachable configured BC environment. `validate` and `diff` remain BC-free.
 
 ## Debugging and Business Central
 
 - Business Central remains authoritative for runtime behavior. DAP support covers
   launch/attach, publish, breakpoints, stack, scopes, variables, evaluate,
   stepping, and disconnect. Wire-contract tests cover the supported method
-  family; deployment against a specific BC service tier is a live-environment
+  family. Deployment against a specific BC service tier is a live-environment
   integration profile. `make live-bc-contracts` is that strict profile:
   absent tenant/environment/version/token inputs report `UNAVAILABLE` with exit
   2, while the repository-owned fixture must pass completed publish/install,
@@ -89,7 +89,7 @@ live in [ROADMAP.md](../ROADMAP.md).
 - XLIFF suggestions use exact and fuzzy translation-memory matches followed by
   symbol-name suggestions. No machine-translation provider is bundled.
 - Full grammar generation requires an installed Microsoft AL extension and the
-  tree-sitter CLI. `make language` only regenerates the Zed language package; it
+  tree-sitter CLI. `make language` only regenerates the Zed language package. It
   does not regenerate grammar data or themes.
 - The external grammar corpus is a measured compatibility suite, not proof that
   every parsed file has correct semantics. Focused fixtures remain required for
@@ -153,8 +153,8 @@ live in [ROADMAP.md](../ROADMAP.md).
   Central credentials, so a socket planted there reads them in cleartext.
 - On Unix the client checks before it sends: every existing ancestor of the
   endpoint's directory must be owned by this user, or by root and not writable
-  by anyone else without the sticky bit; the endpoint must be a socket and not
-  a symlink; and the peer's uid, read from the kernel with `SO_PEERCRED` (or
+  by anyone else without the sticky bit. The endpoint must be a socket and not
+  a symlink. And the peer's uid, read from the kernel with `SO_PEERCRED` (or
   `getpeereid`), must be this user's. The daemon runs the same directory check
   before it creates the socket. `al_protocol::endpoint` holds both.
 - On Windows the endpoint is a named pipe, pipe names are a global namespace,

@@ -8,7 +8,7 @@ description: Use for any question about where an AL or Business Central object l
 Run every command from the project directory you are already in. Do not `cd`
 first: the daemon binds to the directory the command runs in, and the plugin
 directory is not the project. The first call starts a daemon and takes one to
-three seconds; later calls take tens of milliseconds.
+three seconds. Later calls take tens of milliseconds.
 
 ## The flags that keep answers small
 
@@ -82,7 +82,7 @@ Both carry `methods`, `fields`, `keys`, `properties`, `variables` and `namespace
 for workspace objects as well as package objects. Ask for one key at a time.
 Through MCP (`al_call` with `object` or `byId`) each member comes back as one
 line, `1 "No.": Code[20]` or `AssistEdit(OldCust: Record "Customer"): Boolean`
-(`signatures: true`, the MCP default; pass `false` for the full objects).
+(`signatures: true`, the MCP default, pass `false` for the full objects).
 
 ## Procedures of a codeunit
 

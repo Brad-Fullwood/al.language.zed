@@ -39,7 +39,7 @@ cargo bench -p al-lsp --bench perf -- --warm-up-time 0.1 --measurement-time 0.2 
 ```
 
 HTML reports (with regression detection vs the previous run) are written to
-`target/criterion/` after each run; open `target/criterion/report/index.html`.
+`target/criterion/` after each run. Open `target/criterion/report/index.html`.
 
 ## What is measured
 
@@ -81,13 +81,13 @@ symbols/warm_lookup/get_by_name
                         time:   [120.3 ns 121.0 ns 121.8 ns]
 ```
 
-The middle value is the **median**; the brackets are the confidence interval.
+The middle value is the **median**. The brackets are the confidence interval.
 On a re-run Criterion appends `change: [...] (p = ...)` and flags
 `Performance has regressed` / `improved` — that is the regression signal.
 
 ### The memory metric
 
-These are time benchmarks; Criterion does not measure memory. The bench prints one additional line
+These are time benchmarks. Criterion does not measure memory. The bench prints one additional line
 to stderr exactly once per run, before the timings:
 
 ```
@@ -101,7 +101,7 @@ to stderr exactly once per run, before the timings:
   diagnostics rather than converted into invented byte totals.
 - `insight_bytes` / `call_graph_bytes` — retained node, edge, key, and adjacency-list allocations.
 - `rss=external` — process RSS is allocator/OS-dependent and must be captured separately when it is
-  useful; it is not derivable from owned allocations.
+  useful. It is not derivable from owned allocations.
 
 The numbers are deterministic fixture accounting, not a claim about exact process RSS. CI runs the
 short native-only Criterion audit and retains its measured values in the job log. It has no threshold

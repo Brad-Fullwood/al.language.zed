@@ -4,7 +4,7 @@ The project is not currently declared production- or release-ready. The
 blocking work and evidence states are maintained in
 [Completion Evidence Ledger](./Docs/gaps-and-future-work.md).
 Confirmed external-service and compatibility boundaries are listed separately
-in [Current Limitations](./Docs/current-limitations.md); that boundary document
+in [Current Limitations](./Docs/current-limitations.md). That boundary document
 must never be used to hide actionable implementation or verification work.
 
 ## Candidate Implemented Scope Requiring Final Gates
@@ -51,7 +51,7 @@ must never be used to hide actionable implementation or verification work.
 - Native diagnostics, navigation, refactors, call/event graphs, impact analysis,
   profiler views, and symbol operations share lower-level implementations across
   LSP, daemon, CLI/TUI, and MCP.
-- The generic MCP `al_call` exposes the complete daemon catalog; named aliases
+- The generic MCP `al_call` exposes the complete daemon catalog. Named aliases
   add discoverability without forming an allow-list.
 - Gallery-installed LSP, DAP, and MCP processes run `al-lsp` from `PATH` or
   from the release archive the extension downloads and verifies. The language
@@ -69,7 +69,7 @@ must never be used to hide actionable implementation or verification work.
 - Local execution covers pure logic and the supported workspace-record subset,
   deterministic lifecycle/handlers, statement/path/MC/DC coverage, scoped
   mutation testing, and live snapshot capture orchestration.
-- File snapshot validation/diff remain BC-free; platform-object behavior stays
+- File snapshot validation/diff remain BC-free. Platform-object behavior stays
   authoritative on live Business Central.
 
 ## Compatibility Boundaries
@@ -84,7 +84,7 @@ Boundaries are explicit product contracts, not silent partial implementations:
 - Stable Zed extension API 0.7 does not expose settings-schema registration.
   The schema and gated implementation are in-tree for an API line that does.
 - Full grammar/data/theme regeneration consumes a pinned Microsoft AL extension
-  archive; ordinary generation remains self-contained.
+  archive. Ordinary generation remains self-contained.
 
 See [Current Limitations](./Docs/current-limitations.md) for the exact user-facing
 effects and fallback behavior.
@@ -93,14 +93,14 @@ effects and fallback behavior.
 
 - User-facing docs, schemas, settings, command catalogs, and advertised
   capabilities must match runtime wiring.
-- Invalid state and unsupported requests return explicit diagnostics; they do
+- Invalid state and unsupported requests return explicit diagnostics. They do
   not silently select a different backend or stale artifact.
 - `languages/al` and other generated outputs are changed through their
   generators and checked for reproducibility.
 - `extension.toml` grammar revision equals the committed `tree-sitter-al`
   gitlink. The grammar repository is committed and pushed before the
   superproject pointer.
-- The owned grammar crate publishes as `tree-sitter-al-bc`; parent code consumes
+- The owned grammar crate publishes as `tree-sitter-al-bc`. Parent code consumes
   it through the `tree-sitter-al` Rust dependency alias.
 - Product versions in the extension, binaries, lockfile, and release tag stay
   synchronized. Library crates retain independent semantic versions.

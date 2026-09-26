@@ -24,11 +24,11 @@ Loop:
 
    `lint` waits on the dependency source index, which takes about a minute on
    the first call against a project with Base Application loaded. The client
-   keeps waiting while that index makes progress, so let the call finish;
+   keeps waiting while that index makes progress, so let the call finish.
    `al-explorer --json diag | jq -c '.sourceIndex'` shows how far it has got.
 
 2. Apply the mechanical fixes before hand-editing anything. Each one takes
-   `--dry-run`; run that first, read the plan, then run it for real.
+   `--dry-run`. Run that first, read the plan, then run it for real.
 
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer add-application-area --value All --dry-run

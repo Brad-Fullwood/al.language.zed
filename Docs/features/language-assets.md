@@ -1,13 +1,13 @@
 # Language Assets & Schemas
 
-**Locations:** `languages/al/`, `snippets/`, `themes/`, `schemas/` · **Status:** ✅ shipped
+**Locations:** `languages/al/`, `snippets/`, `themes/`, `schemas/`. **Status:** ✅ shipped
 (all of `languages/al/` and `themes/` are **generated** — see warning)
 
 These are the static assets Zed loads to make AL feel native: the language config, tree-sitter query
 files, snippets, themes, and JSON schemas for project files.
 
 > ⚠️ **Generated, do not hand-edit.** Everything in `languages/al/` is generated output (canonical
-> `.scm` queries are copied from `tree-sitter-al/queries`; Zed-specific config and supplemental queries
+> `.scm` queries are copied from `tree-sitter-al/queries`. Zed-specific config and supplemental queries
 > come from generator templates), and `themes/bc-themes.json` is generated from Business Central VS
 > Code theme data. Edit the generators or templates. Run `make language` for `languages/al/`, and
 > run `make grammar` for grammar data or themes. The generator rejects unknown files under
@@ -20,7 +20,7 @@ files, snippets, themes, and JSON schemas for project files.
 | `config.toml` | Zed language registration: name "AL", grammar "al", `.al` suffix, `//` comments, bracket pairs, word chars, `al-lsp` server |
 | `highlights.scm` | syntax highlighting captures (keywords, types, functions, comments, strings, numbers, operators) derived for parity with the VS Code AL grammar |
 | `outline.scm` | document outline (objects, procedures/triggers, events, keys, enum values, and the executable scopes nested under a callable: `begin`, `if`, `case`, `for`, `foreach`, `while`, `repeat`, `with`, each named after its own expression) |
-| `locals.scm` | local variable scope & resolution (scopes for blocks/case/events/loops/objects; definitions for objects/methods/vars/parameters) |
+| `locals.scm` | local variable scope & resolution (scopes for blocks/case/events/loops/objects, definitions for objects/methods/vars/parameters) |
 | `textobjects.scm` | text-object selection (objects, procedures, triggers, events, statements) |
 | `folds.scm` | folding regions (objects, procedures, blocks, control statements, attribute lists) |
 | `indents.scm` | auto-indentation rules |
@@ -58,7 +58,7 @@ same operations are also available without `PATH` through LSP commands (`al.down
   subscribers, control flow (if/case/for/foreach/while/repeat), assertions, `with…do`, error handling,
   test attributes, integration/business events, test setup/teardown.
 - `snippets/json.json` — launch/attach debug configurations for on-premises and cloud Business
-  Central environments; every emitted field is checked against `debug_adapter_schemas/al.json`.
+  Central environments. Every emitted field is checked against `debug_adapter_schemas/al.json`.
 
 ## Themes
 
@@ -72,7 +72,7 @@ via `json.schemas`, see [`examples/zed-settings.jsonc`](../../examples/zed-setti
 
 | Schema | Validates | Highlights |
 | --- | --- | --- |
-| `app.json` | the app manifest | required id/name/publisher/version; runtime, target, dependencies, features, idRanges, resourceExposurePolicy, launch, marketplace metadata |
+| `app.json` | the app manifest | required id/name/publisher/version. Runtime, target, dependencies, features, idRanges, resourceExposurePolicy, launch, marketplace metadata |
 | `settings.json` | `al.*` LSP settings | every setting (also drives in-editor autocomplete on Zed 0.8+) |
 | `ruleset.json` | `*.ruleset.json` | per-code severity overrides (Error/Warning/Hidden/Info/None) |
 | `alarch.json` | `.alarch.json` | native architecture lint rules, object-kind scopes, and literal/regex matching |
@@ -100,7 +100,7 @@ keeps Zed's parse view in sync with the native parser.
 These load automatically when the extension is installed. To get project-file autocomplete/validation,
 add the `json.schemas` block from `examples/zed-settings.jsonc`. Use `make language` after changing
 Zed templates or canonical queries. Use `make grammar` after changing grammar, extracted language
-data, or theme inputs; it requires the Microsoft AL extension and tree-sitter CLI.
+data, or theme inputs. It requires the Microsoft AL extension and tree-sitter CLI.
 
 ## Compatibility boundaries
 

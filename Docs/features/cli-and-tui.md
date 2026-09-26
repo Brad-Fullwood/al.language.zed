@@ -1,10 +1,10 @@
 # CLI & TUI (`al-explorer`)
 
-**Crate:** `crates/al-explorer` · **Status:** ✅ shipped (Linux, macOS, Windows)
+**Crate:** `crates/al-explorer`. **Status:** ✅ shipped (Linux, macOS, Windows)
 
 `al-explorer` is the terminal companion to `al-lsp`. It has two modes selected at startup
 (`main.rs`): with a subcommand it is a **JSON-RPC CLI** client of the daemon (with a global `--json`
-flag for scripts/CI); with no subcommand it opens an interactive **TUI**. Its local daemon IPC uses
+flag for scripts/CI). With no subcommand it opens an interactive **TUI**. Its local daemon IPC uses
 Unix-domain sockets on Linux/macOS and Windows named pipes, with the same JSON-RPC protocol on every
 platform.
 
@@ -39,7 +39,7 @@ A complete list lives in the [CLI command reference](../reference/cli-commands.m
 ### `--json` mode
 
 Every command accepts the global `--json` flag. Human mode prints tables/indented text (status to
-stderr); JSON mode prints structured results to stdout, with errors as `{ "error": "…" }`. This is the
+stderr). JSON mode prints structured results to stdout, with errors as `{ "error": "…" }`. This is the
 contract that makes the whole toolchain CI- and agent-friendly. Example error when the daemon is
 unreachable: `{ "error": "… Hint: Is the daemon running? Start it with: al-lsp daemon --project <dir>" }`.
 
@@ -63,8 +63,8 @@ object. Single-line inputs are capped at 4096 bytes.
 | **Object Browser** | F1 | 4-pane: search (global/package toggle) + packages list, object-kind tabs + objects list, and a details pane (fields, keys, methods, controls, enums, properties). Enter/double-click opens the object — or a selected member — in Zed. |
 | **Event Chain** | F2 | Search-as-you-type event suggestions (index-backed, instant) then a full multi-hop subscriber chain (`trace`, depth 10) with colored edge types. |
 | **Call Graph / Impact** | F3 | Enter a symbol (e.g. `Customer."Credit Limit"`) → impact results grouped by reference type with package tags. |
-| **Profiler** | F4 | Load an `.alcpuprofile`; hotspot table (procedure / object / self ms / total ms / hits), synthetic nodes skipped, capped at 500k nodes. |
-| **Test Runner** | F5 | Hierarchical codeunit → method tree with status icons (○/✓/✗/⊘); `r` runs the selected codeunit, `R` runs all, error detail pane on the right. |
+| **Profiler** | F4 | Load an `.alcpuprofile`. Hotspot table (procedure / object / self ms / total ms / hits), synthetic nodes skipped, capped at 500k nodes. |
+| **Test Runner** | F5 | Hierarchical codeunit → method tree with status icons (○/✓/✗/⊘). `r` runs the selected codeunit, `R` runs all, error detail pane on the right. |
 
 Navigation is consistent: arrows or `j`/`k`, Tab/Enter to move between panes, `Esc` to back out. The
 TUI renders immediately with a "Loading workspace…" status while symbols load on a background thread.
@@ -118,13 +118,13 @@ cross-compiling it. See [Testing guide — daemon IPC](../testing-guide.md#daemo
 
 ## Compatibility boundaries
 
-- Windows uses a per-user named pipe; Linux and macOS use owner-only Unix-domain sockets.
+- Windows uses a per-user named pipe. Linux and macOS use owner-only Unix-domain sockets.
 - Static language tasks (`languages/al/tasks.json`) require `al-explorer` on `PATH`: stable Zed task
   JSON cannot resolve the extension-private sidecar, so the extension's own downloaded copy is not
   reachable from a task. See [Language assets](language-assets.md#al-explorer-must-be-on-path).
   The checkout's contributor-only `.zed/tasks.json` additionally includes affected tests, snapshot
   diff/validation/live replay, `deps-graph`, XLIFF refresh/untranslated/suggestions, and table
-  impact; smoke tests validate the complete clap argument contracts of both files. The replay task
+  impact. Smoke tests validate the complete clap argument contracts of both files. The replay task
   reads the required runtime identity from `AL_BC_VERSION`.
 - Call sites and event subscribers come from workspace source and from the AL source embedded in
   loaded packages. A package without embedded source contributes declarations and no bodies.

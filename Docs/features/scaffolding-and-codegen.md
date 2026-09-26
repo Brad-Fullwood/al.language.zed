@@ -1,7 +1,7 @@
 # Scaffolding & Code Generation
 
 **Modules:** `crates/al-project/src/scaffold.rs`, `crates/al-analysis/src/generators.rs`,
-`crates/al-analysis/src/permissions.rs` ·
+`crates/al-analysis/src/permissions.rs`.
 **Status:** ✅ shipped
 
 The toolchain can create whole AL projects, generate common objects from existing symbols, and emit
@@ -47,9 +47,9 @@ scaffolding and permission generation for consistency.
 ## Permission set generation (`permissions.rs`)
 
 Scans the workspace for object declarations and renders a permission set, mapping each object to its
-permission: tables → `tabledata "Name" = RIMD`; pages/codeunits/reports/xmlports/queries →
-`type "Name" = X` (Execute); extension objects and non-permissioned objects (enum, interface,
-profile…) are skipped. Output is **AL** (`permissionset <id> "Name" { Assignable = true; Permissions
+permission: tables → `tabledata "Name" = RIMD`. Pages/codeunits/reports/xmlports/queries →
+`type "Name" = X` (Execute). Extension objects and non-permissioned objects (enum, interface,
+profile…) are skipped. Output is **AL** (`permissionset <id> "Name" { Assignable = true, Permissions
 = … }`) or **XML** (BC permission-set schema), with proper AL/XML escaping and deterministic ordering
 (sorted by type then name).
 
@@ -57,7 +57,7 @@ profile…) are skipped. Output is **AL** (`permissionset <id> "Name" { Assignab
 
 `al-explorer generate-completions <shell>` generates a tab-completion script for the `al-explorer`
 CLI itself (bash, zsh, fish, elvish, or PowerShell) via `clap_complete` — it has nothing to do with
-symbol data. `--json` returns `{ shell, script }`; without it, the script is printed to stdout for
+symbol data. `--json` returns `{ shell, script }`. Without it, the script is printed to stdout for
 sourcing/installing into the shell's completion directory. See the
 [CLI reference](../reference/cli-commands.md).
 
@@ -101,5 +101,5 @@ Names*, which run `al-explorer` from `PATH`. No LSP execute command covers scaff
 
 - User templates are loaded from `AL_TEMPLATES_DIR`,
   `$XDG_CONFIG_HOME/al/templates`, or `~/.config/al/templates`. Each template directory contains
-  `template.json` and a `files/` tree. File names and contents support project placeholders;
-  traversal and symlink escapes are rejected.
+  `template.json` and a `files/` tree. File names and contents support project placeholders.
+  Traversal and symlink escapes are rejected.

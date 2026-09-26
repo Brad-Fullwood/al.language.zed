@@ -1,6 +1,6 @@
 # Code Actions & Refactorings
 
-**Module:** `crates/al-analysis/src/queries/code_actions/` · **Status:** ✅ shipped
+**Module:** `crates/al-analysis/src/queries/code_actions/`. **Status:** ✅ shipped
 
 Code actions are the quick fixes and source-level refactorings offered in the editor and shared
 daemon/MCP query. Registered safe diagnostic fixes are also batchable through `al-explorer fix`.
@@ -19,13 +19,13 @@ Each action is a `CodeActionEntry { title, kind, edit, is_preferred }` where `ki
 | --- | --- | --- |
 | **Add `using`** | `namespace.rs` | When a type name is unresolved, offers `using NamespaceName;` for each workspace namespace that defines a matching symbol, inserted after existing usings. Backs the AL0185 "type not found" quick fix. |
 | **Implement interface** | `implement_interface.rs` | For a codeunit with `implements`, resolves each interface (and any interface it `extends`) from the symbol index and generates stub procedures for the methods not already present, inserted immediately before the closing `}` — including for a single-line `codeunit 50100 X { }`. Names that are not bare identifiers are quoted. |
-| **Convert promoted actions** | `promoted.rs` | Rewrites legacy `Promoted = true` / `PromotedCategory = X` into the modern `area(Promoted) { actionref(...) }` syntax (pages/pageextensions). `PromotedCategory` becomes a `group(Category_X)`; `PromotedOnly`/`PromotedIsBig` (which have no modern equivalent) are removed; action names are quoted where required; and an existing `area(Promoted)` / category group is reused instead of a duplicate being added. |
+| **Convert promoted actions** | `promoted.rs` | Rewrites legacy `Promoted = true` / `PromotedCategory = X` into the modern `area(Promoted) { actionref(...) }` syntax (pages/pageextensions). `PromotedCategory` becomes a `group(Category_X)`. `PromotedOnly`/`PromotedIsBig` (which have no modern equivalent) are removed. Action names are quoted where required. And an existing `area(Promoted)` / category group is reused instead of a duplicate being added. |
 | **Add parentheses** | `add_parens.rs` | `Commit;` → `Commit();` for bare calls (detects `identifier;` with no `(`, `:=`). Keyword statements such as `end;`, `break;` and `exit;` are excluded. |
 | **Move ToolTip to table field** | `events.rs` | Moves a page field's `ToolTip` down to the underlying table field — one edit removes it from the page, another inserts it into the table field resolved through the page's `SourceTable`. Offered only when that table field is resolvable in the workspace and has no `ToolTip` yet, so the action can never merely delete the text. Not offered for a `ToolTip` inside a page `action`. |
-| **Convert event subscriber** | `events.rs` | Converts the event-name argument of an `[EventSubscriber(...)]` attribute from a `'string literal'` to a bare identifier. Scoped to a single-line attribute within ±2 lines of the cursor; it does not rewrite anything else about the declaration. |
+| **Convert event subscriber** | `events.rs` | Converts the event-name argument of an `[EventSubscriber(...)]` attribute from a `'string literal'` to a bare identifier. Scoped to a single-line attribute within ±2 lines of the cursor. It does not rewrite anything else about the declaration. |
 | **Make method local** | `make_local.rs` | Adds `local` when a workspace-wide scan finds no external callers. Any whole-identifier match in another file suppresses the action, preferring a false negative to silently breaking a caller. Only the modifiers *before* the `procedure` keyword are inspected, so a trailing comment cannot suppress it, and an `internal procedure` has its access modifier replaced rather than producing the invalid `internal local procedure`. |
 | **Eliminate `with`** | `with_elimination.rs` | Expands `with Rec do begin X := Y end` into qualified `Rec.X := Rec.Y` (AA0205 compliance), resolving the record's table fields — including those contributed by its tableextensions — via the type resolver + symbol index. String literals and `//` comments are left untouched, and calls to the object's own procedures or AL built-ins are not qualified. |
-| **Convert `if` to `case`** | `if_to_case.rs` | Converts an `if`/`else if` chain (≥3 branches comparing the same variable) into a `case` statement. The edit spans exactly the `if` statement, so the terminating `;` and anything after it on the same line survive; branch bodies keep their relative indentation and each gets its `;` separator. |
+| **Convert `if` to `case`** | `if_to_case.rs` | Converts an `if`/`else if` chain (≥3 branches comparing the same variable) into a `case` statement. The edit spans exactly the `if` statement, so the terminating `;` and anything after it on the same line survive. Branch bodies keep their relative indentation and each gets its `;` separator. |
 | **Add doc comment** | `doc_region.rs` | Generates an XML doc skeleton (`/// <summary>` + `<param>` per parameter + `<returns>`), skipping if docs already exist. |
 | **Wrap in region** | `doc_region.rs` | Wraps the selection in `#region Name … #endregion`. |
 | **Add data classification** | `code_actions/mod.rs` | For `AL-NL002`, inserts `DataClassification = CustomerContent;` into an ordinary table field. FlowFields and FlowFilters are excluded. |
@@ -57,9 +57,9 @@ blindly batch-applied.
 
 ## How to use
 
-- **In Zed:** trigger the code-action menu on a diagnostic or anywhere in an object; pick the action.
+- **In Zed:** trigger the code-action menu on a diagnostic or anywhere in an object. Pick the action.
 - **CLI:** `al-explorer fix [file] [--dry-run] [--rule <code>]` (Zed task: *AL: Apply Quick Fixes (Current File)*).
-  With a file it applies that file's registered safe diagnostic edits; without one it scans the
+  With a file it applies that file's registered safe diagnostic edits. Without one it scans the
   loaded project. `AL-NL001`, `AL-NL005`, and `AL-NL007` remain explicitly unfixable because changing
   query shape, choosing loaded fields, or inventing user-facing text requires developer intent.
   Workspace-wide property fixups have dedicated commands — see

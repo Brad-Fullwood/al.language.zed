@@ -16,17 +16,17 @@ MCP without a way to invoke it.
 | `al_downloadsymbols` | `downloadSymbols` | `source: nuget \| server = nuget`, `config: string` (launch configuration for `source=server`, first one when omitted) | downloaded package list |
 | `al_symbolsearch` | `search` | `query: string` (required), `limit: number = 50`, `summary: boolean = true` (false includes every member) | matching objects with kind, id, name and package |
 | `al_getdiagnostics` | `lint` | `file: string` or `uri: string`, plus `text: string` for a file outside the project | diagnostics for the file |
-| `al_runtests` | `tests.run_auto` | _(none)_ | test results plus per-method classified/actual backend, local/live status, and reasons; unsupported/platform behavior needs live BC |
+| `al_runtests` | `tests.run_auto` | _(none)_ | test results plus per-method classified/actual backend, local/live status, and reasons. Unsupported/platform behavior needs live BC |
 | `al_deadcode` | `deadCode` | _(none)_ | unused procedures/fields/orphaned subscribers |
 | `al_sqlscan` | `sqlPatterns` | _(none)_ | SQL anti-pattern findings |
 | `al_entrypoints` | `entrypoints` | `scope: workspace \| packages \| all = workspace` | procedures with no incoming calls |
 | `al_trace_event` | `trace` | `event: string` (required), `depth: number = 10` (max 50) | event propagation chain |
-| `al_impact` | `impact` | `symbol: string` (required), `scope: workspace \| packages \| all = workspace` | consumers of the symbol; a name that is not loaded is an error naming the closest ones |
+| `al_impact` | `impact` | `symbol: string` (required), `scope: workspace \| packages \| all = workspace` | consumers of the symbol. A name that is not loaded is an error naming the closest ones |
 | `al_suggestevent` | `suggestEvent` | `query: object` (required) | suggested integration events and paths |
 | `al_testclassify` | `tests.classify` | _(none)_ | per-test execution routing and reasons |
 | `al_testcoverage` | `tests.coverage` | _(none)_ | qualified/transitive static coverage plus explicit unresolved overload targets |
-| `al_testsnapshot` | `tests.snapshot_capture` | `codeunitId`, `codeunitName`, `methodName`, `bcVersion`, `breakpoints`, `outputPath`; optional `config`, `timeoutMs` | live BC breakpoint-variable capture for one exact test method |
-| `al_testsnapshotreplay` | `tests.snapshot_replay` | `snapshotPath`, `bcVersion`; optional `config`, `timeoutMs` | re-run the recorded method on live BC and return field-level divergences |
+| `al_testsnapshot` | `tests.snapshot_capture` | `codeunitId`, `codeunitName`, `methodName`, `bcVersion`, `breakpoints`, `outputPath`. Optional `config`, `timeoutMs` | live BC breakpoint-variable capture for one exact test method |
+| `al_testsnapshotreplay` | `tests.snapshot_replay` | `snapshotPath`, `bcVersion`. Optional `config`, `timeoutMs` | re-run the recorded method on live BC and return field-level divergences |
 | `al_depgraph` | `deps.graph` | `format: json \| dot = json` | GUID-keyed direct/transitive package graph with missing/version-conflict reporting |
 | `al_freeids` | `freeIds` | `kind: object-kind keyword` (omit for a per-kind summary), `object: string` (table/tableextension/enum/enumextension, wins over `kind`), `count: number = 1` (max 100), `includeUsed: boolean = false` | next free object ID, table field number or enum ordinal inside the `app.json` idRanges, with per-range used/free counts |
 
@@ -58,21 +58,21 @@ the advertised schema and the accepted arguments cannot drift apart. The full se
 
 A `uri` or `file` outside the loaded project is refused with `-32002`, for MCP as for every other
 caller, and nothing here reads a file on the caller's behalf. A read-only single-file method can
-be given the source as `text` instead, which the caller already has; a method that rewrites the
+be given the source as `text` instead, which the caller already has. A method that rewrites the
 file it names takes no `text` at all. See
 [paths and the project boundary](./daemon-methods.md#paths-and-the-project-boundary).
 
 ## Protocol surface
 
-`initialize` → `{ protocolVersion, capabilities: { tools }, serverInfo }`; `ping` → `{}`;
-`tools/list` → tool definitions (name, description, `inputSchema`, result-specific `outputSchema`);
+`initialize` → `{ protocolVersion, capabilities: { tools }, serverInfo }`. `ping` → `{}`.
+`tools/list` → tool definitions (name, description, `inputSchema`, result-specific `outputSchema`).
 `tools/call` → `{ content, structuredContent, isError }`. `structuredContent` preserves the daemon
 JSON and may add agent diagnostics or blocked-test routing context.
 
 `tools/call` runs concurrently with the reader loop, so `ping` and the other lifecycle methods stay
 responsive during a long call, and `notifications/cancelled` aborts the matching call by
 `requestId` (in-flight work already delegated to an external process — a build, a live BC test run —
-still finishes). Requests without an `id` are notifications and are never answered; `"id": null` is
+still finishes). Requests without an `id` are notifications and are never answered. `"id": null` is
 answered as a request. Input lines are capped at 64 MB during read, and arguments are validated
 against the published `inputSchema`, `minItems` included.
 
@@ -82,7 +82,7 @@ against the published `inputSchema`, `minItems` included.
   [debugging-dap](../features/debugging-dap.md#mcp-debug-control) for each command and
   parameter. The MCP process must remain running for the session to persist.
 - Tool names mirror Microsoft's AL agent surface where possible (`al_build`, `al_downloadsymbols`,
-  `al_symbolsearch`, `al_getdiagnostics`, `al_runtests`); the rest are project-specific analyses.
+  `al_symbolsearch`, `al_getdiagnostics`, `al_runtests`). The rest are project-specific analyses.
 - MCP is platform-independent stdio on Linux, macOS, and Windows. The Zed context server reuses an
   `al-lsp` path already cached by LSP/DAP or uses the shared GitHub release download path. Its
   `Project` callback cannot perform a fresh worktree `PATH` lookup (no `Worktree` handle), but it
