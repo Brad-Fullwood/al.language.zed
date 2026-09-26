@@ -1,6 +1,7 @@
 # Scaffolding & Code Generation
 
-**Modules:** `crates/al-analysis/src/scaffold.rs`, `generators.rs`, `permissions.rs` ·
+**Modules:** `crates/al-project/src/scaffold.rs`, `crates/al-analysis/src/generators.rs`,
+`crates/al-analysis/src/permissions.rs` ·
 **Status:** ✅ shipped
 
 The toolchain can create whole AL projects, generate common objects from existing symbols, and emit
@@ -8,8 +9,9 @@ permission sets — all natively, with consistent identifier escaping and atomic
 
 ## Project scaffolding (`scaffold.rs`)
 
-`create_project(dir, config)` writes a new project: `app.json` (with template-appropriate target,
-features, and analyzers), `.gitignore`, a `.zed/debug.json` launch config, and template source files.
+`create_project(dir, config)` writes a new project: `app.json` (with a freshly generated app id and
+template-appropriate target, features, and analyzers), `.gitignore`, a `.zed/debug.json` launch
+config, and template source files. It refuses a directory that already holds an `app.json`.
 Writes are atomic (temp + rename) so a crash never leaves a half-written file. Project name,
 publisher, template, and AL runtime are supplied by the CLI or daemon request. The minimum
 Business Central application version is derived from the runtime compatibility line (for example,
@@ -24,13 +26,15 @@ Templates:
 | `appsource` | starter codeunit + `AppSourceCop.json` |
 | `library` | a library codeunit |
 | `test` | a test codeunit with `[Test]` procedures |
-| `copilot` | Copilot chat-participant + Azure OpenAI integration codeunits |
+| `copilot` | a Copilot capability enum extension, a participant codeunit and an Azure OpenAI codeunit |
 | `agent` | Agent orchestration + job-handler codeunits |
 | `api` | a REST API page |
 
 ## Object generators (`generators.rs`)
 
-From workspace symbols:
+From workspace symbols. Without `--id`, `al-explorer generate` gives the object the first free ID
+of its kind inside the `app.json` `idRanges` (the same allocation as `free-ids`), and an `--id`
+outside those ranges prints a warning.
 
 - `generate_page` — a List/Card/Document page with a repeater/layout built from a table's fields
   (skips FlowFields and system fields like `SystemId`/`SystemCreatedAt`).
@@ -81,17 +85,17 @@ deterministic output make these safe to run in scripts and CI.
 al-explorer new <dir> --name <Name> --publisher <Pub> --runtime <major.minor> \
     --template default|pte|appsource|library|test|copilot|agent|api
 al-explorer permissions --format al|xml --name <Name> --id <N> [--role-id <Id>]
-al-explorer generate <kind> --id <N> --name <Name> [--table <T>] [--page-type <T>] [--subject <S>]
+al-explorer generate <kind> [--id <N>] --name <Name> [--table <T>] [--page-type <T>] [--subject <S>]
 al-explorer sort-members [file] [--all] [--dry-run]
 al-explorer organize-files [--dry-run]
 ```
 
 Test generation requires `--subject` so each emitted `[Test]` procedure targets a named codeunit method.
 
-Scaffolding and permissions are reachable via LSP `workspace/executeCommand`. MCP reaches the same
-dispatcher operations through `al_call`: `newProject`, `permissions`, `generate`, `sortMembers`, and
-`organizeFiles`. Stable Zed cannot resolve the extension-private CLI sidecar from a static task, so
-the installed language package does not advertise shell tasks for these operations.
+MCP reaches the same dispatcher operations through `al_call`: `newProject`, `permissions`,
+`generate`, `sortMembers`, and `organizeFiles`. The language package's tasks include *AL: New
+Project*, *AL: Generate Permission Set*, *AL: Sort Members (Current File)* and *AL: Organize File
+Names*, which run `al-explorer` from `PATH`. No LSP execute command covers scaffolding.
 
 ## Compatibility boundaries
 
