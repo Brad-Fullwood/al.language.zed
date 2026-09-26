@@ -43,13 +43,13 @@ Each feature below names the query module that implements the (transport-agnosti
 | **Go to definition** | `queries/definition.rs` | Member → receiver type → member def; object name → workspace or package symbol; local var; same-file procedure. Can synthesize a **virtual file** to navigate into `.app` package symbols. |
 | **Find references** | `queries/references.rs` | Current-file variable refs + event-subscriber string-literal refs + all workspace files. Dedups exact spans. Runs on `spawn_blocking` for cancellation on large files. |
 | **Rename / prepare rename** | `queries/rename.rs` | Produces a `WorkspaceEdit`. Local variables/parameters are renamed only within their procedure to avoid clobbering same-named identifiers elsewhere; cross-file symbols rename workspace-wide. Preserves `"quoted"` identifiers. |
-| **Document symbols** | `queries/symbols.rs` (+ `syntax/symbols.rs`) | Hierarchical outline (object → procedures/triggers/events/fields/keys/enum values/controls). |
+| **Document symbols** | `queries/symbols.rs` (+ `al-syntax/src/symbols/`) | Hierarchical outline (object → procedures/triggers/events/fields/keys/enum values/controls). |
 | **Workspace symbols** | `queries/search.rs` | Case-insensitive substring search across objects and child members. |
 | **Semantic tokens** | `queries/semantic_tokens.rs` (+ `syntax/tokens.rs`) | Full-document, delta-encoded; `spawn_blocking`. |
 | **Inlay hints** | `queries/inlay_hints.rs` | Parameter-name hints at call sites (default on) and return-type hints on procedures (default off), with type-aware overload resolution. Uses cached doc symbols where available. |
-| **CodeLens** | `queries/code_lens.rs` | Reference-count lenses on procedures/triggers/events; profiler lenses (`⏱ Xms · N calls`) when an `.alcpuprofile` is loaded; test status lenses (NotRun/Running/Pass/Fail/Skip) on `[Test]` procedures, carrying a `TestTarget`. |
+| **CodeLens** | `queries/code_lens/` | Reference-count lenses on procedures/triggers/events; profiler lenses (`⏱ Xms · N calls`) when an `.alcpuprofile` is loaded; test status lenses (NotRun/Running/Pass/Fail/Skip) on `[Test]` procedures, carrying a `TestTarget`. |
 | **Signature help** | `queries/signature.rs` | Parameter list with active-parameter highlight; overload picked by parameter count, widest as fallback. Bridge-backed `signature_help_full`. |
-| **Formatting / range formatting** | `queries/format.rs` (+ `syntax/formatting.rs`) | Loads `.alformat.json`; range formatting uses whole-document indent context. |
+| **Formatting / range formatting** | `server/formatting.rs` (+ `al-syntax/src/formatting/`) | Takes indentation from the request's `tabSize`/`insertSpaces` and the rest from the `al.formatting.*` settings; range formatting uses whole-document indent context. `al-explorer format` reads `.alformat.json` through `queries/format.rs` instead. |
 | **Folding** | `queries/folding.rs` (+ `syntax/folding.rs`) | Blocks, procedures, comment runs. |
 | **Diagnostics** | `queries/diagnostics.rs` + `server/diagnostics.rs` | Two-phase (below). |
 
@@ -81,6 +81,12 @@ call the semantic bridge (hover, completion, inlay hints) take the workspace gen
 only long enough to capture a document snapshot and release it before awaiting the bridge, so a slow
 bridge call cannot queue a `did_change` writer — and every reader behind it — for seconds.
 `did_close` aborts pending diagnostics and clears state. `did_save` always re-publishes.
+
+When the client supports dynamic registration, the server registers a `**/*.al` watcher on
+`initialized`. `workspace/didChangeWatchedFiles` then re-reads each `.al` file created, changed or
+deleted outside the editor, so a branch switch or a code generator reaches the index without the
+files being opened. Documents open in the editor are skipped, because their editor text is newer
+than the disk.
 
 ## LSP execute commands
 
@@ -145,7 +151,7 @@ From MCP, `al_call` exposes the daemon equivalents (`hover`, `definition`, `refe
   workspace file and Microsoft bridge enrichment for open documents. This is a deliberate latency
   boundary: exact whole-project Microsoft semantics use the explicit official compile backend
   instead of issuing one serialized CLR compilation for every unopened file.
-- References/subscribers over `.app` dependencies are limited because package symbols carry public
-  API metadata, not call-site bodies.
+- References and subscribers inside `.app` dependencies come from the AL source a package embeds.
+  A package without embedded source carries public API metadata and no call-site bodies.
 - Settings-schema autocomplete only lights up on Zed 0.8+ extension API (see the
   [settings reference](../reference/settings.md)).
