@@ -37,7 +37,7 @@ const MAX_UNUSED_ENTRY_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// least recently used first.
 const MAX_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
 const ENTRY_EXTENSION: &str = "summary";
-/// Longest part of a package file name kept in an entry name.
+/// Longest package name and version kept in an entry name.
 const MAX_STEM_BYTES: usize = 120;
 
 /// What an entry must match to stand in for a package.
@@ -95,16 +95,27 @@ impl PackageKey {
         })
     }
 
-    /// The file name of this key's entry for the package at `app_path`.
-    fn entry_name(&self, app_path: &Path) -> OsString {
-        let stem = app_path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "package".to_string());
-        let mut end = stem.len().min(MAX_STEM_BYTES);
-        while !stem.is_char_boundary(end) {
-            end -= 1;
-        }
+    /// The file name of this key's entry: the package name and version from
+    /// its manifest, for a person reading the directory, then a hash of the
+    /// fields an entry must match. The package's file name is left out, so
+    /// the same bytes under two file names share one entry.
+    fn entry_name(&self) -> OsString {
+        let label = if self.name.is_empty() {
+            "package".to_string()
+        } else {
+            format!("{}_{}", self.name, self.version)
+        };
+        let stem: String = label
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .take(MAX_STEM_BYTES)
+            .collect();
         let mut hash: u64 = 0xcbf29ce484222325;
         let fields = [
             &self.schema_version.to_le_bytes()[..],
@@ -116,7 +127,7 @@ impl PackageKey {
             hash ^= u64::from(*byte);
             hash = hash.wrapping_mul(0x00000100000001b3);
         }
-        OsString::from(format!("{}.{hash:016x}.{ENTRY_EXTENSION}", &stem[..end]))
+        OsString::from(format!("{stem}.{hash:016x}.{ENTRY_EXTENSION}"))
     }
 }
 
@@ -163,17 +174,17 @@ impl SourceSummaryCache {
         }
     }
 
-    /// Where the entry for `key` of the package at `app_path` lives.
-    pub fn entry_path(&self, app_path: &Path, key: &PackageKey) -> PathBuf {
-        self.dir.join(key.entry_name(app_path))
+    /// Where the entry for `key` lives.
+    pub fn entry_path(&self, key: &PackageKey) -> PathBuf {
+        self.dir.join(key.entry_name())
     }
 
     /// The summary stored for `key`, or `None` on any miss: no entry, an
     /// entry another user could have written, an oversized or corrupt entry,
     /// or one written for other bytes, another schema, another grammar or
     /// another summary builder.
-    pub fn load(&self, app_path: &Path, key: &PackageKey) -> Option<PackageSourceSummary> {
-        let path = self.entry_path(app_path, key);
+    pub fn load(&self, key: &PackageKey) -> Option<PackageSourceSummary> {
+        let path = self.entry_path(key);
         if !self.is_readable() {
             return None;
         }
@@ -217,17 +228,12 @@ impl SourceSummaryCache {
         }
     }
 
-    /// Write the summary of the package at `app_path` under `key`.
+    /// Write the summary of the package `key` names.
     ///
     /// The entry is written to a temporary file and renamed into place, so a
     /// reader sees the old entry or the new one. Nothing is written into a
     /// directory another user could replace.
-    pub fn save(
-        &self,
-        app_path: &Path,
-        key: &PackageKey,
-        summary: &PackageSourceSummary,
-    ) -> std::io::Result<()> {
+    pub fn save(&self, key: &PackageKey, summary: &PackageSourceSummary) -> std::io::Result<()> {
         create_private_dir(&self.dir)?;
         private_to_this_user(&self.dir, true)
             .map_err(|reason| std::io::Error::new(std::io::ErrorKind::PermissionDenied, reason))?;
@@ -239,8 +245,8 @@ impl SourceSummaryCache {
 
         static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = self.entry_path(app_path, key);
-        let mut tmp_name = key.entry_name(app_path);
+        let path = self.entry_path(key);
+        let mut tmp_name = key.entry_name();
         tmp_name.push(format!(".tmp.{}.{sequence}", std::process::id()));
         let tmp_path = self.dir.join(tmp_name);
         let written = (|| {
@@ -333,9 +339,9 @@ impl SourceSummaryCache {
         }
     }
 
-    /// The entry name `key` gives the package at `app_path`, for [`Self::retain`].
-    pub fn entry_name(&self, app_path: &Path, key: &PackageKey) -> OsString {
-        key.entry_name(app_path)
+    /// The entry name of `key`, for [`Self::retain`].
+    pub fn entry_name(&self, key: &PackageKey) -> OsString {
+        key.entry_name()
     }
 }
 

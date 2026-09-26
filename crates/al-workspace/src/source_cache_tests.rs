@@ -204,7 +204,7 @@ impl Fixture {
     }
 
     fn entry_path(&self, app: &Path) -> PathBuf {
-        self.cache().entry_path(app, &PackageKey::of(app).unwrap())
+        self.cache().entry_path(&PackageKey::of(app).unwrap())
     }
 }
 
@@ -249,6 +249,39 @@ fn a_second_start_loads_every_package_and_equals_the_fresh_build() {
     let counts = fresh.graph_counts();
     assert!(counts.2 > 10, "the fixture graph has edges: {counts:?}");
     assert_eq!(cached.graph_counts(), counts);
+}
+
+/// An entry is named by the package's manifest and bytes. A package copied
+/// under another file name, as a second project might hold it, reads the
+/// entry the first file wrote.
+#[test]
+fn the_same_bytes_under_another_file_name_read_the_same_entry() {
+    let fixture = Fixture::new();
+    let fresh = fixture.start();
+    let written = fixture.entries();
+    assert!(
+        written
+            .iter()
+            .any(|name| name.starts_with("Fixture_1.0.0.0.")),
+        "{written:?}"
+    );
+
+    let renamed = fixture.fixture_app.with_file_name("Fixture copy.app");
+    std::fs::rename(&fixture.fixture_app, &renamed).unwrap();
+    let workspace = Workspace::new();
+    workspace
+        .symbols
+        .load_packages(&[renamed, fixture.other_app.clone()])
+        .unwrap();
+    workspace.enable_source_summary_cache(fixture.cache());
+    let index = workspace.get_or_build_dependency_source_index().unwrap();
+    assert_eq!(
+        workspace.dependency_source_progress().packages_from_disk,
+        2,
+        "the renamed package loads from the entry its old name wrote"
+    );
+    assert_eq!(index.len(), fresh.index.len());
+    assert_eq!(fixture.entries(), written, "no second entry is written");
 }
 
 #[test]
@@ -333,7 +366,7 @@ fn the_key_follows_the_bytes_the_schema_and_the_grammar() {
     assert_eq!(key.grammar, al_syntax::grammar_fingerprint());
     assert_eq!(key.app_id, "00000000-0000-0000-0000-0000000000c1");
     assert_eq!(key.version, "1.0.0.0");
-    assert!(cache.load(&fixture.fixture_app, &key).is_some());
+    assert!(cache.load(&key).is_some());
 
     // One byte of the package.
     let mut bytes = std::fs::read(&fixture.fixture_app).unwrap();
@@ -344,11 +377,11 @@ fn the_key_follows_the_bytes_the_schema_and_the_grammar() {
     let changed_key = PackageKey::of(&changed).unwrap();
     assert_ne!(changed_key.sha256, key.sha256);
     assert_ne!(
-        cache.entry_path(&fixture.fixture_app, &changed_key),
-        cache.entry_path(&fixture.fixture_app, &key),
+        cache.entry_path(&changed_key),
+        cache.entry_path(&key),
         "other bytes name a different entry"
     );
-    assert!(cache.load(&fixture.fixture_app, &changed_key).is_none());
+    assert!(cache.load(&changed_key).is_none());
 
     let other_schema = PackageKey {
         schema_version: key.schema_version + 1,
@@ -360,18 +393,14 @@ fn the_key_follows_the_bytes_the_schema_and_the_grammar() {
     };
     for other in [&other_schema, &other_grammar] {
         assert_ne!(
-            cache.entry_path(&fixture.fixture_app, other),
-            cache.entry_path(&fixture.fixture_app, &key),
+            cache.entry_path(other),
+            cache.entry_path(&key),
             "a different key names a different entry"
         );
-        assert!(cache.load(&fixture.fixture_app, other).is_none());
+        assert!(cache.load(other).is_none());
         // Even at the entry's own path, the header must match the key.
-        std::fs::copy(
-            cache.entry_path(&fixture.fixture_app, &key),
-            cache.entry_path(&fixture.fixture_app, other),
-        )
-        .unwrap();
-        assert!(cache.load(&fixture.fixture_app, other).is_none());
+        std::fs::copy(cache.entry_path(&key), cache.entry_path(other)).unwrap();
+        assert!(cache.load(other).is_none());
     }
 }
 
@@ -390,23 +419,17 @@ fn an_entry_written_by_another_summary_builder_is_a_miss() {
         ..key.clone()
     };
     assert_ne!(
-        cache.entry_path(&fixture.fixture_app, &other_builder),
-        cache.entry_path(&fixture.fixture_app, &key),
+        cache.entry_path(&other_builder),
+        cache.entry_path(&key),
         "another builder names a different entry"
     );
-    assert!(cache.load(&fixture.fixture_app, &other_builder).is_none());
+    assert!(cache.load(&other_builder).is_none());
 
     // An entry another builder wrote, found where this build looks for its
     // own, is refused on its header and summarized again.
     let summary = PackageSourceSummary::build(&fixture.fixture_app, || {}).unwrap();
-    cache
-        .save(&fixture.fixture_app, &other_builder, &summary)
-        .unwrap();
-    std::fs::rename(
-        cache.entry_path(&fixture.fixture_app, &other_builder),
-        cache.entry_path(&fixture.fixture_app, &key),
-    )
-    .unwrap();
+    cache.save(&other_builder, &summary).unwrap();
+    std::fs::rename(cache.entry_path(&other_builder), cache.entry_path(&key)).unwrap();
     let rebuilt = fixture.start();
     assert_eq!(rebuilt.from_disk, 1, "only the other package loads");
     assert_eq!(rebuilt.summaries(), fresh.summaries());
@@ -587,8 +610,8 @@ fn garbage_collection_keeps_absent_packages_and_drops_superseded_entries() {
     .unwrap();
     let key = PackageKey::of(&app).unwrap();
     let summary = PackageSourceSummary::build(&app, || {}).unwrap();
-    cache.save(&app, &key, &summary).unwrap();
-    let kept = cache.entry_name(&app, &key);
+    cache.save(&key, &summary).unwrap();
+    let kept = cache.entry_name(&key);
 
     let write = |name: &str, age: Duration| {
         let path = dir.join(name);
@@ -598,11 +621,14 @@ fn garbage_collection_keeps_absent_packages_and_drops_superseded_entries() {
         path
     };
     let day = Duration::from_secs(24 * 60 * 60);
-    let superseded = write("Kept.app.00000000000000aa.summary", Duration::ZERO);
-    let absent_recent = write("Absent.app.00000000000000bb.summary", 3 * day);
-    let absent_old = write("Gone.app.00000000000000cc.summary", 40 * day);
-    let dead_tmp = write("Kept.app.00000000000000dd.summary.tmp.1.1", day);
-    let live_tmp = write("Kept.app.00000000000000ee.summary.tmp.2.1", Duration::ZERO);
+    let superseded = write("Kept_1.0.0.0.00000000000000aa.summary", Duration::ZERO);
+    let absent_recent = write("Absent_1.0.0.0.00000000000000bb.summary", 3 * day);
+    let absent_old = write("Gone_1.0.0.0.00000000000000cc.summary", 40 * day);
+    let dead_tmp = write("Kept_1.0.0.0.00000000000000dd.summary.tmp.1.1", day);
+    let live_tmp = write(
+        "Kept_1.0.0.0.00000000000000ee.summary.tmp.2.1",
+        Duration::ZERO,
+    );
     let unrelated = write("notes.txt", 40 * day);
 
     cache.retain(&HashSet::from([kept.clone()]));
