@@ -74,6 +74,12 @@ interactive session checks `flock -n .campaign/headless.lock true` at the start 
 tick and does nothing when the lock is held, so two orchestrators do not edit the branch at
 once. `touch .campaign/STOP` stops the watchdog from starting new sessions.
 
+`claude -p` ends a headless session 600 s after the orchestrator's last message while agents
+it started in the background are still running. The 16:48 session on 2026-09-26 lost six agents
+that way. The watchdog exports `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`, and the headless
+orchestrator keeps its turn open while agents run: it dispatches short agents in the foreground
+and writes no final message while a background agent is in flight.
+
 ## Public repository
 
 This repository is public. Findings, logs and commits must not name customers, customer
