@@ -860,6 +860,69 @@ mod tests {
             "0.1+0.2 = {sum} must match 0.1..0.3 exactly (no f64 drift)"
         );
     }
+
+    #[test]
+    fn whitespace_around_operators_is_skipped() {
+        for spaced in ["1 | 2", "1\t|\t2", "( 1 | 2 )"] {
+            assert_eq!(parse(spaced), parse("1|2"), "{spaced:?}");
+        }
+        assert_eq!(parse("100 .. 200"), parse("100..200"));
+        assert_eq!(parse("1..5 & <>3"), parse("1..5&<>3"));
+    }
+
+    #[test]
+    fn scalar_cells_match_their_text_form() {
+        // Decimal renders normalised, so a trailing zero in the cell still matches.
+        let decimal = parse("1.5").unwrap();
+        assert!(matches(&decimal, &Value::Decimal(dec!(1.50))));
+        assert!(!matches(&decimal, &Value::Decimal(dec!(1.51))));
+
+        let yes = parse("true").unwrap();
+        assert!(matches(&yes, &Value::Boolean(true)));
+        assert!(!matches(&yes, &Value::Boolean(false)));
+
+        let letter = parse("A").unwrap();
+        assert!(matches(&letter, &Value::Char('A')));
+        assert!(!matches(&letter, &Value::Char('B')));
+
+        // Time and DateTime carriers are millisecond counts.
+        let millis = parse("3600000").unwrap();
+        assert!(matches(&millis, &Value::Time(3_600_000)));
+        assert!(!matches(&millis, &Value::Time(0)));
+        assert!(matches(&millis, &Value::DateTime(3_600_000)));
+        assert!(!matches(&millis, &Value::DateTime(1)));
+    }
+
+    #[test]
+    fn integer_cell_compares_with_a_decimal_bound() {
+        let above = parse(">1.5").unwrap();
+        assert!(matches(&above, &int(2)));
+        assert!(!matches(&above, &int(1)));
+        assert!(matches(&above, &Value::BigInteger(2)));
+    }
+
+    #[test]
+    fn option_cell_compares_by_ordinal() {
+        let option = |ordinal: i64| Value::Option {
+            type_name: "Status".to_string(),
+            member: format!("Member{ordinal}"),
+            ordinal,
+        };
+        let above_open = parse(">0").unwrap();
+        assert!(matches(&above_open, &option(1)));
+        assert!(!matches(&above_open, &option(0)));
+        let middle = parse("1..2").unwrap();
+        assert!(matches(&middle, &option(2)));
+        assert!(!matches(&middle, &option(3)));
+    }
+
+    #[test]
+    fn empty_cell_compares_as_zero_against_decimal_and_text_bounds() {
+        assert!(matches(&parse("<0.5").unwrap(), &Value::Empty));
+        assert!(!matches(&parse(">0.5").unwrap(), &Value::Empty));
+        assert!(matches(&parse("<B").unwrap(), &Value::Empty));
+        assert!(!matches(&parse(">B").unwrap(), &Value::Empty));
+    }
 }
 
 #[cfg(test)]
