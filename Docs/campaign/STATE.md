@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-26 12:50 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-26 13:05 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -21,9 +21,9 @@ branches the 07:00 session left, each in its existing worktree under `.claude/wo
 - Ghost race (A): worktree branch `campaign/fix-ghost-race-2`, nothing committed by the first agent.
   Told to name the mechanism and whether it predates the lock batch before changing code, and to
   write `findings/ghost-race-2.md`.
-- Round 7 adversarial review (A), dispatched 12:12: reads `git diff 94700cf7..HEAD -- crates` (67
-  files): the 14 security fixes tried another way, the two hand merges, the lock batch, the blog
-  fixes. Writes `findings/r7-session-review.md` in the main checkout and commits it there.
+- Round 7 fixes (A, D): review done 13:00 (`findings/r7-session-review.md`, 15 findings: 1 high,
+  5 medium, 9 low, 6 of the 14 round 4 fixes have a gap). Fix agent on worktree branch
+  `campaign/fix-r7-review`, highs first.
 - Blog re-read (I), dispatched 12:13: articles 7, 8, 9 against the closed security round and the
   merged blog fixes, `blog-plan.md` numbers, unsloppify and humanizer, `pnpm validate`. Appends
   `### Re-read 2026-09-26 after the security round` to `findings/blog-progress.md`.
