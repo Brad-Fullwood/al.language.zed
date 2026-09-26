@@ -47,10 +47,44 @@ pub enum AnalyzerDiscoveryError {
 /// spelling AL settings use (`al.codeAnalyzers`, `app.json` `ruleSets`).
 #[must_use]
 pub fn is_builtin_analyzer(name: &str) -> bool {
-    matches!(
-        analyzer_name(name).to_ascii_lowercase().as_str(),
-        "codecop" | "appsourcecop" | "uicop" | "pertenantcop" | "pertenantextensioncop"
-    )
+    builtin_analyzer(name).is_some()
+}
+
+/// The toolchain's own file for a built-in analyzer entry, in any spelling
+/// [`is_builtin_analyzer`] accepts, or `None` for any other entry.
+///
+/// A caller that loads a built-in cop takes its path from here. Passed on by
+/// name, a loader that tries the name as a relative path first finds a file
+/// of that name in its working directory, which is the project.
+#[must_use]
+pub fn builtin_analyzer_path<'a>(
+    toolchain: &'a crate::toolchain::AnalyzerPaths,
+    name: &str,
+) -> Option<&'a Path> {
+    let path = match builtin_analyzer(name)? {
+        Builtin::CodeCop => &toolchain.code_cop,
+        Builtin::AppSourceCop => &toolchain.app_source_cop,
+        Builtin::UiCop => &toolchain.ui_cop,
+        Builtin::PerTenantCop => &toolchain.per_tenant_cop,
+    };
+    Some(path)
+}
+
+enum Builtin {
+    CodeCop,
+    AppSourceCop,
+    UiCop,
+    PerTenantCop,
+}
+
+fn builtin_analyzer(name: &str) -> Option<Builtin> {
+    match analyzer_name(name.trim()).to_ascii_lowercase().as_str() {
+        "codecop" => Some(Builtin::CodeCop),
+        "appsourcecop" => Some(Builtin::AppSourceCop),
+        "uicop" => Some(Builtin::UiCop),
+        "pertenantcop" | "pertenantextensioncop" => Some(Builtin::PerTenantCop),
+        _ => None,
+    }
 }
 
 /// Return an analyzer entry in its bare form: unwrapped from a `${Name}`
@@ -715,6 +749,41 @@ mod tests {
         // custom (or unsafe) entry, not a builtin.
         assert!(!is_builtin_analyzer("${LinterCop}"));
         assert!(!is_builtin_analyzer("${../evil}"));
+    }
+
+    #[test]
+    fn every_builtin_spelling_maps_to_its_toolchain_file() {
+        let toolchain = crate::toolchain::AnalyzerPaths {
+            code_cop: PathBuf::from("/tc/Microsoft.Dynamics.Nav.CodeCop.dll"),
+            app_source_cop: PathBuf::from("/tc/Microsoft.Dynamics.Nav.AppSourceCop.dll"),
+            ui_cop: PathBuf::from("/tc/Microsoft.Dynamics.Nav.UICop.dll"),
+            per_tenant_cop: PathBuf::from("/tc/Microsoft.Dynamics.Nav.PerTenantExtensionCop.dll"),
+            common: PathBuf::from("/tc/Microsoft.Dynamics.Nav.Analyzers.Common.dll"),
+            custom: Vec::new(),
+        };
+        for (entry, expected) in [
+            ("CodeCop", &toolchain.code_cop),
+            ("${CodeCop}", &toolchain.code_cop),
+            (" codecop.DLL ", &toolchain.code_cop),
+            ("${AppSourceCop}", &toolchain.app_source_cop),
+            ("UICop.dll", &toolchain.ui_cop),
+            ("PerTenantCop", &toolchain.per_tenant_cop),
+            ("${PerTenantExtensionCop}", &toolchain.per_tenant_cop),
+        ] {
+            assert_eq!(
+                builtin_analyzer_path(&toolchain, entry),
+                Some(expected.as_path()),
+                "{entry:?}"
+            );
+        }
+        for entry in [
+            "BusinessCentral.LinterCop",
+            "${LinterCop}",
+            "./CodeCop.dll",
+            "",
+        ] {
+            assert_eq!(builtin_analyzer_path(&toolchain, entry), None, "{entry:?}");
+        }
     }
 
     /// An entry the toolchain resolves itself, or no entry at all, is not a custom

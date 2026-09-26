@@ -584,11 +584,16 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
         .or_else(|| project.as_ref().map(|project| project.packages_dir.clone()))
         .unwrap_or_else(|| project_root.join(".alpackages"));
 
+    // The bridge starts from this toolchain, so without one there is no pass.
+    let Some(toolchain) = server.workspace.toolchain.read().await.clone() else {
+        return vec![];
+    };
     let analyzers = match tokio::task::spawn_blocking(move || {
         resolve_semantic_analyzer_entries(
             &configured_analyzers,
             &project_root,
             &assembly_probing_paths,
+            &toolchain.analyzers,
         )
     })
     .await
@@ -693,12 +698,25 @@ fn resolve_semantic_analyzer_entries(
     configured: &[String],
     project_root: &Path,
     assembly_probing_paths: &[PathBuf],
+    toolchain: &al_project::toolchain::AnalyzerPaths,
 ) -> Result<Vec<String>, String> {
     configured
         .iter()
         .map(|entry| {
-            if al_project::analyzers::is_builtin_analyzer(entry) {
-                return Ok(entry.clone());
+            // The bridge gets absolute paths only. A built-in name is the
+            // toolchain's file and is never looked up anywhere else.
+            if let Some(path) = al_project::analyzers::builtin_analyzer_path(toolchain, entry) {
+                return path
+                    .canonicalize()
+                    .ok()
+                    .filter(|path| path.is_file())
+                    .map(|path| path.display().to_string())
+                    .ok_or_else(|| {
+                        format!(
+                            "Requested built-in analyzer '{entry}' is not installed at {}",
+                            path.display()
+                        )
+                    });
             }
             al_project::analyzers::discover_custom_analyzer(
                 entry,
@@ -940,6 +958,74 @@ pub fn semantic_to_diagnostic(entry: &crate::semantic::DiagnosticEntry) -> Diagn
 mod tests {
     use super::*;
 
+    /// Analyzer paths for a toolchain in `dir`, with CodeCop installed and the
+    /// other cops missing.
+    fn toolchain_analyzers(dir: &Path) -> al_project::toolchain::AnalyzerPaths {
+        let code_cop = dir.join("Microsoft.Dynamics.Nav.CodeCop.dll");
+        std::fs::write(&code_cop, b"toolchain CodeCop").unwrap();
+        al_project::toolchain::AnalyzerPaths {
+            code_cop,
+            app_source_cop: dir.join("Microsoft.Dynamics.Nav.AppSourceCop.dll"),
+            ui_cop: dir.join("Microsoft.Dynamics.Nav.UICop.dll"),
+            per_tenant_cop: dir.join("Microsoft.Dynamics.Nav.PerTenantExtensionCop.dll"),
+            common: dir.join("Microsoft.Dynamics.Nav.Analyzers.Common.dll"),
+            custom: Vec::new(),
+        }
+    }
+
+    /// The bridge loads the assembly at the path it is given into the language
+    /// server. A built-in name has to reach it as the toolchain's own file:
+    /// passed on by name, the bridge found a file called `CodeCop` or
+    /// `CodeCop.dll` in the working directory, which is the project, before it
+    /// looked in the toolchain.
+    #[test]
+    fn a_builtin_analyzer_name_resolves_to_the_toolchain_and_never_to_a_project_file() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("CodeCop.dll"), b"repository assembly").unwrap();
+        std::fs::write(project.path().join("CodeCop"), b"repository assembly").unwrap();
+        let toolchain = tempfile::tempdir().unwrap();
+        let analyzers = toolchain_analyzers(toolchain.path());
+        let toolchain_root = toolchain.path().canonicalize().unwrap();
+        let project_root = project.path().canonicalize().unwrap();
+
+        for entry in ["CodeCop", "CodeCop.dll", "${CodeCop}", "codecop.DLL"] {
+            let resolved = resolve_semantic_analyzer_entries(
+                &[entry.to_string()],
+                project.path(),
+                &[],
+                &analyzers,
+            )
+            .unwrap_or_else(|error| panic!("{entry:?}: {error}"));
+            let path = PathBuf::from(&resolved[0]);
+            assert!(path.is_absolute(), "{entry:?} resolved to {path:?}");
+            assert!(
+                path.starts_with(&toolchain_root),
+                "{entry:?} resolved to {path:?}, outside the toolchain"
+            );
+            assert!(
+                !path.starts_with(&project_root),
+                "{entry:?} resolved to {path:?}"
+            );
+        }
+    }
+
+    /// A built-in the toolchain does not ship is an error, and the entry is
+    /// not looked up anywhere else.
+    #[test]
+    fn a_builtin_analyzer_missing_from_the_toolchain_is_an_error() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("UICop.dll"), b"repository assembly").unwrap();
+        let toolchain = tempfile::tempdir().unwrap();
+        let error = resolve_semantic_analyzer_entries(
+            &["${UICop}".to_string()],
+            project.path(),
+            &[],
+            &toolchain_analyzers(toolchain.path()),
+        )
+        .unwrap_err();
+        assert!(error.contains("not installed"), "{error}");
+    }
+
     /// The semantic bridge loads the resolved assemblies into the language
     /// server itself, so a name the user wrote must not resolve to a DLL an
     /// untrusted clone ships in `.netpackages` until the project is trusted.
@@ -961,9 +1047,14 @@ mod tests {
             "BusinessCentral.LinterCop".to_string(),
         ];
 
-        let untrusted = resolve_semantic_analyzer_entries(&requested, project.path(), &[]);
+        let toolchain = tempfile::tempdir().unwrap();
+        let analyzers = toolchain_analyzers(toolchain.path());
+
+        let untrusted =
+            resolve_semantic_analyzer_entries(&requested, project.path(), &[], &analyzers);
         let granted = al_project::trust::grant(project.path()).map(|_| ());
-        let trusted = resolve_semantic_analyzer_entries(&requested, project.path(), &[]);
+        let trusted =
+            resolve_semantic_analyzer_entries(&requested, project.path(), &[], &analyzers);
         match previous {
             Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
             None => std::env::remove_var("XDG_CONFIG_HOME"),
@@ -973,7 +1064,15 @@ mod tests {
         assert!(error.contains("not trusted"), "{error}");
         granted.unwrap();
         let resolved = trusted.unwrap();
-        assert_eq!(resolved[0], "CodeCop");
+        assert_eq!(
+            resolved[0],
+            analyzers
+                .code_cop
+                .canonicalize()
+                .unwrap()
+                .display()
+                .to_string()
+        );
         assert_eq!(
             resolved[1],
             dll.canonicalize().unwrap().display().to_string()
@@ -983,10 +1082,12 @@ mod tests {
     #[test]
     fn missing_requested_semantic_analyzer_is_explicit() {
         let project = tempfile::tempdir().unwrap();
+        let toolchain = tempfile::tempdir().unwrap();
         let error = resolve_semantic_analyzer_entries(
             &["Missing.Custom.Analyzer".to_string()],
             project.path(),
             &[],
+            &toolchain_analyzers(toolchain.path()),
         )
         .unwrap_err();
         assert!(error.contains("could not be found"));
