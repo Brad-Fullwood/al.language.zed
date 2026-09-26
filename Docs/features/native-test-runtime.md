@@ -120,7 +120,9 @@ Supported behavior:
   CONST/FIELD/FILTER clauses (including Boolean CONST values), and CalcSums, which totals each
   named field over the rows the current filters select.
 - Rename (the full new primary key, written with the rest of the buffer), TestField (empty, or a
-  given value), IsTemporary.
+  given value), IsTemporary. As in BC, a rename updates every field whose plain TableRelation names
+  the renamed table's single-field key. A test that renames a table named by a conditional or
+  filtered relation, or by a relation to part of a composite key, routes to live BC.
 - Table code runs on its record, which is the implicit `Rec`: `Validate` assigns the field, checks
   a plain TableRelation to a workspace table and runs the field's OnValidate with the record as it
   was as `xRec`; `Insert(true)`, `Modify(true)` and `Delete(true)` run OnInsert, OnModify and

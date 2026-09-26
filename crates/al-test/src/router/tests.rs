@@ -1693,3 +1693,91 @@ fn modify_in_the_test_reaches_the_tables_event_subscribers() {
     );
     assert_reaches_the_subscriber(&result);
 }
+
+/// A workspace with table "R8 Renamed", a table whose field relates to it
+/// through `relation`, and a test codeunit whose test runs `test_body`.
+/// "R8 Renamed" has a procedure `RenameTo` that renames the record itself.
+fn classify_rename_with_relation(relation: &str, test_body: &str) -> ClassifyResult {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Renamed.Table.al"),
+        r#"table 50220 "R8 Renamed"
+{
+fields { field(1; "No."; Code[20]) { } }
+keys { key(PK; "No.") { } }
+procedure RenameTo(NewNo: Code[20])
+begin
+    Rename(NewNo);
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/RenamedUse.Table.al"),
+        format!(
+            r#"table 50221 "R8 Renamed Use"
+{{
+fields
+{{
+    field(1; "Entry No."; Integer) {{ }}
+    field(2; Kind; Option) {{ OptionMembers = Renamed,Other; }}
+    field(3; "Renamed No."; Code[20]) {{ TableRelation = {relation}; }}
+}}
+keys {{ key(PK; "Entry No.") {{ }} }}
+}}"#
+        ),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/RenameTests.Codeunit.al"),
+        format!(
+            r#"codeunit 50222 "R8 Rename Tests"
+{{
+Subtype = Test;
+[Test]
+procedure Renames()
+var R: Record "R8 Renamed";
+begin
+    {test_body}
+end;
+}}"#
+        ),
+    );
+    classify_all(&workspace).unwrap().remove(0)
+}
+
+/// The local rename updates a field whose plain TableRelation names the
+/// renamed table, so the test stays local.
+#[test]
+fn rename_with_a_plain_relation_to_the_table_runs_locally() {
+    let result = classify_rename_with_relation(
+        "\"R8 Renamed\"",
+        "R.\"No.\" := 'A'; R.Insert(); R.Rename('B');",
+    );
+    assert_eq!(
+        result.decision,
+        RoutingDecision::InterpRecord,
+        "{:?}",
+        result.reasons
+    );
+}
+
+/// A conditional relation to the renamed table is one the local rename
+/// does not follow, whether the rename is in the test or in table code.
+#[test]
+fn rename_with_a_conditional_relation_to_the_table_routes_to_live_bc() {
+    let relation = "if (Kind = const(Renamed)) \"R8 Renamed\"";
+    for body in [
+        "R.\"No.\" := 'A'; R.Insert(); R.Rename('B');",
+        "R.\"No.\" := 'A'; R.Insert(); R.RenameTo('B');",
+    ] {
+        let result = classify_rename_with_relation(relation, body);
+        assert_eq!(result.decision, RoutingDecision::LiveBc, "{body}");
+        assert!(
+            result.reasons.iter().any(|reason| reason
+                .message
+                .contains("Rename: field Renamed No. of table R8 Renamed Use has TableRelation")),
+            "{body}: {:?}",
+            result.reasons
+        );
+    }
+}

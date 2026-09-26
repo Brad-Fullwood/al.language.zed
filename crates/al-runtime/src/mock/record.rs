@@ -389,16 +389,7 @@ impl MockRecord {
     /// refusing, and only rejects a second such insert as a duplicate. The
     /// error remains for a table whose zero values could not be recovered.
     fn current_primary_key(&self, view: &RecordView) -> Result<PrimaryKey, RecordError> {
-        self.primary_key_fields
-            .iter()
-            .map(|&f| {
-                view.current
-                    .get(&f)
-                    .or_else(|| self.field_defaults.get(&f))
-                    .map(normalize_key_value)
-                    .ok_or(RecordError::MissingKeyField(f))
-            })
-            .collect()
+        self.key_of_row(&view.current)
     }
 
     /// `INIT` — reset non-key fields to defaults, but PRESERVE primary-key
@@ -884,6 +875,75 @@ impl MockRecord {
             }
         }
         Ok(changed)
+    }
+
+    /// Set `field` to `new` in every row where it holds `old`, which is how
+    /// a rename reaches the fields that relate to the renamed key. A cell the
+    /// row does not hold compares as the field's default. When `field` is
+    /// part of the primary key the rows move to their new keys, and a new key
+    /// that is already taken fails the whole update. Returns the number of
+    /// rows changed.
+    pub fn replace_field_value(
+        &mut self,
+        field: FieldNo,
+        old: &Value,
+        new: Value,
+    ) -> Result<usize, RecordError> {
+        let old = normalize_key_value(old);
+        let default = self
+            .field_defaults
+            .get(&field)
+            .cloned()
+            .unwrap_or(Value::Empty);
+        let matching: Vec<PrimaryKey> = self
+            .rows
+            .iter()
+            .filter(|(_, row)| normalize_key_value(row.get(&field).unwrap_or(&default)) == old)
+            .map(|(key, _)| key.clone())
+            .collect();
+        if !self.primary_key_fields.contains(&field) {
+            for key in &matching {
+                if let Some(row) = self.rows.get_mut(key) {
+                    row.insert(field, new.clone());
+                }
+            }
+            return Ok(matching.len());
+        }
+        let mut moved = Vec::with_capacity(matching.len());
+        for key in &matching {
+            let mut row = self.rows[key].clone();
+            row.insert(field, new.clone());
+            let new_key = self.key_of_row(&row)?;
+            moved.push((key.clone(), new_key, row));
+        }
+        let vacated: std::collections::BTreeSet<&PrimaryKey> = matching.iter().collect();
+        let mut taken = std::collections::BTreeSet::new();
+        for (_, new_key, _) in &moved {
+            let occupied = self.rows.contains_key(new_key) && !vacated.contains(new_key);
+            if occupied || !taken.insert(new_key.clone()) {
+                return Err(RecordError::DuplicateKey);
+            }
+        }
+        for (old_key, _, _) in &moved {
+            self.rows.remove(old_key);
+        }
+        for (_, new_key, row) in moved {
+            self.rows.insert(new_key, row);
+        }
+        Ok(matching.len())
+    }
+
+    /// The primary key of a stored row, missing cells taken as defaults.
+    fn key_of_row(&self, row: &Row) -> Result<PrimaryKey, RecordError> {
+        self.primary_key_fields
+            .iter()
+            .map(|&f| {
+                row.get(&f)
+                    .or_else(|| self.field_defaults.get(&f))
+                    .map(normalize_key_value)
+                    .ok_or(RecordError::MissingKeyField(f))
+            })
+            .collect()
     }
 
     /// `CalcSums` — the total of `field` over the rows the view's filters
@@ -1553,6 +1613,52 @@ mod tests {
             RecordError::DuplicateKey,
             "Decimal PK must trigger DuplicateKey on second insert"
         );
+    }
+
+    #[test]
+    fn replace_field_value_rewrites_matching_cells() {
+        let mut rec = MockRecord::new(28, "Entry", vec![1]);
+        for (no, parent) in [(1, "OLD"), (2, "old"), (3, "OTHER")] {
+            rec.init();
+            rec.field_set(1, Value::Integer(no));
+            rec.field_set(2, Value::Code(parent.to_string()));
+            rec.insert(false).unwrap();
+        }
+        let changed = rec
+            .replace_field_value(2, &Value::Code("OLD".into()), Value::Code("NEW".into()))
+            .unwrap();
+        assert_eq!(changed, 2, "Code compares caselessly");
+        rec.get(vec![Value::Integer(2)]).unwrap();
+        assert_eq!(rec.field_get(2), Some(&Value::Code("NEW".into())));
+        rec.get(vec![Value::Integer(3)]).unwrap();
+        assert_eq!(rec.field_get(2), Some(&Value::Code("OTHER".into())));
+    }
+
+    #[test]
+    fn replace_field_value_moves_rows_whose_key_holds_it() {
+        let mut rec = MockRecord::new(29, "Line", vec![1, 2]);
+        for (doc, line) in [("OLD", 1), ("OLD", 2), ("NEW", 1)] {
+            rec.init();
+            rec.field_set(1, Value::Code(doc.to_string()));
+            rec.field_set(2, Value::Integer(line));
+            rec.insert(false).unwrap();
+        }
+        let taken =
+            rec.replace_field_value(1, &Value::Code("OLD".into()), Value::Code("NEW".into()));
+        assert_eq!(taken, Err(RecordError::DuplicateKey));
+        assert_eq!(rec.count(), 3, "a failed update leaves the rows alone");
+        rec.get(vec![Value::Code("NEW".into()), Value::Integer(1)])
+            .unwrap();
+        rec.delete(false).unwrap();
+        let moved = rec
+            .replace_field_value(1, &Value::Code("OLD".into()), Value::Code("NEW".into()))
+            .unwrap();
+        assert_eq!(moved, 2);
+        assert!(rec
+            .get(vec![Value::Code("OLD".into()), Value::Integer(1)])
+            .is_err());
+        rec.get(vec![Value::Code("NEW".into()), Value::Integer(2)])
+            .unwrap();
     }
 
     #[test]

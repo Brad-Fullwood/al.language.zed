@@ -185,6 +185,9 @@ pub struct DispatchCtx {
     /// The workspace's event subscribers, indexed on first raise.
     #[doc(hidden)]
     pub event_subscribers: Option<Arc<events::SubscriberIndex>>,
+    /// The workspace's table relations, indexed on the first rename.
+    #[doc(hidden)]
+    pub relations: Option<Arc<crate::interpreter::records::RelationIndex>>,
     /// Every JSON node the running code has made; JSON values refer into it.
     #[doc(hidden)]
     pub json: crate::interpreter::json::JsonArena,
@@ -214,6 +217,7 @@ impl DispatchCtx {
             random_state: DEFAULT_RANDOM_SEED,
             expr_fragment_cache: HashMap::new(),
             event_subscribers: None,
+            relations: None,
             json: Default::default(),
         }
     }

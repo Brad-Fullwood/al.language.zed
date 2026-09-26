@@ -41,6 +41,9 @@ use crate::mock::calcformula_parser::{self, CalcFormula, FormulaType, WhereValue
 use crate::mock::filter;
 use crate::mock::record::{FieldNo, FlowAgg, FlowFilter, MockRecord, RecordView};
 
+mod relations;
+pub use relations::{RelationIndex, RenameCascade};
+
 /// A live record-table backing store: the `MockRecord` data plus the
 /// field-name→number map recovered from the workspace table definition.
 #[derive(Debug, Clone)]
@@ -1039,7 +1042,9 @@ pub(crate) fn dispatch_record_method(
 /// The new key goes into the buffer first, so OnBeforeRenameEvent, OnRename
 /// and OnAfterRenameEvent get it as `Rec` and the row as stored as `xRec`.
 /// The row then moves to the new key with the buffer written to it, so what
-/// OnRename sets on `Rec` is saved. A failure leaves the buffer as it was.
+/// OnRename sets on `Rec` is saved, and every field that relates to the old
+/// key gets the new one (see [`RelationIndex`]). A failure leaves the buffer
+/// as it was.
 fn dispatch_rename(
     table: &TableRef,
     handle: u64,
@@ -1064,12 +1069,34 @@ fn dispatch_rename(
     }
     let pk_fields: Vec<FieldNo> = store.record.primary_key_fields().to_vec();
     let mut new_key = Vec::with_capacity(values.len());
-    for (field, value) in pk_fields.into_iter().zip(values) {
+    for (field, value) in pk_fields.iter().copied().zip(values) {
         match store.coerce_to_field(field, value) {
             Ok(coerced) => new_key.push((field, coerced)),
             Err(error) => return eval_error(format!("Rename: {error}")),
         }
     }
+    let view = store.take_view(handle);
+    let old_key: Vec<(FieldNo, Value)> = pk_fields
+        .iter()
+        .map(|&field| {
+            let value = store
+                .record
+                .field_get_in(&view, field)
+                .or_else(|| store.field_defaults.get(&field))
+                .cloned()
+                .unwrap_or(Value::Empty);
+            (field, value)
+        })
+        .collect();
+    store.put_view(handle, view);
+    // A temporary record has no related rows in the database.
+    let cascades = match table.temp_owner {
+        Some(_) => Vec::new(),
+        None => match relation_index(ctx).rename_cascades(&*Arc::clone(&ctx.source), &table.name) {
+            Ok(cascades) => cascades,
+            Err(reason) => return eval_error(format!("Rename: {reason}")),
+        },
+    };
     let failed = |error: crate::mock::record::RecordError| {
         if stmt_position {
             eval_error(format!("Rename: {error}"))
@@ -1089,7 +1116,7 @@ fn dispatch_rename(
 
     let store = ctx.records.get_mut(&key).expect("store just ensured");
     let mut view = store.take_view(handle);
-    let started = store.record.start_rename_in(&mut view, new_key);
+    let started = store.record.start_rename_in(&mut view, new_key.clone());
     store.put_view(handle, view);
     let pending = match started {
         Ok(pending) => pending,
@@ -1137,6 +1164,9 @@ fn dispatch_rename(
     if let Err(error) = finished {
         return failed(error);
     }
+    if let Err(error) = cascade_rename(&key, &cascades, &old_key, &new_key, ctx) {
+        return eval_error(format!("Rename: {error}"));
+    }
     if let Err(error) = raise_table_event(
         table,
         handle,
@@ -1149,6 +1179,65 @@ fn dispatch_rename(
         return error;
     }
     Eval::Normal(Value::Boolean(true))
+}
+
+/// The workspace's table relations, built on first use.
+fn relation_index(ctx: &mut DispatchCtx) -> Arc<RelationIndex> {
+    match &ctx.relations {
+        Some(index) => Arc::clone(index),
+        None => {
+            let index = Arc::new(RelationIndex::build(&*ctx.source));
+            ctx.relations = Some(Arc::clone(&index));
+            index
+        }
+    }
+}
+
+/// Give every field in `cascades` the new value of the renamed key where it
+/// holds the old one. `renamed` is the store key of the renamed table. A
+/// related table no code has touched holds no rows and is skipped.
+fn cascade_rename(
+    renamed: &str,
+    cascades: &[RenameCascade],
+    old_key: &[(FieldNo, Value)],
+    new_key: &[(FieldNo, Value)],
+    ctx: &mut DispatchCtx,
+) -> Result<(), String> {
+    for cascade in cascades {
+        let key_field = ctx
+            .records
+            .get(renamed)
+            .expect("the renamed table has a store")
+            .resolve_field(&cascade.key_field)?;
+        let value_of = |key: &[(FieldNo, Value)]| {
+            key.iter()
+                .find(|(field, _)| *field == key_field)
+                .map(|(_, value)| value.clone())
+        };
+        let (Some(old), Some(new)) = (value_of(old_key), value_of(new_key)) else {
+            continue;
+        };
+        if old == new {
+            continue;
+        }
+        let related = TableRef::persistent(cascade.table.clone()).key();
+        let Some(store) = ctx.records.get_mut(&related) else {
+            continue;
+        };
+        let field = store.resolve_field(&cascade.field)?;
+        let old = store.coerce_to_field(field, old)?;
+        let new = store.coerce_to_field(field, new)?;
+        store
+            .record
+            .replace_field_value(field, &old, new)
+            .map_err(|error| {
+                format!(
+                    "updating field {} of table {}: {error}",
+                    cascade.field, cascade.table
+                )
+            })?;
+    }
+    Ok(())
 }
 
 /// Raise table event `event` (`OnAfterInsertEvent`, ...) on the record on

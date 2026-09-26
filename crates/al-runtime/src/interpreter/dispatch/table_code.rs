@@ -188,7 +188,13 @@ pub fn table_relation_in(
     field: &str,
 ) -> Option<String> {
     let object = find_table_object(root, source, table_name)?;
-    let field_body = field_section(object, source, field)?.child_by_field_name("body")?;
+    field_relation(field_section(object, source, field)?, source)
+}
+
+/// The raw `TableRelation` of the `field(...)` section `section`, if it
+/// declares one.
+pub(crate) fn field_relation(section: tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
+    let field_body = section.child_by_field_name("body")?;
     let mut cursor = field_body.walk();
     let relation = field_body.named_children(&mut cursor).find_map(|child| {
         let is_relation = child.kind() == "property_assignment"

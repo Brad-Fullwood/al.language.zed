@@ -3418,6 +3418,202 @@ fn rename_code_sees_the_new_key_as_rec_and_the_stored_row_as_xrec() {
     );
 }
 
+const PLAIN_TABLE: &str = r#"table 50270 "Plain"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; "Parent No."; Code[20]) { TableRelation = Plain; }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+}
+"#;
+
+const PLAIN_ENTRY_TABLE: &str = r#"table 50271 "Plain Entry"
+{
+    fields
+    {
+        field(1; "Entry No."; Integer) { }
+        field(2; "Plain No."; Code[20]) { TableRelation = "Plain"; }
+    }
+    keys
+    {
+        key(PK; "Entry No.") { }
+    }
+}
+"#;
+
+const PLAIN_LINE_TABLE: &str = r#"table 50272 "Plain Line"
+{
+    fields
+    {
+        field(1; "Plain No."; Code[20]) { TableRelation = "Plain"."No."; }
+        field(2; "Line No."; Integer) { }
+    }
+    keys
+    {
+        key(PK; "Plain No.", "Line No.") { }
+    }
+}
+"#;
+
+const PLAIN_PROBE: &str = r#"codeunit 50273 "Plain Probe"
+{
+    procedure RenameCascades(): Text
+    var
+        P: Record "Plain";
+        Child: Record "Plain";
+        Entry: Record "Plain Entry";
+        Line: Record "Plain Line";
+        Other: Record "Plain Entry";
+    begin
+        P."No." := 'OLD';
+        P.Insert();
+        Child."No." := 'CHILD';
+        Child."Parent No." := 'OLD';
+        Child.Insert();
+        Entry."Entry No." := 1;
+        Entry."Plain No." := 'OLD';
+        Entry.Insert();
+        Other."Entry No." := 2;
+        Other."Plain No." := 'ELSE';
+        Other.Insert();
+        Line."Plain No." := 'OLD';
+        Line."Line No." := 10000;
+        Line.Insert();
+        P.Rename('NEW');
+        Entry.Get(1);
+        Other.Get(2);
+        Child.Get('CHILD');
+        if Line.Get('OLD', 10000) then
+            exit('the line kept the old key');
+        Line.Get('NEW', 10000);
+        exit(Entry."Plain No." + '|' + Other."Plain No." + '|' + Child."Parent No." + '|' + Line."Plain No.");
+    end;
+
+    procedure RenameLine()
+    var
+        Line: Record "Plain Line";
+    begin
+        Line."Plain No." := 'A';
+        Line."Line No." := 1;
+        Line.Insert();
+        Line.Rename('A', 2);
+    end;
+
+    procedure TemporaryRenameStaysLocal(): Text
+    var
+        P: Record "Plain" temporary;
+        Entry: Record "Plain Entry";
+    begin
+        P."No." := 'OLD';
+        P.Insert();
+        Entry."Entry No." := 1;
+        Entry."Plain No." := 'OLD';
+        Entry.Insert();
+        P.Rename('NEW');
+        Entry.Get(1);
+        exit(Entry."Plain No.");
+    end;
+}
+"#;
+
+/// Rename "updates the primary key value in all related tables": every
+/// field whose plain TableRelation names the renamed key gets the new value,
+/// and a row whose key holds it moves. A temporary record has no related
+/// rows.
+#[test]
+fn rename_updates_the_fields_that_relate_to_the_key() {
+    let call = |proc: &str| {
+        run(
+            &[
+                ("/ws/Plain.al", PLAIN_TABLE),
+                ("/ws/PlainEntry.al", PLAIN_ENTRY_TABLE),
+                ("/ws/PlainLine.al", PLAIN_LINE_TABLE),
+                ("/ws/PlainProbe.al", PLAIN_PROBE),
+            ],
+            "Plain Probe",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(
+        ok(call("RenameCascades")),
+        Value::Text("NEW|ELSE|NEW|NEW".into())
+    );
+    assert_eq!(
+        ok(call("TemporaryRenameStaysLocal")),
+        Value::Code("OLD".into())
+    );
+}
+
+/// A relation the local rename cannot follow makes the rename an error that
+/// names it, where a silent rename would leave the related rows behind.
+#[test]
+fn rename_refuses_a_relation_it_cannot_follow() {
+    let conditional = r#"table 50274 "Plain Usage"
+{
+    fields
+    {
+        field(1; "Entry No."; Integer) { }
+        field(2; Kind; Option) { OptionMembers = Plain,Other; }
+        field(3; "No."; Code[20]) { TableRelation = if (Kind = const(Plain)) Plain; }
+    }
+    keys
+    {
+        key(PK; "Entry No.") { }
+    }
+}
+"#;
+    let result = run(
+        &[
+            ("/ws/Plain.al", PLAIN_TABLE),
+            ("/ws/PlainEntry.al", PLAIN_ENTRY_TABLE),
+            ("/ws/PlainLine.al", PLAIN_LINE_TABLE),
+            ("/ws/PlainUsage.al", conditional),
+            ("/ws/PlainProbe.al", PLAIN_PROBE),
+        ],
+        "Plain Probe",
+        "RenameCascades",
+        vec![],
+    );
+    let refused = error_message(result);
+    assert!(
+        refused.contains("field No. of table Plain Usage") && refused.contains("cannot follow"),
+        "{refused}"
+    );
+    let line_ref = r#"table 50275 "Line Ref"
+{
+    fields
+    {
+        field(1; "Entry No."; Integer) { }
+        field(2; "Line No."; Integer) { TableRelation = "Plain Line"."Line No."; }
+    }
+    keys
+    {
+        key(PK; "Entry No.") { }
+    }
+}
+"#;
+    let result = run(
+        &[
+            ("/ws/Plain.al", PLAIN_TABLE),
+            ("/ws/PlainEntry.al", PLAIN_ENTRY_TABLE),
+            ("/ws/PlainLine.al", PLAIN_LINE_TABLE),
+            ("/ws/LineRef.al", line_ref),
+            ("/ws/PlainProbe.al", PLAIN_PROBE),
+        ],
+        "Plain Probe",
+        "RenameLine",
+        vec![],
+    );
+    let refused = error_message(result);
+    assert!(refused.contains("composite primary key"), "{refused}");
+}
+
 /// A table then a codeunit in one file: the codeunit's calls took the
 /// file's first object (the table) as their identity and read globals from
 /// the whole file, failing as "stateful codeunit 'Tour Member'". Label

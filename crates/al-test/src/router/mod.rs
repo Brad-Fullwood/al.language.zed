@@ -141,7 +141,23 @@ struct ProcedureLocation {
     has_object_globals: bool,
 }
 
-type ProcedureCatalog = HashMap<(String, String), ProcedureLocation>;
+/// The workspace's procedures by lowercased `(object, procedure)`, and the
+/// table relations a rename follows.
+#[derive(Debug)]
+struct ProcedureCatalog {
+    procedures: HashMap<(String, String), ProcedureLocation>,
+    relations: al_runtime::interpreter::records::RelationIndex,
+}
+
+impl ProcedureCatalog {
+    fn get(&self, key: &(String, String)) -> Option<&ProcedureLocation> {
+        self.procedures.get(key)
+    }
+
+    fn contains_key(&self, key: &(String, String)) -> bool {
+        self.procedures.contains_key(key)
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 struct LocalHandlerSupport {
@@ -448,7 +464,10 @@ fn build_procedure_catalog(workspace: &Workspace) -> ProcedureCatalog {
             stack.extend(node.named_children(&mut cursor));
         }
     }
-    catalog
+    ProcedureCatalog {
+        procedures: catalog,
+        relations: al_runtime::interpreter::records::RelationIndex::build(&*workspace.file_index),
+    }
 }
 
 fn classify_reachable(
