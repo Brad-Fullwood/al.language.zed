@@ -922,7 +922,7 @@ fn path_refusal_advice(declared: Option<&Dispatcher>, mut response: Response) ->
                     "; this method rewrites the file it names, so it takes a path inside the \
                      project and nothing else",
                 ),
-                PathUse::None => {}
+                PathUse::Named | PathUse::None => {}
             }
         }
     }
@@ -950,6 +950,12 @@ pub(crate) enum PathUse {
     /// Rewrites the file its `uri`/`file` names, through
     /// [`file_uri_from_params`], which takes no `text`.
     Write,
+    /// Reads or writes a path named by another parameter (`xlf`, `generated`,
+    /// `from`, `to`, `dir`), each resolved through
+    /// `containment::resolve_within_project`. The XLIFF methods took any
+    /// absolute path for a release because the registry had no way to say
+    /// they took one at all.
+    Named,
 }
 
 impl PathUse {
@@ -998,6 +1004,9 @@ macro_rules! declared_path {
     (write) => {
         PathUse::Write
     };
+    (named) => {
+        PathUse::Named
+    };
     (authorized) => {
         PathUse::None
     };
@@ -1010,6 +1019,9 @@ macro_rules! declared_credential {
     (write) => {
         CredentialUse::Caller
     };
+    (named) => {
+        CredentialUse::Caller
+    };
     (authorized) => {
         CredentialUse::Authorized
     };
@@ -1018,7 +1030,7 @@ macro_rules! declared_credential {
 /// Build [`DISPATCHERS`] and the method match from one list of arms.
 ///
 /// The capabilities in brackets are the ones [`PathUse`] and [`CredentialUse`]
-/// define: `read`, `write`, `authorized`. An arm that declares none reaches
+/// define: `read`, `write`, `named`, `authorized`. An arm that declares none reaches
 /// neither a caller-named path nor a credential.
 macro_rules! dispatch_table {
     (
@@ -1196,7 +1208,7 @@ dispatch_table! {
         "compile" [] => build_dispatch::dispatch_compile(workspace, id).await,
         "package" [] => build_dispatch::dispatch_package(workspace, id).await,
         "publish" [authorized] => build_dispatch::dispatch_publish(workspace, id, &params).await,
-        "newProject" [] => build_dispatch::dispatch_new_project(workspace, id, &params),
+        "newProject" [named] => build_dispatch::dispatch_new_project(workspace, id, &params),
         "errorCodes" [] => build_dispatch::dispatch_error_codes(workspace, id).await,
         "builtinTypes" [] => build_dispatch::dispatch_builtin_types(workspace, id).await,
         "setup" [] => build_dispatch::dispatch_setup(workspace, id),
@@ -1209,9 +1221,9 @@ dispatch_table! {
         "snapshot" [] => build_dispatch::dispatch_snapshot(workspace, id, &params).await,
         "profiling" [] => build_dispatch::dispatch_profiling(workspace, id, &params).await,
         "xlf.generate" [] => build_dispatch::dispatch_xlf_generate(workspace, id, &params).await,
-        "xlf.refresh" [] => build_dispatch::dispatch_xlf_refresh(workspace, id, &params).await,
-        "xlf.untranslated" [] => build_dispatch::dispatch_xlf_untranslated(id, &params),
-        "xlf.suggest" [] => build_dispatch::dispatch_xlf_suggest(workspace, id, &params).await,
+        "xlf.refresh" [named] => build_dispatch::dispatch_xlf_refresh(workspace, id, &params).await,
+        "xlf.untranslated" [named] => build_dispatch::dispatch_xlf_untranslated(workspace, id, &params),
+        "xlf.suggest" [named] => build_dispatch::dispatch_xlf_suggest(workspace, id, &params).await,
         "tests.discover" [] => build_dispatch::dispatch_tests_discover(workspace, id),
         "tests.run" [authorized] => build_dispatch::dispatch_tests_run(workspace, id, &params).await,
         "tests.coverage" [] => build_dispatch::dispatch_tests_coverage(workspace, id),
@@ -1238,7 +1250,7 @@ dispatch_table! {
         "generate" [] => build_dispatch::dispatch_generate(workspace, id, &params),
         "obsolete" [] => build_dispatch::dispatch_obsolete(workspace, id),
         "obsoleteUsages" [] => build_dispatch::dispatch_obsolete_usages(workspace, id),
-        "packageDiff" [] => build_dispatch::dispatch_package_diff(workspace, id, &params),
+        "packageDiff" [named] => build_dispatch::dispatch_package_diff(workspace, id, &params),
         "audit.dataClassification" [] => {
             build_dispatch::dispatch_audit_data_classification(workspace, id)
         },
