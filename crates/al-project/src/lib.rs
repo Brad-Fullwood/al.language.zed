@@ -5,5 +5,6 @@ pub mod analyzers;
 pub mod config;
 pub mod errors;
 pub mod project;
+pub mod scaffold;
 pub mod toolchain;
 pub mod trust;

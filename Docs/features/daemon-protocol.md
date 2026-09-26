@@ -23,7 +23,7 @@ path does **not** use the daemon — it uses LSP handlers directly. See
   Linux uses `$XDG_RUNTIME_DIR/al-lsp/{hash}.sock` with a `/run/user/{uid}` fallback; macOS uses its
   per-user `$TMPDIR` when XDG is unset; Windows uses
   `\\.\pipe\al-lsp-{user-scope-hash}-{project-hash}`. Unix directories are `0700` and sockets `0600`.
-- **Auto-start and locking (`client.rs`):** `DaemonClient::connect` tries the local endpoint,
+- **Auto-start and locking (`client/mod.rs`):** `DaemonClient::connect` tries the local endpoint,
   else takes a per-project filesystem `.lock` (atomic `create_new`) and spawns the daemon while
   losers wait; stale locks
   (>30 s) are reclaimed. Client timeouts: 2 s socket poll (not the request deadline), 30 s default
@@ -97,7 +97,7 @@ focused submodules:
   completions, signatureHelp, rename, documentSymbols, foldingRanges, semanticTokens, inlayHints,
   codeActions, search, object, byId, events, subscribers, composed, packages, deps).
 - `build_dispatch/` — build, analysis, codegen, fixes, symbol/auth, tests, and XLIFF
-  (`mod.rs`, `build.rs`, `codegen.rs`, `symbols_auth.rs`, `tests_dispatch.rs`, `fixes.rs`, `xliff.rs`).
+  (`mod.rs`, `build.rs`, `codegen.rs`, `symbols_auth.rs`, `tests_dispatch/`, `fixes.rs`, `xliff.rs`).
 - `insight_dispatch.rs` — trace, traceChain, entrypoints, graphExport, insightStats, deadCode, impact,
   tableImpact, suggestEvent, eventMap.
 - `debug_dispatch.rs` — stateful `debug` session control (start, breakpoint, stack/variables/globals,

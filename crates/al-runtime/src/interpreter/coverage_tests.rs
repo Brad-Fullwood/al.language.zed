@@ -5,6 +5,7 @@
 //! recorded, the not-taken branch's are not, branch decisions are tallied, and
 //! a disabled collector records nothing (opt-in / zero-cost).
 
+use al_syntax::IdentifierText;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -31,7 +32,7 @@ fn find_proc_body<'a>(root: Node<'a>, proc_name: &str, src: &[u8]) -> Option<Nod
     while let Some(cur) = stack.pop() {
         if cur.kind() == "procedure_declaration" {
             if let Some(name) = cur.child_by_field_name("name") {
-                let n = name.utf8_text(src).unwrap_or("").trim_matches('"');
+                let n = name.utf8_text(src).unwrap_or("").unquote_identifier();
                 if n.eq_ignore_ascii_case(proc_name) {
                     let mut c = cur.walk();
                     for ch in cur.named_children(&mut c) {

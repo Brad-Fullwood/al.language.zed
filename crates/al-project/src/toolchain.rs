@@ -34,7 +34,7 @@ fn dotnet_program() -> OsString {
 ///
 /// `dotnet_command()` returns a `std::process::Command`; `dotnet_command_async`
 /// the tokio equivalent. Both seed the first arg with the `alc` dll path. The
-/// `dotnet` host program is resolved via [`dotnet_program`] (overridable with
+/// `dotnet` host program is resolved via `dotnet_program` (overridable with
 /// `$AL_DOTNET_PATH`, see [`DOTNET_PATH_ENV`]).
 pub fn dotnet_command(alc: &Path) -> std::process::Command {
     let mut cmd = std::process::Command::new(dotnet_program());

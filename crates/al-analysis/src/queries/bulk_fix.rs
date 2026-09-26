@@ -14,6 +14,22 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+/// Why a bulk fix could not be planned.
+#[derive(Debug, thiserror::Error)]
+pub enum BulkFixError {
+    /// The caller's value or tooltip list cannot be written into AL.
+    #[error("{0}")]
+    InvalidInput(String),
+    /// The project could not be read: a scan limit or a disk fault, which
+    /// the caller reports differently (the user can narrow one of them).
+    #[error(transparent)]
+    Scan(#[from] al_source::file_index::ScanError),
+    /// The project's source cannot be changed safely: malformed AL, a file
+    /// with no object, or a transformation that would produce invalid AL.
+    #[error("{0}")]
+    Refused(String),
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BulkFixResult {
@@ -53,7 +69,7 @@ impl BulkFixPlan {
     }
 }
 
-pub fn plan_application_area(project_dir: &Path, value: &str) -> Result<BulkFixPlan, String> {
+pub fn plan_application_area(project_dir: &Path, value: &str) -> Result<BulkFixPlan, BulkFixError> {
     validate_property_value(value, "ApplicationArea")?;
     build_plan(project_dir, |source, tree, object_kind| {
         if !is_page_kind(object_kind) {
@@ -66,21 +82,25 @@ pub fn plan_application_area(project_dir: &Path, value: &str) -> Result<BulkFixP
 pub fn plan_tooltips(
     project_dir: &Path,
     tooltips: &[(String, String)],
-) -> Result<BulkFixPlan, String> {
+) -> Result<BulkFixPlan, BulkFixError> {
     let mut normalized = std::collections::BTreeMap::new();
     for (field, tooltip) in tooltips {
         let field = field.trim();
         if field.is_empty() {
-            return Err("Tooltip source field name must not be empty".to_string());
+            return Err(BulkFixError::InvalidInput(
+                "Tooltip source field name must not be empty".to_string(),
+            ));
         }
         if tooltip.trim().is_empty() {
-            return Err(format!("Tooltip for field '{field}' must not be empty"));
+            return Err(BulkFixError::InvalidInput(format!(
+                "Tooltip for field '{field}' must not be empty"
+            )));
         }
         let key = field.to_ascii_lowercase();
         if normalized.insert(key, tooltip.clone()).is_some() {
-            return Err(format!(
+            return Err(BulkFixError::InvalidInput(format!(
                 "Tooltip source contains duplicate field name '{field}'"
-            ));
+            )));
         }
     }
     build_plan(project_dir, |source, tree, object_kind| {
@@ -91,7 +111,10 @@ pub fn plan_tooltips(
     })
 }
 
-pub fn plan_data_classification(project_dir: &Path, value: &str) -> Result<BulkFixPlan, String> {
+pub fn plan_data_classification(
+    project_dir: &Path,
+    value: &str,
+) -> Result<BulkFixPlan, BulkFixError> {
     validate_property_value(value, "DataClassification")?;
     build_plan(project_dir, |source, tree, object_kind| {
         if !is_table_kind(object_kind) {
@@ -120,10 +143,12 @@ fn is_table_kind(kind: &str) -> bool {
     )
 }
 
-fn validate_property_value(value: &str, property: &str) -> Result<(), String> {
+fn validate_property_value(value: &str, property: &str) -> Result<(), BulkFixError> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return Err(format!("{property} value must not be empty"));
+        return Err(BulkFixError::InvalidInput(format!(
+            "{property} value must not be empty"
+        )));
     }
     if trimmed
         .chars()
@@ -132,26 +157,25 @@ fn validate_property_value(value: &str, property: &str) -> Result<(), String> {
         || trimmed.contains("/*")
         || trimmed.contains("*/")
     {
-        return Err(format!(
+        return Err(BulkFixError::InvalidInput(format!(
             "{property} value contains characters that cannot appear in an AL property value"
-        ));
+        )));
     }
     Ok(())
 }
 
-fn build_plan<F>(project_dir: &Path, transform: F) -> Result<BulkFixPlan, String>
+fn build_plan<F>(project_dir: &Path, transform: F) -> Result<BulkFixPlan, BulkFixError>
 where
     F: Fn(&str, &tree_sitter::Tree, &str) -> Result<(String, usize), String>,
 {
     // Discovery goes through the source index's walker so a bulk fix cannot
     // disagree with the workspace about which paths belong to the project.
-    let files =
-        al_source::file_index::collect_al_files(project_dir).map_err(|error| error.to_string())?;
+    let files = al_source::file_index::collect_al_files(project_dir)?;
     let mut changes = Vec::new();
     for path in files {
-        let source = al_source::file_index::read_source_file(&path)
-            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?
-            .ok_or_else(|| format!("Workspace source disappeared: {}", path.display()))?;
+        let source = al_source::file_index::read_source_file(&path)?.ok_or_else(|| {
+            BulkFixError::Refused(format!("Workspace source disappeared: {}", path.display()))
+        })?;
         let parsed = al_syntax::AlParser::parse_quick(&source);
         if parsed.tree.root_node().has_error() {
             let details = parsed
@@ -168,7 +192,7 @@ where
                 })
                 .collect::<Vec<_>>()
                 .join("; ");
-            return Err(format!(
+            return Err(BulkFixError::Refused(format!(
                 "Bulk fix refused malformed AL source '{}': {}",
                 path.display(),
                 if details.is_empty() {
@@ -176,32 +200,32 @@ where
                 } else {
                     &details
                 }
-            ));
+            )));
         }
         let object =
             al_syntax::find_object_declaration(&parsed.tree, &source).ok_or_else(|| {
-                format!(
+                BulkFixError::Refused(format!(
                     "Bulk fix refused '{}': no complete AL object declaration was found",
                     path.display()
-                )
+                ))
             })?;
         let (updated, changes_count) = transform(&source, &parsed.tree, &object.kind)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
+            .map_err(|error| BulkFixError::Refused(format!("{}: {error}", path.display())))?;
         if (changes_count == 0) != (updated == source) {
-            return Err(format!(
+            return Err(BulkFixError::Refused(format!(
                 "Bulk-fix transformation integrity mismatch for '{}'",
                 path.display()
-            ));
+            )));
         }
         if changes_count > 0 {
             let verification = al_syntax::AlParser::parse_quick(&updated);
             if verification.tree.root_node().has_error()
                 || al_syntax::find_object_declaration(&verification.tree, &updated).is_none()
             {
-                return Err(format!(
+                return Err(BulkFixError::Refused(format!(
                     "Bulk fix generated invalid AL for '{}'; no files were changed",
                     path.display()
-                ));
+                )));
             }
             changes.push(BulkFixChange {
                 path,
@@ -1024,7 +1048,7 @@ mod tests {
         .unwrap();
 
         let error = plan_application_area(dir.path(), "All").unwrap_err();
-        assert!(error.contains("malformed AL source"), "{error}");
+        assert!(error.to_string().contains("malformed AL source"), "{error}");
         assert_eq!(std::fs::read_to_string(good_path).unwrap(), good);
     }
 

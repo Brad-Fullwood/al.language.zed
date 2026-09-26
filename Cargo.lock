@@ -63,7 +63,6 @@ dependencies = [
  "al-types",
  "al-workspace",
  "petgraph",
- "rayon",
  "regex",
  "serde",
  "serde_json",
@@ -211,21 +210,12 @@ dependencies = [
  "al-types",
  "al-workspace",
  "criterion",
- "dashmap 6.2.1",
  "dirs",
  "futures",
- "futures-util",
- "getrandom 0.4.2",
  "interprocess",
- "keyring",
  "libc",
- "memmap2",
- "petgraph",
  "proptest",
- "quick-xml",
- "rayon",
  "reqwest",
- "ropey",
  "serde",
  "serde_json",
  "serial_test",
@@ -233,16 +223,12 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tokio-tungstenite",
  "tower-lsp",
  "tracing",
  "tracing-subscriber",
  "tree-sitter",
- "tree-sitter-al-bc",
  "url",
- "urlencoding",
  "wiremock",
- "zeroize",
  "zip 2.4.2",
 ]
 
@@ -252,6 +238,7 @@ version = "0.1.0"
 dependencies = [
  "al-bc",
  "al-semantic",
+ "al-syntax",
  "al-types",
  "serde",
  "serde_json",
@@ -284,7 +271,6 @@ dependencies = [
  "al-bc",
  "al-compile",
  "al-project",
- "al-types",
  "al-workspace",
  "serde",
  "serde_json",
@@ -2833,15 +2819,6 @@ name = "memchr"
 version = "2.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
-
-[[package]]
-name = "memmap2"
-version = "0.9.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
-dependencies = [
- "libc",
-]
 
 [[package]]
 name = "memmem"

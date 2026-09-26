@@ -67,13 +67,13 @@ pub struct Cli {
     pub offset: Option<usize>,
 
     /// Keep only these fields on each row, comma separated
-    /// (for example --fields kind,id,name).
+    /// (for example --fields kind,id,name). Implies --json.
     #[arg(long, global = true, value_name = "NAMES", value_delimiter = ',')]
     pub fields: Vec<String>,
 
     /// Which part of the loaded symbol space to report on: workspace,
-    /// packages or all. Applies to impact, table-impact, entrypoints and
-    /// event-map.
+    /// packages or all. Applies to impact (and impact --table), entrypoints,
+    /// intercept and graph.
     #[arg(long, global = true, value_name = "SCOPE")]
     pub scope: Option<String>,
 }
@@ -155,7 +155,7 @@ Examples:
     Events { name: String },
     /// Find event subscribers matching a name
     Subscribers { event: String },
-    /// Resolve the publisher behind the [EventSubscriber] at FILE:LINE
+    /// Resolve the publisher behind the EventSubscriber attribute at FILE:LINE
     EventSource {
         /// File containing the subscriber
         #[arg(long)]
@@ -199,7 +199,7 @@ Examples:
         /// Project directory (default: current dir)
         #[arg(short, long)]
         project: Option<String>,
-        /// Output .app path (default: <project>/output/<publisher>_<name>_<version>.app)
+        /// Output .app path (default: output/PUBLISHER_NAME_VERSION.app in the project)
         #[arg(short, long)]
         out: Option<String>,
         /// Add an authoritative Microsoft AL compiler (alc) compatibility check
@@ -207,13 +207,18 @@ Examples:
         /// Requires a discovered toolchain (AL_TOOL_PATH or an installed ALTool).
         #[arg(long)]
         validate: bool,
+        /// Code analyzers alc runs during --validate (comma-separated, e.g.
+        /// CodeCop,UICop). Default: the project's `al.codeAnalyzers`, with any
+        /// custom analyzer an untrusted project names left out. An empty value
+        /// runs none.
+        #[arg(long, requires = "validate")]
+        analyzers: Option<String>,
     },
     /// Run native lint rules on AL file(s)
     #[command(after_help = "\
 Examples:
   al lint src/Customer.al
   al lint --all
-  al lint --all --analyzers CodeCop,AppSourceCop
   al lint src/Sales.al --json")]
     Lint {
         /// File or directory to lint (default: current dir with --all).
@@ -224,8 +229,9 @@ Examples:
         /// Lint all .al files in the project directory
         #[arg(long)]
         all: bool,
-        /// Analyzers to run (comma-separated: CodeCop,AppSourceCop,UICop,PerTenantCop)
-        #[arg(long)]
+        /// Refused: lint never ran Microsoft's analyzers. Kept so old scripts
+        /// get an explanation instead of a parse error.
+        #[arg(long, hide = true)]
         analyzers: Option<String>,
     },
     /// Format AL code
@@ -651,9 +657,10 @@ Examples:
     Generate {
         /// Object kind: page, report, test
         kind: String,
-        /// Object ID
-        #[arg(long, default_value = "50100")]
-        id: i64,
+        /// Object ID. Default: the first free ID of this kind in the
+        /// project's app.json idRanges
+        #[arg(long)]
+        id: Option<i64>,
         /// Object name
         #[arg(long, default_value = "NewObject")]
         name: String,
@@ -668,7 +675,12 @@ Examples:
         subject: Option<String>,
     },
     /// Show obsolescence timeline (deprecated symbols)
-    Obsolete,
+    Obsolete {
+        /// Instead of every pending obsoletion in the loaded packages, list
+        /// the calls in this workspace to procedures that are obsolete
+        #[arg(long)]
+        used: bool,
+    },
     /// Audit DataClassification on table fields
     #[command(name = "audit-data")]
     AuditData,
@@ -689,6 +701,24 @@ Examples:
         /// Previous published `.app` to diff the current workspace against.
         #[arg(long)]
         baseline_app: Option<String>,
+    },
+    /// Compare two versions of a dependency and list the changes this
+    /// workspace's code uses
+    #[command(
+        name = "package-diff",
+        after_help = "\
+Examples:
+  al-explorer package-diff \".alpackages/old/Microsoft_Base Application_25.0.app\" \".alpackages/Microsoft_Base Application_26.0.app\"
+  al-explorer package-diff old.app new.app --all --json"
+    )]
+    PackageDiff {
+        /// The version the workspace was written against (.app path)
+        from: String,
+        /// The version to move to (.app path)
+        to: String,
+        /// Also list the changes nothing in the workspace uses
+        #[arg(long)]
+        all: bool,
     },
     /// Run architecture lint rules
     #[command(name = "arch-lint")]
@@ -775,7 +805,7 @@ Examples:
         #[arg(long)]
         dry_run: bool,
     },
-    /// Rename .al files to match <Type><Id>.<Name>.al convention
+    /// Rename .al files to the TypeId.Name.al convention (Codeunit50100.MyCodeunit.al)
     #[command(name = "organize-files")]
     OrganizeFiles {
         /// Preview renames without applying

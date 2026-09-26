@@ -77,6 +77,9 @@ That returns the field list and nothing else. For one field, add `jq`:
 `object <kind> "<name>"` returns the same payload keyed by name instead of ID.
 Both carry `methods`, `fields`, `keys`, `properties`, `variables` and `namespace`,
 for workspace objects as well as package objects. Ask for one key at a time.
+Through MCP (`al_call` with `object` or `byId`) each member comes back as one
+line, `1 "No.": Code[20]` or `AssistEdit(OldCust: Record "Customer"): Boolean`
+(`signatures: true`, the MCP default; pass `false` for the full objects).
 
 ## Procedures of a codeunit
 

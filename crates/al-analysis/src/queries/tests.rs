@@ -1,6 +1,6 @@
 //! Test discovery query — `al tests`.
 //!
-//! Uses tree-sitter static analysis to find [Test] codeunits and [Test] procedures
+//! Uses tree-sitter static analysis to find `[Test]` codeunits and `[Test]` procedures
 //! in AL source files. No runtime connection to BC required.
 
 use std::collections::HashSet;
@@ -60,36 +60,38 @@ pub struct TestCodeunit {
     pub test_cleanups: Vec<TestProcedure>,
 }
 
-/// Discover all [Test] codeunits and procedures in workspace .al files.
+/// Discover all `[Test]` codeunits and procedures in workspace .al files.
 pub fn discover_tests(workspace: &Workspace) -> Result<Vec<TestCodeunit>, TestQueryError> {
     let mut results = Vec::new();
 
     let sources =
         crate::workspace_sources::snapshot(workspace).map_err(super::WorkspaceQueryError::from)?;
-    for source_file in sources {
+    for source_file in &sources {
         let path = source_file.path.to_string_lossy().to_string();
         let source = source_file.text.as_bytes();
 
-        if !al_syntax::language_data::is_test_container_kind(&source_file.object.info.kind) {
-            continue;
-        }
+        // Every object in the file: a test codeunit after a table in the
+        // same file was never discovered.
+        for (object, root) in source_file.object_nodes() {
+            if !al_syntax::language_data::is_test_container_kind(&object.info.kind) {
+                continue;
+            }
+            let is_test_subtype = has_test_subtype(root, source);
+            let test_procs = collect_test_procedures(root, source);
+            let test_initializers =
+                collect_procedures_with_attribute(root, source, "TestInitialize");
+            let test_cleanups = collect_procedures_with_attribute(root, source, "TestCleanup");
 
-        let obj_id = source_file.object.normalized_id;
-        let root = source_file.tree.root_node();
-        let is_test_subtype = has_test_subtype(root, source);
-        let test_procs = collect_test_procedures(root, source);
-        let test_initializers = collect_procedures_with_attribute(root, source, "TestInitialize");
-        let test_cleanups = collect_procedures_with_attribute(root, source, "TestCleanup");
-
-        if is_test_subtype || !test_procs.is_empty() {
-            results.push(TestCodeunit {
-                name: source_file.object.info.name.clone(),
-                id: obj_id,
-                file: path,
-                tests: test_procs,
-                test_initializers,
-                test_cleanups,
-            });
+            if is_test_subtype || !test_procs.is_empty() {
+                results.push(TestCodeunit {
+                    name: object.info.name.clone(),
+                    id: object.normalized_id,
+                    file: path.clone(),
+                    tests: test_procs,
+                    test_initializers,
+                    test_cleanups,
+                });
+            }
         }
     }
 
@@ -211,11 +213,9 @@ pub fn files_reachable_from_tests(
     let mut seen: HashSet<NodeId> = HashSet::new();
     let mut queue = std::collections::VecDeque::new();
     for codeunit in &discovered {
-        let kind = object_identity_for_path(workspace, &codeunit.file)?
-            .map(|(kind, _)| kind)
-            .ok_or_else(|| TestQueryError::MissingObjectDeclaration {
-                path: PathBuf::from(&codeunit.file),
-            })?;
+        // Tests live only in codeunits; the file's first object may be a
+        // table the codeunit sits after.
+        let kind = ObjectKind::Codeunit;
         let object = codeunit.name.to_lowercase();
         for procedure in &codeunit.tests {
             let key = NodeKey::Procedure(kind, object.clone(), procedure.name.to_lowercase());
@@ -326,6 +326,25 @@ fn affected_via_call_graph(
             seeds.extend(indices.iter().map(|idx| NodeId::from(*idx)));
         }
     }
+    // A table or table extension has few graph members of its own, but its
+    // fields are read and written by every procedure holding its records.
+    // One walk of the workspace for all the changed tables.
+    let tables = changed_tables(workspace, &want);
+    for (kind, object, procedure) in
+        al_insight::analysis::workspace_procedures_using_tables(&workspace.file_index, &tables)
+    {
+        let (object, procedure) = (object.to_lowercase(), procedure.to_lowercase());
+        // A subscriber or an event publisher has its own node kind.
+        seeds.extend(
+            [
+                NodeKey::Procedure(kind, object.clone(), procedure.clone()),
+                NodeKey::Subscriber(kind, object.clone(), procedure.clone()),
+                NodeKey::Event(kind, object, procedure),
+            ]
+            .iter()
+            .find_map(|key| CallGraph::node_id_for(&insight, key)),
+        );
+    }
     if seeds.is_empty() {
         // Changed object(s) exist but contribute no graph members (e.g. an
         // empty table). Don't claim a precise empty answer — let the caller
@@ -337,11 +356,7 @@ fn affected_via_call_graph(
 
     let mut affected = Vec::new();
     for cu in discover_tests(workspace)? {
-        let kind = object_identity_for_path(workspace, &cu.file)?
-            .map(|(kind, _)| kind)
-            .ok_or_else(|| TestQueryError::MissingObjectDeclaration {
-                path: PathBuf::from(&cu.file),
-            })?;
+        let kind = ObjectKind::Codeunit;
         let obj_lower = cu.name.to_lowercase();
         for proc in &cu.tests {
             let key = NodeKey::Procedure(kind, obj_lower.clone(), proc.name.to_lowercase());
@@ -363,6 +378,27 @@ fn affected_via_call_graph(
         }
     }
     Ok(Some(affected))
+}
+
+/// The tables whose records a change to `objects` affects: a changed table
+/// itself, and the table a changed table extension extends.
+fn changed_tables(workspace: &Workspace, objects: &HashSet<(ObjectKind, String)>) -> Vec<String> {
+    let mut tables: Vec<String> = objects
+        .iter()
+        .filter_map(|(kind, name)| match kind {
+            ObjectKind::Table => Some(name.clone()),
+            ObjectKind::TableExtension => workspace
+                .symbols
+                .get_by_name(name)
+                .iter()
+                .find(|entry| entry.kind == ObjectKind::TableExtension)
+                .and_then(|entry| entry.extends.clone()),
+            _ => None,
+        })
+        .collect();
+    tables.sort_by_key(|table| table.to_lowercase());
+    tables.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    tables
 }
 
 /// Resolve the `(ObjectKind, lowercased name)` of the AL object declared in
@@ -1097,6 +1133,110 @@ mod affected_call_graph {
         let ws = build_ws();
         let result = affected_tests_detailed(&ws, &[]).unwrap();
         assert!(result.tests.is_empty());
+    }
+
+    /// A table extension has no procedures, so call edges alone found no
+    /// test; its fields are used by every procedure holding a Customer.
+    #[test]
+    fn changing_a_table_extension_marks_tests_holding_its_records() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/ws/custext.al"),
+            r#"tableextension 50100 "Cust Ext" extends Customer
+{
+    fields
+    {
+        field(50100; "Loyalty Tier"; Code[10]) { }
+    }
+}
+"#
+            .to_string(),
+        );
+        ws.file_index.add_file(
+            PathBuf::from("/ws/mgt.al"),
+            r#"codeunit 50101 "Loyalty Mgt"
+{
+    procedure SetTier(var Cust: Record Customer; Tier: Code[10])
+    begin
+        Cust."Loyalty Tier" := Tier;
+    end;
+}
+"#
+            .to_string(),
+        );
+        ws.file_index.add_file(
+            PathBuf::from("/ws/tests.al"),
+            r#"codeunit 50110 "Loyalty Test"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure ThroughMgt()
+    var
+        Mgt: Codeunit "Loyalty Mgt";
+        C: Record Integer;
+    begin
+        Mgt.SetTier(C, 'GOLD');
+    end;
+
+    [Test]
+    procedure Direct()
+    var
+        Cust: Record Customer;
+    begin
+        Cust."Loyalty Tier" := '';
+    end;
+
+    [Test]
+    procedure Unrelated()
+    var
+        V: Record Vendor;
+    begin
+        V.Init();
+    end;
+
+    [Test]
+    procedure ThroughTempBuffer()
+    var
+        Buffer: Record Customer temporary;
+    begin
+        Buffer.Insert();
+    end;
+
+    [Test]
+    procedure ThroughOnRun()
+    begin
+        Codeunit.Run(Codeunit::"Loyalty Job");
+    end;
+}
+"#
+            .to_string(),
+        );
+        ws.file_index.add_file(
+            PathBuf::from("/ws/job.al"),
+            r#"codeunit 50102 "Loyalty Job"
+{
+    trigger OnRun()
+    var
+        Cust: Record Customer;
+    begin
+        Cust.Modify();
+    end;
+}
+"#
+            .to_string(),
+        );
+        let (mode, names) = affected_names(&ws, &["/ws/custext.al"]);
+        assert_eq!(mode, AffectedMode::CallGraph);
+        assert_eq!(
+            names,
+            vec![
+                "Direct".to_string(),
+                "ThroughMgt".to_string(),
+                "ThroughOnRun".to_string(),
+                "ThroughTempBuffer".to_string()
+            ]
+        );
     }
 
     #[test]

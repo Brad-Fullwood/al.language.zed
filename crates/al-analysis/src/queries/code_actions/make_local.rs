@@ -1,5 +1,6 @@
 //! Make-procedure-local source action.
 
+use al_syntax::IdentifierText;
 use url::Url;
 
 use super::single_edit_ws;
@@ -161,7 +162,7 @@ pub(super) fn source_action_make_local(
     let proc_name = node
         .child_by_field_name("name")
         .and_then(|n| n.utf8_text(text.as_bytes()).ok())
-        .map(|s| s.trim_matches('"').to_string())?;
+        .map(|s| s.unquote_identifier().into_owned())?;
     if external_caller_exists(workspace, uri, &proc_name) {
         return None;
     }

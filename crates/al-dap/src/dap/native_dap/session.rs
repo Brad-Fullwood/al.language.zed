@@ -2,7 +2,7 @@
 //!
 //! Launch and attach share one handler because the only difference is whether
 //! a compile and publish runs first. `configurationDone` can be rejected by BC
-//! until the client has attached, so [`try_configuration_done`] is what the
+//! until the client has attached, so `try_configuration_done` is what the
 //! event forwarder retries with.
 
 use std::path::{Path, PathBuf};

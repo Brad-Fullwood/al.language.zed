@@ -151,37 +151,15 @@ pub(super) fn parse_query_string(query: &str) -> std::collections::HashMap<Strin
         .collect()
 }
 
-/// Spawn `cmd` with `args`, discarding all three standard streams. Returns
-/// whether the spawn succeeded (the child is detached; we never wait on it).
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn suppress_stdio_and_spawn(cmd: &str, args: &[&str]) -> bool {
-    use std::process::Stdio;
-    std::process::Command::new(cmd)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .is_ok()
-}
-
+/// Open `url` in the user's browser. See [`al_types::browser`] for why Windows
+/// does not go through `cmd /c start`.
 pub(super) fn open_browser(url: &str) -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        suppress_stdio_and_spawn("xdg-open", &[url])
-    }
-    #[cfg(target_os = "macos")]
-    {
-        suppress_stdio_and_spawn("open", &[url])
-    }
-    #[cfg(target_os = "windows")]
-    {
-        suppress_stdio_and_spawn("cmd", &["/c", "start", "", url])
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        let _ = url;
-        false
+    match al_types::open_in_browser(url) {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!("open_browser: {error}");
+            false
+        }
     }
 }
 

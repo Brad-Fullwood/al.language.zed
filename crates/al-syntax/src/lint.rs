@@ -375,12 +375,20 @@ fn scan_procedure_for_find_in_loop(
 
         let in_loop = line_in_loop || !frames.is_empty();
         if in_loop && calls_find_first_or_last(&lower) {
+            // The call itself, when it is written `Rec.FindFirst()`.
+            let call = ["findfirst", "findlast"]
+                .into_iter()
+                .flat_map(|method| method_calls(&cleaned, method))
+                .min_by_key(|call| call.dot);
             out.push(LintDiagnostic {
                 code: "AL-NL001".to_string(),
                 message: "FindFirst()/FindLast() inside a loop causes N+1 queries; use \
                           FindSet()/repeat..until Next() = 0 instead."
                     .to_string(),
-                range: line_range(file_text, line_idx),
+                range: match call {
+                    Some(call) => span_range(file_text, line_idx, call.start, call.end),
+                    None => line_range(file_text, line_idx),
+                },
                 severity: LintSeverity::Warning,
             });
         }
@@ -426,7 +434,20 @@ fn lint_missing_data_classification(tree: &Tree, text: &str, out: &mut Vec<LintD
     }
 }
 
-fn method_calls(line: &str, method: &str) -> Vec<(usize, String)> {
+/// One `Receiver.Method(...)` on a line.
+struct MethodCall {
+    /// Byte offset of the `.`.
+    dot: usize,
+    /// Byte span from the receiver to the closing `)` (or the `(` when the
+    /// arguments run past the line).
+    start: usize,
+    end: usize,
+    /// The receiver as written, and lower-cased for comparison.
+    receiver: String,
+    key: String,
+}
+
+fn method_calls(line: &str, method: &str) -> Vec<MethodCall> {
     let needle = format!(".{}(", method.to_ascii_lowercase());
     let lower = line.to_ascii_lowercase();
     let mut calls = Vec::new();
@@ -435,24 +456,46 @@ fn method_calls(line: &str, method: &str) -> Vec<(usize, String)> {
         let dot = from + relative;
         let before = &line[..dot];
         let trimmed = before.trim_end();
-        let receiver = if let Some(without_closing_quote) = trimmed.strip_suffix('"') {
-            without_closing_quote
-                .rfind('"')
-                .map(|start| trimmed[start..].to_string())
+        let start = if let Some(without_closing_quote) = trimmed.strip_suffix('"') {
+            without_closing_quote.rfind('"')
         } else {
             let start = trimmed
                 .char_indices()
                 .rev()
                 .find(|(_, ch)| !ch.is_ascii_alphanumeric() && *ch != '_')
                 .map_or(0, |(idx, ch)| idx + ch.len_utf8());
-            (start < trimmed.len()).then(|| trimmed[start..].to_string())
+            (start < trimmed.len()).then_some(start)
         };
-        if let Some(receiver) = receiver.filter(|value| !value.is_empty()) {
-            calls.push((dot, receiver.to_ascii_lowercase()));
+        let open = dot + needle.len();
+        if let Some(start) = start {
+            let end = line[open..]
+                .find(')')
+                .map_or(open, |close| open + close + 1);
+            let receiver = trimmed[start..].to_string();
+            calls.push(MethodCall {
+                dot,
+                start,
+                end,
+                key: receiver.to_ascii_lowercase(),
+                receiver,
+            });
         }
-        from = dot + needle.len();
+        from = open;
     }
     calls
+}
+
+/// The byte columns `start..end` of line `row`, as a range.
+fn span_range(text: &str, row: usize, start: usize, end: usize) -> Range {
+    let line = line_range(text, row);
+    let width = line.end_byte - line.start_byte;
+    let (start, end) = (start.min(width), end.min(width));
+    Range {
+        start_byte: line.start_byte + start,
+        end_byte: line.start_byte + end,
+        start_point: Point { row, column: start },
+        end_point: Point { row, column: end },
+    }
 }
 
 /// AL-NL005: a record read without a preceding `SetLoadFields`.
@@ -473,30 +516,42 @@ fn lint_missing_set_load_fields(tree: &Tree, text: &str, out: &mut Vec<LintDiagn
                 for (offset, line) in proc_text.lines().enumerate() {
                     let (cleaned, still_in_block_comment) = mask_non_code(line, in_block_comment);
                     in_block_comment = still_in_block_comment;
-                    let mut events: Vec<(usize, bool, String)> =
+                    // The procedure's first line starts at its column.
+                    let column = if offset == 0 {
+                        node.start_position().column
+                    } else {
+                        0
+                    };
+                    let mut events: Vec<(bool, MethodCall)> =
                         method_calls(&cleaned, "setloadfields")
                             .into_iter()
-                            .map(|(position, receiver)| (position, true, receiver))
+                            .map(|call| (true, call))
                             .collect();
                     for method in ["findset", "findfirst", "findlast"] {
                         events.extend(
                             method_calls(&cleaned, method)
                                 .into_iter()
-                                .map(|(position, receiver)| (position, false, receiver)),
+                                .map(|call| (false, call)),
                         );
                     }
-                    events.sort_by_key(|(position, is_prepare, _)| (*position, !*is_prepare));
-                    for (_, is_prepare, receiver) in events {
+                    events.sort_by_key(|(is_prepare, call)| (call.dot, !*is_prepare));
+                    for (is_prepare, call) in events {
                         if is_prepare {
-                            prepared.insert(receiver);
-                        } else if !prepared.contains(&receiver) {
+                            prepared.insert(call.key);
+                        } else if !prepared.contains(&call.key) {
                             out.push(LintDiagnostic {
                                 code: "AL-NL005".to_string(),
                                 message: format!(
-                                    "Record {receiver} is read without a preceding \
-                                     SetLoadFields call in this procedure."
+                                    "Record {} is read without a preceding \
+                                     SetLoadFields call in this procedure.",
+                                    call.receiver
                                 ),
-                                range: line_range(text, start_row + offset),
+                                range: span_range(
+                                    text,
+                                    start_row + offset,
+                                    column + call.start,
+                                    column + call.end,
+                                ),
                                 severity: LintSeverity::Warning,
                             });
                         }
@@ -1282,6 +1337,42 @@ mod tests {
         let result = AlParser::parse_quick(src);
         let diags = lint(&result.tree, src);
         assert!(diags.is_empty(), "expected no diagnostics, got {diags:?}");
+    }
+
+    /// Both findings spanned the whole line, and NL005 lower-cased the
+    /// variable (`Record cust is read ...`).
+    #[test]
+    fn record_read_findings_point_at_the_call_and_name_the_variable_as_written() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure ReadItems()
+    var
+        Cust: Record Customer;
+        i: Integer;
+    begin
+        for i := 1 to 3 do
+            if Cust.FindFirst() then;
+    end;
+}"#;
+        let result = AlParser::parse_quick(src);
+        let diags = lint(&result.tree, src);
+        for code in ["AL-NL001", "AL-NL005"] {
+            let diag = diags
+                .iter()
+                .find(|d| d.code == code)
+                .unwrap_or_else(|| panic!("expected {code}, got {diags:?}"));
+            assert_eq!(
+                &src[diag.range.start_byte..diag.range.end_byte],
+                "Cust.FindFirst()"
+            );
+            assert_eq!(diag.range.start_point.column, 15, "{code}");
+        }
+        let nl005 = diags.iter().find(|d| d.code == "AL-NL005").unwrap();
+        assert!(
+            nl005.message.starts_with("Record Cust "),
+            "{}",
+            nl005.message
+        );
     }
 
     #[test]

@@ -401,22 +401,12 @@ mod tests {
 
     fn make_codeunit(id: i32, name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Codeunit,
             id,
             name: name.to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "TestPkg".to_string(),
             methods,
-            fields: vec![],
-            controls: vec![],
-            enum_values: vec![],
-            keys: vec![],
-            properties: vec![],
-            permissions: Vec::new(),
-            variables: vec![],
+            ..Default::default()
         }
     }
 

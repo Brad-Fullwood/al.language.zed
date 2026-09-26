@@ -107,6 +107,33 @@ permissionset 50101 "API User"
     );
 }
 
+/// Lowercase letters are indirect grants: the direct bit shifted left by 5,
+/// as Microsoft's packages encode them (`Rimd` is 449 in Base Application).
+#[test]
+fn indirect_permission_letters_are_encoded_above_the_direct_ones() {
+    let source = r#"table 50100 Ledger
+{
+    fields { field(1; "Entry No."; Integer) { } }
+}
+
+permissionset 50101 Poster
+{
+    Permissions = tabledata Ledger = Rimd,
+        tabledata Ledger = RIMD,
+        tabledata Ledger = rm;
+}
+"#;
+    let objects = extract_objects(source, "src/Permissions.al");
+    let document = build_symbol_reference(&objects, &min_app_meta(), &Default::default());
+    let values: Vec<i64> = document["PermissionSets"][0]["Permissions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|grant| grant["Value"].as_i64().unwrap())
+        .collect();
+    assert_eq!(values, vec![449, 15, 160]);
+}
+
 /// The inline control add-in `PublicKeyToken` is the first 8 bytes of
 /// `SHA256(app name)` in lowercase hex — derived from the app name, not the
 /// add-in name. Known-answer vector verified against alc.

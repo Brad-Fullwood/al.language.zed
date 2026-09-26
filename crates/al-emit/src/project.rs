@@ -191,6 +191,25 @@ fn parse_external_symbols(package_paths: &[PathBuf]) -> Result<ExternalSymbols, 
                         .entry((obj.name.to_lowercase(), f.name.to_lowercase()))
                         .or_insert_with(|| f.type_name.clone());
                 }
+                for m in &obj.methods {
+                    ext.table_methods
+                        .insert((obj.name.to_lowercase(), m.name.to_lowercase()));
+                }
+            }
+            // A dependency's table extension adds its fields to the table it
+            // extends, and this app may read and write them too.
+            if obj.kind == ObjectKind::TableExtension {
+                if let Some(extended) = obj.extends.as_deref() {
+                    for f in &obj.fields {
+                        ext.field_types
+                            .entry((extended.to_lowercase(), f.name.to_lowercase()))
+                            .or_insert_with(|| f.type_name.clone());
+                    }
+                    for m in &obj.methods {
+                        ext.table_methods
+                            .insert((extended.to_lowercase(), m.name.to_lowercase()));
+                    }
+                }
             }
         }
     }
@@ -468,6 +487,7 @@ pub fn build_verified_app_from_project_with_packages(
         &objects,
         external.as_ref(),
     ));
+    super::verification::verify_layout_files(project_dir, &objects, &mut diagnostics);
     timings.semantic_verification_ns = timings
         .semantic_verification_ns
         .saturating_add(elapsed_ns(verification_started));

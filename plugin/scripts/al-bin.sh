@@ -32,7 +32,7 @@ esac
 
 # A candidate directory has to hold both binaries. al-explorer spawns the daemon
 # by looking next to its own executable before it walks PATH
-# (crates/al-protocol/src/client.rs), so a directory holding only one of them
+# (crates/al-protocol/src/client/mod.rs), so a directory holding only one of them
 # gives the CLI and the daemon different builds.
 has_pair() {
 	local dir="$1" name
@@ -60,7 +60,7 @@ if [ -z "$bin_dir" ]; then
 	# is `.`, so the loop below never ended and the MCP server never started.
 	# An unset directory leaves `search` empty, which skips the loop.
 	search="${CLAUDE_PLUGIN_ROOT:-$(dirname -- "$0")/..}"
-	search="$(CDPATH='' cd -- "$search" 2>/dev/null && pwd || true)"
+	search="$(CDPATH='' cd -- "$search" 2>/dev/null && pwd)" || search=""
 	while [ -n "$search" ] && [ "$search" != "/" ]; do
 		for profile in release debug; do
 			if has_pair "$search/target/$profile"; then

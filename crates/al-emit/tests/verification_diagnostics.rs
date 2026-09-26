@@ -199,6 +199,39 @@ fn aln2404_unknown_field_on_a_known_record() {
     assert_silent(&clean, "ALN2404");
 }
 
+/// A field a table extension adds belongs to the table it extends. The
+/// verifier only read fields from `table` objects, so every per-tenant
+/// extension that wrote to its own field on a base table failed to build.
+#[test]
+fn aln2404_accepts_a_field_added_by_a_table_extension() {
+    let codes = codes_for(&[
+        CUSTOMER_TABLE,
+        (
+            "Ext.TableExt.al",
+            "tableextension 50102 \"Prop Customer Ext\" extends \"Prop Customer\"\n\
+             {\n\
+             \x20   fields\n\
+             \x20   {\n\
+             \x20       field(50100; \"Loyalty Tier\"; Code[10]) { DataClassification = CustomerContent; }\n\
+             \x20   }\n\
+             }\n",
+        ),
+        (
+            "C.Codeunit.al",
+            "codeunit 50101 C\n\
+             {\n\
+             \x20   procedure P()\n\
+             \x20   var\n\
+             \x20       Customer: Record \"Prop Customer\";\n\
+             \x20   begin\n\
+             \x20       Customer.\"Loyalty Tier\" := '';\n\
+             \x20   end;\n\
+             }\n",
+        ),
+    ]);
+    assert_silent(&codes, "ALN2404");
+}
+
 #[test]
 fn aln2209_unknown_method_on_a_record_and_unknown_local_call() {
     let on_record = codes_for(&[
@@ -223,6 +256,49 @@ fn aln2209_unknown_method_on_a_record_and_unknown_local_call() {
         "codeunit 50100 C\n{\n    procedure P()\n    begin\n        NoSuchLocalProcedure();\n    end;\n}\n",
     )]);
     assert_reports(&unqualified, "ALN2209");
+}
+
+/// A table's own procedures, and those its extensions add, are methods of a
+/// Record of that table: `Cust.SelectCustomer(Cust);` was refused as
+/// unknown, so no extension calling a table procedure could be built.
+#[test]
+fn aln2209_accepts_procedures_the_table_and_its_extensions_declare() {
+    let codes = codes_for(&[
+        (
+            "T.Table.al",
+            "table 50100 \"Proc Table\"\n\
+             {\n\
+             \x20   fields { field(1; \"No.\"; Code[20]) { } }\n\
+             \x20   procedure SelectIt(var Rec: Record \"Proc Table\")\n\
+             \x20   begin\n\
+             \x20   end;\n\
+             }\n",
+        ),
+        (
+            "T.TableExt.al",
+            "tableextension 50101 \"Proc Ext\" extends \"Proc Table\"\n\
+             {\n\
+             \x20   procedure HasAddress(): Boolean\n\
+             \x20   begin\n\
+             \x20       exit(true);\n\
+             \x20   end;\n\
+             }\n",
+        ),
+        (
+            "C.Codeunit.al",
+            "codeunit 50102 C\n\
+             {\n\
+             \x20   procedure P()\n\
+             \x20   var\n\
+             \x20       Rec: Record \"Proc Table\";\n\
+             \x20   begin\n\
+             \x20       Rec.SelectIt(Rec);\n\
+             \x20       Rec.HasAddress();\n\
+             \x20   end;\n\
+             }\n",
+        ),
+    ]);
+    assert_silent(&codes, "ALN2209");
 }
 
 #[test]
@@ -401,4 +477,86 @@ fn verification_is_deterministic() {
         ),
     ];
     assert_eq!(codes_for(sources), codes_for(sources));
+}
+
+/// A named return value is returned by assigning it: `Result := ...` was an
+/// undeclared identifier and the missing `exit(...)` an error.
+#[test]
+fn a_named_return_value_is_declared_and_needs_no_exit() {
+    let codes = codes_for(&[(
+        "C.Codeunit.al",
+        "codeunit 50100 C\n{\n    procedure Describe(Value: Integer) Result: Text\n    begin\n        Result := Format(Value);\n        Value := 2;\n    end;\n}\n",
+    )]);
+    assert_silent(&codes, "ALN2402");
+    assert_silent(&codes, "ALN2203");
+}
+
+/// `Token.AsValue().AsText()` calls AsText on the value AsValue returns,
+/// not a local procedure named AsText.
+#[test]
+fn a_method_on_a_call_result_is_not_an_unknown_local_procedure() {
+    let codes = codes_for(&[(
+        "C.Codeunit.al",
+        "codeunit 50100 C\n{\n    procedure Name(): Text\n    var\n        Token: JsonToken;\n    begin\n        exit(Token.AsValue().AsText());\n    end;\n}\n",
+    )]);
+    assert_silent(&codes, "ALN2209");
+}
+
+/// `Record "X" temporary` names table X.
+#[test]
+fn a_temporary_record_of_a_known_table_is_known() {
+    let codes = codes_for(&[
+        CUSTOMER_TABLE,
+        (
+            "C.Codeunit.al",
+            "codeunit 50100 C\n{\n    procedure P()\n    var\n        TempCust: Record \"Prop Customer\" temporary;\n    begin\n        TempCust.Init();\n    end;\n}\n",
+        ),
+    ]);
+    assert_silent(&codes, "ALN2401");
+}
+
+/// Every object in a file was checked against the whole file, so one
+/// error came back once per object, attributed to each.
+#[test]
+fn an_error_in_a_multi_object_file_is_reported_once() {
+    let dir = tempfile::tempdir().unwrap();
+    write_project(
+        dir.path(),
+        APP_JSON,
+        &[(
+            "Two.al",
+            "codeunit 50100 A\n{\n    procedure P()\n    begin\n        Nowhere := 1;\n    end;\n}\n\ncodeunit 50101 B\n{\n    procedure Q()\n    begin\n    end;\n}\n",
+        )],
+    );
+    let built = build_verified_app_from_project(dir.path(), "13.0.0.0", "2026-01-01T00:00:00Z")
+        .expect("verification runs");
+    let undeclared: Vec<_> = built
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == "ALN2402")
+        .collect();
+    assert_eq!(undeclared.len(), 1, "{:?}", built.diagnostics);
+    assert_eq!(undeclared[0].line, 5);
+}
+
+#[test]
+fn aln2501_a_missing_layout_file_is_reported_on_the_report() {
+    let dir = tempfile::tempdir().unwrap();
+    write_project(
+        dir.path(),
+        APP_JSON,
+        &[(
+            "R.Report.al",
+            "report 50100 R\n{\n    DefaultRenderingLayout = L;\n    dataset { }\n    rendering\n    {\n        layout(L)\n        {\n            Type = Excel;\n            LayoutFile = 'Missing.xlsx';\n        }\n    }\n}\n",
+        )],
+    );
+    let built = build_verified_app_from_project(dir.path(), "13.0.0.0", "2026-01-01T00:00:00Z")
+        .expect("a missing layout is a diagnostic, not a build failure");
+    let missing = built
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "ALN2501")
+        .unwrap_or_else(|| panic!("{:?}", built.diagnostics));
+    assert!(missing.file.ends_with("R.Report.al"), "{missing:?}");
+    assert_eq!(missing.line, 10);
 }

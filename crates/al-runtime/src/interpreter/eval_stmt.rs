@@ -30,9 +30,11 @@
 //! sequence propagates to the caller. `Eval::Exit` also short-circuits,
 //! unwinding back to the enclosing procedure.
 
+use al_syntax::IdentifierText;
 use tree_sitter::Node;
 
 use super::error_info;
+use crate::interpreter::chain;
 use crate::interpreter::dispatch::{dispatch_call_scoped, DispatchCtx, MAX_AST_DEPTH};
 use crate::interpreter::eval_expr::eval_expr;
 use crate::interpreter::records;
@@ -265,7 +267,7 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
 
     let var_name = match var_node {
         Some(n) => match n.utf8_text(source) {
-            Ok(t) => t.trim_matches('"').to_string(),
+            Ok(t) => t.unquote_identifier().into_owned(),
             Err(_) => return Eval::Error(error_info("for_statement: invalid variable name")),
         },
         None => return Eval::Error(error_info("for_statement: missing variable")),
@@ -394,7 +396,7 @@ fn eval_foreach(
 
     let var_name = match var_node {
         Some(n) => match n.utf8_text(source) {
-            Ok(t) => t.trim_matches('"').to_string(),
+            Ok(t) => t.unquote_identifier().into_owned(),
             Err(_) => return Eval::Error(error_info("foreach: invalid variable name")),
         },
         None => return Eval::Error(error_info("foreach: missing variable")),
@@ -635,7 +637,7 @@ fn eval_assignment(
     }
 
     let lhs_name = match lhs_node.utf8_text(source) {
-        Ok(t) => t.trim_matches('"').to_ascii_lowercase(),
+        Ok(t) => t.unquote_identifier().to_ascii_lowercase(),
         Err(_) => return Eval::Error(error_info("assignment: invalid LHS identifier")),
     };
 
@@ -796,7 +798,35 @@ pub(crate) fn eval_call(
     //   - `member_access . identifier ( args )` → receiver.proc
     //
     // We handle both by inspecting child kinds.
+    if let Some(result) = chain::eval_chained_call(node, source, stack, ctx) {
+        return result;
+    }
     let (receiver, proc_name, args_node) = extract_call_parts(node, source);
+    eval_call_parts(
+        receiver.as_deref(),
+        &proc_name,
+        args_node,
+        source,
+        stack,
+        ctx,
+    )
+}
+
+/// Run `receiver.proc_name(args)` (or the bare `proc_name(args)`), routing a
+/// method call by the receiver variable's value kind.
+pub(crate) fn eval_call_parts(
+    receiver: Option<&str>,
+    proc_name: &str,
+    args_node: Option<Node<'_>>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    let receiver = receiver.map(str::to_string);
+    let proc_name = proc_name.to_string();
+    // Argument evaluation clears the statement marker; builtins whose failure
+    // differs by position (a statement `Evaluate(...)` raises) need it back.
+    let statement = ctx.stmt_position;
 
     // MaxStrLen is defined by the argument's declared Text[N]/Code[N] type,
     // not its current contents. Preserve that lvalue metadata before normal
@@ -849,17 +879,41 @@ pub(crate) fn eval_call(
                 };
                 return records::dispatch_text_method(&recv, &proc_name, args, stack);
             }
-            Some(Value::Dict(_))
-                if records::supports_dict_method(&proc_name)
-                    || proc_name.eq_ignore_ascii_case("get") =>
-            {
+            Some(Value::Dict(_)) if records::supports_dict_method(&proc_name) => {
                 let recv = recv.to_string();
                 let args = match eval_args_opt(args_node, source, stack, ctx) {
                     Ok(v) => v,
                     Err(ArgsShort::Error(e)) => return Eval::Error(e),
                     Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
                 };
+                // `Get(key, var value)` answers whether the key exists and
+                // writes the value to the caller's variable.
+                if proc_name.eq_ignore_ascii_case("get") && args.len() == 2 {
+                    return match records::dict_lookup(&recv, &args[0], stack) {
+                        Ok(Some(value)) => {
+                            ctx.var_writebacks.clear();
+                            ctx.var_writebacks.push((1, value));
+                            apply_var_writebacks(args_node, source, stack, ctx);
+                            Eval::Normal(Value::Boolean(true))
+                        }
+                        Ok(None) => Eval::Normal(Value::Boolean(false)),
+                        Err(error) => crate::interpreter::eval_error(error),
+                    };
+                }
                 return records::dispatch_dict_method(&recv, &proc_name, args, stack);
+            }
+            Some(Value::Option { .. })
+                if crate::interpreter::enums::supports_enum_method(&proc_name) =>
+            {
+                let value = stack.lookup(recv).cloned().unwrap_or(Value::Null);
+                let args = match eval_args_opt(args_node, source, stack, ctx) {
+                    Ok(v) => v,
+                    Err(ArgsShort::Error(e)) => return Eval::Error(e),
+                    Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
+                };
+                return crate::interpreter::enums::dispatch_enum_method(
+                    &value, &proc_name, &args, ctx,
+                );
             }
             Some(Value::Codeunit { object_name }) => {
                 let object_name = object_name.clone();
@@ -882,6 +936,7 @@ pub(crate) fn eval_call(
         Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
     };
 
+    ctx.stmt_position = statement;
     let result = dispatch_call_scoped(receiver.as_deref(), &proc_name, args, stack, ctx);
     apply_var_writebacks(args_node, source, stack, ctx);
     result
@@ -928,7 +983,7 @@ fn apply_var_writebacks(
 /// cannot corrupt a caller variable by matching the wrong slot.
 fn simple_lvalue_name(node: Node<'_>, source: &[u8]) -> Option<String> {
     let text = node.utf8_text(source).ok()?.trim();
-    let inner = text.trim_matches('"');
+    let inner = text.unquote_identifier();
     if inner.is_empty() {
         return None;
     }
@@ -944,6 +999,20 @@ fn simple_lvalue_name(node: Node<'_>, source: &[u8]) -> Option<String> {
 }
 
 /// Evaluate an optional argument-list node into a `Vec<Value>`.
+/// Evaluate a call's arguments; `Err` carries an error or an `exit` raised
+/// while evaluating one.
+pub(crate) fn eval_call_arguments(
+    args_node: Option<Node<'_>>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Result<Vec<Value>, Eval> {
+    eval_args_opt(args_node, source, stack, ctx).map_err(|short| match short {
+        ArgsShort::Error(error) => Eval::Error(error),
+        ArgsShort::Exit(value) => Eval::Exit(value),
+    })
+}
+
 fn eval_args_opt(
     args_node: Option<Node<'_>>,
     source: &[u8],
@@ -998,12 +1067,12 @@ fn extract_call_parts<'a>(
                     let receiver_text = node
                         .child(0)
                         .and_then(|n| n.utf8_text(source).ok())
-                        .map(|t| t.trim_matches('"').to_string());
+                        .map(|t| t.unquote_identifier().into_owned());
                     let proc_name = sfx
                         .named_children(&mut sfx.walk())
                         .find(|n| n.kind() == "identifier" || n.kind() == "name")
                         .and_then(|n| n.utf8_text(source).ok())
-                        .map(|t| t.trim_matches('"').to_string())
+                        .map(|t| t.unquote_identifier().into_owned())
                         .unwrap_or_default();
                     return (receiver_text, proc_name, args);
                 }
@@ -1016,16 +1085,16 @@ fn extract_call_parts<'a>(
                             if n.kind() == "primary_expression" {
                                 n.named_child(0)
                                     .and_then(|id| id.utf8_text(source).ok())
-                                    .map(|t| t.trim_matches('"').to_string())
+                                    .map(|t| t.unquote_identifier().into_owned())
                                     .or_else(|| {
                                         n.utf8_text(source)
                                             .ok()
-                                            .map(|t| t.trim_matches('"').to_string())
+                                            .map(|t| t.unquote_identifier().into_owned())
                                     })
                             } else {
                                 n.utf8_text(source)
                                     .ok()
-                                    .map(|t| t.trim_matches('"').to_string())
+                                    .map(|t| t.unquote_identifier().into_owned())
                             }
                         })
                         .unwrap_or_default();
@@ -1063,7 +1132,7 @@ fn extract_call_parts<'a>(
                 )
         })
         .filter_map(|(_, c)| c.utf8_text(source).ok())
-        .map(|t| t.trim_matches('"').to_string())
+        .map(|t| t.unquote_identifier().into_owned())
         .collect();
 
     match name_parts.as_slice() {
@@ -1073,7 +1142,7 @@ fn extract_call_parts<'a>(
     }
 }
 
-fn find_argument_list(node: Node<'_>) -> Option<Node<'_>> {
+pub(crate) fn find_argument_list(node: Node<'_>) -> Option<Node<'_>> {
     // First try field "call" (as defined in the grammar for call_suffix).
     if let Some(n) = node.child_by_field_name("call") {
         return Some(n);
@@ -1179,7 +1248,7 @@ fn collect_arg_nodes<'a>(node: Node<'a>, out: &mut Vec<Node<'a>>) {
 fn node_text(node: Node<'_>, source: &[u8]) -> String {
     node.utf8_text(source)
         .unwrap_or("")
-        .trim_matches('"')
+        .unquote_identifier()
         .to_string()
 }
 

@@ -715,3 +715,99 @@ async fn test_edit_h04_many_sequential_edits() {
 
     client.shutdown().await;
 }
+
+/// A file created, edited or deleted outside the editor reaches the index
+/// through `workspace/didChangeWatchedFiles`. The server registered no
+/// watcher and had no handler, so after a `git checkout` every file the
+/// editor did not have open kept its old contents.
+#[tokio::test]
+async fn files_changed_outside_the_editor_reach_the_index() {
+    let project = tempfile::tempdir().expect("temp project");
+    std::fs::copy(
+        test_project_dir().join("app.json"),
+        project.path().join("app.json"),
+    )
+    .expect("copy app.json");
+    std::fs::create_dir(project.path().join("src")).expect("src");
+    // `spawn` waits until workspace/symbol answers with something.
+    std::fs::write(
+        project.path().join("src").join("Seed.Codeunit.al"),
+        "codeunit 50179 Seed\n{\n}\n",
+    )
+    .expect("seed");
+    let mut client = LspClient::spawn(project.path()).await.unwrap();
+
+    let found = |symbols: &[serde_json::Value], name: &str| {
+        symbols
+            .iter()
+            .any(|symbol| symbol["name"].as_str().is_some_and(|n| n.contains(name)))
+    };
+    async fn wait_for(
+        client: &mut LspClient,
+        query: &str,
+        want: impl Fn(&[serde_json::Value]) -> bool,
+    ) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if want(&client.workspace_symbol(query).await) {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    let path = project.path().join("src").join("OnDisk.Codeunit.al");
+    std::fs::write(&path, "codeunit 50180 \"Made On Disk\"\n{\n}\n").unwrap();
+    client
+        .files_changed_on_disk(&[("src/OnDisk.Codeunit.al", 1)])
+        .await;
+    assert!(
+        wait_for(&mut client, "Made On Disk", |s| found(s, "Made On Disk")).await,
+        "a created file must be indexed"
+    );
+
+    std::fs::write(&path, "codeunit 50180 \"Renamed On Disk\"\n{\n}\n").unwrap();
+    client
+        .files_changed_on_disk(&[("src/OnDisk.Codeunit.al", 2)])
+        .await;
+    assert!(
+        wait_for(&mut client, "On Disk", |s| found(s, "Renamed On Disk")
+            && !found(s, "Made On Disk"))
+        .await,
+        "a changed file must be re-read"
+    );
+
+    std::fs::remove_file(&path).unwrap();
+    client
+        .files_changed_on_disk(&[("src/OnDisk.Codeunit.al", 3)])
+        .await;
+    assert!(
+        wait_for(&mut client, "On Disk", |s| !found(s, "On Disk")).await,
+        "a deleted file must leave the index"
+    );
+
+    // An open document's editor text is newer than the disk and must win.
+    client
+        .open_file(
+            "src/Seed.Codeunit.al",
+            "codeunit 50179 \"Seed Edited\"\n{\n}\n",
+        )
+        .await;
+    std::fs::write(
+        project.path().join("src").join("Seed.Codeunit.al"),
+        "codeunit 50179 \"Seed Disk\"\n{\n}\n",
+    )
+    .unwrap();
+    client
+        .files_changed_on_disk(&[("src/Seed.Codeunit.al", 2)])
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let symbols = client.workspace_symbol("Seed").await;
+    assert!(
+        found(&symbols, "Seed Edited") && !found(&symbols, "Seed Disk"),
+        "the disk must not replace an open document: {symbols:?}"
+    );
+
+    client.shutdown().await;
+}

@@ -47,8 +47,8 @@ window: `al_symbolsearch` on a common word, `al_entrypoints` on a project with B
 `al_impact` on a base table each return tens of thousands of rows otherwise. An explicit `limit`
 always wins, including `limit: 0` for a count alone.
 
-`al_impact` and `al_entrypoints`, and `impact`, `tableImpact`, `entrypoints` and `eventMap` through
-`al_call`, also accept `scope` as `workspace`, `packages` or `all`, and report `scope` and
+`al_impact` and `al_entrypoints`, and `impact`, `tableImpact`, `entrypoints`, `eventMap` and
+`graphExport` through `al_call`, also accept `scope` as `workspace`, `packages` or `all`, and report `scope` and
 `outOfScopeCount`. An MCP call that passes no `scope` gets `workspace`, the code the open project
 can change.
 

@@ -6,7 +6,7 @@ use crate::cli::commands::*;
 
 pub fn cmd_generate(
     kind: &str,
-    id: i64,
+    id: Option<i64>,
     name: &str,
     table: Option<&str>,
     page_type: Option<&str>,
@@ -17,7 +17,10 @@ pub fn cmd_generate(
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    let mut params = serde_json::json!({ "kind": kind, "id": id, "name": name });
+    let mut params = serde_json::json!({ "kind": kind, "name": name });
+    if let Some(id) = id {
+        params["id"] = serde_json::json!(id);
+    }
     if let Some(t) = table {
         params["table"] = serde_json::Value::String(t.to_string());
     }
@@ -34,6 +37,11 @@ pub fn cmd_generate(
             } else {
                 let code = result.get("code").and_then(|v| v.as_str()).unwrap_or("");
                 print!("{code}");
+                for warning in result["warnings"].as_array().into_iter().flatten() {
+                    if let Some(warning) = warning.as_str() {
+                        eprintln!("warning: {warning}");
+                    }
+                }
             }
             ExitCode::SUCCESS
         }
@@ -61,6 +69,106 @@ pub fn cmd_obsolete(json: bool) -> ExitCode {
                     println!("{kind} {object}::{symbol} [{state}]: {reason}");
                 }
                 eprintln!("\n{} obsolete symbol(s)", entries.len());
+            }
+        },
+    )
+}
+
+pub fn cmd_obsolete_usages(json: bool) -> ExitCode {
+    run_command(
+        "obsoleteUsages",
+        Some(serde_json::json!({})),
+        json,
+        None,
+        |result| {
+            let findings = list_rows(result).as_array().cloned().unwrap_or_default();
+            if findings.is_empty() {
+                println!("No calls to obsolete procedures found.");
+                return;
+            }
+            for finding in &findings {
+                let file = finding.get("file").and_then(|v| v.as_str()).unwrap_or("?");
+                let line = finding["range"]["start"]["line"]
+                    .as_u64()
+                    .map_or(0, |l| l + 1);
+                let column = finding["range"]["start"]["character"]
+                    .as_u64()
+                    .map_or(0, |c| c + 1);
+                let message = finding
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                println!("{file}:{line}:{column}: {message}");
+            }
+            eprintln!("\n{} call(s) to obsolete procedures", findings.len());
+        },
+    )
+}
+
+pub fn cmd_package_diff(from: &str, to: &str, all: bool, json: bool) -> ExitCode {
+    run_command(
+        "packageDiff",
+        Some(serde_json::json!({ "from": from, "to": to, "all": all })),
+        json,
+        None,
+        |result| {
+            let label = |side: &str| {
+                let package = &result[side];
+                format!(
+                    "{} {}",
+                    package["name"].as_str().unwrap_or("?"),
+                    package["version"].as_str().unwrap_or("?")
+                )
+            };
+            println!(
+                "{} -> {}: {} change(s), {} breaking, {} used by this workspace, {} possibly",
+                label("from"),
+                label("to"),
+                result["totalChanges"].as_u64().unwrap_or(0),
+                result["breakingChanges"].as_u64().unwrap_or(0),
+                result["affectingWorkspace"].as_u64().unwrap_or(0),
+                result["possiblyAffecting"].as_u64().unwrap_or(0),
+            );
+            if let Some(warning) = result["warning"].as_str() {
+                eprintln!("warning: {warning}");
+            }
+            for change in list_rows(&result["changes"])
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                let object = change["object"].as_str().unwrap_or("?");
+                let target = match change["member"].as_str() {
+                    Some(member) => format!("{object}.{member}"),
+                    None => object.to_string(),
+                };
+                // Table and page "Payment Terms" share a name.
+                let target = match change["objectKind"].as_str() {
+                    Some(kind) => format!("{kind} {target}"),
+                    None => target,
+                };
+                let severity = if change["isBreaking"].as_bool().unwrap_or(false) {
+                    "breaking"
+                } else {
+                    "warning"
+                };
+                println!(
+                    "\n[{severity}] {target}: {}",
+                    change["description"].as_str().unwrap_or("")
+                );
+                for (key, prefix) in [("uses", ""), ("possibleUses", "possibly: ")] {
+                    for used in change[key].as_array().into_iter().flatten() {
+                        let kind = used["k"].as_str().unwrap_or("?");
+                        let name = used["n"].as_str().unwrap_or("?");
+                        let how = used["type"].as_str().unwrap_or("?");
+                        match used["proc"].as_str() {
+                            Some(procedure) => {
+                                println!("    {prefix}{kind} {name}, {procedure} ({how})")
+                            }
+                            None => println!("    {prefix}{kind} {name} ({how})"),
+                        }
+                    }
+                }
             }
         },
     )
@@ -281,9 +389,38 @@ pub fn cmd_deps_graph(format: &str, json: bool) -> ExitCode {
 fn baseline_params_from_app(baseline_app: &str) -> Result<serde_json::Value, String> {
     let pkg = al_symbols::app_reader::read_app_file(std::path::Path::new(baseline_app))
         .map_err(|e| format!("reading baseline .app {baseline_app}: {e}"))?;
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    if let Ok(manifest) = al_project::project::load_app_manifest(&cwd)
+        && let Some(warning) = different_app_warning(&pkg.app_id, &pkg.name, &manifest)
+    {
+        eprintln!("warning: {warning}");
+    }
     let baseline_symbols = serde_json::to_value(&pkg.objects)
         .map_err(|e| format!("serializing baseline symbols: {e}"))?;
     Ok(serde_json::json!({ "baselineSymbols": baseline_symbols }))
+}
+
+/// A warning when the baseline `.app` is not an earlier build of this
+/// project. Comparing another app's surface reports its whole API as
+/// removed, thousands of "breaking changes" with nothing wrong.
+fn different_app_warning(
+    baseline_id: &str,
+    baseline_name: &str,
+    project: &al_project::project::AppManifest,
+) -> Option<String> {
+    let normalize = |id: &str| {
+        id.trim_matches(|c| c == '{' || c == '}')
+            .to_ascii_lowercase()
+    };
+    if baseline_id.is_empty() || normalize(baseline_id) == normalize(&project.id) {
+        return None;
+    }
+    Some(format!(
+        "the baseline is \"{baseline_name}\" ({baseline_id}), not an earlier build of \"{}\" ({}); \
+         every object it has that this app lacks is reported as removed. To compare \
+         two versions of a dependency, use `package-diff`.",
+        project.name, project.id
+    ))
 }
 
 pub fn cmd_breaking_changes(baseline_app: Option<&str>, json: bool) -> ExitCode {
@@ -528,5 +665,39 @@ mod exit_status_tests {
     fn cross_version_checks_without_a_baseline_are_not_green() {
         assert_eq!(cmd_breaking_changes(None, true), ExitCode::FAILURE);
         assert_eq!(cmd_upgrade_report(None, true), ExitCode::FAILURE);
+    }
+}
+
+#[cfg(test)]
+mod baseline_tests {
+    use super::different_app_warning;
+
+    fn manifest(id: &str) -> al_project::project::AppManifest {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "name": "My App", "publisher": "Me", "version": "1.0.0.0"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_earlier_build_of_the_same_app_is_not_warned_about() {
+        let project = manifest("0a1b2c3d-0000-0000-0000-000000000001");
+        assert_eq!(
+            different_app_warning("{0A1B2C3D-0000-0000-0000-000000000001}", "My App", &project),
+            None
+        );
+    }
+
+    #[test]
+    fn another_app_as_baseline_is_warned_about() {
+        let project = manifest("0a1b2c3d-0000-0000-0000-000000000001");
+        let warning = different_app_warning(
+            "437dbf0e-84ff-417a-965d-ed2bb9650972",
+            "Base Application",
+            &project,
+        )
+        .expect("a different app id warns");
+        assert!(warning.contains("Base Application"), "{warning}");
+        assert!(warning.contains("package-diff"), "{warning}");
     }
 }

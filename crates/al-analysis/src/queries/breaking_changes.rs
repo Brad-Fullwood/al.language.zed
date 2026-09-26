@@ -3,10 +3,11 @@
 //! Compare two symbol sets (baseline vs current) to identify breaking changes.
 //! Breaking changes are API surface removals or signature changes.
 
+use al_syntax::IdentifierText;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
-use al_symbols::{MethodSymbol, SymbolEntry};
+use al_symbols::{MethodSymbol, ObjectKind, SymbolEntry};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +48,8 @@ pub enum BreakingChangeKind {
 pub struct BreakingChange {
     pub kind: BreakingChangeKind,
     pub object: String,
+    /// The changed object's kind: a page and a table can share a name.
+    pub object_kind: ObjectKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub member: Option<String>,
     pub description: String,
@@ -86,6 +89,7 @@ pub fn analyze_breaking_changes(
                 changes.push(BreakingChange {
                     kind: BreakingChangeKind::NamespaceChanged,
                     object: old_entry.name.clone(),
+                    object_kind: old_entry.kind,
                     member: None,
                     description: format!(
                         "Object '{}' moved from namespace '{}' to '{}'",
@@ -100,6 +104,7 @@ pub fn analyze_breaking_changes(
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::ObjectRemoved,
                 object: old_entry.name.clone(),
+                object_kind: old_entry.kind,
                 member: None,
                 description: format!(
                     "Object '{}' ({}) was removed",
@@ -223,7 +228,10 @@ fn validate_entry_surface(label: &str, entry: &SymbolEntry) -> Result<(), String
                 permission.permission_object
             ));
         }
-        if !(0..=31).contains(&permission.value) {
+        // Five direct R/I/M/D/X bits and, above them, the same five for
+        // indirect permissions: Base Application 25 carries masks such as 32,
+        // 129 and 257, and allowing only 0..=31 refused every real package.
+        if !(0..=1023).contains(&permission.value) {
             return Err(format!(
                 "{label} {object} contains invalid permission mask {}",
                 permission.value
@@ -270,6 +278,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
         changes.push(BreakingChange {
             kind: BreakingChangeKind::ObjectIdChanged,
             object: old.name.clone(),
+            object_kind: old.kind,
             member: None,
             description: format!(
                 "Object '{}' ID changed from {} to {}",
@@ -284,6 +293,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
         changes.push(BreakingChange {
             kind: BreakingChangeKind::BaseObjectChanged,
             object: old.name.clone(),
+            object_kind: old.kind,
             member: None,
             description: format!(
                 "Base object of '{}' changed from '{}' to '{}'",
@@ -304,6 +314,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::InterfaceRemoved,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(interface.clone()),
                 description: format!(
                     "Object '{}' no longer implements interface '{}'",
@@ -317,6 +328,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
         changes.push(BreakingChange {
             kind: BreakingChangeKind::AccessReduced,
             object: old.name.clone(),
+            object_kind: old.kind,
             member: None,
             description: format!("Object '{}' access changed to Internal", old.name),
             is_breaking: true,
@@ -339,11 +351,12 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             .copied()
             .find(|method| parameter_contract_matches(old_method, method));
         if let Some(new_method) = exact {
-            check_matching_signature(&old.name, old_method, new_method, changes);
+            check_matching_signature(old, old_method, new_method, changes);
         } else if same_name.is_empty() {
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::ProcedureRemoved,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_method.name.clone()),
                 description: format!(
                     "Public procedure '{}' was removed from '{}'",
@@ -353,11 +366,12 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
                 is_breaking: true,
             });
         } else if same_name.len() == 1 {
-            check_incompatible_signature(&old.name, old_method, same_name[0], changes);
+            check_incompatible_signature(old, old_method, same_name[0], changes);
         } else {
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::SignatureChanged,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_method.name.clone()),
                 description: format!(
                     "No current overload of '{}' preserves baseline signature {}",
@@ -386,6 +400,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
                 changes.push(BreakingChange {
                     kind: BreakingChangeKind::FieldRenamed,
                     object: old.name.clone(),
+                    object_kind: old.kind,
                     member: Some(old_field.name.clone()),
                     description: format!(
                         "Field '{}' (ID {}) in '{}' was renamed to '{}'",
@@ -398,6 +413,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::FieldRemoved,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_field.name.clone()),
                 description: format!("Field '{}' was removed from '{}'", old_field.name, old.name),
                 is_breaking: true,
@@ -408,6 +424,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::FieldIdChanged,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_field.name.clone()),
                 description: format!(
                     "Field '{}' in '{}' changed ID from {} to {}",
@@ -420,6 +437,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::FieldTypeChanged,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_field.name.clone()),
                 description: format!(
                     "Field '{}' in '{}' changed type from '{}' to '{}'",
@@ -434,6 +452,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::AccessReduced,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_field.name.clone()),
                 description: format!(
                     "Field '{}' in '{}' access changed to Internal",
@@ -453,6 +472,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::EnumValueRemoved,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_val.name.clone()),
                 description: format!(
                     "Enum value '{}' was removed from '{}'",
@@ -466,6 +486,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::EnumValueOrdinalChanged,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_val.name.clone()),
                 description: format!(
                     "Enum value '{}' in '{}' changed ordinal from {} to {}",
@@ -490,6 +511,7 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::PermissionReduced,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(format!(
                     "{}:{}",
                     old_permission.permission_object, old_permission.object_id
@@ -522,6 +544,7 @@ fn diff_keys(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingCha
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::KeyRemoved,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_key.name.clone()),
                 description: format!(
                     "Key '{}' ({}) was removed from '{}'",
@@ -547,6 +570,7 @@ fn diff_keys(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingCha
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::KeyFieldsChanged,
                 object: old.name.clone(),
+                object_kind: old.kind,
                 member: Some(old_key.name.clone()),
                 description: format!(
                     "Key '{}' in '{}' changed fields from ({}) to ({})",
@@ -575,6 +599,7 @@ fn diff_controls(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<Breakin
         changes.push(BreakingChange {
             kind: BreakingChangeKind::ControlRemoved,
             object: old.name.clone(),
+            object_kind: old.kind,
             member: Some(name.clone()),
             description: format!("Control '{name}' was removed from '{}'", old.name),
             is_breaking: true,
@@ -596,7 +621,7 @@ fn control_names(controls: &[al_symbols::ControlSymbol]) -> BTreeMap<String, Str
 }
 
 fn check_incompatible_signature(
-    object_name: &str,
+    object: &SymbolEntry,
     old: &MethodSymbol,
     new: &MethodSymbol,
     changes: &mut Vec<BreakingChange>,
@@ -604,7 +629,8 @@ fn check_incompatible_signature(
     if old.parameters.len() != new.parameters.len() {
         changes.push(BreakingChange {
             kind: BreakingChangeKind::SignatureChanged,
-            object: object_name.to_string(),
+            object: object.name.clone(),
+            object_kind: object.kind,
             member: Some(old.name.clone()),
             description: format!(
                 "Procedure '{}' parameter count changed from {} to {}",
@@ -622,7 +648,8 @@ fn check_incompatible_signature(
         if normalize_name(&old_parameter.type_name) != normalize_name(&new_parameter.type_name) {
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::SignatureChanged,
-                object: object_name.to_string(),
+                object: object.name.clone(),
+                object_kind: object.kind,
                 member: Some(old.name.clone()),
                 description: format!(
                     "Parameter {} type changed from '{}' to '{}' in '{}'",
@@ -637,7 +664,8 @@ fn check_incompatible_signature(
         if old_parameter.is_var != new_parameter.is_var {
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::SignatureChanged,
-                object: object_name.to_string(),
+                object: object.name.clone(),
+                object_kind: object.kind,
                 member: Some(old.name.clone()),
                 description: format!(
                     "Parameter {} '{}' modifier changed from {} to {} in '{}'",
@@ -662,7 +690,7 @@ fn check_incompatible_signature(
 }
 
 fn check_matching_signature(
-    object_name: &str,
+    object: &SymbolEntry,
     old: &MethodSymbol,
     new: &MethodSymbol,
     changes: &mut Vec<BreakingChange>,
@@ -674,7 +702,8 @@ fn check_matching_signature(
     if old_ret.map(str::to_lowercase) != new_ret.map(str::to_lowercase) {
         changes.push(BreakingChange {
             kind: BreakingChangeKind::ReturnTypeChanged,
-            object: object_name.to_string(),
+            object: object.name.clone(),
+            object_kind: object.kind,
             member: Some(old.name.clone()),
             description: format!(
                 "Return type of '{}' changed from '{}' to '{}'",
@@ -696,7 +725,8 @@ fn check_matching_signature(
             // name.
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::ParameterRenamed,
-                object: object_name.to_string(),
+                object: object.name.clone(),
+                object_kind: object.kind,
                 member: Some(old.name.clone()),
                 description: format!(
                     "Parameter {} in '{}' was renamed from '{}' to '{}'",
@@ -740,7 +770,7 @@ fn method_label(method: &MethodSymbol) -> String {
 }
 
 fn normalize_name(value: &str) -> String {
-    value.trim().trim_matches('"').to_ascii_lowercase()
+    value.unquote_identifier().to_ascii_lowercase()
 }
 
 fn normalize_optional_name(value: Option<&str>) -> Option<String> {
@@ -765,22 +795,12 @@ mod tests {
 
     fn make_codeunit(name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Codeunit,
             id: 50100,
             name: name.to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Test".to_string(),
             methods,
-            fields: Vec::new(),
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -900,15 +920,10 @@ mod tests {
     #[test]
     fn detects_removed_field() {
         let old_table = SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Table,
             id: 18,
             name: "Customer".to_string(),
-            extends: None,
-            implements: Vec::new(),
             package: "Base".to_string(),
-            namespace: String::new(),
-            methods: Vec::new(),
             fields: vec![
                 FieldSymbol {
                     id: 1,
@@ -923,12 +938,7 @@ mod tests {
                     properties: vec![],
                 },
             ],
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         };
 
         let new_table = SymbolEntry {
@@ -1000,17 +1010,10 @@ mod tests {
     fn detects_enum_value_removed() {
         use al_symbols::EnumValueSymbol;
         let make_enum = |values: Vec<&str>| SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Enum,
             id: 50100,
             name: "Status".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Test".to_string(),
-            methods: Vec::new(),
-            fields: Vec::new(),
-            controls: Vec::new(),
             enum_values: values
                 .into_iter()
                 .enumerate()
@@ -1019,10 +1022,7 @@ mod tests {
                     name: n.to_string(),
                 })
                 .collect(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         };
         let baseline = vec![make_enum(vec!["Open", "Pending", "Closed"])];
         let current = vec![make_enum(vec!["Open", "Closed"])];
@@ -1488,12 +1488,28 @@ mod tests {
             permissions: vec![PermissionSymbol {
                 permission_object: 5,
                 object_id: 80,
-                value: 32,
+                value: 1024,
             }],
             ..Default::default()
         };
         let error = analyze_breaking_changes_checked(&[invalid_permissions], &[])
             .expect_err("unknown permission bits must fail");
         assert!(error.contains("invalid permission mask"), "{error}");
+
+        // Indirect bits sit above the direct ones; Microsoft's own packages
+        // use them, so they are a valid surface.
+        let indirect = SymbolEntry {
+            kind: ObjectKind::PermissionSet,
+            id: 50102,
+            name: "Indirect Permissions".to_string(),
+            permissions: vec![PermissionSymbol {
+                permission_object: 0,
+                object_id: 18,
+                value: 129,
+            }],
+            ..Default::default()
+        };
+        analyze_breaking_changes_checked(&[indirect], &[])
+            .expect("an indirect permission bit is a valid mask");
     }
 }

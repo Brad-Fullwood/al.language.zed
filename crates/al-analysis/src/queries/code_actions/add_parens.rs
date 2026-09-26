@@ -1,5 +1,6 @@
 //! Add-parentheses source action.
 
+use al_syntax::IdentifierText;
 use url::Url;
 
 use super::single_edit_ws;
@@ -95,7 +96,7 @@ fn is_callable_identifier_path(body: &str) -> bool {
     // guess.
     let segments: Vec<String> = body
         .split('.')
-        .map(|segment| segment.trim().trim_matches('"').to_ascii_lowercase())
+        .map(|segment| segment.unquote_identifier().to_ascii_lowercase())
         .collect();
     if segments.iter().any(String::is_empty) {
         return false;

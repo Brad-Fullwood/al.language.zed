@@ -1,5 +1,6 @@
 //! Interface stub-generation source action.
 
+use al_syntax::IdentifierText;
 use url::Url;
 
 use super::{detect_indent, quote_al_identifier, single_edit_ws};
@@ -237,7 +238,7 @@ fn extract_interface_names(obj_node: tree_sitter::Node, source: &[u8]) -> Vec<St
                     || inner.kind() == "quoted_identifier"
                 {
                     if let Ok(t) = inner.utf8_text(source) {
-                        let name = t.trim().trim_matches('"');
+                        let name = t.unquote_identifier();
                         if !name.is_empty() {
                             names.push(name.to_string());
                         }
@@ -258,7 +259,7 @@ fn collect_existing_procedures(obj_node: tree_sitter::Node, source: &[u8]) -> Ve
         if node.kind() == "procedure_declaration" || node.kind() == "event_procedure_declaration" {
             if let Some(name_node) = node.child_by_field_name("name") {
                 if let Ok(name) = name_node.utf8_text(source) {
-                    procs.push(name.trim_matches('"').to_string());
+                    procs.push(name.unquote_identifier().into_owned());
                 }
             }
             // Don't descend into procedure bodies

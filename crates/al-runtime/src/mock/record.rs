@@ -66,6 +66,8 @@ pub enum RecordError {
     TriggerExecutionUnsupported(&'static str),
     #[error("arithmetic overflow while calculating FlowField {0}")]
     FlowArithmeticOverflow(&'static str),
+    #[error("field {0} is part of the primary key; ModifyAll cannot change it")]
+    PrimaryKeyModifyAll(FieldNo),
     #[error("invalid FIND direction '{0}' (expected '-' or '+')")]
     InvalidFindDirection(char),
 }
@@ -158,11 +160,17 @@ fn zero_like(bound: &Value) -> Option<Value> {
 struct SortKey {
     /// Field numbers, in priority order.
     fields: Vec<FieldNo>,
+    /// `Ascending(false)`: iterate the whole key, primary key included, in
+    /// reverse.
+    descending: bool,
 }
 
 impl SortKey {
     fn from_fields(fields: Vec<FieldNo>) -> Self {
-        SortKey { fields }
+        SortKey {
+            fields,
+            descending: false,
+        }
     }
 
     /// The sort key normalises each cell exactly as the primary-key index does. A BC
@@ -225,6 +233,37 @@ fn normalize_key_value(value: &Value) -> Value {
 
 fn normalize_key(key: &[Value]) -> PrimaryKey {
     key.iter().map(normalize_key_value).collect()
+}
+
+/// Sum numeric cells: Integer when every one is, Decimal otherwise.
+fn sum_cells<'a>(cells: impl Iterator<Item = &'a Value>) -> Result<Value, RecordError> {
+    let mut int_sum: i64 = 0;
+    let mut dec_sum = Decimal::ZERO;
+    let mut any_decimal = false;
+    for cell in cells {
+        match cell {
+            Value::Integer(n) | Value::BigInteger(n) => {
+                int_sum = int_sum
+                    .checked_add(*n)
+                    .ok_or(RecordError::FlowArithmeticOverflow("Sum"))?;
+                dec_sum = dec_sum
+                    .checked_add(Decimal::from(*n))
+                    .ok_or(RecordError::FlowArithmeticOverflow("Sum"))?;
+            }
+            Value::Decimal(d) => {
+                any_decimal = true;
+                dec_sum = dec_sum
+                    .checked_add(*d)
+                    .ok_or(RecordError::FlowArithmeticOverflow("Sum"))?;
+            }
+            _ => {}
+        }
+    }
+    Ok(if any_decimal {
+        Value::Decimal(dec_sum)
+    } else {
+        Value::Integer(int_sum)
+    })
 }
 
 fn row_matches_filters(filters: &BTreeMap<FieldNo, FieldFilter>, row: &Row) -> bool {
@@ -561,12 +600,27 @@ impl MockRecord {
         self.with_default_view(|table, view| table.rename_in(view, new_key_values))
     }
 
-    /// `SETCURRENTKEY(fields…)` — change iteration sort order.
+    /// `SETCURRENTKEY(fields…)` — change iteration sort order. The direction
+    /// set by `Ascending` is kept.
     #[allow(clippy::unused_self)]
     pub fn set_current_key_in(&self, view: &mut RecordView, fields: Vec<FieldNo>) {
-        view.sort_key = SortKey::from_fields(fields);
+        view.sort_key.fields = fields;
         view.iter_set.clear();
         view.iter_pos = None;
+    }
+
+    /// `ASCENDING(flag)` — iterate the current key forwards or backwards.
+    #[allow(clippy::unused_self)]
+    pub fn set_ascending_in(&self, view: &mut RecordView, ascending: bool) {
+        view.sort_key.descending = !ascending;
+        view.iter_set.clear();
+        view.iter_pos = None;
+    }
+
+    /// `ASCENDING()` — whether the view iterates forwards.
+    #[allow(clippy::unused_self)]
+    pub fn is_ascending_in(&self, view: &RecordView) -> bool {
+        !view.sort_key.descending
     }
 
     pub fn set_current_key(&mut self, fields: Vec<FieldNo>) {
@@ -636,6 +690,11 @@ impl MockRecord {
             let row_b = self.rows.get(b).unwrap();
             sort_key.key_of(row_a).cmp(&sort_key.key_of(row_b))
         });
+        // Ties on the current key fall back to primary-key order, which
+        // descending order reverses too.
+        if sort_key.descending {
+            keys.reverse();
+        }
 
         view.iter_set = keys;
     }
@@ -756,6 +815,49 @@ impl MockRecord {
         self.count_in(&self.view)
     }
 
+    /// `ModifyAll(field, value)` — set `field` on every row the view's
+    /// filters select, returning how many changed. A primary-key field would
+    /// move rows and is refused.
+    pub fn modify_all_in(
+        &mut self,
+        view: &RecordView,
+        field: FieldNo,
+        value: Value,
+        run_trigger: bool,
+    ) -> Result<usize, RecordError> {
+        if run_trigger {
+            return Err(RecordError::TriggerExecutionUnsupported("ModifyAll"));
+        }
+        if self.primary_key_fields().contains(&field) {
+            return Err(RecordError::PrimaryKeyModifyAll(field));
+        }
+        let mut changed = 0;
+        for row in self.rows.values_mut() {
+            if row_matches_filters(&view.filters, row) {
+                row.insert(field, value.clone());
+                changed += 1;
+            }
+        }
+        Ok(changed)
+    }
+
+    /// `CalcSums` — the total of `field` over the rows the view's filters
+    /// select. Integer when every contributing cell is, Decimal otherwise or
+    /// when the field is declared Decimal.
+    pub fn calc_sum_in(&self, view: &RecordView, field: FieldNo) -> Result<Value, RecordError> {
+        let total = sum_cells(
+            self.rows
+                .values()
+                .filter(|row| row_matches_filters(&view.filters, row))
+                .filter_map(|row| row.get(&field)),
+        )?;
+        let declared_decimal = matches!(self.field_defaults.get(&field), Some(Value::Decimal(_)));
+        Ok(match total {
+            Value::Integer(n) if declared_decimal => Value::Decimal(Decimal::from(n)),
+            other => other,
+        })
+    }
+
     pub fn x_rec(&self) -> &Row {
         &self.view.x_rec
     }
@@ -807,35 +909,7 @@ impl MockRecord {
                     .map_err(|_| RecordError::FlowArithmeticOverflow("Count"))?,
             )),
             FlowAgg::Exist => Ok(Value::Boolean(!matching.is_empty())),
-            FlowAgg::Sum => {
-                let mut int_sum: i64 = 0;
-                let mut dec_sum = Decimal::ZERO;
-                let mut any_decimal = false;
-                for cell in target_cells() {
-                    match cell {
-                        Value::Integer(n) | Value::BigInteger(n) => {
-                            int_sum = int_sum
-                                .checked_add(*n)
-                                .ok_or(RecordError::FlowArithmeticOverflow("Sum"))?;
-                            dec_sum = dec_sum
-                                .checked_add(Decimal::from(*n))
-                                .ok_or(RecordError::FlowArithmeticOverflow("Sum"))?;
-                        }
-                        Value::Decimal(d) => {
-                            any_decimal = true;
-                            dec_sum = dec_sum
-                                .checked_add(*d)
-                                .ok_or(RecordError::FlowArithmeticOverflow("Sum"))?;
-                        }
-                        _ => {}
-                    }
-                }
-                if any_decimal {
-                    Ok(Value::Decimal(dec_sum))
-                } else {
-                    Ok(Value::Integer(int_sum))
-                }
-            }
+            FlowAgg::Sum => sum_cells(target_cells()),
             FlowAgg::Average => {
                 let nums: Vec<Decimal> = target_cells().filter_map(as_number).collect();
                 if nums.is_empty() {

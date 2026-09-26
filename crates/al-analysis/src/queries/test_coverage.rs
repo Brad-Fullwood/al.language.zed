@@ -18,6 +18,7 @@
 //! Output: per-test-procedure list of called production procedures, plus a
 //! reverse map of untested public production procedures.
 
+use al_syntax::IdentifierText;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::Serialize;
@@ -514,7 +515,7 @@ fn collect_coverage_from_tree(
             if node.kind() == "procedure_declaration" {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     if let Ok(raw_name) = name_node.utf8_text(source) {
-                        let proc_name = raw_name.trim_matches('"');
+                        let proc_name = raw_name.unquote_identifier();
                         if test_names.contains(&proc_name.to_lowercase()) {
                             let (called, unresolved_calls) = collect_called_identifiers(
                                 node,

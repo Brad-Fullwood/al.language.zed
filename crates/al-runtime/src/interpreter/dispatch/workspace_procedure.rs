@@ -8,6 +8,7 @@
 use crate::interpreter::eval_error;
 use crate::interpreter::scope::{CallFrame, Eval, ScopeStack};
 use crate::interpreter::value::{ErrorInfo, Value};
+use al_syntax::IdentifierText;
 
 use super::frames::{
     bind_local_vars, bind_object_globals, bind_structured_locals, check_param_type,
@@ -96,7 +97,7 @@ pub(super) fn dispatch_workspace_procedure(
             if node.kind() == "procedure_declaration" {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     if let Ok(name_text) = name_node.utf8_text(source) {
-                        let clean = name_text.trim_matches('"');
+                        let clean = name_text.unquote_identifier();
                         if clean.eq_ignore_ascii_case(procedure) {
                             let params = collect_params(node, source);
                             let ret = collect_return(node, source);

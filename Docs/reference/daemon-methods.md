@@ -17,6 +17,7 @@ below is available through MCP's `al_call`, whether or not it also has a named M
 `parse`, `metrics`, `sqlPatterns`, `sortMembers`, `organizeFiles`, `source`, `eventSource`,
 `location`, `permissions`, `compile`, `package`, `publish`, `newProject`, `errorCodes`, `builtinTypes`, `setup`,
 `clearCache`, `authenticate`, `downloadSymbols`, `snapshot`, `profiling`, `generate`, `obsolete`,
+`obsoleteUsages`, `packageDiff`,
 `audit.dataClassification`, `permissions.audit`, `deps.graph`, `breaking`, `arch.lint`, `duplicates`,
 `upgrade`, `profiler.hints`, `nativeCheck`, `freeIds`, `diag`.
 
@@ -26,6 +27,25 @@ XLIFF: `xlf.generate`, `xlf.refresh`, `xlf.untranslated`, `xlf.suggest`.
 launch configuration in the project. Params: `config` (launch configuration name, optional),
 `incremental` (boolean, default false). The target server comes only from the project's own
 launch configuration.
+
+`obsoleteUsages` lists the calls in the workspace to procedures that are obsolete, each with
+`file`, `range` and a `message` naming the reason and tag. A call on a variable of a package
+object is judged against that object's overloads, chosen by argument count and by the types of
+arguments that are variables or literals; any other call counts only when every definition of the
+name is obsolete. `obsolete` lists every pending obsoletion in the loaded packages
+instead.
+
+`packageDiff` compares two versions of a dependency and keeps the changes the workspace uses.
+Params: `from` and `to` (paths to the two `.app` files, inside the project or its package
+folders; relative paths resolve against the project root), `all` (boolean, default false: also
+return the changes nothing in the workspace uses). The result names both packages and carries
+`totalChanges`, `breakingChanges`, `affectingWorkspace`, `possiblyAffecting` and `changes`, where
+each change has the `kind`, `object`, `objectKind`, `member`, `description` and `isBreaking` of
+`breaking` plus `uses`, the workspace consumers whose receiver resolves to the changed object in
+`impact`'s row shape, and `possibleUses`, name matches whose receiver did not resolve. A change to
+a member counts only code that uses the member; extending the object is not a use of each of its
+members. A use has to name the changed kind: `Record "Payment Terms"` is not a use of page
+"Payment Terms".
 
 `freeIds` allocates inside the `idRanges` declared in `app.json`. Params: `kind` (object kind
 keyword, omit for a per-kind summary), `object` (a table, tableextension, enum or enumextension
@@ -74,20 +94,32 @@ beside them. `total` counts the rows before the window, and `truncated` is true 
 the page, so a full page is never mistaken for a complete answer.
 
 Root-array methods: `search`, `object`, `byId`, `events`, `subscribers`, `entrypoints`, `deadCode`,
-`nativeCheck`, `trace`, `packages`, `sqlPatterns`, `obsolete`, `rules`, `errorCodes`,
+`nativeCheck`, `trace`, `packages`, `sqlPatterns`, `obsolete`, `obsoleteUsages`, `rules`, `errorCodes`,
 `builtinTypes`, `duplicates`, `arch.lint`, `audit.dataClassification`, `tests.discover`,
-`profiler.hints`, `breaking`, `upgrade`.
+`profiler.hints`, `breaking`, `upgrade`, `completions`, `inlayHints`, `foldingRanges`.
 
 Object-with-array methods, with the field projected: `impact` (`impacted`), `tableImpact`
 (`objects`), `eventMap` (`events`), `suggestEvent` (`integrationPoints`), `traceChain` (`chains`),
-`composed` (`extensions`), `tests.affected` (`affected`), `permissions.audit` (`coverage`).
+`composed` (`extensions`), `tests.affected` (`affected`), `permissions.audit` (`coverage`),
+`packageDiff` (`changes`).
+
+`fields` is refused when no row has any of the names. A name that only some results carry is not
+refused, because rows leave optional keys out when they are empty (a workspace `impact` row has no
+`package`); the result names it in `absentFields` instead.
+
+`object` and `byId` also take `signatures: true`, which renders each field, procedure and global
+variable as one line (`1 "No.": Code[20]`, `AssistEdit(OldCust: Record "Customer"): Boolean`)
+instead of an object with every property: Base Application's Customer table goes from 113 KB to
+24 KB. MCP callers get it by default.
 
 MCP callers get `limit: 50` when they do not pass one, because a tool result goes straight into a
 context window. An explicit `limit` always wins, including `limit: 0` for a count.
 
 ## Scope: `workspace`, `packages`, `all`
 
-`impact`, `tableImpact`, `entrypoints` and `eventMap` accept `scope`. `workspace` keeps the rows
+`impact`, `tableImpact`, `entrypoints`, `eventMap` and `graphExport` accept `scope`. For
+`graphExport`, `workspace` keeps the nodes of the project's objects and the nodes one edge away from
+them. `workspace` keeps the rows
 from the open project, `packages` keeps the rows from loaded `.app` files, and `all` keeps
 everything. The result reports the `scope` it used and `outOfScopeCount`, so a short answer is not
 read as a small workspace.

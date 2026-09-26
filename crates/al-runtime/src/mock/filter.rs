@@ -5,7 +5,7 @@
 //!
 //! Public API:
 //! - [`parse`] — parse a filter expression string into a [`FilterExpr`] AST.
-//! - [`matches`] — test whether a [`Value`] satisfies a [`FilterExpr`].
+//! - [`matches()`] — test whether a [`Value`] satisfies a [`FilterExpr`].
 
 use crate::interpreter::value::{Decimal, Value};
 use std::fmt;
@@ -58,7 +58,7 @@ pub struct Pattern {
     /// Whether this is a case-sensitive match. BC filter matching on `Text`
     /// values is case-sensitive by default; the `@` prefix makes the pattern
     /// case-INsensitive. (`Code` cells are caseless regardless — see
-    /// [`pattern_matches`].)
+    /// `pattern_matches`.)
     pub case_sensitive: bool,
 }
 

@@ -1,9 +1,12 @@
 //! Tree-walking AL interpreter with no .NET runtime dependency.
 
+mod chain;
 pub mod coverage;
 pub mod dispatch;
+pub mod enums;
 pub mod eval_expr;
 pub mod eval_stmt;
+mod indexing;
 pub mod records;
 pub mod scope;
 pub mod value;

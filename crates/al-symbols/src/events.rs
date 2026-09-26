@@ -262,13 +262,9 @@ mod tests {
     fn make_codeunit_with_events() -> Vec<SymbolEntry> {
         vec![
             SymbolEntry {
-                synthetic: false,
                 kind: ObjectKind::Codeunit,
                 id: 50100,
                 name: "Sales Event Publisher".to_string(),
-                extends: None,
-                implements: Vec::new(),
-                namespace: String::new(),
                 package: "TestPkg".to_string(),
                 methods: vec![
                     MethodSymbol {
@@ -299,22 +295,12 @@ mod tests {
                         is_local: false,
                     },
                 ],
-                fields: Vec::new(),
-                controls: Vec::new(),
-                enum_values: Vec::new(),
-                keys: Vec::new(),
-                properties: Vec::new(),
-                permissions: Vec::new(),
-                variables: Vec::new(),
+                ..Default::default()
             },
             SymbolEntry {
-                synthetic: false,
                 kind: ObjectKind::Codeunit,
                 id: 50101,
                 name: "Sales Subscriber".to_string(),
-                extends: None,
-                implements: Vec::new(),
-                namespace: String::new(),
                 package: "TestPkg".to_string(),
                 methods: vec![MethodSymbol {
                     name: "HandlePostSalesOrder".to_string(),
@@ -333,13 +319,7 @@ mod tests {
                     }],
                     is_local: false,
                 }],
-                fields: Vec::new(),
-                controls: Vec::new(),
-                enum_values: Vec::new(),
-                keys: Vec::new(),
-                properties: Vec::new(),
-                permissions: Vec::new(),
-                variables: Vec::new(),
+                ..Default::default()
             },
         ]
     }

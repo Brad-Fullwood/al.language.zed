@@ -100,7 +100,7 @@ they are confined to: the daemon changes files only inside the project it has lo
 | `compile` | `--project <dir>` | Compile (native default; `al.useOfficialCompiler` → `alc`) |
 | `package` | — | Package compiled app into `.app` |
 | `publish` | `--config <name> [--incremental]` | Compile and publish the `.app` to the BC dev endpoint named in `.vscode/launch.json` or `.zed/debug.json`; `--incremental` uses the RAD API |
-| `pack-native` | `--project <dir> --out <path> [--validate]` | Verified pure-Rust `.app` build; rejects syntax/manifest/project/binding/artifact errors and writes nothing on failure; global `--json` returns exact native ranges; `--validate` adds `alc` after native checks |
+| `pack-native` | `--project <dir> --out <path> [--validate [--analyzers <list>]]` | Verified pure-Rust `.app` build; rejects syntax/manifest/project/binding/artifact errors and writes nothing on failure; global `--json` returns exact native ranges; `--validate` adds `alc` after native checks, with the project's `al.codeAnalyzers` or the `--analyzers` list (a custom analyzer from an untrusted repository's own folders is refused) |
 | `download-symbols` | `--project <dir> --source server\|nuget` | Download dependency symbols |
 | `authenticate [login\|status\|clear]` | `--tenant <tenant>` | BC / Entra authentication and cached-session management |
 
@@ -109,11 +109,11 @@ they are confined to: the daemon changes files only inside the project it has lo
 | Command | Flags | Purpose |
 | --- | --- | --- |
 | `format [file]` | `--check --stdin --all` | Format (check exits non-zero if changes needed) |
-| `lint [file]` | `--all --analyzers <list>` | Lint via native + Microsoft analyzers |
+| `lint [file]` | `--all` | Lint with the native rules (Microsoft's cops run under alc: `pack-native --validate --analyzers`) |
 | `fix [file]` | `--dry-run --rule <code>` | Apply registered safe diagnostic fixes to one file or the loaded project; report unfixable findings separately |
 | `permissions` | `--format al\|xml --name <n> --id <N> --role-id <id>` | Generate permission set |
 | `new <dir>` | `--name --publisher --template <t> --runtime <major.minor>` | New project from a built-in or configured user template; application minimum derives from runtime |
-| `generate <kind>` | `--id --name --table --page-type --subject` | Generate page/report/test (`test` requires `--subject`) |
+| `generate <kind>` | `--id --name --table --page-type --subject` | Generate page/report/test (`test` requires `--subject`). Without `--id` the object takes the first free ID of its kind in the app.json `idRanges`; an `--id` outside them prints a warning |
 | `sort-members [file]` | `--all --dry-run` | Canonical member order |
 | `organize-files` | `--dry-run` | Rename `.al` files to `<Type><Id>.<Name>.al` |
 | `add-application-area` | `--value <v> --dry-run` | Add `ApplicationArea` workspace-wide |
@@ -127,10 +127,10 @@ they are confined to: the daemon changes files only inside the project it has lo
 | `trace <event>` | `--depth N (10) --tree` | Event propagation chain (`--tree` = full multi-hop) |
 | `intercept` | — | Full event interception map + orphans |
 | `entrypoints` | — | Procedures with no incoming calls |
-| `graph` | `--format json\|dot` | Insight graph export |
+| `graph` | `--format json\|dot`, global `--scope workspace\|packages\|all` | Insight graph export; `--scope workspace` keeps the workspace's objects and the nodes one edge away |
 | `insight-stats` | — | Node/edge counts |
 | `impact <symbol>` | `--table` | Who consumes this symbol/table |
-| `suggest-event` | `--object/--procedure/--table/--field/--event <x>` | Integration-point discovery |
+| `suggest-event` | `--object <x> [--procedure/--event <x>]`, or `--table <x> [--field <x>]` | Integration-point discovery (`--event` needs `--object`) |
 | `metrics [file]` | `--all --threshold-cyclomatic N --threshold-cognitive N` | Complexity |
 | `dead-code` | — | Unused procedures/fields/subscribers (with confidence) |
 | `sql-scan` | — | SQL anti-patterns |
@@ -140,7 +140,8 @@ they are confined to: the daemon changes files only inside the project it has lo
 | `free-ids` | `--kind K --object NAME --count N --include-used` | Next free object ID, table field number or enum ordinal inside the `app.json` idRanges |
 | `breaking` | `--baseline-app <old.app>` | Breaking API changes; reports unevaluated when omitted |
 | `upgrade` | `--baseline-app <old.app>` | Upgrade impact report; reports unevaluated when omitted |
-| `obsolete` | — | `[Obsolete]` timeline |
+| `obsolete` | `--used` | `[Obsolete]` timeline of the loaded packages; with `--used`, the workspace's calls to obsolete procedures |
+| `package-diff <old.app> <new.app>` | `--all` | Changes between two versions of a dependency that the workspace's code uses (`--all`: every change) |
 | `audit-data` | — | Data-classification audit |
 | `permission-audit` | — | Permission-set coverage audit |
 | `profiler-hints [hotspots…]` | — | Optimization hints for named hotspot procedures |

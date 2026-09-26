@@ -39,43 +39,15 @@ tempfile = { workspace = true }
 tokio = { workspace = true }
 interprocess = { workspace = true }
 tower-lsp = { workspace = true }
-dashmap = { workspace = true }
-ropey = { workspace = true }
 tracing = { workspace = true }
 tree-sitter = { workspace = true }
-# AL grammar: canonical tree-sitter binding crate (compiles src/parser.c itself).
-tree-sitter-al = { package = "tree-sitter-al-bc", path = "../../tree-sitter-al", version = "0.1.0" }
 url = { workspace = true }
-urlencoding = { workspace = true }
-petgraph = { workspace = true }
 reqwest = { workspace = true }
-# rustls-tls-native-roots: rustls TLS using the OS trust store, so the SignalR
-# websocket client has no system-OpenSSL build dep (cross-compiles to aarch64).
-tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
-futures-util = "0.3"
 # Folded in from al-symbols (stage 5):
 dirs = { workspace = true }
 zip = { workspace = true }
-quick-xml = { workspace = true }
 sha2 = { workspace = true }
-memmap2 = { workspace = true }
-rayon = { workspace = true }
-getrandom = { workspace = true }
 futures = { workspace = true }
-# Zeroize OAuth bearer and refresh secrets on drop.
-zeroize = { workspace = true }
-# OS secret store (Secret Service / Keychain / Credential Manager) for OAuth
-# token persistence keeps the 90-day refresh token off plaintext disk.
-# crypto-rust keeps the pure-Rust / no-OpenSSL cross-compile posture; the code
-# falls back to the hardened 0o600 file when no backend is available (headless
-# Linux / CI), so auth never breaks because a keyring is absent.
-keyring = { version = "3", default-features = false, features = [
-    "apple-native",
-    "windows-native",
-    "async-secret-service",
-    "crypto-rust",
-    "tokio",
-] }
 # Folded in from al-lsp (stage 7):
 # tracing-subscriber is binary-only — only the [[bin]] al-lsp target wires it
 # up. Opt-in via the `bin` feature so library consumers (al-test-harness, the

@@ -1,5 +1,6 @@
 //! Namespace and using-directive code actions.
 
+use al_syntax::IdentifierText;
 use url::Url;
 
 use super::single_edit_ws;
@@ -118,7 +119,7 @@ fn extract_word_at_position(text: &str, range: Range) -> String {
     }
 
     if start_byte < end_byte && end_byte <= line.len() {
-        return line[start_byte..end_byte].trim_matches('"').to_string();
+        return line[start_byte..end_byte].unquote_identifier().into_owned();
     }
 
     // Non-ASCII bytes (>= 0x80) are not alphanumeric, so they act as word boundaries.
@@ -278,22 +279,12 @@ mod tests {
 
     fn make_entry_with_namespace(kind: ObjectKind, id: i32, name: &str, ns: &str) -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind,
             id,
             name: name.to_string(),
-            extends: None,
-            implements: Vec::new(),
             package: "TestPkg".to_string(),
             namespace: ns.to_string(),
-            methods: Vec::new(),
-            fields: Vec::new(),
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 

@@ -5,6 +5,7 @@
 //! edit such as `Cust.` leaves behind, and is guarded against comments and
 //! string literals by [`position_is_in_comment_or_literal`].
 
+use al_syntax::IdentifierText;
 use tree_sitter::Tree;
 
 use crate::queries::Position;
@@ -63,7 +64,7 @@ pub(crate) fn access_path_at(tree: &Tree, text: &str, position: Position) -> Opt
                     let member = member_node
                         .utf8_text(text.as_bytes())
                         .unwrap_or("")
-                        .trim_matches('"')
+                        .unquote_identifier()
                         .to_string();
                     let kind = if current.kind().starts_with("scope") {
                         AccessKind::Scope
@@ -210,6 +211,27 @@ fn previous_access_part(line: &str, current_start: usize) -> Option<(AccessKind,
         return None;
     };
 
+    // `Token.AsValue().AsText`: the part before the `.` is a call, so step
+    // back over its argument list to the name.
+    if kind == AccessKind::Member && bytes.get(prev_end.wrapping_sub(1)) == Some(&b')') {
+        let mut depth = 0usize;
+        let mut open = None;
+        for index in (0..prev_end).rev() {
+            match bytes[index] {
+                b')' => depth += 1,
+                b'(' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        open = Some(index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let (prev_start, _) = token_span_ending_at(line, open?)?;
+        return Some((kind, prev_start, prev_end));
+    }
     let (prev_start, _) = token_span_ending_at(line, prev_end)?;
     Some((kind, prev_start, prev_end))
 }
@@ -304,7 +326,7 @@ fn is_identifier_char(ch: u8) -> bool {
 }
 
 fn clean_access_text(value: &str) -> String {
-    value.trim().trim_matches('"').to_string()
+    value.unquote_identifier().into_owned()
 }
 
 /// Whether `position` sits inside a comment or a string literal.
@@ -494,5 +516,26 @@ mod tests {
         let real = at(8, 14).expect("the real member access still resolves");
         assert_eq!(real.receiver, "Cust");
         assert_eq!(real.member, "Name");
+    }
+
+    /// A method on a call's result: the receiver is the call expression.
+    #[test]
+    fn a_member_after_a_call_has_the_call_as_its_receiver() {
+        let source = "codeunit 50100 X\n{\n    procedure P()\n    var\n        Token: JsonToken;\n        V: Text;\n    begin\n        V := Token.AsValue().AsText();\n    end;\n}";
+        let mut parser = AlParser::new();
+        let parsed = parser.parse(source);
+        let line = source.lines().nth(7).unwrap();
+        let column = line.find("AsText").unwrap() as u32 + 2;
+        let path = access_path_at(
+            &parsed.tree,
+            source,
+            Position {
+                line: 7,
+                character: column,
+            },
+        )
+        .expect("access path");
+        assert_eq!(path.receiver, "Token.AsValue()");
+        assert_eq!(path.member, "AsText");
     }
 }

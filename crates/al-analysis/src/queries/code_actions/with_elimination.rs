@@ -1,5 +1,6 @@
 //! With-statement elimination source action.
 
+use al_syntax::IdentifierText;
 use url::Url;
 
 use super::{detect_indent, single_edit_ws};
@@ -83,7 +84,7 @@ fn find_record_type_recursive(
         if kind == "regular_variable_declaration" || kind == "parameter" {
             if let Some(name_node) = node.child_by_field_name("name") {
                 if let Ok(name_text) = name_node.utf8_text(source) {
-                    let name_clean = name_text.trim_matches('"').trim();
+                    let name_clean = name_text.unquote_identifier();
                     if name_clean.to_lowercase() == *var_lower {
                         if let Some(type_node) = node.child_by_field_name("type") {
                             return extract_record_subtype(type_node, source);
@@ -115,7 +116,7 @@ fn extract_record_subtype(type_node: tree_sitter::Node, source: &[u8]) -> Option
             }
         } else {
             if let Ok(text) = child.utf8_text(source) {
-                let trimmed = text.trim().trim_matches('"').trim();
+                let trimmed = text.unquote_identifier();
                 if !trimmed.is_empty() {
                     return Some(trimmed.to_string());
                 }
@@ -378,7 +379,7 @@ fn collect_own_procedure_names(
                 .child_by_field_name("name")
                 .and_then(|n| n.utf8_text(source).ok())
             {
-                names.insert(name.trim().trim_matches('"').to_lowercase());
+                names.insert(name.unquote_identifier().to_lowercase());
             }
             // Nested declarations do not exist in AL; skip the body.
             continue;

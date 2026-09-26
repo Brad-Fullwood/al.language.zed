@@ -5,10 +5,13 @@
 //! comparisons, string concatenation, parenthesised groups, member
 //! lookups, and procedure-call expressions (delegated to `dispatch`).
 
+use al_syntax::IdentifierText;
 use tree_sitter::Node;
 
 use super::error_info;
+use crate::interpreter::chain;
 use crate::interpreter::dispatch::DispatchCtx;
+use crate::interpreter::indexing;
 use crate::interpreter::records;
 use crate::interpreter::scope::{Eval, ScopeStack};
 use crate::interpreter::value::{self, Decimal, ErrorInfo, Value};
@@ -111,6 +114,12 @@ fn eval_expr_inner(
         // Calls and record reads need the dispatch context; scope access yields
         // an Option value; everything else unwraps.
         "postfix_expression" => eval_postfix(node, source, stack, ctx),
+        // A case label holding an operator (`Points >= 1000:` under
+        // `case true of`) is a binary expression; only its first operand was
+        // evaluated, so every such label compared `Points` with `true`.
+        "case_label_expression" if node.named_child_count() > 1 => {
+            eval_expression_node(node, source, stack, ctx)
+        }
         "parenthesized_expression" | "primary_expression" | "case_label_expression" => {
             match named_child(node, 0) {
                 Some(inner) => eval_expr(inner, source, stack, ctx),
@@ -520,6 +529,19 @@ fn eval_postfix(
         }
     }
 
+    if let Some((name, suffix)) = indexing::indexed_variable(node, source) {
+        return indexing::read_element(&name, suffix, source, stack, ctx);
+    }
+    if let Some(result) = chain::eval_chained_value(node, source, stack, ctx) {
+        return result;
+    }
+    if node.named_child_count() > 1 {
+        return Eval::Error(error_info(format!(
+            "'{}' is not an expression the local runtime can evaluate",
+            utf8_text(node, source).unwrap_or_default().trim()
+        )));
+    }
+
     // Plain wrapper — evaluate the primary expression.
     match named_child(node, 0) {
         Some(inner) => eval_expr(inner, source, stack, ctx),
@@ -536,7 +558,7 @@ fn eval_postfix(
 ///
 /// Workspace enum declarations are resolved through the same source catalog as
 /// procedure dispatch, preserving explicit (including sparse) ordinals.
-fn eval_scope_access(
+pub(crate) fn eval_scope_access(
     node: Node<'_>,
     scope_members: &[Node<'_>],
     source: &[u8],
@@ -546,13 +568,13 @@ fn eval_scope_access(
         n.child_by_field_name("member")
             .or_else(|| n.named_child(0))
             .and_then(|m| m.utf8_text(source).ok())
-            .map(|t| t.trim_matches('"').to_string())
+            .map(|t| t.unquote_identifier().into_owned())
     };
 
     let primary_text = node
         .named_child(0)
         .and_then(|p| p.utf8_text(source).ok())
-        .map(|t| t.trim_matches('"').to_string())
+        .map(|t| t.unquote_identifier().into_owned())
         .unwrap_or_default();
 
     let (type_name, member) = if primary_text.eq_ignore_ascii_case("enum") {
@@ -587,28 +609,7 @@ fn eval_scope_access(
 }
 
 fn resolve_workspace_enum_ordinal(ctx: &DispatchCtx, type_name: &str, member: &str) -> Option<i64> {
-    let path = ctx.source.find_by_object_name(type_name)?;
-    let (text, tree) = ctx.source.get_cached_parse(&path)?;
-    let bytes = text.as_bytes();
-    let mut stack = vec![tree.root_node()];
-    while let Some(node) = stack.pop() {
-        if node.kind() == "enum_value_declaration" {
-            let name = node
-                .child_by_field_name("name")
-                .and_then(|name| name.utf8_text(bytes).ok())
-                .map(|name| name.trim().trim_matches('"'));
-            if name.is_some_and(|name| name.eq_ignore_ascii_case(member)) {
-                return node
-                    .child_by_field_name("id")
-                    .and_then(|id| id.utf8_text(bytes).ok())
-                    .and_then(|id| id.trim().parse::<i64>().ok());
-            }
-            continue;
-        }
-        let mut cursor = node.walk();
-        stack.extend(node.named_children(&mut cursor));
-    }
-    None
+    crate::interpreter::enums::workspace_enum_ordinal(ctx, type_name, member)
 }
 
 /// Evaluate an AL date literal (`20240701D`, `0D`) into a `Value::Date`.
@@ -784,6 +785,16 @@ fn eval_expression_node(
                 other => return other,
             };
 
+        // `Slots[i] := value` / `Name[1] := 'x'`: one element of an array or
+        // one character of a Text.
+        if let Some((name, suffix)) = indexing::indexed_variable(lhs_node, source) {
+            let combine = |current: Value, rhs: Value| match kind {
+                AssignKind::Plain => Eval::Normal(rhs),
+                AssignKind::Compound(base_op) => apply_binary(base_op, current, rhs),
+            };
+            return indexing::write_element(&name, suffix, source, rhs_val, &combine, stack, ctx);
+        }
+
         // Record field assignment: `Rec."Field" := value` / `Rec.Amount += 5`.
         // Handled before the plain-identifier path so the whole record isn't
         // overwritten. Compound forms load the field's current value and apply
@@ -824,7 +835,7 @@ fn eval_expression_node(
                 lhs_node
                     .utf8_text(source)
                     .ok()
-                    .map(|s| s.trim_matches('"').to_ascii_lowercase())
+                    .map(|s| s.unquote_identifier().to_ascii_lowercase())
             })
             .unwrap_or_default();
 
@@ -1158,7 +1169,7 @@ fn extract_identifier_name(node: Node<'_>, source: &[u8]) -> Option<String> {
                 return child
                     .utf8_text(source)
                     .ok()
-                    .map(|s| s.trim_matches('"').to_ascii_lowercase());
+                    .map(|s| s.unquote_identifier().to_ascii_lowercase());
             }
             "unary_expression" | "postfix_expression" | "primary_expression" => {
                 if let Some(name) = extract_identifier_name(child, source) {

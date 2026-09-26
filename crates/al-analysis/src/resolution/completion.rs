@@ -318,7 +318,19 @@ pub(crate) fn completion_items_for_receiver(
         total = items.len(),
         "completion_items_for_receiver: done"
     );
+    quote_member_names(&mut items);
     Ok(items)
+}
+
+/// A member whose name is not a plain identifier (`No.`, `Loyalty Tier`)
+/// has to be written quoted: inserting the label gave `Cust.No.`, which does
+/// not compile. Object-name completions already quote the same way.
+fn quote_member_names(items: &mut [CompletionCandidate]) {
+    for item in items {
+        if item.insert_text.is_none() && crate::queries::completions::needs_quoting(&item.label) {
+            item.insert_text = Some(format!("\"{}\"", item.label.replace('"', "\"\"")));
+        }
+    }
 }
 
 pub(crate) fn enum_completion_items(
@@ -433,6 +445,7 @@ pub(crate) fn enum_completion_items(
         total = items.len(),
         "enum_completion_items: done"
     );
+    quote_member_names(&mut items);
     Ok(items)
 }
 
@@ -642,5 +655,49 @@ mod tests {
             assert_eq!(item.kind, CompletionCandidateKind::Field);
             assert_eq!(item.detail.as_deref(), Some(type_name));
         }
+    }
+
+    /// `Cust.` offered `No.` and `Loyalty Tier` with no insert text, so an
+    /// editor wrote `Cust.No.`, which does not compile.
+    #[test]
+    fn member_names_that_are_not_identifiers_insert_quoted() {
+        let ws = Workspace::new();
+        ws.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Table,
+            id: 18,
+            name: "Customer".to_string(),
+            package: "Base Application".to_string(),
+            fields: vec![
+                al_symbols::FieldSymbol {
+                    id: 1,
+                    name: "No.".to_string(),
+                    type_name: "Code[20]".to_string(),
+                    properties: Vec::new(),
+                },
+                al_symbols::FieldSymbol {
+                    id: 2,
+                    name: "Name".to_string(),
+                    type_name: "Text[100]".to_string(),
+                    properties: Vec::new(),
+                },
+            ],
+            ..Default::default()
+        }]);
+        let receiver = ResolvedType {
+            type_name: "Record".to_string(),
+            type_subtype: Some("Customer".to_string()),
+        };
+
+        let items = completion_items_for_receiver(&ws, &receiver);
+        let insert = |label: &str| {
+            items
+                .iter()
+                .find(|item| item.label == label)
+                .unwrap_or_else(|| panic!("{label} missing"))
+                .insert_text
+                .clone()
+        };
+        assert_eq!(insert("No.").as_deref(), Some("\"No.\""));
+        assert_eq!(insert("Name"), None);
     }
 }

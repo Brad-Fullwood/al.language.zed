@@ -75,10 +75,31 @@ pub fn cmd_sort_members(file: Option<&str>, all: bool, dry_run: bool, json: bool
                     .get("changed")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                if changed {
-                    println!("Members sorted.");
-                } else {
+                if !changed {
                     println!("Already sorted — no changes.");
+                } else if dry_run {
+                    // The file is untouched; say what would change instead of
+                    // reporting a sort that did not happen.
+                    match (
+                        result.get("sorted").and_then(|v| v.as_str()),
+                        result.get("files"),
+                    ) {
+                        (Some(sorted), _) => {
+                            println!("Would reorder members (dry run, nothing written):\n");
+                            print!("{sorted}");
+                        }
+                        (None, Some(files)) => {
+                            println!("Would reorder members in (dry run, nothing written):");
+                            for file in files.as_array().into_iter().flatten() {
+                                if file["changed"].as_bool() == Some(true) {
+                                    println!("  {}", file["file"].as_str().unwrap_or("?"));
+                                }
+                            }
+                        }
+                        _ => println!("Would reorder members (dry run, nothing written)."),
+                    }
+                } else {
+                    println!("Members sorted.");
                 }
             }
             ExitCode::SUCCESS

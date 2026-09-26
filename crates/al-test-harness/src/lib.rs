@@ -16,7 +16,7 @@
 //! Nothing in this manifest depends on `al-lsp` or `al-explorer`, so cargo
 //! will not rebuild them for a plain `cargo test -p al-test-harness`: the
 //! suite measures whichever binaries are sitting in `target/`. Build the
-//! workspace first, as the `Makefile` targets do. [`find_binary`] refuses a
+//! workspace first, as the `Makefile` targets do. `find_binary` refuses a
 //! binary older than the crate sources rather than reporting a result for the
 //! previous build.
 //!
@@ -77,9 +77,59 @@ pub use protocol::*;
 /// this harness itself, and the Zed extension, which builds to wasm.
 const NOT_LINKED_BY_ANY_BINARY: [&str; 2] = ["al-test-harness", "zed-al"];
 
-/// Newest modification time under the `src/` or `Cargo.toml` of a crate a
-/// spawned binary could link.
-fn newest_source_mtime(workspace_root: &Path) -> Option<std::time::SystemTime> {
+/// The workspace crates the binary built from `crate_name` links: the crate
+/// itself plus every crate reached through `path = "../<crate>"` entries in a
+/// `[dependencies]` or `[target.*.dependencies]` section, transitively.
+/// Dev-dependencies never reach a binary. `None` when `crate_name` is not a
+/// workspace crate.
+///
+/// Without this, editing al-explorer marked al-lsp stale even though cargo
+/// rightly left al-lsp alone, and every harness test refused to run until
+/// something relinked al-lsp.
+fn linked_crates(
+    workspace_root: &Path,
+    crate_name: &str,
+) -> Option<std::collections::HashSet<String>> {
+    let crates = workspace_root.join("crates");
+    if !crates.join(crate_name).join("Cargo.toml").is_file() {
+        return None;
+    }
+    let mut linked = std::collections::HashSet::new();
+    let mut pending = vec![crate_name.to_string()];
+    while let Some(name) = pending.pop() {
+        if !linked.insert(name.clone()) {
+            continue;
+        }
+        let Ok(manifest) = std::fs::read_to_string(crates.join(&name).join("Cargo.toml")) else {
+            continue;
+        };
+        let mut in_dependencies = false;
+        for line in manifest.lines().map(str::trim) {
+            if line.starts_with('[') {
+                in_dependencies = line == "[dependencies]"
+                    || (line.starts_with("[target.") && line.ends_with(".dependencies]"));
+                continue;
+            }
+            if !in_dependencies {
+                continue;
+            }
+            if let Some(rest) = line.split("path = \"../").nth(1) {
+                if let Some(dependency) = rest.split('"').next() {
+                    pending.push(dependency.to_string());
+                }
+            }
+        }
+    }
+    Some(linked)
+}
+
+/// Newest modification time under the `src/` or `Cargo.toml` of a crate the
+/// spawned binary links: the crates in `linked` when known, otherwise any
+/// crate a spawned binary could link.
+fn newest_source_mtime(
+    workspace_root: &Path,
+    linked: Option<&std::collections::HashSet<String>>,
+) -> Option<std::time::SystemTime> {
     fn walk(dir: &Path, newest: &mut Option<std::time::SystemTime>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
@@ -107,11 +157,11 @@ fn newest_source_mtime(workspace_root: &Path) -> Option<std::time::SystemTime> {
         return None;
     };
     for entry in entries.flatten() {
-        if entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| NOT_LINKED_BY_ANY_BINARY.contains(&name))
-        {
+        let skip = entry.file_name().to_str().is_some_and(|name| match linked {
+            Some(linked) => !linked.contains(name),
+            None => NOT_LINKED_BY_ANY_BINARY.contains(&name),
+        });
+        if skip {
             continue;
         }
         let src = entry.path().join("src");
@@ -139,9 +189,14 @@ fn assert_binary_is_current(binary: &Path, workspace_root: &Path) {
     if std::env::var_os("AL_HARNESS_ALLOW_STALE_BINARY").is_some() {
         return;
     }
+    // Binaries are named after the crate that builds them (al-lsp, al-explorer).
+    let linked = binary
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .and_then(|crate_name| linked_crates(workspace_root, crate_name));
     let (Ok(metadata), Some(newest_source)) = (
         std::fs::metadata(binary),
-        newest_source_mtime(workspace_root),
+        newest_source_mtime(workspace_root, linked.as_ref()),
     ) else {
         return;
     };
@@ -896,6 +951,23 @@ impl LspClient {
         }
     }
 
+    /// Send `workspace/didChangeWatchedFiles` for paths relative to the
+    /// project, each with its LSP change type (1 created, 2 changed, 3 deleted).
+    pub async fn files_changed_on_disk(&mut self, changes: &[(&str, u32)]) {
+        let changes: Vec<Value> = changes
+            .iter()
+            .map(|(relative_path, change_type)| {
+                serde_json::json!({ "uri": self.file_uri(relative_path), "type": change_type })
+            })
+            .collect();
+        self.notify(
+            "workspace/didChangeWatchedFiles",
+            serde_json::json!({ "changes": changes }),
+        )
+        .await
+        .expect("workspace/didChangeWatchedFiles notify failed");
+    }
+
     pub async fn workspace_symbol(&mut self, query: &str) -> Vec<Value> {
         let params = serde_json::json!({ "query": query });
 
@@ -1141,8 +1213,8 @@ async fn send_message(
 
 /// Read JSON-RPC messages from the transport and dispatch them.
 ///
-/// Generic over the reader type so both stdio (BufReader<ChildStdout>) and
-/// socket (BufReader<OwnedReadHalf>) use the same code with zero dynamic dispatch.
+/// Generic over the reader type so both stdio (`BufReader<ChildStdout>`) and
+/// socket (`BufReader<OwnedReadHalf>`) use the same code with zero dynamic dispatch.
 ///
 /// Exposed as `pub` so `transport.rs` tests can drive it directly without a
 /// copy-paste duplicate.
@@ -1299,4 +1371,41 @@ fn scopeguard_remove(
         }
     }
     Guard { pending, id }
+}
+
+#[cfg(test)]
+mod staleness_tests {
+    use super::linked_crates;
+    use std::path::PathBuf;
+
+    fn workspace_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|crates| crates.parent())
+            .expect("workspace root")
+            .to_path_buf()
+    }
+
+    #[test]
+    fn al_lsp_links_its_dependencies_transitively_but_not_al_explorer() {
+        let linked = linked_crates(&workspace_root(), "al-lsp").expect("al-lsp is a crate");
+        assert!(linked.contains("al-lsp"));
+        assert!(linked.contains("al-analysis"), "direct dependency");
+        assert!(linked.contains("al-syntax"), "reached through al-analysis");
+        assert!(!linked.contains("al-explorer"), "{linked:?}");
+        assert!(!linked.contains("al-test-harness"), "{linked:?}");
+    }
+
+    #[test]
+    fn al_explorer_does_not_link_al_lsp() {
+        let linked =
+            linked_crates(&workspace_root(), "al-explorer").expect("al-explorer is a crate");
+        assert!(linked.contains("al-compile"));
+        assert!(!linked.contains("al-lsp"), "{linked:?}");
+    }
+
+    #[test]
+    fn an_unknown_binary_falls_back_to_every_crate() {
+        assert!(linked_crates(&workspace_root(), "no-such-crate").is_none());
+    }
 }

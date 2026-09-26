@@ -541,6 +541,24 @@ pub fn nuget_feeds() -> Vec<NuGetFeed> {
     ]
 }
 
+/// The per-user data directory al-lsp keeps its state under:
+/// `$XDG_DATA_HOME`, else `$HOME/.local/share`, else on Windows
+/// `%LOCALAPPDATA%`. Windows sets neither XDG variable nor `HOME`, so the test
+/// results store failed there with "neither XDG_DATA_HOME nor HOME is set".
+pub fn user_data_dir() -> Option<PathBuf> {
+    let non_empty = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    non_empty("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| non_empty("HOME").map(|home| PathBuf::from(home).join(".local").join("share")))
+        .or_else(|| {
+            if cfg!(target_os = "windows") {
+                non_empty("LOCALAPPDATA").map(PathBuf::from)
+            } else {
+                None
+            }
+        })
+}
+
 pub fn home_dir() -> Option<PathBuf> {
     std::env::var("HOME").ok().map(PathBuf::from).or({
         #[cfg(target_os = "windows")]

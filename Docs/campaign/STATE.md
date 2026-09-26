@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-21 01:30 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-24 12:30 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -8,32 +8,25 @@ Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two 
 
 ## In flight
 
-| Item | Kind | Output |
-|------|------|--------|
-| Ghost diagnostics race: the server can publish diagnostics for a file after didClose (a harness test's own bug hid it as a panic 1 run in 3) | worktree fix | branch `campaign/fix-ghost-diagnostics` |
-| Formatter idempotence: two persisted proptest seeds (mutated fixtures with a `{` after a statement line, tab indentation) fail `format(format(x)) == format(x)` | worktree fix | branch `campaign/fix-formatter-idempotence` |
-| desloppify batch: split `resolution.rs`, `dispatch.rs`, `native_dap.rs`, `session.rs`, `xliff.rs`, `calls.rs`, `router.rs`, plus three open review A items | worktree refactor | branch `campaign/slop-splits-2`, `findings/slop-splits-2.md` |
-| Persisted symbol and source index on disk (cold start 54 s and 2.9 GB RSS today), keyed by app id, version and content hash | worktree build | branch `campaign/ai-persisted-index`, `findings/ai-persisted-index.md` |
+Nothing. The three unmerged fix branches (`fix-formatter-idempotence`, `fix-ghost-diagnostics`,
+`slop-splits-2`) are merged. `campaign/ai-persisted-index` never reached origin, so the
+persisted index is queued again below.
+
+Remote branch cleanup: every `campaign/*` branch except this one is merged into it. Cloud
+sessions can push only to `campaign/2026-09-21`, so deleting them is left to Brad (the list is in
+`LOG.md`, 2026-09-24).
 
 Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, CI runs on every push).
 
 Queued:
 
-- Three review A findings still open: `extract_table_relation_table` has no caller, `PermissionAuditReport` doc comment truncated, `build_reference_counts` is 364 lines.
-- `dispatch_generate` cannot warn on IDs outside the project `idRanges` until the dispatcher is async.
-- `pack-native --validate` passes `analyzers: None`, which `resolve_analyzer_paths` reads as every installed analyzer. 29 cop errors on a project plain `alc` compiles, and the project's `al.codeAnalyzers` never reaches the call. Add a flag and honour the project setting through the trust gate.
-
-
-
-- 124 `trim_matches('"')` identifier cleanups in al-analysis (102) and al-insight (22), replace with `al_syntax::node_text_clean`. Start after both analysis fix branches merge.
-- al-dap and al-publish post to different BC dev endpoints (needs a live server to settle). The duplicated response validation framework in al-explorer (about 300 lines to move).
+- Persisted symbol and source index on disk (cold start 54 s and 2.9 GB RSS), keyed by app id, version and content hash.
+- Rebuild `target/release` before measuring for articles (it predates `publish` and `free-ids`).
+- al-dap and al-publish post to different BC dev endpoints (needs a live server to settle).
 - desloppify fix batches (`findings/desloppify.md` section 4), file splits after the owning fix branch merges.
 - Workstream E (tests): coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis. Start when a build slot frees.
 - Workstream D (security): dedicated review after round 1 fixes are in, covering what changed.
-- `al-explorer packages` prints per-package source counts keyed by folded display name (`al-symbols` `index.rs:259`), so two `System` packages with one app id and different versions both show `0/502/1` against 529 manifest objects. Key by app id and version. Details in `findings/blog-progress.md`.
 - Blog: article 1 repeats a wrong diagnosis of the `trace` timeout (it is the cold call-graph build, 86 s with Base Application). Rewrite that paragraph. Articles 2, 4, 5, 8 after the daemon work and fix branches merge, then article 9, then the fact pass list in `findings/blog-progress.md`.
-- README.md line 339 omits `publish` from the CLI list. Rebuild `target/release` before measuring for articles (it predates `publish` and `free-ids`).
-- AI tooling build item 9: dependency package version diff.
 - Plugin leftovers: `plugin/evals/`, release binary download hook, test on a project with `.alpackages`.
 
 A review file without a `## Review complete` line means the agent died. Re-dispatch it to
@@ -52,9 +45,9 @@ whichever ones pay off most. Record progress per workstream below so gaps are vi
 |---|------------|----------|-----------|
 | A | Correctness: review rounds, triage, fixes with a failing test first | R1 reviews running | Triage each `findings/r1-*.md` as it completes, dispatch fix agents per crate group |
 | B | Old audit: mark each of the 227 `AUDIT-BACKLOG.md` findings fixed or open | R1 reviewers report still-open ones | Collect `[STILL-OPEN]` tags, queue them under A |
-| C | Slop and simplification: desloppify plan, per-crate simplify pass | Batch 3 (four file splits) and the 112 item review queue merged. Strict 79.9 | Fresh `desloppify review` to re-score, then the 63 deferred items (typed RPC boundary is the largest), batches 10 (async locking) and 11 (docs and API hygiene), remaining file splits (`resolution.rs` 2754 lines, `dispatch.rs` 3243, `tests_dispatch.rs` 4216, `lsp.rs` 3415, `native_dap.rs` 3636) |
+| C | Slop and simplification: desloppify plan, per-crate simplify pass | Batch 3 (four file splits) and the 112 item review queue merged. Strict 79.9. 2026-09-24: test modules split out of six large files, rustdoc warnings 46 to 0 (CI gated), bulk-fix errors typed | Fresh `desloppify review` to re-score, then the 63 deferred items (typed RPC boundary is the largest), batches 10 (async locking) and 11 (docs and API hygiene), remaining file splits (`resolution.rs` 2754 lines, `dispatch.rs` 3243, `tests_dispatch.rs` 4216, `lsp.rs` 3415, `native_dap.rs` 3636) |
 | D | Security: credentials, archive parsing, MCP and daemon input, extension binary download, supply chain | Three review rounds (8, 19, 10 findings), all fixed and merged. Project trust, dispatcher capability registry, peer-checked endpoint | Windows named pipe owner check. A fourth round late in the week over the final diff |
-| E | Tests: coverage by crate, property tests, `cargo mutants` | First pass merged: 4 bugs found by property tests, coverage table, CI job proposal | Add the property test CI job, run `cargo mutants` on the 10 file shortlist in `findings/test-depth.md`, make `al-test/backends/snapshot.rs` testable |
+| E | Tests: coverage by crate, property tests, `cargo mutants` | First pass merged: 4 bugs found by property tests, coverage table, CI job proposal | Nightly property job added (`property-nightly.yml`, 8192 cases; the per-PR run already covers 128). Next: `cargo mutants` on the 10 file shortlist in `findings/test-depth.md`, make `al-test/backends/snapshot.rs` testable |
 | F | Grammar: corpus tests, query drift between `languages/al` and `tree-sitter-al/queries` | R1 review running | From R1 findings |
 | G | AI tooling: make this project speed up and sharpen AI work on Business Central (see below) | Inventory, measurements and design done (`findings/ai-tooling-ideas.md`): latency is 4 to 150 ms warm, but 14 of 20 measured answers are too large for an agent (up to 9.4 MB). Plugin build running | Daemon projection work after the LSP fix branch merges |
 | H | Docs: `Docs/`, `README.md`, `ROADMAP.md` match the code, then unsloppify | R1 docs review running | From R1 findings |
@@ -85,6 +78,11 @@ round on the areas with the most findings.
 
 ## Done
 
+- 2026-09-24 r6 session review: 14 of 14 fixed (`findings/r6-session-review.md`). File-index re-index race closed, typed bulk-fix errors, six large files lost their test modules to `tests.rs`, rustdoc at zero warnings and gated in CI.
+- 2026-09-24 r5 dogfood closed: 31 of 32 findings fixed, 1 partly (`findings/r5-dogfood.md`). Table and table-extension changes reach their tests, plain Insert/Modify/Delete raise table events in the call graph, `graph --scope workspace`, `impact` call/write/read, LSP-shaped JSON and readable text for completions/hints/symbols/folding, suggest-event says why a trace is partial.
+- 2026-09-24 features and CI: all six CI jobs green on PR 30 (first time this campaign; ubuntu ShellCheck, Windows data directory and output-pipe inheritance, macOS `/var` and `/tmp` symlinks). `package-diff <old.app> <new.app>` (Base Application 25 to 26: 1,137 changes, 7 s, only the ones the workspace uses), `obsolete --used`, a `.al` file watcher in the LSP server, a text outline for `symbols`, and the `bc-upgrade-impact` skill rewritten around them (it had told agents `obsolete` lists workspace uses and `breaking` diffs dependencies; neither did).
+- 2026-09-24 dogfood pass: a project scaffolded with `al-explorer new` against Base Application 26 symbols from the public NuGet feed (`Docs/campaign/LOG.md`). Fixed: `download-symbols` never returned after a successful download (the daemon waited on its own project read guard), the client failed a request on EINTR, the daemon never saw files written after it started (now an incremental scan per request), native compile rejected fields a table extension adds (ALN2404), go-to-definition on such a field opened the package outline, `free-ids` gave dependency tables field numbers outside `idRanges` and listed workspace extensions twice, `--fields` printed `?` columns in text mode, `al-explorer new` failed outside an AL project and wrote the nil GUID as app id, the daemon startup error lost the file it named. CI: ShellCheck SC2015, Windows data directory, macOS `/var` symlink refusal.
+- 2026-09-24 session: merged `fix-formatter-idempotence` (the persisted seed passes), `fix-ghost-diagnostics` and `slop-splits-2`. Diagnostics publishes now hold the generation read lock from the currency check through the send, so a didClose cannot slip between them (the harness test passes 32 of 32 at 12-way load). One Windows browser opener in al-types (`rundll32 url.dll,FileProtocolHandler`, http(s) only) replaces the two `cmd /c start` copies that split OAuth and debugger URLs at `&`. `pack-native --validate` runs the project's analyzers through the trust gate, `--analyzers` overrides. The harness judges a binary stale only against the crates it links. Review A: `extract_table_relation_table` removed, `PermissionAuditReport` doc restated. Gates: fmt and clippy clean, 95 suites, 5011 passed, 1 failed (`a_failed_file_write_leaves_the_whole_workspace_unchanged`, which needs a non-root user: the cloud container runs as root, which writes through a 0555 directory).
 - Merged `campaign/fix-r3-security`: 10 of 10. The MCP advisory names keys only. The Zed extension ignores `binary.path`, `binary.arguments` and the debug adapter path from any settings (WASM sandbox cannot read the trust store), `PATH` is the way to run a specific build. `al-explorer trust` confirms on a terminal. Unix socket ownership and peer uid checked before connect, HMAC handshake with a per-user key. `snapshot` and `profiling` gated. Revoke takes effect per request. Open: Windows named pipe owner check (documented). Gates: 94 suites, 4995 passed, 1 failed (formatter seed).
 - Merged `campaign/fix-r2-review-b`: 19 of 19. The daemon dispatch match is generated from a capability registry (`dispatch_table!`), so every method declares whether it reads a path or reaches a credential, and tests drive those declarations end to end. `rename` contained, `tests.snapshot_capture` gated, `.alpackages` symlink root only with trust, extension path comparison by component. Full gates: 94 suites, 4966 passed, 2 failed (formatter seed in flight, ghost diagnostics race found).
 - Merged `campaign/slop-review-queue`: 112 review items closed (34 changed, 63 deferred behind live branches, 7 deferred, 3 accepted, 15 skipped as false positives). Strict 80.2 to 79.9 because the scan surface grew and the subjective dimensions are not re-scored until a fresh review. Architecture diagram now pinned to the manifests by a test (it caught the new harness dependency on al-protocol at once). Windows auth credentials unified across the three BC clients. Gates: 93 suites, 4873 passed, 1 failed (the formatter seed, fix in flight).

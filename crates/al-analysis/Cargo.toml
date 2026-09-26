@@ -23,7 +23,6 @@ petgraph = { workspace = true }
 tree-sitter = { workspace = true }
 url = { workspace = true }
 tower-lsp = { workspace = true, optional = true }
-rayon = { workspace = true }
 regex = { workspace = true }
 tempfile = { workspace = true }
 

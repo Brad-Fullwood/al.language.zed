@@ -6,7 +6,8 @@
 //!
 //! Used by `al impact <TableName>` queries.
 
-use std::collections::HashMap;
+use al_syntax::IdentifierText;
+use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 
@@ -126,8 +127,7 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
                 if prop.name.eq_ignore_ascii_case("SourceTable")
                     && prop
                         .value
-                        .trim()
-                        .trim_matches('"')
+                        .unquote_identifier()
                         .eq_ignore_ascii_case(table_name)
                 {
                     impacts.push(TableImpact {
@@ -214,26 +214,219 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
     }
 }
 
-/// Extract the leading table-name component of a `TableRelation` property value.
+/// Add the workspace's procedure-local `Record <table>` variables to a
+/// [`table_impact`] result.
 ///
-/// AL `TableRelation` values can take several shapes:
-/// - `Customer` — bare identifier
-/// - `"Customer"` — quoted identifier
-/// - `"Sales Header"` — quoted multi-word
-/// - `Customer."No."` — table dot field
-/// - `"Sales Header"."No."`
-/// - `"Item" WHERE("Type" = CONST(Inventory))` — with filter clause
-/// - `Customer WHERE(...)`
+/// Symbol entries carry an object's global variables and its procedures'
+/// parameters, but not the variables declared inside a procedure, which is
+/// where most code holds a record: a test codeunit whose only use of
+/// Customer was two `Cust: Record Customer` locals did not appear at all.
+pub fn add_workspace_local_record_variables(
+    result: &mut TableImpactResult,
+    files: &al_source::file_index::FileIndex,
+    table_name: &str,
+) {
+    let mut paths: Vec<std::path::PathBuf> = files
+        .files
+        .iter()
+        .map(|entry| entry.key().clone())
+        .collect();
+    paths.sort();
+    for path in paths {
+        let Some((text, tree)) = files.get_cached_parse(&path) else {
+            continue;
+        };
+        let objects = files
+            .object_infos
+            .get(&path)
+            .map(|infos| infos.value().clone())
+            .unwrap_or_default();
+        let source = text.as_bytes();
+        let mut stack = vec![tree.root_node()];
+        while let Some(node) = stack.pop() {
+            let mut cursor = node.walk();
+            stack.extend(node.children(&mut cursor));
+            if node.kind() != "regular_variable_declaration" {
+                continue;
+            }
+            let Some(procedure) = std::iter::successors(node.parent(), |n| n.parent()).find(|n| {
+                matches!(
+                    n.kind(),
+                    "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration"
+                )
+            }) else {
+                continue; // an object-level global: already in the entry
+            };
+            let is_record = node
+                .child_by_field_name("type")
+                .and_then(|ty| ty.utf8_text(source).ok())
+                .is_some_and(|ty| is_record_of(ty, table_name));
+            if !is_record {
+                continue;
+            }
+            let Some(object) = objects.iter().find(|object| {
+                object.range.start_byte <= node.start_byte()
+                    && node.end_byte() <= object.range.end_byte
+            }) else {
+                continue;
+            };
+            let procedure_name = procedure
+                .child_by_field_name("name")
+                .and_then(|name| name.utf8_text(source).ok())
+                .map(|name| name.unquote_identifier().into_owned())
+                .unwrap_or_default();
+            let mut cursor = node.walk();
+            let names: Vec<String> = node
+                .children_by_field_name("name", &mut cursor)
+                .filter_map(|name| name.utf8_text(source).ok())
+                .map(|name| name.unquote_identifier().into_owned())
+                .collect();
+            let kind = object
+                .kind
+                .parse::<ObjectKind>()
+                .map(|kind| kind.to_string())
+                .unwrap_or_else(|_| object.kind.clone());
+            let index = match result.objects.iter().position(|existing| {
+                existing.object_kind == kind
+                    && existing.object_name.eq_ignore_ascii_case(&object.name)
+            }) {
+                Some(index) => index,
+                None => {
+                    result.objects.push(ObjectImpact {
+                        object_kind: kind.clone(),
+                        object_name: object.name.clone(),
+                        package: "workspace".to_string(),
+                        impacts: Vec::new(),
+                    });
+                    result.objects.len() - 1
+                }
+            };
+            for name in names {
+                result.objects[index].impacts.push(TableImpact {
+                    operation: TableOperationKind::RecordVariable,
+                    location_hint: Some(format!("var {name} in {procedure_name}")),
+                });
+                result.total_impacts += 1;
+            }
+        }
+    }
+    result.objects.sort_by(|a, b| {
+        a.object_name
+            .as_bytes()
+            .iter()
+            .map(u8::to_ascii_lowercase)
+            .cmp(b.object_name.as_bytes().iter().map(u8::to_ascii_lowercase))
+    });
+}
+
+/// The workspace procedures that hold a `Record` of any of `tables`: as a
+/// parameter, a local variable, or through an object-level global, which
+/// makes every procedure of that object a user.
 ///
-/// For the conditional form this is the *first declared* branch's table.
-/// Callers that need every branch — anything asking "does this relation reach
-/// table X" — want [`extract_table_relation_tables`] instead.
-///
-/// Returns `None` if the value is empty after stripping. Pre-allocates no
-/// `String` on the happy path; returns a borrowed `&str` of the table-name
-/// slice.
-pub fn extract_table_relation_table(value: &str) -> Option<&str> {
-    extract_table_relation_tables(value).into_iter().next()
+/// Returned as `(object kind, object name, procedure name)`, in the file
+/// index's path order. Triggers are included under their trigger name.
+pub fn workspace_procedures_using_tables(
+    files: &al_source::file_index::FileIndex,
+    tables: &[String],
+) -> Vec<(ObjectKind, String, String)> {
+    if tables.is_empty() {
+        return Vec::new();
+    }
+    let mut paths: Vec<std::path::PathBuf> = files
+        .files
+        .iter()
+        .map(|entry| entry.key().clone())
+        .collect();
+    paths.sort();
+    let mut users = Vec::new();
+    for path in paths {
+        let Some((text, tree)) = files.get_cached_parse(&path) else {
+            continue;
+        };
+        let objects = files
+            .object_infos
+            .get(&path)
+            .map(|infos| infos.value().clone())
+            .unwrap_or_default();
+        let source = text.as_bytes();
+        let holds_record = |node: tree_sitter::Node| {
+            node.child_by_field_name("type")
+                .and_then(|ty| ty.utf8_text(source).ok())
+                .is_some_and(|ty| tables.iter().any(|table| is_record_of(ty, table)))
+        };
+        // Procedures per object, and whether the object has a global record.
+        let mut procedures: Vec<(usize, tree_sitter::Node)> = Vec::new();
+        let mut global_users: HashSet<usize> = HashSet::new();
+        let mut stack = vec![tree.root_node()];
+        while let Some(node) = stack.pop() {
+            let mut cursor = node.walk();
+            stack.extend(node.children(&mut cursor));
+            let object_of = |node: tree_sitter::Node| {
+                objects.iter().position(|object| {
+                    object.range.start_byte <= node.start_byte()
+                        && node.end_byte() <= object.range.end_byte
+                })
+            };
+            match node.kind() {
+                // Triggers (`OnRun`, a field's `OnValidate`) and subscribers
+                // run code holding records as much as procedures do.
+                "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration" => {
+                    if let Some(object) = object_of(node) {
+                        procedures.push((object, node));
+                    }
+                }
+                "regular_variable_declaration" if holds_record(node) => {
+                    let in_body = std::iter::successors(node.parent(), |n| n.parent()).any(|n| {
+                        matches!(
+                            n.kind(),
+                            "procedure_declaration"
+                                | "trigger_declaration"
+                                | "event_procedure_declaration"
+                        )
+                    });
+                    if !in_body {
+                        global_users.extend(object_of(node));
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (object, procedure) in procedures {
+            let uses = global_users.contains(&object) || {
+                let mut stack = vec![procedure];
+                let mut found = false;
+                while let Some(node) = stack.pop() {
+                    if matches!(node.kind(), "parameter" | "regular_variable_declaration")
+                        && holds_record(node)
+                    {
+                        found = true;
+                        break;
+                    }
+                    let mut cursor = node.walk();
+                    stack.extend(node.children(&mut cursor));
+                }
+                found
+            };
+            if !uses {
+                continue;
+            }
+            let info = &objects[object];
+            let (Ok(kind), Some(name)) = (
+                info.kind.parse::<ObjectKind>(),
+                procedure
+                    .child_by_field_name("name")
+                    .and_then(|name| name.utf8_text(source).ok()),
+            ) else {
+                continue;
+            };
+            users.push((
+                kind,
+                info.name.clone(),
+                name.unquote_identifier().into_owned(),
+            ));
+        }
+    }
+    users
 }
 
 /// Every table referenced by a `TableRelation` value, in declaration order.
@@ -283,7 +476,7 @@ pub fn extract_table_relation_tables(value: &str) -> Vec<&str> {
     }
 
     // Declaration order, deduplicated in place: the first branch is the
-    // primary relation and `extract_table_relation_table` returns it. Sorting
+    // primary relation and callers taking the first element rely on it. Sorting
     // here used to make that the alphabetically first branch instead.
     let mut seen = std::collections::HashSet::new();
     tables.retain(|table| seen.insert(table.to_ascii_lowercase()));
@@ -374,7 +567,24 @@ pub fn is_record_of(type_name: &str, table_name: &str) -> bool {
     if table_name.is_empty() {
         return false;
     }
-    let t = type_name.trim();
+    let mut t = type_name.trim();
+    // `array[5] of Record Customer` holds Customer records too.
+    if t.len() > 5 && t[..5].eq_ignore_ascii_case("array") {
+        if let Some(of) = t.to_ascii_lowercase().find(" of ") {
+            t = t[of + 4..].trim();
+        }
+    }
+    // `Record Customer temporary`: the keyword follows the name.
+    if let Some(head) = t
+        .len()
+        .checked_sub("temporary".len())
+        .filter(|split| t.is_char_boundary(*split))
+        .filter(|split| t[*split..].eq_ignore_ascii_case("temporary"))
+        .map(|split| t[..split].trim_end())
+        .filter(|head| head.split_whitespace().count() >= 2)
+    {
+        t = head;
+    }
     let rest = match t.split_once(|c: char| c.is_whitespace()) {
         Some((prefix, rest)) if prefix.eq_ignore_ascii_case("Record") => rest.trim(),
         _ => return false,
@@ -389,6 +599,36 @@ pub fn is_record_of(type_name: &str, table_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A codeunit whose only use of a table is procedure-local variables.
+    #[test]
+    fn local_record_variables_count_as_table_uses() {
+        let files = al_source::file_index::FileIndex::new();
+        files.add_file(
+            std::path::PathBuf::from("/ws/LoyaltyTest.Codeunit.al"),
+            "codeunit 50103 \"Loyalty Test\"\n{\n    var\n        Global: Record Item;\n\n    procedure TierCanBeCleared()\n    var\n        Cust, Other: Record Customer;\n        Count: Integer;\n    begin\n    end;\n}\n"
+                .to_string(),
+        );
+        let mut result = table_impact(&SymbolIndex::new(), "Customer");
+
+        add_workspace_local_record_variables(&mut result, &files, "Customer");
+
+        assert_eq!(result.objects.len(), 1, "{result:#?}");
+        assert_eq!(result.objects[0].object_name, "Loyalty Test");
+        let hints: Vec<_> = result.objects[0]
+            .impacts
+            .iter()
+            .filter_map(|impact| impact.location_hint.clone())
+            .collect();
+        assert_eq!(
+            hints,
+            vec![
+                "var Cust in TierCanBeCleared",
+                "var Other in TierCanBeCleared"
+            ]
+        );
+        assert_eq!(result.total_impacts, 2);
+    }
     use al_symbols::{
         AttributeSymbol, FieldSymbol, MethodSymbol, ObjectKind, ParameterSymbol, PropertyValue,
         SymbolEntry, SymbolIndex, VariableSymbol,
@@ -396,22 +636,11 @@ mod tests {
 
     fn base_entry(kind: ObjectKind, id: i32, name: &str) -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind,
             id,
             name: name.to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "TestPkg".to_string(),
-            methods: Vec::new(),
-            fields: Vec::new(),
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -672,30 +901,30 @@ mod tests {
 
     #[test]
     fn extract_table_relation_bare_identifier() {
-        assert_eq!(extract_table_relation_table("Customer"), Some("Customer"));
+        assert_eq!(extract_table_relation_tables("Customer"), vec!["Customer"]);
     }
 
     #[test]
     fn extract_table_relation_quoted_identifier() {
         assert_eq!(
-            extract_table_relation_table(r#""Customer""#),
-            Some("Customer")
+            extract_table_relation_tables(r#""Customer""#),
+            vec!["Customer"]
         );
     }
 
     #[test]
     fn extract_table_relation_quoted_multi_word() {
         assert_eq!(
-            extract_table_relation_table(r#""Sales Header""#),
-            Some("Sales Header")
+            extract_table_relation_tables(r#""Sales Header""#),
+            vec!["Sales Header"]
         );
     }
 
     #[test]
     fn extract_table_relation_table_dot_field() {
         assert_eq!(
-            extract_table_relation_table(r#""Customer"."No.""#),
-            Some("Customer")
+            extract_table_relation_tables(r#""Customer"."No.""#),
+            vec!["Customer"]
         );
     }
 
@@ -704,32 +933,34 @@ mod tests {
         // Real AL: `Customer WHERE("Blocked" = CONST(""))`. Prior code did
         // not split on whitespace, so this fell through and never matched.
         assert_eq!(
-            extract_table_relation_table(r#"Customer WHERE("Blocked" = CONST(""))"#),
-            Some("Customer")
+            extract_table_relation_tables(r#"Customer WHERE("Blocked" = CONST(""))"#),
+            vec!["Customer"]
         );
     }
 
     #[test]
     fn extract_table_relation_quoted_with_where_clause() {
         assert_eq!(
-            extract_table_relation_table(r#""Item" WHERE("Type" = CONST(Inventory))"#),
-            Some("Item")
+            extract_table_relation_tables(r#""Item" WHERE("Type" = CONST(Inventory))"#),
+            vec!["Item"]
         );
     }
 
     #[test]
     fn extract_table_relation_quoted_multiword_with_filter() {
         assert_eq!(
-            extract_table_relation_table(r#""Sales Header" WHERE("Document Type" = CONST(Order))"#),
-            Some("Sales Header")
+            extract_table_relation_tables(
+                r#""Sales Header" WHERE("Document Type" = CONST(Order))"#
+            ),
+            vec!["Sales Header"]
         );
     }
 
     #[test]
     fn extract_table_relation_rejects_empty() {
-        assert_eq!(extract_table_relation_table(""), None);
-        assert_eq!(extract_table_relation_table(r#""""#), None);
-        assert_eq!(extract_table_relation_table("   "), None);
+        assert_eq!(extract_table_relation_tables(""), Vec::<&str>::new());
+        assert_eq!(extract_table_relation_tables(r#""""#), Vec::<&str>::new());
+        assert_eq!(extract_table_relation_tables("   "), Vec::<&str>::new());
     }
 
     #[test]
@@ -763,6 +994,23 @@ mod tests {
                 .any(|i| i.operation == TableOperationKind::Relation),
             "Relation impact must be detected even when filter clause is present"
         );
+    }
+
+    #[test]
+    fn is_record_of_reads_temporary_records_and_arrays() {
+        assert!(is_record_of("Record Customer temporary", "customer"));
+        assert!(is_record_of(
+            "Record \"Sales Header\" Temporary",
+            "sales header"
+        ));
+        assert!(is_record_of("array[5] of Record Customer", "customer"));
+        assert!(is_record_of(
+            "Array[2, 3] of Record Customer temporary",
+            "customer"
+        ));
+        // A table that is itself named Temporary keeps its name.
+        assert!(is_record_of("Record Temporary", "temporary"));
+        assert!(!is_record_of("array[5] of Integer", "integer"));
     }
 
     #[test]
@@ -811,7 +1059,6 @@ mod tests {
             extract_table_relation_tables(value),
             vec!["Item", "Resource"]
         );
-        assert_ne!(extract_table_relation_table(value), Some("if"));
     }
 
     #[test]
@@ -832,9 +1079,9 @@ mod tests {
         );
     }
 
-    /// The doc promises declaration order, and the singular helper promises
-    /// the primary relation. Sorting made both wrong: `Resource` came back as
-    /// "the" table for a relation whose first branch is `Zebra`.
+    /// The doc promises declaration order, so the first element is the primary
+    /// relation. Sorting made that wrong: `Apple` came back first for a relation
+    /// whose first branch is `Zebra`.
     #[test]
     fn extract_table_relation_tables_keeps_declaration_order() {
         let value = r#"IF (Type=CONST(Zebra)) Zebra."No." ELSE IF (Type=CONST(Apple)) Apple."No.""#;
@@ -843,7 +1090,6 @@ mod tests {
             vec!["Zebra", "Apple"],
             "branches must come back in the order they are declared"
         );
-        assert_eq!(extract_table_relation_table(value), Some("Zebra"));
     }
 
     #[test]

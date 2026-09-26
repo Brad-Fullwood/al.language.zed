@@ -86,6 +86,12 @@ jobs:
       - name: Formatting check
         run: cargo fmt --all -- --check
 
+      - name: Rustdoc (broken and private intra-doc links)
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --exclude zed-al --no-deps
+
       - name: Benchmark harness contract tests
         if: matrix.os == 'ubuntu-latest'
         run: python3 -m unittest discover -s benchmarks/scripts -p 'test_*_bench.py'
@@ -166,6 +172,18 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           arguments: --workspace
+
+      # A dependency nothing uses still compiles, still reaches cargo-deny,
+      # and hides which crate owns a capability: al-lsp carried thirteen
+      # after the al-core split moved their code elsewhere.
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch, 2026-09-03
+        with:
+          toolchain: stable
+      - name: Unused dependencies (cargo-machete)
+        run: |
+          cargo install cargo-machete --version 0.9.2 --locked
+          cargo machete
 
   wasm:
     name: WASM extension build

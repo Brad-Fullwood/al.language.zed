@@ -1,6 +1,7 @@
 //! Details-pane rendering, lazy member hydration, and "open in editor"
 //! for the object browser's selected object.
 
+use al_symbols::source_availability::is_workspace_package;
 use std::sync::Arc;
 
 use ratatui::style::{Color, Modifier, Style};
@@ -410,10 +411,6 @@ impl App {
             }
         }
     }
-}
-
-fn is_workspace_package(package: &str) -> bool {
-    package.eq_ignore_ascii_case("workspace") || package.eq_ignore_ascii_case("(workspace)")
 }
 
 /// Scan a text file for the first line containing `member_name` as a whole word.

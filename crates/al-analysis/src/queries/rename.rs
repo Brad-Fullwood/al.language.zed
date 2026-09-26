@@ -27,12 +27,27 @@ pub fn prepare_rename(
     ))
 }
 
+/// Why a rename was refused or could not be computed.
+#[derive(Debug, thiserror::Error)]
+pub enum RenameError {
+    #[error(transparent)]
+    State(#[from] WorkspaceStateError),
+    /// The new name is already declared where the renamed symbol is visible.
+    #[error("'{new_name}' is already a {what} in '{scope}'; renaming '{old_name}' to it would declare it twice")]
+    Collision {
+        old_name: String,
+        new_name: String,
+        what: &'static str,
+        scope: String,
+    },
+}
+
 pub fn rename(
     workspace: &Workspace,
     uri: &Url,
     position: Position,
     new_name: &str,
-) -> Result<Option<WorkspaceEdit>, WorkspaceStateError> {
+) -> Result<Option<WorkspaceEdit>, RenameError> {
     // Reject a new name that cannot be spelled in AL at all, and work out the
     // spelling for the rest. Without this, renaming to `` or to a name holding
     // a newline returns a WorkspaceEdit that writes syntax errors
@@ -77,6 +92,34 @@ pub fn rename(
                     .unwrap_or(false)
             };
         if is_local_binding {
+            // `Tier` renamed to `Cust` beside `var Cust: Record Customer`
+            // produced a procedure declaring `Cust` twice.
+            let resolver = al_syntax::type_resolver::TypeResolver::new(&tree, &text);
+            if !new_name.clean.eq_ignore_ascii_case(clean_name) {
+                if let Some(existing) =
+                    resolver
+                        .variables_at(position.into())
+                        .into_iter()
+                        .find(|decl| {
+                            decl.name.eq_ignore_ascii_case(&new_name.clean)
+                                && matches!(
+                                    decl.scope,
+                                    al_syntax::type_resolver::VariableScope::Local
+                                        | al_syntax::type_resolver::VariableScope::Parameter
+                                )
+                        })
+                {
+                    return Err(RenameError::Collision {
+                        old_name: clean_name.to_string(),
+                        new_name: existing.name,
+                        what: match existing.scope {
+                            al_syntax::type_resolver::VariableScope::Parameter => "parameter",
+                            _ => "local variable",
+                        },
+                        scope: proc.name.clone(),
+                    });
+                }
+            }
             let proc_start = proc.range.start_byte;
             let proc_end = proc.range.end_byte;
             let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
@@ -580,6 +623,29 @@ mod tests {
         new_name: &str,
     ) -> Option<WorkspaceEdit> {
         super::rename(workspace, uri, position, new_name).unwrap()
+    }
+
+    /// Renaming parameter `Tier` to `Cust` beside `var Cust` produced
+    /// `procedure SetLoyaltyTier(var Cust: ...; Cust: Code[10])`.
+    #[test]
+    fn rename_refuses_a_name_already_declared_in_the_procedure() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        let source = "codeunit 50101 \"Loyalty Mgt\"\n{\n    procedure SetLoyaltyTier(var Cust: Record Customer; Tier: Code[10])\n    var\n        Other: Integer;\n    begin\n        Cust.\"Loyalty Tier\" := Tier;\n    end;\n}\n";
+        open_doc(&ws, &uri, source);
+        // `Tier` in the header, line 2.
+        let at = Position {
+            line: 2,
+            character: 59,
+        };
+        for taken in ["Cust", "other"] {
+            let error = super::rename(&ws, &uri, at, taken).expect_err("must refuse");
+            assert!(
+                matches!(error, RenameError::Collision { .. }),
+                "{taken}: {error}"
+            );
+        }
+        assert!(super::rename(&ws, &uri, at, "NewTier").unwrap().is_some());
     }
 
     fn test_uri() -> Url {

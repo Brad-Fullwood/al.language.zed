@@ -1,7 +1,7 @@
 //! The caches derived from the entries: composed objects, the event catalog,
 //! source paths and package availability.
 
-use super::{fold_name, SymbolIndex};
+use super::{fold_name, package_identity_key, SymbolIndex};
 use super::{read_derived_cache, write_derived_cache};
 use crate::events;
 use crate::model::{ObjectKind, SymbolEntry};
@@ -132,6 +132,35 @@ impl SymbolIndex {
         if let Some(entries) = self.by_package.get(&fold_name(package)) {
             for symbol in entries.value() {
                 summary.record(source_availability::classify(symbol, app_path.as_deref()));
+            }
+        }
+        summary
+    }
+
+    /// Source availability for the one package with this identity (app id,
+    /// display name when the id is empty).
+    ///
+    /// [`Self::package_source_availability`] pools every package that shares
+    /// a display name, so two apps named `System` reported the same counts.
+    /// A package whose identity is not indexed reports all zeros.
+    pub fn package_source_availability_for(
+        &self,
+        app_id: &str,
+        name: &str,
+    ) -> SourceAvailabilitySummary {
+        let identity = package_identity_key(app_id, name);
+        let app_path = self
+            .app_paths
+            .get(&identity)
+            .map(|record| record.value().path.clone());
+        let mut summary = SourceAvailabilitySummary::default();
+        for entry in self.all.iter() {
+            let indexed = entry.value();
+            if indexed.package_key == identity {
+                summary.record(source_availability::classify(
+                    &indexed.arc,
+                    app_path.as_deref(),
+                ));
             }
         }
         summary

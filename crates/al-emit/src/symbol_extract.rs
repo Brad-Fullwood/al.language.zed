@@ -121,6 +121,26 @@ pub struct EmitObject {
     pub field_groups: Vec<KeySymbol>,
 }
 
+/// `source` with everything outside `range` blanked, newlines kept.
+///
+/// The verifier reads an object's `source_text` line by line and maps byte
+/// offsets in it to file positions. With the whole file there, every check
+/// ran once per object in a multi-object file (one error six times) and
+/// could attribute one object's code to another. Blanking keeps the offsets
+/// and line numbers of the object's own code unchanged.
+fn object_view(source: &str, range: std::ops::Range<usize>) -> String {
+    source
+        .char_indices()
+        .map(|(index, ch)| {
+            if range.contains(&index) || ch == '\n' || ch == '\r' {
+                ch
+            } else {
+                ' '
+            }
+        })
+        .collect()
+}
+
 /// Extract every top-level object declared in `source`. `source_file` is the
 /// in-`.app` archive path recorded on each object (e.g. `src/Lib.al`).
 pub fn extract_objects(source: &str, source_file: &str) -> Vec<EmitObject> {
@@ -161,7 +181,7 @@ pub fn extract_objects_from_tree(source: &str, source_file: &str, tree: &Tree) -
                 out.push(EmitObject {
                     entry: ex.entry,
                     source_file: source_file.to_string(),
-                    source_text: source.to_string(),
+                    source_text: object_view(source, child.byte_range()),
                     source_range: al_syntax::ts_range_to_syntax(&child.range(), src),
                     enum_value_properties: ex.enum_value_properties,
                     query_elements: ex.query_elements,

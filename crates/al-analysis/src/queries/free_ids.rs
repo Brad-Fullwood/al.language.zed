@@ -21,6 +21,7 @@
 //! Output is deliberately small. The used set is summarised as counts; the
 //! caller asks for the full list with `include_used`.
 
+use al_syntax::IdentifierText;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -444,8 +445,16 @@ fn allocate_members(
 ) -> Result<FreeIdsReport, FreeIdsError> {
     let target = resolve_object(objects, name, query.kind)?;
 
+    // A base object owns its numbering space only when it is this app's own.
+    // A table or enum from a dependency gets new members through an
+    // extension, whose numbers must lie in this app's `idRanges`: asking for
+    // Customer's free fields in a per-tenant extension answered 13.
     let (mode, base_name, constrained) = match target.kind {
-        ObjectKind::Table => (FreeIdsMode::Field, target.name.clone(), false),
+        ObjectKind::Table => (
+            FreeIdsMode::Field,
+            target.name.clone(),
+            !target.is_workspace(),
+        ),
         ObjectKind::TableExtension => (
             FreeIdsMode::Field,
             target
@@ -454,7 +463,11 @@ fn allocate_members(
                 .unwrap_or_else(|| target.name.clone()),
             true,
         ),
-        ObjectKind::Enum => (FreeIdsMode::Value, target.name.clone(), false),
+        ObjectKind::Enum => (
+            FreeIdsMode::Value,
+            target.name.clone(),
+            !target.is_workspace(),
+        ),
         ObjectKind::EnumExtension => (
             FreeIdsMode::Value,
             target
@@ -634,7 +647,11 @@ fn collect_objects(workspace: &Workspace, ranges: &[IdRange]) -> Vec<ObjectRecor
     let mut objects = workspace_objects(workspace);
     let in_range = |id: i64| ranges.iter().any(|range| range.contains(id));
     for entry in workspace.symbols.all_entries() {
-        if entry.synthetic {
+        // Workspace objects come from the file index above; the symbol index
+        // holds them too, under a pseudo-package, and counting both listed
+        // every workspace extension twice in `sources`.
+        if entry.synthetic || al_symbols::source_availability::is_workspace_package(&entry.package)
+        {
             continue;
         }
         let id = i64::from(entry.id);
@@ -692,7 +709,7 @@ fn workspace_objects(workspace: &Workspace) -> Vec<ObjectRecord> {
                 Err(_) => continue,
             };
             let node = object_node_at(&tree, info.range.start_byte);
-            let extends = node.and_then(|node| extension_target(node, source));
+            let extends = node.and_then(|node| al_syntax::object_extends_target(node, source));
             let members = node
                 .map(|node| member_numbers(node, source, kind))
                 .unwrap_or_default();
@@ -720,43 +737,6 @@ fn object_node_at(tree: &tree_sitter::Tree, start_byte: usize) -> Option<tree_si
         }
     }
     Some(root)
-}
-
-/// The `extends` / `customizes` target inside one object's subtree.
-fn extension_target(object: tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
-    let mut stack = vec![object];
-    while let Some(node) = stack.pop() {
-        if matches!(node.kind(), "object_modifier" | "implements_clause") {
-            let mut keyword_cursor = node.walk();
-            let keyword = node
-                .child_by_field_name("modifier")
-                .or_else(|| {
-                    node.children(&mut keyword_cursor)
-                        .find(|child| child.kind() == "metadata_keyword")
-                })
-                .and_then(|node| node.utf8_text(source).ok())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if keyword.eq_ignore_ascii_case("extends") || keyword.eq_ignore_ascii_case("customizes")
-            {
-                let mut target_cursor = node.walk();
-                return node
-                    .child_by_field_name("target")
-                    .or_else(|| {
-                        node.children(&mut target_cursor)
-                            .find(|child| matches!(child.kind(), "name" | "name_or_keyword"))
-                    })
-                    .and_then(|node| node.utf8_text(source).ok())
-                    .map(|text| text.trim().trim_matches('"').to_string());
-            }
-        }
-        if node.kind() != "object_body" {
-            let mut cursor = node.walk();
-            stack.extend(node.children(&mut cursor));
-        }
-    }
-    None
 }
 
 /// `(number, name)` for one object's table fields or enum values.
@@ -845,7 +825,7 @@ fn member_from_parens(section: tree_sitter::Node<'_>, source: &[u8]) -> Option<(
                 if past_semicolon && name.is_none() =>
             {
                 if let Ok(text) = child.utf8_text(source) {
-                    let trimmed = text.trim().trim_matches('"').trim().to_string();
+                    let trimmed = text.unquote_identifier().into_owned();
                     if !trimmed.is_empty() {
                         name = Some(trimmed);
                     }
@@ -865,7 +845,7 @@ fn enum_value_member(node: tree_sitter::Node<'_>, source: &[u8]) -> Option<(i64,
     let name = node
         .child_by_field_name("name")
         .and_then(|node| node.utf8_text(source).ok())
-        .map(|text| text.trim().trim_matches('"').to_string())
+        .map(|text| text.unquote_identifier().into_owned())
         .filter(|name| !name.is_empty())?;
     Some((ordinal, name))
 }
@@ -1123,6 +1103,32 @@ mod tests {
         assert_eq!(report.mode, FreeIdsMode::Field);
         assert_eq!(report.free, vec![3, 4]);
         assert!(report.ranges.is_empty(), "a base table is not range-bound");
+    }
+
+    #[test]
+    fn a_dependency_table_takes_new_fields_from_the_apps_id_ranges() {
+        let mut base = object(ObjectKind::Table, 18, "Customer");
+        base.members = vec![(1, "No.".into()), (2, "Name".into())];
+        base.package = "Base Application".to_string();
+        let ours = extension(
+            ObjectKind::TableExtension,
+            50100,
+            "Cust Ext",
+            "Customer",
+            &[(50100, "Loyalty Tier")],
+        );
+        let report = allocate(
+            &[base, ours],
+            &ranges(&[(50100, 50149)]),
+            &FreeIdsQuery {
+                object: Some("Customer".to_string()),
+                count: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(report.next_free, Some(50101));
+        assert!(!report.ranges.is_empty(), "the answer is range-bound");
     }
 
     #[test]

@@ -109,6 +109,11 @@ fn read_bounded_line<R: BufRead>(
     loop {
         let available = match reader.fill_buf() {
             Ok(a) => a,
+            // A signal arriving mid-read (SIGCHLD, SIGWINCH, a debugger
+            // attaching) is not the daemon going away. `fill_buf` does not
+            // retry it the way `read_line` does, so a resize of the terminal
+            // failed a long request with "Interrupted system call".
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e)
                 if matches!(
                     e.kind(),
@@ -672,8 +677,8 @@ impl DaemonClient {
     /// Send a JSON-RPC request and receive the response.
     ///
     /// While the daemon reports "Workspace is initializing, try again",
-    /// retries every [`Self::init_retry_delay`] up to a total of
-    /// [`Self::init_wait_total`] — cold daemon startup on a real project
+    /// retries every `init_retry_delay` up to a total of
+    /// `init_wait_total` — cold daemon startup on a real project
     /// takes seconds, and the first command after boot should wait for it
     /// rather than fail. Each retry sends a new request (new ID) and
     /// validates that the response ID matches.
@@ -860,10 +865,10 @@ impl DaemonClient {
                 std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
             ) {
                 format!(
-                    "Daemon did not respond within {}s — the operation may still be \
+                    "Daemon did not respond within {} — the operation may still be \
                          running. Raise AL_REQUEST_TIMEOUT_MS or pass --timeout-ms, or \
                          check the daemon log at ~/.local/share/al-lsp/logs/al-lsp.log",
-                    timeout.as_secs()
+                    describe_timeout(timeout)
                 )
             } else {
                 format!("Failed to read response: {}", e)
@@ -882,10 +887,10 @@ impl DaemonClient {
                 std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
             ) {
                 format!(
-                    "Daemon did not respond within {}s — the operation may still be \
+                    "Daemon did not respond within {} — the operation may still be \
                          running. Raise AL_REQUEST_TIMEOUT_MS or pass --timeout-ms, or \
                          check the daemon log at ~/.local/share/al-lsp/logs/al-lsp.log",
-                    timeout.as_secs()
+                    describe_timeout(timeout)
                 )
             } else {
                 format!("Failed to read response: {}", e)
@@ -897,6 +902,14 @@ impl DaemonClient {
 
     fn start_daemon(project_root: &Path) -> Result<std::process::Child, String> {
         let al_lsp = find_al_lsp_binary()?;
+        // Windows hands every inheritable handle to a child, and this
+        // process's own standard handles are inheritable when a caller
+        // captures them through pipes. The daemon outlives this process, so it
+        // held the caller's pipe open and `al-explorer diag` run with captured
+        // output did not finish until the daemon exited, up to 30 minutes
+        // later.
+        #[cfg(windows)]
+        let _std_handles = windows_std_handles::NotInherited::new();
         std::process::Command::new(&al_lsp)
             .arg("daemon")
             .arg("--project")
@@ -930,14 +943,7 @@ impl DaemonClient {
             .rev()
             .map(str::trim)
             .find(|line| !line.is_empty())
-            .map(|line| {
-                // tracing writes "<timestamp> ERROR target: message"; the
-                // message is what the caller needs.
-                line.rsplit_once(": ")
-                    .map(|(_, message)| message)
-                    .unwrap_or(line)
-                    .to_string()
-            })
+            .map(startup_error_message)
     }
 
     fn wait_for_daemon(
@@ -1193,8 +1199,146 @@ fn connect_stream(endpoint: &Path) -> std::io::Result<Stream> {
         .connect_sync()
 }
 
+/// Clear the inherit flag on this process's standard handles for the length
+/// of one spawn, and put back what was there afterwards.
+#[cfg(windows)]
+mod windows_std_handles {
+    use windows_sys::Win32::Foundation::{
+        GetHandleInformation, SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT,
+        INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+
+    /// Held for the guard's lifetime: the flags are process-wide, and a second
+    /// spawn that found them already cleared would record nothing to restore
+    /// while the first one's restore put them back mid-spawn.
+    static SPAWNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    pub(super) struct NotInherited {
+        restore: Vec<HANDLE>,
+        _serialized: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl NotInherited {
+        pub(super) fn new() -> Self {
+            let serialized = SPAWNING
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut restore = Vec::new();
+            for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+                // Safety: these read and set flags on this process's own
+                // standard handles, which stay open for its lifetime.
+                unsafe {
+                    let handle = GetStdHandle(which);
+                    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+                        continue;
+                    }
+                    let mut flags = 0u32;
+                    if GetHandleInformation(handle, &mut flags) == 0
+                        || flags & HANDLE_FLAG_INHERIT == 0
+                    {
+                        continue;
+                    }
+                    if SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) != 0 {
+                        restore.push(handle);
+                    }
+                }
+            }
+            Self {
+                restore,
+                _serialized: serialized,
+            }
+        }
+    }
+
+    impl Drop for NotInherited {
+        fn drop(&mut self) {
+            for handle in &self.restore {
+                // Safety: see `new`; this restores the flag it cleared.
+                unsafe {
+                    SetHandleInformation(*handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+                }
+            }
+        }
+    }
+}
+
+/// A request deadline for a message: `--timeout-ms 100` printed "within 0s".
+fn describe_timeout(timeout: std::time::Duration) -> String {
+    if timeout.as_millis() < 1000 {
+        format!("{} ms", timeout.as_millis())
+    } else if timeout.subsec_millis() == 0 {
+        format!("{}s", timeout.as_secs())
+    } else {
+        format!("{:.1}s", timeout.as_secs_f64())
+    }
+}
+
+/// The message in one line of the daemon's tracing output.
+///
+/// The daemon logs `<timestamp> <LEVEL> <message> error=<error>` with ANSI
+/// colour codes. The client used to keep the text after the last `": "`, which
+/// cut `Invalid app.json at <path>: missing field` down to `missing field` and
+/// dropped the one thing the user needed: which file.
+fn startup_error_message(line: &str) -> String {
+    let mut plain = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            for code in chars.by_ref() {
+                if code.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            plain.push(c);
+        }
+    }
+    if let Some((_, error)) = plain.split_once("error=") {
+        return error.trim().to_string();
+    }
+    let mut rest = plain.trim();
+    for _ in 0..2 {
+        let Some((head, tail)) = rest.split_once(char::is_whitespace) else {
+            break;
+        };
+        let is_prefix = head.starts_with(|c: char| c.is_ascii_digit())
+            || matches!(head, "ERROR" | "WARN" | "INFO" | "DEBUG" | "TRACE");
+        if !is_prefix {
+            break;
+        }
+        rest = tail.trim_start();
+    }
+    rest.to_string()
+}
+
 #[cfg(all(test, unix))]
-mod tests {
+mod startup_error_tests {
+    use super::startup_error_message;
+
+    #[test]
+    fn startup_error_keeps_the_path_in_a_structured_error() {
+        let line = "\u{1b}[2m2026-09-24T05:23:43.774319Z\u{1b}[0m \u{1b}[31mERROR\u{1b}[0m Daemon failed \u{1b}[3merror\u{1b}[0m\u{1b}[2m=\u{1b}[0mInvalid app.json at /work/schemas/app.json: missing field `id` at line 252 column 1";
+        assert_eq!(
+            startup_error_message(line),
+            "Invalid app.json at /work/schemas/app.json: missing field `id` at line 252 column 1"
+        );
+    }
+
+    #[test]
+    fn startup_error_drops_timestamp_and_level_from_a_plain_message() {
+        assert_eq!(
+            startup_error_message("2026-09-24T05:23:43Z ERROR Daemon failed: no socket dir"),
+            "Daemon failed: no socket dir"
+        );
+        assert_eq!(
+            startup_error_message("thread 'main' panicked"),
+            "thread 'main' panicked"
+        );
+    }
+
     use super::*;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -1568,6 +1712,34 @@ mod tests {
         let result = read_bounded_line(&mut reader, &mut Vec::new(), 64, None)
             .expect("under-cap line should succeed");
         assert_eq!(result.as_deref(), Some("hello world"));
+    }
+
+    /// A reader whose first read is interrupted by a signal, as a socket read
+    /// is when SIGCHLD or SIGWINCH arrives.
+    struct InterruptedOnce<'a> {
+        interrupted: bool,
+        rest: &'a [u8],
+    }
+
+    impl std::io::Read for InterruptedOnce<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            std::io::Read::read(&mut self.rest, buf)
+        }
+    }
+
+    #[test]
+    fn bounded_read_retries_a_read_interrupted_by_a_signal() {
+        let mut reader = std::io::BufReader::new(InterruptedOnce {
+            interrupted: false,
+            rest: b"{\"id\":1}\n",
+        });
+        let result = read_bounded_line(&mut reader, &mut Vec::new(), 64, None)
+            .expect("an interrupted read is retried, not reported");
+        assert_eq!(result.as_deref(), Some("{\"id\":1}"));
     }
 
     #[test]
@@ -2361,188 +2533,5 @@ mod tests {
     }
 }
 
-/// Exercises the actual platform backend selected by `interprocess`: a Unix
-/// domain socket on Linux/macOS and a named pipe on Windows. Keep this outside
-/// the Unix-only legacy test module so Windows CI proves that client setup,
-/// nonblocking pipe I/O, framing, and response parsing work together.
 #[cfg(test)]
-mod cross_platform_tests {
-    use super::{connect_stream, DaemonClient};
-    use crate::jsonrpc::{Request, Response};
-    use crate::socket::socket_path_with_runtime_dir;
-    #[cfg(unix)]
-    use interprocess::local_socket::traits::Stream as _;
-    use interprocess::local_socket::{
-        traits::Listener as _, GenericFilePath, ListenerOptions, ToFsName,
-    };
-    use std::io::{BufRead, Write};
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
-
-    #[test]
-    fn local_transport_round_trip_uses_real_platform_backend() {
-        let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let root = std::env::temp_dir().join(format!(
-            "al-protocol-cross-platform-{}-{n}",
-            std::process::id()
-        ));
-        let project = root.join("project");
-        // Unix-domain sockets have a small path cap (104 bytes on macOS).
-        // GitHub's checkout and temp paths can exceed it before the endpoint
-        // filename is appended, so keep this real-backend fixture beneath the
-        // short, conventional Unix temp root. Windows named pipes are not
-        // filesystem paths and retain the fully isolated fixture directory.
-        #[cfg(unix)]
-        let runtime =
-            std::path::PathBuf::from(format!("/tmp/al-protocol-{}-{n}", std::process::id()));
-        #[cfg(windows)]
-        let runtime = root.join("runtime");
-        std::fs::create_dir_all(&project).expect("create project directory");
-        std::fs::create_dir_all(runtime.join("al-lsp")).expect("create runtime directory");
-
-        let endpoint = socket_path_with_runtime_dir(&project, runtime.to_string_lossy())
-            .expect("create platform endpoint");
-        let name = endpoint
-            .as_path()
-            .to_fs_name::<GenericFilePath>()
-            .expect("convert endpoint name");
-        let listener = ListenerOptions::new()
-            .name(name)
-            .create_sync()
-            .expect("bind platform local transport");
-
-        // Keep the server-side named-pipe handle alive until the client has
-        // consumed the response. The Windows local-socket wrapper's `flush`
-        // is intentionally a no-op, so dropping the short-lived fixture
-        // server immediately after `write_all` can race the client and turn a
-        // valid buffered response into EOF. Real daemons keep the connection
-        // open for subsequent requests.
-        let (response_read_tx, response_read_rx) = std::sync::mpsc::channel();
-
-        let server = std::thread::spawn(move || {
-            let conn = listener.accept().expect("accept client");
-            let mut reader = std::io::BufReader::new(&conn);
-            let mut line = String::new();
-            reader.read_line(&mut line).expect("read request frame");
-            let request: Request = serde_json::from_str(line.trim()).expect("parse request");
-
-            let response = Response::ok(
-                request.dispatch_id(),
-                serde_json::json!({"transport": "local", "method": request.method}),
-            );
-            let mut frame = serde_json::to_vec(&response).expect("serialize response");
-            frame.push(b'\n');
-            let mut writer = &conn;
-            writer.write_all(&frame).expect("write response frame");
-            writer.flush().expect("flush response frame");
-            let _ = response_read_rx.recv_timeout(std::time::Duration::from_secs(5));
-        });
-
-        let stream = connect_stream(&endpoint).expect("connect platform local transport");
-        let mut client = DaemonClient::from_stream(stream).expect("construct daemon client");
-        let response = client
-            .request("test/platform", None)
-            .expect("complete platform round trip");
-        assert_eq!(response["transport"], "local");
-        assert_eq!(response["method"], "test/platform");
-        response_read_tx
-            .send(())
-            .expect("notify fixture server that response was consumed");
-
-        drop(client);
-        server.join().expect("server thread completed");
-        #[cfg(unix)]
-        let _ = std::fs::remove_file(&endpoint);
-        let _ = std::fs::remove_dir_all(&root);
-        #[cfg(unix)]
-        let _ = std::fs::remove_dir_all(&runtime);
-    }
-
-    #[test]
-    fn local_transport_request_deadline_is_enforced() {
-        let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let root =
-            std::env::temp_dir().join(format!("al-protocol-deadline-{}-{n}", std::process::id()));
-        let project = root.join("project");
-        #[cfg(unix)]
-        let runtime = std::path::PathBuf::from(format!(
-            "/tmp/al-protocol-deadline-{}-{n}",
-            std::process::id()
-        ));
-        #[cfg(windows)]
-        let runtime = root.join("runtime");
-        std::fs::create_dir_all(&project).expect("create project directory");
-        std::fs::create_dir_all(runtime.join("al-lsp")).expect("create runtime directory");
-
-        let endpoint = socket_path_with_runtime_dir(&project, runtime.to_string_lossy())
-            .expect("create platform endpoint");
-        let name = endpoint
-            .as_path()
-            .to_fs_name::<GenericFilePath>()
-            .expect("convert endpoint name");
-        let listener = ListenerOptions::new()
-            .name(name)
-            .create_sync()
-            .expect("bind platform local transport");
-
-        let server = std::thread::spawn(move || {
-            let conn = listener.accept().expect("accept client");
-            let mut reader = std::io::BufReader::new(&conn);
-            let mut line = String::new();
-            reader.read_line(&mut line).expect("read request frame");
-            std::thread::sleep(std::time::Duration::from_secs(1));
-        });
-
-        let stream = connect_stream(&endpoint).expect("connect platform local transport");
-        let mut client = DaemonClient::from_stream(stream).expect("construct daemon client");
-        #[cfg(unix)]
-        client
-            .reader
-            .get_ref()
-            .set_recv_timeout(Some(std::time::Duration::from_millis(50)))
-            .expect("shorten Unix socket poll interval for deadline test");
-        let error = client
-            .request_with_timeout("test/never", None, std::time::Duration::from_millis(200))
-            .expect_err("silent platform peer must hit the request deadline");
-        assert!(
-            error.contains("did not respond"),
-            "deadline error must be actionable: {error}"
-        );
-
-        drop(client);
-        server.join().expect("server thread completed");
-        #[cfg(unix)]
-        let _ = std::fs::remove_file(&endpoint);
-        let _ = std::fs::remove_dir_all(&root);
-        #[cfg(unix)]
-        let _ = std::fs::remove_dir_all(&runtime);
-    }
-
-    /// The old message told the caller to "retry with a longer timeout" and
-    /// there was no way to set one.
-    #[test]
-    fn timeout_message_names_a_control_that_exists() {
-        use super::is_timeout_message;
-        // The literal in `read_one_response`, checked directly: building a
-        // real stall here would add seconds to the suite for one string.
-        let rendered = format!(
-            "Daemon did not respond within {}s — the operation may still be \
-             running. Raise AL_REQUEST_TIMEOUT_MS or pass --timeout-ms, or \
-             check the daemon log at ~/.local/share/al-lsp/logs/al-lsp.log",
-            30
-        );
-        assert!(is_timeout_message(&rendered));
-        assert!(rendered.contains("AL_REQUEST_TIMEOUT_MS"));
-        assert!(!rendered.contains("Retry with a longer timeout"));
-    }
-
-    #[test]
-    fn a_non_timeout_error_is_not_treated_as_one() {
-        use super::is_timeout_message;
-        assert!(!is_timeout_message(
-            "Failed to read response: Connection reset by peer (os error 104)"
-        ));
-        assert!(!is_timeout_message("Connection closed by daemon (EOF)"));
-    }
-}
+mod tests;

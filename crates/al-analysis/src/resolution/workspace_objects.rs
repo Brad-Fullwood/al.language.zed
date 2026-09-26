@@ -5,6 +5,7 @@
 //! type keyword when the caller has one and scans `object_info`, which is keyed
 //! by path, for the entry whose kind matches.
 
+use al_syntax::IdentifierText;
 use std::path::{Path, PathBuf};
 
 use url::Url;
@@ -164,6 +165,93 @@ pub(super) fn workspace_object_name(workspace: &Workspace, path: &Path) -> Optio
         .map(|info| info.name.clone())
 }
 
+/// A member that an extension object in the workspace adds to `base`: a
+/// field of a table extension, a procedure, an enum extension's value.
+///
+/// The composed members of a package table include the fields a workspace
+/// extension adds, but carry no location, so go-to-definition on
+/// `Cust."Loyalty Tier"` opened the Base Application outline of `Customer`
+/// instead of the extension that declares the field.
+///
+/// `receiver_type` is the receiver's type keyword (`Record`, `Page`, ...):
+/// only an extension of that kind counts, so a page extension of a page named
+/// like the table does not answer for a field of the table. The member has to
+/// be declared inside the extension object, not elsewhere in its file.
+pub(super) fn workspace_extension_member(
+    workspace: &Workspace,
+    receiver_type: &str,
+    base: &str,
+    member_name: &str,
+) -> Option<ResolvedMember> {
+    let extension_kind = extension_keyword_for(receiver_type)?;
+    let base = base.unquote_identifier();
+    let mut candidates: Vec<(PathBuf, tree_sitter::Range)> = workspace
+        .file_index
+        .object_infos
+        .iter()
+        .flat_map(|entry| {
+            let path = entry.key().clone();
+            entry
+                .value()
+                .iter()
+                .filter(|info| info.kind.eq_ignore_ascii_case(extension_kind))
+                .map(|info| (path.clone(), info.range))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    candidates.sort_by(|(left, left_range), (right, right_range)| {
+        left.cmp(right)
+            .then(left_range.start_byte.cmp(&right_range.start_byte))
+    });
+    for (path, object_range) in candidates {
+        let Some((content, tree)) = workspace.file_index.get_cached_parse(&path) else {
+            continue;
+        };
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        let extends_base = root
+            .children(&mut cursor)
+            .filter(|object| object.start_byte() == object_range.start_byte)
+            .any(|object| {
+                al_syntax::object_extends_target(object, content.as_bytes())
+                    .is_some_and(|target| target.eq_ignore_ascii_case(&base))
+            });
+        if !extends_base {
+            continue;
+        }
+        if let Some(member) = workspace_member(workspace, &path, member_name) {
+            let lines = object_range.start_point.row..=object_range.end_point.row;
+            if member_line(&member).is_some_and(|line| lines.contains(&line)) {
+                return Some(member);
+            }
+        }
+    }
+    None
+}
+
+/// The extension keyword for a receiver type: `Record` → `tableextension`.
+fn extension_keyword_for(receiver_type: &str) -> Option<&'static str> {
+    match receiver_type.to_ascii_lowercase().as_str() {
+        "record" => Some("tableextension"),
+        "page" | "testpage" => Some("pageextension"),
+        "report" | "testrequestpage" => Some("reportextension"),
+        "enum" => Some("enumextension"),
+        _ => None,
+    }
+}
+
+/// The line a resolved workspace member is declared on.
+fn member_line(member: &ResolvedMember) -> Option<usize> {
+    let range = match &member.kind {
+        ResolvedMemberKind::Variable { range, .. }
+        | ResolvedMemberKind::Procedure { range, .. }
+        | ResolvedMemberKind::Field { range }
+        | ResolvedMemberKind::EnumValue { range } => range.as_ref()?,
+        ResolvedMemberKind::BuiltinMethod { .. } => return None,
+    };
+    Some(range.start.line as usize)
+}
+
 pub(super) fn workspace_member(
     workspace: &Workspace,
     path: &Path,
@@ -300,6 +388,55 @@ pub(super) fn workspace_member(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A page extension of page "Customer" and a table extension of table
+    /// "Customer" both add a `Refresh`; which one answers depends on the
+    /// receiver, and a codeunit in the extension's file does not count.
+    #[test]
+    fn an_extension_member_comes_from_an_extension_of_the_receiver_s_kind() {
+        let ws = Workspace::new();
+        let page_path = std::path::PathBuf::from("/proj/CustCard.PageExt.al");
+        ws.file_index.add_file(
+            page_path.clone(),
+            r#"pageextension 50102 "Cust Card Ext" extends Customer
+{
+    procedure Refresh()
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+        let table_path = std::path::PathBuf::from("/proj/Cust.TableExt.al");
+        ws.file_index.add_file(
+            table_path.clone(),
+            r#"tableextension 50100 "Cust Ext" extends Customer
+{
+}
+
+codeunit 50103 Helper
+{
+    procedure Recalculate()
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+
+        let from_page = workspace_extension_member(&ws, "Page", "Customer", "Refresh")
+            .expect("the page extension declares Refresh");
+        assert_eq!(from_page.uri, Url::from_file_path(&page_path).ok());
+        assert!(
+            workspace_extension_member(&ws, "Record", "Customer", "Refresh").is_none(),
+            "a record receiver is not answered by a page extension"
+        );
+        assert!(
+            workspace_extension_member(&ws, "Record", "Customer", "Recalculate").is_none(),
+            "a codeunit sharing the table extension's file is not the extension"
+        );
+        assert!(workspace_extension_member(&ws, "Codeunit", "Customer", "Refresh").is_none());
+    }
 
     /// A setup table and its card share a name, which is the usual AL
     /// convention. `object_path` returns whichever file was indexed last, so

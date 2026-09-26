@@ -5,6 +5,7 @@
 //! every `Record` carries, or from the CodeAnalysis builtin catalog. The order
 //! below is the order those sources are consulted.
 
+use al_syntax::IdentifierText;
 use tree_sitter::Tree;
 use url::Url;
 
@@ -15,7 +16,9 @@ use crate::queries::Position;
 use super::type_text::{
     format_builtin_signature, format_method_signature, parse_type_expr, split_last, strip_length,
 };
-use super::workspace_objects::{resolve_object_path, workspace_member, workspace_object_type};
+use super::workspace_objects::{
+    resolve_object_path, workspace_extension_member, workspace_member, workspace_object_type,
+};
 use super::xml_doc::format_xml_doc;
 use super::{ResolvedMember, ResolvedMemberKind, ResolvedType};
 
@@ -81,6 +84,8 @@ pub(crate) fn resolve_expression_type(
         else {
             return Ok(None);
         };
+        // A call step (`AsValue()`) resolves by its name to its return type.
+        let rhs = rhs.split_once('(').map_or(rhs, |(name, _)| name).trim();
         let result =
             resolve_member(workspace, uri, &receiver, rhs)?.and_then(|member| member.type_info);
         tracing::debug!(
@@ -247,7 +252,7 @@ pub(crate) fn resolve_member(
         .map_err(|_| WorkspaceStateError::Poisoned {
             component: "semantic_cache",
         })?;
-    let target_name = member_name.trim_matches('"');
+    let target_name = member_name.unquote_identifier();
     let result = (|| {
         tracing::debug!(
             receiver = %receiver.type_name,
@@ -260,7 +265,7 @@ pub(crate) fn resolve_member(
             if let Some(path) =
                 resolve_object_path(workspace, Some(uri), subtype, Some(&receiver.type_name))
             {
-                if let Some(member) = workspace_member(workspace, &path, target_name) {
+                if let Some(member) = workspace_member(workspace, &path, &target_name) {
                     tracing::debug!(
                         member = %target_name,
                         result = "workspace_member",
@@ -271,6 +276,18 @@ pub(crate) fn resolve_member(
                 }
             }
 
+            if let Some(member) =
+                workspace_extension_member(workspace, &receiver.type_name, subtype, &target_name)
+            {
+                tracing::debug!(
+                    member = %target_name,
+                    result = "workspace_extension_member",
+                    found = %member.name,
+                    "resolve_member: found in a workspace extension"
+                );
+                return Some(member);
+            }
+
             for members in composed_members_for(workspace, subtype) {
                 let ComposedMembers {
                     package,
@@ -279,7 +296,7 @@ pub(crate) fn resolve_member(
                     enum_values,
                 } = &members;
                 for method in methods {
-                    if method.name.eq_ignore_ascii_case(target_name) {
+                    if method.name.eq_ignore_ascii_case(&target_name) {
                         tracing::debug!(
                             member = %target_name,
                             result = "Procedure",
@@ -306,7 +323,7 @@ pub(crate) fn resolve_member(
                 }
 
                 for field in fields {
-                    if field.name.eq_ignore_ascii_case(target_name) {
+                    if field.name.eq_ignore_ascii_case(&target_name) {
                         tracing::debug!(
                             member = %target_name,
                             result = "Field",
@@ -325,7 +342,7 @@ pub(crate) fn resolve_member(
                 }
 
                 for value in enum_values {
-                    if value.name.eq_ignore_ascii_case(target_name) {
+                    if value.name.eq_ignore_ascii_case(&target_name) {
                         tracing::debug!(
                             member = %target_name,
                             result = "EnumValue",
@@ -348,7 +365,7 @@ pub(crate) fn resolve_member(
             }
         }
 
-        if let Some(field) = record_system_field(receiver, target_name) {
+        if let Some(field) = record_system_field(receiver, &target_name) {
             tracing::debug!(
                 member = %target_name,
                 result = "Field",
@@ -360,7 +377,7 @@ pub(crate) fn resolve_member(
 
         if let Some(builtin) = builtin_for(&cache, receiver) {
             for method in &builtin.methods {
-                if method.name.eq_ignore_ascii_case(target_name) {
+                if method.name.eq_ignore_ascii_case(&target_name) {
                     tracing::debug!(
                         member = %target_name,
                         result = "BuiltinMethod",
@@ -610,6 +627,43 @@ mod tests {
                 .type_name,
             "ObjectResult"
         );
+    }
+
+    /// `Token.AsValue().AsText()`: the receiver of AsText is what AsValue
+    /// returns. A call step used to be looked up as a member named
+    /// `AsValue()`, parentheses included, and resolved to nothing.
+    #[test]
+    fn resolve_expression_type_follows_a_call_step() {
+        let ws = Workspace::new();
+        al_workspace::set_builtins(
+            &ws,
+            vec![
+                al_semantic::BuiltinType {
+                    name: "JsonTokenClass".to_string(),
+                    methods: vec![builtin_method("AsValue", "JsonValue")],
+                    enum_values: Vec::new(),
+                },
+                al_semantic::BuiltinType {
+                    name: "JsonValueClass".to_string(),
+                    methods: vec![builtin_method("AsText", "Text")],
+                    enum_values: Vec::new(),
+                },
+            ],
+            "test",
+        );
+        let uri = Url::parse("file:///x.al").unwrap();
+        let text = "codeunit 1 X\n{\n    procedure P()\n    var\n        Token: JsonToken;\n    begin\n        Token.AsValue().AsText();\n    end;\n}";
+        let parsed = AlParser::parse_quick(text);
+        let position = Position {
+            line: 6,
+            character: 10,
+        };
+        let receiver =
+            resolve_expression_type(&ws, &uri, text, &parsed.tree, "Token.AsValue()", position)
+                .expect("the call step resolves to its return type");
+        assert_eq!(receiver.type_name, "JsonValue");
+        let member = resolve_member(&ws, &uri, &receiver, "AsText").expect("AsText on JsonValue");
+        assert_eq!(member.type_info.expect("return type").type_name, "Text");
     }
 
     #[test]

@@ -2204,3 +2204,582 @@ fn assert_expected_error_matches_a_substring_of_the_caught_error() {
         "expected a thrown-nothing failure, got: {none}"
     );
 }
+
+const POINT_LEDGER: &str = r#"table 50150 "Point Ledger"
+{
+    fields
+    {
+        field(1; "Entry No."; Integer) { }
+        field(2; Member; Code[20]) { }
+        field(3; Points; Decimal) { }
+    }
+    keys
+    {
+        key(PK; "Entry No.") { Clustered = true; }
+    }
+}
+"#;
+
+const POINT_CALC: &str = r#"codeunit 50151 "Point Calc"
+{
+    procedure Add(EntryNo: Integer; MemberCode: Code[20]; Amount: Decimal)
+    var
+        Ledger: Record "Point Ledger";
+    begin
+        Ledger.Init();
+        Ledger."Entry No." := EntryNo;
+        Ledger.Member := MemberCode;
+        Ledger.Points := Amount;
+        Ledger.Insert();
+    end;
+
+    procedure BalanceOfA(): Decimal
+    var
+        Ledger: Record "Point Ledger";
+    begin
+        Add(1, 'A', 10);
+        Add(2, 'B', 5);
+        Add(3, 'A', 32.5);
+        Ledger.SetRange(Member, 'A');
+        Ledger.CalcSums(Points);
+        exit(Ledger.Points);
+    end;
+
+    procedure NothingMatches(): Decimal
+    var
+        Ledger: Record "Point Ledger";
+    begin
+        Add(1, 'A', 10);
+        Ledger.SetRange(Member, 'Z');
+        Ledger.CalcSums(Points);
+        exit(Ledger.Points);
+    end;
+}
+"#;
+
+/// CalcSums was unsupported, so any test using it was routed to live BC.
+#[test]
+fn calcsums_totals_the_filtered_rows() {
+    let run_calc = |proc: &str| {
+        run(
+            &[("/ws/Ledger.al", POINT_LEDGER), ("/ws/Calc.al", POINT_CALC)],
+            "Point Calc",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(ok(run_calc("BalanceOfA")), Value::Decimal(dec!(42.5)));
+    assert_eq!(ok(run_calc("NothingMatches")), Value::Decimal(dec!(0)));
+}
+
+/// `case true of Points >= 1000:` evaluated only `Points` of each label and
+/// compared it with `true`, so every value fell through to `else`.
+#[test]
+fn case_true_of_compares_each_label_expression() {
+    let src = r#"codeunit 50160 Probe
+{
+    procedure Tier(Points: Decimal): Text
+    begin
+        case true of
+            Points >= 1000:
+                exit('GOLD');
+            Points >= 100:
+                exit('SILVER');
+            else
+                exit('NONE');
+        end;
+    end;
+}
+"#;
+    let tier = |points: Value| ok(run(&[("/ws/P.al", src)], "Probe", "Tier", vec![points]));
+    assert_eq!(tier(Value::Decimal(dec!(1000))), Value::Text("GOLD".into()));
+    assert_eq!(
+        tier(Value::Decimal(dec!(150))),
+        Value::Text("SILVER".into())
+    );
+    assert_eq!(tier(Value::Integer(99)), Value::Text("NONE".into()));
+}
+
+const BUILTIN_PROBE: &str = r#"codeunit 50170 "Builtin Probe"
+{
+    procedure DelStrOf(): Text
+    begin
+        exit(DelStr('ABCDEF', 2, 3) + '|' + DelStr('ABCDEF', 4));
+    end;
+
+    procedure Extremes(): Decimal
+    begin
+        exit(Maximum(3, 7.5) - Minimum(4, -2));
+    end;
+
+    procedure ArrayLength(): Integer
+    var
+        Slots: array[4] of Integer;
+    begin
+        exit(ArrayLen(Slots));
+    end;
+
+    procedure ArrayElements(): Integer
+    var
+        Slots: array[4] of Integer;
+        i: Integer;
+        Total: Integer;
+    begin
+        for i := 1 to ArrayLen(Slots) do
+            Slots[i] := i * 10;
+        Slots[i - 1] += 5;
+        for i := 1 to 4 do
+            Total += Slots[i];
+        exit(Total + Slots[i - 2 + 1]);
+    end;
+
+    procedure ArrayOutOfBounds(): Integer
+    var
+        Slots: array[2] of Integer;
+    begin
+        exit(Slots[3]);
+    end;
+
+    procedure TextCharacters(): Text
+    var
+        Word: Text;
+        Tag: Code[10];
+    begin
+        Word := 'cat';
+        Word[1] := 'b';
+        Tag := 'AB';
+        Tag[2] := 'z';
+        exit(Word + Format(Word[3]) + Tag);
+    end;
+
+    procedure CalcDateOf(Formula: Text; Day: Integer; Month: Integer; Year: Integer): Date
+    begin
+        exit(CalcDate(Formula, DMY2Date(Day, Month, Year)));
+    end;
+
+    procedure Dwy(Day: Integer; Month: Integer; Year: Integer; What: Integer): Integer
+    begin
+        exit(Date2DWY(DMY2Date(Day, Month, Year), What));
+    end;
+
+    procedure EvaluateInteger(Input: Text): Integer
+    var
+        Parsed: Integer;
+    begin
+        Parsed := -1;
+        if not Evaluate(Parsed, Input) then
+            exit(-99);
+        exit(Parsed);
+    end;
+
+    procedure EvaluateAsStatement()
+    var
+        Parsed: Decimal;
+    begin
+        Evaluate(Parsed, 'not a number');
+    end;
+
+    procedure ListInsert(): Text
+    var
+        Names: List of [Text];
+        Name: Text;
+        Joined: Text;
+    begin
+        Names.Add('a');
+        Names.Add('c');
+        Names.Insert(2, 'b');
+        Names.Insert(4, 'd');
+        foreach Name in Names do
+            Joined += Name;
+        exit(Joined);
+    end;
+
+    procedure DictGet(): Text
+    var
+        Prices: Dictionary of [Code[20], Decimal];
+        Price: Decimal;
+        Found: Text;
+    begin
+        Prices.Add('A', 12.5);
+        if Prices.Get('A', Price) then
+            Found := Format(Price);
+        if not Prices.Get('Z', Price) then
+            Found += '|missing';
+        exit(Found);
+    end;
+}
+"#;
+
+fn probe(proc: &str, args: Vec<Value>) -> Eval {
+    run(
+        &[("/ws/Probe.al", BUILTIN_PROBE)],
+        "Builtin Probe",
+        proc,
+        args,
+    )
+}
+
+/// DelStr, Maximum/Minimum and ArrayLen were unsupported, so any test using
+/// them was routed to live BC.
+#[test]
+fn text_and_numeric_builtins_run_locally() {
+    assert_eq!(ok(probe("DelStrOf", vec![])), Value::Text("AEF|ABC".into()));
+    assert_eq!(ok(probe("Extremes", vec![])), Value::Decimal(dec!(9.5)));
+    assert_eq!(ok(probe("ArrayLength", vec![])), Value::Integer(4));
+}
+
+/// Array variables were never bound, so `Slots[i]` failed as an unbound
+/// identifier.
+#[test]
+fn array_elements_and_text_characters_read_and_write() {
+    // 10 + 20 + 35 + 40 = 105, plus Slots[3] = 35.
+    assert_eq!(ok(probe("ArrayElements", vec![])), Value::Integer(140));
+    let out_of_bounds = error_message(probe("ArrayOutOfBounds", vec![]));
+    assert!(
+        out_of_bounds.contains("index 3 is outside"),
+        "{out_of_bounds}"
+    );
+    assert_eq!(
+        ok(probe("TextCharacters", vec![])),
+        Value::Text("battAZ".into())
+    );
+}
+
+#[test]
+fn calcdate_applies_each_term_and_clamps_month_ends() {
+    use crate::interpreter::value::al_days_from_ymd;
+    let calc = |formula: &str, (d, m, y): (i64, i64, i64)| {
+        ok(probe(
+            "CalcDateOf",
+            vec![
+                Value::Text(formula.into()),
+                Value::Integer(d),
+                Value::Integer(m),
+                Value::Integer(y),
+            ],
+        ))
+    };
+    let date = |d, m, y| Value::Date(al_days_from_ymd(y, m, d));
+    assert_eq!(calc("<+1M>", (31, 1, 2026)), date(28, 2, 2026));
+    assert_eq!(calc("<CM>", (10, 2, 2028)), date(29, 2, 2028));
+    assert_eq!(calc("<-CM>", (10, 2, 2026)), date(1, 2, 2026));
+    assert_eq!(calc("<CM+1D>", (10, 12, 2026)), date(1, 1, 2027));
+    assert_eq!(calc("<-1W>", (7, 1, 2026)), date(31, 12, 2025));
+    assert_eq!(calc("<CQ>", (5, 8, 2026)), date(30, 9, 2026));
+    assert_eq!(calc("<-CY+1Y>", (5, 8, 2026)), date(1, 1, 2027));
+    // 24 Sep 2026 is a Thursday: the week ends on Sunday the 27th.
+    assert_eq!(calc("<CW>", (24, 9, 2026)), date(27, 9, 2026));
+    assert!(error_message(calc_err("<1X>")).contains("unsupported unit"));
+}
+
+fn calc_err(formula: &str) -> Eval {
+    probe(
+        "CalcDateOf",
+        vec![
+            Value::Text(formula.into()),
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Integer(2026),
+        ],
+    )
+}
+
+#[test]
+fn date2dwy_gives_weekday_iso_week_and_its_year() {
+    let dwy = |d, m, y, what| {
+        ok(probe(
+            "Dwy",
+            vec![
+                Value::Integer(d),
+                Value::Integer(m),
+                Value::Integer(y),
+                Value::Integer(what),
+            ],
+        ))
+    };
+    // Thursday 24 Sep 2026, ISO week 39.
+    assert_eq!(dwy(24, 9, 2026, 1), Value::Integer(4));
+    assert_eq!(dwy(24, 9, 2026, 2), Value::Integer(39));
+    // Friday 1 Jan 2027 belongs to week 53 of 2026.
+    assert_eq!(dwy(1, 1, 2027, 1), Value::Integer(5));
+    assert_eq!(dwy(1, 1, 2027, 2), Value::Integer(53));
+    assert_eq!(dwy(1, 1, 2027, 3), Value::Integer(2026));
+    // Monday 29 Dec 2025 is in week 1 of 2026.
+    assert_eq!(dwy(29, 12, 2025, 2), Value::Integer(1));
+    assert_eq!(dwy(29, 12, 2025, 3), Value::Integer(2026));
+}
+
+/// Evaluate writes the parsed value to its var argument, answers false in an
+/// expression and raises as a statement, as BC does.
+#[test]
+fn evaluate_writes_back_or_fails_by_position() {
+    let evaluate = |input: &str| ok(probe("EvaluateInteger", vec![Value::Text(input.into())]));
+    assert_eq!(evaluate(" 42 "), Value::Integer(42));
+    assert_eq!(evaluate("4x2"), Value::Integer(-99));
+    let raised = error_message(probe("EvaluateAsStatement", vec![]));
+    assert!(
+        raised.contains("'not a number' is not a valid Decimal"),
+        "{raised}"
+    );
+}
+
+#[test]
+fn list_insert_and_dictionary_get_with_var_run_locally() {
+    assert_eq!(ok(probe("ListInsert", vec![])), Value::Text("abcd".into()));
+    assert_eq!(
+        ok(probe("DictGet", vec![])),
+        Value::Text("12.5|missing".into())
+    );
+}
+
+const POINT_RESET: &str = r#"codeunit 50152 "Point Reset"
+{
+    procedure ZeroMemberA(): Decimal
+    var
+        Calc: Codeunit "Point Calc";
+        Ledger: Record "Point Ledger";
+    begin
+        Calc.Add(1, 'A', 10);
+        Calc.Add(2, 'B', 5);
+        Calc.Add(3, 'A', 7);
+        Ledger.SetRange(Member, 'A');
+        Ledger.ModifyAll(Points, 0);
+        Ledger.Reset();
+        Ledger.CalcSums(Points);
+        exit(Ledger.Points);
+    end;
+
+    procedure ModifyKey()
+    var
+        Ledger: Record "Point Ledger";
+    begin
+        Ledger.ModifyAll("Entry No.", 9);
+    end;
+}
+"#;
+
+/// ModifyAll was unsupported, so any test using it was routed to live BC.
+#[test]
+fn modifyall_sets_the_field_on_filtered_rows_only() {
+    let files = [
+        ("/ws/Ledger.al", POINT_LEDGER),
+        ("/ws/Calc.al", POINT_CALC),
+        ("/ws/Reset.al", POINT_RESET),
+    ];
+    assert_eq!(
+        ok(run(&files, "Point Reset", "ZeroMemberA", vec![])),
+        Value::Decimal(dec!(5))
+    );
+    let refused = error_message(run(&files, "Point Reset", "ModifyKey", vec![]));
+    assert!(refused.contains("part of the primary key"), "{refused}");
+}
+
+const CHAIN_PROBE: &str = r#"codeunit 50190 Chain
+{
+    procedure SplitCount(): Integer
+    var
+        S: Text;
+    begin
+        S := 'a,b';
+        exit(S.Split(',').Count());
+    end;
+
+    procedure TrimThenUpper(): Text
+    var
+        S: Text;
+    begin
+        S := ' a,b ';
+        exit(S.Trim().ToUpper());
+    end;
+
+    procedure FormatThenPad(): Text
+    begin
+        exit(Format(12).PadLeft(4, '0') + '|' + 'ab'.PadRight(3) + '|');
+    end;
+
+    procedure FieldThenUpper(): Text
+    var
+        Item: Record Item;
+    begin
+        Item."No." := 'X1';
+        Item.Description := 'hello';
+        exit(Item.Description.ToUpper());
+    end;
+
+    procedure SplitElementTrimmed(): Text
+    var
+        S: Text;
+        Parts: List of [Text];
+    begin
+        S := 'a, b ,c';
+        Parts := S.Split(',');
+        exit(Parts.Get(2).Trim() + S.Remove(2, 1).Split(' ').Get(1));
+    end;
+
+    procedure ElementCharacter(): Text
+    var
+        S: Text;
+    begin
+        S := 'ab,cd';
+        exit(Format(S.Split(',').Get(2)[2]));
+    end;
+
+    procedure UnsupportedStep(): Text
+    var
+        S: Text;
+    begin
+        exit(S.Split(',').Reverse());
+    end;
+}
+"#;
+
+/// Only the last call of a chain ran, on the first receiver: `S.Trim().ToUpper()`
+/// answered ' A,B ' and `S.Split(',').Count()` failed to find an object 'S'.
+#[test]
+fn chained_calls_apply_every_step_in_order() {
+    let chain = |proc: &str| {
+        run(
+            &[("/ws/Chain.al", CHAIN_PROBE), ("/ws/Item.al", ITEM_TABLE)],
+            "Chain",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(ok(chain("SplitCount")), Value::Integer(2));
+    assert_eq!(ok(chain("TrimThenUpper")), Value::Text("A,B".into()));
+    assert_eq!(ok(chain("FormatThenPad")), Value::Text("0012|ab |".into()));
+    assert_eq!(ok(chain("FieldThenUpper")), Value::Text("HELLO".into()));
+    assert_eq!(ok(chain("SplitElementTrimmed")), Value::Text("ba".into()));
+    assert_eq!(ok(chain("ElementCharacter")), Value::Text("d".into()));
+    let unsupported = error_message(chain("UnsupportedStep"));
+    assert!(
+        unsupported.contains("List.Reverse in a chained call is not supported"),
+        "{unsupported}"
+    );
+}
+
+const POINT_ORDER: &str = r#"codeunit 50153 "Point Order"
+{
+    procedure Order(): Text
+    var
+        Calc: Codeunit "Point Calc";
+        Ledger: Record "Point Ledger";
+        Seen: Text;
+    begin
+        Calc.Add(1, 'A', 5);
+        Calc.Add(2, 'B', 9);
+        Calc.Add(3, 'C', 5);
+        Ledger.SetCurrentKey(Points);
+        Ledger.Ascending(false);
+        if Ledger.Ascending() then
+            exit('still ascending');
+        if Ledger.FindSet() then
+            repeat
+                Seen += Ledger.Member;
+            until Ledger.Next() = 0;
+        Ledger.Reset();
+        Ledger.FindFirst();
+        exit(Seen + '|' + Ledger.Member);
+    end;
+}
+"#;
+
+/// Ascending was unsupported, so a test sorting backwards went to live BC.
+/// Descending order reverses ties on the current key too.
+#[test]
+fn ascending_false_iterates_the_key_backwards_until_reset() {
+    let files = [
+        ("/ws/Ledger.al", POINT_LEDGER),
+        ("/ws/Calc.al", POINT_CALC),
+        ("/ws/Order.al", POINT_ORDER),
+    ];
+    assert_eq!(
+        ok(run(&files, "Point Order", "Order", vec![])),
+        Value::Text("BCA|A".into())
+    );
+}
+
+const ENUM_PROBE: &str = r#"codeunit 50192 "Enum Probe"
+{
+    procedure AssignedFormat(): Text
+    var
+        C: Enum Colour;
+    begin
+        C := Colour::Blue;
+        exit(Format(C));
+    end;
+
+    procedure UnassignedIsOrdinalZero(): Boolean
+    var
+        C: Enum Colour;
+    begin
+        exit(C = Colour::Red);
+    end;
+
+    procedure AsInteger(): Integer
+    var
+        C: Enum Colour;
+    begin
+        C := Colour::Blue;
+        exit(C.AsInteger());
+    end;
+
+    procedure ValueAsInteger(): Integer
+    begin
+        exit(Colour::Blue.AsInteger() + Enum::Colour::Blue.AsInteger());
+    end;
+
+    procedure FromIntegerAndNames(): Text
+    var
+        C: Enum Colour;
+    begin
+        C := Enum::Colour.FromInteger(3);
+        exit(Format(C) + Format(Enum::Colour.Names().Count()));
+    end;
+
+    procedure UnassignedFormatAndNames(): Text
+    var
+        C: Enum Colour;
+    begin
+        exit(Format(C) + '|' + C.Names().Get(2));
+    end;
+
+    procedure CaseOnEnum(): Integer
+    var
+        C: Enum Colour;
+    begin
+        C := Enum::Colour::Blue;
+        case C of
+            Colour::Red: exit(1);
+            Colour::Blue: exit(2);
+        end;
+    end;
+}
+"#;
+
+const COLOUR_ENUM: &str =
+    "enum 50191 Colour\n{\n    value(0; Red) { }\n    value(3; Blue) { }\n}\n";
+
+/// `Enum` variables were never bound, so assigning one failed as an
+/// undeclared identifier, and no enum method ran locally.
+#[test]
+fn enum_variables_and_methods_run_locally() {
+    let call = |proc: &str| {
+        ok(run(
+            &[("/ws/Probe.al", ENUM_PROBE), ("/ws/Colour.al", COLOUR_ENUM)],
+            "Enum Probe",
+            proc,
+            vec![],
+        ))
+    };
+    assert_eq!(call("AssignedFormat"), Value::Text("Blue".into()));
+    assert_eq!(call("UnassignedIsOrdinalZero"), Value::Boolean(true));
+    assert_eq!(call("AsInteger"), Value::Integer(3));
+    assert_eq!(call("CaseOnEnum"), Value::Integer(2));
+    assert_eq!(call("ValueAsInteger"), Value::Integer(6));
+    assert_eq!(call("FromIntegerAndNames"), Value::Text("Blue2".into()));
+    assert_eq!(
+        call("UnassignedFormatAndNames"),
+        Value::Text("Red|Blue".into())
+    );
+}

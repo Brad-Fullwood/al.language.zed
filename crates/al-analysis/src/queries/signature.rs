@@ -159,7 +159,9 @@ fn signature_help_inner(
             "signature_help: UTF-16 column past end of line; clamped to line.len()"
         );
     }
-    let prefix = &line[..col_byte];
+    // Inside a string argument the rest of the line is text: the receiver
+    // lookups below would take a `.` or `(` in it for code.
+    let prefix = al_syntax::code_before_open_literal(&line[..col_byte]);
 
     let (func_name, active_param) = al_syntax::find_call_context(prefix)?;
 
@@ -892,6 +894,28 @@ mod tests {
             0,
         )
         .is_none());
+    }
+
+    /// A `.` and `(` inside the string being typed were read as a receiver
+    /// call (`3 (`), which skipped the same-file lookup.
+    #[test]
+    fn a_dot_and_paren_inside_the_string_argument_are_not_a_receiver() {
+        let src = "codeunit 50100 X\n{\n    procedure Notify(Msg: Text)\n    begin\n    end;\n\n    procedure Run()\n    begin\n        Notify('See p. 3 (\n    end;\n}\n";
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/notify.al").expect("uri");
+        ws.documents.open(uri.clone(), src.to_string()).unwrap();
+        let line = src.lines().nth(8).unwrap();
+        let result = signature_help(
+            &ws,
+            &uri,
+            Position {
+                line: 8,
+                character: line.len() as u32,
+            },
+        )
+        .expect("the local Notify signature");
+        assert!(result.signatures[0].label.starts_with("Notify("));
+        assert_eq!(result.active_parameter, Some(0));
     }
 
     #[test]

@@ -197,6 +197,9 @@ pub(super) fn dispatch_rename(
     match result {
         Ok(Some(we)) => serialized_response(id, &we, "textDocument/rename"),
         Ok(None) => Response::null(id),
+        Err(error @ al_analysis::queries::rename::RenameError::Collision { .. }) => {
+            rpc_error(id, error_codes::INVALID_PARAMS, &error.to_string())
+        }
         Err(error) => rpc_error(
             id,
             error_codes::INTERNAL_ERROR,
@@ -339,10 +342,33 @@ pub(super) fn dispatch_search(
         Ok(summary) => summary,
         Err(error) => return rpc_error(id, error_codes::INVALID_PARAMS, &error),
     };
+    // `limit` and `offset` also page the result (projection.rs), which
+    // needs every match to report `total` and `truncated`: capping the
+    // search at `limit` told a caller asking for 3 of 8 matches that 3 was
+    // all there was, and `offset 3` returned nothing. So a paged search
+    // collects every match, and serializes in full only the rows that can
+    // land in the page (with a margin for de-duplication below); the rest
+    // are summaries the projection drops.
+    const MAX_PAGED_MATCHES: usize = 10_000;
+    let paged = params.get("limit").is_some() || params.get("offset").is_some();
+    let offset = params
+        .get("offset")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|offset| usize::try_from(offset).ok())
+        .unwrap_or(0);
+    let (limit, full_rows) = if paged {
+        (
+            MAX_PAGED_MATCHES.max(limit),
+            offset.saturating_add(limit).saturating_add(64),
+        )
+    } else {
+        (limit, usize::MAX)
+    };
     let results = workspace.symbols.search(query, limit);
     let mut value: Vec<serde_json::Value> = match results
         .iter()
-        .map(|entry| symbol_entry_to_json(workspace, entry, summary))
+        .enumerate()
+        .map(|(row, entry)| symbol_entry_to_json(workspace, entry, summary || row >= full_rows))
         .collect::<Result<Vec<_>, _>>()
     {
         Ok(value) => value,
@@ -516,6 +542,10 @@ pub(super) fn dispatch_object(
     let Some(name) = params.get("name").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
+    let signatures = match optional_bool_param(params, "signatures", false) {
+        Ok(signatures) => signatures,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
     // `kind` is optional: editor tasks only have the
     // symbol under the cursor. When omitted, resolve by name — unambiguous
     // single-kind matches proceed; multi-kind matches get an actionable
@@ -576,6 +606,9 @@ pub(super) fn dispatch_object(
             &format!("object lookup produced invalid metadata: {error}"),
         );
     }
+    if signatures {
+        matches.iter_mut().for_each(member_signatures);
+    }
     if matches.is_empty() {
         Response {
             id,
@@ -592,6 +625,129 @@ pub(super) fn dispatch_object(
             result: Some(serde_json::json!(matches)),
             error: None,
             ..Default::default()
+        }
+    }
+}
+
+/// Render an object's members as one line each, for `signatures: true`.
+///
+/// Base Application's Customer table was 113 KB as JSON, 110 KB of it
+/// fields with every property (tooltips included) and methods with their
+/// parameters as objects. An agent asking what Customer has needs the
+/// names and types: `1 "No.": Code[20]`,
+/// `AssistEdit(OldCust: Record "Customer"): Boolean`.
+fn member_signatures(object: &mut serde_json::Value) {
+    fn text<'a>(value: &'a serde_json::Value, key: &str) -> &'a str {
+        value.get(key).and_then(|v| v.as_str()).unwrap_or("")
+    }
+    fn quoted(name: &str) -> String {
+        if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            name.to_string()
+        } else {
+            format!("\"{name}\"")
+        }
+    }
+    fn property<'a>(member: &'a serde_json::Value, name: &str) -> Option<&'a str> {
+        member
+            .get("properties")?
+            .as_array()?
+            .iter()
+            .find(|p| text(p, "name").eq_ignore_ascii_case(name))
+            .map(|p| text(p, "value"))
+    }
+    let Some(object) = object.as_object_mut() else {
+        return;
+    };
+    if let Some(serde_json::Value::Array(fields)) = object.get_mut("fields") {
+        for field in fields.iter_mut() {
+            let mut line = format!(
+                "{} {}: {}",
+                field.get("id").map(|id| id.to_string()).unwrap_or_default(),
+                quoted(text(field, "name")),
+                text(field, "type_name")
+            );
+            if let Some(class) =
+                property(field, "FieldClass").filter(|c| !c.eq_ignore_ascii_case("Normal"))
+            {
+                line.push_str(&format!(" ({class})"));
+            }
+            if let Some(state) =
+                property(field, "ObsoleteState").filter(|s| !s.eq_ignore_ascii_case("No"))
+            {
+                line.push_str(&format!(" (obsolete: {state})"));
+            }
+            *field = serde_json::Value::String(line);
+        }
+    }
+    if let Some(serde_json::Value::Array(methods)) = object.get_mut("methods") {
+        for method in methods.iter_mut() {
+            let mut line = String::new();
+            for attribute in method
+                .get("attributes")
+                .and_then(|a| a.as_array())
+                .into_iter()
+                .flatten()
+            {
+                // Arguments kept: an Obsolete attribute's reason names the
+                // replacement.
+                let arguments: Vec<String> = attribute
+                    .get("arguments")
+                    .and_then(|a| a.as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|a| a.as_str())
+                    .map(|a| format!("'{a}'"))
+                    .collect();
+                if arguments.is_empty() {
+                    line.push_str(&format!("[{}] ", text(attribute, "name")));
+                } else {
+                    line.push_str(&format!(
+                        "[{}({})] ",
+                        text(attribute, "name"),
+                        arguments.join(", ")
+                    ));
+                }
+            }
+            if method.get("is_local").and_then(|v| v.as_bool()) == Some(true) {
+                line.push_str("local ");
+            }
+            let parameters: Vec<String> = method
+                .get("parameters")
+                .and_then(|p| p.as_array())
+                .into_iter()
+                .flatten()
+                .map(|parameter| {
+                    let var = if parameter.get("is_var").and_then(|v| v.as_bool()) == Some(true) {
+                        "var "
+                    } else {
+                        ""
+                    };
+                    format!(
+                        "{var}{}: {}",
+                        text(parameter, "name"),
+                        text(parameter, "type_name")
+                    )
+                })
+                .collect();
+            line.push_str(&format!(
+                "{}({})",
+                text(method, "name"),
+                parameters.join("; ")
+            ));
+            if let Some(ret) = method.get("return_type").and_then(|v| v.as_str()) {
+                line.push_str(&format!(": {ret}"));
+            }
+            *method = serde_json::Value::String(line);
+        }
+    }
+    if let Some(serde_json::Value::Array(variables)) = object.get_mut("variables") {
+        for variable in variables.iter_mut() {
+            let line = format!(
+                "{}: {}",
+                text(variable, "name"),
+                text(variable, "type_name")
+            );
+            *variable = serde_json::Value::String(line);
         }
     }
 }
@@ -677,6 +833,10 @@ pub(super) fn dispatch_by_id(
     let Some(obj_id) = super::extract_i32(params, "id") else {
         return invalid_params(id);
     };
+    let signatures = match optional_bool_param(params, "signatures", false) {
+        Ok(signatures) => signatures,
+        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+    };
     let kind = match super::parse_object_kind(id, kind_str) {
         Ok(k) => k,
         Err(e) => return e,
@@ -729,6 +889,9 @@ pub(super) fn dispatch_by_id(
             error_codes::INTERNAL_ERROR,
             &format!("object ID lookup produced invalid metadata: {error}"),
         );
+    }
+    if signatures {
+        value.iter_mut().for_each(member_signatures);
     }
     if value.is_empty() {
         Response {
@@ -1058,13 +1221,14 @@ pub(super) fn dispatch_packages(workspace: &Workspace, id: u64) -> Response {
             let object = value
                 .as_object_mut()
                 .ok_or_else(|| format!("serialized package {index} is not an object"))?;
-            let availability =
-                serde_json::to_value(workspace.symbols.package_source_availability(&package.name))
-                    .map_err(|error| {
-                        format!(
-                            "package {index} source availability is not JSON serializable: {error}"
-                        )
-                    })?;
+            let availability = serde_json::to_value(
+                workspace
+                    .symbols
+                    .package_source_availability_for(&package.app_id, &package.name),
+            )
+            .map_err(|error| {
+                format!("package {index} source availability is not JSON serializable: {error}")
+            })?;
             object.insert("source_availability".into(), availability);
             Ok::<_, String>(value)
         })
@@ -1159,6 +1323,47 @@ pub(super) fn dispatch_deps(workspace: &Workspace, id: u64) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn member_signatures_render_one_line_per_member() {
+        let mut object = serde_json::json!({
+            "kind": "Table",
+            "name": "Customer",
+            "fields": [
+                {"id": 1, "name": "No.", "type_name": "Code[20]",
+                 "properties": [{"name": "ToolTip", "value": "long text"}]},
+                {"id": 59, "name": "Balance", "type_name": "Decimal",
+                 "properties": [{"name": "FieldClass", "value": "FlowField"}]},
+                {"id": 7, "name": "Old", "type_name": "Text[30]",
+                 "properties": [{"name": "ObsoleteState", "value": "Removed"}]}
+            ],
+            "methods": [
+                {"name": "LookupCustomer",
+                 "parameters": [{"name": "Customer", "type_name": "Record \"Customer\"", "is_var": true}],
+                 "return_type": "Boolean",
+                 "attributes": [{"name": "Obsolete", "arguments": ["Use SelectCustomer instead.", "24.0"]}],
+                 "is_local": false}
+            ],
+            "variables": [{"name": "SalesSetup", "type_name": "Record \"Sales & Receivables Setup\""}]
+        });
+        member_signatures(&mut object);
+        assert_eq!(
+            object["fields"],
+            serde_json::json!([
+                "1 \"No.\": Code[20]",
+                "59 Balance: Decimal (FlowField)",
+                "7 Old: Text[30] (obsolete: Removed)"
+            ])
+        );
+        assert_eq!(
+            object["methods"][0],
+            "[Obsolete('Use SelectCustomer instead.', '24.0')] LookupCustomer(var Customer: Record \"Customer\"): Boolean"
+        );
+        assert_eq!(
+            object["variables"][0],
+            "SalesSetup: Record \"Sales & Receivables Setup\""
+        );
+    }
 
     /// JSON-RPC 2.0 §5: every response carries exactly one of `result` or
     /// `error`. `Response { result: None, error: None }` serialises to
@@ -1642,6 +1847,39 @@ mod tests {
         assert_invalid_params(&resp, 10);
     }
 
+    /// `limit` pages the result, so the search itself must not stop at it:
+    /// the page is cut, and `total` counted, from every match.
+    #[test]
+    fn a_paged_search_returns_every_match_for_the_projection_to_page() {
+        let ws = al_workspace::Workspace::new();
+        let entries: Vec<al_symbols::SymbolEntry> = (0..5)
+            .map(|index| al_symbols::SymbolEntry {
+                kind: al_symbols::ObjectKind::Codeunit,
+                id: 80 + index,
+                name: format!("Sales-Post {index}"),
+                package: "Base Application".to_string(),
+                ..Default::default()
+            })
+            .collect();
+        ws.symbols.add_entries(&entries);
+
+        let params = serde_json::json!({ "query": "Sales-Post", "limit": 2, "offset": 2 });
+        let resp = dispatch_search(&ws, 13, &params);
+        let rows = resp
+            .result
+            .as_ref()
+            .and_then(|r| r.as_array())
+            .unwrap()
+            .len();
+        assert_eq!(rows, 5);
+
+        let paged = super::super::projection::apply("search", &params, resp);
+        let page = paged.result.unwrap();
+        assert_eq!(page["total"], 5, "{page}");
+        assert_eq!(page["returned"], 2, "{page}");
+        assert_eq!(page["truncated"], true, "{page}");
+    }
+
     #[test]
     fn dispatch_search_rejects_missing_query() {
         let ws = al_workspace::Workspace::new();
@@ -1963,6 +2201,7 @@ mod tests {
             .write()
             .unwrap()
             .push(al_workspace::PackageInfo {
+                app_id: String::new(),
                 name: "Base Application".to_string(),
                 publisher: "Microsoft".to_string(),
                 version: "1.0.0.0".to_string(),

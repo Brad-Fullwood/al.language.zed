@@ -186,6 +186,7 @@ pub fn cmd_pack_native(
     project_dir: Option<&str>,
     out: Option<&str>,
     validate: bool,
+    analyzers: Option<&str>,
     json: bool,
 ) -> ExitCode {
     let dir = match project_dir {
@@ -276,7 +277,7 @@ pub fn cmd_pack_native(
     // This keeps syntax/project failures fast and makes `--validate` an
     // explicit compatibility oracle rather than the primary verifier.
     if validate {
-        if let Some(code) = validate_with_alc(&dir, json) {
+        if let Some(code) = validate_with_alc(&dir, analyzers, json) {
             return code;
         }
     }
@@ -361,12 +362,82 @@ fn create_validation_tempdir() -> std::io::Result<tempfile::TempDir> {
     tempfile::tempdir()
 }
 
+/// The analyzers `--validate` asks alc to run: the `--analyzers` list when one
+/// was given (empty entries dropped, so an empty value means none), otherwise
+/// the project's `al.codeAnalyzers` as the trust gate left it.
+fn validation_analyzers(requested: Option<&str>, project_setting: &[String]) -> Vec<String> {
+    match requested {
+        Some(list) => list
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .collect(),
+        None => project_setting.to_vec(),
+    }
+}
+
+/// The requested analyzers that resolve through the project's own folders: a
+/// custom name is looked up in `packages/` and `.netpackages/` before the
+/// NuGet cache, and a relative path is joined to the project root. Built-in
+/// cops come from the toolchain and an absolute path is the caller's choice.
+fn project_local_analyzers(requested: &[String]) -> Vec<&str> {
+    requested
+        .iter()
+        .map(|entry| entry.trim())
+        .filter(|entry| {
+            !entry.is_empty()
+                && !al_project::analyzers::is_builtin_analyzer(entry)
+                && !std::path::Path::new(entry).is_absolute()
+        })
+        .collect()
+}
+
 /// Compile `dir` with the Microsoft AL compiler (alc) and, if it reports
 /// errors (or no toolchain is available), return an exit code so the caller
 /// refuses to emit. Returns `None` when validation passes and the native emit
 /// should proceed. Runs in a temp copy of the project so alc's output never
 /// pollutes the user's tree.
-fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
+///
+/// alc runs with the project's own analyzers and compilation settings. It used
+/// to get no analyzer list, which the build service reads as every installed
+/// analyzer, so a project that plain alc compiles failed on cop errors from
+/// analyzers it never enabled.
+fn validate_with_alc(
+    dir: &std::path::Path,
+    analyzers: Option<&str>,
+    json: bool,
+) -> Option<ExitCode> {
+    let settings = match al_project::trust::evaluate(dir) {
+        Ok(settings) => settings,
+        Err(error) => {
+            return Some(report_error(
+                &format!("reading the project's AL settings for --validate: {error}"),
+                json,
+            ));
+        }
+    };
+    if !json {
+        if let Some(advisory) = settings.decision.advisory() {
+            eprintln!("{advisory}");
+        }
+    }
+    let analyzers = validation_analyzers(analyzers, &settings.config.code_analyzers);
+    if !settings.decision.is_trusted() {
+        let project_local = project_local_analyzers(&analyzers);
+        if !project_local.is_empty() {
+            return Some(report_error(
+                &format!(
+                    "--analyzers {} would load an analyzer from this untrusted repository's own \
+                     folders into alc. Run `{}` in the project to allow it, or pass the \
+                     analyzer's absolute path.",
+                    project_local.join(","),
+                    al_project::trust::TRUST_COMMAND
+                ),
+                json,
+            ));
+        }
+    }
     let toolchain = match al_project::toolchain::find_toolchain() {
         Ok(t) => t,
         Err(e) => {
@@ -431,8 +502,8 @@ fn validate_with_alc(dir: &std::path::Path, json: bool) -> Option<ExitCode> {
         toolchain: Some(&toolchain),
         dependency_packages: None,
         package_cache: Some(&pkg_cache),
-        analyzers: None,
-        config: al_compile::CompilationConfigOptions::default(),
+        analyzers: Some(&analyzers),
+        config: al_compile::CompilationConfigOptions::from(&settings.config),
     }));
     // `tmp` (the `TempDir` guard) is dropped — and the directory removed —
     // when this function returns, on every path below.
@@ -662,5 +733,57 @@ mod validation_tempdir_tests {
             Some(pid_name.as_str()),
             "must not reproduce the old predictable pid-based directory name"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{project_local_analyzers, validation_analyzers};
+
+    fn project_setting() -> Vec<String> {
+        vec!["CodeCop".to_string(), "UICop".to_string()]
+    }
+
+    #[test]
+    fn validation_uses_the_project_setting_without_a_flag() {
+        assert_eq!(
+            validation_analyzers(None, &project_setting()),
+            project_setting()
+        );
+    }
+
+    #[test]
+    fn an_explicit_list_replaces_the_project_setting() {
+        assert_eq!(
+            validation_analyzers(Some(" AppSourceCop , PerTenantCop,"), &project_setting()),
+            vec!["AppSourceCop".to_string(), "PerTenantCop".to_string()]
+        );
+    }
+
+    /// An untrusted repository could ship `packages/LinterCop.dll`; only the
+    /// toolchain's own cops and absolute paths skip the project's folders.
+    #[test]
+    fn custom_names_and_relative_paths_resolve_through_the_project() {
+        let absolute = std::env::temp_dir()
+            .join("Custom.dll")
+            .to_string_lossy()
+            .into_owned();
+        let requested = vec![
+            "CodeCop".to_string(),
+            "UICop.dll".to_string(),
+            "LinterCop".to_string(),
+            "tools/Mine.dll".to_string(),
+            absolute,
+        ];
+        assert_eq!(
+            project_local_analyzers(&requested),
+            vec!["LinterCop", "tools/Mine.dll"]
+        );
+    }
+
+    #[test]
+    fn an_empty_value_runs_no_analyzer() {
+        assert!(validation_analyzers(Some(""), &project_setting()).is_empty());
+        assert!(validation_analyzers(Some(" , "), &project_setting()).is_empty());
     }
 }

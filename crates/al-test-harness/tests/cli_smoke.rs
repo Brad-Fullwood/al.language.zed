@@ -253,7 +253,7 @@ fn cli_commands_use_the_real_project_daemon() {
         ),
         (
             &["folding", "src/HelloWorld.al", "--json"][..],
-            "\"start_line\":",
+            "\"startLine\":",
         ),
         (
             &["tokens", "src/HelloWorld.al", "--json"][..],
@@ -365,6 +365,77 @@ fn isolated_test_project() -> tempfile::TempDir {
     .expect("copy app.json");
     copy_tree(&test_project_dir().join("src"), &project.path().join("src"));
     project
+}
+
+/// The daemon read the workspace once at startup, so a file written or edited
+/// after its first request was invisible until it exited: an agent that
+/// created an object and then looked it up was told it did not exist.
+#[test]
+fn a_running_daemon_sees_files_written_after_it_started() {
+    let project = isolated_test_project();
+    let search = |name: &str| {
+        let output = run_al_in(project.path(), &["--json", "search", name]);
+        assert!(output.status.success(), "search {name} failed: {output:?}");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    // The first request starts the daemon and indexes the fixture.
+    assert!(!search("Written Later").contains("Written Later"));
+
+    let path = project.path().join("src").join("WrittenLater.Codeunit.al");
+    std::fs::write(&path, "codeunit 50190 \"Written Later\"\n{\n}\n").expect("write");
+    let found = search("Written Later");
+
+    std::fs::write(&path, "codeunit 50190 \"Renamed Later\"\n{\n}\n").expect("rewrite");
+    let renamed = search("Later");
+
+    std::fs::remove_file(&path).expect("delete");
+    let deleted = search("Later");
+    let _ = run_al_in(project.path(), &["daemon-shutdown"]);
+
+    assert!(found.contains("Written Later"), "a new file: {found}");
+    assert!(
+        renamed.contains("Renamed Later") && !renamed.contains("Written Later"),
+        "an edited file: {renamed}"
+    );
+    assert!(
+        !deleted.contains("Renamed Later"),
+        "a deleted file: {deleted}"
+    );
+}
+
+/// The daemon opens every file it scanned at startup as a document, and the
+/// per-file commands read that document. The refresh updated the index only,
+/// so `symbols` on an edited file kept listing the procedures it had when the
+/// daemon started.
+#[test]
+fn a_per_file_command_sees_an_edit_made_after_the_daemon_started() {
+    let project = isolated_test_project();
+    let path = project.path().join("src").join("Edited.Codeunit.al");
+    let write = |procedure: &str| {
+        std::fs::write(
+            &path,
+            format!(
+                "codeunit 50191 Edited\n{{\n    procedure {procedure}()\n    begin\n    end;\n}}\n"
+            ),
+        )
+        .expect("write");
+    };
+    let symbols = || {
+        let output = run_al_in(project.path(), &["symbols", "src/Edited.Codeunit.al"]);
+        assert!(output.status.success(), "symbols failed: {output:?}");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    write("First");
+    let before = symbols();
+    write("Second");
+    let after = symbols();
+    let _ = run_al_in(project.path(), &["daemon-shutdown"]);
+
+    assert!(before.contains("First"), "{before}");
+    assert!(
+        after.contains("Second") && !after.contains("First"),
+        "{after}"
+    );
 }
 
 /// `test-run <id>` without `--name` left the daemon filling `codeunitName`
@@ -644,6 +715,8 @@ fn every_top_level_command_has_a_structured_black_box_path() {
             "Customer",
         ],
         &["obsolete"],
+        // No .app files in the fixture: the structured "could not read" path.
+        &["package-diff", "old.app", "new.app"],
         &["audit-data"],
         &["permission-audit"],
         &["deps-graph"],

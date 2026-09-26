@@ -1,5 +1,6 @@
 //! Upgrade impact analysis with migration hints.
 
+use al_syntax::IdentifierText;
 use serde::Serialize;
 
 use super::breaking_changes::{
@@ -431,9 +432,8 @@ fn same_method_contract(
             .all(|(baseline, current)| {
                 baseline
                     .type_name
-                    .trim()
-                    .trim_matches('"')
-                    .eq_ignore_ascii_case(current.type_name.trim().trim_matches('"'))
+                    .unquote_identifier()
+                    .eq_ignore_ascii_case(&current.type_name.unquote_identifier())
                     && baseline.is_var == current.is_var
             })
 }
@@ -448,22 +448,12 @@ mod tests {
 
     fn make_codeunit(name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Codeunit,
             id: 50100,
             name: name.to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Test".to_string(),
             methods,
-            fields: Vec::new(),
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -520,27 +510,17 @@ mod tests {
     #[test]
     fn field_type_change_triggers_data_migration() {
         let old_table = SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Table,
             id: 18,
             name: "Customer".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "Base".to_string(),
-            methods: Vec::new(),
             fields: vec![FieldSymbol {
                 id: 1,
                 name: "Amount".to_string(),
                 type_name: "Integer".to_string(),
                 properties: vec![],
             }],
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         };
 
         let new_table = SymbolEntry {

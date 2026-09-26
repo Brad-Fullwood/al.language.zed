@@ -159,3 +159,35 @@ Append-only. Newest entry last.
 ## 2026-09-22 12:10 BST: seventh usage limit
 
 - Limit hit about 10:30, reset 12:00. Three agents resumed. The round 3 security merge failed clippy: the review queue branch had bumped `getrandom` to 0.4 (`fill`) and the security branch used 0.2 (`getrandom`). One-line fix, gates rerunning.
+
+## 2026-09-24 06:30 BST: stray branches merged, four queued items fixed
+
+- Cloud session. Merged the three branches with unmerged commits: formatter idempotence, the ghost-diagnostics test, and three file splits. Fixed the ghost-diagnostics window in the server, the Windows `&` URL bug (both copies), `pack-native --validate` analyzers, two review A items, the README CLI list, and the harness stale-binary check that failed 270 tests after an al-explorer edit. Clippy caught split damage in `native_dap/mod.rs` doc comments. Gates: 95 suites, 5011 passed, 1 failed (root-only).
+- Branches fully merged into `campaign/2026-09-21` and safe to delete (the cloud session gets 403 on delete): `ai-daemon-projection`, `ai-free-ids`, `ai-plugin`, `fix-ci-platforms`, `fix-daemon-lifecycle`, `fix-formatter-idempotence`, `fix-ghost-diagnostics`, `fix-lsp-content-modified`, `fix-queued-2`, `fix-r1-analysis-insight`, `fix-r1-emit-bc-explorer`, `fix-r1-extension-ci`, `fix-r1-lsp-protocol`, `fix-r1-runtime-dap`, `fix-r1-symbols-project`, `fix-r1-syntax-grammar`, `fix-r1b-analysis`, `fix-r1b-runtime-dap`, `fix-r1c-analysis`, `fix-r2-review-b`, `fix-r2-security`, `fix-r3-security`, `slop-review-queue`, `slop-splits-2`, `slop-syntax-symbols`, `test-depth` (all under `campaign/`).
+
+## 2026-09-24 08:00 BST: dogfooding against Base Application symbols
+
+- Scaffolded a project with `al-explorer new` and downloaded Base Application 26 symbols from the public NuGet feed, then ran every common agent query. Twelve defects found and fixed, each with a test: see the STATE.md Done entry. The largest were a deadlock in `downloadSymbols` (a `let _ = guard;` that dropped nothing), a daemon that answered from its startup snapshot for up to 30 minutes, and native compile rejecting table extension fields. Also fixed the three CI failures on ubuntu, Windows and macOS that predate this session. Query latency on the bench project: 15 to 90 ms per CLI call, `diag` cold 1.1 s for 10,778 symbols.
+
+## 2026-09-24 09:20 BST: R4 review fixed, queue drained
+
+- The R4 session review (`findings/r4-session-review.md`) found 1 medium and 9 low. Nine are fixed with tests, one queued (daemon requests need snapshots, not a request-wide lock). The medium: `pack-native --validate --analyzers X` loaded a DLL an untrusted repository shipped. Fixing the syntax-only daemon refresh exposed a worse bug: the daemon refreshed its file index but not its document store, so `symbols`, `hover` and `lint` on an edited file answered from startup text.
+- Queue items done: `obsolete --used` judges calls against the receiver's overloads (the Rijndael Text/SecretText case is now reported on the real System Application); the emitter encodes lowercase permission letters as indirect grants (confirmed from 16,816 Base Application grants, not an alc build); `package-diff` filters uses by object kind and by declared receivers (a probe on Base Application 25 to 26 went from 1 use plus 9 false possibles to the 1 real use); `generate` takes the next free ID in `idRanges`; one response-contract validator in the CLI (466 duplicate lines gone); file splits for `xliff.rs`, `calls.rs`, `router.rs` and the BC debug `session.rs`. MCP search results for agents are compact summaries (212 KB to 492 bytes for three Base Application hits).
+- Also found while fixing: `lint --analyzers` was accepted and ignored (now refused with where the cops run), and `definition` jumped to any same-named workspace procedure when a resolved record had no such member.
+- Gates: 94 suites, 4981 passed, 1 failed (root-only). A dogfood agent is sweeping every CLI command against Base Application into `findings/r5-dogfood.md`.
+
+## 2026-09-24 11:30 BST: r5 dogfood findings closed
+
+- Every finding in `findings/r5-dogfood.md` now has a status: 31 fixed, 1 partly fixed (PERF-PACKAGE-DIFF: the timeout message and a warning when the `breaking` baseline is a different app; no `.app` cache, which would pin two Base Applications in memory).
+- The two that changed the most behaviour: `test-affected` now reaches tests through the records a changed table or table extension defines, and a plain `Insert()`/`Modify()`/`Delete()` raises the table's OnBefore/OnAfter events in the call graph (only `RunTrigger = true` did). `suggest-event` no longer prints "still being analyzed" on every run: it says whether the trace was cut at depth 10 or reached package code without source, and a cut trace exits 0, not 75.
+- Also: `graph --scope workspace` exports the workspace slice (10 nodes on the bench, where the whole graph was 117k and over the cap), `impact` reports call/write/read and stops repeating rows, completions/hints/symbols/folding page and print readable text with LSP-shaped JSON, signature help works inside a string argument, lint findings point at the call.
+- A guard test caught a node kind (`field_declaration`) the grammar does not have in the impact change after it was pushed; fixed in the next commit.
+
+## 2026-09-24 12:30 BST: r6 session review closed, splits, rustdoc gate
+
+- A review agent read this session's commits (`findings/r6-session-review.md`): 14 findings, 5 medium, all fixed. The mediums: test-affected missed temporary records, record arrays and triggers; `impact` read `Validate("Field", X)` as a low-confidence read (now a bound write, SetRange/SetFilter a filter); `--fields` refused optional keys rows leave out when empty (now `absentFields`); package obsolete procedures were given caller counts by bare name (now omitted); `xlf refresh` never carried a developer Comment into existing units.
+- The file-index re-index race from R4 is closed without a lock: each name's owners are swapped under one entry lock and stale names pruned after. A concurrency test saw the object missing on the old code.
+- Bulk fix planning has a typed error, so scan limits and bad values come back as INVALID_PARAMS instead of CODE_ANALYSIS_ERROR.
+- Test modules moved out of six large files (`tests_dispatch.rs` 4182, `lsp.rs` 4043, `daemon/mod.rs` 3645, `workspace.rs`, `mcp.rs`, `client.rs`); code unchanged, test counts unchanged.
+- All 46 rustdoc warnings fixed; CI now runs `cargo doc` with `-D warnings`.
+- Gates: full suite 93 suites, 5026 passed, 1 failed (root-only) before the r6 fixes; CI green on every push since.

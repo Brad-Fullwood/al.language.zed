@@ -3,6 +3,7 @@
 //! These checks deliberately live below the CLI/LSP surfaces so every native
 //! build receives the same correctness gate without Microsoft AL tooling.
 
+use al_syntax::IdentifierText;
 use std::collections::{HashMap, HashSet};
 
 use al_symbols::model::{ObjectKind, SymbolEntry};
@@ -247,6 +248,50 @@ fn is_al_version(value: &str) -> bool {
     }) && components.next().is_none()
 }
 
+/// A report layout file that is not in the project, reported on the
+/// report's `LayoutFile` line. It used to surface only when the package was
+/// assembled, as one ALN0000 on `app.json` naming no report.
+pub(crate) fn verify_layout_files(
+    project_dir: &std::path::Path,
+    objects: &[EmitObject],
+    diagnostics: &mut Vec<VerificationDiagnostic>,
+) {
+    for object in objects {
+        for layout in &object.report_layouts {
+            let Some(file) = layout
+                .properties
+                .iter()
+                .find(|p| p.name.eq_ignore_ascii_case("LayoutFile"))
+            else {
+                continue;
+            };
+            // A path that leaves the project is refused when the package is
+            // assembled; only look inside it here.
+            let Ok(relative) =
+                super::assemble::project_relative_resource_path(&file.value, "report layout")
+            else {
+                continue;
+            };
+            if project_dir.join(relative).is_file() {
+                continue;
+            }
+            let offset = object
+                .source_text
+                .find(&file.value)
+                .unwrap_or(object.source_text.len());
+            diagnostics.push(VerificationDiagnostic::error_at_source_offset(
+                object,
+                offset,
+                "ALN2501",
+                format!(
+                    "layout '{}' names file '{}', which is not in the project",
+                    layout.name, file.value
+                ),
+            ));
+        }
+    }
+}
+
 pub(crate) fn verify_project_objects(
     app_json: &serde_json::Value,
     objects: &[EmitObject],
@@ -262,7 +307,7 @@ pub(crate) fn verify_project_objects(
     verify_permissions(objects, external, &mut diagnostics);
     verify_local_interface_contracts(objects, &mut diagnostics);
     verify_field_property_typos(objects, &mut diagnostics);
-    verify_local_procedure_semantics(objects, &mut diagnostics);
+    verify_local_procedure_semantics(objects, external, &mut diagnostics);
     verify_provable_body_bindings(objects, external, &mut diagnostics);
     verify_local_event_contracts(objects, &mut diagnostics);
     diagnostics.sort_by(|a, b| {
@@ -325,24 +370,35 @@ fn verify_provable_body_bindings(
         .collect();
     let mut fields = external.field_types.clone();
     for object in objects {
-        if object.entry.kind == ObjectKind::Table {
-            tables.insert(object.entry.name.to_ascii_lowercase());
-            for field in &object.entry.fields {
-                fields.insert(
-                    (
-                        object.entry.name.to_ascii_lowercase(),
-                        field.name.to_ascii_lowercase(),
-                    ),
-                    field.type_name.clone(),
-                );
+        // A table extension's fields belong to the table it extends, as they
+        // do in `symbol_reference`; reading only `table` objects rejected
+        // every write to a field an extension adds to a base table.
+        let table = match object.entry.kind {
+            ObjectKind::Table => {
+                tables.insert(object.entry.name.to_ascii_lowercase());
+                &object.entry.name
             }
+            ObjectKind::TableExtension => match object.entry.extends.as_deref() {
+                Some(extended) => extended,
+                None => continue,
+            },
+            _ => continue,
+        };
+        for field in &object.entry.fields {
+            fields.insert(
+                (
+                    table.unquote_identifier().to_ascii_lowercase(),
+                    field.name.to_ascii_lowercase(),
+                ),
+                field.type_name.clone(),
+            );
         }
     }
     for object in objects {
         let vars = variable_types(&object.source_text);
         for (name, ty) in &vars {
             if let Some(table) = record_subtype(ty) {
-                let table = table.trim().trim_matches('"').to_ascii_lowercase();
+                let table = table.unquote_identifier().to_ascii_lowercase();
                 if !tables.contains(&table) {
                     let offset = object
                         .source_text
@@ -399,7 +455,7 @@ fn verify_provable_body_bindings(
                 let Some(table) = record_subtype(ty) else {
                     continue;
                 };
-                let table = table.trim().trim_matches('"').to_ascii_lowercase();
+                let table = table.unquote_identifier().to_ascii_lowercase();
                 let prefix = format!("{var}.\"");
                 if let Some(start) = trimmed.to_ascii_lowercase().find(&prefix) {
                     let rest = &trimmed[start + prefix.len()..];
@@ -466,7 +522,7 @@ fn verify_page_change_contracts(objects: &[EmitObject], out: &mut Vec<Verificati
             .extends
             .as_deref()
             .unwrap_or_default()
-            .trim_matches('"')
+            .unquote_identifier()
             .to_ascii_lowercase();
         for change in &object.control_changes {
             if change.kind.starts_with("add") {
@@ -551,7 +607,38 @@ fn verify_page_change_contracts(objects: &[EmitObject], out: &mut Vec<Verificati
 /// the method/attribute symbols extracted by `al-syntax`.  Cross-package calls
 /// intentionally remain outside this pass: a package SymbolReference does not
 /// retain enough source-level overload/body information to prove them.
-fn verify_local_procedure_semantics(objects: &[EmitObject], out: &mut Vec<VerificationDiagnostic>) {
+fn verify_local_procedure_semantics(
+    objects: &[EmitObject],
+    external: &ExternalSymbols,
+    out: &mut Vec<VerificationDiagnostic>,
+) {
+    // The procedures each known table declares, its extensions' included:
+    // `Cust.SelectCustomer(Cust)` calls a procedure of table Customer, not a
+    // built-in record method, and was refused as unknown.
+    let mut known_tables: HashSet<String> = external
+        .object_kinds
+        .iter()
+        .filter(|(kind, _)| *kind == ObjectKind::Table)
+        .map(|(_, name)| name.clone())
+        .collect();
+    let mut table_methods = external.table_methods.clone();
+    for object in objects {
+        let table = match object.entry.kind {
+            ObjectKind::Table => {
+                known_tables.insert(object.entry.name.to_ascii_lowercase());
+                object.entry.name.as_str()
+            }
+            ObjectKind::TableExtension => match object.entry.extends.as_deref() {
+                Some(extended) => extended,
+                None => continue,
+            },
+            _ => continue,
+        };
+        let table = table.unquote_identifier().to_ascii_lowercase();
+        for method in &object.entry.methods {
+            table_methods.insert((table.clone(), method.name.to_ascii_lowercase()));
+        }
+    }
     for object in objects {
         // Unqualified invocations bind to the containing object, not to a
         // coincidentally named procedure in another workspace object.
@@ -570,10 +657,18 @@ fn verify_local_procedure_semantics(objects: &[EmitObject], out: &mut Vec<Verifi
             };
             for site in call_sites(body) {
                 if let Some(receiver) = &site.receiver {
-                    let is_record = vars
+                    // Only a table this build knows can be said to lack a
+                    // method; an unknown one is ALN2401's to report.
+                    let table = vars
                         .get(&receiver.to_ascii_lowercase())
-                        .is_some_and(|ty| record_subtype(ty).is_some());
-                    if is_record && !known_record_method(&site.name) {
+                        .and_then(|ty| record_subtype(ty))
+                        .map(|table| table.unquote_identifier().to_ascii_lowercase())
+                        .filter(|table| known_tables.contains(table));
+                    let unknown = table.is_some_and(|table| {
+                        !known_record_method(&site.name)
+                            && !table_methods.contains(&(table, site.name.to_ascii_lowercase()))
+                    });
+                    if unknown {
                         out.push(VerificationDiagnostic::error_at_source_offset(
                             object,
                             body_offset + site.offset,
@@ -632,7 +727,20 @@ fn verify_local_procedure_semantics(objects: &[EmitObject], out: &mut Vec<Verifi
             }
 
             let exits = exit_expressions(body);
+            // A named return value (`procedure P() Result: Text`) is returned
+            // by assigning it; `exit;` and no exit at all are both fine.
+            let named_return = procedure_headers(&object.source_text)
+                .into_iter()
+                .find(|header| {
+                    header
+                        .get("procedure ".len()..)
+                        .and_then(|rest| rest.trim_start().get(..method.name.len()))
+                        .is_some_and(|name| name.eq_ignore_ascii_case(&method.name))
+                })
+                .and_then(|header| procedure_signature(header).1)
+                .is_some();
             match &method.return_type {
+                Some(_) if named_return => {}
                 Some(return_type) => {
                     if exits.is_empty() {
                         out.push(VerificationDiagnostic::error_for_object(
@@ -847,6 +955,9 @@ fn procedure_body<'a>(source: &'a str, name: &str) -> Option<(usize, &'a str)> {
     Some((start + begin + 5, &body[..end]))
 }
 
+/// The receiver of a method called on an expression's result.
+const CHAINED_RECEIVER: &str = "(expression)";
+
 #[derive(Debug)]
 struct CallSite {
     name: String,
@@ -899,6 +1010,12 @@ fn call_sites(source: &str) -> Vec<CallSite> {
                 .trim_end()
                 .strip_suffix('.')
                 .and_then(|prefix| {
+                    // A method on a call's result (`Token.AsValue().AsText()`)
+                    // has an expression for a receiver, not a variable; it
+                    // was taken for an unknown local procedure.
+                    if prefix.trim_end().ends_with([')', ']']) {
+                        return Some(CHAINED_RECEIVER.to_string());
+                    }
                     let receiver = prefix
                         .rsplit(|c: char| !c.is_ascii_alphanumeric() && c != '_')
                         .next()
@@ -941,8 +1058,101 @@ fn split_call_arguments(source: &str) -> Vec<String> {
     arguments
 }
 
+/// A declared name and its type text.
+type Declaration = (String, String);
+
+/// A procedure's parameters and its named return value, from its header
+/// (`procedure Name(var A: T; B: U) Result: V;`).
+fn procedure_signature(header: &str) -> (Vec<Declaration>, Option<Declaration>) {
+    let Some(open) = header.find('(') else {
+        return (Vec::new(), None);
+    };
+    let mut depth = 0usize;
+    let mut close = None;
+    for (index, byte) in header.bytes().enumerate().skip(open) {
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(index);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(close) = close else {
+        return (Vec::new(), None);
+    };
+    let declaration = |text: &str| -> Option<Declaration> {
+        let (name, ty) = text.split_once(':')?;
+        let name = name.trim();
+        let name = name
+            .strip_prefix("var ")
+            .or_else(|| name.strip_prefix("VAR "))
+            .or_else(|| name.strip_prefix("Var "))
+            .unwrap_or(name)
+            .trim()
+            .trim_matches('"');
+        let ty = ty.trim().trim_end_matches(';').trim();
+        (!name.is_empty() && !ty.is_empty()).then(|| (name.to_string(), ty.to_string()))
+    };
+    let parameters = header[open + 1..close]
+        .split(';')
+        .filter_map(declaration)
+        .collect();
+    let after = header[close + 1..].split(';').next().unwrap_or("");
+    let named_return = declaration(after).filter(|(name, _)| {
+        name.bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b' ')
+    });
+    (parameters, named_return)
+}
+
+/// Every procedure header in `source`, from `procedure` to the `;` after
+/// its parameter list.
+fn procedure_headers(source: &str) -> Vec<&str> {
+    let lower = source.to_ascii_lowercase();
+    let mut headers = Vec::new();
+    let mut offset = 0;
+    while let Some(index) = lower[offset..].find("procedure ") {
+        let start = offset + index;
+        offset = start + "procedure ".len();
+        if start > 0 && lower.as_bytes()[start - 1].is_ascii_alphanumeric() {
+            continue;
+        }
+        let rest = &source[start..];
+        // The header ends at the first `;` outside the parameter list.
+        let mut depth = 0usize;
+        let mut end = rest.len();
+        for (index, byte) in rest.bytes().enumerate() {
+            match byte {
+                b'(' => depth += 1,
+                b')' => depth = depth.saturating_sub(1),
+                b';' if depth == 0 => {
+                    end = index;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        headers.push(&rest[..end]);
+    }
+    headers
+}
+
 fn variable_types(source: &str) -> HashMap<String, String> {
     let mut vars = HashMap::new();
+    // Parameters and named return values are declared in the header, which
+    // the line scan below cannot read: `Result := ...` in
+    // `procedure Describe() Result: Text` was an undeclared identifier.
+    for header in procedure_headers(source) {
+        let (parameters, named_return) = procedure_signature(header);
+        for (name, ty) in parameters.into_iter().chain(named_return) {
+            vars.insert(name.to_ascii_lowercase(), ty);
+        }
+    }
     for line in source.lines() {
         let trimmed = line.trim();
         let Some((name, ty)) = trimmed.split_once(':') else {
@@ -969,15 +1179,22 @@ fn variable_types(source: &str) -> HashMap<String, String> {
 }
 
 fn record_subtype(type_name: &str) -> Option<&str> {
-    let (prefix, subtype) = type_name.split_at(type_name.find(|c: char| !c.is_ascii_whitespace())?);
-    let _ = prefix;
-    let type_name = subtype;
-    type_name
+    let type_name = type_name.trim_start();
+    let subtype = type_name
         .get(..6)
         .filter(|prefix| prefix.eq_ignore_ascii_case("record"))
         .and_then(|_| type_name.get(6..))
         .filter(|suffix| suffix.starts_with(char::is_whitespace))
-        .map(str::trim)
+        .map(str::trim)?;
+    // `Record "Loyalty Entry" temporary`: the keyword is not the table's name.
+    Some(
+        subtype
+            .len()
+            .checked_sub(" temporary".len())
+            .filter(|split| subtype.is_char_boundary(*split))
+            .filter(|split| subtype[*split..].eq_ignore_ascii_case(" temporary"))
+            .map_or(subtype, |split| subtype[..split].trim_end()),
+    )
 }
 
 fn exit_expressions(source: &str) -> Vec<&str> {
@@ -1200,7 +1417,7 @@ fn verify_permissions(
             require_object(
                 &available,
                 kind,
-                permission.object_name.trim_matches('"'),
+                &permission.object_name.unquote_identifier(),
                 object,
                 "ALN2103",
                 format!(
@@ -1226,7 +1443,7 @@ fn verify_local_interface_contracts(objects: &[EmitObject], out: &mut Vec<Verifi
     for object in objects {
         for interface_name in &object.entry.implements {
             let Some(interface) =
-                interfaces.get(&interface_name.trim_matches('"').to_ascii_lowercase())
+                interfaces.get(&interface_name.unquote_identifier().to_ascii_lowercase())
             else {
                 // Dependency package method surfaces are not retained in the
                 // lightweight resolver; existence itself is checked by ALN2002.
@@ -1621,7 +1838,7 @@ fn verify_bindings(
             require_object(
                 &available,
                 ObjectKind::Interface,
-                interface.trim_matches('"'),
+                &interface.unquote_identifier(),
                 object,
                 "ALN2002",
                 format!(
@@ -1669,7 +1886,7 @@ fn verify_type(
         return;
     };
     let base = &trimmed[..space];
-    let subtype = trimmed[space..].trim().trim_matches('"');
+    let subtype = trimmed[space..].unquote_identifier();
     if subtype.is_empty() {
         return;
     }
@@ -1687,7 +1904,7 @@ fn verify_type(
     require_object(
         available,
         kind,
-        subtype,
+        &subtype,
         object,
         "ALN2003",
         format!(
@@ -1708,7 +1925,7 @@ fn verify_property_binding(
         .properties
         .iter()
         .find(|property| property.name.eq_ignore_ascii_case("SourceTable"))
-        .map(|property| property.value.trim().trim_matches('"'))
+        .map(|property| property.value.unquote_identifier())
         .filter(|value| !value.is_empty() && value.parse::<i32>().is_err())
     else {
         return;
@@ -1716,7 +1933,7 @@ fn verify_property_binding(
     require_object(
         available,
         ObjectKind::Table,
-        source_table,
+        &source_table,
         object,
         "ALN2004",
         format!(

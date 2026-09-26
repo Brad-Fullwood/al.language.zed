@@ -21,6 +21,25 @@ impl SymbolIndex {
         self.remove_packages_named(&std::collections::HashSet::from([fold_name(package_name)]));
     }
 
+    /// Remove the entries of `package_name` that `keep` rejects.
+    ///
+    /// Workspace objects enter the index when the call graph is built, so a
+    /// deleted file's object stayed searchable until the next build; this
+    /// drops just those without waiting for it.
+    pub fn retain_package_entries(&self, package_name: &str, keep: impl Fn(&SymbolEntry) -> bool) {
+        let package = fold_name(package_name);
+        let to_remove: Vec<(usize, Arc<SymbolEntry>)> = self
+            .all
+            .iter()
+            .filter_map(|entry| {
+                let indexed = entry.value();
+                (fold_name(&indexed.arc.package) == package && !keep(&indexed.arc))
+                    .then(|| (*entry.key(), Arc::clone(&indexed.arc)))
+            })
+            .collect();
+        self.remove_selected_entries(to_remove);
+    }
+
     pub(super) fn clear_loaded_packages(&self) {
         let identities: std::collections::HashSet<String> = self
             .app_paths

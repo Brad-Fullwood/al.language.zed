@@ -26,6 +26,55 @@ pub(super) fn complete_package_batch<T>(
         .collect())
 }
 
+/// Keep one package per identity (app id, display name as fallback): the
+/// highest version, or the first seen when versions tie or do not compare.
+/// Kept items stay in input order.
+///
+/// `.alpackages` often holds two versions of one app whose file names do not
+/// share a `Publisher_Name_` prefix, so the file-name dedup in al-project
+/// misses them. Indexing both made the later file in path order replace the
+/// earlier, which could put the older version in the index and left the
+/// package list reporting two rows for one set of symbols.
+pub(super) fn newest_per_identity<T>(
+    items: Vec<T>,
+    package: impl Fn(&T) -> &SymbolPackage,
+) -> Vec<T> {
+    let mut kept: Vec<Option<T>> = Vec::with_capacity(items.len());
+    let mut slot_by_identity: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for item in items {
+        let pkg = package(&item);
+        let identity = package_identity_key(&pkg.app_id, &pkg.name);
+        match slot_by_identity.get(&identity) {
+            Some(&slot) => {
+                let existing = package(kept[slot].as_ref().expect("slots are filled"));
+                let newer = crate::model::version_at_least(&pkg.version, &existing.version)
+                    && !crate::model::version_at_least(&existing.version, &pkg.version);
+                let (dropped, winner) = if newer {
+                    (&existing.version, &pkg.version)
+                } else {
+                    (&pkg.version, &existing.version)
+                };
+                debug!(
+                    name = %pkg.name,
+                    app_id = %pkg.app_id,
+                    kept = %winner,
+                    superseded = %dropped,
+                    "two versions of one package; indexing the newest"
+                );
+                if newer {
+                    kept[slot] = Some(item);
+                }
+            }
+            None => {
+                slot_by_identity.insert(identity, kept.len());
+                kept.push(Some(item));
+            }
+        }
+    }
+    kept.into_iter().flatten().collect()
+}
+
 /// One `.app` parsed through the disk cache: `(path, package, from_cache)`.
 type CachedPackageLoad = Result<(PathBuf, SymbolPackage, bool), PackageLoadFailure>;
 
@@ -183,7 +232,7 @@ impl SymbolIndex {
                 }
             })
             .collect();
-        let parsed = complete_package_batch(parsed)?;
+        let parsed = newest_per_identity(complete_package_batch(parsed)?, |(_, pkg)| pkg);
 
         let mut results = Vec::with_capacity(parsed.len());
         for (path, pkg) in parsed {
@@ -203,7 +252,10 @@ impl SymbolIndex {
         cache: &crate::cache::SymbolCache,
     ) -> Result<Vec<SymbolPackage>, PackageLoadError> {
         cache.gc_once();
-        let parsed = complete_package_batch(load_package_batch_via_cache(paths, cache))?;
+        let parsed = newest_per_identity(
+            complete_package_batch(load_package_batch_via_cache(paths, cache))?,
+            |(_, pkg, _)| pkg,
+        );
 
         let mut results = Vec::with_capacity(parsed.len());
         for (path, pkg, from_cache) in parsed {
@@ -223,18 +275,19 @@ impl SymbolIndex {
         cache: &crate::cache::SymbolCache,
     ) -> (Vec<SymbolPackage>, Vec<PackageLoadFailure>) {
         cache.gc_once();
-        let parsed = load_package_batch_via_cache(paths, cache);
-
-        let mut results = Vec::new();
+        let mut loaded = Vec::new();
         let mut failures = Vec::new();
-        for item in parsed {
+        for item in load_package_batch_via_cache(paths, cache) {
             match item {
-                Ok((path, pkg, from_cache)) => {
-                    results.push(self.index_loaded_package(pkg, Some(&path), from_cache));
-                }
+                Ok(load) => loaded.push(load),
                 Err(failure) => failures.push(failure),
             }
         }
+
+        let results = newest_per_identity(loaded, |(_, pkg, _)| pkg)
+            .into_iter()
+            .map(|(path, pkg, from_cache)| self.index_loaded_package(pkg, Some(&path), from_cache))
+            .collect();
         (results, failures)
     }
 
@@ -249,7 +302,10 @@ impl SymbolIndex {
         cache: &crate::cache::SymbolCache,
     ) -> Result<Vec<SymbolPackage>, PackageLoadError> {
         cache.gc_once();
-        let parsed = complete_package_batch(load_package_batch_via_cache(paths, cache))?;
+        let parsed = newest_per_identity(
+            complete_package_batch(load_package_batch_via_cache(paths, cache))?,
+            |(_, pkg, _)| pkg,
+        );
 
         self.clear_loaded_packages();
         let mut results = Vec::with_capacity(parsed.len());
@@ -373,9 +429,135 @@ impl SymbolIndex {
 
 #[cfg(test)]
 mod tests {
+    use super::newest_per_identity;
     use crate::index::test_support::*;
     use crate::index::SymbolIndex;
-    use crate::model::ObjectKind;
+    use crate::model::{ObjectKind, SymbolPackage};
+
+    fn package(app_id: &str, name: &str, version: &str, object_names: &[&str]) -> SymbolPackage {
+        let objects: Vec<_> = object_names
+            .iter()
+            .enumerate()
+            .map(|(offset, object)| {
+                let mut entry = make_entry(ObjectKind::Table, 50_000 + offset as i32, object);
+                entry.package = name.to_string();
+                entry
+            })
+            .collect();
+        SymbolPackage {
+            app_id: app_id.to_string(),
+            name: name.to_string(),
+            publisher: "Microsoft".to_string(),
+            version: version.to_string(),
+            object_count: objects.len(),
+            objects,
+        }
+    }
+
+    const SYSTEM_ID: &str = "8874ed3a-0643-4247-9ced-7a7002f7135d";
+
+    #[test]
+    fn the_newest_version_of_one_app_is_kept_whatever_the_path_order() {
+        let older = package(SYSTEM_ID, "System", "27.0.46760.0", &["Old"]);
+        let newer = package(SYSTEM_ID, "System", "28.0.51202.0", &["New"]);
+        for batch in [
+            vec![older.clone(), newer.clone()],
+            vec![newer.clone(), older.clone()],
+        ] {
+            let kept = newest_per_identity(batch, |pkg| pkg);
+            assert_eq!(kept.len(), 1);
+            assert_eq!(kept[0].version, "28.0.51202.0");
+        }
+    }
+
+    #[test]
+    fn distinct_apps_sharing_a_name_are_both_kept_in_order() {
+        let first = package(
+            "11111111-0000-0000-0000-000000000000",
+            "Utilities",
+            "1.0.0.0",
+            &[],
+        );
+        let second = package(
+            "22222222-0000-0000-0000-000000000000",
+            "Utilities",
+            "1.0.0.0",
+            &[],
+        );
+        let base = package("", "Base Application", "28.0.0.0", &[]);
+        let kept = newest_per_identity(vec![first, base, second], |pkg| pkg);
+        let ids: Vec<_> = kept.iter().map(|pkg| pkg.app_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "11111111-0000-0000-0000-000000000000",
+                "",
+                "22222222-0000-0000-0000-000000000000"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tie_or_an_unparseable_version_keeps_the_first() {
+        let first = package(SYSTEM_ID, "System", "preview", &["First"]);
+        let second = package(SYSTEM_ID, "System", "28.0.0.0", &["Second"]);
+        let kept = newest_per_identity(vec![first, second], |pkg| pkg);
+        assert_eq!(kept[0].objects[0].name, "First");
+    }
+
+    #[test]
+    fn availability_counts_one_identity_not_every_package_with_its_name() {
+        let index = SymbolIndex::new();
+        index.index_loaded_package(
+            package(
+                "11111111-0000-0000-0000-000000000000",
+                "Utilities",
+                "1.0.0.0",
+                &["A", "B"],
+            ),
+            None,
+            false,
+        );
+        index.index_loaded_package(
+            package(
+                "22222222-0000-0000-0000-000000000000",
+                "Utilities",
+                "1.0.0.0",
+                &["C"],
+            ),
+            None,
+            false,
+        );
+        let total = |summary: crate::source_availability::SourceAvailabilitySummary| {
+            summary.workspace_source
+                + summary.embedded_source
+                + summary.generated_outline
+                + summary.metadata_only
+        };
+        assert_eq!(
+            total(index.package_source_availability_for(
+                "11111111-0000-0000-0000-000000000000",
+                "Utilities"
+            )),
+            2
+        );
+        assert_eq!(
+            total(index.package_source_availability_for(
+                "22222222-0000-0000-0000-000000000000",
+                "Utilities"
+            )),
+            1
+        );
+        assert_eq!(
+            total(index.package_source_availability_for(
+                "33333333-0000-0000-0000-000000000000",
+                "Utilities"
+            )),
+            0,
+            "an identity that was never indexed reports nothing"
+        );
+        assert_eq!(total(index.package_source_availability("Utilities")), 3);
+    }
 
     #[test]
     fn replace_with_rebuilds_every_lookup_and_completion_index() {

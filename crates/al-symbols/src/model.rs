@@ -652,7 +652,16 @@ pub(crate) struct ObjectJson {
     pub id: i32,
     #[serde(alias = "Name", default)]
     pub name: String,
-    #[serde(alias = "ExtendsObjectName", default)]
+    /// The extended object. Microsoft's packages and alc write it as
+    /// `TargetObject` (`Target` on report extensions); `ExtendsObjectName` is
+    /// the older spelling. A target in another app carries that app's id:
+    /// `#63ca2fa44f034f2ba480172fef340d3f#Feature To Update`.
+    #[serde(
+        alias = "TargetObject",
+        alias = "Target",
+        alias = "ExtendsObjectName",
+        default
+    )]
     pub extends: Option<String>,
     /// Interface names from `implements` clause (codeunits only).
     #[serde(alias = "Implements", default)]
@@ -1054,6 +1063,17 @@ fn synthesize_option_enums(
     entries
 }
 
+/// `#<app id without dashes>#Name` → `Name`: the form a package gives an
+/// extension target that lives in another app.
+fn strip_target_app_id(target: String) -> String {
+    target
+        .strip_prefix('#')
+        .and_then(|rest| rest.split_once('#'))
+        .filter(|(app_id, _)| app_id.len() == 32 && app_id.chars().all(|c| c.is_ascii_hexdigit()))
+        .map(|(_, name)| name.to_string())
+        .unwrap_or(target)
+}
+
 impl ObjectJson {
     fn into_entry(self, kind: ObjectKind, package: &str, namespace: &str) -> SymbolEntry {
         SymbolEntry {
@@ -1061,7 +1081,7 @@ impl ObjectJson {
             id: self.id,
             synthetic: false,
             name: self.name,
-            extends: self.extends,
+            extends: self.extends.map(strip_target_app_id),
             package: package.to_string(),
             methods: self.methods.into_iter().map(|m| m.into_method()).collect(),
             fields: self.fields.into_iter().map(|f| f.into_field()).collect(),
@@ -1737,6 +1757,46 @@ mod tests {
         assert_eq!(deserialized.kind, ObjectKind::Enum);
         assert_eq!(deserialized.name, "MyEnum");
         assert_eq!(deserialized.enum_values.len(), 2);
+    }
+
+    /// Base Application 26 moved manufacturing fields into table extensions
+    /// in the same app. Its packages name the target in `TargetObject`
+    /// (`Target` on report extensions), prefixed with the app id when the
+    /// target is in another app; reading only `ExtendsObjectName` left all
+    /// 80 table and 41 enum extensions detached from their base object.
+    #[test]
+    fn package_extensions_attach_through_target_object() {
+        let json = r##"{
+            "TableExtensions": [
+                { "Id": 99000750, "Name": "Mfg. Item", "TargetObject": "Item" }
+            ],
+            "EnumExtensionTypes": [
+                { "Id": 2611, "Name": "Feature To Update - BaseApp",
+                  "TargetObject": "#63ca2fa44f034f2ba480172fef340d3f#Feature To Update" }
+            ],
+            "ReportExtensions": [
+                { "Id": 929, "Name": "Asm. Get Demand To Reserve", "Target": "Get Demand To Reserve" }
+            ]
+        }"##;
+
+        let sr: SymbolReferenceJson = serde_json::from_str(json).unwrap();
+        let entries = sr.into_entries("Base Application");
+        let extends = |name: &str| {
+            entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .and_then(|entry| entry.extends.clone())
+        };
+
+        assert_eq!(extends("Mfg. Item").as_deref(), Some("Item"));
+        assert_eq!(
+            extends("Feature To Update - BaseApp").as_deref(),
+            Some("Feature To Update")
+        );
+        assert_eq!(
+            extends("Asm. Get Demand To Reserve").as_deref(),
+            Some("Get Demand To Reserve")
+        );
     }
 
     #[test]

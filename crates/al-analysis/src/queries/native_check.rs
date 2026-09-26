@@ -13,6 +13,7 @@
 //! package gating, the explicit `al-explorer native-check` command, and the
 //! `nativeCheck` daemon RPC.
 
+use al_syntax::IdentifierText;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -233,7 +234,7 @@ fn collect_objects(sources: &[crate::workspace_sources::WorkspaceSource]) -> Vec
                     id: object.info.id,
                     name: object.info.name.clone(),
                     file: source.path.clone(),
-                    extends: extract_extends(node, bytes),
+                    extends: al_syntax::object_extends_target(node, bytes),
                     member_ids: extract_member_ids(node, bytes, &object.info.kind),
                 })
         })
@@ -410,48 +411,6 @@ pub fn affix_rules_from_appsourcecop(root: &Path) -> Result<AffixRules, String> 
     })
 }
 
-/// Extract the `extends`/`customizes` target object name from a parse tree.
-///
-/// The grammar emits the clause either as `object_modifier`
-/// (`modifier`/`target` fields) or — what real headers produce — as
-/// `implements_clause` (positional `metadata_keyword` + `name`, shared with
-/// `implements`). The leading keyword disambiguates. Mirrors the proven
-/// extraction in `al-insight`. Returns `None` for objects with no such clause.
-fn extract_extends(object: Node<'_>, source: &[u8]) -> Option<String> {
-    let mut stack = vec![object];
-    while let Some(node) = stack.pop() {
-        if matches!(node.kind(), "object_modifier" | "implements_clause") {
-            let mut kw_cursor = node.walk();
-            let keyword_node = node.child_by_field_name("modifier").or_else(|| {
-                node.children(&mut kw_cursor)
-                    .find(|c| c.kind() == "metadata_keyword")
-            });
-            let keyword = keyword_node
-                .and_then(|m| m.utf8_text(source).ok())
-                .unwrap_or("")
-                .trim();
-            if keyword.eq_ignore_ascii_case("extends") || keyword.eq_ignore_ascii_case("customizes")
-            {
-                let mut tgt_cursor = node.walk();
-                let target_node = node.child_by_field_name("target").or_else(|| {
-                    node.children(&mut tgt_cursor)
-                        .find(|c| matches!(c.kind(), "name" | "name_or_keyword"))
-                });
-                return target_node
-                    .and_then(|t| t.utf8_text(source).ok())
-                    .map(|t| t.trim().trim_matches('"').to_string());
-            }
-        }
-        // The clause lives in the object header — procedure code can't contain
-        // these nodes, so skip object bodies for speed.
-        if node.kind() != "object_body" {
-            let mut cursor = node.walk();
-            stack.extend(node.children(&mut cursor));
-        }
-    }
-    None
-}
-
 /// Extract `(id, name)` pairs for a table's fields or an enum's values.
 ///
 /// Both grammar forms are `keyword(ID; "Name"; ...)` parsed as an
@@ -533,7 +492,7 @@ fn member_from_paren(section: Node, source: &[u8]) -> Option<(i64, String)> {
                 if past_semicolon && name.is_none() =>
             {
                 if let Ok(t) = child.utf8_text(source) {
-                    let trimmed = t.trim().trim_matches('"').trim().to_string();
+                    let trimmed = t.unquote_identifier().into_owned();
                     if !trimmed.is_empty() {
                         name = Some(trimmed);
                     }
@@ -554,7 +513,7 @@ fn enum_value_member(node: Node, source: &[u8]) -> Option<(i64, String)> {
     let name = node
         .child_by_field_name("name")
         .and_then(|n| n.utf8_text(source).ok())
-        .map(|t| t.trim().trim_matches('"').to_string())
+        .map(|t| t.unquote_identifier().into_owned())
         .filter(|name| !name.is_empty())?;
     Some((id, name))
 }

@@ -17,7 +17,10 @@ pub mod traversal;
 pub mod type_resolver;
 pub mod types;
 
-pub use context::{detect_context, extract_last_identifier, find_call_context, CompletionContext};
+pub use context::{
+    code_before_open_literal, detect_context, extract_last_identifier, find_call_context,
+    CompletionContext,
+};
 pub use folding::extract_folding_ranges;
 pub use formatting::{
     format_al, format_range, BlankLinesBetweenProcedures, BraceStyle, FormatOptions, KeywordCasing,
@@ -45,18 +48,29 @@ pub use types::{
 };
 
 /// Clean an attribute argument: trim, strip a leading `Type::` prefix, and strip
-/// surrounding `"`/`'` quotes. A pure string helper shared by the navigation,
+/// one surrounding `"`/`'` pair, unescaping the doubled quote inside it. A pure string helper shared by the navigation,
 /// insight and query layers.
 pub fn clean_attr_arg(s: &str) -> String {
     let s = s.trim();
-    let s = if let Some(pos) = s.find("::") {
-        &s[pos + 2..]
-    } else {
-        s
+    // `Codeunit::"Sales-Post"` names the object after the scope operator. A
+    // quoted argument is a name in its own right, `::` inside it included.
+    let s = match s.find("::") {
+        Some(pos) if !s.starts_with('"') && !s.starts_with('\'') => s[pos + 2..].trim(),
+        _ => s,
     };
-    let s = s.trim_matches('"');
-    let s = s.trim_matches('\'');
-    s.trim().to_string()
+    // One quote pair, with the doubled quote unescaped, so `"My ""Big"" Unit"`
+    // matches the name al-syntax reports for that object. An unbalanced value
+    // keeps the old lenient strip.
+    for quote in ['"', '\''] {
+        if s.len() >= 2 && s.starts_with(quote) && s.ends_with(quote) {
+            let doubled: String = [quote, quote].iter().collect();
+            return s[1..s.len() - 1]
+                .replace(&doubled, &quote.to_string())
+                .trim()
+                .to_string();
+        }
+    }
+    s.trim_matches('"').trim_matches('\'').trim().to_string()
 }
 
 /// Convert a byte-offset column (as produced by tree-sitter) within a UTF-8 line to a
@@ -130,6 +144,33 @@ pub fn clean_identifier(text: &str) -> String {
     clean_identifier_text(text).unwrap_or_default()
 }
 
+/// Identifier cleanup for text that did not come straight from a syntax node.
+pub trait IdentifierText {
+    /// Trim whitespace, drop one leading and one trailing `"`, and unescape
+    /// `""` to `"`.
+    ///
+    /// Replaces `trim_matches('"')`, which strips quote *runs*: it left the
+    /// doubled quote inside `"Cust ""Main"" Rec"` and over-stripped
+    /// `"Name"""` to `Name`, so those names never matched the ones al-syntax
+    /// reports. Each end is handled on its own, so text cut off mid-name while
+    /// the user types (`"Sales Hea`) still loses its opening quote. Borrows
+    /// when there is nothing to unescape.
+    fn unquote_identifier(&self) -> std::borrow::Cow<'_, str>;
+}
+
+impl IdentifierText for str {
+    fn unquote_identifier(&self) -> std::borrow::Cow<'_, str> {
+        let text = self.trim();
+        let text = text.strip_prefix('"').unwrap_or(text);
+        let text = text.strip_suffix('"').unwrap_or(text);
+        if text.contains("\"\"") {
+            std::borrow::Cow::Owned(text.replace("\"\"", "\""))
+        } else {
+            std::borrow::Cow::Borrowed(text)
+        }
+    }
+}
+
 pub fn node_text_or(node: tree_sitter::Node, source: &[u8], fallback: &str) -> String {
     node_text_clean(node, source).unwrap_or_else(|| fallback.to_string())
 }
@@ -140,6 +181,49 @@ pub fn node_name_or(node: tree_sitter::Node, source: &[u8], fallback: &str) -> S
     node.child_by_field_name("name")
         .and_then(|n| node_text_clean(n, source))
         .unwrap_or_else(|| fallback.to_string())
+}
+
+/// The object an extension object extends (`extends` / `customizes`), cleaned
+/// of quotes, or `None` for an object with no such clause.
+///
+/// The grammar emits the clause either as `object_modifier` (`modifier` and
+/// `target` fields) or, for the headers real code has, as
+/// `implements_clause` (a positional `metadata_keyword` and `name`, shared
+/// with `implements`); the leading keyword tells them apart. Only the object
+/// header is searched.
+pub fn object_extends_target(object: tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
+    let mut stack = vec![object];
+    while let Some(node) = stack.pop() {
+        if matches!(node.kind(), "object_modifier" | "implements_clause") {
+            let mut keyword_cursor = node.walk();
+            let keyword = node
+                .child_by_field_name("modifier")
+                .or_else(|| {
+                    node.children(&mut keyword_cursor)
+                        .find(|child| child.kind() == "metadata_keyword")
+                })
+                .and_then(|keyword| keyword.utf8_text(source).ok())
+                .unwrap_or("")
+                .trim();
+            if keyword.eq_ignore_ascii_case("extends") || keyword.eq_ignore_ascii_case("customizes")
+            {
+                let mut target_cursor = node.walk();
+                return node
+                    .child_by_field_name("target")
+                    .or_else(|| {
+                        node.children(&mut target_cursor)
+                            .find(|child| matches!(child.kind(), "name" | "name_or_keyword"))
+                    })
+                    .and_then(|target| target.utf8_text(source).ok())
+                    .map(|text| text.unquote_identifier().into_owned());
+            }
+        }
+        if node.kind() != "object_body" {
+            let mut cursor = node.walk();
+            stack.extend(node.children(&mut cursor));
+        }
+    }
+    None
 }
 
 /// Extract the object name from an `object_declaration` node.
@@ -384,6 +468,69 @@ mod clean_identifier_tests {
         assert_eq!(clean_identifier_text(""), None);
         assert_eq!(clean_identifier_text(r#""""#), None);
         assert_eq!(clean_identifier_text("   "), None);
+    }
+}
+
+#[cfg(test)]
+mod unquote_identifier_tests {
+    use super::IdentifierText;
+
+    #[test]
+    fn strips_one_quote_at_each_end_and_unescapes() {
+        assert_eq!(
+            "\"Cust \"\"Main\"\" Rec\"".unquote_identifier(),
+            "Cust \"Main\" Rec"
+        );
+        assert_eq!("\"Name\"\"\"".unquote_identifier(), "Name\"");
+        assert_eq!("  \"Sales Header\" ".unquote_identifier(), "Sales Header");
+        assert_eq!("Customer".unquote_identifier(), "Customer");
+    }
+
+    #[test]
+    fn an_unbalanced_quote_is_still_dropped() {
+        assert_eq!("\"Sales Hea".unquote_identifier(), "Sales Hea");
+        assert_eq!("\"\"".unquote_identifier(), "");
+    }
+
+    #[test]
+    fn borrows_when_nothing_is_unescaped() {
+        assert!(matches!(
+            "\"Sales Header\"".unquote_identifier(),
+            std::borrow::Cow::Borrowed("Sales Header")
+        ));
+    }
+}
+
+#[cfg(test)]
+mod clean_attr_arg_tests {
+    use super::clean_attr_arg;
+
+    #[test]
+    fn strips_the_scope_prefix() {
+        assert_eq!(clean_attr_arg("ObjectType::Codeunit"), "Codeunit");
+        assert_eq!(clean_attr_arg(" Codeunit::\"Sales-Post\" "), "Sales-Post");
+    }
+
+    #[test]
+    fn unescapes_a_doubled_quote_inside_one_quote_pair() {
+        assert_eq!(
+            clean_attr_arg("\"My \"\"Big\"\" Codeunit\""),
+            "My \"Big\" Codeunit"
+        );
+        assert_eq!(clean_attr_arg("'Don''t'"), "Don't");
+        assert_eq!(clean_attr_arg("\"Name\"\"\""), "Name\"");
+    }
+
+    #[test]
+    fn keeps_a_scope_operator_inside_a_quoted_name() {
+        assert_eq!(clean_attr_arg("\"A::B\""), "A::B");
+    }
+
+    #[test]
+    fn plain_and_unbalanced_values_keep_the_lenient_strip() {
+        assert_eq!(clean_attr_arg("OnAfterPost"), "OnAfterPost");
+        assert_eq!(clean_attr_arg("'OnAfterPost"), "OnAfterPost");
+        assert_eq!(clean_attr_arg("''"), "");
     }
 }
 

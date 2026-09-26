@@ -11,6 +11,19 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+/// Escape a name for a quoted AL identifier: AL writes a literal `"` inside
+/// one as `""`. Shared with al-analysis's generators and permission-set
+/// rendering so no generator forgets it and emits AL that does not parse.
+pub fn al_escape_name(name: &str) -> String {
+    name.replace('"', "\"\"")
+}
+
+/// The single placeholder `[Test]` procedure emitted when there is nothing to
+/// derive stubs from. Shared with al-analysis's test generator.
+pub fn default_test_stub() -> String {
+    "    [Test]\n    procedure TestSomething()\n    begin\n        Error('Placeholder test: implementation required');\n    end;\n".to_string()
+}
+
 /// Comma-separated list of the built-in template names, for error messages.
 const BUILTIN_TEMPLATE_NAMES: &str = "default, pte, appsource, library, test, copilot, agent, api";
 
@@ -38,7 +51,7 @@ pub enum ProjectTemplate {
 }
 
 /// A resolved user-defined template: its name, the directory it lives in, and
-/// its parsed `template.json` descriptor. Produced by [`resolve_custom_template`]
+/// its parsed `template.json` descriptor. Produced by `resolve_custom_template`
 /// (and by [`ProjectTemplate::from_str`] when a name is not a built-in).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CustomTemplate {
@@ -120,7 +133,10 @@ impl Default for ScaffoldConfig {
         Self {
             name: "MyApp".to_string(),
             publisher: "Default Publisher".to_string(),
-            id: "00000000-0000-0000-0000-000000000000".to_string(),
+            // Every new project gets its own app id. The nil GUID made every
+            // scaffolded app the same app to Business Central, so publishing a
+            // second one replaced the first.
+            id: fresh_guid(),
             version: "1.0.0.0".to_string(),
             // Runtime 17.0 is the stable AL runtime shipped with BC 28. The
             // generated application minimum is derived from this value rather
@@ -131,6 +147,10 @@ impl Default for ScaffoldConfig {
         }
     }
 }
+
+/// The newest AL runtime major this build knows (17 is Business Central 28),
+/// and the default for new projects.
+const NEWEST_KNOWN_RUNTIME_MAJOR: u32 = 17;
 
 /// Map an AL runtime version to the Business Central application version that
 /// introduced it. Runtime 1.0 shipped with BC 12.0, and subsequent major
@@ -151,6 +171,16 @@ pub fn application_version_for_runtime(runtime: &str) -> Result<String, String> 
     if parts.next().is_some() {
         return Err(format!(
             "Invalid AL runtime '{runtime}': expected major.minor, for example 17.0"
+        ));
+    }
+    // `--runtime 99.0` wrote `"application": "110.0.0.0"`, a Business
+    // Central that does not exist. Allow a little past the newest runtime
+    // this build knows, for toolchains released after it.
+    if major > NEWEST_KNOWN_RUNTIME_MAJOR + 2 {
+        return Err(format!(
+            "Invalid AL runtime '{runtime}': the newest AL runtime this version knows is \
+             {NEWEST_KNOWN_RUNTIME_MAJOR}.0 (Business Central {})",
+            NEWEST_KNOWN_RUNTIME_MAJOR + 11
         ));
     }
     let application_major = major
@@ -198,6 +228,14 @@ pub fn create_project(dir: &Path, config: &ScaffoldConfig) -> Result<ScaffoldRes
         ),
     ];
     planned.extend(generate_template_files(config)?);
+    // Workspace settings the folder already has are the user's; the
+    // analyzer choice is only a default.
+    if !dir.join(".vscode/settings.json").exists() {
+        planned.push((
+            ".vscode/settings.json".to_string(),
+            generate_vscode_settings(config)?.into_bytes(),
+        ));
+    }
     refuse_existing_destinations(dir, planned.iter().map(|(name, _)| name.as_str()))?;
 
     let mut files = Vec::with_capacity(planned.len());
@@ -689,7 +727,7 @@ fn substitute_path(rel: &Path, substitute: &impl Fn(&str) -> String) -> Result<P
 /// Generate a fresh v4-shaped GUID (canonical lowercase, unbraced) for the
 /// `{{id}}` placeholder when a descriptor requests `generateId`.
 ///
-/// al-analysis has no RNG dependency, so this seeds a SplitMix64 stream from the
+/// This crate has no RNG dependency, so this seeds a SplitMix64 stream from the
 /// wall clock, the process id, and a monotonic counter. That is *not*
 /// cryptographic randomness, but a scaffold's app id only needs to be unique,
 /// which this comfortably provides (distinct calls advance the counter).
@@ -730,21 +768,15 @@ fn splitmix64(seed: u64) -> u64 {
 
 fn generate_app_json(config: &ScaffoldConfig) -> Result<String, String> {
     let application = application_version_for_runtime(&config.runtime)?;
-    let (target, features, analyzers) = match &config.template {
+    let (target, features) = match &config.template {
         ProjectTemplate::AppSourceApp => (
             "Cloud",
             serde_json::json!(["NoImplicitWith", "GenerateCaptions"]),
-            serde_json::json!(["AppSourceCop", "PerTenantExtensionCop", "UICop"]),
         ),
-        ProjectTemplate::Api => (
-            "Cloud",
-            serde_json::json!(["NoImplicitWith"]),
-            serde_json::json!(["PerTenantExtensionCop"]),
-        ),
+        ProjectTemplate::Api => ("Cloud", serde_json::json!(["NoImplicitWith"])),
         _ => (
             config.target.as_str(),
             serde_json::json!(["NoImplicitWith"]),
-            serde_json::json!(["PerTenantExtensionCop"]),
         ),
     };
 
@@ -772,8 +804,7 @@ fn generate_app_json(config: &ScaffoldConfig) -> Result<String, String> {
         },
         "runtime": config.runtime,
         "target": target,
-        "features": features,
-        "codeAnalyzers": analyzers
+        "features": features
     });
 
     if matches!(
@@ -787,6 +818,29 @@ fn generate_app_json(config: &ScaffoldConfig) -> Result<String, String> {
         .map_err(|e| format!("Failed to serialize app.json: {e}"))
 }
 
+/// The analyzers a template's projects are checked with.
+fn template_code_analyzers(template: &ProjectTemplate) -> &'static [&'static str] {
+    match template {
+        ProjectTemplate::AppSourceApp => &["AppSourceCop", "PerTenantExtensionCop", "UICop"],
+        _ => &["PerTenantExtensionCop"],
+    }
+}
+
+/// `.vscode/settings.json` choosing the template's analyzers.
+///
+/// They used to go into `app.json` as `codeAnalyzers`, which is not an
+/// app.json property: the compiler ignores it, and Microsoft's AL extension
+/// and this one read `al.codeAnalyzers` from settings.
+fn generate_vscode_settings(config: &ScaffoldConfig) -> Result<String, String> {
+    let analyzers: Vec<String> = template_code_analyzers(&config.template)
+        .iter()
+        .map(|analyzer| format!("${{{analyzer}}}"))
+        .collect();
+    serde_json::to_string_pretty(&serde_json::json!({ "al.codeAnalyzers": analyzers }))
+        .map(|text| text + "\n")
+        .map_err(|error| format!("rendering .vscode/settings.json: {error}"))
+}
+
 fn generate_gitignore() -> String {
     "\
 # AL build artifacts
@@ -797,8 +851,8 @@ fn generate_gitignore() -> String {
 # Package cache
 .alpackages/
 
-# VS Code / Zed settings (keep debug.json)
-.vscode/settings.json
+# .vscode/settings.json is not ignored: it holds al.codeAnalyzers, which a
+# clone and CI must run too.
 
 # OS files
 .DS_Store
@@ -902,7 +956,7 @@ fn generate_starter_codeunit(config: &ScaffoldConfig) -> String {
 }
 
 fn generate_library_codeunit(config: &ScaffoldConfig) -> String {
-    let name = crate::permissions::al_escape_name(&config.name);
+    let name = al_escape_name(&config.name);
     format!(
         r#"codeunit 50100 "{name} Library"
 {{
@@ -916,8 +970,8 @@ fn generate_library_codeunit(config: &ScaffoldConfig) -> String {
 }
 
 fn generate_test_codeunit(config: &ScaffoldConfig) -> String {
-    let name = crate::permissions::al_escape_name(&config.name);
-    let stub = crate::generators::default_test_stub();
+    let name = al_escape_name(&config.name);
+    let stub = default_test_stub();
     format!(
         r#"codeunit 50100 "{name} Test"
 {{
@@ -935,7 +989,7 @@ fn generate_test_codeunit(config: &ScaffoldConfig) -> String {
 /// chat with Copilot is not extensible.
 /// <https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/ai-build-capability-in-al>
 fn generate_copilot_capability_enum(config: &ScaffoldConfig) -> String {
-    let name = crate::permissions::al_escape_name(&config.name);
+    let name = al_escape_name(&config.name);
     let caption = al_escape_literal(&config.name);
     format!(
         r#"enumextension 50100 "{name} Copilot Capability" extends "Copilot Capability"
@@ -952,7 +1006,7 @@ fn generate_copilot_capability_enum(config: &ScaffoldConfig) -> String {
 }
 
 fn generate_copilot_codeunit(config: &ScaffoldConfig) -> String {
-    let name = crate::permissions::al_escape_name(&config.name);
+    let name = al_escape_name(&config.name);
     format!(
         r#"codeunit 50100 "{name} Copilot Participant"
 {{
@@ -996,7 +1050,7 @@ fn generate_copilot_codeunit(config: &ScaffoldConfig) -> String {
 }
 
 fn generate_azure_openai_codeunit(config: &ScaffoldConfig) -> String {
-    let name = crate::permissions::al_escape_name(&config.name);
+    let name = al_escape_name(&config.name);
     let single_quoted = al_escape_literal(&config.name);
     format!(
         r#"codeunit 50101 "{name} Azure OpenAI Helper"
@@ -1011,7 +1065,7 @@ fn generate_azure_openai_codeunit(config: &ScaffoldConfig) -> String {
 }
 
 fn generate_agent_codeunit(config: &ScaffoldConfig) -> String {
-    let name = crate::permissions::al_escape_name(&config.name);
+    let name = al_escape_name(&config.name);
     format!(
         r#"codeunit 50100 "{name} Agent"
 {{
@@ -1029,7 +1083,7 @@ fn generate_agent_codeunit(config: &ScaffoldConfig) -> String {
 }
 
 fn generate_agent_job_handler(config: &ScaffoldConfig) -> String {
-    let name = crate::permissions::al_escape_name(&config.name);
+    let name = al_escape_name(&config.name);
     format!(
         r#"codeunit 50101 "{name} Agent Job Handler"
 {{
@@ -1064,7 +1118,7 @@ fn api_identifier(text: &str) -> String {
 }
 
 fn generate_api_page(config: &ScaffoldConfig) -> String {
-    let name = crate::permissions::al_escape_name(&config.name);
+    let name = al_escape_name(&config.name);
     // `EntityName = 'item'` over `SourceTable = Customer` made `/items` return
     // customers. The publisher and group come from the project rather than the
     // `defaultPublisher` / `defaultGroup` placeholders AppSourceCop flags.
@@ -1124,7 +1178,15 @@ fn generate_app_source_cop_json() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::assert_al_parses;
+
+    fn assert_al_parses(label: &str, source: &str) {
+        let result = al_syntax::parser::AlParser::parse_quick(source);
+        assert!(
+            result.errors.is_empty(),
+            "{label} did not parse cleanly:\n{source}\nerrors: {:?}",
+            result.errors
+        );
+    }
 
     #[test]
     fn scaffold_creates_all_files() {
@@ -1132,11 +1194,58 @@ mod tests {
         let config = ScaffoldConfig::default();
         let result = create_project(dir.path(), &config).unwrap();
 
-        assert_eq!(result.files_created.len(), 4);
+        assert_eq!(result.files_created.len(), 5);
         assert!(dir.path().join("app.json").exists());
         assert!(dir.path().join(".gitignore").exists());
         assert!(dir.path().join(".zed/debug.json").exists());
         assert!(dir.path().join("src/HelloWorld.Codeunit.al").exists());
+        assert!(dir.path().join(".vscode/settings.json").exists());
+        // The analyzers live there, so the generated .gitignore must not
+        // keep them out of the repository.
+        let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(
+            !gitignore
+                .lines()
+                .any(|line| line.trim() == ".vscode/settings.json"),
+            "{gitignore}"
+        );
+    }
+
+    /// `codeAnalyzers` is not an app.json property; the analyzers go to the
+    /// `al.codeAnalyzers` setting, and a folder's own settings are kept.
+    #[test]
+    fn analyzers_go_to_settings_not_app_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ScaffoldConfig {
+            template: ProjectTemplate::AppSourceApp,
+            ..ScaffoldConfig::default()
+        };
+        create_project(dir.path(), &config).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("app.json")).unwrap())
+                .unwrap();
+        assert!(manifest.get("codeAnalyzers").is_none(), "{manifest}");
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join(".vscode/settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            settings["al.codeAnalyzers"],
+            serde_json::json!(["${AppSourceCop}", "${PerTenantExtensionCop}", "${UICop}"])
+        );
+
+        let existing = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(existing.path().join(".vscode")).unwrap();
+        std::fs::write(
+            existing.path().join(".vscode/settings.json"),
+            "{\"mine\": 1}",
+        )
+        .unwrap();
+        create_project(existing.path(), &ScaffoldConfig::default()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(existing.path().join(".vscode/settings.json")).unwrap(),
+            "{\"mine\": 1}"
+        );
     }
 
     #[test]
@@ -1345,7 +1454,7 @@ mod tests {
 
     #[test]
     fn scaffold_rejects_invalid_runtime_instead_of_emitting_stale_application() {
-        for runtime in ["", "latest", "0.0", "17.0.1"] {
+        for runtime in ["", "latest", "0.0", "17.0.1", "99.0"] {
             let config = ScaffoldConfig {
                 runtime: runtime.to_string(),
                 ..Default::default()
@@ -1929,6 +2038,24 @@ mod tests {
         assert!(guard_relative(Path::new("../a")).is_err());
         assert!(guard_relative(Path::new("a/../../b")).is_err());
         assert!(guard_relative(Path::new("/abs")).is_err());
+    }
+
+    #[test]
+    fn a_built_in_template_gets_its_own_app_id() {
+        let ids: Vec<String> = (0..2)
+            .map(|_| {
+                let dir = tempfile::tempdir().unwrap();
+                let target = dir.path().join("app");
+                create_project(&target, &ScaffoldConfig::default()).unwrap();
+                let app: serde_json::Value = serde_json::from_str(
+                    &std::fs::read_to_string(target.join("app.json")).unwrap(),
+                )
+                .unwrap();
+                app["id"].as_str().unwrap().to_string()
+            })
+            .collect();
+        assert_ne!(ids[0], "00000000-0000-0000-0000-000000000000");
+        assert_ne!(ids[0], ids[1], "two projects must not share an app id");
     }
 
     #[test]

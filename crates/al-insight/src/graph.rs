@@ -56,6 +56,12 @@ pub enum InsightNode {
         object_kind: ObjectKind,
         object_name: String,
         name: String,
+        /// The publisher's kind, from the attribute's `ObjectType::` argument.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        target_kind: Option<ObjectKind>,
+        /// The publisher's name. An attribute may name it by ID (`Codeunit,
+        /// 80`), and Microsoft's packages always do; the ID is replaced by the
+        /// name once every object is known (`resolve_subscriber_edges`).
         target_object: String,
         target_event: String,
     },
@@ -130,7 +136,7 @@ pub enum NodeKey {
 /// crates from building on a transient internal layout.
 pub struct InsightGraph {
     pub graph: DiGraph<InsightNode, InsightEdge>,
-    /// Lookup table: NodeKey -> Vec<NodeIndex>.
+    /// Lookup table: `NodeKey` -> `Vec<NodeIndex>`.
     ///
     /// Multiple packages can define objects with the same (kind, name), so each
     /// key maps to a list of node indices rather than a single one.  This avoids
@@ -305,6 +311,7 @@ impl InsightGraph {
     /// which are platform-implicit, never declared in AL source), an Event
     /// node is synthesized under that object so the chain stays traceable.
     pub fn resolve_subscriber_edges(&mut self) {
+        self.name_numeric_subscriber_targets();
         let subscribers: Vec<(NodeIndex, String, String)> = self
             .graph
             .node_indices()
@@ -379,6 +386,42 @@ impl InsightGraph {
                 self.add_edge(obj_idx, event_idx, InsightEdge::Publishes);
                 self.add_edge(sub_idx, event_idx, InsightEdge::SubscribesTo);
                 break;
+            }
+        }
+    }
+
+    /// Replace a subscriber target given by object ID with the object's name.
+    ///
+    /// `[EventSubscriber(ObjectType::Codeunit, 80, ...)]` is valid AL, and
+    /// every subscriber in a symbol package is written that way. Matching the
+    /// raw `80` against object names left all of them unbound: `dead-code`
+    /// called live subscribers orphaned and `trace` showed no package
+    /// subscriber at all.
+    fn name_numeric_subscriber_targets(&mut self) {
+        let mut names: HashMap<(ObjectKind, i32), String> = HashMap::new();
+        for node in self.graph.node_weights() {
+            if let InsightNode::Object { kind, id, name, .. } = node {
+                names.entry((*kind, *id)).or_insert_with(|| name.clone());
+            }
+        }
+        let indices: Vec<NodeIndex> = self.graph.node_indices().collect();
+        for idx in indices {
+            if let InsightNode::Subscriber {
+                target_kind,
+                target_object,
+                ..
+            } = &mut self.graph[idx]
+            {
+                let Ok(id) = target_object.trim().parse::<i32>() else {
+                    continue;
+                };
+                let kinds: &[ObjectKind] = match target_kind {
+                    Some(kind) => std::slice::from_ref(kind),
+                    None => &EVENT_PUBLISHER_KINDS,
+                };
+                if let Some(name) = kinds.iter().find_map(|kind| names.get(&(*kind, id))) {
+                    *target_object = name.clone();
+                }
             }
         }
     }
@@ -499,7 +542,8 @@ impl InsightGraph {
                 );
                 self.add_edge(obj_idx, event_idx, InsightEdge::Publishes);
             } else if is_subscriber {
-                let (target_object, target_event) = parse_subscriber_target(&method.attributes);
+                let (target_kind, target_object, target_event) =
+                    parse_subscriber_target_full(&method.attributes);
 
                 let key = NodeKey::Subscriber(
                     entry.kind,
@@ -512,6 +556,7 @@ impl InsightGraph {
                         object_kind: entry.kind,
                         object_name: entry.name.clone(),
                         name: method.name.clone(),
+                        target_kind,
                         target_object,
                         target_event,
                     },
@@ -724,11 +769,6 @@ fn parse_subscriber_target_full(
     (None, String::new(), String::new())
 }
 
-fn parse_subscriber_target(attributes: &[al_symbols::AttributeSymbol]) -> (String, String) {
-    let (_, obj, evt) = parse_subscriber_target_full(attributes);
-    (obj, evt)
-}
-
 fn clean_quotes(s: &str) -> String {
     let s = s.trim();
     let s = s.strip_prefix('"').unwrap_or(s);
@@ -745,74 +785,45 @@ mod tests {
 
     fn make_codeunit(id: i32, name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Codeunit,
             id,
             name: name.to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "TestPkg".to_string(),
             methods,
-            fields: Vec::new(),
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 
     fn make_table(id: i32, name: &str) -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Table,
             id,
             name: name.to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "TestPkg".to_string(),
-            methods: Vec::new(),
             fields: vec![FieldSymbol {
                 id: 1,
                 name: "No.".to_string(),
                 type_name: "Code".to_string(),
                 properties: vec![],
             }],
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 
     fn make_table_ext(id: i32, name: &str, extends: &str) -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::TableExtension,
             id,
             name: name.to_string(),
             extends: Some(extends.to_string()),
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "ExtPkg".to_string(),
-            methods: Vec::new(),
             fields: vec![FieldSymbol {
                 id: 50100,
                 name: "Custom".to_string(),
                 type_name: "Boolean".to_string(),
                 properties: vec![],
             }],
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -1001,6 +1012,51 @@ mod tests {
         } else {
             panic!("Expected Event node");
         }
+    }
+
+    /// Microsoft's packages write every subscriber target as `Codeunit`,
+    /// `80`; AL source may too. Codeunit 80 and table 80 both exist, so the
+    /// kind has to pick the object.
+    #[test]
+    fn a_subscriber_naming_its_publisher_by_id_binds_to_the_event() {
+        let index = SymbolIndex::new();
+        let mut by_id = event_subscriber("HandleAfterPost", "Codeunit", "", "OnAfterPost");
+        by_id.attributes[0].arguments[0] = "Codeunit".to_string();
+        by_id.attributes[0].arguments[1] = "80".to_string();
+        index.add_entries(&[
+            make_codeunit(80, "Sales-Post", vec![integration_event("OnAfterPost")]),
+            SymbolEntry {
+                kind: ObjectKind::Table,
+                id: 80,
+                name: "Gen. Journal Template".to_string(),
+                ..Default::default()
+            },
+            make_codeunit(50100, "My Subscriber", vec![by_id]),
+        ]);
+
+        let mut g = InsightGraph::new();
+        g.build_from_index(&index);
+        g.resolve_subscriber_edges();
+
+        let sub = g
+            .get_node(&NodeKey::Subscriber(
+                ObjectKind::Codeunit,
+                "my subscriber".to_string(),
+                "handleafterpost".to_string(),
+            ))
+            .unwrap();
+        let event = g
+            .get_node(&NodeKey::Event(
+                ObjectKind::Codeunit,
+                "sales-post".to_string(),
+                "onafterpost".to_string(),
+            ))
+            .unwrap();
+        assert!(g.graph.find_edge(sub, event).is_some());
+        let InsightNode::Subscriber { target_object, .. } = &g.graph[sub] else {
+            panic!("not a subscriber node");
+        };
+        assert_eq!(target_object, "Sales-Post");
     }
 
     #[test]
@@ -1194,39 +1250,24 @@ mod tests {
         let index = SymbolIndex::new();
 
         let customer = SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Table,
             id: 18,
             name: "Customer".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "TestPkg".to_string(),
-            methods: Vec::new(),
             fields: vec![FieldSymbol {
                 id: 1,
                 name: "No.".to_string(),
                 type_name: "Code".to_string(),
                 properties: vec![],
             }],
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         };
 
         let sales_header = SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Table,
             id: 36,
             name: "Sales Header".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "TestPkg".to_string(),
-            methods: Vec::new(),
             fields: vec![FieldSymbol {
                 id: 2,
                 name: "Sell-to Customer No.".to_string(),
@@ -1236,12 +1277,7 @@ mod tests {
                     value: "Customer".to_string(),
                 }],
             }],
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         };
 
         index.add_entries(&[customer, sales_header]);
@@ -1273,39 +1309,24 @@ mod tests {
         let index = SymbolIndex::new();
 
         let item = SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Table,
             id: 27,
             name: "Item".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "TestPkg".to_string(),
-            methods: Vec::new(),
             fields: vec![FieldSymbol {
                 id: 1,
                 name: "No.".to_string(),
                 type_name: "Code".to_string(),
                 properties: vec![],
             }],
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         };
 
         let sales_line = SymbolEntry {
-            synthetic: false,
             kind: ObjectKind::Table,
             id: 37,
             name: "Sales Line".to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "TestPkg".to_string(),
-            methods: Vec::new(),
             fields: vec![FieldSymbol {
                 id: 2,
                 name: "No.".to_string(),
@@ -1315,12 +1336,7 @@ mod tests {
                     value: "\"Item\" WHERE(\"Type\" = CONST(Inventory))".to_string(),
                 }],
             }],
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         };
 
         index.add_entries(&[item, sales_line]);

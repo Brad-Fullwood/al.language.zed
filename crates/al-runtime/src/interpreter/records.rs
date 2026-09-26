@@ -24,6 +24,7 @@
 //! Invalid table metadata or FlowField formulas fail explicitly instead of
 //! fabricating field IDs, primary keys, or plain-buffer fallbacks.
 
+use al_syntax::IdentifierText;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -68,11 +69,11 @@ pub struct RecordStore {
 impl RecordStore {
     /// Resolve a field name through the parsed workspace schema.
     fn resolve_field(&self, name: &str) -> Result<FieldNo, String> {
-        let key = name.trim().trim_matches('"').to_ascii_lowercase();
+        let key = name.unquote_identifier().to_ascii_lowercase();
         self.field_by_name.get(&key).copied().ok_or_else(|| {
             format!(
                 "field '{}' is not declared on workspace table '{}'",
-                name.trim().trim_matches('"'),
+                name.unquote_identifier(),
                 self.record.table_name
             )
         })
@@ -125,7 +126,7 @@ fn records_disabled_error() -> Eval {
 
 /// Lowercased table-name store key.
 fn key_for(table_name: &str) -> String {
-    table_name.trim().trim_matches('"').to_ascii_lowercase()
+    table_name.unquote_identifier().to_ascii_lowercase()
 }
 
 /// Which backing store a record variable reads and writes.
@@ -279,8 +280,8 @@ fn load_table_meta(
     source: &dyn al_types::ProcedureSource,
     table_name: &str,
 ) -> Result<TableMeta, String> {
-    let want = table_name.trim().trim_matches('"');
-    let path = source.find_by_object_name(want).ok_or_else(|| {
+    let want = table_name.unquote_identifier();
+    let path = source.find_by_object_name(&want).ok_or_else(|| {
         format!(
             "record table '{want}' not found in workspace (native record ops require a workspace \
              table definition; base-app tables are not modelled)"
@@ -299,7 +300,7 @@ fn load_table_meta(
         ));
     }
     let bytes = text.as_bytes();
-    parse_table_meta(tree.root_node(), bytes, want, source)
+    parse_table_meta(tree.root_node(), bytes, &want, source)
         .map_err(|reason| format!("invalid metadata for record table '{want}': {reason}"))
 }
 
@@ -453,7 +454,7 @@ fn find_table_object<'a>(root: Node<'a>, source: &[u8], want: &str) -> Option<No
 fn object_name_of(obj: Node<'_>, source: &[u8]) -> Option<String> {
     obj.child_by_field_name("name")
         .and_then(|n| n.utf8_text(source).ok())
-        .map(|t| t.trim().trim_matches('"').to_string())
+        .map(|t| t.unquote_identifier().into_owned())
 }
 
 /// Get the `body` object_body of the `object_section` whose keyword equals `kw`.
@@ -562,7 +563,7 @@ fn parse_field_def(
                     child
                         .utf8_text(source)
                         .map_err(|error| format!("field name is not UTF-8: {error}"))?
-                        .trim_matches('"')
+                        .unquote_identifier()
                         .to_string(),
                 );
             }
@@ -671,7 +672,7 @@ fn option_field_default(
     if base_type.eq_ignore_ascii_case("option") {
         let member = option_members
             .and_then(|members| members.split(',').next())
-            .map(|m| m.trim().trim_matches('"').to_string())
+            .map(|m| m.unquote_identifier().into_owned())
             .unwrap_or_default();
         return Some(Value::Option {
             type_name: String::new(),
@@ -709,7 +710,7 @@ fn enum_member_with_ordinal_zero(
                 return node
                     .child_by_field_name("name")
                     .and_then(|name| name.utf8_text(bytes).ok())
-                    .map(|name| name.trim().trim_matches('"').to_string());
+                    .map(|name| name.unquote_identifier().into_owned());
             }
             continue;
         }
@@ -754,7 +755,7 @@ fn parse_key_fields(key: Node<'_>, source: &[u8]) -> Result<Vec<String>, String>
         let text = child
             .utf8_text(source)
             .map_err(|error| format!("primary-key field name is not UTF-8: {error}"))?;
-        names.push(text.trim_matches('"').to_string());
+        names.push(text.unquote_identifier().into_owned());
     }
     Ok(names)
 }
@@ -785,6 +786,9 @@ pub fn supports_record_method(method: &str) -> bool {
             | "setcurrentkey"
             | "deleteall"
             | "calcfields"
+            | "calcsums"
+            | "modifyall"
+            | "ascending"
     )
 }
 
@@ -820,6 +824,15 @@ pub(crate) fn dispatch_record_method(
     // field-name nodes are never evaluated as variables.
     if lower == "calcfields" {
         return dispatch_calcfields(table, handle, &nodes, source, ctx);
+    }
+    // CalcSums takes field names too, and totals each over the rows the
+    // view's filters select, into the buffer.
+    if lower == "calcsums" {
+        return dispatch_calcsums(table, handle, &nodes, source, ctx);
+    }
+    // ModifyAll(Field, Value[, RunTrigger]): the first argument names a field.
+    if lower == "modifyall" {
+        return dispatch_modifyall(table, handle, &nodes, source, stack, ctx);
     }
 
     // SetCurrentKey takes only field references. Handle it before the general
@@ -956,6 +969,14 @@ fn run_record_method(
             store.record.reset_in(view);
             Eval::Normal(Value::Empty)
         }
+        "ascending" => match values.as_slice() {
+            [] => Eval::Normal(Value::Boolean(store.record.is_ascending_in(view))),
+            [Value::Boolean(ascending)] => {
+                store.record.set_ascending_in(view, *ascending);
+                Eval::Normal(Value::Boolean(*ascending))
+            }
+            _ => eval_error("Ascending expects an optional Boolean"),
+        },
         "insert" => match optional_boolean("Insert", &values) {
             Ok(run_trigger) => mutation_result("Insert", store.record.insert_in(view, run_trigger)),
             Err(error) => eval_error(error),
@@ -1186,6 +1207,96 @@ pub(crate) fn field_get(
     Eval::Normal(read_buffer_field(store, handle, f))
 }
 
+/// `Rec.ModifyAll(Field, Value[, RunTrigger])` — set `Field` on every row the
+/// view's filters select.
+fn dispatch_modifyall(
+    table: &TableRef,
+    handle: u64,
+    nodes: &[Node<'_>],
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    let (field_node, value_node) = match nodes {
+        [field, value] | [field, value, _] => (*field, *value),
+        _ => return eval_error("ModifyAll expects (Field, Value[, RunTrigger])"),
+    };
+    let value = match eval_expr(value_node, source, stack, ctx) {
+        Eval::Normal(value) => value,
+        other => return other,
+    };
+    let run_trigger = match nodes.get(2) {
+        None => false,
+        Some(node) => match eval_expr(*node, source, stack, ctx) {
+            Eval::Normal(Value::Boolean(flag)) => flag,
+            Eval::Normal(_) => return eval_error("ModifyAll: RunTrigger must be a Boolean"),
+            other => return other,
+        },
+    };
+    let key = match ensure_store(ctx, table) {
+        Ok(k) => k,
+        Err(e) => return eval_error(e),
+    };
+    let store = ctx.records.get_mut(&key).expect("store just ensured");
+    let field_no = match store.resolve_field(&node_text(field_node, source)) {
+        Ok(field_no) => field_no,
+        Err(error) => return eval_error(format!("ModifyAll: {error}")),
+    };
+    let value = match store.coerce_to_field(field_no, value) {
+        Ok(value) => value,
+        Err(error) => return eval_error(format!("ModifyAll: {error}")),
+    };
+    let view = store.take_view(handle);
+    let result = store
+        .record
+        .modify_all_in(&view, field_no, value, run_trigger);
+    store.put_view(handle, view);
+    match result {
+        Ok(_) => Eval::Normal(Value::Empty),
+        Err(error) => eval_error(format!("ModifyAll: {error}")),
+    }
+}
+
+fn dispatch_calcsums(
+    table: &TableRef,
+    handle: u64,
+    nodes: &[Node<'_>],
+    source: &[u8],
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    if nodes.is_empty() {
+        return eval_error("CalcSums: requires at least one field");
+    }
+    let key = match ensure_store(ctx, table) {
+        Ok(k) => k,
+        Err(e) => return eval_error(e),
+    };
+    let store = ctx.records.get_mut(&key).expect("store just ensured");
+    let mut view = store.take_view(handle);
+    for node in nodes {
+        let name = node_text(*node, source);
+        let result = store
+            .resolve_field(&name)
+            .map_err(|error| format!("CalcSums: {error}"))
+            .and_then(|field_no| {
+                store
+                    .record
+                    .calc_sum_in(&view, field_no)
+                    .map(|total| (field_no, total))
+                    .map_err(|error| format!("CalcSums: {error}"))
+            });
+        match result {
+            Ok((field_no, total)) => store.record.field_set_in(&mut view, field_no, total),
+            Err(error) => {
+                store.put_view(handle, view);
+                return eval_error(error);
+            }
+        }
+    }
+    store.put_view(handle, view);
+    Eval::Normal(Value::Empty)
+}
+
 /// `Rec.CalcFields(F1, F2, …)` — evaluate each named FlowField and store the
 /// result into the current buffer. Non-FlowField (or unparseable) args are
 /// ignored, matching BC's tolerance of explicitly-listed normal fields.
@@ -1408,7 +1519,7 @@ pub(crate) fn record_field_access(node: Node<'_>, source: &[u8]) -> Option<(Stri
     let recv = pf
         .child(0)
         .and_then(|n| n.utf8_text(source).ok())
-        .map(|t| t.trim_matches('"').to_string())?;
+        .map(|t| t.unquote_identifier().into_owned())?;
     let member_node = suffix.child_by_field_name("member").or_else(|| {
         let mut c = suffix.walk();
         let found = suffix
@@ -1418,7 +1529,7 @@ pub(crate) fn record_field_access(node: Node<'_>, source: &[u8]) -> Option<(Stri
     });
     let field = member_node
         .and_then(|n| n.utf8_text(source).ok())
-        .map(|t| t.trim_matches('"').to_string())?;
+        .map(|t| t.unquote_identifier().into_owned())?;
     Some((recv, field))
 }
 
@@ -1440,7 +1551,7 @@ fn descend_to_postfix(node: Node<'_>) -> Option<Node<'_>> {
 pub fn supports_list_method(method: &str) -> bool {
     matches!(
         method.to_ascii_lowercase().as_str(),
-        "add" | "get" | "count" | "contains" | "indexof" | "remove" | "removeat" | "set"
+        "add" | "get" | "count" | "contains" | "indexof" | "insert" | "remove" | "removeat" | "set"
     )
 }
 
@@ -1518,6 +1629,26 @@ pub(crate) fn dispatch_list_method(
             Err(error) => eval_error(error),
         },
         "set" => eval_error("List.Set expects exactly an Integer index and one value"),
+        // `Insert(index, value)`: 1-based, up to one past the end.
+        "insert" => match args.as_slice() {
+            [Value::Integer(index), value] => {
+                let position = index
+                    .checked_sub(1)
+                    .and_then(|index| usize::try_from(index).ok())
+                    .filter(|index| *index <= items.len());
+                match position {
+                    Some(position) => {
+                        items.insert(position, value.clone());
+                        Eval::Normal(Value::Boolean(true))
+                    }
+                    None => eval_error(format!(
+                        "List.Insert: index {index} out of range 1..{}",
+                        items.len() + 1
+                    )),
+                }
+            }
+            _ => eval_error("List.Insert expects an Integer index and one value"),
+        },
         other => eval_error(format!("unsupported List method: {other}")),
     }
 }
@@ -1553,6 +1684,9 @@ pub fn supports_text_method(method: &str) -> bool {
             | "tolower"
             | "toupper"
             | "substring"
+            | "padleft"
+            | "padright"
+            | "remove"
     )
 }
 
@@ -1708,20 +1842,89 @@ pub(crate) fn dispatch_text_method(
                 }
             }
         }
+        // `PadLeft(count[, char])`: pad to `count` characters; a longer
+        // text is returned unchanged.
+        "padleft" | "padright" => {
+            let (count, pad) = match args.as_slice() {
+                [Value::Integer(count)] => (*count, ' '),
+                [Value::Integer(count), pad] => match text_arg(pad).as_deref().map(str::chars) {
+                    Some(mut chars) => match (chars.next(), chars.next()) {
+                        (Some(pad), None) => (*count, pad),
+                        _ => {
+                            return eval_error(format!(
+                                "Text.{method}: the pad must be one character"
+                            ))
+                        }
+                    },
+                    None => return eval_error(format!("Text.{method} expects (Integer[, Char])")),
+                },
+                _ => return eval_error(format!("Text.{method} expects (Integer[, Char])")),
+            };
+            let missing = usize::try_from(count)
+                .unwrap_or(0)
+                .saturating_sub(s.chars().count());
+            let padding: String = std::iter::repeat_n(pad, missing).collect();
+            Eval::Normal(Value::Text(if lower == "padleft" {
+                padding + &s
+            } else {
+                s + &padding
+            }))
+        }
+        // `Remove(start[, count])`: 1-based, to the end without `count`.
+        "remove" => {
+            let chars: Vec<char> = s.chars().collect();
+            let (start, count) = match args.as_slice() {
+                [Value::Integer(start)] => (*start, None),
+                [Value::Integer(start), Value::Integer(count)] => (*start, Some(*count)),
+                _ => return eval_error("Text.Remove expects (Integer[, Integer])"),
+            };
+            if start < 1 || start as usize > chars.len() {
+                return eval_error(format!(
+                    "Text.Remove: start position {start} is out of range for a {}-character string",
+                    chars.len()
+                ));
+            }
+            let zero = start as usize - 1;
+            let end = match count {
+                None => chars.len(),
+                Some(count) if count >= 0 && zero + count as usize <= chars.len() => {
+                    zero + count as usize
+                }
+                Some(count) => {
+                    return eval_error(format!(
+                        "Text.Remove: {count} characters from position {start} exceed the string length {}",
+                        chars.len()
+                    ))
+                }
+            };
+            Eval::Normal(Value::Text(
+                chars[..zero].iter().chain(&chars[end..]).collect(),
+            ))
+        }
         other => eval_error(format!("unsupported Text method: {other}")),
     }
 }
 
 /// True if `method` is a `Dictionary of [K, V]` method implemented by the
-/// local runtime. `Get` is intentionally absent: its common two-argument
-/// `var`-out form needs by-reference write-back the builtin path does not
-/// have, so Dictionary reads route to live BC (the one-argument returning
-/// form still executes if a body reaches the interpreter).
+/// local runtime.
 pub fn supports_dict_method(method: &str) -> bool {
     matches!(
         method.to_ascii_lowercase().as_str(),
-        "add" | "set" | "containskey" | "remove" | "count" | "keys" | "values"
+        "add" | "get" | "set" | "containskey" | "remove" | "count" | "keys" | "values"
     )
+}
+
+/// The value `recv` holds under `key`, for the two-argument
+/// `Dictionary.Get(key, var value)`, which writes it back to its caller.
+pub(crate) fn dict_lookup(
+    recv: &str,
+    key: &Value,
+    stack: &ScopeStack,
+) -> Result<Option<Value>, String> {
+    let Some(Value::Dict(entries)) = stack.lookup(recv) else {
+        return Err(format!("'{recv}' is not a Dictionary"));
+    };
+    Ok(entries.get(&dict_key(key)?).cloned())
 }
 
 /// Serialise a dictionary key value into the `Dict` map's string key space.
@@ -1879,7 +2082,30 @@ pub(crate) fn default_for_structured(type_text: &str) -> Option<Value> {
     if lower == "variant" {
         return Some(Value::Variant(Box::new(Value::Null)));
     }
-    None
+    if let Some(array) = default_for_array(trimmed) {
+        return Some(array);
+    }
+    crate::interpreter::enums::default_enum_value(trimmed)
+}
+
+/// `array[N] of T` with a scalar `T`: `N` default elements. Several
+/// dimensions (`array[2, 3]`) are left unbound, as are arrays of records.
+fn default_for_array(type_text: &str) -> Option<Value> {
+    let rest = strip_keyword(type_text, "array")?.trim_start();
+    let rest = rest.strip_prefix('[')?;
+    let close = rest.find(']')?;
+    let length: usize = rest[..close].trim().parse().ok()?;
+    let element = strip_keyword(rest[close + 1..].trim_start(), "of")?.trim();
+    let base = element.split('[').next()?.trim();
+    let default = Value::default_for(base)?;
+    Some(Value::Array(vec![default; length]))
+}
+
+/// `text` after a leading `keyword`, compared without case.
+fn strip_keyword<'a>(text: &'a str, keyword: &str) -> Option<&'a str> {
+    text.get(..keyword.len())
+        .filter(|head| head.eq_ignore_ascii_case(keyword))
+        .map(|_| &text[keyword.len()..])
 }
 
 /// Extract the subtype name following a leading keyword, stripping quotes.
@@ -1933,8 +2159,7 @@ fn unquote_subtype(raw: &str) -> String {
 fn node_text(node: Node<'_>, source: &[u8]) -> String {
     node.utf8_text(source)
         .unwrap_or("")
-        .trim()
-        .trim_matches('"')
+        .unquote_identifier()
         .to_string()
 }
 

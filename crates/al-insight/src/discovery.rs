@@ -105,6 +105,7 @@ pub fn subscribers_of(graph: &InsightGraph, query: &str) -> Vec<MatchedSubscribe
                 name,
                 target_object,
                 target_event,
+                ..
             } = &graph.graph[idx]
             else {
                 continue;
@@ -198,6 +199,7 @@ pub fn discover_events(graph: &InsightGraph) -> EventDiscoveryResult {
                     name,
                     target_object,
                     target_event,
+                    ..
                 } => (
                     object_kind.to_string(),
                     object_name.clone(),
@@ -321,22 +323,11 @@ mod tests {
 
     fn base_entry(kind: ObjectKind, id: i32, name: &str) -> SymbolEntry {
         SymbolEntry {
-            synthetic: false,
             kind,
             id,
             name: name.to_string(),
-            extends: None,
-            implements: Vec::new(),
-            namespace: String::new(),
             package: "TestPkg".to_string(),
-            methods: Vec::new(),
-            fields: Vec::new(),
-            controls: Vec::new(),
-            enum_values: Vec::new(),
-            keys: Vec::new(),
-            properties: Vec::new(),
-            permissions: Vec::new(),
-            variables: Vec::new(),
+            ..Default::default()
         }
     }
 

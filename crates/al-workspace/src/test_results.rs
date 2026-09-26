@@ -157,22 +157,12 @@ impl TestResultStore {
 
 fn canonical_path_for(project_root: &std::path::Path) -> Result<PathBuf, PersistenceError> {
     let hash = short_hash(project_root.to_string_lossy().as_bytes());
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| {
-                let mut p = PathBuf::from(h);
-                p.push(".local");
-                p.push("share");
-                p
-            })
-        })
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "neither XDG_DATA_HOME nor HOME is set",
-            )
-        })?;
+    let base = al_project::project::user_data_dir().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no per-user data directory: set XDG_DATA_HOME or HOME (LOCALAPPDATA on Windows)",
+        )
+    })?;
     let mut path = base;
     path.push("al-lsp");
     path.push(hash);

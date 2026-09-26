@@ -1,5 +1,6 @@
 //! Event-subscriber conversion and tooltip-move source actions.
 
+use al_syntax::IdentifierText;
 use url::Url;
 
 use super::{annotation_edit, detect_object_kind, single_edit_ws, strip_literals_and_comment};
@@ -205,7 +206,7 @@ fn table_field_name(args: &str) -> Option<String> {
         None => source,
     };
     let bare = bare.trim();
-    let name = bare.trim_matches('"').trim();
+    let name = bare.unquote_identifier();
     if name.is_empty() {
         return None;
     }
@@ -248,7 +249,7 @@ fn page_source_table(text: &str) -> Option<String> {
             .trim()
             .trim_end_matches(';')
             .trim();
-        let value = value.trim_matches('"').trim();
+        let value = value.unquote_identifier();
         if !value.is_empty() {
             return Some(value.to_string());
         }
@@ -272,8 +273,7 @@ fn find_table_field_declaration(table_text: &str, field_name: &str) -> Option<u3
             continue;
         };
         if name_part
-            .trim()
-            .trim_matches('"')
+            .unquote_identifier()
             .eq_ignore_ascii_case(field_name)
         {
             return Some(index as u32);

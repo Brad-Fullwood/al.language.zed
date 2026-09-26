@@ -125,6 +125,24 @@ fn sort_body<'a>(body_lines: &[&'a str]) -> Vec<&'a str> {
         return body_lines.to_vec();
     }
 
+    // A member absorbs the blank lines after it. Moving those with the member
+    // put two procedures against each other and left a blank line against the
+    // closing brace, so the trailing blanks stay where they were: the i-th
+    // member emitted gets the separator that followed the i-th member in the
+    // source.
+    let mut separators: Vec<Vec<&str>> = Vec::with_capacity(members.len());
+    let members: Vec<Vec<&str>> = members
+        .into_iter()
+        .map(|mut member| {
+            let content_len = member
+                .iter()
+                .rposition(|line| !line.trim().is_empty())
+                .map_or(0, |last| last + 1);
+            separators.push(member.split_off(content_len));
+            member
+        })
+        .collect();
+
     // `var` and `protected var` blocks all hoist to the top, keeping their
     // relative source order. (An object may legally declare both.)
     let mut var_blocks: Vec<Vec<&str>> = Vec::new();
@@ -164,18 +182,15 @@ fn sort_body<'a>(body_lines: &[&'a str]) -> Vec<&'a str> {
     triggers.sort_by_key(|a| a.0.to_lowercase());
     procedures.sort_by_key(|a| a.0.to_lowercase());
 
+    let ordered = var_blocks
+        .into_iter()
+        .chain(triggers.into_iter().map(|(_, member)| member))
+        .chain(procedures.into_iter().map(|(_, member)| member))
+        .chain(other);
     let mut sorted: Vec<&str> = Vec::with_capacity(body_lines.len());
-    for member in var_blocks {
+    for (member, separator) in ordered.zip(separators) {
         sorted.extend(member);
-    }
-    for (_, member) in triggers {
-        sorted.extend(member);
-    }
-    for (_, member) in procedures {
-        sorted.extend(member);
-    }
-    for member in other {
-        sorted.extend(member);
+        sorted.extend(separator);
     }
     sorted
 }
@@ -485,17 +500,17 @@ mod multi_object_tests {
                      \x20   begin\n\
                      \x20   end;\n\
                      }\n";
-        // A member owns the blank line that follows it, so the separator
-        // travels with the member that moved.
+        // The blank line between two members stays between them when the
+        // members swap.
         let expected = "codeunit 50100 A\n\
                         {\n\
                         \x20   procedure Mango()\n\
                         \x20   begin\n\
                         \x20   end;\n\
+                        \n\
                         \x20   procedure Zebra()\n\
                         \x20   begin\n\
                         \x20   end;\n\
-                        \n\
                         }\n\
                         \n\
                         codeunit 50101 B\n\
@@ -503,10 +518,10 @@ mod multi_object_tests {
                         \x20   procedure Alpha()\n\
                         \x20   begin\n\
                         \x20   end;\n\
+                        \n\
                         \x20   procedure Delta()\n\
                         \x20   begin\n\
                         \x20   end;\n\
-                        \n\
                         }\n";
 
         let sorted = sort_members(input).expect("should sort");
@@ -557,10 +572,10 @@ mod multi_object_tests {
                         \x20   procedure Bravo()\n\
                         \x20   begin\n\
                         \x20   end;\n\
+                        \n\
                         \x20   procedure Yankee()\n\
                         \x20   begin\n\
                         \x20   end;\n\
-                        \n\
                         }\n\
                         \n\
                         codeunit 50102 C\n\
@@ -568,10 +583,10 @@ mod multi_object_tests {
                         \x20   procedure Charlie()\n\
                         \x20   begin\n\
                         \x20   end;\n\
+                        \n\
                         \x20   procedure Xray()\n\
                         \x20   begin\n\
                         \x20   end;\n\
-                        \n\
                         }\n";
 
         let sorted = sort_members(input).expect("should sort");
@@ -612,11 +627,11 @@ mod multi_object_tests {
                         \x20   begin\n\
                         \x20       // }\n\
                         \x20   end;\n\
+                        \n\
                         \x20   procedure Zebra()\n\
                         \x20   begin\n\
                         \x20       Message('}');\n\
                         \x20   end;\n\
-                        \n\
                         }\n\
                         \n\
                         codeunit 50101 B\n\
@@ -624,11 +639,11 @@ mod multi_object_tests {
                         \x20   procedure Bravo()\n\
                         \x20   begin\n\
                         \x20   end;\n\
+                        \n\
                         \x20   procedure Yankee()\n\
                         \x20   begin\n\
                         \x20       Message('{');\n\
                         \x20   end;\n\
-                        \n\
                         }\n";
 
         let sorted = sort_members(input).expect("should sort");
@@ -712,6 +727,16 @@ mod tests {
         let zebra_pos = result.find("procedure Zebra").expect("should have Zebra");
         assert!(apple_pos < mango_pos, "Apple before Mango");
         assert!(mango_pos < zebra_pos, "Mango before Zebra");
+    }
+
+    #[test]
+    fn the_blank_line_between_members_stays_between_them() {
+        let input = "codeunit 50100 Probe\n{\n    procedure Zebra()\n    begin\n    end;\n\n    procedure Mango()\n    begin\n    end;\n}\n";
+        let result = sort_members(input).expect("should sort");
+        assert_eq!(
+            result,
+            "codeunit 50100 Probe\n{\n    procedure Mango()\n    begin\n    end;\n\n    procedure Zebra()\n    begin\n    end;\n}\n"
+        );
     }
 
     /// Non-whitespace characters, sorted — sorting is a reordering, so this

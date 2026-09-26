@@ -15,7 +15,7 @@ pub enum TestSnapshotCommands {
         codeunit: i32,
         /// Test codeunit object name
         codeunit_name: String,
-        /// Exact [Test] method name
+        /// Exact name of the test method
         method: String,
         /// BC runtime version recorded in snapshot metadata
         #[arg(long)]

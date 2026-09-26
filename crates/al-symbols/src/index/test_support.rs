@@ -4,43 +4,22 @@ use crate::model::{ObjectKind, SymbolEntry};
 
 pub(super) fn make_entry(kind: ObjectKind, id: i32, name: &str) -> SymbolEntry {
     SymbolEntry {
-        synthetic: false,
         kind,
         id,
         name: name.to_string(),
-        extends: None,
-        implements: Vec::new(),
-        namespace: String::new(),
         package: "TestPkg".to_string(),
-        methods: Vec::new(),
-        fields: Vec::new(),
-        controls: Vec::new(),
-        enum_values: Vec::new(),
-        keys: Vec::new(),
-        properties: Vec::new(),
-        permissions: Vec::new(),
-        variables: Vec::new(),
+        ..Default::default()
     }
 }
 
 pub(super) fn make_extension(kind: ObjectKind, id: i32, name: &str, extends: &str) -> SymbolEntry {
     SymbolEntry {
-        synthetic: false,
         kind,
         id,
         name: name.to_string(),
         extends: Some(extends.to_string()),
-        implements: Vec::new(),
-        namespace: String::new(),
         package: "TestPkg".to_string(),
-        methods: Vec::new(),
-        fields: Vec::new(),
-        controls: Vec::new(),
-        enum_values: Vec::new(),
-        keys: Vec::new(),
-        properties: Vec::new(),
-        permissions: Vec::new(),
-        variables: Vec::new(),
+        ..Default::default()
     }
 }
 

@@ -4,16 +4,12 @@ use std::process::ExitCode;
 
 use crate::cli::commands::*;
 
-pub fn cmd_lint(file: Option<&str>, all: bool, analyzers: Option<&str>, json: bool) -> ExitCode {
+pub fn cmd_lint(file: Option<&str>, all: bool, json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
     let mut params = serde_json::json!({ "all": all });
-    if let Some(a) = analyzers {
-        let analyzer_list: Vec<&str> = a.split(',').map(|s| s.trim()).collect();
-        params["analyzers"] = serde_json::json!(analyzer_list);
-    }
     if let Some(f) = file {
         let uri = match file_to_uri(f) {
             Ok(uri) => uri,
@@ -400,6 +396,21 @@ fn print_position_query_human(method: &str, result: &serde_json::Value) {
                 );
             }
         }
+        "completions" => {
+            let items = list_rows(result)
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            for item in items {
+                let label = item["label"].as_str().unwrap_or("?");
+                match item["detail"].as_str().filter(|detail| !detail.is_empty()) {
+                    Some(detail) => println!("{label}  {detail}"),
+                    None => println!("{label}"),
+                }
+            }
+            eprintln!("\n{} completion(s)", items.len());
+        }
+        "signatureHelp" => print_signature_help(result),
         _ => {
             println!("Result:");
             println!(
@@ -408,14 +419,137 @@ fn print_position_query_human(method: &str, result: &serde_json::Value) {
             );
         }
     }
+    print_page_footer(result);
+}
+
+/// Each signature on its own line, the active one marked and its active
+/// parameter in brackets: `> SetTier(var Cust: Record Customer; [Tier: Code[10]])`.
+fn print_signature_help(result: &serde_json::Value) {
+    let active_signature = result["activeSignature"].as_u64().unwrap_or(0);
+    let signatures = result["signatures"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    for (index, signature) in signatures.iter().enumerate() {
+        let mut label = signature["label"].as_str().unwrap_or("?").to_string();
+        let active_parameter = signature["activeParameter"]
+            .as_u64()
+            .or_else(|| result["activeParameter"].as_u64());
+        let parameter = active_parameter
+            .and_then(|active| signature["parameters"].get(active as usize))
+            .and_then(|parameter| parameter["label"].as_str());
+        if let Some(parameter) = parameter
+            && let Some(start) = label.find(parameter)
+        {
+            label.replace_range(start..start + parameter.len(), &format!("[{parameter}]"));
+        }
+        let marker = if index as u64 == active_signature {
+            ">"
+        } else {
+            " "
+        };
+        println!("{marker} {label}");
+    }
 }
 
 pub fn cmd_symbols(file: &str, json: bool) -> ExitCode {
-    cmd_file_query("documentSymbols", file, json)
+    if json {
+        return cmd_file_query("documentSymbols", file, json);
+    }
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+    let uri = match file_to_uri(file) {
+        Ok(uri) => uri,
+        Err(error) => return report_error(&error, json),
+    };
+    match request_checked(
+        &mut client,
+        "documentSymbols",
+        Some(serde_json::json!({ "uri": uri })),
+    ) {
+        Ok(result) => {
+            let outline = render_outline(list_rows(&result));
+            if outline.is_empty() {
+                eprintln!("No symbols in {file}");
+            } else {
+                print!("{outline}");
+                print_page_footer(&result);
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+/// Document symbols as an indented outline, one symbol per line with its
+/// 1-based line: `Method SetTier(var Cust: Record Customer)  :3`.
+fn render_outline(symbols: &serde_json::Value) -> String {
+    fn walk(symbols: &serde_json::Value, depth: usize, out: &mut String) {
+        for symbol in symbols.as_array().into_iter().flatten() {
+            let kind = symbol["kind"].as_str().unwrap_or("Symbol");
+            let name = symbol["name"].as_str().unwrap_or("?");
+            let detail = symbol["detail"].as_str().unwrap_or("");
+            let line = symbol["range"]["start"]["line"]
+                .as_u64()
+                .map_or(0, |l| l + 1);
+            let separator = if detail.starts_with('(') || detail.is_empty() {
+                ""
+            } else {
+                " "
+            };
+            out.push_str(&format!(
+                "{:indent$}{kind} {name}{separator}{detail}  :{line}\n",
+                "",
+                indent = depth * 2
+            ));
+            walk(&symbol["children"], depth + 1, out);
+        }
+    }
+    let mut out = String::new();
+    walk(symbols, 0, &mut out);
+    out
 }
 
 pub fn cmd_folding(file: &str, json: bool) -> ExitCode {
-    cmd_file_query("foldingRanges", file, json)
+    if json {
+        return cmd_file_query("foldingRanges", file, json);
+    }
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+    let uri = match file_to_uri(file) {
+        Ok(uri) => uri,
+        Err(error) => return report_error(&error, json),
+    };
+    match request_checked(
+        &mut client,
+        "foldingRanges",
+        Some(serde_json::json!({ "uri": uri })),
+    ) {
+        Ok(result) => {
+            let ranges = list_rows(&result)
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            if ranges.is_empty() {
+                eprintln!("No folding ranges in {file}");
+            } else {
+                // 1-based, as the command's input and every other text output.
+                for range in ranges {
+                    let start = range["startLine"].as_u64().map_or(0, |line| line + 1);
+                    let end = range["endLine"].as_u64().map_or(0, |line| line + 1);
+                    let kind = range["kind"].as_str().unwrap_or("region");
+                    println!("{start}-{end}  {kind}");
+                }
+                print_page_footer(&result);
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
 }
 
 pub fn cmd_tokens(file: &str, json: bool) -> ExitCode {
@@ -801,6 +935,31 @@ mod exit_status_tests {
         assert_eq!(
             rename_exit_code(&serde_json::json!({"changes": {}})),
             ExitCode::SUCCESS
+        );
+    }
+}
+
+#[cfg(test)]
+mod outline_tests {
+    use super::render_outline;
+
+    #[test]
+    fn outline_indents_children_and_shows_one_based_lines() {
+        let symbols = serde_json::json!([{
+            "name": "Loyalty Mgt",
+            "detail": "codeunit 50101",
+            "kind": "Class",
+            "range": { "start": { "line": 0, "character": 0 } },
+            "children": [{
+                "name": "SetTier",
+                "detail": "(var Cust: Record Customer)",
+                "kind": "Method",
+                "range": { "start": { "line": 2, "character": 4 } }
+            }]
+        }]);
+        assert_eq!(
+            render_outline(&symbols),
+            "Class Loyalty Mgt codeunit 50101  :1\n  Method SetTier(var Cust: Record Customer)  :3\n"
         );
     }
 }

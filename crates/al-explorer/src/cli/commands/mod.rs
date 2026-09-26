@@ -220,6 +220,12 @@ pub fn connect(project_dir: Option<&str>) -> Result<DaemonClient, String> {
                     "{e}\n\nHint: Is the daemon running? Start it with: al-lsp daemon --project {}",
                     root.display()
                 )
+            } else if e.contains("Invalid app.json at") {
+                format!(
+                    "{e}\n\nHint: no valid AL project was found from {}, and the app.json named \
+                     above could not be read as one. Run the command from the AL project directory.",
+                    root.display()
+                )
             } else if e.contains("app.json") {
                 format!(
                     "{e}\n\nHint: No AL project found. Ensure app.json exists in {}",
@@ -454,11 +460,36 @@ where
                 print_json(&result);
             } else {
                 format_fn(&result);
+                print_page_footer(&result);
             }
             exit_code
         }
         Err(e) => report_error(&e, json),
     }
+}
+
+/// Under `--limit`, the text formatters count the rows they were given, so
+/// `Entry points (3 found)` hid 27,070 more. Say what the page is.
+pub(crate) fn print_page_footer(result: &serde_json::Value) {
+    if result.get("truncated").and_then(serde_json::Value::as_bool) != Some(true) {
+        return;
+    }
+    let (Some(total), Some(returned)) = (
+        result.get("total").and_then(serde_json::Value::as_u64),
+        result.get("returned").and_then(serde_json::Value::as_u64),
+    ) else {
+        return;
+    };
+    let offset = result
+        .get("offset")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    println!(
+        "\n(showing {} to {} of {total}; --offset {} for the next page)",
+        offset + 1,
+        offset + returned,
+        offset + returned
+    );
 }
 
 /// The global `--limit`, `--offset`, `--fields` and `--scope` for this
@@ -521,8 +552,16 @@ fn with_projection(params: Option<serde_json::Value>) -> Option<serde_json::Valu
 /// prints the whole envelope, because `total` and `truncated` are the part an
 /// agent needs.
 pub fn list_rows(result: &serde_json::Value) -> &serde_json::Value {
+    // Two envelopes wrap a list: projection (`--limit`/`--offset`) adds
+    // `total`, and `--scope` adds `scope`. Unwrapping only the first made
+    // `--scope workspace entrypoints` fail its own response check.
     match result.get("items") {
-        Some(items) if items.is_array() && result.get("total").is_some() => items,
+        Some(items)
+            if items.is_array()
+                && (result.get("total").is_some() || result.get("scope").is_some()) =>
+        {
+            items
+        }
         _ => result,
     }
 }
@@ -577,6 +616,27 @@ fn params_with_text(
     Some(retry)
 }
 
+/// Say so when `--limit`, `--offset` or `--fields` came back as a whole,
+/// unpaged list: the daemon has no list target for the method, and the
+/// flags used to be dropped without a word.
+fn warn_if_not_projected(
+    method: &str,
+    sent: Option<&serde_json::Value>,
+    result: &serde_json::Value,
+) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let asked = sent.is_some_and(|params| {
+        ["limit", "offset", "fields"]
+            .iter()
+            .any(|key| params.get(key).is_some())
+    });
+    if asked && result.is_array() && !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!(
+            "warning: --limit, --offset and --fields do not apply to `{method}`; the whole result is shown"
+        );
+    }
+}
+
 /// Whether the request narrowed each row to a chosen set of keys.
 fn asked_for_fields(params: Option<&serde_json::Value>) -> bool {
     params
@@ -604,11 +664,15 @@ pub fn request_checked(
                 // error for getting one.
                 if !asked_for_fields(sent.as_ref()) {
                     let checked = list_rows(&result).clone();
-                    if response_contract::handles(method) {
-                        response_contract::validate(method, sent.as_ref(), &checked)?;
-                    } else {
-                        validate_run_command_result(method, &checked)?;
-                    }
+                    response_contract::validate(method, sent.as_ref(), &checked)?;
+                }
+                warn_if_not_projected(method, sent.as_ref(), &result);
+                if let Some(absent) = result.get("absentFields").and_then(|v| v.as_array()) {
+                    let names: Vec<&str> = absent.iter().filter_map(|v| v.as_str()).collect();
+                    eprintln!(
+                        "note: no row has {}; those fields are left out",
+                        names.join(", ")
+                    );
                 }
                 return Ok(result);
             }
@@ -630,449 +694,6 @@ fn explain_path_refusal(error: &str) -> String {
         )
     } else {
         error.to_string()
-    }
-}
-
-fn validate_run_command_result(method: &str, result: &serde_json::Value) -> Result<(), String> {
-    let response_error = |expected: &str| {
-        format!(
-            "daemon returned an invalid response for '{method}': expected {expected}, got {}",
-            json_type_name(result)
-        )
-    };
-    match method {
-        "entrypoints" => validate_array_object_fields(
-            result,
-            method,
-            &[
-                ("type", JsonFieldKind::String),
-                ("object_name", JsonFieldKind::String),
-                ("name", JsonFieldKind::String),
-            ],
-        )?,
-        "obsolete" => validate_array_object_fields(
-            result,
-            method,
-            &[
-                ("kind", JsonFieldKind::String),
-                ("object", JsonFieldKind::String),
-                ("symbol", JsonFieldKind::String),
-                ("state", JsonFieldKind::String),
-                ("callerCount", JsonFieldKind::Unsigned),
-            ],
-        )?,
-        "audit.dataClassification" => validate_array_object_fields(
-            result,
-            method,
-            &[
-                ("table", JsonFieldKind::String),
-                ("field", JsonFieldKind::String),
-                ("classification", JsonFieldKind::String),
-                ("risk", JsonFieldKind::String),
-            ],
-        )?,
-        "breaking" => validate_array_object_fields(
-            result,
-            method,
-            &[
-                ("kind", JsonFieldKind::String),
-                ("object", JsonFieldKind::String),
-                ("description", JsonFieldKind::String),
-                ("isBreaking", JsonFieldKind::Boolean),
-            ],
-        )?,
-        "arch.lint" => validate_array_object_fields(
-            result,
-            method,
-            &[
-                ("ruleId", JsonFieldKind::String),
-                ("message", JsonFieldKind::String),
-                ("object", JsonFieldKind::String),
-            ],
-        )?,
-        "nativeCheck" => validate_array_object_fields(
-            result,
-            method,
-            &[
-                ("code", JsonFieldKind::String),
-                ("severity", JsonFieldKind::String),
-                ("objectType", JsonFieldKind::String),
-                ("objectName", JsonFieldKind::String),
-                ("message", JsonFieldKind::String),
-            ],
-        )?,
-        "upgrade" => validate_array_object_fields(
-            result,
-            method,
-            &[
-                ("kind", JsonFieldKind::String),
-                ("object", JsonFieldKind::String),
-                ("description", JsonFieldKind::String),
-                ("migrationHint", JsonFieldKind::String),
-                ("severity", JsonFieldKind::String),
-            ],
-        )?,
-        "object" | "byId" => validate_array_object_fields(
-            result,
-            method,
-            &[
-                ("kind", JsonFieldKind::String),
-                ("id", JsonFieldKind::Integer),
-                ("name", JsonFieldKind::String),
-                ("package", JsonFieldKind::String),
-            ],
-        )?,
-        "sqlPatterns" => validate_array_object_fields(
-            result,
-            method,
-            &[
-                ("kind", JsonFieldKind::String),
-                ("message", JsonFieldKind::String),
-                ("object", JsonFieldKind::String),
-                ("procedure", JsonFieldKind::String),
-                ("line", JsonFieldKind::Unsigned),
-            ],
-        )?,
-        "rules" => validate_array_object_fields(
-            result,
-            method,
-            &[
-                ("code", JsonFieldKind::String),
-                ("severity", JsonFieldKind::String),
-                ("name", JsonFieldKind::String),
-                ("description", JsonFieldKind::String),
-            ],
-        )?,
-        "errorCodes" => validate_array_object_fields(
-            result,
-            method,
-            &[
-                ("code", JsonFieldKind::String),
-                ("description", JsonFieldKind::String),
-            ],
-        )?,
-        "builtinTypes" => validate_array_object_fields(
-            result,
-            method,
-            &[
-                ("name", JsonFieldKind::String),
-                ("methods", JsonFieldKind::Array),
-            ],
-        )?,
-        "tests.discover" => validate_array_object_fields(
-            result,
-            method,
-            &[
-                ("name", JsonFieldKind::String),
-                ("id", JsonFieldKind::Integer),
-                ("file", JsonFieldKind::String),
-                ("tests", JsonFieldKind::Array),
-                ("testInitializers", JsonFieldKind::Array),
-                ("testCleanups", JsonFieldKind::Array),
-            ],
-        )
-        .and_then(|()| validate_discovered_test_methods(result))?,
-        "insightStats" => {
-            require_object_field(result, "nodes", serde_json::Value::is_u64, "integer")?;
-            require_object_field(result, "edges", serde_json::Value::is_u64, "integer")?;
-        }
-        // `mode` selects which of the remaining fields are present, so it is
-        // the one field the formatter cannot do without.
-        "freeIds" => {
-            require_object_field(result, "mode", serde_json::Value::is_string, "string")?;
-            require_object_field(result, "usedCount", serde_json::Value::is_i64, "integer")?;
-        }
-        "xlf.generate" => {
-            require_object_field(result, "units", serde_json::Value::is_u64, "integer")?;
-            let path = result
-                .as_object()
-                .and_then(|object| object.get("path"))
-                .ok_or_else(|| response_error("an object with field 'path'"))?;
-            if !path.is_null() && !path.is_string() {
-                return Err(response_error("an object whose 'path' is a string or null"));
-            }
-        }
-        "xlf.refresh" => {
-            for field in ["added", "changed", "removed"] {
-                require_object_field(result, field, serde_json::Value::is_array, "array")?;
-            }
-            require_object_field(result, "preserved", serde_json::Value::is_u64, "integer")?;
-        }
-        "xlf.untranslated" => {
-            require_object_field(result, "count", serde_json::Value::is_u64, "integer")?;
-            require_object_field(result, "untranslated", serde_json::Value::is_array, "array")?;
-            validate_named_array_object_fields(
-                result,
-                "untranslated",
-                &[
-                    ("id", JsonFieldKind::String),
-                    ("source", JsonFieldKind::String),
-                ],
-            )?;
-        }
-        "xlf.suggest" => {
-            require_object_field(result, "count", serde_json::Value::is_u64, "integer")?;
-            require_object_field(result, "suggestions", serde_json::Value::is_array, "array")?;
-            validate_named_array_object_fields(
-                result,
-                "suggestions",
-                &[
-                    ("unit_id", JsonFieldKind::String),
-                    ("source", JsonFieldKind::String),
-                    ("suggested_translation", JsonFieldKind::String),
-                    ("confidence", JsonFieldKind::Number),
-                ],
-            )?;
-        }
-        "diag" => {
-            if !result.is_object() {
-                return Err(response_error("a diagnostic summary object"));
-            }
-        }
-        "tests.coverage" => {
-            require_object_field(result, "coverage", serde_json::Value::is_array, "array")?;
-            require_object_field(result, "untested", serde_json::Value::is_array, "array")?;
-        }
-        "tests.affected" => {
-            require_object_field(result, "affected", serde_json::Value::is_array, "array")?;
-            validate_named_array_object_fields(
-                result,
-                "affected",
-                &[
-                    ("codeunitName", JsonFieldKind::String),
-                    ("codeunitId", JsonFieldKind::Integer),
-                    ("methodName", JsonFieldKind::String),
-                    ("line", JsonFieldKind::Integer),
-                ],
-            )?;
-        }
-        "tests.classify" => {
-            require_object_field(
-                result,
-                "classifications",
-                serde_json::Value::is_array,
-                "array",
-            )?;
-            validate_named_array_object_fields(
-                result,
-                "classifications",
-                &[
-                    ("codeunitId", JsonFieldKind::Integer),
-                    ("codeunitName", JsonFieldKind::String),
-                    ("methodName", JsonFieldKind::String),
-                    ("decision", JsonFieldKind::String),
-                    ("runsLocally", JsonFieldKind::Boolean),
-                    ("execution", JsonFieldKind::String),
-                    ("reasons", JsonFieldKind::Array),
-                ],
-            )?;
-        }
-        "permissions.audit" => {
-            // `parseIssues` carries the clauses the audit could not read. A
-            // consumer that does not look at it calls a set clean when the
-            // clause took no part in any check.
-            for field in ["coverage", "overBroad", "overGrantedRights", "parseIssues"] {
-                require_object_field(result, field, serde_json::Value::is_array, "array")?;
-            }
-            validate_named_array_object_fields(
-                result,
-                "coverage",
-                &[
-                    ("kind", JsonFieldKind::String),
-                    ("id", JsonFieldKind::Integer),
-                    ("name", JsonFieldKind::String),
-                    ("covered", JsonFieldKind::Boolean),
-                    ("coveredBy", JsonFieldKind::Array),
-                ],
-            )?;
-            validate_named_array_object_fields(
-                result,
-                "overBroad",
-                &[
-                    ("permissionSet", JsonFieldKind::String),
-                    ("objectType", JsonFieldKind::String),
-                    ("object", JsonFieldKind::String),
-                    ("rights", JsonFieldKind::String),
-                    ("reason", JsonFieldKind::String),
-                ],
-            )?;
-            validate_named_array_object_fields(
-                result,
-                "overGrantedRights",
-                &[
-                    ("permissionSet", JsonFieldKind::String),
-                    ("objectType", JsonFieldKind::String),
-                    ("object", JsonFieldKind::String),
-                    ("grantedRights", JsonFieldKind::String),
-                    ("overGranted", JsonFieldKind::String),
-                    ("observedRights", JsonFieldKind::String),
-                    ("reason", JsonFieldKind::String),
-                ],
-            )?;
-            validate_named_array_object_fields(
-                result,
-                "parseIssues",
-                &[
-                    ("permissionSet", JsonFieldKind::String),
-                    ("file", JsonFieldKind::String),
-                    ("clause", JsonFieldKind::Integer),
-                    ("text", JsonFieldKind::String),
-                    ("reason", JsonFieldKind::String),
-                ],
-            )?;
-        }
-        "deps" => {
-            require_object_field(result, "project", serde_json::Value::is_object, "object")?;
-            require_object_field(result, "explicit", serde_json::Value::is_array, "array")?;
-            require_object_field(result, "all", serde_json::Value::is_array, "array")?;
-        }
-        _ => {
-            return Err(format!(
-                "CLI command '{method}' has no registered daemon response contract"
-            ));
-        }
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone, Copy)]
-enum JsonFieldKind {
-    String,
-    Integer,
-    Unsigned,
-    Number,
-    Boolean,
-    Array,
-}
-
-impl JsonFieldKind {
-    fn matches(self, value: &serde_json::Value) -> bool {
-        match self {
-            Self::String => value.is_string(),
-            Self::Integer => value.is_i64(),
-            Self::Unsigned => value.is_u64(),
-            Self::Number => value.is_number(),
-            Self::Boolean => value.is_boolean(),
-            Self::Array => value.is_array(),
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::String => "a string",
-            Self::Integer => "an integer",
-            Self::Unsigned => "a non-negative integer",
-            Self::Number => "a number",
-            Self::Boolean => "a boolean",
-            Self::Array => "an array",
-        }
-    }
-}
-
-fn validate_array_object_fields(
-    value: &serde_json::Value,
-    label: &str,
-    fields: &[(&str, JsonFieldKind)],
-) -> Result<(), String> {
-    let items = value
-        .as_array()
-        .ok_or_else(|| format!("daemon response for '{label}' must be an array"))?;
-    validate_object_items(items, label, fields)
-}
-
-fn validate_named_array_object_fields(
-    value: &serde_json::Value,
-    field: &str,
-    fields: &[(&str, JsonFieldKind)],
-) -> Result<(), String> {
-    let items = value
-        .as_object()
-        .and_then(|object| object.get(field))
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| format!("daemon response field '{field}' must be an array"))?;
-    validate_object_items(items, field, fields)
-}
-
-fn validate_discovered_test_methods(value: &serde_json::Value) -> Result<(), String> {
-    let codeunits = value
-        .as_array()
-        .ok_or_else(|| "daemon response for 'tests.discover' must be an array".to_string())?;
-    for (codeunit_index, codeunit) in codeunits.iter().enumerate() {
-        for field in ["tests", "testInitializers", "testCleanups"] {
-            let procedures = codeunit
-                .get(field)
-                .and_then(serde_json::Value::as_array)
-                .ok_or_else(|| {
-                    format!("tests.discover[{codeunit_index}].{field} must be an array")
-                })?;
-            validate_object_items(
-                procedures,
-                &format!("tests.discover[{codeunit_index}].{field}"),
-                &[
-                    ("name", JsonFieldKind::String),
-                    ("line", JsonFieldKind::Unsigned),
-                    ("handlerFunctions", JsonFieldKind::Array),
-                ],
-            )?;
-        }
-    }
-    Ok(())
-}
-
-fn validate_object_items(
-    items: &[serde_json::Value],
-    label: &str,
-    fields: &[(&str, JsonFieldKind)],
-) -> Result<(), String> {
-    for (index, item) in items.iter().enumerate() {
-        let object = item
-            .as_object()
-            .ok_or_else(|| format!("{label}[{index}] must be an object"))?;
-        for (field, kind) in fields {
-            let value = object
-                .get(*field)
-                .ok_or_else(|| format!("{label}[{index}] is missing required field '{field}'"))?;
-            if !kind.matches(value) {
-                return Err(format!(
-                    "{label}[{index}].{field} must be {}, got {}",
-                    kind.label(),
-                    json_type_name(value)
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn require_object_field(
-    value: &serde_json::Value,
-    field: &str,
-    predicate: fn(&serde_json::Value) -> bool,
-    expected_type: &str,
-) -> Result<(), String> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| format!("daemon response must be an object containing '{field}'"))?;
-    let field_value = object
-        .get(field)
-        .ok_or_else(|| format!("daemon response is missing required field '{field}'"))?;
-    if !predicate(field_value) {
-        return Err(format!(
-            "daemon response field '{field}' must be {expected_type}, got {}",
-            json_type_name(field_value)
-        ));
-    }
-    Ok(())
-}
-
-fn json_type_name(value: &serde_json::Value) -> &'static str {
-    match value {
-        serde_json::Value::Null => "null",
-        serde_json::Value::Bool(_) => "boolean",
-        serde_json::Value::Number(_) => "number",
-        serde_json::Value::String(_) => "string",
-        serde_json::Value::Array(_) => "array",
-        serde_json::Value::Object(_) => "object",
     }
 }
 
@@ -1214,7 +835,8 @@ mod lint_target_tests {
 
 #[cfg(test)]
 mod path_tests {
-    use super::{absolutize_path, validate_run_command_result};
+    use super::absolutize_path;
+    use super::response_contract::validate;
 
     #[test]
     fn absolutize_path_passes_through_absolute_paths() {
@@ -1246,6 +868,19 @@ mod path_tests {
     }
 
     #[test]
+    fn list_rows_unwraps_both_the_projection_and_the_scope_envelope() {
+        let rows = serde_json::json!([{ "name": "A" }]);
+        for envelope in [
+            serde_json::json!({ "items": rows, "total": 1 }),
+            serde_json::json!({ "items": rows, "scope": "workspace", "outOfScopeCount": 3 }),
+        ] {
+            assert_eq!(super::list_rows(&envelope), &rows, "{envelope}");
+        }
+        let object = serde_json::json!({ "items": 4, "scope": "x" });
+        assert_eq!(super::list_rows(&object), &object);
+    }
+
+    #[test]
     fn command_response_contract_rejects_clean_looking_wrong_shapes() {
         for (method, value) in [
             ("obsolete", serde_json::json!({})),
@@ -1264,7 +899,7 @@ mod path_tests {
             ),
         ] {
             assert!(
-                validate_run_command_result(method, &value).is_err(),
+                validate(method, None, &value).is_err(),
                 "{method} must reject {value}"
             );
         }
@@ -1291,14 +926,10 @@ mod path_tests {
         }
         assert!(!methods.is_empty());
         for method in methods {
-            // `request_checked` consults `response_contract` first, so a method
-            // it claims never reaches this fallback module.
-            if super::response_contract::handles(&method) {
-                continue;
-            }
             let probe = match method.as_str() {
                 "entrypoints"
                 | "obsolete"
+                | "obsoleteUsages"
                 | "audit.dataClassification"
                 | "breaking"
                 | "arch.lint"
@@ -1312,6 +943,12 @@ mod path_tests {
                 | "builtinTypes"
                 | "tests.discover" => serde_json::json!([]),
                 "insightStats" => serde_json::json!({"nodes": 0, "edges": 0}),
+                "packageDiff" => serde_json::json!({
+                    "totalChanges": 0,
+                    "breakingChanges": 0,
+                    "affectingWorkspace": 0,
+                    "changes": []
+                }),
                 "freeIds" => serde_json::json!({"mode": "summary", "usedCount": 0}),
                 "xlf.refresh" => {
                     serde_json::json!({
@@ -1329,15 +966,26 @@ mod path_tests {
                 "permissions.audit" => serde_json::json!({
                     "coverage": [],
                     "overBroad": [],
-                    "overGrantedRights": []
+                    "overGrantedRights": [],
+                    "parseIssues": []
                 }),
                 "deps" => serde_json::json!({"project": {}, "explicit": [], "all": []}),
                 "diag" => serde_json::json!({}),
                 "xlf.generate" => serde_json::json!({"path": null, "units": 0}),
-                other => panic!("run_command method has no test probe: {other}"),
+                // Contracts that need the request's parameters or a richer
+                // result than an empty one are exercised by the null probe:
+                // it must fail on the contract, not for want of one.
+                _ => {
+                    if let Err(error) = validate(&method, None, &serde_json::Value::Null) {
+                        assert!(
+                            !error.contains("no manual response contract is registered"),
+                            "{method} has no response contract"
+                        );
+                    }
+                    continue;
+                }
             };
-            validate_run_command_result(&method, &probe)
-                .unwrap_or_else(|error| panic!("{method}: {error}"));
+            validate(&method, None, &probe).unwrap_or_else(|error| panic!("{method}: {error}"));
         }
     }
 
@@ -1398,15 +1046,14 @@ mod path_tests {
         }
         assert!(methods.len() > 40, "unexpectedly few methods: {methods:#?}");
         for method in methods {
-            if super::response_contract::handles(&method) {
-                continue;
+            // Some contracts accept null (`definition` finding nothing);
+            // what must not happen is a method with no contract at all.
+            if let Err(error) = validate(&method, None, &serde_json::Value::Null) {
+                assert!(
+                    !error.contains("no manual response contract is registered"),
+                    "{method} bypasses response validation"
+                );
             }
-            let error = validate_run_command_result(&method, &serde_json::Value::Null)
-                .expect_err("a null probe must not satisfy a registered response contract");
-            assert!(
-                !error.contains("has no registered daemon response contract"),
-                "{method} bypasses response validation"
-            );
         }
 
         // The two generic query helpers receive these method names dynamically.
@@ -1433,15 +1080,14 @@ mod path_tests {
             "tests.run_batch",
             "tests.run_auto",
         ] {
-            if super::response_contract::handles(method) {
-                continue;
+            // Some contracts accept null (`definition` finding nothing);
+            // what must not happen is a method with no contract at all.
+            if let Err(error) = validate(method, None, &serde_json::Value::Null) {
+                assert!(
+                    !error.contains("no manual response contract is registered"),
+                    "{method} has no response contract"
+                );
             }
-            let error = validate_run_command_result(method, &serde_json::Value::Null)
-                .expect_err("a null probe must not satisfy a registered response contract");
-            assert!(
-                !error.contains("has no registered daemon response contract"),
-                "{method} has no response contract"
-            );
         }
     }
 }

@@ -7,6 +7,7 @@
 use crate::interpreter::records;
 use crate::interpreter::scope::CallFrame;
 use crate::interpreter::value::Value;
+use al_syntax::IdentifierText;
 
 /// Bind a procedure's local variables into `frame` exactly as workspace
 /// dispatch does: scalar `var`-section locals to their type defaults, then
@@ -97,7 +98,7 @@ pub(super) fn collect_return(
     let name = proc_node
         .child_by_field_name("return_var")
         .and_then(|n| n.utf8_text(source).ok())
-        .map(|t| t.trim().trim_matches('"').to_string())
+        .map(|t| t.unquote_identifier().into_owned())
         .filter(|t| !t.is_empty());
     Some(ReturnDecl { name, type_name })
 }
@@ -148,7 +149,7 @@ fn bind_structured_var_decl(reg: tree_sitter::Node<'_>, source: &[u8], frame: &m
             match rc.field_name() {
                 Some("name") => {
                     if let Ok(t) = rc.node().utf8_text(source) {
-                        names.push(t.trim_matches('"').to_string());
+                        names.push(t.unquote_identifier().into_owned());
                     }
                 }
                 Some("type") => {
@@ -220,7 +221,7 @@ pub(super) fn collect_params(proc_node: tree_sitter::Node<'_>, source: &[u8]) ->
         let Ok(name_text) = name_node.utf8_text(source) else {
             continue;
         };
-        let name = name_text.trim_matches('"').to_string();
+        let name = name_text.unquote_identifier().into_owned();
 
         // `var` (by-reference) modifier: the grammar puts an optional `kw_var`
         // token before the name. Check both the node kind and the raw text so
@@ -310,7 +311,7 @@ fn bind_regular_var_decl(reg: tree_sitter::Node<'_>, source: &[u8], frame: &mut 
             match rc.field_name() {
                 Some("name") => {
                     if let Ok(t) = rc.node().utf8_text(source) {
-                        names.push(t.trim_matches('"').to_string());
+                        names.push(t.unquote_identifier().into_owned());
                     }
                 }
                 Some("type") => {

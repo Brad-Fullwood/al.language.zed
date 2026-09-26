@@ -33,6 +33,7 @@
 //! - Must not persist after clearing (clearing is handled by al-lsp, not here)
 //! - Hints on a procedure's signature line, not body line
 
+use al_syntax::IdentifierText;
 use url::Url;
 
 use crate::queries::code_lens::CodeLensEntry;
@@ -178,7 +179,7 @@ fn aggregate_total_time_ms(
 /// Parse a `.alcpuprofile` JSON document into a list of hotspot nodes.
 ///
 /// Self time is the sum of each node's sampled `timeDeltas` (see
-/// [`aggregate_self_time_us`]); profiles lacking `samples`/`timeDeltas` fall
+/// `aggregate_self_time_us`); profiles lacking `samples`/`timeDeltas` fall
 /// back to a 1 ms-per-hit estimate. Nodes with no self time and no hits are
 /// skipped, as are internal nodes (`(root)`, `(idle)`, `(garbage collector)`,
 /// `(program)`).
@@ -538,7 +539,7 @@ fn collect_profiler_lenses(
         if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
             if let Some(name_node) = node.child_by_field_name("name") {
                 if let Ok(name_text) = name_node.utf8_text(source) {
-                    let name_clean = name_text.trim_matches('"').trim();
+                    let name_clean = name_text.unquote_identifier();
                     let name_lc = name_clean.to_lowercase();
                     if let Some(hint) = by_proc.get(&name_lc) {
                         let start_row = name_node.start_position().row as u32;

@@ -161,11 +161,6 @@ fn decode_scope_reference(reference: i64) -> Option<(i64, i64)> {
     Some((group, reference & 0xffff))
 }
 
-/// Run the native DAP server on stdio.
-///
-/// `acquire_token` is a callback to get an OAuth access token for the given tenant.
-/// `resolve_object` maps a file path to its AL object type + ID using the workspace index.
-/// `resolve_path` is the reverse: given a BC (ObjectType, ObjectNumber) returns the source file.
 /// A parsed `setBreakpoints` request entry: `(line, condition)`. `condition`
 /// is `""` when the client sent none.
 type BpRequest = (i64, String);
@@ -173,8 +168,6 @@ type BpRequest = (i64, String);
 /// `setBreakpoints` requests queued per source path while no debug session
 /// exists yet.
 type PendingBreakpoints = HashMap<String, Vec<BpRequest>>;
-
-/// Both are provided by the caller (al-lsp binary) since they depend on `crate::symbols`.
 
 /// Shared state and host callbacks for the native DAP server.
 pub(crate) struct NativeDapState<F, R, P, C, A> {
@@ -221,6 +214,12 @@ pub(crate) struct NativeDapState<F, R, P, C, A> {
     find_app: A,
 }
 
+/// Run the native DAP server on stdio.
+///
+/// `acquire_token` is a callback to get an OAuth access token for the given tenant.
+/// `resolve_object` maps a file path to its AL object type + ID using the workspace index.
+/// `resolve_path` is the reverse: given a BC (ObjectType, ObjectNumber) returns the source file.
+/// Both are provided by the caller (al-lsp binary) since they depend on `crate::symbols`.
 pub async fn run_native_dap<F, Fut, R, P, C, CompileFut, A>(
     project_root: &str,
     acquire_token: F,

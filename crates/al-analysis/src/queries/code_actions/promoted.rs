@@ -1,5 +1,6 @@
 //! Promoted-actions conversion, ApplicationArea, and report-layout source actions.
 
+use al_syntax::IdentifierText;
 use url::Url;
 
 use super::{detect_indent, detect_object_kind, single_edit_ws, strip_literals_and_comment};
@@ -153,7 +154,7 @@ fn extract_action_name(line: &str) -> Option<String> {
     if inner.is_empty() {
         return None;
     }
-    Some(inner.trim_matches('"').to_string())
+    Some(inner.unquote_identifier().into_owned())
 }
 
 fn find_block_extent(lines: &[&str], start: usize) -> (usize, Vec<usize>) {
@@ -681,7 +682,7 @@ fn existing_layout_names(lines: &[&str], block: &BlockSpan) -> Vec<String> {
         .filter_map(|line| {
             let normalized = strip_literals_and_comment(line).trim().to_lowercase();
             let rest = normalized.strip_prefix("layout(")?;
-            let name = rest.split(')').next()?.trim().trim_matches('"');
+            let name = rest.split(')').next()?.unquote_identifier();
             (!name.is_empty()).then(|| name.to_string())
         })
         .collect()

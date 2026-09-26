@@ -4,7 +4,7 @@
 //! `languages/<lang>/config.toml`, and theme files, and prints the index JSON
 //! to stdout for the editor end-to-end container.
 //!
-//! Usage: gen-zed-index <repo-root> > index.json
+//! Usage: `gen-zed-index <repo-root> > index.json`
 
 use std::path::Path;
 use std::process::exit;

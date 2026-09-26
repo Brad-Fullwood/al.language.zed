@@ -1,11 +1,11 @@
 //! Name resolution: from a cursor position to the AL declaration it names.
 //!
-//! The pipeline runs left to right. [`access_path`] turns a position into a
-//! receiver and a member, [`members`] resolves the receiver to a type and the
-//! member on it, [`workspace_objects`] finds the declaring file in workspace
-//! source, [`fields`] reads table field declarations, [`completion`] lists what
-//! a receiver offers, [`type_text`] parses and formats AL type and signature
-//! text, and [`xml_doc`] renders XML doc comments for display.
+//! The pipeline runs left to right. `access_path` turns a position into a
+//! receiver and a member, `members` resolves the receiver to a type and the
+//! member on it, `workspace_objects` finds the declaring file in workspace
+//! source, `fields` reads table field declarations, `completion` lists what
+//! a receiver offers, `type_text` parses and formats AL type and signature
+//! text, and `xml_doc` renders XML doc comments for display.
 
 pub(crate) mod access_path;
 pub(crate) mod completion;

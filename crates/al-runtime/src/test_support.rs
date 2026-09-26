@@ -8,6 +8,7 @@
 //! the name `Workspace` in the test modules so the original fixtures
 //! (`Workspace::new()`, `ws.file_index.add_file(..)`) compile unchanged.
 
+use al_syntax::IdentifierText;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -96,6 +97,6 @@ fn scrape_object_name(src: &str) -> String {
     }
     line.split_whitespace()
         .nth(2)
-        .map(|s| s.trim_matches('"').to_string())
+        .map(|s| s.unquote_identifier().into_owned())
         .unwrap_or_default()
 }
