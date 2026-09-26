@@ -2,9 +2,9 @@
 
 **Module:** `crates/al-lsp/src/server/mcp/` · **Status:** ✅ shipped
 
-The extension registers a Zed context server named **AL Tools** that launches `al-lsp mcp` from the
-extension's resolved cache or downloads the current release when that cache is empty. An
-explicit/PATH binary previously resolved by LSP or DAP is reused from the cache. The MCP server speaks
+The extension registers a Zed context server named **AL Tools** that launches `al-lsp mcp` with the
+binary LSP or DAP already resolved in this Zed session (which may be the one on `PATH`), or else the
+latest release, downloaded or reused from disk. The MCP server speaks
 newline-delimited JSON-RPC 2.0 over stdio (protocol version `2025-11-25`, with `2024-11-05`
 accepted for compatibility) and forwards every tool call
 into the **same daemon dispatcher** the CLI uses — so MCP behavior and CLI behavior cannot drift.
@@ -44,20 +44,20 @@ published input schema, including `minItems`/`maxItems` on array arguments.
 | `al_call` | selected at call time | `method` (string, required), `params` (object, default `{}`) | Call any method in the shared daemon catalog through one generic entry point. |
 | `al_debug` | `debug` | `cmd` (required) plus command-specific debug parameters | Drive a persistent BC debug session: start, breakpoint, state, stack, locals/globals/expansion, evaluate, continue, step, history, and stop. |
 | `al_build` | `compile` | — | Compile the project (native emitter by default); returns success, diagnostics, `.app` path. |
-| `al_downloadsymbols` | `downloadSymbols` | — | Download dependency symbol packages into `.alpackages`. |
-| `al_symbolsearch` | `search` | `query` (string), `limit` (number, default 20), `summary` (default true: name, kind, id and package only; false adds every member) | Fuzzy-search symbols across workspace and packages. |
-| `al_getdiagnostics` | `lint` | `file` (path, required) | Run diagnostics for an AL file. |
+| `al_downloadsymbols` | `downloadSymbols` | `source` (`nuget` or `server`, default `nuget`), `config` (launch configuration for `server`) | Download dependency symbol packages into `.alpackages`. |
+| `al_symbolsearch` | `search` | `query` (string), `limit` (number, default 50 through MCP), `summary` (default true: name, kind, id and package only; false adds every member) | Fuzzy-search symbols across workspace and packages. |
+| `al_getdiagnostics` | `lint` | `file` or `uri`, plus `text` for a file outside the project | Run diagnostics for an AL file. |
 | `al_runtests` | `tests.run_auto` | — | Discover and run tests; returns per-method classified/actual routing and reasons. Pure-logic and supported workspace-record tests run locally, while unsupported/platform-dependent tests need a launch config + live BC. |
 | `al_deadcode` | `deadCode` | — | Find unused procedures, fields, and orphaned subscribers. |
 | `al_sqlscan` | `sqlPatterns` | — | Detect SQL anti-patterns (FindFirst/Get/CalcFields in loops, unfiltered FindSet). |
-| `al_entrypoints` | `entrypoints` | — | List procedures with no incoming calls. |
+| `al_entrypoints` | `entrypoints` | `scope` (default `workspace`) | List procedures with no incoming calls. |
 | `al_trace_event` | `trace` | `event` (string), `depth` (number, default 10) | Trace publisher→subscriber event propagation. |
-| `al_impact` | `impact` | `symbol` (string, required, e.g. `Customer` or `Sales-Post.PostDocument`) | Answer "who consumes this symbol?" |
+| `al_impact` | `impact` | `symbol` (string, required, e.g. `Customer` or `Sales-Post.PostDocument`), `scope` (default `workspace`) | Answer "who consumes this symbol?" |
 | `al_suggestevent` | `suggestEvent` | `query` (structured source/filter object) | Suggest integration events along an object, table, procedure, or event path. |
 | `al_testclassify` | `tests.classify` | — | Explain where every test runs and why. |
 | `al_testcoverage` | `tests.coverage` | — | Report qualified/transitive static call-graph coverage, including explicit unresolved overload targets. |
-| `al_testsnapshot` | `tests.snapshot_capture` | — | Capture explicit breakpoint samples while one exact test method runs on live BC. |
-| `al_testsnapshotreplay` | `tests.snapshot_replay` | — | Re-run a baseline snapshot's exact test method on live BC and return divergences. |
+| `al_testsnapshot` | `tests.snapshot_capture` | `codeunitId`, `codeunitName`, `methodName`, `bcVersion`, `breakpoints` (`file`, `line`, optional `condition`), `outputPath`; optional `config`, `timeoutMs` | Capture explicit breakpoint samples while one exact test method runs on live BC. |
+| `al_testsnapshotreplay` | `tests.snapshot_replay` | `snapshotPath`, `bcVersion`; optional `config`, `timeoutMs` | Re-run a baseline snapshot's exact test method on live BC and return divergences. |
 | `al_depgraph` | `deps.graph` | `format` (`json` or `dot`) | Return the GUID-keyed current-manifest/package dependency graph. |
 | `al_freeids` | `freeIds` | `kind` (object-kind keyword, omit for a per-kind summary), `object` (table/tableextension/enum/enumextension, wins over `kind`), `count` (1 to 100, default 1), `includeUsed` (default false) | Pick the next free object ID, table field number or enum value ordinal inside the `app.json` idRanges. |
 
@@ -78,7 +78,11 @@ symbols, missing live-BC configuration, unavailable semantic-bridge enrichment, 
 navigation where the original AL source was not shipped. `al_call` intentionally retains a generic
 result schema because it forwards heterogeneous methods across the complete daemon catalog.
 
-Tool results are compact JSON. A `search` sent through MCP, by `al_symbolsearch` or `al_call`,
+Tool results are compact JSON. A list method called through MCP without `limit` returns 50 rows
+with `total` and `truncated`, and `impact`, `tableImpact`, `entrypoints`, `eventMap` and
+`graphExport` default to `scope: workspace`. `object` and `byId` default to `signatures: true`,
+one line per member. The [MCP tool reference](../reference/mcp-tools.md#result-size) has the
+details. A `search` sent through MCP, by `al_symbolsearch` or `al_call`,
 returns summaries unless it passes `summary: false`: three Base Application results take about
 500 bytes instead of about 210 KB.
 
