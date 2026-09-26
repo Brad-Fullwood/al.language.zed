@@ -178,7 +178,7 @@ live in [ROADMAP.md](../ROADMAP.md).
   and does not keep the archive, and the API has no way to unpack a local file.
   It checks the extracted `al-lsp`, `al-explorer` and every file under
   `bridge/` against the release's `binary-checksums.txt` instead, before either
-  executable is made executable. Releases made before the bridge was hashed list
+  program is marked executable. Releases made before the bridge was hashed list
   no bridge file, and for those only the two executables are checked.
   `checksums.txt` still covers the archives for a manual `sha256sum -c` of a
   hand-downloaded asset.

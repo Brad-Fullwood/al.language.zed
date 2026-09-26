@@ -58,7 +58,7 @@ path does **not** use the daemon — it uses LSP handlers directly. See
   that does not verify is refused with its own error, `AL_ALLOW_MISMATCHED_DAEMON` does not
   reach it, and the endpoint is sent nothing after the handshake, so a process squatting on
   it never receives the `shutdown` that would let it race the replacement. A replacement
-  started from this binary must prove itself too; one that does not is refused rather than
+  started from this binary must prove itself too, and one that does not is refused rather than
   used. A client that cannot name its own build still checks the proof. A daemon that
   answers with no proof at all predates it: on Unix, where the kernel peer check has already
   said the process is this user's, it is replaced as a mismatch. On Windows the proof is the

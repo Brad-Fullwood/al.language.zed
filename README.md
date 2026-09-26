@@ -444,7 +444,7 @@ and is what `sha256sum -c` verifies after a manual download. `binary-checksums.t
 per file inside each archive, keyed `<archive>/<path>`, and is what the extension checks on the
 automatic download path: it extracts the archive, compares `al-lsp`, `al-explorer` and every file
 under `bridge/` (which `al-lsp` loads into its own process) against that listing, refuses a bridge
-file the listing does not name, and only then makes the executables executable. A mismatch deletes
+file the listing does not name, and only then marks the two programs executable. A mismatch deletes
 the directory and reports the expected and actual digests. See [Current limitations](./Docs/current-limitations.md#releases) for
 why the archive itself cannot be checked there.
 

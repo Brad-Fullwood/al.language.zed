@@ -198,7 +198,7 @@ jobs:
           Copy-Item (Join-Path $bridgeSrc.FullName 'AlBridge.runtimeconfig.json') $bridgeDst
           $archive = "al-${{ matrix.artifact_name }}.zip"
           Compress-Archive -Path "$stage/*" -DestinationPath $archive
-          # Same digests as the Unix leg, over every staged file; see the
+          # Same digests as the Unix leg, over every staged file. See the
           # comment there.
           $lines = Get-ChildItem -Path $stage -Recurse -File | Sort-Object FullName | ForEach-Object {
             $relative = [System.IO.Path]::GetRelativePath($stage.FullName, $_.FullName).Replace('\', '/')
