@@ -19,7 +19,7 @@ below is available through MCP's `al_call`, whether or not it also has a named M
 `clearCache`, `authenticate`, `downloadSymbols`, `snapshot`, `profiling`, `generate`, `obsolete`,
 `obsoleteUsages`, `packageDiff`,
 `audit.dataClassification`, `permissions.audit`, `deps.graph`, `breaking`, `arch.lint`, `duplicates`,
-`upgrade`, `profiler.hints`, `nativeCheck`, `freeIds`, `diag`.
+`upgrade`, `profiler.hints`, `freeIds`. `diag` is answered in `daemon/mod.rs`.
 
 XLIFF: `xlf.generate`, `xlf.refresh`, `xlf.untranslated`, `xlf.suggest`.
 
@@ -70,14 +70,15 @@ Tests: `tests.discover`, `tests.run`, `tests.coverage`, `tests.run_batch`, `test
 
 ## Insight (`insight_dispatch.rs`)
 
-`trace`, `traceChain`, `entrypoints`, `graphExport`, `insightStats`, `deadCode`, `impact`,
-`tableImpact`, `suggestEvent`, `eventMap`.
+`trace`, `traceChain`, `entrypoints`, `graphExport`, `insightStats`, `deadCode`, `nativeCheck`,
+`impact`, `tableImpact`, `suggestEvent`, `eventMap`.
 
 ## Debug (`debug_dispatch.rs`)
 
 `debug` with `params.cmd` ∈ { `start`, `breakpoint`, `state`, `stack`, `variables`, `globals`,
 `expand`, `eval`, `continue`, `step`, `history`, `stop` }. Inspection/evaluation commands accept
-`frameId`; `expand` also requires `path`; `step` accepts `stepType: over|in|out`. This stateful method
+`frameId`; `expand` also requires `path`; `step` accepts `stepType: over|in|into|out` (`into` is a
+synonym for `in`). This stateful method
 backs both the CLI debug commands and the MCP `al_debug` tool; the process must remain alive between
 calls.
 
@@ -130,9 +131,11 @@ default to `workspace`, because that is the code the project can change.
 
 ## Conventions & limits
 
-- Lifecycle methods: `ping` returns an empty object, `status` returns daemon/workspace state,
+- Lifecycle methods: `ping` returns the string `"pong"`, `status` returns daemon/workspace state,
   `shutdown` requests an orderly daemon stop, and `handshake` returns `{version, build, pid}` — the
-  build this daemon was started from. A client compares `version` and `build` with its own before
+  build this daemon was started from. When the request carries a `nonce`, `handshake` also returns
+  `proof`, an HMAC over the nonce and the identity keyed by a file only the current user can read,
+  so a process that did not start from this user's key cannot answer it. A client compares `version` and `build` with its own before
   it uses a daemon it did not start, and replaces one that does not match, because a daemon from
   other code answers with that code's response shapes.
 - `status` reports `memory` and `diag/summary` reports `process`, both
@@ -141,8 +144,9 @@ default to `workspace`, because that is the code the project can change.
   allocations the workspace owns.
 - `status` and `diag` report `sourceIndex` as `{state, packagesDone, packagesTotal, filesDone,
   elapsedMs}`, where `state` is `idle`, `building`, `ready` or `failed`. The dependency AL source
-  index takes about a minute on Base Application, and `subscribers`, `composed`, `events`, `lint`,
-  `trace`, `impact` and `entrypoints` all wait for it. The daemon and the MCP server start it in
+  index takes about a minute on Base Application. `lint` and the methods that read the call graph
+  (`subscribers`, `events`, `composed`, `object`, `byId`, `generate`, `trace`, `traceChain`, `impact`,
+  `tableImpact`, `entrypoints`, `eventMap`, `graphExport`, `insightStats`) wait for it. The daemon and the MCP server start it in
   the background at startup, and the build is single-flight, so concurrent and retried callers join
   one build rather than starting their own.
 - `status` reports `launchConfigError` when the project's debug configuration file could not be
@@ -173,8 +177,7 @@ analyses that text and never opens the path, and the document it holds for the r
 when the request is answered. `rename` belongs here because it returns a `WorkspaceEdit` for the
 client to apply and writes nothing itself. `text` is refused for a path inside the project, where
 the daemon's own copy is authoritative, and refused outright by any method that rewrites the file it
-names (`format`, `fix*`, `sortMembers`, `organizeFiles`): supplied content is analysed, never
-written back.
+names (`format`, `fix`, `sortMembers`): supplied content is analysed, never written back.
 
 `al-explorer` uses that: on `-32002` from a read-only method it reads the file itself and asks
 again with `text`, so `al-explorer parse ../elsewhere/Foo.al` works while the daemon still opens
