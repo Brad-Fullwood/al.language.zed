@@ -34,7 +34,11 @@ Five agents dispatched at 07:05:
   proxy stdout lock held for one frame, 15 dead `#[allow]` removed, SAFETY comments on every
   unsafe block, 50 accepted guard sites recorded in `findings/async-locking.md`. Deferred:
   `did_change_watched_files` reads files under the generation write guard on purpose. Gates
-  running on the merge (62a4f85a) at 08:00.
+  on the merge (62a4f85a): fmt, release build and clippy clean, 94 suites, 5065 passed,
+  1 failed: `no_ghost_diagnostics_after_close_during_debounce` fails 2 in 8 at load average 20
+  with the publish order clear, error, clear. Pushed at 08:50 so CI runs it on a quiet runner.
+  Debug agent dispatched 08:52 on worktree branch `campaign/fix-ghost-race-2`, told to find the
+  mechanism and whether it predates the merge before changing code.
 
 A fix branch on origin or in `.claude/worktrees/` with commits not in this branch and no live
 agent means the agent died: re-dispatch onto that branch.
