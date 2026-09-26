@@ -1218,4 +1218,276 @@ codeunit 50100 T
             "Apple must come before Zebra after sort"
         );
     }
+
+    #[test]
+    fn declines_a_brace_that_shares_its_line() {
+        let open_on_header = "\
+codeunit 50100 T {
+    procedure Zebra()
+    begin
+    end;
+
+    procedure Alpha()
+    begin
+    end;
+}
+";
+        assert_eq!(sort_members(open_on_header), None);
+
+        let close_after_code = "\
+codeunit 50100 T
+{
+    procedure Zebra()
+    begin
+    end;
+
+    procedure Alpha()
+    begin
+    end; }
+";
+        assert_eq!(sort_members(close_after_code), None);
+    }
+
+    #[test]
+    fn a_dropped_or_repeated_line_is_not_a_reordering() {
+        assert!(is_pure_reordering(&["a", "b", "c"], &["c", "a", "b"]));
+        assert!(!is_pure_reordering(&["a", "b"], &["a"]));
+        assert!(!is_pure_reordering(&["a", "b"], &["a", "a"]));
+    }
+
+    #[test]
+    fn triggers_sort_alphabetically() {
+        let input = "\
+table 50100 T
+{
+    trigger OnModify()
+    begin
+    end;
+
+    trigger OnDelete()
+    begin
+    end;
+
+    trigger OnInsert()
+    begin
+    end;
+}
+";
+        let expected = "\
+table 50100 T
+{
+    trigger OnDelete()
+    begin
+    end;
+
+    trigger OnInsert()
+    begin
+    end;
+
+    trigger OnModify()
+    begin
+    end;
+}
+";
+        assert_eq!(sort_members(input).as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn overloads_keep_their_source_order() {
+        let input = "\
+codeunit 50100 T
+{
+    procedure Run(Z: Integer)
+    begin
+    end;
+
+    procedure Run(A: Text)
+    begin
+    end;
+
+    procedure Alpha()
+    begin
+    end;
+}
+";
+        let expected = "\
+codeunit 50100 T
+{
+    procedure Alpha()
+    begin
+    end;
+
+    procedure Run(Z: Integer)
+    begin
+    end;
+
+    procedure Run(A: Text)
+    begin
+    end;
+}
+";
+        assert_eq!(sort_members(input).as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn a_trigger_inside_a_field_stays_in_its_field() {
+        let input = "\
+table 50100 T
+{
+    fields
+    {
+        field(1; \"No.\"; Code[20])
+        {
+            trigger OnValidate()
+            begin
+            end;
+        }
+    }
+
+    trigger OnModify()
+    begin
+    end;
+
+    trigger OnInsert()
+    begin
+    end;
+}
+";
+        let expected = "\
+table 50100 T
+{
+    trigger OnInsert()
+    begin
+    end;
+
+    trigger OnModify()
+    begin
+    end;
+
+    fields
+    {
+        field(1; \"No.\"; Code[20])
+        {
+            trigger OnValidate()
+            begin
+            end;
+        }
+    }
+}
+";
+        assert_eq!(sort_members(input).as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn a_three_line_attribute_moves_with_its_procedure() {
+        let input = "\
+codeunit 50100 T
+{
+    procedure Mango()
+    begin
+    end;
+
+    [EventSubscriber(ObjectType::Table, Database::Customer,
+        'OnAfterInsertEvent',
+        '', false, false)]
+    local procedure Zebra()
+    begin
+    end;
+
+    procedure Alpha()
+    begin
+    end;
+}
+";
+        let expected = "\
+codeunit 50100 T
+{
+    procedure Alpha()
+    begin
+    end;
+
+    procedure Mango()
+    begin
+    end;
+
+    [EventSubscriber(ObjectType::Table, Database::Customer,
+        'OnAfterInsertEvent',
+        '', false, false)]
+    local procedure Zebra()
+    begin
+    end;
+}
+";
+        assert_eq!(sort_members(input).as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn a_comment_between_an_attribute_and_its_procedure_keeps_them_together() {
+        let input = "\
+codeunit 50100 T
+{
+    [Test]
+    // Scenario: the attribute and the procedure stay one member.
+    procedure Zebra()
+    begin
+    end;
+
+    procedure Alpha()
+    begin
+    end;
+}
+";
+        let expected = "\
+codeunit 50100 T
+{
+    procedure Alpha()
+    begin
+    end;
+
+    [Test]
+    // Scenario: the attribute and the procedure stay one member.
+    procedure Zebra()
+    begin
+    end;
+}
+";
+        assert_eq!(sort_members(input).as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn a_var_section_with_a_declaration_on_its_header_line_hoists() {
+        let input = "\
+codeunit 50100 T
+{
+    procedure Zebra()
+    begin
+    end;
+
+    protected var Shared: Integer;
+
+    procedure Mango()
+    begin
+    end;
+
+    var Counter: Integer;
+}
+";
+        let expected = "\
+codeunit 50100 T
+{
+    protected var Shared: Integer;
+
+    var Counter: Integer;
+
+    procedure Mango()
+    begin
+    end;
+
+    procedure Zebra()
+    begin
+    end;
+}
+";
+        assert_eq!(sort_members(input).as_deref(), Some(expected));
+    }
 }
