@@ -23,6 +23,7 @@ pub mod dialog;
 pub mod events;
 pub mod frames;
 pub mod numeric;
+pub mod picture;
 pub mod random;
 pub mod render;
 pub mod routing;
