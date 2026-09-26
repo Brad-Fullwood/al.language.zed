@@ -219,6 +219,14 @@ impl RecordView {
     }
 }
 
+/// A rename between [`MockRecord::start_rename_in`] and its finish or
+/// cancel: the key the row is stored under and the buffer as it was.
+#[derive(Debug)]
+pub struct PendingRename {
+    old_key: PrimaryKey,
+    saved: Row,
+}
+
 /// Normalize one primary-key component so key lookup follows BC field
 /// semantics: `Code` keys are caseless (uppercased) and the Integer/Decimal
 /// numeric class unifies (an `Integer` key value matches a stored `Decimal`
@@ -566,7 +574,8 @@ impl MockRecord {
         self.with_default_view(|table, view| table.delete_all_in(view, run_trigger))
     }
 
-    /// `RENAME(new_key)` — move the current row to a new primary key.
+    /// `RENAME(new_key)` — move the current row to a new primary key and
+    /// write the buffer to it.
     ///
     /// The new key values must be provided as a `Vec<(FieldNo, Value)>` that
     /// covers all primary key fields. Saves the old row as `xRec`.
@@ -575,34 +584,66 @@ impl MockRecord {
         view: &mut RecordView,
         new_key_values: Vec<(FieldNo, Value)>,
     ) -> Result<(), RecordError> {
+        let pending = self.start_rename_in(view, new_key_values)?;
+        self.finish_rename_in(view, pending)
+    }
+
+    /// The first half of `RENAME`: write the new key values into the buffer
+    /// and keep the key the row is stored under. Table code that runs before
+    /// [`Self::finish_rename_in`] or [`Self::cancel_rename_in`] sees the new
+    /// key in the buffer.
+    pub fn start_rename_in(
+        &self,
+        view: &mut RecordView,
+        new_key_values: Vec<(FieldNo, Value)>,
+    ) -> Result<PendingRename, RecordError> {
         let old_key = self.current_primary_key(view)?;
-        let old_row = self.rows.remove(&old_key).ok_or(RecordError::NotFound)?;
-        // BC leaves Rec (and the table) unchanged when Rename fails, so
-        // snapshot the buffer before writing the new key values into it and
-        // restore both on every error path — otherwise the buffer would keep
-        // the new key while the table still holds the old one, and a
-        // subsequent Modify would target a row that does not exist.
-        let saved_current = view.current.clone();
-        let mut new_row = old_row.clone();
+        let saved = view.current.clone();
         for (field, value) in new_key_values {
-            new_row.insert(field, value.clone());
             view.current.insert(field, value);
         }
-        let new_key = match self.current_primary_key(view) {
-            Ok(key) => key,
-            Err(error) => {
-                view.current = saved_current;
-                self.rows.insert(old_key, old_row);
-                return Err(error);
-            }
-        };
-        if self.rows.contains_key(&new_key) {
-            view.current = saved_current;
-            self.rows.insert(old_key, old_row);
+        Ok(PendingRename { old_key, saved })
+    }
+
+    /// The second half of `RENAME`: move the stored row to the key the buffer
+    /// holds and write the buffer to it, as `MODIFY` does. BC leaves Rec (and
+    /// the table) unchanged when Rename fails, so on error the buffer is
+    /// restored and the table is not touched. Otherwise the buffer would keep
+    /// the new key while the table still holds the old one, and a later
+    /// Modify would target a row that does not exist.
+    pub fn finish_rename_in(
+        &mut self,
+        view: &mut RecordView,
+        pending: PendingRename,
+    ) -> Result<(), RecordError> {
+        let moved = self.move_renamed_row(view, &pending.old_key);
+        if moved.is_err() {
+            view.current = pending.saved;
+        }
+        moved
+    }
+
+    /// Undo [`Self::start_rename_in`]: the buffer gets its old values back.
+    pub fn cancel_rename_in(&self, view: &mut RecordView, pending: PendingRename) {
+        view.current = pending.saved;
+    }
+
+    fn move_renamed_row(
+        &mut self,
+        view: &mut RecordView,
+        old_key: &PrimaryKey,
+    ) -> Result<(), RecordError> {
+        let new_key = self.current_primary_key(view)?;
+        if !self.rows.contains_key(old_key) {
+            return Err(RecordError::NotFound);
+        }
+        if new_key != *old_key && self.rows.contains_key(&new_key) {
             return Err(RecordError::DuplicateKey);
         }
-        view.x_rec = old_row;
-        self.rows.insert(new_key, new_row);
+        if let Some(old_row) = self.rows.remove(old_key) {
+            view.x_rec = old_row;
+        }
+        self.rows.insert(new_key, view.current.clone());
         Ok(())
     }
 

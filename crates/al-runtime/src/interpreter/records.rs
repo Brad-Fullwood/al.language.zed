@@ -894,18 +894,21 @@ pub(crate) fn dispatch_record_method(
         }
     }
 
-    // Insert, Modify, Delete and Rename raise the table's OnBefore…Event and
+    if lower == "rename" {
+        return dispatch_rename(table, handle, values, stmt_position, stack, ctx);
+    }
+
+    // Insert, Modify and Delete raise the table's OnBefore…Event and
     // OnAfter…Event for subscribers whatever RunTrigger says.
     let table_event = match lower.as_str() {
         "insert" => Some("Insert"),
         "modify" => Some("Modify"),
         "delete" => Some("Delete"),
-        "rename" => Some("Rename"),
         _ => None,
     };
-    let run_trigger = lower == "rename" || matches!(values.first(), Some(Value::Boolean(true)));
+    let run_trigger = matches!(values.first(), Some(Value::Boolean(true)));
     // xRec for the events and the trigger: the row as the table holds it
-    // before a Modify, Delete or Rename, the buffer itself for an Insert.
+    // before a Modify or Delete, the buffer itself for an Insert.
     // Made only when a subscriber or trigger will see it: copying a
     // temporary record copies its rows.
     let stored = lower != "insert";
@@ -941,8 +944,7 @@ pub(crate) fn dispatch_record_method(
     }
 
     // Insert(true), Modify(true) and Delete(true) run the table's trigger
-    // first, on this record; Rename always runs OnRename. The operation
-    // itself then runs without triggers.
+    // first, on this record. The operation itself then runs without triggers.
     let trigger = match lower.as_str() {
         "insert" | "modify" | "delete" if matches!(values.first(), Some(Value::Boolean(true))) => {
             values[0] = Value::Boolean(false);
@@ -952,7 +954,6 @@ pub(crate) fn dispatch_record_method(
                 _ => "OnDelete",
             })
         }
-        "rename" => Some("OnRename"),
         _ => None,
     };
     let trigger = trigger.filter(|trigger| {
@@ -1031,6 +1032,123 @@ pub(crate) fn dispatch_record_method(
         }
     }
     result
+}
+
+/// `Rec.Rename(key values…)`, the new primary key with all its parts.
+///
+/// The new key goes into the buffer first, so OnBeforeRenameEvent, OnRename
+/// and OnAfterRenameEvent get it as `Rec` and the row as stored as `xRec`.
+/// The row then moves to the new key with the buffer written to it, so what
+/// OnRename sets on `Rec` is saved. A failure leaves the buffer as it was.
+fn dispatch_rename(
+    table: &TableRef,
+    handle: u64,
+    values: Vec<Value>,
+    stmt_position: bool,
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    use crate::interpreter::dispatch::{events, table_code};
+
+    let key = match ensure_store(ctx, table) {
+        Ok(key) => key,
+        Err(error) => return eval_error(error),
+    };
+    let store = ctx.records.get_mut(&key).expect("store just ensured");
+    if values.len() != store.record.primary_key_len() {
+        return eval_error(format!(
+            "Rename: requires all {} primary-key values (got {})",
+            store.record.primary_key_len(),
+            values.len()
+        ));
+    }
+    let pk_fields: Vec<FieldNo> = store.record.primary_key_fields().to_vec();
+    let mut new_key = Vec::with_capacity(values.len());
+    for (field, value) in pk_fields.into_iter().zip(values) {
+        match store.coerce_to_field(field, value) {
+            Ok(coerced) => new_key.push((field, coerced)),
+            Err(error) => return eval_error(format!("Rename: {error}")),
+        }
+    }
+    let failed = |error: crate::mock::record::RecordError| {
+        if stmt_position {
+            eval_error(format!("Rename: {error}"))
+        } else {
+            Eval::Normal(Value::Boolean(false))
+        }
+    };
+
+    let trigger = table_code::TableCode::Trigger("OnRename");
+    let has_trigger = table_code::declares(ctx, &table.name, trigger);
+    let observed = has_trigger
+        || ["OnBeforeRenameEvent", "OnAfterRenameEvent"]
+            .iter()
+            .any(|event| events::has_subscribers("table", &table.name, event, "", ctx));
+    // The row as stored, read while the buffer still holds the old key.
+    let mut x_rec = observed.then(|| x_rec_of(table, handle, true, ctx));
+
+    let store = ctx.records.get_mut(&key).expect("store just ensured");
+    let mut view = store.take_view(handle);
+    let started = store.record.start_rename_in(&mut view, new_key);
+    store.put_view(handle, view);
+    let pending = match started {
+        Ok(pending) => pending,
+        Err(error) => return failed(error),
+    };
+
+    let mut code_result = raise_table_event(
+        table,
+        handle,
+        (&mut x_rec, true),
+        "OnBeforeRenameEvent",
+        true,
+        stack,
+        ctx,
+    );
+    // `observed` covers the trigger, so `x_rec` holds the stored row here.
+    if let (Ok(()), true, Some(x_rec)) = (&code_result, has_trigger, x_rec.clone()) {
+        if let Some(result @ Eval::Error(_)) = table_code::run_table_code(
+            record_value_on(table, handle),
+            x_rec,
+            trigger,
+            Vec::new(),
+            stack,
+            ctx,
+        ) {
+            code_result = Err(result);
+        }
+    }
+
+    let key = match ensure_store(ctx, table) {
+        Ok(key) => key,
+        Err(error) => return eval_error(error),
+    };
+    let store = ctx.records.get_mut(&key).expect("store just ensured");
+    let mut view = store.take_view(handle);
+    let finished = match code_result {
+        Ok(()) => store.record.finish_rename_in(&mut view, pending),
+        Err(error) => {
+            store.record.cancel_rename_in(&mut view, pending);
+            store.put_view(handle, view);
+            return error;
+        }
+    };
+    store.put_view(handle, view);
+    if let Err(error) = finished {
+        return failed(error);
+    }
+    if let Err(error) = raise_table_event(
+        table,
+        handle,
+        (&mut x_rec, true),
+        "OnAfterRenameEvent",
+        true,
+        stack,
+        ctx,
+    ) {
+        return error;
+    }
+    Eval::Normal(Value::Boolean(true))
 }
 
 /// Raise table event `event` (`OnAfterInsertEvent`, ...) on the record on
@@ -1167,29 +1285,6 @@ fn run_record_method(
                     "Get: the record does not exist in table '{}'",
                     store.record.table_name
                 )),
-                Err(_) => Eval::Normal(Value::Boolean(false)),
-            }
-        }
-        // `Rename(key values…)`: the new primary key, all parts.
-        "rename" => {
-            if values.len() != store.record.primary_key_len() {
-                return eval_error(format!(
-                    "Rename: requires all {} primary-key values (got {})",
-                    store.record.primary_key_len(),
-                    values.len()
-                ));
-            }
-            let pk_fields: Vec<FieldNo> = store.record.primary_key_fields().to_vec();
-            let mut new_key = Vec::with_capacity(values.len());
-            for (field, value) in pk_fields.into_iter().zip(values) {
-                match store.coerce_to_field(field, value) {
-                    Ok(coerced) => new_key.push((field, coerced)),
-                    Err(error) => return eval_error(format!("Rename: {error}")),
-                }
-            }
-            match store.record.rename_in(view, new_key) {
-                Ok(()) => Eval::Normal(Value::Boolean(true)),
-                Err(error) if stmt_position => eval_error(format!("Rename: {error}")),
                 Err(_) => Eval::Normal(Value::Boolean(false)),
             }
         }

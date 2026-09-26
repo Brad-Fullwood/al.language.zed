@@ -119,11 +119,13 @@ Supported behavior:
 - CalcFields and automatic reads for Sum/Average/Min/Max/Count/Exist/Lookup FlowFields with
   CONST/FIELD/FILTER clauses (including Boolean CONST values), and CalcSums, which totals each
   named field over the rows the current filters select.
-- Rename (the full new primary key), TestField (empty, or a given value), IsTemporary.
+- Rename (the full new primary key, written with the rest of the buffer), TestField (empty, or a
+  given value), IsTemporary.
 - Table code runs on its record, which is the implicit `Rec`: `Validate` assigns the field, checks
   a plain TableRelation to a workspace table and runs the field's OnValidate with the record as it
   was as `xRec`; `Insert(true)`, `Modify(true)` and `Delete(true)` run OnInsert, OnModify and
-  OnDelete first, and `Rename` runs OnRename; `Member.Deposit(7)` runs the table's procedure on
+  OnDelete first, and `Rename` runs OnRename, which like the rename events gets the new key in
+  `Rec` and the row as stored as `xRec`. `Member.Deposit(7)` runs the table's procedure on
   `Member`'s buffer. Inside table code a bare field name reads and writes `Rec`, and a bare record
   method (`TestField(Name)`) acts on it.
 - Events: calling an `[IntegrationEvent]`, `[BusinessEvent]` or `[InternalEvent]` publisher runs

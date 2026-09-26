@@ -3260,6 +3260,164 @@ fn events_run_their_automatic_subscribers() {
     assert!(refused.contains("A name is required"), "{refused}");
 }
 
+const RENAMED_MEMBER_TABLE: &str = r#"table 50260 "Renamed Member"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; "Renamed From"; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+
+    trigger OnRename()
+    var
+        Logger: Codeunit "Rename Logger";
+    begin
+        if StrLen("No.") < 3 then
+            Error('%1 is too short', "No.");
+        Logger.Add('OnRename', "No.", xRec."No.");
+        "Renamed From" := xRec."No.";
+    end;
+}
+"#;
+
+const RENAME_LOG_TABLE: &str = r#"table 50261 "Rename Log"
+{
+    fields
+    {
+        field(1; "Entry No."; Integer) { }
+        field(2; Step; Text[30]) { }
+        field(3; "Rec No."; Code[20]) { }
+        field(4; "xRec No."; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; "Entry No.") { }
+    }
+}
+"#;
+
+const RENAME_LOGGER: &str = r#"codeunit 50262 "Rename Logger"
+{
+    procedure Add(Step: Text; RecNo: Code[20]; XRecNo: Code[20])
+    var
+        Log: Record "Rename Log";
+    begin
+        Log."Entry No." := Log.Count() + 1;
+        Log.Step := Step;
+        Log."Rec No." := RecNo;
+        Log."xRec No." := XRecNo;
+        Log.Insert();
+    end;
+
+    procedure Read(): Text
+    var
+        Log: Record "Rename Log";
+        Seen: Text;
+    begin
+        if Log.FindSet() then
+            repeat
+                Seen += Log.Step + ':' + Log."Rec No." + '<-' + Log."xRec No." + '|';
+            until Log.Next() = 0;
+        exit(Seen);
+    end;
+}
+"#;
+
+const RENAME_SUBSCRIBERS: &str = r#"codeunit 50263 "Rename Subscribers"
+{
+    [EventSubscriber(ObjectType::Table, Database::"Renamed Member", 'OnBeforeRenameEvent', '', false, false)]
+    local procedure BeforeRename(var Rec: Record "Renamed Member"; var xRec: Record "Renamed Member"; RunTrigger: Boolean)
+    var
+        Logger: Codeunit "Rename Logger";
+    begin
+        Logger.Add('Before', Rec."No.", xRec."No.");
+    end;
+
+    [EventSubscriber(ObjectType::Table, Database::"Renamed Member", 'OnAfterRenameEvent', '', false, false)]
+    local procedure AfterRename(var Rec: Record "Renamed Member"; var xRec: Record "Renamed Member"; RunTrigger: Boolean)
+    var
+        Logger: Codeunit "Rename Logger";
+    begin
+        Logger.Add('After', Rec."No.", xRec."No.");
+    end;
+}
+"#;
+
+const RENAME_PROBE: &str = r#"codeunit 50264 "Rename Probe"
+{
+    procedure RenameSeesBothKeys(): Text
+    var
+        Member: Record "Renamed Member";
+        Logger: Codeunit "Rename Logger";
+    begin
+        Member."No." := 'OLD';
+        Member.Insert();
+        Member.Rename('NEW');
+        Member.Get('NEW');
+        exit(Logger.Read() + Member."Renamed From");
+    end;
+
+    procedure RenameToShortKey()
+    var
+        Member: Record "Renamed Member";
+    begin
+        Member."No." := 'LONGKEY';
+        Member.Insert();
+        Member.Rename('AB');
+    end;
+
+    procedure FailedRenameKeepsTheOldKey(): Text
+    var
+        Member: Record "Renamed Member";
+        Other: Record "Renamed Member";
+    begin
+        Other."No." := 'TAKEN';
+        Other.Insert();
+        Member."No." := 'OLD';
+        Member.Insert();
+        if Member.Rename('TAKEN') then
+            exit('renamed onto an existing key');
+        exit(Member."No.");
+    end;
+}
+"#;
+
+/// In Business Central `Rec` holds the new key and `xRec` the row as stored
+/// in OnBeforeRenameEvent, OnRename and OnAfterRenameEvent, and Rename
+/// writes what OnRename sets on `Rec`. OnRename ran before the key changed,
+/// so `Rec` held the old key there and in OnBeforeRenameEvent.
+#[test]
+fn rename_code_sees_the_new_key_as_rec_and_the_stored_row_as_xrec() {
+    let call = |proc: &str| {
+        run(
+            &[
+                ("/ws/RenamedMember.al", RENAMED_MEMBER_TABLE),
+                ("/ws/RenameLog.al", RENAME_LOG_TABLE),
+                ("/ws/RenameLogger.al", RENAME_LOGGER),
+                ("/ws/RenameSubscribers.al", RENAME_SUBSCRIBERS),
+                ("/ws/RenameProbe.al", RENAME_PROBE),
+            ],
+            "Rename Probe",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(
+        ok(call("RenameSeesBothKeys")),
+        Value::Text("Before:NEW<-OLD|OnRename:NEW<-OLD|After:NEW<-OLD|OLD".into())
+    );
+    let refused = error_message(call("RenameToShortKey"));
+    assert!(refused.contains("AB is too short"), "{refused}");
+    assert_eq!(
+        ok(call("FailedRenameKeepsTheOldKey")),
+        Value::Code("OLD".into())
+    );
+}
+
 /// A table then a codeunit in one file: the codeunit's calls took the
 /// file's first object (the table) as their identity and read globals from
 /// the whole file, failing as "stateful codeunit 'Tour Member'". Label
