@@ -21,3 +21,4 @@ wiremock = "0.6"
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 serial_test = "3"
+tracing-subscriber = { workspace = true }

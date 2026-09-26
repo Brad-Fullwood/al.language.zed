@@ -282,3 +282,43 @@ Append-only. Newest entry last.
 - `target/debug` (30 GB) deleted, 31 GB free after.
 - Five agents dispatched at 18:40, listed in `STATE.md`.
 - Later the same evening: codeunit variables are instances with their own globals (stateful helpers run locally; only SingleInstance helpers route live), review fixes (XML format, `sender`, JSON sharing, Validate relation agreement between router and runtime), table events see the stored row as `xRec`. Found a grammar defect while testing subscribers: an attributed `local procedure` right after a var section loses its attribute (`findings/grammar-attribute-after-var.md`, with a tested scanner patch for the grammar repository). It hides such subscribers and publishers from the call graph, the router and the interpreter.
+
+## 2026-09-26 19:17 BST: headless session, round 8 queued, five agents again
+
+- The 18:32 session's five agents were dead at the start: no live process, an empty session log,
+  no commits from the mutants and triage agents, five findings from the round 8 reviewer
+  (`findings/r8-session-review.md`, committed as 32ca741f), and the fix-r7 worktree still holding
+  its uncommitted SEC-7 fix, now 296 lines.
+- Origin was six commits ahead (1a081fbe..aa01cb97), pushed by the second session between 18:30 and
+  19:08 BST: JSON types run in the interpreter (`json.rs`, reference semantics through an arena),
+  table events get the stored row as `xRec`, a subscriber's `sender` parameter is passed, one
+  `validate_relation` decides Validate routing for the router and the runtime, XML `Format` no
+  longer groups thousands. Its own review fixed two of the five round 8 findings before the
+  reviewer wrote them up (RT-3, and the `xRec` half of RT-1). CI on PR 32 passed on every push
+  except the ubuntu job still running at 19:20. Fast-forwarded.
+- Merged `campaign/slop-batch-11` (2b7bce37): the desloppify re-score (overall 80.2 unchanged,
+  strict 79.6, the scan surface grew with the merges, section 5 of `findings/desloppify.md`),
+  the `get_` prefix dropped from three al-dap hub accessors, a crate doc for zed-al. The agent
+  found `desloppify scan` returns 7 files and 0 lines while sibling worktrees are busy and wrote
+  down how to spot it.
+- Five agents dispatched at 19:30 (`STATE.md`): round 7 fixes, round 8 review continuation, round 8
+  fixes on a new branch `campaign/fix-r8-review`, the audit backlog triage, `cargo mutants`.
+
+## 2026-09-26 21:44 BST: headless session after two hours of limits, mutants merged, six agents
+
+- The 19:17 session hit its session limit at 19:53 (reset 21:40). Every headless start from 19:53
+  to 21:34 exited at once on both models. Ten commits were unpushed (d1afbef3..79dc5087, the
+  slop batch 11 merge and the round 8 findings), pushed now. The five agents were dead: the triage
+  and plugin agents had written nothing, the reviewer left 430 lines of scratch tests, the fix-r7
+  worktree still held the 317-line SEC-7 diff. All three saved as patches under `.campaign/`.
+- Merged `campaign/test-mutants` (7e4c02f3): 12 commits, tests only, for five of the ten shortlist
+  files (`method_id.rs`, `http_auth.rs`, `sort.rs`, `documents.rs`, `filter.rs`) and
+  `findings/mutants.md` with the setup, the per-file runs and the survivors marked equivalent.
+- `.campaign/run-gates.sh` now runs the semantic clippy and rustdoc lines too. Gates on 7e4c02f3
+  started in the background. The `slop-11` worktree removed, 35 GB free.
+- Six agents dispatched at 21:50 (`STATE.md`): round 7 fixes, round 8 fixes, round 8 review
+  continuation, audit triage (third attempt, writes every five items), `cargo mutants` (the last
+  five files), plugin leftovers (third attempt).
+- Gates on the mutants merge (7e4c02f3): fmt, release build, both clippy runs and rustdoc clean.
+  94 suites, 5209 passed, 0 failed, 10 ignored, at load average 9 with six agents starting.
+  Pushed.
