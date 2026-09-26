@@ -4,7 +4,7 @@
 //! run, split out as pure functions so it can be tested without a filesystem,
 //! a network or a Zed host.
 
-use crate::{choose_release, expected_sha256, CachedRelease, ReleaseChoice};
+use crate::{check_bridge_files, choose_release, expected_sha256, CachedRelease, ReleaseChoice};
 use std::time::{Duration, SystemTime};
 
 fn cached(version: &str, age_secs: u64) -> CachedRelease {
@@ -199,4 +199,69 @@ fn a_malformed_digest_is_not_accepted_as_a_checksum() {
             "accepted a malformed line: {listing:?}"
         );
     }
+}
+
+fn digest(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn bridge_listing() -> String {
+    format!(
+        "{}  al-linux-x86_64.tar.gz/al-lsp\n{}  al-linux-x86_64.tar.gz/bridge/AlBridge.dll\n",
+        digest(b"server"),
+        digest(b"bridge"),
+    )
+}
+
+/// al-lsp loads the bridge into its own process, so a substituted bridge in an
+/// otherwise good archive must not pass.
+#[test]
+fn a_changed_bridge_assembly_is_refused() {
+    let files = vec![("bridge/AlBridge.dll".to_string(), b"substituted".to_vec())];
+    let error = check_bridge_files(&bridge_listing(), "al-linux-x86_64.tar.gz", &files)
+        .expect_err("a substituted bridge must be refused");
+    assert!(error.contains("Checksum mismatch"), "{error}");
+}
+
+#[test]
+fn a_bridge_file_the_listing_does_not_name_is_refused() {
+    let files = vec![
+        ("bridge/AlBridge.dll".to_string(), b"bridge".to_vec()),
+        ("bridge/Extra.dll".to_string(), b"added".to_vec()),
+    ];
+    let error = check_bridge_files(&bridge_listing(), "al-linux-x86_64.tar.gz", &files)
+        .expect_err("an unlisted assembly must be refused");
+    assert!(error.contains("bridge/Extra.dll"), "{error}");
+}
+
+#[test]
+fn a_listed_bridge_file_that_was_not_extracted_is_refused() {
+    let error = check_bridge_files(&bridge_listing(), "al-linux-x86_64.tar.gz", &[])
+        .expect_err("a missing bridge must be refused");
+    assert!(error.contains("not extracted"), "{error}");
+}
+
+#[test]
+fn the_listed_bridge_passes() {
+    let files = vec![("bridge/AlBridge.dll".to_string(), b"bridge".to_vec())];
+    assert_eq!(
+        check_bridge_files(&bridge_listing(), "al-linux-x86_64.tar.gz", &files),
+        Ok(true)
+    );
+}
+
+/// A release made before the bridge was hashed lists no bridge file, and its
+/// executables are still checked.
+#[test]
+fn a_listing_without_bridge_entries_skips_the_bridge_check() {
+    let listing = format!("{}  al-linux-x86_64.tar.gz/al-lsp\n", digest(b"server"));
+    let files = vec![("bridge/AlBridge.dll".to_string(), b"anything".to_vec())];
+    assert_eq!(
+        check_bridge_files(&listing, "al-linux-x86_64.tar.gz", &files),
+        Ok(false)
+    );
 }

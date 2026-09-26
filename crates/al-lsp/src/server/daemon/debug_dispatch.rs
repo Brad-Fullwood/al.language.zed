@@ -259,6 +259,28 @@ pub(in crate::server) fn authorize_launch_target(
     )
 }
 
+/// Authorise a live Business Central test run against the launch
+/// configuration it picked, and keep `acceptInvalidCerts` only where the
+/// authorisation grants it.
+///
+/// The test runner sends `BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`,
+/// from the environment. The environment is the user's, but the server comes
+/// from a launch file the repository carries, which is the case `publish` is
+/// authorised for. `tests.run*` and the Run Test code lens both call this.
+pub(crate) fn authorize_live_test_target(
+    project_root: &std::path::Path,
+    config: &mut al_bc::launch::BcServerConfig,
+) -> Result<(), String> {
+    let authorization = al_project::trust::authorize_cached_credential(
+        project_root,
+        &al_project::trust::BcTarget::from_launch(config),
+        al_project::trust::CredentialKind::Environment,
+        al_project::trust::TargetSource::Repository,
+    )?;
+    config.accept_invalid_certs &= authorization.may_accept_invalid_certs;
+    Ok(())
+}
+
 /// The bearer token a debug configuration authenticates with, and the
 /// authorisation that decides whether it may be spent on that target.
 ///

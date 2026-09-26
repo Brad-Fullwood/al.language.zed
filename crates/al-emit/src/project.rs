@@ -567,6 +567,12 @@ fn elapsed_ns(started: std::time::Instant) -> u64 {
 /// directory into itself) previously recursed forever, aborting the native
 /// build with a stack overflow instead of failing cleanly or simply not
 /// re-visiting the same directory twice.
+///
+/// A symlink, to a directory or to a file, is skipped, which is the rule the
+/// workspace index follows (`al_source::file_index::collect_al_files`). The
+/// build used to follow them, so a clone could ship `src/shared` as a link to
+/// a sibling checkout and have that source compiled into the `.app` and
+/// published, while the index and every query showed nothing there.
 fn collect_al_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), EmitError> {
     let mut visited = std::collections::HashSet::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -594,7 +600,13 @@ fn collect_al_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), EmitError>
                 ))
             })?;
             let p = e.path();
-            if p.is_dir() {
+            let file_type = e.file_type().map_err(|e| {
+                EmitError::Project(format!("inspecting source entry {}: {e}", p.display()))
+            })?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
                 // Skip dot-dirs (.alpackages, .snapshots, .git, .vscode, …): alc does
                 // not compile sources under them, and scanning the whole project root
                 // would otherwise descend into the symbol-package cache.
@@ -603,7 +615,7 @@ fn collect_al_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), EmitError>
                     continue;
                 }
                 stack.push(p);
-            } else if p.extension().and_then(|x| x.to_str()) == Some("al") {
+            } else if file_type.is_file() && p.extension().and_then(|x| x.to_str()) == Some("al") {
                 out.push(p);
             }
         }
@@ -1376,5 +1388,35 @@ pagecustomization "Local Card Custom" customizes "Local Card"
             vec!["Root.al".to_string(), "Sub.al".to_string()],
             "each file must be discovered exactly once despite the cycle"
         );
+    }
+
+    /// The build compiles what the index shows. A linked directory or a linked
+    /// `.al` file pointing out of the project is not source the index has, so
+    /// the build does not package it either.
+    #[test]
+    #[cfg(unix)]
+    fn collect_al_files_skips_links_out_of_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        let sibling = dir.path().join("sibling");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(project.join("src/Own.al"), "codeunit 1 Own {}").unwrap();
+        std::fs::write(sibling.join("Private.al"), "codeunit 2 Private {}").unwrap();
+        std::os::unix::fs::symlink(&sibling, project.join("src/shared")).unwrap();
+        std::os::unix::fs::symlink(
+            sibling.join("Private.al"),
+            project.join("src/Setup.Codeunit.al"),
+        )
+        .unwrap();
+
+        let mut files = Vec::new();
+        collect_al_files(&project, &mut files).unwrap();
+
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["Own.al".to_string()]);
     }
 }

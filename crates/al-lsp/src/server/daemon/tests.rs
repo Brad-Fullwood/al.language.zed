@@ -336,7 +336,7 @@ mod dispatch_tests {
 
         let mut checked = 0;
         for dispatcher in DISPATCHERS {
-            if dispatcher.path == PathUse::None {
+            if !matches!(dispatcher.path, PathUse::Read | PathUse::Write) {
                 continue;
             }
             checked += 1;
@@ -380,6 +380,98 @@ mod dispatch_tests {
             checked >= 15,
             "only {checked} dispatchers declare a path parameter"
         );
+    }
+
+    /// Every method that takes a path in a parameter other than `uri`/`file`
+    /// refuses one outside the project, and in particular a `.g.xlf` the
+    /// caller names outside it is neither read nor replaced.
+    #[tokio::test]
+    async fn every_named_path_dispatcher_refuses_a_path_outside_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let (workspace, _) = project_with_doc(&root);
+        let workspace = std::sync::Arc::new(workspace);
+        let outside = dir.path().join("outside.xlf");
+        let original = r#"<xliff version="1.2"><file original="x"></file></xliff>"#;
+        std::fs::write(&outside, original).unwrap();
+        let outside_dir = dir.path().join("elsewhere");
+        let shutdown = Notify::new();
+
+        let mut checked = BTreeSet::new();
+        for dispatcher in DISPATCHERS {
+            if dispatcher.path != PathUse::Named {
+                continue;
+            }
+            let params = serde_json::json!({
+                "xlf": outside.to_str().unwrap(),
+                "generated": outside.to_str().unwrap(),
+                "from": outside.to_str().unwrap(),
+                "to": outside.to_str().unwrap(),
+                "dir": outside_dir.to_str().unwrap(),
+                "name": "Scaffold",
+                "publisher": "Test",
+            });
+            let response = dispatch_request(
+                &workspace,
+                Request::new(1, dispatcher.method, Some(params)),
+                &shutdown,
+            )
+            .await;
+            let error = response.error.unwrap_or_else(|| {
+                panic!(
+                    "{} answered for a path outside the project",
+                    dispatcher.method
+                )
+            });
+            assert!(
+                error.message.contains("outside the project"),
+                "{} must refuse an outside path: {error:?}",
+                dispatcher.method
+            );
+            checked.insert(dispatcher.method);
+        }
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            original,
+            "a refused method rewrote the file"
+        );
+        assert!(
+            !outside_dir.exists(),
+            "a refused method created a directory"
+        );
+        for method in ["xlf.refresh", "xlf.untranslated", "xlf.suggest"] {
+            assert!(checked.contains(method), "{method} declares no path use");
+        }
+    }
+
+    /// `xlf.generate` writes into the project it serves, and a `project`
+    /// naming any other directory is refused rather than written under.
+    #[tokio::test]
+    async fn xlf_generate_refuses_a_project_other_than_the_loaded_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("app.json"), r#"{"name":"Other"}"#).unwrap();
+        let (workspace, _) = project_with_doc(&root);
+        let workspace = std::sync::Arc::new(workspace);
+
+        let response = dispatch_request(
+            &workspace,
+            Request::new(
+                1,
+                "xlf.generate",
+                Some(serde_json::json!({ "project": elsewhere.to_str().unwrap() })),
+            ),
+            &Notify::new(),
+        )
+        .await;
+
+        let error = response.error.expect("another project is refused");
+        assert_eq!(error.code, error_codes::PATH_NOT_AUTHORIZED, "{error:?}");
+        assert!(!elsewhere.join("Translations").exists());
     }
 
     /// The daemon and `al-explorer` agree on which methods take `text` because
@@ -472,6 +564,35 @@ mod dispatch_tests {
         }
     }
 
+    /// `downloadSymbols` renames packages into `.alpackages`, so a clone that
+    /// ships it as a link out of the project would have the daemon write
+    /// there. It is refused before any download, NuGet or server.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn download_symbols_refuses_a_linked_alpackages_in_an_untrusted_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(root.join("app.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(".alpackages")).unwrap();
+        let workspace = al_workspace::Workspace::new();
+        set_test_project_root(&workspace, &root);
+        let workspace = std::sync::Arc::new(workspace);
+
+        let response = dispatch_request(
+            &workspace,
+            Request::new(1, "downloadSymbols", Some(serde_json::json!({}))),
+            &Notify::new(),
+        )
+        .await;
+
+        let error = response.error.expect("the linked folder is refused");
+        assert!(error.message.contains("symbolic link"), "{error:?}");
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    }
+
     /// Which methods reach a Business Central credential is a decision, not a
     /// detail: adding one to the dispatch table has to be deliberate, and the
     /// trust documentation names the same set.
@@ -487,7 +608,12 @@ mod dispatch_tests {
             BTreeSet::from([
                 "debug",
                 "downloadSymbols",
+                "profiling",
                 "publish",
+                "snapshot",
+                "tests.run",
+                "tests.run_auto",
+                "tests.run_batch",
                 "tests.snapshot_capture",
                 "tests.snapshot_replay",
             ]),

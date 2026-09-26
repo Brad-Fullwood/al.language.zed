@@ -402,7 +402,7 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
     // does not drop anything), and the function takes `project.write()` once
     // a package has been downloaded, so every successful download waited on
     // its own guard forever and the caller never got a response.
-    let (all_deps, dest, project_configs, configured_packages) = {
+    let (project_root, all_deps, dest, project_configs, configured_packages) = {
         let project = match workspace.project.try_read() {
             Ok(guard) => guard,
             Err(_) => {
@@ -429,12 +429,31 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
             };
         };
         (
+            project.root.clone(),
             project.all_dependencies(),
             project.packages_dir.clone(),
             project.server_configs.clone(),
             project.packages.clone(),
         )
     };
+
+    // Packages are renamed into `dest`. A `.alpackages` the repository ships
+    // as a link out of the project makes that a write outside it, which
+    // containment and the trust gate already refuse in their own spellings.
+    if al_project::trust::escapes_untrusted_project(&project_root, &dest) {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            &format!(
+                "Refusing to download symbols into {}: it is inside this project but resolves \
+                 outside it through a symbolic link, and the project is not trusted. To read the \
+                 configuration and decide, the user runs this in a terminal: {} --show {}",
+                al_project::trust::one_line(&dest.display().to_string()),
+                al_project::trust::TRUST_COMMAND,
+                al_project::trust::one_line(&project_root.display().to_string())
+            ),
+        );
+    }
 
     if all_deps.is_empty() {
         return Response {

@@ -534,6 +534,9 @@ pub(crate) fn snapshot_is_current(
 ///
 /// Shared between `compute_diagnostics` (pull) and `publish_diagnostics` (push Phase 2).
 async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<Diagnostic> {
+    // The analyzers below are loaded into this process, so they come from the
+    // trust decision as it stands now.
+    server.refresh_trust().await;
     let (
         enable_analysis,
         bg_analysis,
@@ -937,24 +940,39 @@ pub fn semantic_to_diagnostic(entry: &crate::semantic::DiagnosticEntry) -> Diagn
 mod tests {
     use super::*;
 
+    /// The semantic bridge loads the resolved assemblies into the language
+    /// server itself, so a name the user wrote must not resolve to a DLL an
+    /// untrusted clone ships in `.netpackages` until the project is trusted.
     #[test]
-    fn semantic_analyzer_resolution_preserves_builtins_and_discovers_custom_names() {
+    #[serial_test::serial]
+    fn semantic_analyzer_resolution_preserves_builtins_and_needs_trust_for_project_copies() {
+        let config = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", config.path());
+
         let project = tempfile::tempdir().unwrap();
         let dll = project
             .path()
             .join(".netpackages/businesscentral.lintercop/1.0.0/BusinessCentral.LinterCop.dll");
         std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
         std::fs::write(&dll, b"analyzer").unwrap();
+        let requested = [
+            "CodeCop".to_string(),
+            "BusinessCentral.LinterCop".to_string(),
+        ];
 
-        let resolved = resolve_semantic_analyzer_entries(
-            &[
-                "CodeCop".to_string(),
-                "BusinessCentral.LinterCop".to_string(),
-            ],
-            project.path(),
-            &[],
-        )
-        .unwrap();
+        let untrusted = resolve_semantic_analyzer_entries(&requested, project.path(), &[]);
+        let granted = al_project::trust::grant(project.path()).map(|_| ());
+        let trusted = resolve_semantic_analyzer_entries(&requested, project.path(), &[]);
+        match previous {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+
+        let error = untrusted.expect_err("the clone's copy must not be loaded");
+        assert!(error.contains("not trusted"), "{error}");
+        granted.unwrap();
+        let resolved = trusted.unwrap();
         assert_eq!(resolved[0], "CodeCop");
         assert_eq!(
             resolved[1],

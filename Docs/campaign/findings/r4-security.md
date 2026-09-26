@@ -70,7 +70,12 @@ Earlier rounds, not repeated here: `r1-extension-ci-security.md`, `r2-security.m
   check in al-dap (or pass an authoriser closure in from `al-lsp.rs` beside `acquire_token`) so
   every DAP entry point shares it. Add a DAP-level test that an untrusted project with an
   on-premises `http://` server gets a failed launch response and no request reaches the mock.
-- status: open
+- status: fixed 9961e25c. Both DAP entry points run `dap_mode::authorize_debug_scenario`
+  (`authorize_cached_credential`, scenario judged as a repository file, `acceptInvalidCerts`
+  only where granted) on launch and attach before any compile, token or request. Tests:
+  `dap_refuses_a_launch_the_authoriser_refuses_before_any_token_or_request`,
+  `dap_refuses_cached_token_for_an_untrusted_repository_server`,
+  `the_legacy_proxy_answers_a_refused_launch_instead_of_forwarding_it`.
 
 ### [SECURITY] high: `tests.run` and the Run Test code lens send the user's environment credentials to the repository's launch server, with an `http://` default
 
@@ -110,7 +115,10 @@ Earlier rounds, not repeated here: `r1-extension-ci-security.md`, `r2-security.m
   does when it parses the same string (`trust.rs` `BcTarget::endpoint`), so the check and the
   request agree on the scheme. Declare the three methods `[authorized]` and move them in
   `project-trust.md` from "caller brings its own credential" to the authorised list.
-- status: open
+- status: fixed 957d445c. `tests.run*` and the Run Test code lens call
+  `authorize_live_test_target` (`authorize_cached_credential`, `Environment`, `Repository`)
+  before any request, and the three methods are declared `[authorized]`. Test:
+  `tests_run_refuses_the_launch_server_of_an_untrusted_repository`.
 
 ### [SECURITY] medium: the authorisation reads a bare host as `https`, the request builders send to it as `http`
 
@@ -141,7 +149,11 @@ Earlier rounds, not repeated here: `r1-extension-ci-security.md`, `r2-security.m
   serve TLS in any deployment that sends credentials), and keep the check calling it so the two
   cannot drift again. Test: a trusted project with a bare non-loopback host is refused by
   `publish` and by `downloadSymbols` without the variable.
-- status: open
+- status: fixed e4fff85b. Decision: a scheme-less server is `https`. `server_with_scheme`
+  prepends `https://` and `BcTarget::endpoint`, the test runner and the debug session all read
+  the server through it, and a cleartext server is written `http://` with
+  `AL_ALLOW_INSECURE_BC_HTTP=1` off loopback (recorded in `project-trust.md`). Tests:
+  `a_bare_host_is_sent_as_https`, `a_bare_host_is_judged_as_the_https_url_the_request_uses`.
 
 ### [SECURITY] high: the four XLIFF methods take absolute paths with no containment, and `xlf.generate` writes through a repository symlink
 
@@ -180,7 +192,12 @@ Earlier rounds, not repeated here: `r1-extension-ci-security.md`, `r2-security.m
   anything that is not a regular file, rather than trusting `metadata.len()`. Extend the
   registry so a method that takes any path-valued parameter, not only `uri`/`file`, must
   declare it, and add these four to the containment test.
-- status: open
+- status: fixed dc8c6603. The XLIFF methods resolve `xlf`/`generated` through
+  `resolve_within_project` and read regular files capped on bytes read, `xlf.generate` takes
+  only the loaded project and writes by rename into a `Translations` inside it, and the
+  registry's new `[named]` capability puts them in a containment test. Tests:
+  `every_named_path_dispatcher_refuses_a_path_outside_the_project`,
+  `build_xliff_replaces_a_planted_link_instead_of_following_it`.
 
 ### [SECURITY] high: a user's own analyzer name resolves to a DLL the untrusted repository ships, on every compile path except `--validate`
 
@@ -222,7 +239,12 @@ Earlier rounds, not repeated here: `r1-extension-ci-security.md`, `r2-security.m
   `project_local_analyzers` in favour of the shared rule. Tests: an untrusted project with
   `packages/x/Foo.dll` and a user-level `Foo` resolves to the NuGet copy or to an error, from
   `al_compile::build` and from `resolve_semantic_analyzer_entries`.
-- status: open
+- status: fixed 2d889e93. `discover_custom_analyzer` decides trust itself and searches
+  `.netpackages`, `packages` and relative probing paths, or accepts a relative analyzer path,
+  only for a trusted project, and `project_local_analyzers` is gone. Tests:
+  `an_untrusted_project_cannot_supply_a_user_named_analyzer`,
+  `named_custom_analyzer_in_the_project_needs_trust`,
+  `semantic_analyzer_resolution_preserves_builtins_and_needs_trust_for_project_copies`.
 
 ### [SECURITY] medium: the trust digest covers the path of a repository-resident analyzer or `dotnet`, not the file, so a later commit swaps the code under an existing record
 
@@ -246,7 +268,13 @@ Earlier rounds, not repeated here: `r1-extension-ci-security.md`, `r2-security.m
   discovery could pick), so a changed binary makes the record `stale`. Print the hash in
   `trust --show` so the reviewer sees it is part of the record. Paths outside the project are
   the user's machine and can stay path-only.
-- status: open
+- status: fixed b39fff3b. A privileged path into the project is recorded with its file's SHA-256
+  (one hash over every `.dll` for a probing directory), each analyzer name that resolves to a
+  DLL under `.netpackages`, `packages` or a relative probing path is recorded with that DLL's
+  hash, `trust --show` prints them, and the daemon fingerprint stamps the `dotnet` host. Tests:
+  `a_replaced_analyzer_file_makes_the_record_stale`,
+  `a_replaced_dotnet_in_the_tree_makes_the_record_stale`,
+  `a_replaced_project_copy_of_a_named_analyzer_makes_the_record_stale`.
 
 ### [SECURITY] medium: a failed handshake proof is handled as a version mismatch, so it can be overridden and the replacement path continues past it
 
@@ -284,7 +312,14 @@ Earlier rounds, not repeated here: `r1-extension-ci-security.md`, `r2-security.m
   including the `shutdown` in the replace path. Treat `handshake_secret() == None` as a refusal
   on Windows, where the proof is the only control. The Windows owner check
   (`GetNamedPipeServerProcessId` plus a SID comparison) stays the real fix.
-- status: open
+- status: fixed f4a16d9b. The client authenticates before it compares builds: a wrong proof is
+  refused with its own error, `AL_ALLOW_MISMATCHED_DAEMON` does not reach it, no `shutdown` is
+  sent, a replacement must prove itself, a client with no expected identity and
+  `connect_existing` still check it, and on Windows a missing proof, key or nonce is refused.
+  The Windows pipe owner check stays open, as recorded in `current-limitations.md`. Tests:
+  `a_daemon_that_fails_the_proof_is_refused_and_never_asked_to_stop`,
+  `a_replacement_that_fails_the_proof_is_refused`,
+  `a_client_with_no_expected_identity_still_checks_the_proof`.
 
 ### [SECURITY] low: symbol download writes into `.alpackages` wherever it points, although containment stopped trusting a symlinked `.alpackages`
 
@@ -309,7 +344,12 @@ Earlier rounds, not repeated here: `r1-extension-ci-security.md`, `r2-security.m
   that resolves outside the root exactly like an untrusted `packageCachePath`: fall back to a
   real directory inside the project, or refuse the download with the advisory. One predicate
   for both, taken from `stays_inside_project`.
-- status: open
+- status: fixed b64aeabe. `trust::escapes_untrusted_project` is the one check for a folder
+  written inside the project that resolves outside it: discovery and
+  `configured_symbol_packages` do not read it and `downloadSymbols` refuses to write into it
+  until the project is trusted. Tests:
+  `download_symbols_refuses_a_linked_alpackages_in_an_untrusted_project`,
+  `a_linked_alpackages_is_not_read_for_an_untrusted_project`.
 
 ### [SECURITY] low: the per-binary digests the extension checks leave out the semantic bridge that al-lsp loads in process
 
@@ -330,7 +370,11 @@ Earlier rounds, not repeated here: `r1-extension-ci-security.md`, `r2-security.m
   `<archive>.binaries.sha256`, and have `verify_extracted_binaries` walk the extracted
   `bridge/` directory against the same list, refusing a file the list does not name. Until
   then, correct the comment to say which files are covered.
-- status: open
+- status: fixed 188695ea. Both packaging legs hash every staged file, and the extension checks
+  every extracted `bridge/` file against the listing, refusing one it does not name, when the
+  release's listing covers the bridge. Tests: `a_changed_bridge_assembly_is_refused`,
+  `a_bridge_file_the_listing_does_not_name_is_refused`,
+  `binary_checksum_asset_is_produced_by_the_release_workflow`.
 
 ### [SECURITY] low: `newProject` contains `dir` but then writes through symlinked subdirectories below it
 
@@ -351,7 +395,11 @@ Earlier rounds, not repeated here: `r1-extension-ci-security.md`, `r2-security.m
   link anywhere in the not-yet-existing tail), check existence with `symlink_metadata`, and
   create the temp file with `create_new(true)` so a planted temp name fails instead of being
   followed.
-- status: open
+- status: fixed d414d4ac. The scaffold refuses a planned destination with a symbolic link
+  anywhere below the target, checks existence with `symlink_metadata`, and opens its temp file
+  with `create_new`. Tests: `scaffold_refuses_to_write_through_a_linked_subdirectory`,
+  `scaffold_refuses_a_dangling_link_at_a_destination`,
+  `atomic_write_does_not_follow_a_planted_temp_file`.
 
 ### [DOCS] low: `project-trust.md` describes `snapshot` and `profiling` as ungated, and the code gates them
 
@@ -373,7 +421,10 @@ Earlier rounds, not repeated here: `r1-extension-ci-security.md`, `r2-security.m
   with `acceptInvalidCerts` taken from the launch configuration, and move `tests.run*` as the
   `tests.run` finding says. In `on_prem_url`, take the port from the URL, defaulting by scheme,
   so the check compares the port the client will use.
-- status: open
+- status: fixed 9d83f915. `project-trust.md` lists `snapshot` and `profiling` among the
+  authorised methods with the rule they follow, the dispatch table declares them `[authorized]`
+  so the registry test holds the doc to it, and `BcTarget::on_prem_url` takes the URL's own port
+  or its scheme's default. Test: `an_inline_url_is_judged_on_the_port_the_client_connects_to`.
 
 ### [SECURITY] low: the native build follows symlinks out of the project and packages what it finds
 
@@ -394,7 +445,8 @@ Earlier rounds, not repeated here: `r1-extension-ci-security.md`, `r2-security.m
 - fix: use the scan's rule in the emitter: skip symlinked entries (`DirEntry::file_type`, which
   does not follow), or share `al_source::file_index::collect_al_files` so the build compiles
   exactly the files the index shows.
-- status: open
+- status: fixed 08006336. The emitter reads each entry's own file type and skips links, the rule
+  the workspace index follows. Test: `collect_al_files_skips_links_out_of_the_project`.
 
 ### [SECURITY] medium: `al-explorer trust --yes --root <project>` lets any non-interactive caller grant trust, and the refusal an agent receives tells it to use that
 
@@ -420,7 +472,15 @@ Earlier rounds, not repeated here: `r1-extension-ci-security.md`, `r2-security.m
   through a separate, documented step the user performs once. Either way, remove the flag from the
   refusal message: a refusal addressed to a caller that has no terminal is, by construction,
   addressed to a script or an agent.
-- status: open
+- status: fixed ef0d4e27. Decision: `--yes` stays for CI, and the refusal for a call with no
+  terminal names no flag. `--yes` also needs `--digest`, the digest a person read with `trust
+  --show` (which now prints it), so a commit that changes a privileged value fails the job. The
+  digest is not a secret, as the review says: it pins what was reviewed, and does not stop an
+  agent that goes looking. A program running as the user can write the store itself, and
+  `project-trust.md` now says so and records the decision. Tests:
+  `the_refusal_does_not_name_the_flags_that_bypass_it`,
+  `yes_without_the_reviewed_digest_is_refused`,
+  `yes_with_a_digest_the_values_no_longer_match_is_refused`.
 
 ### [SECURITY] low: a revoke reaches the daemon on its next request but not a running language server
 
@@ -437,7 +497,10 @@ Earlier rounds, not repeated here: `r1-extension-ci-security.md`, `r2-security.m
 - fix: run the same fingerprint check in the LSP before each compile-shaped command and before
   semantic analysis resolves analyzers (the stat calls are cheap), or watch the trust store
   and re-gate on change. Say in `project-trust.md` which processes the revoke reaches.
-- status: open
+- status: fixed 06d1b41f. `AlServer::refresh_trust` takes the six-stat fingerprint before every
+  command and before semantic analysis resolves analyzers, and gates the editor's settings again
+  when it moved. `project-trust.md` says which processes a revoke reaches. Test:
+  `a_revoke_reaches_a_running_language_server`.
 
 ## Checked and sound
 

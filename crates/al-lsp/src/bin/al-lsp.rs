@@ -342,9 +342,13 @@ async fn run() {
         }
         let fi = file_index.clone();
         let fi2 = file_index.clone();
+        let authorize_root = PathBuf::from(&project_root);
 
         if let Err(e) = al_dap::dap::native_dap::run_native_dap(
             &project_root,
+            std::sync::Arc::new(move |config: &al_dap::dap::bc_debug::BcDebugConfig| {
+                al_lsp::server::dap_mode::authorize_debug_scenario(&authorize_root, config)
+            }),
             |tenant| async move {
                 match al_bc::http_auth::access_token_from_env().map_err(|e| e.to_string())? {
                     Some(token) => Ok(token),
