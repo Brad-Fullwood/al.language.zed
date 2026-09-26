@@ -791,6 +791,7 @@ pub fn supports_record_method(method: &str) -> bool {
             | "rename"
             | "testfield"
             | "validate"
+            | "istemporary"
     )
 }
 
@@ -831,6 +832,9 @@ pub(crate) fn dispatch_record_method(
     // view's filters select, into the buffer.
     if lower == "calcsums" {
         return dispatch_calcsums(table, handle, &nodes, source, ctx);
+    }
+    if lower == "istemporary" {
+        return Eval::Normal(Value::Boolean(table.temp_owner.is_some()));
     }
     // Validate(Field[, Value]): the first argument names a field.
     if lower == "validate" {
@@ -887,6 +891,29 @@ pub(crate) fn dispatch_record_method(
             Eval::Exit(v) => return Eval::Exit(v),
             // Expressions can't legally produce break/continue statements.
             cf @ (Eval::Break | Eval::Continue) => return cf,
+        }
+    }
+
+    // Insert, Modify, Delete and Rename raise the table's OnBefore…Event and
+    // OnAfter…Event for subscribers whatever RunTrigger says.
+    let table_event = match lower.as_str() {
+        "insert" => Some("Insert"),
+        "modify" => Some("Modify"),
+        "delete" => Some("Delete"),
+        "rename" => Some("Rename"),
+        _ => None,
+    };
+    let run_trigger = lower == "rename" || matches!(values.first(), Some(Value::Boolean(true)));
+    if let Some(operation) = table_event {
+        if let Err(error) = raise_table_event(
+            table,
+            handle,
+            &format!("OnBefore{operation}Event"),
+            run_trigger,
+            stack,
+            ctx,
+        ) {
+            return error;
         }
     }
 
@@ -957,7 +984,45 @@ pub(crate) fn dispatch_record_method(
     );
     let store = ctx.records.get_mut(&key).expect("store just ensured");
     store.put_view(handle, view);
+    let succeeded = matches!(result, Eval::Normal(ref value) if *value != Value::Boolean(false));
+    if let (Some(operation), true) = (table_event, succeeded) {
+        if let Err(error) = raise_table_event(
+            table,
+            handle,
+            &format!("OnAfter{operation}Event"),
+            run_trigger,
+            stack,
+            ctx,
+        ) {
+            return error;
+        }
+    }
     result
+}
+
+/// Raise table event `event` (`OnAfterInsertEvent`, ...) on the record on
+/// view `handle`: subscribers get it as `Rec` (sharing the view, so their
+/// changes are the caller's), with `xRec` and `RunTrigger`.
+fn raise_table_event(
+    table: &TableRef,
+    handle: u64,
+    event: &str,
+    run_trigger: bool,
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Result<(), Eval> {
+    let rec = record_value_on(table, handle);
+    let mut values = vec![rec.clone(), rec, Value::Boolean(run_trigger)];
+    crate::interpreter::dispatch::events::raise(
+        "table",
+        &table.name,
+        event,
+        "",
+        &["Rec", "xRec", "RunTrigger"],
+        &mut values,
+        stack,
+        ctx,
+    )
 }
 
 /// The record-method body proper, operating on a taken-out view so early
@@ -1360,9 +1425,29 @@ fn dispatch_validate(
             return eval_error(error);
         }
     }
-    match crate::interpreter::dispatch::table_code::run_table_code(
+    let validate_event = |event: &str, stack: &mut ScopeStack, ctx: &mut DispatchCtx| {
+        let mut values = vec![
+            record_value_on(table, handle),
+            x_rec.clone(),
+            Value::Integer(0),
+        ];
+        crate::interpreter::dispatch::events::raise(
+            "table",
+            &table.name,
+            event,
+            &field_name,
+            &["Rec", "xRec", "CurrFieldNo"],
+            &mut values,
+            stack,
+            ctx,
+        )
+    };
+    if let Err(error) = validate_event("OnBeforeValidateEvent", stack, ctx) {
+        return error;
+    }
+    if let Some(error @ Eval::Error(_)) = crate::interpreter::dispatch::table_code::run_table_code(
         record_value_on(table, handle),
-        x_rec,
+        x_rec.clone(),
         crate::interpreter::dispatch::table_code::TableCode::FieldTrigger {
             field: &field_name,
             trigger: "OnValidate",
@@ -1371,8 +1456,11 @@ fn dispatch_validate(
         stack,
         ctx,
     ) {
-        Some(error @ Eval::Error(_)) => error,
-        _ => Eval::Normal(Value::Empty),
+        return error;
+    }
+    match validate_event("OnAfterValidateEvent", stack, ctx) {
+        Ok(()) => Eval::Normal(Value::Empty),
+        Err(error) => error,
     }
 }
 
@@ -1392,30 +1480,13 @@ fn check_table_relation(
     else {
         return Ok(());
     };
-    // Keywords outside quoted names: `"Gift Card"` is a table, not an `if`.
-    let unquoted: String = relation
-        .split('"')
-        .step_by(2)
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_lowercase();
-    let conditional = unquoted.contains('(')
-        || unquoted
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|word| matches!(word, "where" | "if" | "else"));
-    if conditional {
+    let Some((target, target_field)) =
+        crate::interpreter::dispatch::table_code::relation_target(&relation)
+    else {
         return Err(format!(
             "Validate: the TableRelation of {field_name} ('{relation}') needs live Business Central to check"
         ));
-    }
-    let (target, target_field) = match relation.split_once('.') {
-        Some((target, field)) => (
-            target.trim(),
-            Some(field.trim().unquote_identifier().into_owned()),
-        ),
-        None => (relation.trim(), None),
     };
-    let target = target.unquote_identifier().into_owned();
     let target_ref = TableRef::persistent(target.clone());
     let key = ensure_store(ctx, &target_ref).map_err(|_| {
         format!(

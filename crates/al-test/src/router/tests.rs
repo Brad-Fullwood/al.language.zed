@@ -410,16 +410,45 @@ end;
     );
 }
 
+/// Table code runs locally now, so a table that declares triggers is no
+/// longer refused outright: its triggers and procedures are classified like
+/// any reachable code, and one that needs BC still routes the test there.
 #[test]
-fn table_triggers_are_routed_to_live_bc() {
+fn table_code_is_classified_like_reachable_code() {
     let workspace = Workspace::new();
     workspace.file_index.add_file(
         std::path::PathBuf::from("/tmp/TriggeredEntry.Table.al"),
         r#"table 50155 "Triggered Entry"
 {
+fields
+{
+    field(1; "No."; Code[20]) { }
+    field(2; Name; Text[50])
+    {
+        trigger OnValidate()
+        begin
+            TestField("No.");
+        end;
+    }
+}
+keys { key(PK; "No.") { } }
+trigger OnInsert()
+begin
+    Name := UpperCase(Name);
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/PostingEntry.Table.al"),
+        r#"table 50158 "Posting Entry"
+{
 fields { field(1; "No."; Code[20]) { } }
 keys { key(PK; "No.") { } }
-trigger OnInsert() begin end;
+trigger OnDelete()
+begin
+    Page.RunModal(0);
+end;
 }"#
         .to_string(),
     );
@@ -432,18 +461,50 @@ Subtype = Test;
 procedure Inserts()
 var Entry: Record "Triggered Entry";
 begin
-    Entry.Insert();
+    Entry."No." := 'A';
+    Entry.Validate(Name, 'x');
+    Entry.Insert(true);
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/PostingTests.Codeunit.al"),
+        r#"codeunit 50159 "Posting Tests"
+{
+Subtype = Test;
+[Test]
+procedure Deletes()
+var Entry: Record "Posting Entry";
+begin
+    Entry.Delete(true);
 end;
 }"#
         .to_string(),
     );
     let results = classify_all(&workspace).unwrap();
-    let result = &results[0];
-    assert_eq!(result.decision, RoutingDecision::LiveBc);
-    assert!(result
-        .reasons
+    let local = results
         .iter()
-        .any(|reason| reason.message.contains("triggers")));
+        .find(|result| result.method_name == "Inserts")
+        .expect("insert classification");
+    assert_eq!(
+        local.decision,
+        RoutingDecision::InterpRecord,
+        "locally supported table code stays local: {:?}",
+        local.reasons
+    );
+    let live = results
+        .iter()
+        .find(|result| result.method_name == "Deletes")
+        .expect("delete classification");
+    assert_eq!(live.decision, RoutingDecision::LiveBc);
+    assert!(
+        live.reasons.iter().any(|reason| reason
+            .message
+            .contains("reachable procedure calls Page.RunModal")),
+        "unexpected reasons: {:?}",
+        live.reasons
+    );
 }
 
 #[test]
@@ -1124,5 +1185,150 @@ end;
         RoutingDecision::Interp,
         "TextBuilder and Guid builtins run locally: {:?}",
         result.reasons
+    );
+}
+
+/// The router follows an event publisher to its subscribers; the local
+/// runtime now runs them, so such a test stays local and its subscriber's
+/// body is classified like any reachable code.
+#[test]
+fn published_event_subscribers_are_reached_and_run_locally() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Pub.Codeunit.al"),
+        r#"codeunit 50170 Publisher
+{
+procedure Post(var Total: Integer)
+begin
+    OnBeforePost(Total);
+end;
+
+[IntegrationEvent(false, false)]
+local procedure OnBeforePost(var Total: Integer)
+begin
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Sub.Codeunit.al"),
+        r#"codeunit 50171 Subscriber
+{
+[EventSubscriber(ObjectType::Codeunit, Codeunit::Publisher, 'OnBeforePost', '', false, false)]
+local procedure AddTen(var Total: Integer)
+begin
+    Total += 10;
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/PubTests.Codeunit.al"),
+        r#"codeunit 50172 "Pub Tests"
+{
+Subtype = Test;
+[Test]
+procedure SubscriberAdds()
+var
+    P: Codeunit Publisher;
+    Total: Integer;
+begin
+    P.Post(Total);
+    if Total <> 10 then
+        Error('subscriber did not run');
+end;
+}"#
+        .to_string(),
+    );
+    let result = classify_all(&workspace).unwrap().remove(0);
+    assert_eq!(
+        result.decision,
+        RoutingDecision::Interp,
+        "{:?}",
+        result.reasons
+    );
+}
+
+/// Validate checks the field's TableRelation, which the local runtime can
+/// do only for a plain relation to a workspace table.
+#[test]
+fn validate_on_a_relation_outside_the_workspace_routes_to_live_bc() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Loyalty.Table.al"),
+        r#"table 50190 "Loyalty Card"
+{
+fields
+{
+    field(1; "No."; Code[20]) { }
+    field(2; "Customer No."; Code[20]) { TableRelation = Customer; }
+    field(3; "Card No."; Code[20]) { TableRelation = "Loyalty Card"."No."; }
+}
+keys { key(PK; "No.") { } }
+
+procedure Renew()
+begin
+    Validate("Card No.", "No.");
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/LoyaltyTests.Codeunit.al"),
+        r#"codeunit 50191 "Loyalty Tests"
+{
+Subtype = Test;
+[Test]
+procedure ValidatesLocalRelation()
+var Card: Record "Loyalty Card";
+begin
+    Card.Validate("Card No.", 'X');
+    Card.Renew();
+end;
+
+[Test]
+procedure ValidatesCustomer()
+var Card: Record "Loyalty Card";
+begin
+    Card.Validate("Customer No.", '10000');
+end;
+}"#
+        .to_string(),
+    );
+    let results = classify_all(&workspace).unwrap();
+    // Both tests share the codeunit, so the Customer relation takes both to
+    // live BC; the reason names the relation that forced it.
+    let customer = results
+        .iter()
+        .find(|result| result.method_name == "ValidatesCustomer")
+        .expect("customer classification");
+    assert_eq!(customer.decision, RoutingDecision::LiveBc);
+    assert!(
+        customer.reasons.iter().any(|reason| reason
+            .message
+            .contains("validates Customer No., whose TableRelation to 'Customer' is outside the workspace")),
+        "unexpected reasons: {:?}",
+        customer.reasons
+    );
+    let local = results
+        .iter()
+        .find(|result| result.method_name == "ValidatesLocalRelation")
+        .expect("local classification");
+    assert!(
+        !local
+            .reasons
+            .iter()
+            .any(|reason| reason.message.contains("Card No.")
+                || reason.message.contains("unsupported Record.Renew")),
+        "a workspace relation and a table procedure are local: {:?}",
+        local.reasons
+    );
+    assert!(
+        local
+            .reasons
+            .iter()
+            .any(|reason| reason.message.contains("calls table procedure Card.Renew")),
+        "{:?}",
+        local.reasons
     );
 }

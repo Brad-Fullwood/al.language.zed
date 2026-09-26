@@ -3065,3 +3065,127 @@ fn table_triggers_validate_and_procedures_run_on_the_record() {
         "{missing}"
     );
 }
+
+const EVENT_PUBLISHER: &str = r#"codeunit 50170 Publisher
+{
+    procedure Post(var Total: Integer; Label: Text): Integer
+    begin
+        OnBeforePost(Total, Label);
+        exit(Total);
+    end;
+
+    [IntegrationEvent(false, false)]
+    local procedure OnBeforePost(var Total: Integer; Label: Text)
+    begin
+    end;
+}
+"#;
+
+const EVENT_SUBSCRIBERS: &str = r#"codeunit 50171 Subscribers
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::Publisher, 'OnBeforePost', '', false, false)]
+    local procedure AddTen(var Total: Integer)
+    begin
+        Total += 10;
+    end;
+
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::50170, 'OnBeforePost', '', false, false)]
+    local procedure AddLabelLength(Label: Text; var Total: Integer)
+    begin
+        Total += StrLen(Label);
+    end;
+
+    [EventSubscriber(ObjectType::Table, Database::"Tour Member", 'OnAfterInsertEvent', '', false, false)]
+    local procedure StampInsert(var Rec: Record "Tour Member"; RunTrigger: Boolean)
+    begin
+        if Rec.IsTemporary() then
+            exit;
+        Rec."Last Balance" := 999;
+        Rec.Modify();
+    end;
+
+    [EventSubscriber(ObjectType::Table, Database::"Tour Member", 'OnBeforeValidateEvent', 'Name', false, false)]
+    local procedure RefuseBlankName(var Rec: Record "Tour Member")
+    begin
+        if Rec.Name = '' then
+            Error('A name is required');
+    end;
+}
+"#;
+
+const MANUAL_SUBSCRIBERS: &str = r#"codeunit 50173 "Manual Subscribers"
+{
+    EventSubscriberInstance = Manual;
+
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::Publisher, 'OnBeforePost', '', false, false)]
+    local procedure AddThousand(var Total: Integer)
+    begin
+        Total += 1000;
+    end;
+}
+"#;
+
+const EVENT_PROBE: &str = r#"codeunit 50172 "Event Probe"
+{
+    procedure PostRunsSubscribers(): Integer
+    var
+        P: Codeunit Publisher;
+        Total: Integer;
+    begin
+        Total := 1;
+        P.Post(Total, 'abc');
+        exit(Total);
+    end;
+
+    procedure InsertRaisesTableEvent(): Text
+    var
+        Member: Record "Tour Member";
+        Temp: Record "Tour Member" temporary;
+    begin
+        Member."No." := 'M1';
+        Member.Insert();
+        Member.Get('M1');
+        Temp."No." := 'T1';
+        Temp.Insert();
+        Temp.Get('T1');
+        exit(Format(Member."Last Balance") + '|' + Format(Temp."Last Balance"));
+    end;
+
+    procedure ValidateRaisesFieldEvent()
+    var
+        Member: Record "Tour Member";
+    begin
+        Member.Validate(Name, '');
+    end;
+}
+"#;
+
+/// Subscribers never ran locally, yet the router followed the publisher's
+/// edges to them and kept such tests local: a test that relied on one
+/// failed here and passed on BC.
+#[test]
+fn events_run_their_automatic_subscribers() {
+    let call = |proc: &str| {
+        run(
+            &[
+                ("/ws/Publisher.al", EVENT_PUBLISHER),
+                ("/ws/Subscribers.al", EVENT_SUBSCRIBERS),
+                ("/ws/Manual.al", MANUAL_SUBSCRIBERS),
+                ("/ws/Member.al", MEMBER_TABLE),
+                ("/ws/Item.al", ITEM_TABLE),
+                ("/ws/Probe.al", EVENT_PROBE),
+            ],
+            "Event Probe",
+            proc,
+            vec![],
+        )
+    };
+    // 1 + 10 (by name) + 3 (by ID, 'abc'); the manual subscriber is unbound.
+    assert_eq!(ok(call("PostRunsSubscribers")), Value::Integer(14));
+    assert_eq!(
+        ok(call("InsertRaisesTableEvent")),
+        Value::Text("999|0".into())
+    );
+    let refused = error_message(call("ValidateRaisesFieldEvent"));
+    assert!(refused.contains("A name is required"), "{refused}");
+}

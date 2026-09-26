@@ -149,8 +149,57 @@ pub(crate) fn field_table_relation(
 ) -> Option<String> {
     let path = ctx.source.find_by_object_name(table_name)?;
     let (text, tree) = ctx.source.get_cached_parse(&path)?;
-    let source = text.as_bytes();
-    let object = find_table_object(tree.root_node(), source, table_name)?;
+    table_relation_in(tree.root_node(), text.as_bytes(), table_name, field)
+}
+
+/// A plain relation's target table and, when named, field: `Item` or
+/// `Item."No."`. `None` for a conditional or filtered relation
+/// (`where(...)`, `if (...) ... else ...`), which the local runtime cannot
+/// check.
+pub fn relation_target(relation: &str) -> Option<(String, Option<String>)> {
+    // Keywords outside quoted names: `"Gift Card"` is a table, not an `if`.
+    let unquoted: String = relation
+        .split('"')
+        .step_by(2)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    let conditional = unquoted.contains('(')
+        || unquoted
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| matches!(word, "where" | "if" | "else"));
+    if conditional {
+        return None;
+    }
+    let (target, field) = match split_outside_quotes(relation, '.') {
+        Some((target, field)) => (target, Some(field.trim().unquote_identifier().into_owned())),
+        None => (relation, None),
+    };
+    Some((target.trim().unquote_identifier().into_owned(), field))
+}
+
+/// Split at the first `separator` outside double quotes.
+fn split_outside_quotes(text: &str, separator: char) -> Option<(&str, &str)> {
+    let mut quoted = false;
+    for (at, c) in text.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            c if c == separator && !quoted => return Some((&text[..at], &text[at + 1..])),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The raw `TableRelation` of field `field` of table `table_name` in the
+/// parse tree `root`, if it declares one.
+pub fn table_relation_in(
+    root: tree_sitter::Node<'_>,
+    source: &[u8],
+    table_name: &str,
+    field: &str,
+) -> Option<String> {
+    let object = find_table_object(root, source, table_name)?;
     let field_body = field_section(object, source, field)?.child_by_field_name("body")?;
     let mut cursor = field_body.walk();
     let relation = field_body.named_children(&mut cursor).find_map(|child| {

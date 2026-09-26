@@ -294,8 +294,24 @@ pub(super) fn run_declaration(
     // it is defined in (which may differ from the caller's file), then
     // restore the caller's file when the call returns.
     let cov_prev_file = ctx.cov_enter_file(&path.to_string_lossy());
-    let result = crate::interpreter::eval_stmt::eval_stmt(body, source, stack, ctx);
+    let mut result = crate::interpreter::eval_stmt::eval_stmt(body, source, stack, ctx);
     ctx.cov_restore_file(cov_prev_file);
+    // Calling an event publisher raises its event: every subscriber runs
+    // with the publisher's arguments, and `var` parameters take the values
+    // they leave.
+    if !matches!(result, Eval::Error(_)) && super::events::is_publisher(proc_node, source) {
+        if let Err(error) = raise_published_event(
+            proc_node,
+            source,
+            object_name,
+            procedure,
+            &params,
+            stack,
+            ctx,
+        ) {
+            result = error;
+        }
+    }
     ctx.recursion_depth -= 1;
 
     // Record final values of `var` (by-reference) parameters so the caller
@@ -342,6 +358,60 @@ pub(super) fn run_declaration(
         Eval::Continue => eval_error("continue statement not inside a loop"),
         other => other,
     }
+}
+
+/// Raise the event `procedure` publishes, with the parameter values in the
+/// running frame, and store what subscribers leave in its `var` parameters.
+fn raise_published_event(
+    proc_node: tree_sitter::Node<'_>,
+    source: &[u8],
+    object_name: &str,
+    procedure: &str,
+    params: &[ParamDecl],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Result<(), Eval> {
+    let mut object = proc_node;
+    while object.kind() != "object_declaration" {
+        match object.parent() {
+            Some(parent) => object = parent,
+            None => break,
+        }
+    }
+    let kind = object
+        .child_by_field_name("kind")
+        .and_then(|kind| kind.utf8_text(source).ok())
+        .unwrap_or("codeunit")
+        .to_string();
+    let names: Vec<&str> = params.iter().map(|param| param.name.as_str()).collect();
+    let mut values: Vec<Value> = params
+        .iter()
+        .map(|param| {
+            stack
+                .top()
+                .and_then(|frame| frame.get(&param.name))
+                .cloned()
+                .unwrap_or(Value::Empty)
+        })
+        .collect();
+    super::events::raise(
+        &kind,
+        object_name,
+        procedure,
+        "",
+        &names,
+        &mut values,
+        stack,
+        ctx,
+    )?;
+    if let Some(frame) = stack.top_mut() {
+        for (param, value) in params.iter().zip(values) {
+            if param.is_var {
+                frame.bind(&param.name, value);
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn object_has_global_declarations(root: tree_sitter::Node<'_>) -> bool {

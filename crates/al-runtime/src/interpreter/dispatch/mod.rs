@@ -20,6 +20,7 @@
 
 pub mod datetime;
 pub mod dialog;
+pub mod events;
 pub mod frames;
 pub mod numeric;
 pub mod random;
@@ -179,6 +180,9 @@ pub struct DispatchCtx {
     /// instead of reallocating the string.
     #[doc(hidden)]
     pub expr_fragment_cache: HashMap<String, (Arc<str>, tree_sitter::Tree)>,
+    /// The workspace's event subscribers, indexed on first raise.
+    #[doc(hidden)]
+    pub event_subscribers: Option<Arc<events::SubscriberIndex>>,
 }
 
 /// Fixed default seed for the deterministic `Random` builtin.
@@ -204,6 +208,7 @@ impl DispatchCtx {
             work_date: None,
             random_state: DEFAULT_RANDOM_SEED,
             expr_fragment_cache: HashMap::new(),
+            event_subscribers: None,
         }
     }
 
