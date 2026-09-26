@@ -148,11 +148,12 @@ writing a sentence.
 
 ## Credentials
 
-Five daemon methods reach a credential the daemon holds, or send the user's own to a server
-the repository's launch file names, and all five go through one authorisation function:
-`debug` (the `start` command), `publish`, `downloadSymbols` from a BC server,
-`tests.snapshot_capture` and `tests.snapshot_replay`. The daemon's dispatch table declares
-which methods those are, and a test holds this list and that declaration together.
+Eight daemon methods reach a credential the daemon holds, or send the user's own to a
+server the repository's launch file names, and all eight go through one authorisation
+function: `debug` (the `start` command), `publish`, `downloadSymbols` from a BC server,
+`tests.run`, `tests.run_batch`, `tests.run_auto`, `tests.snapshot_capture` and
+`tests.snapshot_replay`. The daemon's dispatch table declares which methods those are, and a
+test holds this list and that declaration together.
 
 - Microsoft's Business Central online endpoints are always allowed. The endpoint is fixed, so
   a repository cannot redirect the token.
@@ -179,11 +180,12 @@ the repository carries: an on-premises server needs a trusted project, and
 `acceptInvalidCerts` is honoured only when the project's launch file sets it for the same
 server. A refused launch fails with the reason in the debug console.
 
-`publish` is in that list although it never reads the OAuth cache: it sends
-`BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`, from the environment. The environment
-is the user's own decision, but which server receives it is the repository's, so the target
-is authorised and the refusal says "Business Central credentials" rather than naming a cached
-token.
+`publish` and `tests.run*` are in that list although they never read the OAuth cache: they
+send `BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`, from the environment. The
+environment is the user's own decision, but which server receives it is the repository's, so
+the target is authorised and the refusal says "Business Central credentials" rather than
+naming a cached token. The Run Test code lens in the language server runs the same check
+before it starts a live test.
 
 ### Where the caller brings its own credential
 
@@ -194,9 +196,6 @@ calls them:
 - `snapshot` and `profiling` take `serverUrl`, `username`, `password` and their own
   `acceptInvalidCerts`, which is honoured because the caller chose both the server and the
   setting.
-- `tests.run`, `tests.run_batch` and `tests.run_auto` against live BC authenticate from
-  `BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`, against the launch configuration the
-  request names.
 - `debug start` with an explicit `accessToken` spends that token rather than the cached one.
   `acceptInvalidCerts` is still refused unless the project's own configuration asks for it
   and the project is trusted: turning off TLS verification is about the target, not the

@@ -1652,3 +1652,99 @@ end;
     );
     assert_eq!(result["executorPhase"], "interpreter", "{result}");
 }
+
+/// A workspace whose `.zed/debug.json` names the on-premises server at
+/// `server_uri`, with no source for the requested codeunit, so the router
+/// sends it to live Business Central.
+fn ws_with_live_launch_server(
+    tmp: &tempfile::TempDir,
+    server_uri: &str,
+) -> std::sync::Arc<Workspace> {
+    let url = url::Url::parse(server_uri).unwrap();
+    std::fs::write(tmp.path().join("app.json"), "{}").unwrap();
+    std::fs::create_dir_all(tmp.path().join(".zed")).unwrap();
+    std::fs::write(
+        tmp.path().join(".zed/debug.json"),
+        serde_json::json!([{
+            "name": "Local",
+            "type": "al",
+            "request": "launch",
+            "environmentType": "OnPrem",
+            "server": format!("{}://{}", url.scheme(), url.host_str().unwrap()),
+            "port": url.port(),
+            "serverInstance": "BC",
+            "authentication": "Windows",
+        }])
+        .to_string(),
+    )
+    .unwrap();
+    let ws = std::sync::Arc::new(empty_ws());
+    crate::server::daemon::set_test_project_root(&ws, tmp.path());
+    ws
+}
+
+/// `tests.run*` sends the user's `BC_USERNAME`/`BC_PASSWORD` or
+/// `BC_ACCESS_TOKEN` to the server the repository's launch file names, so an
+/// untrusted clone must not choose it. `publish` was already authorised for
+/// the same reason. The Windows configuration sends a request even with no
+/// credentials in the environment, so the mock sees any request that leaves.
+#[tokio::test]
+async fn tests_run_refuses_the_launch_server_of_an_untrusted_repository() {
+    let collector = wiremock::MockServer::start().await;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let ws = ws_with_live_launch_server(&tmp, &collector.uri());
+
+    let resp = dispatch_tests_run_batch(
+        &ws,
+        9,
+        &serde_json::json!({ "codeunitIds": [50199], "codeunitNames": ["Live Only"] }),
+    )
+    .await;
+
+    let error = resp.error.expect("the run must be refused");
+    assert!(error.message.contains("not trusted"), "{error:?}");
+    assert!(
+        collector
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty(),
+        "a request reached the repository's server"
+    );
+}
+
+/// Trusting the project is how the user says its launch server may receive
+/// their credentials, and then the run goes ahead.
+#[tokio::test]
+#[serial_test::serial]
+async fn tests_run_reaches_the_launch_server_of_a_trusted_repository() {
+    let config = tempfile::TempDir::new().unwrap();
+    let previous = std::env::var_os("XDG_CONFIG_HOME");
+    std::env::set_var("XDG_CONFIG_HOME", config.path());
+
+    let collector = wiremock::MockServer::start().await;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let ws = ws_with_live_launch_server(&tmp, &collector.uri());
+    al_project::trust::grant(tmp.path()).unwrap();
+
+    let _ = dispatch_tests_run_batch(
+        &ws,
+        10,
+        &serde_json::json!({ "codeunitIds": [50199], "codeunitNames": ["Live Only"] }),
+    )
+    .await;
+    let reached = !collector
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .is_empty();
+
+    match previous {
+        Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+        None => std::env::remove_var("XDG_CONFIG_HOME"),
+    }
+    assert!(
+        reached,
+        "the trusted project's own server was not contacted"
+    );
+}

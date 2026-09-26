@@ -23,6 +23,7 @@ mod process_memory;
 mod projection;
 mod scope;
 
+pub(crate) use debug_dispatch::authorize_live_test_target;
 pub(crate) use projection::list_target;
 pub(crate) use scope::accepts_scope;
 
@@ -1212,10 +1213,10 @@ dispatch_table! {
         "xlf.untranslated" [] => build_dispatch::dispatch_xlf_untranslated(id, &params),
         "xlf.suggest" [] => build_dispatch::dispatch_xlf_suggest(workspace, id, &params).await,
         "tests.discover" [] => build_dispatch::dispatch_tests_discover(workspace, id),
-        "tests.run" [] => build_dispatch::dispatch_tests_run(workspace, id, &params).await,
+        "tests.run" [authorized] => build_dispatch::dispatch_tests_run(workspace, id, &params).await,
         "tests.coverage" [] => build_dispatch::dispatch_tests_coverage(workspace, id),
-        "tests.run_batch" [] => build_dispatch::dispatch_tests_run_batch(workspace, id, &params).await,
-        "tests.run_auto" [] => build_dispatch::dispatch_tests_run_auto(workspace, id, &params).await,
+        "tests.run_batch" [authorized] => build_dispatch::dispatch_tests_run_batch(workspace, id, &params).await,
+        "tests.run_auto" [authorized] => build_dispatch::dispatch_tests_run_auto(workspace, id, &params).await,
         "tests.last_results" [] => {
             build_dispatch::dispatch_tests_last_results(workspace, id, &params).await
         },
