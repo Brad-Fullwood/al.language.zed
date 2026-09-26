@@ -1,7 +1,8 @@
 # Native `.app` Emitter & Build Pipeline
 
-**Modules:** `crates/al-emit/src/` (verification + emitter) + `crates/al-compile/src/`,
-`publish.rs`, `toolchain.rs`, `launch.rs`, `config.rs` · **Status:** ✅ shipped (verified native
+**Modules:** `crates/al-emit/src/` (verification + emitter), `crates/al-compile/src/lib.rs`,
+`crates/al-publish/src/lib.rs`, `crates/al-project/src/{toolchain,config}.rs`,
+`crates/al-bc/src/{launch,bc_client}.rs` · **Status:** ✅ shipped (verified native
 build is the default); `alc` compatibility/fallback retained
 
 The pure-Rust compiler back end produces a Business Central `.app` directly from source without
@@ -35,7 +36,7 @@ placed under `res/` are not copied; current `alc` 17 evidence omitted the measur
 `.res` input as well. Resource shapes outside these measured contracts use the
 explicit Microsoft compatibility profile.
 
-## Pipeline (`emit/`)
+## Pipeline (`crates/al-emit/src/`)
 
 | Stage | File | What it does |
 | --- | --- | --- |
@@ -69,7 +70,7 @@ Compatibility depends heavily on the shape and identifiers in `SymbolReference.j
   properties, page customization defaults, a report layout, and an app logo.
 - `.app` selection prefers the manifest-derived `{publisher}_{name}_{version}.app` name.
 
-## Build orchestration (`crates/al-compile/src/lib.rs`, `toolchain.rs`)
+## Build orchestration (`crates/al-compile/src/lib.rs`, `al-project/src/toolchain.rs`)
 
 `al-compile` wraps the Microsoft `dotnet alc` path for when it is requested: it runs the compiler in a
 per-invocation temporary directory and moves the completed `.app` into the project root. It is
@@ -118,10 +119,14 @@ remain `null`; native diagnostics preserve both endpoints.
 | --- | --- |
 | `ALN0000`–`ALN0002` | Native build infrastructure failure, AL syntax error, or a source file that is not valid UTF-8. |
 | `ALN0100`–`ALN0106` | Invalid JSON, missing/invalid identity fields, invalid ranges/dependencies, or duplicate dependency IDs. |
-| `ALN1001`–`ALN1007` | Duplicate/out-of-range object identity or missing dependency package. |
+| `ALN1001`–`ALN1003`, `ALN1007`, `ALN1008` | Duplicate object ID or name, an ID outside `idRanges`, a declared dependency with no loaded package, or two objects whose names map to the same package entry name. |
 | `ALN1101`–`ALN1107` | Duplicate fields, enum values, procedures/parameters, or invalid key/field-group field references. |
 | `ALN2001`–`ALN2004` | Unresolved extension target, interface, declared object subtype, or `SourceTable`. |
 | `ALN2101`–`ALN2106` | Unsupported permission object type, invalid permission flags, unresolved permission target, a missing local interface member, forbidden page-customization ToolTip, or a duplicate locally added page control. |
+| `ALN2201`–`ALN2211` | Local procedure contracts: no overload or more than one for the argument count, a Record passed to an Integer parameter, `Exit` with or without a value against the declared return, an incompatible literal return, a conditional `Exit(value)` with no unconditional return, `Break`/`Continue` outside a loop, an unknown local or Record method. |
+| `ALN2301` | An `[EventSubscriber]` whose parameters do not match a locally declared publisher. |
+| `ALN2401`–`ALN2405` | Body binding: unknown Record subtype, undeclared identifier, incompatible assignment, a Record field that neither the table nor any of its table extensions declares, an unknown field property. |
+| `ALN2501` | A report layout that names a file outside the project. |
 | `ALN3001`–`ALN3006` | Unreadable/corrupt artifact, missing/empty or duplicate entries, source-snapshot mismatch, generated metadata parse failure, or package identity mismatch. |
 
 `build_verified_app_from_project` preserves all structured diagnostics.
@@ -170,9 +175,9 @@ indexes; it does not claim an OS page-cache flush. Native builds publish their i
 index, verification, emission, artifact-check, and output-write phases. Microsoft `alc` exposes
 only total wall-clock time, so its total is never presented as a phase-equivalent comparison.
 
-## Publish (`publish.rs`, `launch.rs`, `bc_client.rs`)
+## Publish (`al-publish`, `al-bc/src/launch.rs`, `al-bc/src/bc_client.rs`)
 
-`publish.rs` resolves a `launch.json`/`.zed/debug.json` config, compiles (native by default), and
+`al-publish` resolves a `launch.json`/`.zed/debug.json` config, compiles (native by default), and
 uploads the `.app` to the BC dev API — optionally via **RAD** incremental deploy when `app.json` has
 an id, which must be a GUID. Each phase (`PublishPhase::Compile`/`Upload`/`Rad`) is tracked.
 `launch.rs` parses the debug configs and builds dev-endpoint URLs for on-prem vs cloud with tenant
