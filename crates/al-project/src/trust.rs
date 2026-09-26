@@ -591,6 +591,32 @@ fn stays_inside_project(path: &Path, project_root: &Path) -> bool {
     resolved.starts_with(&root) || resolved.starts_with(project_root)
 }
 
+/// Whether `path`, written inside the project, resolves outside it through a
+/// symbolic link the repository ships, while the project is not trusted.
+///
+/// `.alpackages` is where symbols are read from and downloaded to, and a clone
+/// can commit it as a link to any directory. The gate already refuses that
+/// shape spelled as `"al.packageCachePath": "./cache"`, through
+/// [`stays_inside_project`]. This is the same decision for the default folder
+/// and for every other folder path inside the project. A path written outside
+/// the project is the user's own and is not this function's business.
+#[must_use]
+pub fn escapes_untrusted_project(project_root: &Path, path: &Path) -> bool {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project_root.join(path)
+    };
+    let spelled_inside = absolute.starts_with(project_root)
+        || project_root
+            .canonicalize()
+            .is_ok_and(|root| absolute.starts_with(root));
+    if !spelled_inside || stays_inside_project(&absolute, project_root) {
+        return false;
+    }
+    !decide(project_root).is_ok_and(|decision| decision.is_trusted())
+}
+
 /// `path` with its deepest existing ancestor canonicalised and the rest
 /// re-appended, so a symlink anywhere along the path is followed even when the
 /// path itself does not exist yet.
@@ -2370,6 +2396,33 @@ mod tests {
             .find(|setting| setting.key == "al.dotnetPath")
             .unwrap();
         assert_eq!(dotnet.value, "/usr/bin/dotnet");
+    }
+
+    /// A clone that commits `.alpackages` as a link out of the project names a
+    /// directory outside it, the same as `"al.packageCachePath": "./cache"`
+    /// with `cache` a link, and needs trust the same way.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_package_folder_escapes_until_the_project_is_trusted() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings("{}");
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), project.path().join(".alpackages")).unwrap();
+        std::fs::create_dir_all(project.path().join("real")).unwrap();
+
+        let linked = project.path().join(".alpackages");
+        assert!(escapes_untrusted_project(project.path(), &linked));
+        assert!(!escapes_untrusted_project(
+            project.path(),
+            &project.path().join("real")
+        ));
+        assert!(
+            !escapes_untrusted_project(project.path(), outside.path()),
+            "a path written outside the project is the user's own"
+        );
+
+        grant(project.path()).unwrap();
+        assert!(!escapes_untrusted_project(project.path(), &linked));
     }
 
     #[test]

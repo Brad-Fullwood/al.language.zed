@@ -39,6 +39,13 @@ a future extension API that exposes `binary.env` does not widen an existing reco
 spellings are built-in tokens: the toolchain resolves them to Microsoft's own assemblies, so
 they are not gated.
 
+A repository can also point outside itself without a setting, by committing `.alpackages`
+as a symbolic link. A symbol folder written inside the project that resolves outside it is
+treated like `al.packageCachePath` outside the project: until the project is trusted its
+packages are not read, `downloadSymbols` refuses to write into it, and the daemon does not
+count it as a containment root. `al_project::trust::escapes_untrusted_project` is the one
+check.
+
 Everything else in a repository's settings applies without trust: formatting, inlay hints,
 `al.diagnosticsScope`, `al.enableNativeLint` and its per-rule overrides, `al.incrementalBuild`,
 `al.useOfficialCompiler`, `al.maxDocumentSizeBytes`, a ruleset or package folder inside the

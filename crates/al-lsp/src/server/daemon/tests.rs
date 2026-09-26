@@ -564,6 +564,35 @@ mod dispatch_tests {
         }
     }
 
+    /// `downloadSymbols` renames packages into `.alpackages`, so a clone that
+    /// ships it as a link out of the project would have the daemon write
+    /// there. It is refused before any download, NuGet or server.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn download_symbols_refuses_a_linked_alpackages_in_an_untrusted_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(root.join("app.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(".alpackages")).unwrap();
+        let workspace = al_workspace::Workspace::new();
+        set_test_project_root(&workspace, &root);
+        let workspace = std::sync::Arc::new(workspace);
+
+        let response = dispatch_request(
+            &workspace,
+            Request::new(1, "downloadSymbols", Some(serde_json::json!({}))),
+            &Notify::new(),
+        )
+        .await;
+
+        let error = response.error.expect("the linked folder is refused");
+        assert!(error.message.contains("symbolic link"), "{error:?}");
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    }
+
     /// Which methods reach a Business Central credential is a decision, not a
     /// detail: adding one to the dispatch table has to be deliberate, and the
     /// trust documentation names the same set.
