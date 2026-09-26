@@ -728,6 +728,78 @@ mod trust_gate_tests {
         assert_eq!(analyzers, vec!["${CodeCop}".to_string()]);
     }
 
+    /// The settings handler gated its copy while the project was trusted and
+    /// installed it after waiting on the generation guard. A revoke and a
+    /// command's `refresh_trust` in between stored the new fingerprint, so the
+    /// copy gated before the revoke went in with the repository's analyzer,
+    /// and every later `refresh_trust` returned early.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_revoke_during_a_settings_change_is_not_undone_by_its_install() {
+        let scratch = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", scratch.path());
+
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".vscode")).unwrap();
+        std::fs::write(
+            project.path().join(".vscode/settings.json"),
+            r#"{"al.codeAnalyzers": ["${CodeCop}", "./tools/Payload.dll"]}"#,
+        )
+        .unwrap();
+        al_project::trust::grant(project.path()).unwrap();
+
+        let (service, mut socket) = LspService::new(AlServer::new);
+        // `show_message` is sent before `initialize` too, and a send waits
+        // until the socket takes the message, so the socket is drained.
+        tokio::spawn(async move {
+            use futures::StreamExt;
+            while socket.next().await.is_some() {}
+        });
+        let server = service.inner();
+        server
+            .workspace_init_state
+            .send_replace(WorkspaceInitState::Ready);
+        let root = Url::from_file_path(project.path()).unwrap();
+        *server.root_uri.write().await = Some(root.clone());
+        let mut config = al_project::config::AlConfig::default();
+        gate_repository_settings(Some(&root), &mut config);
+        *server.workspace.config.write().await = config;
+
+        // The handler installs under the generation write guard, so a reader
+        // holding it keeps the handler waiting between its gate and its
+        // install.
+        let reader = server.workspace.generation_lock.read().await;
+        let change = server.did_change_configuration(DidChangeConfigurationParams {
+            settings: serde_json::json!({
+                "al": {"codeAnalyzers": ["${CodeCop}", "./tools/Payload.dll"]}
+            }),
+        });
+        let revoke = async move {
+            // The lock is fair: once the handler queues for the write guard,
+            // a new read guard is refused. The handler has gated its copy by
+            // then.
+            while server.workspace.generation_lock.try_read().is_ok() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            al_project::trust::revoke_project(&project.path().canonicalize().unwrap()).unwrap();
+            server.refresh_trust().await;
+            drop(reader);
+            project
+        };
+        let (_, _project) = tokio::join!(change, revoke);
+        let installed = server.workspace.config.read().await.code_analyzers.clone();
+        server.refresh_trust().await;
+        let refreshed = server.workspace.config.read().await.code_analyzers.clone();
+
+        match previous {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        assert_eq!(installed, vec!["${CodeCop}".to_string()]);
+        assert_eq!(refreshed, vec!["${CodeCop}".to_string()]);
+    }
+
     /// A non-`file:` root is the same situation: nothing local to read.
     #[tokio::test]
     async fn a_non_file_root_denies_every_privileged_setting() {

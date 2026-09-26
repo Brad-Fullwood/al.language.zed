@@ -470,12 +470,44 @@ pub fn evaluate(project_root: &Path) -> Result<TrustEvaluation, ConfigLoadError>
 /// [`evaluate`]: the LSP receives its settings from the editor, which has
 /// already merged the worktree's `.zed/settings.json` into the user's own.
 pub fn gate(project_root: &Path, config: &mut AlConfig) -> Result<TrustDecision, ConfigLoadError> {
-    let (ask, mut decision) = inspect(project_root)?;
-    if !decision.state.is_trusted() {
-        ask.remove_from(config);
+    let read = read_gate(project_root)?;
+    read.apply(config);
+    Ok(read.decision)
+}
+
+/// What [`gate`] reads from the project's files, kept so it can be applied to
+/// a configuration later.
+///
+/// Reading walks and hashes the project's analyzer folders. Applying reads
+/// nothing, so a caller can read first and apply under the lock that installs
+/// the configuration.
+#[derive(Debug, Clone)]
+pub struct GateReading {
+    ask: RepositoryAsk,
+    decision: TrustDecision,
+}
+
+impl GateReading {
+    /// Remove from `config` every privileged value the repository asks for,
+    /// unless the project is trusted.
+    pub fn apply(&self, config: &mut AlConfig) {
+        if !self.decision.state.is_trusted() {
+            self.ask.remove_from(config);
+        }
     }
-    decision.privileged = ask.settings;
-    Ok(decision)
+
+    /// The trust decision the reading made.
+    #[must_use]
+    pub fn decision(&self) -> &TrustDecision {
+        &self.decision
+    }
+}
+
+/// Read what [`gate`] needs without applying it.
+pub fn read_gate(project_root: &Path) -> Result<GateReading, ConfigLoadError> {
+    let (ask, mut decision) = inspect(project_root)?;
+    decision.privileged = ask.settings.clone();
+    Ok(GateReading { ask, decision })
 }
 
 /// Clear every privileged field.

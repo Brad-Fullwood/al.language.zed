@@ -777,9 +777,139 @@ fn extract_al_settings(value: serde_json::Value) -> serde_json::Value {
     value.get("al").cloned().unwrap_or(value)
 }
 
-/// `al_project::trust::inputs_fingerprint` as it was when the configuration
-/// was last gated.
+/// `al_project::trust::inputs_fingerprint` of the trust inputs the installed
+/// configuration was gated at.
+///
+/// Only [`SessionGate::record`] stores it, under the configuration write guard
+/// that installs the gated configuration. A settings change gates a copy and
+/// installs it after waiting on guards, so a fingerprint stored at the gate
+/// could match the files after a revoke in that wait while the installed copy
+/// was gated before the revoke.
 static GATED_TRUST_INPUTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// What the trust gate read for this session's root.
+///
+/// Reading walks and hashes the project's analyzer folders, so it runs before
+/// any guard is taken. [`SessionGate::apply`] reads nothing and runs under the
+/// guard that installs the configuration.
+struct SessionGate {
+    /// The root and `inputs_fingerprint` taken before the files were read, so
+    /// a write during the read shows up as a moved fingerprint.
+    root: Option<(std::path::PathBuf, u64)>,
+    outcome: SessionGateOutcome,
+}
+
+enum SessionGateOutcome {
+    /// No local project directory: there is no repository to ask.
+    NoRoot,
+    Read {
+        reading: Box<al_project::trust::GateReading>,
+        dotnet_advisory: Option<String>,
+    },
+    /// The repository's settings files could not be read.
+    Unreadable(String),
+}
+
+impl SessionGate {
+    fn read(root_uri: Option<&Url>) -> Self {
+        let Some(root) = root_uri.and_then(|uri| uri.to_file_path().ok()) else {
+            return Self {
+                root: None,
+                outcome: SessionGateOutcome::NoRoot,
+            };
+        };
+        let fingerprint = al_project::trust::inputs_fingerprint(&root);
+        let dotnet_advisory = al_project::trust::enforce_dotnet_path(&root);
+        let outcome = match al_project::trust::read_gate(&root) {
+            Ok(reading) => SessionGateOutcome::Read {
+                reading: Box::new(reading),
+                dotnet_advisory,
+            },
+            Err(error) => {
+                tracing::warn!(%error, "cannot read this project's settings files for the trust check");
+                SessionGateOutcome::Unreadable(error.to_string())
+            }
+        };
+        Self {
+            root: Some((root, fingerprint)),
+            outcome,
+        }
+    }
+
+    /// [`SessionGate::read`] on a blocking thread.
+    async fn read_off_runtime(root_uri: Option<Url>) -> Self {
+        tokio::task::spawn_blocking(move || Self::read(root_uri.as_ref()))
+            .await
+            .unwrap_or_else(|error| Self {
+                root: None,
+                outcome: SessionGateOutcome::Unreadable(format!(
+                    "the trust check did not finish: {error}"
+                )),
+            })
+    }
+
+    /// Whether the trust inputs are as they were when this gate was read.
+    fn is_current(&self) -> bool {
+        self.root.as_ref().is_none_or(|(root, fingerprint)| {
+            al_project::trust::inputs_fingerprint(root) == *fingerprint
+        })
+    }
+
+    /// Record the fingerprint this gate was read at as the installed
+    /// configuration's. Call under the configuration write guard that installs
+    /// a configuration this gate was applied to.
+    fn record(&self) {
+        if let Some((_, fingerprint)) = &self.root {
+            GATED_TRUST_INPUTS.store(*fingerprint, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Remove from `config` the privileged settings this project's own files
+    /// ask for, unless the project is trusted, and return the message for the
+    /// user.
+    ///
+    /// The editor merges `.zed/settings.json` from the worktree into the
+    /// user's own settings before sending them, so what arrives here does not
+    /// say where each value came from. The gate asks the repository files and
+    /// takes back exactly what they contribute. With no root, or a root that
+    /// is not a local file, there is no repository to ask, so every privileged
+    /// value goes: the settings that arrived already carry whatever
+    /// `.zed/settings.json` contributed, and nothing here can tell which ones
+    /// those are. Containment answers the same situation the same way, with
+    /// "No project is loaded, so no file path can be authorised".
+    fn apply(&self, config: &mut al_project::config::AlConfig) -> Option<String> {
+        match &self.outcome {
+            SessionGateOutcome::NoRoot => {
+                al_project::trust::deny_privileged(config);
+                Some(
+                    "AL settings that can run code were not applied: this session names no \
+                     local project directory, so the settings a repository contributed cannot \
+                     be told apart from your own."
+                        .to_string(),
+                )
+            }
+            SessionGateOutcome::Read {
+                reading,
+                dotnet_advisory,
+            } => {
+                reading.apply(config);
+                match (reading.decision().advisory(), dotnet_advisory.clone()) {
+                    (Some(settings), Some(dotnet)) => Some(format!("{settings}\n{dotnet}")),
+                    (settings, dotnet) => settings.or(dotnet),
+                }
+            }
+            SessionGateOutcome::Unreadable(error) => {
+                // Unreadable repository settings cannot be subtracted one value
+                // at a time, so every privileged field goes instead.
+                al_project::trust::deny_privileged(config);
+                Some(format!(
+                    "AL settings that can run code were not applied: this project's settings \
+                     files could not be read ({error})"
+                ))
+            }
+        }
+    }
+}
 
 impl AlServer {
     /// Gate the configuration again when anything the trust decision reads has
@@ -802,9 +932,15 @@ impl AlServer {
         if GATED_TRUST_INPUTS.load(std::sync::atomic::Ordering::Relaxed) == fingerprint {
             return;
         }
+        // Read before the guard, so requests that read the configuration do
+        // not wait on the hashing. Applying only removes values, so applying
+        // this reading to a configuration installed in the meantime is sound.
+        let gate = SessionGate::read_off_runtime(root_uri).await;
         let advisory = {
             let mut config = self.workspace.config.write().await;
-            gate_repository_settings(root_uri.as_ref(), &mut config)
+            let advisory = gate.apply(&mut config);
+            gate.record();
+            advisory
         };
         self.semantic_diagnostic_cache.lock().await.clear();
         if let Some(advisory) = advisory {
@@ -813,59 +949,34 @@ impl AlServer {
                 .await;
         }
     }
+
+    /// Read the trust gate again and apply it to `staged`, for an install that
+    /// found the trust inputs moved since `gate` was read.
+    async fn regate(
+        &self,
+        gate: &mut SessionGate,
+        root_uri: &Option<Url>,
+        staged: &mut al_project::config::AlConfig,
+    ) {
+        *gate = SessionGate::read_off_runtime(root_uri.clone()).await;
+        if let Some(advisory) = gate.apply(staged) {
+            self.client
+                .show_message(MessageType::WARNING, advisory)
+                .await;
+        }
+    }
 }
 
-/// Remove from `config` the privileged settings this project's own files ask
-/// for, unless the project is trusted, and return the message for the user.
-///
-/// The editor merges `.zed/settings.json` from the worktree into the user's
-/// own settings before sending them, so what arrives here does not say where
-/// each value came from. `al_project::trust::gate` asks the repository files
-/// and takes back exactly what they contribute.
-/// With no root, or a root that is not a local file, there is no repository to
-/// ask, so every privileged value goes: the settings that arrived already carry
-/// whatever `.zed/settings.json` contributed, and nothing here can tell which
-/// ones those are. Containment answers the same situation the same way, with
-/// "No project is loaded, so no file path can be authorised".
+/// Read the trust gate for `root_uri`, apply it to `config` and record it, for
+/// a caller that installs `config` under the guard it already holds.
 fn gate_repository_settings(
     root_uri: Option<&Url>,
     config: &mut al_project::config::AlConfig,
 ) -> Option<String> {
-    let root = match root_uri.and_then(|uri| uri.to_file_path().ok()) {
-        Some(root) => root,
-        None => {
-            al_project::trust::deny_privileged(config);
-            return Some(
-                "AL settings that can run code were not applied: this session names no local \
-                 project directory, so the settings a repository contributed cannot be told \
-                 apart from your own."
-                    .to_string(),
-            );
-        }
-    };
-    // Recorded before the gate reads anything, so a write during it costs one
-    // extra re-gate in `refresh_trust` rather than being missed.
-    GATED_TRUST_INPUTS.store(
-        al_project::trust::inputs_fingerprint(&root),
-        std::sync::atomic::Ordering::Relaxed,
-    );
-    let dotnet_advisory = al_project::trust::enforce_dotnet_path(&root);
-    match al_project::trust::gate(&root, config) {
-        Ok(decision) => match (decision.advisory(), dotnet_advisory) {
-            (Some(settings), Some(dotnet)) => Some(format!("{settings}\n{dotnet}")),
-            (settings, dotnet) => settings.or(dotnet),
-        },
-        Err(error) => {
-            tracing::warn!(%error, "cannot read this project's settings files for the trust check");
-            // Unreadable repository settings cannot be subtracted one value at
-            // a time, so every privileged field goes instead.
-            al_project::trust::deny_privileged(config);
-            Some(format!(
-                "AL settings that can run code were not applied: this project's settings files \
-                 could not be read ({error})"
-            ))
-        }
-    }
+    let gate = SessionGate::read(root_uri);
+    let advisory = gate.apply(config);
+    gate.record();
+    advisory
 }
 
 #[tower_lsp::async_trait]
@@ -1560,13 +1671,19 @@ impl LanguageServer for AlServer {
         let old_local_paths = staged_config.app_local_folder_paths.clone();
         let report = staged_config.merge_reporting(&al_settings);
         let root_uri = self.root_uri.read().await.clone();
-        if let Some(advisory) = gate_repository_settings(root_uri.as_ref(), &mut staged_config) {
+        // Every install below checks that the trust inputs have not moved
+        // since this reading, and gates the copy again when they have, so a
+        // revoke that lands while this handler waits is not undone.
+        let mut gate = SessionGate::read_off_runtime(root_uri.clone()).await;
+        if let Some(advisory) = gate.apply(&mut staged_config) {
             self.client
                 .show_message(MessageType::WARNING, advisory)
                 .await;
         }
-        let symbol_paths_changed = old_cache_path != staged_config.package_cache_path
-            || old_local_paths != staged_config.app_local_folder_paths;
+        let symbol_paths_changed = |config: &al_project::config::AlConfig| {
+            old_cache_path != config.package_cache_path
+                || old_local_paths != config.app_local_folder_paths
+        };
         if !report.unknown_keys.is_empty() {
             tracing::warn!(
                 keys = ?report.unknown_keys,
@@ -1594,18 +1711,36 @@ impl LanguageServer for AlServer {
             return;
         }
 
-        if !symbol_paths_changed {
-            let publication = self.workspace.generation_lock.write().await;
-            *self.workspace.config.write().await = staged_config.clone();
-            self.workspace
-                .documents
-                .set_max_doc_bytes(staged_config.max_document_size_bytes);
-            self.semantic_diagnostic_cache.lock().await.clear();
-            self.workspace.mark_generation_changed();
-            drop(publication);
-            tracing::info!("Configuration updated");
-            self.refresh_diagnostics_after_configuration().await;
-            return;
+        if !symbol_paths_changed(&staged_config) {
+            let publication = loop {
+                let publication = self.workspace.generation_lock.write().await;
+                if gate.is_current() {
+                    break Some(publication);
+                }
+                drop(publication);
+                self.regate(&mut gate, &root_uri, &mut staged_config).await;
+                // A revoke can take back a repository package path, and the
+                // packages are then staged again below.
+                if symbol_paths_changed(&staged_config) {
+                    break None;
+                }
+            };
+            if let Some(publication) = publication {
+                {
+                    let mut config = self.workspace.config.write().await;
+                    gate.record();
+                    *config = staged_config.clone();
+                }
+                self.workspace
+                    .documents
+                    .set_max_doc_bytes(staged_config.max_document_size_bytes);
+                self.semantic_diagnostic_cache.lock().await.clear();
+                self.workspace.mark_generation_changed();
+                drop(publication);
+                tracing::info!("Configuration updated");
+                self.refresh_diagnostics_after_configuration().await;
+                return;
+            }
         }
 
         loop {
@@ -1623,7 +1758,16 @@ impl LanguageServer for AlServer {
                     drop(publication);
                     continue;
                 }
-                *self.workspace.config.write().await = staged_config.clone();
+                if !gate.is_current() {
+                    drop(publication);
+                    self.regate(&mut gate, &root_uri, &mut staged_config).await;
+                    continue;
+                }
+                {
+                    let mut config = self.workspace.config.write().await;
+                    gate.record();
+                    *config = staged_config.clone();
+                }
                 self.workspace.mark_generation_changed();
                 self.semantic_diagnostic_cache.lock().await.clear();
                 drop(publication);
@@ -1688,6 +1832,13 @@ impl LanguageServer for AlServer {
                 drop(publication);
                 continue;
             }
+            if !gate.is_current() {
+                // The packages were staged from a copy gated before the trust
+                // inputs moved, so they are staged again from the new gate.
+                drop(publication);
+                self.regate(&mut gate, &root_uri, &mut staged_config).await;
+                continue;
+            }
 
             // Both guards are taken before the first swap, so the publication
             // sequence below has no await point that a cancelled handler could
@@ -1698,6 +1849,7 @@ impl LanguageServer for AlServer {
             let mut published_config = self.workspace.config.write().await;
             self.workspace.symbols.replace_with(&symbols);
             *published_project = Some(project);
+            gate.record();
             *published_config = staged_config.clone();
             self.workspace
                 .replace_package_info(loaded.iter().map(al_workspace::PackageInfo::from).collect());
