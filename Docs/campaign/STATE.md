@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-26 12:25 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-26 12:50 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -21,9 +21,6 @@ branches the 07:00 session left, each in its existing worktree under `.claude/wo
 - Ghost race (A): worktree branch `campaign/fix-ghost-race-2`, nothing committed by the first agent.
   Told to name the mechanism and whether it predates the lock batch before changing code, and to
   write `findings/ghost-race-2.md`.
-- `${CodeCop}` token refusal (blog finding 4): worktree branch `campaign/fix-blog-findings`, Sonnet.
-  `pack-native --validate` refuses the `${Name}` spelling of a built-in analyzer as if the repository
-  shipped it, and names `--analyzers` when the list came from settings.
 - Round 7 adversarial review (A), dispatched 12:12: reads `git diff 94700cf7..HEAD -- crates` (67
   files): the 14 security fixes tried another way, the two hand merges, the lock batch, the blog
   fixes. Writes `findings/r7-session-review.md` in the main checkout and commits it there.
@@ -32,7 +29,7 @@ branches the 07:00 session left, each in its existing worktree under `.claude/wo
   `### Re-read 2026-09-26 after the security round` to `findings/blog-progress.md`.
 
 Merged this session: `campaign/fix-r4-security` (14 of 14), `campaign/fix-blog-findings` (3 of 4),
-`origin/dev`, `campaign/docs-review` (done, 12:20). Gate result on the merge is in `LOG.md`.
+`origin/dev`, `campaign/docs-review` (done, 12:20), `campaign/fix-blog-findings` again for finding 4 (12:50). Gate result on the merge is in `LOG.md`.
 
 PR 30 was merged into `dev` on 2026-09-25 (afec75d1). CI runs on pushes to `main` and `dev` and on
 pull requests, so draft PR 32 (https://github.com/Brad-Fullwood/al.language.zed/pull/32, base `dev`)
@@ -106,7 +103,7 @@ round on the areas with the most findings.
 
 - 2026-09-26 docs review merged (`findings/docs-review.md`): every user doc checked against the code, four drift items fixed, plain-wording pass over `Docs/`, `README.md`, `ROADMAP.md` and `plugin/`.
 - 2026-09-26 security round 4 merged: 14 of 14 fixed (`findings/r4-security.md`). Every DAP and test-run path authorises the target before a credential leaves the machine, a scheme-less server is `https`, XLIFF methods are contained, the trust digest hashes repository-resident analyzers and `dotnet`, the handshake proof is checked before the build identity, a linked `.alpackages` is an untrusted package cache, the semantic bridge is in the release digests, the scaffold and native build refuse symlinks, `trust --yes` is pinned to a reviewed digest, the language server re-gates settings when trust inputs move.
-- 2026-09-26 blog findings 1 to 3 merged: `packages` counts skip synthetic Option enums, the client deadline extends while the call graph builds, `object` and `byId` answer without the graph.
+- 2026-09-26 blog findings 1 to 4 merged: `packages` counts skip synthetic Option enums, the client deadline extends while the call graph builds, `object` and `byId` answer without the graph, the `${Name}` analyzer token spelling is a builtin so a fresh untrusted scaffold passes `pack-native --validate`.
 - 2026-09-26 async locking batch merged (`findings/async-locking.md`): two deadlocks in al-lsp, DAP proxy stdout lock per frame, dead allow attributes removed, SAFETY comments on every unsafe block.
 - 2026-09-24 r6 session review: 14 of 14 fixed (`findings/r6-session-review.md`). File-index re-index race closed, typed bulk-fix errors, six large files lost their test modules to `tests.rs`, rustdoc at zero warnings and gated in CI.
 - 2026-09-24 r5 dogfood closed: 31 of 32 findings fixed, 1 partly (`findings/r5-dogfood.md`). Table and table-extension changes reach their tests, plain Insert/Modify/Delete raise table events in the call graph, `graph --scope workspace`, `impact` call/write/read, LSP-shaped JSON and readable text for completions/hints/symbols/folding, suggest-event says why a trace is partial.
