@@ -362,19 +362,12 @@ async fn run() {
                     }
                 }
             },
-            move |file_path| {
-                let path = PathBuf::from(file_path);
-                fi.object_info.get(&path).and_then(|info| {
-                    let kind = info.kind.parse::<al_symbols::ObjectKind>().ok()?;
-                    let object_id = kind.normalize_declaration_id(info.id).ok()?;
-                    let object_type = al_dap::dap::native_dap::kind_to_object_type(&info.kind);
-                    (object_type != al_dap::dap::native_dap::bc_object_type::UNKNOWN).then_some(
-                        al_dap::dap::native_dap::ResolvedObject {
-                            object_type,
-                            object_id,
-                        },
-                    )
-                })
+            move |file_path, line| {
+                al_lsp::server::dap_mode::native_dap_object_at_line(
+                    &fi,
+                    std::path::Path::new(file_path),
+                    line,
+                )
             },
             move |object_type, object_id| {
                 al_lsp::server::dap_mode::native_dap_object_path(&fi2, object_type, object_id)

@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "summary": {
     "files": [
       {
@@ -24,7 +24,21 @@
                 "record_vars": {},
                 "object_vars": {}
               }
-            }
+            },
+            "effects": [
+              {
+                "name": "Ship",
+                "attributes": [],
+                "declaration_range": {
+                  "start_line": 2,
+                  "start_character": 14,
+                  "end_line": 2,
+                  "end_character": 18
+                },
+                "writes": [],
+                "commits": []
+              }
+            ]
           },
           {
             "kind": "codeunit",
@@ -75,7 +89,49 @@
                 },
                 "object_vars": {}
               }
-            }
+            },
+            "effects": [
+              {
+                "name": "OnAfterShip",
+                "attributes": [
+                  [
+                    "IntegrationEvent",
+                    "[IntegrationEvent(false, false)]"
+                  ]
+                ],
+                "declaration_range": {
+                  "start_line": 16,
+                  "start_character": 20,
+                  "end_line": 16,
+                  "end_character": 31
+                },
+                "writes": [],
+                "commits": []
+              },
+              {
+                "name": "Ship",
+                "attributes": [],
+                "declaration_range": {
+                  "start_line": 7,
+                  "start_character": 14,
+                  "end_line": 7,
+                  "end_character": 18
+                },
+                "writes": [
+                  {
+                    "range": {
+                      "start_line": 11,
+                      "start_character": 14,
+                      "end_line": 11,
+                      "end_character": 20
+                    },
+                    "byte_start": 233,
+                    "label": "database write Entry.Insert()"
+                  }
+                ],
+                "commits": []
+              }
+            ]
           },
           {
             "kind": "codeunit",
@@ -299,7 +355,194 @@
                 },
                 "object_vars": {}
               }
-            }
+            },
+            "effects": [
+              {
+                "name": "Tidy",
+                "attributes": [],
+                "declaration_range": {
+                  "start_line": 73,
+                  "start_character": 14,
+                  "end_line": 73,
+                  "end_character": 18
+                },
+                "writes": [
+                  {
+                    "range": {
+                      "start_line": 79,
+                      "start_character": 14,
+                      "end_line": 79,
+                      "end_character": 20
+                    },
+                    "byte_start": 1772,
+                    "label": "database write Entry.Rename()"
+                  },
+                  {
+                    "range": {
+                      "start_line": 80,
+                      "start_character": 14,
+                      "end_line": 80,
+                      "end_character": 23
+                    },
+                    "byte_start": 1799,
+                    "label": "database write Entry.ModifyAll()"
+                  },
+                  {
+                    "range": {
+                      "start_line": 81,
+                      "start_character": 14,
+                      "end_line": 81,
+                      "end_character": 23
+                    },
+                    "byte_start": 1842,
+                    "label": "database write Entry.DeleteAll()"
+                  },
+                  {
+                    "range": {
+                      "start_line": 82,
+                      "start_character": 15,
+                      "end_line": 82,
+                      "end_character": 21
+                    },
+                    "byte_start": 1870,
+                    "label": "database write Target.Modify()"
+                  }
+                ],
+                "commits": []
+              },
+              {
+                "name": "HandleEntryInsert",
+                "attributes": [
+                  [
+                    "EventSubscriber",
+                    "[EventSubscriber(ObjectType::Table, Database::\"Fixture Entry\", 'OnAfterInsertEvent', '', false, false)]"
+                  ]
+                ],
+                "declaration_range": {
+                  "start_line": 68,
+                  "start_character": 20,
+                  "end_line": 68,
+                  "end_character": 37
+                },
+                "writes": [],
+                "commits": []
+              },
+              {
+                "name": "HandleShip",
+                "attributes": [
+                  [
+                    "EventSubscriber",
+                    "[EventSubscriber(ObjectType::Codeunit, Codeunit::\"Fixture Truck\", 'OnAfterShip', '', false, false)]"
+                  ]
+                ],
+                "declaration_range": {
+                  "start_line": 62,
+                  "start_character": 20,
+                  "end_line": 62,
+                  "end_character": 30
+                },
+                "writes": [],
+                "commits": []
+              },
+              {
+                "name": "TryPost",
+                "attributes": [
+                  [
+                    "TryFunction",
+                    "[TryFunction]"
+                  ]
+                ],
+                "declaration_range": {
+                  "start_line": 52,
+                  "start_character": 14,
+                  "end_line": 52,
+                  "end_character": 21
+                },
+                "writes": [
+                  {
+                    "range": {
+                      "start_line": 57,
+                      "start_character": 14,
+                      "end_line": 57,
+                      "end_character": 20
+                    },
+                    "byte_start": 1113,
+                    "label": "database write Entry.Delete()"
+                  }
+                ],
+                "commits": []
+              },
+              {
+                "name": "Helper",
+                "attributes": [],
+                "declaration_range": {
+                  "start_line": 44,
+                  "start_character": 20,
+                  "end_line": 44,
+                  "end_character": 26
+                },
+                "writes": [
+                  {
+                    "range": {
+                      "start_line": 48,
+                      "start_character": 14,
+                      "end_line": 48,
+                      "end_character": 20
+                    },
+                    "byte_start": 930,
+                    "label": "database write Entry.Modify()"
+                  }
+                ],
+                "commits": []
+              },
+              {
+                "name": "Helper",
+                "attributes": [],
+                "declaration_range": {
+                  "start_line": 39,
+                  "start_character": 20,
+                  "end_line": 39,
+                  "end_character": 26
+                },
+                "writes": [],
+                "commits": [
+                  {
+                    "range": {
+                      "start_line": 41,
+                      "start_character": 8,
+                      "end_line": 41,
+                      "end_character": 14
+                    },
+                    "byte_start": 796,
+                    "label": "Commit()"
+                  }
+                ]
+              },
+              {
+                "name": "Dispatch",
+                "attributes": [],
+                "declaration_range": {
+                  "start_line": 28,
+                  "start_character": 14,
+                  "end_line": 28,
+                  "end_character": 22
+                },
+                "writes": [],
+                "commits": []
+              },
+              {
+                "name": "OnRun",
+                "attributes": [],
+                "declaration_range": {
+                  "start_line": 23,
+                  "start_character": 12,
+                  "end_line": 23,
+                  "end_character": 17
+                },
+                "writes": [],
+                "commits": []
+              }
+            ]
           },
           {
             "kind": "table",
@@ -320,258 +563,21 @@
                 "record_vars": {},
                 "object_vars": {}
               }
-            }
-          }
-        ],
-        "effects": [
-          {
-            "name": "OnInsert",
-            "attributes": [],
-            "declaration_range": {
-              "start_line": 94,
-              "start_character": 12,
-              "end_line": 94,
-              "end_character": 20
             },
-            "writes": [],
-            "commits": []
-          },
-          {
-            "name": "Tidy",
-            "attributes": [],
-            "declaration_range": {
-              "start_line": 73,
-              "start_character": 14,
-              "end_line": 73,
-              "end_character": 18
-            },
-            "writes": [
+            "effects": [
               {
-                "range": {
-                  "start_line": 79,
-                  "start_character": 14,
-                  "end_line": 79,
+                "name": "OnInsert",
+                "attributes": [],
+                "declaration_range": {
+                  "start_line": 94,
+                  "start_character": 12,
+                  "end_line": 94,
                   "end_character": 20
                 },
-                "byte_start": 1772,
-                "label": "database write Entry.Rename()"
-              },
-              {
-                "range": {
-                  "start_line": 80,
-                  "start_character": 14,
-                  "end_line": 80,
-                  "end_character": 23
-                },
-                "byte_start": 1799,
-                "label": "database write Entry.ModifyAll()"
-              },
-              {
-                "range": {
-                  "start_line": 81,
-                  "start_character": 14,
-                  "end_line": 81,
-                  "end_character": 23
-                },
-                "byte_start": 1842,
-                "label": "database write Entry.DeleteAll()"
-              },
-              {
-                "range": {
-                  "start_line": 82,
-                  "start_character": 15,
-                  "end_line": 82,
-                  "end_character": 21
-                },
-                "byte_start": 1870,
-                "label": "database write Target.Modify()"
-              }
-            ],
-            "commits": []
-          },
-          {
-            "name": "HandleEntryInsert",
-            "attributes": [
-              [
-                "EventSubscriber",
-                "[EventSubscriber(ObjectType::Table, Database::\"Fixture Entry\", 'OnAfterInsertEvent', '', false, false)]"
-              ]
-            ],
-            "declaration_range": {
-              "start_line": 68,
-              "start_character": 20,
-              "end_line": 68,
-              "end_character": 37
-            },
-            "writes": [],
-            "commits": []
-          },
-          {
-            "name": "HandleShip",
-            "attributes": [
-              [
-                "EventSubscriber",
-                "[EventSubscriber(ObjectType::Codeunit, Codeunit::\"Fixture Truck\", 'OnAfterShip', '', false, false)]"
-              ]
-            ],
-            "declaration_range": {
-              "start_line": 62,
-              "start_character": 20,
-              "end_line": 62,
-              "end_character": 30
-            },
-            "writes": [],
-            "commits": []
-          },
-          {
-            "name": "TryPost",
-            "attributes": [
-              [
-                "TryFunction",
-                "[TryFunction]"
-              ]
-            ],
-            "declaration_range": {
-              "start_line": 52,
-              "start_character": 14,
-              "end_line": 52,
-              "end_character": 21
-            },
-            "writes": [
-              {
-                "range": {
-                  "start_line": 57,
-                  "start_character": 14,
-                  "end_line": 57,
-                  "end_character": 20
-                },
-                "byte_start": 1113,
-                "label": "database write Entry.Delete()"
-              }
-            ],
-            "commits": []
-          },
-          {
-            "name": "Helper",
-            "attributes": [],
-            "declaration_range": {
-              "start_line": 44,
-              "start_character": 20,
-              "end_line": 44,
-              "end_character": 26
-            },
-            "writes": [
-              {
-                "range": {
-                  "start_line": 48,
-                  "start_character": 14,
-                  "end_line": 48,
-                  "end_character": 20
-                },
-                "byte_start": 930,
-                "label": "database write Entry.Modify()"
-              }
-            ],
-            "commits": []
-          },
-          {
-            "name": "Helper",
-            "attributes": [],
-            "declaration_range": {
-              "start_line": 39,
-              "start_character": 20,
-              "end_line": 39,
-              "end_character": 26
-            },
-            "writes": [],
-            "commits": [
-              {
-                "range": {
-                  "start_line": 41,
-                  "start_character": 8,
-                  "end_line": 41,
-                  "end_character": 14
-                },
-                "byte_start": 796,
-                "label": "Commit()"
+                "writes": [],
+                "commits": []
               }
             ]
-          },
-          {
-            "name": "Dispatch",
-            "attributes": [],
-            "declaration_range": {
-              "start_line": 28,
-              "start_character": 14,
-              "end_line": 28,
-              "end_character": 22
-            },
-            "writes": [],
-            "commits": []
-          },
-          {
-            "name": "OnRun",
-            "attributes": [],
-            "declaration_range": {
-              "start_line": 23,
-              "start_character": 12,
-              "end_line": 23,
-              "end_character": 17
-            },
-            "writes": [],
-            "commits": []
-          },
-          {
-            "name": "OnAfterShip",
-            "attributes": [
-              [
-                "IntegrationEvent",
-                "[IntegrationEvent(false, false)]"
-              ]
-            ],
-            "declaration_range": {
-              "start_line": 16,
-              "start_character": 20,
-              "end_line": 16,
-              "end_character": 31
-            },
-            "writes": [],
-            "commits": []
-          },
-          {
-            "name": "Ship",
-            "attributes": [],
-            "declaration_range": {
-              "start_line": 7,
-              "start_character": 14,
-              "end_line": 7,
-              "end_character": 18
-            },
-            "writes": [
-              {
-                "range": {
-                  "start_line": 11,
-                  "start_character": 14,
-                  "end_line": 11,
-                  "end_character": 20
-                },
-                "byte_start": 233,
-                "label": "database write Entry.Insert()"
-              }
-            ],
-            "commits": []
-          },
-          {
-            "name": "Ship",
-            "attributes": [],
-            "declaration_range": {
-              "start_line": 2,
-              "start_character": 14,
-              "end_line": 2,
-              "end_character": 18
-            },
-            "writes": [],
-            "commits": []
           }
         ]
       },
@@ -603,21 +609,21 @@
                 "record_vars": {},
                 "object_vars": {}
               }
-            }
-          }
-        ],
-        "effects": [
-          {
-            "name": "Run",
-            "attributes": [],
-            "declaration_range": {
-              "start_line": 2,
-              "start_character": 14,
-              "end_line": 2,
-              "end_character": 17
             },
-            "writes": [],
-            "commits": []
+            "effects": [
+              {
+                "name": "Run",
+                "attributes": [],
+                "declaration_range": {
+                  "start_line": 2,
+                  "start_character": 14,
+                  "end_line": 2,
+                  "end_character": 17
+                },
+                "writes": [],
+                "commits": []
+              }
+            ]
           }
         ]
       }
