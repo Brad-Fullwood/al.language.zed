@@ -12,7 +12,7 @@ Other global flags, which work on every subcommand:
 | `--limit N` | Return at most N rows from a list-returning command. The JSON result reports `total` and `truncated` |
 | `--offset N` | Skip the first N rows, for reading past a truncated page |
 | `--fields a,b,c` | Keep only these fields on each row |
-| `--scope workspace\|packages\|all` | Which code `impact`, `entrypoints` and the event map report on. The result reports `outOfScopeCount` |
+| `--scope workspace\|packages\|all` | Which code `impact` (and `impact --table`), `entrypoints`, `intercept` and `graph` report on. The result reports `outOfScopeCount` |
 | `--timeout-ms N` | Per-request deadline, overriding `AL_REQUEST_TIMEOUT_MS`. A request blocked on the dependency source index keeps waiting while that index makes progress, whatever this is set to |
 
 The projection flags are the daemon's `limit`, `offset`, `fields` and `scope` parameters, described
@@ -24,9 +24,9 @@ its own value.
 
 Exit status is part of the command contract and is identical in human and
 `--json` modes: `0` means the requested gate passed, `1` means a request error
-or a completed gate with blocking findings, and `75` means the result is
-temporarily incomplete (for example, workspace initialization or a partial
-analysis). Finding-producing commands such as `metrics`, `dead-code`,
+or a completed gate with blocking findings, and `75` is what `doctor` returns
+while the daemon has not finished its first workspace and package load.
+Finding-producing commands such as `metrics`, `dead-code`,
 `sql-scan`, `duplicates`, `arch-lint`, `breaking`, `upgrade`, `audit-data`, and
 `permission-audit` therefore print their findings and exit non-zero. A
 non-empty report is not silently treated as success.
@@ -54,7 +54,7 @@ they are confined to: the daemon changes files only inside the project it has lo
 | `clear-cache` | — | Delete the symbol index cache |
 | `daemon-shutdown` | — | Stop the existing daemon for this project without spawning one, returning only once its endpoint has stopped accepting (up to 20s); `--json` reports whether one was running |
 | `init-debug` | — | Scaffold `.zed/debug.json` |
-| `trust` | `[PROJECT] --show --revoke` | Let this project's own files supply settings that load code, run programs or receive Business Central credentials. See [project trust](../features/project-trust.md) |
+| `trust` | `[PROJECT] --show --revoke`, `--yes --root <PATH>` for a scripted install with no terminal | Let this project's own files supply settings that load code, run programs or receive Business Central credentials. See [project trust](../features/project-trust.md) |
 
 ## Symbols & objects
 
@@ -65,12 +65,12 @@ they are confined to: the daemon changes files only inside the project it has lo
 | `by-id <type> <id>` | — | Look up object by kind + numeric id, with members |
 | `source <name>` | `--kind <type>`, `--package <name>`, `--procedure <name>` or `--trigger <name>`, `--list-procedures` | Return the strongest actual source representation; ambiguous names require kind/package selection. `--list-procedures` returns signatures and line ranges without bodies, and a wrong `--procedure` name lists the ones that exist |
 | `location <name>` | `--kind <type>`, `--package <name>` | Print `path:line` for an object's declaration. A package object is materialised as a virtual `.al` file |
-| `composed [<kind>] <name>` | — | Base object + all extensions merged |
+| `composed [<kind>] <name>` | `--name <name>` | Base object + all extensions merged. `--name` spells out a name that could be read as a kind |
 | `packages` | — | List loaded packages with version, publisher, object count, and embedded/outline/metadata-only source counts |
 | `deps` | — | Explicit + transitive dependencies |
 | `deps-graph` | `--format json\|dot` | Dependency graph export |
 | `events <name>` | — | Event publishers matching name (+ subscriber counts) |
-| `subscribers <event>` | — | Subscribers of an event (workspace source) |
+| `subscribers <event>` | — | Subscribers of an event, from workspace source and from the AL source embedded in loaded packages |
 | `event-source` | `--file <p> --line <n>` | Resolve publisher behind an `[EventSubscriber]` |
 | `builtins` | — | Built-in types + method counts |
 | `rules` | — | Registered native file, project-semantic, and transaction-stack lint rules |
@@ -130,7 +130,7 @@ they are confined to: the daemon changes files only inside the project it has lo
 | `graph` | `--format json\|dot`, global `--scope workspace\|packages\|all` | Insight graph export; `--scope workspace` keeps the workspace's objects and the nodes one edge away |
 | `insight-stats` | — | Node/edge counts |
 | `impact <symbol>` | `--table` | Who consumes this symbol/table |
-| `suggest-event` | `--object <x> [--procedure/--event <x>]`, or `--table <x> [--field <x>]` | Integration-point discovery (`--event` needs `--object`) |
+| `suggest-event` | `--object <x> [--kind <k>] [--procedure/--event <x>]`, or `--table <x> [--field <x>]` | Integration-point discovery (`--event` needs `--object`, `--kind` picks one object when the name exists in more than one kind) |
 | `metrics [file]` | `--all --threshold-cyclomatic N --threshold-cognitive N` | Complexity |
 | `dead-code` | — | Unused procedures/fields/subscribers (with confidence) |
 | `sql-scan` | — | SQL anti-patterns |
@@ -150,8 +150,8 @@ they are confined to: the daemon changes files only inside the project it has lo
 
 | Command | Subcommands / flags | Purpose |
 | --- | --- | --- |
-| `debug` | `start [--config] · breakpoint [--file --line --condition] · state · eval <expr> · continue · step <over\|into\|out> · history [--var] · stop` | Drive a debug session |
-| `snapshot` | `start · list · download <id>` (+ `--server --company --username --password --output-dir`) | Snapshot debugging |
+| `debug` | `start [--config] · breakpoint <file> <line> [--condition] · state · eval <expr> · continue · step [over\|into\|out] · history [--var] · stop` | Drive a debug session |
+| `snapshot` | `start [--description] · list · download <id>` (+ `--company` (required) `--server --username --password --output-dir`) | Snapshot debugging |
 | `profile` | `start · stop [--session-id] · analyze <path> [--top N]` (+ server/auth flags) | CPU profiling |
 
 ## Tests
@@ -172,4 +172,4 @@ they are confined to: the daemon changes files only inside the project it has lo
 
 | Command | Subcommands | Purpose |
 | --- | --- | --- |
-| `xlf` | `generate [--project] · refresh <lang.xlf> --generated <base> · untranslated <lang.xlf> · suggest <lang.xlf>` | XLIFF workflows |
+| `xlf` | `generate [--project] · refresh <lang.xlf> [--generated <g.xlf>] · untranslated <lang.xlf> · suggest <lang.xlf>` | XLIFF workflows (`refresh` finds the `.g.xlf` when `--generated` is omitted) |
