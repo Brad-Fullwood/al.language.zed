@@ -131,6 +131,40 @@ impl SubscriberIndex {
     }
 }
 
+/// The subscriber index, built on first use.
+fn index(ctx: &mut DispatchCtx) -> Arc<SubscriberIndex> {
+    match &ctx.event_subscribers {
+        Some(index) => Arc::clone(index),
+        None => {
+            let index = Arc::new(SubscriberIndex::build(ctx));
+            ctx.event_subscribers = Some(Arc::clone(&index));
+            index
+        }
+    }
+}
+
+fn event_key(publisher_kind: &str, publisher: &str, event: &str, element: &str) -> EventKey {
+    (
+        publisher_kind.to_ascii_lowercase(),
+        publisher.unquote_identifier().to_ascii_lowercase(),
+        event.to_ascii_lowercase(),
+        element.to_ascii_lowercase(),
+    )
+}
+
+/// Whether any automatic subscriber is bound to the event.
+pub(crate) fn has_subscribers(
+    publisher_kind: &str,
+    publisher: &str,
+    event: &str,
+    element: &str,
+    ctx: &mut DispatchCtx,
+) -> bool {
+    !index(ctx)
+        .subscribers(&event_key(publisher_kind, publisher, event, element))
+        .is_empty()
+}
+
 /// Run every subscriber of event `event` (with `element`, such as a field
 /// name for a validate event) published by `publisher_kind` object
 /// `publisher`. `names` and `values` are the publisher's parameters; a
@@ -147,20 +181,8 @@ pub(crate) fn raise(
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Result<(), Eval> {
-    let index = match &ctx.event_subscribers {
-        Some(index) => Arc::clone(index),
-        None => {
-            let index = Arc::new(SubscriberIndex::build(ctx));
-            ctx.event_subscribers = Some(Arc::clone(&index));
-            index
-        }
-    };
-    let key = (
-        publisher_kind.to_ascii_lowercase(),
-        publisher.unquote_identifier().to_ascii_lowercase(),
-        event.to_ascii_lowercase(),
-        element.to_ascii_lowercase(),
-    );
+    let index = index(ctx);
+    let key = event_key(publisher_kind, publisher, event, element);
     for subscriber in index.subscribers(&key) {
         let mut positions = Vec::with_capacity(subscriber.params.len());
         for param in &subscriber.params {

@@ -3098,10 +3098,17 @@ const EVENT_SUBSCRIBERS: &str = r#"codeunit 50171 Subscribers
     [EventSubscriber(ObjectType::Table, Database::"Tour Member", 'OnAfterInsertEvent', '', false, false)]
     local procedure StampInsert(var Rec: Record "Tour Member"; RunTrigger: Boolean)
     begin
-        if Rec.IsTemporary() then
+        if Rec.IsTemporary() or (Rec."No." = 'MOD') then
             exit;
         Rec."Last Balance" := 999;
         Rec.Modify();
+    end;
+
+    [EventSubscriber(ObjectType::Table, Database::"Tour Member", 'OnAfterModifyEvent', '', false, false)]
+    local procedure ReportChange(var Rec: Record "Tour Member"; var xRec: Record "Tour Member")
+    begin
+        if Rec."No." = 'MOD' then
+            Error('changed %1 to %2', xRec.Balance, Rec.Balance);
     end;
 
     [EventSubscriber(ObjectType::Table, Database::"Tour Member", 'OnBeforeValidateEvent', 'Name', false, false)]
@@ -3151,6 +3158,17 @@ const EVENT_PROBE: &str = r#"codeunit 50172 "Event Probe"
         exit(Format(Member."Last Balance") + '|' + Format(Temp."Last Balance"));
     end;
 
+    procedure ModifySubscriberSeesStoredRow()
+    var
+        Member: Record "Tour Member";
+    begin
+        Member."No." := 'MOD';
+        Member.Balance := 10;
+        Member.Insert();
+        Member.Balance := 25;
+        Member.Modify();
+    end;
+
     procedure ValidateRaisesFieldEvent()
     var
         Member: Record "Tour Member";
@@ -3186,6 +3204,9 @@ fn events_run_their_automatic_subscribers() {
         ok(call("InsertRaisesTableEvent")),
         Value::Text("999|0".into())
     );
+    // OnAfterModifyEvent's xRec is the row as stored before the Modify.
+    let changed = error_message(call("ModifySubscriberSeesStoredRow"));
+    assert!(changed.contains("changed 10 to 25"), "{changed}");
     let refused = error_message(call("ValidateRaisesFieldEvent"));
     assert!(refused.contains("A name is required"), "{refused}");
 }

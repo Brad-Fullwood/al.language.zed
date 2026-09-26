@@ -904,10 +904,33 @@ pub(crate) fn dispatch_record_method(
         _ => None,
     };
     let run_trigger = lower == "rename" || matches!(values.first(), Some(Value::Boolean(true)));
+    // xRec for the events and the trigger: the row as the table holds it
+    // before a Modify, Delete or Rename, the buffer itself for an Insert.
+    // Made only when a subscriber or trigger will see it: copying a
+    // temporary record copies its rows.
+    let stored = lower != "insert";
+    let mut x_rec: Option<Value> = None;
+    // Taken before the operation even when only the OnAfter event has
+    // subscribers: afterwards the stored row already holds the new values.
+    if let Some(operation) = table_event {
+        let observed = ["OnBefore", "OnAfter"].iter().any(|when| {
+            crate::interpreter::dispatch::events::has_subscribers(
+                "table",
+                &table.name,
+                &format!("{when}{operation}Event"),
+                "",
+                ctx,
+            )
+        });
+        if observed {
+            x_rec = Some(x_rec_of(table, handle, stored, ctx));
+        }
+    }
     if let Some(operation) = table_event {
         if let Err(error) = raise_table_event(
             table,
             handle,
+            (&mut x_rec, stored),
             &format!("OnBefore{operation}Event"),
             run_trigger,
             stack,
@@ -932,8 +955,17 @@ pub(crate) fn dispatch_record_method(
         "rename" => Some("OnRename"),
         _ => None,
     };
+    let trigger = trigger.filter(|trigger| {
+        crate::interpreter::dispatch::table_code::declares(
+            ctx,
+            &table.name,
+            crate::interpreter::dispatch::table_code::TableCode::Trigger(trigger),
+        )
+    });
     if let Some(trigger) = trigger {
-        let x_rec = x_rec_of(table, handle, lower != "insert", ctx);
+        let x_rec = x_rec
+            .get_or_insert_with(|| x_rec_of(table, handle, stored, ctx))
+            .clone();
         if let Some(result) = crate::interpreter::dispatch::table_code::run_table_code(
             record_value_on(table, handle),
             x_rec,
@@ -989,6 +1021,7 @@ pub(crate) fn dispatch_record_method(
         if let Err(error) = raise_table_event(
             table,
             handle,
+            (&mut x_rec, stored),
             &format!("OnAfter{operation}Event"),
             run_trigger,
             stack,
@@ -1006,13 +1039,24 @@ pub(crate) fn dispatch_record_method(
 fn raise_table_event(
     table: &TableRef,
     handle: u64,
+    (x_rec, stored): (&mut Option<Value>, bool),
     event: &str,
     run_trigger: bool,
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Result<(), Eval> {
-    let rec = record_value_on(table, handle);
-    let mut values = vec![rec.clone(), rec, Value::Boolean(run_trigger)];
+    if !crate::interpreter::dispatch::events::has_subscribers("table", &table.name, event, "", ctx)
+    {
+        return Ok(());
+    }
+    let x_rec = x_rec
+        .get_or_insert_with(|| x_rec_of(table, handle, stored, ctx))
+        .clone();
+    let mut values = vec![
+        record_value_on(table, handle),
+        x_rec,
+        Value::Boolean(run_trigger),
+    ];
     crate::interpreter::dispatch::events::raise(
         "table",
         &table.name,
