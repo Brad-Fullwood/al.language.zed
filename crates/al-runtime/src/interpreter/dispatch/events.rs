@@ -187,7 +187,11 @@ pub(crate) fn raise(
         let mut positions = Vec::with_capacity(subscriber.params.len());
         for param in &subscriber.params {
             match names.iter().position(|name| name.eq_ignore_ascii_case(param)) {
-                Some(position) => positions.push(position),
+                Some(position) => positions.push(Some(position)),
+                // `IncludeSender = true`: the publishing codeunit itself.
+                None if param == "sender" && publisher_kind.eq_ignore_ascii_case("codeunit") => {
+                    positions.push(None)
+                }
                 None => {
                     return Err(eval_error(format!(
                         "subscriber {}.{} declares parameter '{param}', which event {event} does not publish",
@@ -196,7 +200,15 @@ pub(crate) fn raise(
                 }
             }
         }
-        let args = positions.iter().map(|&at| values[at].clone()).collect();
+        let args = positions
+            .iter()
+            .map(|at| match at {
+                Some(at) => values[*at].clone(),
+                None => Value::Codeunit {
+                    object_name: publisher.unquote_identifier().into_owned(),
+                },
+            })
+            .collect();
         match dispatch_workspace_procedure(
             Some(&subscriber.object),
             &subscriber.procedure,
@@ -208,8 +220,8 @@ pub(crate) fn raise(
             other => return Err(other),
         }
         for (arg_index, value) in std::mem::take(&mut ctx.var_writebacks) {
-            if let Some(&at) = positions.get(arg_index) {
-                values[at] = value;
+            if let Some(Some(at)) = positions.get(arg_index) {
+                values[*at] = value;
             }
         }
     }

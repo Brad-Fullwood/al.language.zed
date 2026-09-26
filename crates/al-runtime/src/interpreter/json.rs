@@ -3,12 +3,15 @@
 //! AL's JSON types are references: `Obj2 := Obj1` shares one object, and a
 //! token from `Obj.Get('child', Token)` changes the child inside `Obj`. A
 //! JSON value is therefore a [`JsonRef`] into the [`JsonArena`] the dispatch
-//! context owns. A declared variable starts without a node and gets an empty
-//! one on first use, the way record variables get their view handle.
+//! context owns. A declared variable gets its node id when declared, so
+//! copies made before its first use still share one node; the node itself,
+//! an empty value of the declared type, is made on first use.
 //!
 //! Text is written compactly (`{"a":1}`), as BC's `WriteTo` does. Numbers
 //! keep their exact decimal value. Dates and times are written in the XML
 //! format (`2026-09-05`).
+
+use std::collections::{HashMap, HashSet};
 
 use rust_decimal::prelude::*;
 
@@ -37,7 +40,7 @@ impl JsonKind {
     }
 }
 
-/// A JSON variable's value: its type and, once used, the node it refers to.
+/// A JSON variable's value: its type and the node it refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct JsonRef {
     pub kind: JsonKind,
@@ -63,27 +66,37 @@ enum Node {
 /// Every JSON node the running test has made.
 #[derive(Debug, Default, Clone)]
 pub struct JsonArena {
-    nodes: Vec<Node>,
+    nodes: HashMap<usize, Node>,
     /// Whether each node already sits inside an object or array: adding it
     /// elsewhere then adds a copy, as BC does.
-    attached: Vec<bool>,
+    attached: HashSet<usize>,
 }
 
 impl JsonArena {
     fn push(&mut self, node: Node) -> usize {
-        self.nodes.push(node);
-        self.attached.push(false);
-        self.nodes.len() - 1
+        let id = fresh_id();
+        self.nodes.insert(id, node);
+        id
+    }
+
+    /// Make sure node `id` exists: a variable's node is created on first
+    /// use, as an empty value of its declared kind.
+    fn materialize(&mut self, id: usize, kind: JsonKind) {
+        self.nodes.entry(id).or_insert_with(|| empty_node(kind));
+    }
+
+    fn set(&mut self, id: usize, node: Node) {
+        self.nodes.insert(id, node);
     }
 
     fn deep_copy(&mut self, id: usize) -> usize {
-        let node = match self.nodes[id].clone() {
+        let node = match self.nodes[&id].clone() {
             Node::Object(entries) => Node::Object(
                 entries
                     .into_iter()
                     .map(|(key, child)| {
                         let copy = self.deep_copy(child);
-                        self.attached[copy] = true;
+                        self.attached.insert(copy);
                         (key, copy)
                     })
                     .collect(),
@@ -93,7 +106,7 @@ impl JsonArena {
                     .into_iter()
                     .map(|child| {
                         let copy = self.deep_copy(child);
-                        self.attached[copy] = true;
+                        self.attached.insert(copy);
                         copy
                     })
                     .collect(),
@@ -107,22 +120,26 @@ impl JsonArena {
     /// itself, a copy of it when it already has a parent, or a new scalar.
     fn child_for(&mut self, value: &Value) -> Result<usize, String> {
         let id = match value {
-            Value::Json(JsonRef { node: Some(id), .. }) => {
-                if self.attached[*id] {
+            Value::Json(JsonRef {
+                node: Some(id),
+                kind,
+            }) => {
+                self.materialize(*id, *kind);
+                if self.attached.contains(id) {
                     self.deep_copy(*id)
                 } else {
                     *id
                 }
             }
-            Value::Json(JsonRef { kind, node: None }) => self.push(empty_node(*kind)?),
+            Value::Json(JsonRef { kind, node: None }) => self.push(empty_node(*kind)),
             other => self.push(Node::Scalar(scalar_of(other)?)),
         };
-        self.attached[id] = true;
+        self.attached.insert(id);
         Ok(id)
     }
 
     fn write(&self, id: usize, out: &mut String) {
-        match &self.nodes[id] {
+        match &self.nodes[&id] {
             Node::Object(entries) => {
                 out.push('{');
                 for (index, (key, child)) in entries.iter().enumerate() {
@@ -164,7 +181,7 @@ impl JsonArena {
                 let mut entries = Vec::with_capacity(map.len());
                 for (key, value) in map {
                     let child = self.import(value)?;
-                    self.attached[child] = true;
+                    self.attached.insert(child);
                     entries.push((key.clone(), child));
                 }
                 Node::Object(entries)
@@ -173,7 +190,7 @@ impl JsonArena {
                 let mut children = Vec::with_capacity(items.len());
                 for value in items {
                     let child = self.import(value)?;
-                    self.attached[child] = true;
+                    self.attached.insert(child);
                     children.push(child);
                 }
                 Node::Array(children)
@@ -216,7 +233,7 @@ impl JsonArena {
                     let index: usize = inside.parse().map_err(|_| {
                         format!("'{inside}' is not an array index in path '{path}'")
                     })?;
-                    match &self.nodes[current] {
+                    match &self.nodes[&current] {
                         Node::Array(items) => items.get(index).copied(),
                         _ => None,
                     }
@@ -239,7 +256,7 @@ impl JsonArena {
     }
 
     fn member(&self, object: usize, key: &str) -> Option<usize> {
-        match &self.nodes[object] {
+        match &self.nodes[&object] {
             Node::Object(entries) => entries
                 .iter()
                 .find(|(name, _)| name == key)
@@ -253,13 +270,22 @@ fn write_string(text: &str, out: &mut String) {
     out.push_str(&serde_json::Value::String(text.to_string()).to_string());
 }
 
-fn empty_node(kind: JsonKind) -> Result<Node, String> {
+/// A variable's initial node: an empty object or array, or a null value
+/// (also for a token no one has assigned, which `ReadFrom` can fill).
+fn empty_node(kind: JsonKind) -> Node {
     match kind {
-        JsonKind::Object => Ok(Node::Object(Vec::new())),
-        JsonKind::Array => Ok(Node::Array(Vec::new())),
-        JsonKind::Value => Ok(Node::Scalar(Scalar::Null)),
-        JsonKind::Token => Err("the JsonToken has no value".to_string()),
+        JsonKind::Object => Node::Object(Vec::new()),
+        JsonKind::Array => Node::Array(Vec::new()),
+        JsonKind::Value | JsonKind::Token => Node::Scalar(Scalar::Null),
     }
+}
+
+/// Node ids are unique across every arena, so a variable can be given its
+/// id when declared, before any arena holds the node: copies of the variable
+/// then share it, as AL's reference semantics require.
+fn fresh_id() -> usize {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 fn scalar_of(value: &Value) -> Result<Scalar, String> {
@@ -356,13 +382,17 @@ fn node_of(
         Some(Value::Json(json)) => *json,
         _ => return Err(format!("'{recv}' is not a JSON variable")),
     };
-    if let Some(node) = json.node {
-        return Ok((json.kind, node));
-    }
-    let node = ctx.json.push(empty_node(json.kind)?);
-    if let Some(Value::Json(slot)) = stack.lookup_mut(recv) {
-        slot.node = Some(node);
-    }
+    let node = match json.node {
+        Some(node) => node,
+        None => {
+            let node = fresh_id();
+            if let Some(Value::Json(slot)) = stack.lookup_mut(recv) {
+                slot.node = Some(node);
+            }
+            node
+        }
+    };
+    ctx.json.materialize(node, json.kind);
     Ok((json.kind, node))
 }
 
@@ -488,7 +518,8 @@ fn run(
                 return Ok(Value::Boolean(false));
             }
             let imported = arena.import(&parsed)?;
-            arena.nodes[node] = arena.nodes[imported].clone();
+            let imported = arena.nodes[&imported].clone();
+            arena.set(node, imported);
             return Ok(Value::Boolean(true));
         }
         "selecttoken" => {
@@ -509,7 +540,7 @@ fn run(
         "astoken" => return Ok(reference(JsonKind::Token, node)),
         _ => {}
     }
-    let current = arena.nodes[node].clone();
+    let current = arena.nodes[&node].clone();
     match (kind, lower.as_str(), current) {
         (JsonKind::Token, "isobject", current) => {
             Ok(Value::Boolean(matches!(current, Node::Object(_))))
@@ -533,7 +564,7 @@ fn run(
             }
             let child = arena.child_for(args.get(1).ok_or("the value is missing")?)?;
             entries.push((key, child));
-            arena.nodes[node] = Node::Object(entries);
+            arena.set(node, Node::Object(entries));
             Ok(Value::Boolean(true))
         }
         (JsonKind::Object, "replace", Node::Object(mut entries)) => {
@@ -542,7 +573,7 @@ fn run(
                 return Ok(Value::Boolean(false));
             };
             entries[at].1 = arena.child_for(args.get(1).ok_or("the value is missing")?)?;
-            arena.nodes[node] = Node::Object(entries);
+            arena.set(node, Node::Object(entries));
             Ok(Value::Boolean(true))
         }
         (JsonKind::Object, "remove", Node::Object(mut entries)) => {
@@ -550,7 +581,7 @@ fn run(
             let before = entries.len();
             entries.retain(|(name, _)| *name != key);
             let removed = entries.len() != before;
-            arena.nodes[node] = Node::Object(entries);
+            arena.set(node, Node::Object(entries));
             Ok(Value::Boolean(removed))
         }
         (JsonKind::Object, "contains", Node::Object(entries)) => {
@@ -587,7 +618,7 @@ fn run(
                 .find(|(name, _)| *name == key)
                 .map(|(_, child)| *child)
                 .ok_or_else(|| format!("the key '{key}' does not exist"))?;
-            match &arena.nodes[child] {
+            match &arena.nodes[&child] {
                 Node::Scalar(scalar) => scalar_as(scalar, &getter[3..]),
                 _ => Err(format!("the value of '{key}' is not a JSON value")),
             }
@@ -595,26 +626,26 @@ fn run(
         (JsonKind::Array, "add", Node::Array(mut items)) => {
             let child = arena.child_for(args.first().ok_or("the value is missing")?)?;
             items.push(child);
-            arena.nodes[node] = Node::Array(items);
+            arena.set(node, Node::Array(items));
             Ok(Value::Boolean(true))
         }
         (JsonKind::Array, "insert", Node::Array(mut items)) => {
             let at = index_arg(args.first(), items.len(), true)?;
             let child = arena.child_for(args.get(1).ok_or("the value is missing")?)?;
             items.insert(at, child);
-            arena.nodes[node] = Node::Array(items);
+            arena.set(node, Node::Array(items));
             Ok(Value::Boolean(true))
         }
         (JsonKind::Array, "set", Node::Array(mut items)) => {
             let at = index_arg(args.first(), items.len(), false)?;
             items[at] = arena.child_for(args.get(1).ok_or("the value is missing")?)?;
-            arena.nodes[node] = Node::Array(items);
+            arena.set(node, Node::Array(items));
             Ok(Value::Boolean(true))
         }
         (JsonKind::Array, "removeat", Node::Array(mut items)) => {
             let at = index_arg(args.first(), items.len(), false)?;
             items.remove(at);
-            arena.nodes[node] = Node::Array(items);
+            arena.set(node, Node::Array(items));
             Ok(Value::Boolean(true))
         }
         (JsonKind::Array, "count", Node::Array(items)) => Ok(Value::Integer(items.len() as i64)),
@@ -642,7 +673,7 @@ fn run(
         }
         (JsonKind::Array, getter, Node::Array(items)) if getter.starts_with("get") => {
             let at = index_arg(args.first(), items.len(), false)?;
-            match &arena.nodes[items[at]] {
+            match &arena.nodes[&items[at]] {
                 Node::Scalar(scalar) => scalar_as(scalar, &getter[3..]),
                 _ => Err(format!("element {at} is not a JSON value")),
             }
@@ -652,12 +683,12 @@ fn run(
         }
         (JsonKind::Value, "isundefined", _) => Ok(Value::Boolean(false)),
         (JsonKind::Value, "setvaluetonull", _) => {
-            arena.nodes[node] = Node::Scalar(Scalar::Null);
+            arena.set(node, Node::Scalar(Scalar::Null));
             Ok(Value::Empty)
         }
         (JsonKind::Value, "setvalue", _) => {
             let scalar = scalar_of(args.first().ok_or("the value is missing")?)?;
-            arena.nodes[node] = Node::Scalar(scalar);
+            arena.set(node, Node::Scalar(scalar));
             Ok(Value::Empty)
         }
         (JsonKind::Value, conversion, Node::Scalar(scalar)) if conversion.starts_with("as") => {
@@ -679,5 +710,8 @@ pub(crate) fn default_for(type_name: &str) -> Option<Value> {
         "jsonvalue" => JsonKind::Value,
         _ => return None,
     };
-    Some(Value::Json(JsonRef { kind, node: None }))
+    Some(Value::Json(JsonRef {
+        kind,
+        node: Some(fresh_id()),
+    }))
 }

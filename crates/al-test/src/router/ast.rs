@@ -264,8 +264,8 @@ pub(super) fn json_kind(type_name: &str) -> Option<al_runtime::interpreter::json
 }
 
 /// Why `Validate(Field, ...)` on table `table` must run on live BC: the
-/// field's TableRelation is conditional, or relates to a table outside the
-/// workspace, so the local runtime cannot check the value exists.
+/// field's TableRelation cannot be checked locally (the runtime's own
+/// [`al_runtime::interpreter::records::validate_relation`] decides).
 fn validate_blocker(
     workspace: &Workspace,
     table: &str,
@@ -275,32 +275,9 @@ fn validate_blocker(
     let arguments = call.child_by_field_name("call")?.utf8_text(source).ok()?;
     let inner = arguments.trim().strip_prefix('(')?.strip_suffix(')')?;
     let field = first_argument(inner).unquote_identifier().into_owned();
-    let path = workspace
-        .file_index
-        .object_path_of_kind(table, &["table"])?;
-    let (text, tree) = workspace.file_index.get_cached_parse(&path)?;
-    let relation = al_runtime::interpreter::dispatch::table_code::table_relation_in(
-        tree.root_node(),
-        text.as_bytes(),
-        table,
-        &field,
-    )?;
-    match al_runtime::interpreter::dispatch::table_code::relation_target(&relation) {
-        None => Some(format!(
-            "validates {field}, whose conditional TableRelation needs live BC to check"
-        )),
-        Some((target, _))
-            if workspace
-                .file_index
-                .object_path_of_kind(&target, &["table"])
-                .is_none() =>
-        {
-            Some(format!(
-                "validates {field}, whose TableRelation to '{target}' is outside the workspace"
-            ))
-        }
-        Some(_) => None,
-    }
+    al_runtime::interpreter::records::validate_relation(&*workspace.file_index, table, &field)
+        .err()
+        .map(|reason| format!("Validate: {reason}"))
 }
 
 /// The first comma-separated argument, outside quotes.

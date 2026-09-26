@@ -1304,9 +1304,12 @@ end;
         .expect("customer classification");
     assert_eq!(customer.decision, RoutingDecision::LiveBc);
     assert!(
-        customer.reasons.iter().any(|reason| reason
-            .message
-            .contains("validates Customer No., whose TableRelation to 'Customer' is outside the workspace")),
+        customer
+            .reasons
+            .iter()
+            .any(|reason| reason.message.contains(
+                "Validate: Customer No. relates to table 'Customer', which is not in the workspace"
+            )),
         "unexpected reasons: {:?}",
         customer.reasons
     );
@@ -1366,6 +1369,64 @@ end;
         result.decision,
         RoutingDecision::Interp,
         "JSON runs locally: {:?}",
+        result.reasons
+    );
+}
+
+/// A relation to a workspace table with a composite key and no field named
+/// cannot be checked locally; the router used to keep it local, and the
+/// runtime then refused it.
+#[test]
+fn validate_on_a_composite_key_relation_routes_to_live_bc() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/OrderLine.Table.al"),
+        r#"table 50193 "Order Line"
+{
+fields
+{
+    field(1; "Document No."; Code[20]) { }
+    field(2; "Line No."; Integer) { }
+}
+keys { key(PK; "Document No.", "Line No.") { } }
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Shipment.Table.al"),
+        r#"table 50194 Shipment
+{
+fields
+{
+    field(1; "No."; Code[20]) { }
+    field(2; "Order Line"; Code[20]) { TableRelation = "Order Line"; }
+}
+keys { key(PK; "No.") { } }
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/ShipmentTests.Codeunit.al"),
+        r#"codeunit 50195 "Shipment Tests"
+{
+Subtype = Test;
+[Test]
+procedure ValidatesOrderLine()
+var Shipment: Record Shipment;
+begin
+    Shipment.Validate("Order Line", 'SO1');
+end;
+}"#
+        .to_string(),
+    );
+    let result = classify_all(&workspace).unwrap().remove(0);
+    assert_eq!(result.decision, RoutingDecision::LiveBc);
+    assert!(
+        result
+            .reasons
+            .iter()
+            .any(|reason| reason.message.contains("by a composite key")),
+        "{:?}",
         result.reasons
     );
 }

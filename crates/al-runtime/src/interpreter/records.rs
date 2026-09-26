@@ -1508,46 +1508,75 @@ fn dispatch_validate(
     }
 }
 
+/// How `Validate` checks field `field_name` of table `table_name` against
+/// its `TableRelation`: `Ok(None)` without one, `Ok(Some((table, field)))`
+/// naming the related table and, when the relation names one, its field
+/// (otherwise its single primary-key field). `Err` says why the check needs
+/// live BC: a conditional or filtered relation, a related table outside the
+/// workspace, or a composite key with no field named. The test router asks
+/// the same question, so the two cannot disagree.
+pub fn validate_relation(
+    source: &dyn al_types::ProcedureSource,
+    table_name: &str,
+    field_name: &str,
+) -> Result<Option<(String, Option<String>)>, String> {
+    let relation = source.find_by_object_name(table_name).and_then(|path| {
+        let (text, tree) = source.get_cached_parse(&path)?;
+        crate::interpreter::dispatch::table_code::table_relation_in(
+            tree.root_node(),
+            text.as_bytes(),
+            table_name,
+            field_name,
+        )
+    });
+    let Some(relation) = relation else {
+        return Ok(None);
+    };
+    let Some((target, target_field)) =
+        crate::interpreter::dispatch::table_code::relation_target(&relation)
+    else {
+        return Err(format!(
+            "the TableRelation of {field_name} ('{relation}') needs live Business Central to check"
+        ));
+    };
+    let meta = load_table_meta(source, &target).map_err(|_| {
+        format!(
+            "{field_name} relates to table '{target}', which is not in the workspace; \
+             checking it needs live Business Central"
+        )
+    })?;
+    match &target_field {
+        Some(name) if !meta.field_by_name.contains_key(&name.to_ascii_lowercase()) => Err(format!(
+            "{field_name} relates to field '{name}', which table '{target}' does not declare"
+        )),
+        None if meta.pk_fields.len() != 1 => Err(format!(
+            "{field_name} relates to table '{target}' by a composite key; \
+             checking it needs live Business Central"
+        )),
+        _ => Ok(Some((target, target_field))),
+    }
+}
+
 /// BC's Validate refuses a value its field's `TableRelation` does not
-/// contain. A plain relation to a workspace table (`TableRelation = Item;`
-/// or `Item."No."`) is checked against that table's rows; a conditional or
-/// filtered relation, or one to a table outside the workspace, cannot be
-/// checked locally and is an error.
+/// contain. Checks the value exists in the related workspace table, or
+/// says why that needs live BC (see [`validate_relation`]).
 fn check_table_relation(
     table_name: &str,
     field_name: &str,
     value: &Value,
     ctx: &mut DispatchCtx,
 ) -> Result<(), String> {
-    let Some(relation) =
-        crate::interpreter::dispatch::table_code::field_table_relation(ctx, table_name, field_name)
+    let source = Arc::clone(&ctx.source);
+    let Some((target, target_field)) = validate_relation(&*source, table_name, field_name)
+        .map_err(|reason| format!("Validate: {reason}"))?
     else {
         return Ok(());
     };
-    let Some((target, target_field)) =
-        crate::interpreter::dispatch::table_code::relation_target(&relation)
-    else {
-        return Err(format!(
-            "Validate: the TableRelation of {field_name} ('{relation}') needs live Business Central to check"
-        ));
-    };
-    let target_ref = TableRef::persistent(target.clone());
-    let key = ensure_store(ctx, &target_ref).map_err(|_| {
-        format!(
-            "Validate: {field_name} relates to table '{target}', which is not in the workspace;              checking it needs live Business Central"
-        )
-    })?;
+    let key = ensure_store(ctx, &TableRef::persistent(target.clone()))?;
     let store = ctx.records.get(&key).expect("store just ensured");
     let related_field = match &target_field {
         Some(name) => store.resolve_field(name)?,
-        None => match store.record.primary_key_fields() {
-            [single] => *single,
-            _ => {
-                return Err(format!(
-                    "Validate: {field_name} relates to table '{target}' by a composite key;                      checking it needs live Business Central"
-                ))
-            }
-        },
+        None => store.record.primary_key_fields()[0],
     };
     let related_value = store.coerce_to_field(related_field, value.clone())?;
     let mut view = store.record.new_view();

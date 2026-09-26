@@ -86,6 +86,9 @@ pub(super) fn builtin_format(args: &[Value]) -> Eval {
 /// Render a value with Format's XML format (format number 9).
 pub(crate) fn render_value_xml(v: &Value) -> String {
     match v {
+        // XML format is culture-invariant: no thousands separators.
+        Value::Integer(n) | Value::BigInteger(n) => n.to_string(),
+        Value::Decimal(n) => n.normalize().to_string(),
         Value::Boolean(b) => b.to_string(),
         Value::Date(0) | Value::Time(0) | Value::DateTime(0) => String::new(),
         Value::Date(d) => {
@@ -436,6 +439,20 @@ mod tests {
             )),
             Value::Text("-1,234,567".into()),
             "the standard format groups thousands"
+        );
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "Format",
+                vec![
+                    Value::Decimal(rust_decimal_macros::dec!(1234567.5)),
+                    Value::Integer(0),
+                    Value::Integer(9)
+                ],
+                &mut ctx
+            )),
+            Value::Text("1234567.5".into()),
+            "XML format is invariant: no grouping"
         );
         // A format the runtime cannot render must error, not be ignored.
         assert!(dispatch_call(

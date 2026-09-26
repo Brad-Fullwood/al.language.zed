@@ -140,18 +140,6 @@ pub(crate) fn dispatch_table_procedure(
     .ok_or_else(Vec::new)
 }
 
-/// The raw `TableRelation` of field `field` of table `table_name`, if it
-/// declares one.
-pub(crate) fn field_table_relation(
-    ctx: &DispatchCtx,
-    table_name: &str,
-    field: &str,
-) -> Option<String> {
-    let path = ctx.source.find_by_object_name(table_name)?;
-    let (text, tree) = ctx.source.get_cached_parse(&path)?;
-    table_relation_in(tree.root_node(), text.as_bytes(), table_name, field)
-}
-
 /// A plain relation's target table and, when named, field: `Item` or
 /// `Item."No."`. `None` for a conditional or filtered relation
 /// (`where(...)`, `if (...) ... else ...`), which the local runtime cannot

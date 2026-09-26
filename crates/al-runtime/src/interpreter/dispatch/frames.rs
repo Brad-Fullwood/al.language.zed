@@ -393,7 +393,10 @@ pub(super) fn check_param_type(arg: &Value, type_name: &str) -> Option<String> {
         return None;
     }
     let lower = type_name.to_lowercase();
-    match lower.as_str() {
+    // The keyword alone: `Text[50]` is Text, but `TextBuilder` is not and
+    // `Codeunit "X"` is not Code.
+    let base = lower.split(['[', ' ']).next().unwrap_or_default();
+    match base {
         "integer" | "biginteger" if !matches!(arg, Value::Integer(_) | Value::BigInteger(_)) => {
             return Some(format!("expected Integer, got {}", arg.type_name()));
         }
@@ -408,10 +411,10 @@ pub(super) fn check_param_type(arg: &Value, type_name: &str) -> Option<String> {
         "boolean" if !matches!(arg, Value::Boolean(_)) => {
             return Some(format!("expected Boolean, got {}", arg.type_name()));
         }
-        t if t.starts_with("text") && !matches!(arg, Value::Text(_) | Value::Code(_)) => {
+        "text" if !matches!(arg, Value::Text(_) | Value::Code(_) | Value::Char(_)) => {
             return Some(format!("expected Text, got {}", arg.type_name()));
         }
-        t if t.starts_with("code") && !matches!(arg, Value::Text(_) | Value::Code(_)) => {
+        "code" if !matches!(arg, Value::Text(_) | Value::Code(_) | Value::Char(_)) => {
             return Some(format!("expected Code, got {}", arg.type_name()));
         }
         // Complex types require symbol metadata not available in this layer.

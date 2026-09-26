@@ -3074,7 +3074,12 @@ const EVENT_PUBLISHER: &str = r#"codeunit 50170 Publisher
         exit(Total);
     end;
 
-    [IntegrationEvent(false, false)]
+    procedure Bonus(): Integer
+    begin
+        exit(100);
+    end;
+
+    [IntegrationEvent(true, false)]
     local procedure OnBeforePost(var Total: Integer; Label: Text)
     begin
     end;
@@ -3087,6 +3092,12 @@ const EVENT_SUBSCRIBERS: &str = r#"codeunit 50171 Subscribers
     local procedure AddTen(var Total: Integer)
     begin
         Total += 10;
+    end;
+
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::Publisher, 'OnBeforePost', '', false, false)]
+    local procedure AddFromSender(sender: Codeunit Publisher; var Total: Integer)
+    begin
+        Total += sender.Bonus();
     end;
 
     [EventSubscriber(ObjectType::Codeunit, Codeunit::50170, 'OnBeforePost', '', false, false)]
@@ -3198,8 +3209,9 @@ fn events_run_their_automatic_subscribers() {
             vec![],
         )
     };
-    // 1 + 10 (by name) + 3 (by ID, 'abc'); the manual subscriber is unbound.
-    assert_eq!(ok(call("PostRunsSubscribers")), Value::Integer(14));
+    // 1 + 10 (by name) + 100 (from the sender) + 3 (by ID, 'abc'); the
+    // manual subscriber is unbound.
+    assert_eq!(ok(call("PostRunsSubscribers")), Value::Integer(114));
     assert_eq!(
         ok(call("InsertRaisesTableEvent")),
         Value::Text("999|0".into())
@@ -3309,6 +3321,33 @@ const JSON_PROBE: &str = r#"codeunit 50197 "Json Probe"
         exit(Token.AsValue().AsInteger());
     end;
 
+    procedure SharedBeforeFirstUse(): Text
+    var
+        A: JsonObject;
+        B: JsonObject;
+        Out: Text;
+    begin
+        B := A;
+        A.Add('a', 1);
+        Fill(B);
+        B.WriteTo(Out);
+        exit(Out);
+    end;
+
+    local procedure Fill(Target: JsonObject)
+    begin
+        Target.Add('b', 2);
+    end;
+
+    procedure UnassignedTokenReads(): Text
+    var
+        Token: JsonToken;
+    begin
+        if not Token.ReadFrom('{"a":[1,2]}') then
+            exit('unreadable');
+        exit(Format(Token.IsObject()) + '|' + Format(Token.AsObject().Contains('a')));
+    end;
+
     procedure DuplicateKey()
     var
         A: JsonObject;
@@ -3335,6 +3374,16 @@ fn json_objects_arrays_and_tokens_run_locally() {
         Value::Text("SO1|12.5|Yes".into())
     );
     assert_eq!(ok(call("SharedReference")), Value::Integer(2));
+    // JSON values are references even before first use, and a by-value
+    // parameter passes the reference.
+    assert_eq!(
+        ok(call("SharedBeforeFirstUse")),
+        Value::Text(r#"{"a":1,"b":2}"#.into())
+    );
+    assert_eq!(
+        ok(call("UnassignedTokenReads")),
+        Value::Text("Yes|Yes".into())
+    );
     let duplicate = error_message(call("DuplicateKey"));
     assert!(
         duplicate.contains("the key 'n' already exists"),
