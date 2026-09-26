@@ -39,6 +39,13 @@ a future extension API that exposes `binary.env` does not widen an existing reco
 spellings are built-in tokens: the toolchain resolves them to Microsoft's own assemblies, so
 they are not gated.
 
+A repository can also point outside itself without a setting, by committing `.alpackages`
+as a symbolic link. A symbol folder written inside the project that resolves outside it is
+treated like `al.packageCachePath` outside the project: until the project is trusted its
+packages are not read, `downloadSymbols` refuses to write into it, and the daemon does not
+count it as a containment root. `al_project::trust::escapes_untrusted_project` is the one
+check.
+
 Everything else in a repository's settings applies without trust: formatting, inlay hints,
 `al.diagnosticsScope`, `al.enableNativeLint` and its per-rule overrides, `al.incrementalBuild`,
 `al.useOfficialCompiler`, `al.maxDocumentSizeBytes`, a ruleset or package folder inside the
@@ -93,22 +100,49 @@ while the process still has a controlling terminal, and a pipe is what a task, a
 was not enough on its own: the command used to write the record with stdin closed and no
 terminal, so anything running as the user granted trust in one call.
 
-A scripted install whose settings you have read passes `--yes` together with
-`--root <project>`. `--yes` alone is refused, and `--root` naming a different path is
-refused, so the caller spells out which project's values it means. Nothing in `plugin/` or
-`scripts/` runs this command, and nothing should.
+A CI job has no terminal, so it answers with flags: `--yes --root <project> --digest
+<sha256>`. The digest is the one `al-explorer trust --show` printed when a person read the
+values, and it goes in the CI configuration. `--yes` without `--root` or `--digest` is
+refused, `--root` naming a different path is refused, and a digest the current values no
+longer match is refused, so a commit that changes a privileged value fails the job rather
+than being trusted by it. `--yes --root` used to record whatever the repository held at that
+moment.
 
-A revoke takes effect on the next request. The daemon fingerprints the trust store, the
-user settings file, both repository settings files and the launch file before each request,
-five `stat` calls, and re-evaluates when any of them moved. It used to decide once at
-startup and keep that configuration until it exited, which is up to `AL_DAEMON_IDLE_SECS`
-after the last request and never while an editor keeps it busy.
+The refusal a call with no terminal receives does not name these flags. That call is by
+construction a script or an agent, and the refusal said how to make the same call succeed.
+The flags are a step a person puts into a CI configuration, not an answer to a refusal. Nothing
+in `plugin/` or `scripts/` runs this command, and nothing should.
+
+This is not a boundary against a program that already runs as the user: such a program can
+write `trusted-projects.json` itself. What the design controls is that no surface an agent
+reaches (the daemon, the MCP tools, a refusal, a skill) grants trust or tells it how to.
+
+A revoke takes effect on the next request, in every process that applies these settings.
+The daemon, and the MCP server through it, fingerprint the trust store, the user settings
+file, both repository settings files, the launch file and the `dotnet` host they run before
+each request, six `stat` calls, and re-evaluate when any of them moved. They used to decide
+once at startup and keep that configuration until they exited, which is up to
+`AL_DAEMON_IDLE_SECS` after the last request and never while an editor keeps them busy.
+
+The language server Zed runs takes the same fingerprint before every command (build, Run
+Test, symbol download) and before semantic analysis resolves analyzers, and gates the
+editor's settings again when it moved. Gating only removes values, so a project trusted
+while the language server runs takes effect at the next settings change or restart. The
+debug adapter is a new process for each session and decides at launch.
 
 The record lives in `~/.config/al-lsp/trusted-projects.json` (or `$XDG_CONFIG_HOME/al-lsp/`),
 outside every repository, mode 0600, written through a temp file and a rename. Each entry
 holds the canonical project root and a SHA-256 of the privileged values. Change one of those
 values in the repository and the digest stops matching, so the settings are ignored again
 until you run `trust` a second time. `al-explorer trust --show` reports that as `stale`.
+
+A privileged value that is a path into the project names a file the repository ships, and
+the file is what runs. For an analyzer path, `al.dotnetPath`, `binary.path` and each
+analyzer name that resolves to a DLL under `.netpackages`, `packages` or a relative probing
+path, the recorded value carries the file's SHA-256, and for a probing directory inside the
+project one hash over every `.dll` below it. `trust --show` prints those hashes. A commit
+that replaces one of those files, or adds one where the record saw none, makes the record
+`stale`. A path outside the project is the user's machine and is recorded as written.
 
 ## Settings you wrote yourself
 
@@ -119,6 +153,16 @@ to the language server, so the server cannot see which file a value came from. I
 that by reading the repository's own settings files and removing exactly the values they
 contribute. A privileged value written only in user settings survives; one the repository also
 asks for is gated until the project is trusted.
+
+An analyzer name you write yourself, such as `BusinessCentral.LinterCop`, is looked up in the
+project's own folders (`.netpackages`, `packages`, a relative `al.assemblyProbingPaths`
+entry) only when the project is trusted. Otherwise it resolves from the NuGet cache, an
+absolute probing path or the editor extension folders, and a name found only inside the
+project is refused with a message saying so. A relative analyzer path names a file the
+repository ships and is refused the same way. The name was the user's, but the repository
+chose which file answered to it, and that file is loaded into alc and into the language
+server's semantic bridge. The rule sits in `al_project::analyzers::discover_custom_analyzer`,
+which every build, publish, debug launch and semantic analysis goes through.
 
 A credential you supply yourself is the same: `BC_USERNAME`, `BC_PASSWORD` and
 `BC_ACCESS_TOKEN` apply without trust. What still needs trust is the *server* those
@@ -148,11 +192,13 @@ writing a sentence.
 
 ## Credentials
 
-Five daemon methods reach a credential the daemon holds, or send the user's own to a server
-the repository's launch file names, and all five go through one authorisation function:
-`debug` (the `start` command), `publish`, `downloadSymbols` from a BC server,
-`tests.snapshot_capture` and `tests.snapshot_replay`. The daemon's dispatch table declares
-which methods those are, and a test holds this list and that declaration together.
+Ten daemon methods reach a credential the daemon holds, send the user's own to a server the
+repository's launch file names, or send one to a server the request names, and all ten go
+through one authorisation function: `debug` (the `start` command), `publish`,
+`downloadSymbols` from a BC server, `tests.run`, `tests.run_batch`, `tests.run_auto`,
+`tests.snapshot_capture`, `tests.snapshot_replay`, `snapshot` and `profiling`. The daemon's
+dispatch table declares which methods those are, and a test holds this list and that
+declaration together.
 
 - Microsoft's Business Central online endpoints are always allowed. The endpoint is fixed, so
   a repository cannot redirect the token.
@@ -161,31 +207,45 @@ which methods those are, and a test holds this list and that declaration togethe
 - `http://` is refused for bearer and basic credentials unless the host is loopback. Set
   `AL_ALLOW_INSECURE_BC_HTTP=1` to allow a cleartext server elsewhere on a network you trust.
   An environment variable is a user-level decision, so it needs no project trust.
+- A server written without a scheme (`bc.corp.example`, `bc.corp.example:7049`) is
+  `https`. The authorisation and every request builder read it through one function,
+  `al_bc::launch::server_with_scheme`, so the scheme that was judged is the scheme the
+  request uses. To reach a cleartext server, write `http://` in the launch configuration,
+  and set `AL_ALLOW_INSECURE_BC_HTTP=1` when the host is not loopback. A bare host used to be
+  sent as `http://` while the check read it as `https`, so the cleartext rule passed a
+  request that then sent Basic credentials in the clear.
 - `acceptInvalidCerts` from the project's own debug configuration is honoured only for the
   same target and only when the project is trusted.
 
-`publish` is in that list although it never reads the OAuth cache: it sends
-`BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`, from the environment. The environment
-is the user's own decision, but which server receives it is the repository's, so the target
-is authorised and the refusal says "Business Central credentials" rather than naming a cached
-token.
+The Zed debug adapter (`al-lsp --dap`) and the EditorServices proxy (`al-lsp --dap-legacy`)
+run the same authorisation on every `launch` and `attach`, before anything is compiled or
+sent. Zed reads the debug scenario from the worktree's `.zed/debug.json` or from the user's
+own debug settings, and the adapter cannot tell which, so the scenario is judged as a file
+the repository carries: an on-premises server needs a trusted project, and
+`acceptInvalidCerts` is honoured only when the project's launch file sets it for the same
+server. A refused launch fails with the reason in the debug console.
+
+`publish` and `tests.run*` are in that list although they never read the OAuth cache: they
+send `BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`, from the environment. The
+environment is the user's own decision, but which server receives it is the repository's, so
+the target is authorised and the refusal says "Business Central credentials" rather than
+naming a cached token. The Run Test code lens in the language server runs the same check
+before it starts a live test.
+
+`snapshot` and `profiling` take `serverUrl`, `username` and `password` from the request.
+The credential is the caller's, but the server is a string an agent can choose through
+`al_call`, so an inline `serverUrl` must match a launch configuration of a trusted project,
+compared on scheme, host and the port the client connects to (the URL's own, or 443 or 80 by
+scheme). Their `acceptInvalidCerts` is refused unless that launch configuration sets it for
+the same server. A request with no `serverUrl` gets the daemon's loopback default, which no
+caller chose, and `acceptInvalidCerts` is dropped for it.
 
 ### Where the caller brings its own credential
 
-These methods take the credential and the server from the request, so there is no cached
-credential to protect and no trust decision to make. They are as trusted as the caller that
-calls them:
-
-- `snapshot` and `profiling` take `serverUrl`, `username`, `password` and their own
-  `acceptInvalidCerts`, which is honoured because the caller chose both the server and the
-  setting.
-- `tests.run`, `tests.run_batch` and `tests.run_auto` against live BC authenticate from
-  `BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`, against the launch configuration the
-  request names.
-- `debug start` with an explicit `accessToken` spends that token rather than the cached one.
-  `acceptInvalidCerts` is still refused unless the project's own configuration asks for it
-  and the project is trusted: turning off TLS verification is about the target, not the
-  token.
+`debug start` with an explicit `accessToken` spends that token rather than the cached one,
+so there is no cached credential to protect. `acceptInvalidCerts` is still refused unless the
+project's own configuration asks for it and the project is trusted: turning off TLS
+verification is about the target, not the token.
 
 ## Limits
 

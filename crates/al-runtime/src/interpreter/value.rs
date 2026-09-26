@@ -100,6 +100,11 @@ pub enum Value {
     Text(String),
     /// AL `Code[N]` — uppercase string, length cap not enforced here.
     Code(String),
+    /// AL `TextBuilder` — a string its methods change in place.
+    TextBuilder(String),
+    /// `JsonObject`, `JsonArray`, `JsonToken` or `JsonValue`: a reference
+    /// into the dispatch context's JSON arena.
+    Json(crate::interpreter::json::JsonRef),
     /// AL `Date` — days since AL epoch (0001-01-01).
     Date(AlDate),
     /// AL `Time` — milliseconds since midnight.
@@ -217,6 +222,8 @@ impl Ord for Value {
                 ErrorInfo(_) => 21,
                 Codeunit { .. } => 22,
                 Range { .. } => 23,
+                TextBuilder(_) => 24,
+                Json(_) => 25,
             }
         }
         let mine = variant_index(self);
@@ -230,10 +237,11 @@ impl Ord for Value {
             (Decimal(a), Decimal(b)) => a.cmp(b),
             (Boolean(a), Boolean(b)) => a.cmp(b),
             (Char(a), Char(b)) => a.cmp(b),
-            (Text(a), Text(b)) | (Code(a), Code(b)) => a.cmp(b),
+            (Text(a), Text(b)) | (Code(a), Code(b)) | (TextBuilder(a), TextBuilder(b)) => a.cmp(b),
             (Date(a), Date(b)) | (Time(a), Time(b)) | (DateTime(a), DateTime(b)) => a.cmp(b),
             (Duration(a), Duration(b)) => a.cmp(b),
             (Guid(a), Guid(b)) => a.cmp(b),
+            (Json(a), Json(b)) => a.cmp(b),
             (
                 Option {
                     type_name: at,
@@ -400,9 +408,11 @@ impl Value {
             "time" => Some(Value::Time(0)),
             "datetime" => Some(Value::DateTime(0)),
             "duration" => Some(Value::Duration(0)),
-            "guid" => Some(Value::Guid("00000000-0000-0000-0000-000000000000".into())),
+            // Braced, as Format shows a Guid and CreateGuid returns one.
+            "guid" => Some(Value::Guid("{00000000-0000-0000-0000-000000000000}".into())),
             "char" => Some(Value::Char('\0')),
-            _ => None,
+            "textbuilder" => Some(Value::TextBuilder(String::new())),
+            other => crate::interpreter::json::default_for(other),
         }
     }
 
@@ -419,6 +429,13 @@ impl Value {
             Value::Char(_) => "Char",
             Value::Text(_) => "Text",
             Value::Code(_) => "Code",
+            Value::TextBuilder(_) => "TextBuilder",
+            Value::Json(json) => match json.kind {
+                crate::interpreter::json::JsonKind::Object => "JsonObject",
+                crate::interpreter::json::JsonKind::Array => "JsonArray",
+                crate::interpreter::json::JsonKind::Token => "JsonToken",
+                crate::interpreter::json::JsonKind::Value => "JsonValue",
+            },
             Value::Date(_) => "Date",
             Value::Time(_) => "Time",
             Value::DateTime(_) => "DateTime",
@@ -553,7 +570,7 @@ mod tests {
         assert!(matches!(Value::default_for("code"), Some(Value::Code(s)) if s.is_empty()));
         match Value::default_for("guid") {
             Some(Value::Guid(g)) => {
-                assert_eq!(g, "00000000-0000-0000-0000-000000000000");
+                assert_eq!(g, "{00000000-0000-0000-0000-000000000000}");
             }
             other => panic!("guid default wrong: {other:?}"),
         }

@@ -228,8 +228,13 @@ pub fn classify_codeunits(
                 ));
                 continue;
             };
-            let (mut decision, mut reasons) =
-                classify_reachable(workspace, &graph, &catalog, root, handler_support);
+            let (mut decision, mut reasons) = classify_reachable(
+                workspace,
+                (&graph, &insight),
+                &catalog,
+                root,
+                handler_support,
+            );
             for reason in handler_reasons {
                 decision = RoutingDecision::LiveBc;
                 push_reason(&mut reasons, reason);
@@ -257,7 +262,7 @@ pub fn classify_codeunits(
                 };
                 let (lifecycle_decision, lifecycle_reasons) = classify_reachable(
                     workspace,
-                    &graph,
+                    (&graph, &insight),
                     &catalog,
                     lifecycle_root,
                     handler_support,
@@ -287,8 +292,13 @@ pub fn classify_codeunits(
                     );
                     continue;
                 };
-                let (handler_decision, handler_reasons) =
-                    classify_reachable(workspace, &graph, &catalog, handler_root, handler_support);
+                let (handler_decision, handler_reasons) = classify_reachable(
+                    workspace,
+                    (&graph, &insight),
+                    &catalog,
+                    handler_root,
+                    handler_support,
+                );
                 decision = decision.max(handler_decision);
                 for reason in handler_reasons {
                     push_reason(&mut reasons, reason);
@@ -440,7 +450,7 @@ fn build_procedure_catalog(workspace: &Workspace) -> ProcedureCatalog {
 
 fn classify_reachable(
     workspace: &Workspace,
-    graph: &CallGraph,
+    (graph, insight): (&CallGraph, &al_insight::graph::InsightGraph),
     catalog: &ProcedureCatalog,
     root: NodeId,
     handler_support: LocalHandlerSupport,
@@ -452,7 +462,40 @@ fn classify_reachable(
     let root_object = graph
         .node_info(root)
         .map(|info| info.object.to_ascii_lowercase());
-    while let Some(node) = queue.pop_front() {
+    // Workspace tables with triggers or procedures that reachable code uses:
+    // their code runs locally (Validate, Insert(true), Rec.Proc()), so every
+    // declaration is classified and its callees followed.
+    let mut tables: Vec<String> = Vec::new();
+    let mut classified_tables: HashSet<String> = HashSet::new();
+    loop {
+        while let Some(table) = tables.pop() {
+            if !classified_tables.insert(table.to_ascii_lowercase()) {
+                continue;
+            }
+            classify_table_code(
+                workspace,
+                catalog,
+                &table,
+                (&mut decision, &mut reasons),
+                handler_support,
+                &mut tables,
+                |name| {
+                    let key = NodeKey::Procedure(
+                        ObjectKind::Table,
+                        table.to_ascii_lowercase(),
+                        name.to_ascii_lowercase(),
+                    );
+                    if let Some(id) = CallGraph::node_id_for(insight, &key) {
+                        if visited.insert(id) {
+                            queue.push_back(id);
+                        }
+                    }
+                },
+            );
+        }
+        let Some(node) = queue.pop_front() else {
+            break;
+        };
         let Some(info) = graph.node_info(node) else {
             decision = RoutingDecision::LiveBc;
             push_reason(
@@ -499,6 +542,7 @@ fn classify_reachable(
                 &mut reasons,
                 node != root,
                 handler_support,
+                &mut tables,
             );
         } else if !matches!(info.node_type.as_str(), "event" | "object")
             && !al_runtime::stubs::is_supported(&info.object, &info.name)
@@ -527,6 +571,51 @@ fn classify_reachable(
         }
     }
     (decision, reasons)
+}
+
+/// Classify every trigger and procedure of workspace table `table` as
+/// reachable code, reporting each declaration's name to `enqueue` so its
+/// call-graph node's callees are followed.
+fn classify_table_code(
+    workspace: &Workspace,
+    catalog: &ProcedureCatalog,
+    table: &str,
+    (decision, reasons): (&mut RoutingDecision, &mut Vec<RoutingReason>),
+    handler_support: LocalHandlerSupport,
+    tables: &mut Vec<String>,
+    mut enqueue: impl FnMut(&str),
+) {
+    let Some(path) = workspace.file_index.object_path_of_kind(table, &["table"]) else {
+        return;
+    };
+    let Some((text, tree)) = workspace.file_index.get_cached_parse(&path) else {
+        return;
+    };
+    let scope = object_scope(workspace, &path, &tree, table);
+    let location = ProcedureLocation {
+        file: path.clone(),
+        object: table.to_string(),
+        name: String::new(),
+        has_object_globals: false,
+    };
+    for declaration in ast::table_code_declarations(scope) {
+        ast::classify_declaration(
+            workspace,
+            catalog,
+            &location,
+            (&tree, &text, declaration),
+            (&mut *decision, &mut *reasons),
+            true,
+            handler_support,
+            tables,
+        );
+        if let Some(name) = declaration
+            .child_by_field_name("name")
+            .and_then(|name| name.utf8_text(text.as_bytes()).ok())
+        {
+            enqueue(&name.unquote_identifier());
+        }
+    }
 }
 
 fn local_handler_support(

@@ -25,10 +25,26 @@ pub enum AnalyzerDiscoveryError {
         .0.display()
     )]
     ScanLimit(PathBuf),
+    /// The entry resolves only to a file inside the project, and the project
+    /// is not trusted. The fields are already put through
+    /// [`crate::trust::one_line`], since a repository chose the file name.
+    #[error(
+        "analyzer '{entry}' resolves to '{found}' inside this project, and the project is not \
+         trusted, so it is not loaded. Install the analyzer in the NuGet cache, or name its \
+         absolute path in user settings. To read the project's settings and decide, the user \
+         runs this in a terminal: {} --show {root}",
+        crate::trust::TRUST_COMMAND
+    )]
+    UntrustedProjectAnalyzer {
+        entry: String,
+        found: String,
+        root: String,
+    },
 }
 
 /// Whether `name` denotes one of Microsoft's analyzer assemblies shipped with
-/// the AL toolchain. The alias mirrors Microsoft's DLL name.
+/// the AL toolchain, in either the bare (`CodeCop`) or the `${Name}` token
+/// spelling AL settings use (`al.codeAnalyzers`, `app.json` `ruleSets`).
 #[must_use]
 pub fn is_builtin_analyzer(name: &str) -> bool {
     matches!(
@@ -37,9 +53,21 @@ pub fn is_builtin_analyzer(name: &str) -> bool {
     )
 }
 
-/// Return an analyzer entry without a case-insensitive trailing `.dll`.
+/// Return an analyzer entry in its bare form: unwrapped from a `${Name}`
+/// token, if it is one, then without a case-insensitive trailing `.dll`.
+///
+/// The token spelling is how `al.codeAnalyzers` names a built-in cop (the
+/// default project template writes `${PerTenantExtensionCop}`); the bare name
+/// and the `.dll` suffix are both accepted elsewhere. Every caller that needs
+/// to compare an entry against a builtin name, including a caller outside
+/// this crate that already stripped its own `.dll` suffix, goes through this
+/// one function.
 #[must_use]
 pub fn analyzer_name(name: &str) -> &str {
+    let name = name
+        .strip_prefix("${")
+        .and_then(|rest| rest.strip_suffix('}'))
+        .unwrap_or(name);
     name.get(..name.len().saturating_sub(4))
         .filter(|_| {
             name.get(name.len().saturating_sub(4)..)
@@ -53,6 +81,15 @@ pub fn analyzer_name(name: &str) -> &str {
 /// `Ok(None)` means no matching analyzer was installed in any supported
 /// location. Explicit absolute or path-containing entries are different:
 /// their absence is a configuration error and returns `Err`.
+///
+/// The project's own folders (`.netpackages`, `packages`, a relative probing
+/// path, a relative analyzer path) are searched only when the project is
+/// trusted. The trust gate removes analyzer entries a repository writes, but a
+/// name the user writes, such as `BusinessCentral.LinterCop` in user
+/// settings, was still looked up in `<project>/packages` before the NuGet
+/// cache, so a clone that shipped a DLL of that name had it loaded into alc and
+/// into the language server. Every caller goes through this one function, so
+/// every caller gets the rule.
 pub fn discover_custom_analyzer(
     entry: &str,
     project_root: &Path,
@@ -62,6 +99,22 @@ pub fn discover_custom_analyzer(
     if entry.is_empty() || is_builtin_analyzer(entry) {
         return Ok(None);
     }
+    let trusted = crate::trust::decide(project_root).is_ok_and(|decision| decision.is_trusted());
+    discover(entry, project_root, assembly_probing_paths, trusted)
+}
+
+/// [`discover_custom_analyzer`] with the trust decision already made.
+fn discover(
+    entry: &str,
+    project_root: &Path,
+    assembly_probing_paths: &[PathBuf],
+    search_project: bool,
+) -> Result<Option<PathBuf>, AnalyzerDiscoveryError> {
+    let untrusted = |found: &Path| AnalyzerDiscoveryError::UntrustedProjectAnalyzer {
+        entry: crate::trust::one_line(entry),
+        found: crate::trust::one_line(&found.display().to_string()),
+        root: crate::trust::one_line(&project_root.display().to_string()),
+    };
 
     let configured_path = Path::new(entry);
     let contains_separator =
@@ -72,9 +125,15 @@ pub fn discover_custom_analyzer(
         } else {
             project_root.join(configured_path)
         };
-        return canonical_file(&path)
-            .map(Some)
-            .ok_or(AnalyzerDiscoveryError::MissingExplicitPath(path));
+        let found = canonical_file(&path)
+            .ok_or(AnalyzerDiscoveryError::MissingExplicitPath(path.clone()))?;
+        // A path into the project names a file the repository ships, however
+        // it is spelled. The trust record hashes that file, so a later commit
+        // that replaces it makes the project stale and lands here.
+        if !search_project && is_inside(&found, project_root) {
+            return Err(untrusted(&found));
+        }
+        return Ok(Some(found));
     }
 
     let file_name = if entry
@@ -86,25 +145,33 @@ pub fn discover_custom_analyzer(
         format!("{entry}.dll")
     };
 
+    let project_roots = project_search_roots(project_root, assembly_probing_paths);
+
     // Explicit probing paths have highest priority and are searched in the
     // order configured by the user.
     for configured in assembly_probing_paths {
-        let root = if configured.is_absolute() {
-            configured.clone()
-        } else {
-            project_root.join(configured)
-        };
-        if let Some(path) = find_best_below(&root, &file_name, true)? {
+        if !configured.is_absolute() {
+            if !search_project {
+                continue;
+            }
+            if let Some(path) = find_best_below(&project_root.join(configured), &file_name, true)? {
+                return Ok(Some(path));
+            }
+            continue;
+        }
+        if let Some(path) = find_best_below(configured, &file_name, true)? {
             return Ok(Some(path));
         }
     }
 
-    for root in [
-        project_root.join(".netpackages"),
-        project_root.join("packages"),
-    ] {
-        if let Some(path) = find_best_below(&root, &file_name, false)? {
-            return Ok(Some(path));
+    if search_project {
+        for root in [
+            project_root.join(".netpackages"),
+            project_root.join("packages"),
+        ] {
+            if let Some(path) = find_best_below(&root, &file_name, false)? {
+                return Ok(Some(path));
+            }
         }
     }
 
@@ -140,7 +207,67 @@ pub fn discover_custom_analyzer(
         }
     }
 
+    if !search_project {
+        // Nothing outside the project has it. Say so when the project does,
+        // rather than reporting the analyzer as missing.
+        for root in &project_roots {
+            if let Ok(Some(found)) = find_best_below(root, &file_name, false) {
+                return Err(untrusted(&found));
+            }
+        }
+    }
+
     Ok(None)
+}
+
+/// The directories inside the project that discovery searches for a bare
+/// analyzer name: each relative probing path, then `.netpackages` and
+/// `packages`. They are searched first when the project is trusted and not at
+/// all when it is not.
+fn project_search_roots(project_root: &Path, assembly_probing_paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = assembly_probing_paths
+        .iter()
+        .filter(|configured| !configured.is_absolute())
+        .map(|configured| project_root.join(configured))
+        .collect();
+    roots.push(project_root.join(".netpackages"));
+    roots.push(project_root.join("packages"));
+    roots
+}
+
+/// The file inside the project a bare analyzer name would resolve to when the
+/// project is trusted, for the trust record to hash.
+pub(crate) fn find_in_project(
+    entry: &str,
+    project_root: &Path,
+    assembly_probing_paths: &[PathBuf],
+) -> Option<PathBuf> {
+    let entry = entry.trim();
+    if entry.is_empty()
+        || is_builtin_analyzer(entry)
+        || Path::new(entry).is_absolute()
+        || entry.contains(['/', '\\'])
+    {
+        return None;
+    }
+    let file_name = if entry
+        .rsplit_once('.')
+        .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("dll"))
+    {
+        entry.to_string()
+    } else {
+        format!("{entry}.dll")
+    };
+    project_search_roots(project_root, assembly_probing_paths)
+        .iter()
+        .find_map(|root| find_best_below(root, &file_name, false).ok().flatten())
+}
+
+fn is_inside(path: &Path, project_root: &Path) -> bool {
+    let root = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf());
+    path.starts_with(&root)
 }
 
 fn canonical_file(path: &Path) -> Option<PathBuf> {
@@ -324,6 +451,20 @@ fn dedup_paths(paths: &mut Vec<PathBuf>) {
 mod tests {
     use super::*;
 
+    /// [`discover_custom_analyzer`] for a project the user has trusted, which
+    /// is what the tests of the search order itself describe.
+    fn discover_in_trusted_project(
+        entry: &str,
+        project_root: &Path,
+        assembly_probing_paths: &[PathBuf],
+    ) -> Result<Option<PathBuf>, AnalyzerDiscoveryError> {
+        let entry = entry.trim();
+        if entry.is_empty() || is_builtin_analyzer(entry) {
+            return Ok(None);
+        }
+        discover(entry, project_root, assembly_probing_paths, true)
+    }
+
     #[test]
     fn probing_path_finds_nested_analyzer_case_insensitively() {
         let project = tempfile::tempdir().unwrap();
@@ -332,10 +473,11 @@ mod tests {
         let dll = probing.join("BusinessCentral.LinterCop.DLL");
         std::fs::write(&dll, b"analyzer").unwrap();
 
-        let found = discover_custom_analyzer(
+        let found = discover(
             "BusinessCentral.LinterCop",
             project.path(),
             &[PathBuf::from("tools")],
+            true,
         )
         .unwrap()
         .expect("analyzer");
@@ -356,7 +498,7 @@ mod tests {
         let expected = new.join("BusinessCentral.LinterCop.dll");
         std::fs::write(&expected, b"new").unwrap();
 
-        let found = discover_custom_analyzer("BusinessCentral.LinterCop", project.path(), &[])
+        let found = discover("BusinessCentral.LinterCop", project.path(), &[], true)
             .unwrap()
             .expect("analyzer");
         assert_eq!(found, expected.canonicalize().unwrap());
@@ -378,10 +520,114 @@ mod tests {
         let expected = new.join("BusinessCentral.LinterCop.dll");
         std::fs::write(&expected, b"new").unwrap();
 
-        let found = discover_custom_analyzer("BusinessCentral.LinterCop", &project, &[])
+        let found = discover("BusinessCentral.LinterCop", &project, &[], true)
             .unwrap()
             .expect("analyzer");
         assert_eq!(found, expected.canonicalize().unwrap());
+    }
+
+    /// A name the user wrote must not resolve to a DLL a cloned repository
+    /// ships under `packages/`: that is the repository choosing the code alc
+    /// and the language server load. The project here has no trust record.
+    #[test]
+    fn an_untrusted_project_cannot_supply_a_user_named_analyzer() {
+        let project = tempfile::tempdir().unwrap();
+        let shipped = project.path().join("packages/any");
+        std::fs::create_dir_all(&shipped).unwrap();
+        std::fs::write(shipped.join("RepositoryShippedCop.dll"), b"payload").unwrap();
+
+        let error = discover_custom_analyzer("RepositoryShippedCop", project.path(), &[])
+            .expect_err("the repository's copy must not be loaded");
+        assert!(
+            matches!(
+                error,
+                AnalyzerDiscoveryError::UntrustedProjectAnalyzer { .. }
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().contains("not trusted"), "{error}");
+    }
+
+    #[test]
+    fn an_untrusted_project_cannot_supply_a_relative_analyzer_path() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join("tools")).unwrap();
+        std::fs::write(project.path().join("tools/TeamCop.dll"), b"payload").unwrap();
+
+        let error = discover_custom_analyzer("./tools/TeamCop.dll", project.path(), &[])
+            .expect_err("a relative path names a file the repository ships");
+        assert!(
+            matches!(
+                error,
+                AnalyzerDiscoveryError::UntrustedProjectAnalyzer { .. }
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn an_untrusted_project_is_not_searched_through_a_relative_probing_path() {
+        let project = tempfile::tempdir().unwrap();
+        let probing = project.path().join("tools/net8.0");
+        std::fs::create_dir_all(&probing).unwrap();
+        std::fs::write(probing.join("ProbedCop.dll"), b"payload").unwrap();
+
+        let error = discover(
+            "ProbedCop",
+            project.path(),
+            &[PathBuf::from("tools")],
+            false,
+        )
+        .expect_err("the relative probing path is inside the project");
+        assert!(
+            matches!(
+                error,
+                AnalyzerDiscoveryError::UntrustedProjectAnalyzer { .. }
+            ),
+            "{error}"
+        );
+        assert_eq!(
+            discover("ProbedCop", project.path(), &[PathBuf::from("tools")], true)
+                .unwrap()
+                .unwrap(),
+            probing.join("ProbedCop.dll").canonicalize().unwrap(),
+            "a trusted project keeps its probing path"
+        );
+    }
+
+    /// An absolute path outside the project is the user's own choice.
+    #[test]
+    fn an_absolute_analyzer_path_outside_the_project_resolves_without_trust() {
+        let project = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let dll = elsewhere.path().join("Absolute.dll");
+        std::fs::write(&dll, b"analyzer").unwrap();
+
+        let found = discover(dll.to_str().unwrap(), project.path(), &[], false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(found, dll.canonicalize().unwrap());
+    }
+
+    /// An absolute path into the project still names the repository's file,
+    /// so it needs trust the way a relative one does.
+    #[test]
+    fn an_absolute_analyzer_path_into_the_project_needs_trust() {
+        let project = tempfile::tempdir().unwrap();
+        let dll = project.path().join("tools/TeamCop.dll");
+        std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
+        std::fs::write(&dll, b"analyzer").unwrap();
+
+        let error = discover(dll.to_str().unwrap(), project.path(), &[], false)
+            .expect_err("the file is the repository's");
+        assert!(
+            matches!(
+                error,
+                AnalyzerDiscoveryError::UntrustedProjectAnalyzer { .. }
+            ),
+            "{error}"
+        );
+        assert!(discover(dll.to_str().unwrap(), project.path(), &[], true).is_ok());
     }
 
     /// `read_dir` returns entries in whatever order the filesystem holds them,
@@ -425,7 +671,7 @@ mod tests {
         std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
         std::fs::write(&dll, b"analyzer").unwrap();
 
-        let found = discover_custom_analyzer("analyzers/Custom.dll", project.path(), &[])
+        let found = discover_in_trusted_project("analyzers/Custom.dll", project.path(), &[])
             .unwrap()
             .expect("analyzer");
         assert_eq!(found, dll.canonicalize().unwrap());
@@ -434,7 +680,7 @@ mod tests {
     #[test]
     fn missing_explicit_path_is_an_error() {
         let project = tempfile::tempdir().unwrap();
-        let result = discover_custom_analyzer("analyzers/Missing.dll", project.path(), &[]);
+        let result = discover_in_trusted_project("analyzers/Missing.dll", project.path(), &[]);
         assert!(matches!(
             result,
             Err(AnalyzerDiscoveryError::MissingExplicitPath(_))
@@ -451,6 +697,26 @@ mod tests {
         );
     }
 
+    /// `al-explorer new`'s default `.vscode/settings.json` writes
+    /// `${PerTenantExtensionCop}`, not the bare name (`scaffold.rs`,
+    /// `generate_vscode_settings`), and `trust::evaluate` leaves the token
+    /// spelling in an untrusted project's `code_analyzers` untouched because
+    /// it is never gated. `is_builtin_analyzer` has to recognise both
+    /// spellings, or a freshly scaffolded, untrusted project is refused on
+    /// its own default settings.
+    #[test]
+    fn is_builtin_analyzer_accepts_the_token_spelling() {
+        for name in ["CodeCop", "UICop", "PerTenantExtensionCop", "AppSourceCop"] {
+            assert!(is_builtin_analyzer(name), "bare {name:?} must be builtin");
+            let token = format!("${{{name}}}");
+            assert!(is_builtin_analyzer(&token), "{token:?} must be builtin");
+        }
+        // A token wrapping something that is not one of the four cops stays a
+        // custom (or unsafe) entry, not a builtin.
+        assert!(!is_builtin_analyzer("${LinterCop}"));
+        assert!(!is_builtin_analyzer("${../evil}"));
+    }
+
     /// An entry the toolchain resolves itself, or no entry at all, is not a custom
     /// analyzer — even when a file of that name sits in the project.
     #[test]
@@ -462,11 +728,64 @@ mod tests {
 
         for entry in ["", "   ", "CodeCop", "codecop.dll", "AppSourceCop", "UICop"] {
             assert_eq!(
-                discover_custom_analyzer(entry, project.path(), &[]).unwrap(),
+                discover_in_trusted_project(entry, project.path(), &[]).unwrap(),
                 None,
                 "{entry:?} must not resolve as a custom analyzer"
             );
         }
+    }
+
+    /// The token spelling is not a repository analyzer either: `discover_custom_analyzer`
+    /// must return `Ok(None)` for it immediately, in an untrusted project, without
+    /// searching the project's folders or reporting "could not be found".
+    #[test]
+    fn discover_custom_analyzer_treats_the_token_spelling_as_builtin() {
+        // The project ships a file that literally matches the file name a
+        // buggy, non-short-circuiting search would look for
+        // (`${CodeCop}.dll`), so this only passes if `is_builtin_analyzer`
+        // stops `discover_custom_analyzer` before it ever searches the
+        // project's own folders. Before the fix, the token spelling was not
+        // recognised as builtin, the project was untrusted, and the search
+        // found this file and refused it as an untrusted project analyzer
+        // instead of returning `Ok(None)`.
+        let project = tempfile::tempdir().unwrap();
+        let packages = project.path().join("packages");
+        std::fs::create_dir_all(&packages).unwrap();
+
+        for entry in [
+            "${CodeCop}",
+            "${UICop}",
+            "${PerTenantExtensionCop}",
+            "${AppSourceCop}",
+        ] {
+            std::fs::write(packages.join(format!("{entry}.dll")), b"decoy").unwrap();
+            assert_eq!(
+                discover_custom_analyzer(entry, project.path(), &[]).unwrap(),
+                None,
+                "{entry:?} must not be treated as a repository analyzer"
+            );
+        }
+    }
+
+    /// The refusal for an analyzer that resolves only inside an untrusted project
+    /// is worded without reference to any particular caller (the `--analyzers` flag
+    /// or a settings key): both `pack-native --validate --analyzers <name>` and a
+    /// future caller that reaches this from settings get the same, accurate text.
+    #[test]
+    fn untrusted_project_analyzer_message_names_no_specific_caller() {
+        let project = tempfile::tempdir().unwrap();
+        let packages = project.path().join("packages");
+        std::fs::create_dir_all(&packages).unwrap();
+        std::fs::write(packages.join("LinterCop.dll"), b"analyzer").unwrap();
+
+        let error = discover_custom_analyzer("LinterCop", project.path(), &[]).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            !message.contains("--analyzers"),
+            "message must not name the --analyzers flag when the caller may be settings: {message}"
+        );
+        assert!(message.contains("LinterCop"), "{message}");
+        assert!(message.contains("is not trusted"), "{message}");
     }
 
     #[test]
@@ -476,7 +795,7 @@ mod tests {
         let dll = elsewhere.path().join("Custom.dll");
         std::fs::write(&dll, b"analyzer").unwrap();
 
-        let found = discover_custom_analyzer(&dll.display().to_string(), project.path(), &[])
+        let found = discover_in_trusted_project(&dll.display().to_string(), project.path(), &[])
             .unwrap()
             .expect("analyzer");
         assert_eq!(found, dll.canonicalize().unwrap());
@@ -489,7 +808,7 @@ mod tests {
         let project = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(project.path().join("analyzers/Custom.dll")).unwrap();
         assert!(matches!(
-            discover_custom_analyzer("analyzers/Custom.dll", project.path(), &[]),
+            discover_in_trusted_project("analyzers/Custom.dll", project.path(), &[]),
             Err(AnalyzerDiscoveryError::MissingExplicitPath(_))
         ));
     }
@@ -499,13 +818,13 @@ mod tests {
     #[test]
     fn missing_configured_probing_path_is_reported_but_missing_defaults_are_not() {
         let project = tempfile::tempdir().unwrap();
-        let error = discover_custom_analyzer("Custom", project.path(), &[PathBuf::from("nope")])
+        let error = discover_in_trusted_project("Custom", project.path(), &[PathBuf::from("nope")])
             .expect_err("a missing configured probing path must be reported");
         assert!(matches!(error, AnalyzerDiscoveryError::Inspect { .. }));
 
         // With no probing paths configured, the absent default roots are simply not there.
         assert_eq!(
-            discover_custom_analyzer("Custom", project.path(), &[]).unwrap(),
+            discover_in_trusted_project("Custom", project.path(), &[]).unwrap(),
             None
         );
     }
@@ -518,7 +837,7 @@ mod tests {
         std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
         std::fs::write(&dll, b"analyzer").unwrap();
 
-        let found = discover_custom_analyzer(
+        let found = discover_in_trusted_project(
             "Custom",
             project.path(),
             &[PathBuf::from("tools/Custom.dll")],
@@ -540,7 +859,7 @@ mod tests {
         std::fs::create_dir_all(wanted.parent().unwrap()).unwrap();
         std::fs::write(&wanted, b"analyzer").unwrap();
 
-        let found = discover_custom_analyzer(
+        let found = discover_in_trusted_project(
             "Custom",
             project.path(),
             &[PathBuf::from("tools/Other.dll")],
@@ -560,7 +879,7 @@ mod tests {
             std::fs::write(path.join("Custom.dll"), dir.as_bytes()).unwrap();
         }
 
-        let found = discover_custom_analyzer(
+        let found = discover_in_trusted_project(
             "Custom",
             project.path(),
             &[PathBuf::from("second"), PathBuf::from("first")],
@@ -586,7 +905,7 @@ mod tests {
         std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
         std::fs::write(&dll, b"analyzer").unwrap();
 
-        let found = discover_custom_analyzer("Custom", project.path(), &[])
+        let found = discover_in_trusted_project("Custom", project.path(), &[])
             .unwrap()
             .expect("analyzer");
         assert_eq!(found, dll.canonicalize().unwrap());
@@ -610,7 +929,7 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), packages.join("linked")).unwrap();
 
         assert_eq!(
-            discover_custom_analyzer("Custom", project.path(), &[]).unwrap(),
+            discover_in_trusted_project("Custom", project.path(), &[]).unwrap(),
             None,
             "a symlinked assembly must not be picked up"
         );
@@ -628,7 +947,7 @@ mod tests {
         std::fs::write(deep.join("Custom.dll"), b"analyzer").unwrap();
 
         assert_eq!(
-            discover_custom_analyzer("Custom", project.path(), &[]).unwrap(),
+            discover_in_trusted_project("Custom", project.path(), &[]).unwrap(),
             None
         );
     }
@@ -690,7 +1009,7 @@ mod tests {
             "MYANALYZER.DLL",
         ] {
             assert_eq!(
-                discover_custom_analyzer(entry, project.path(), &[])
+                discover_in_trusted_project(entry, project.path(), &[])
                     .unwrap()
                     .expect("analyzer"),
                 expected,

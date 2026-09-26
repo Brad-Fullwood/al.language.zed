@@ -3,6 +3,7 @@
 
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn classify_procedure_ast(
     workspace: &Workspace,
     catalog: &ProcedureCatalog,
@@ -11,6 +12,7 @@ pub(super) fn classify_procedure_ast(
     reasons: &mut Vec<RoutingReason>,
     reachable: bool,
     handler_support: LocalHandlerSupport,
+    tables: &mut Vec<String>,
 ) {
     let Some((text, tree)) = workspace.file_index.get_cached_parse(&location.file) else {
         *decision = RoutingDecision::LiveBc;
@@ -44,7 +46,33 @@ pub(super) fn classify_procedure_ast(
         );
         return;
     };
-    let resolver = al_syntax::TypeResolver::new(&tree, &text);
+    classify_declaration(
+        workspace,
+        catalog,
+        location,
+        (&tree, &text, procedure),
+        (decision, reasons),
+        reachable,
+        handler_support,
+        tables,
+    );
+}
+
+/// Classify one procedure or trigger body. Workspace tables with code that
+/// the body uses are added to `tables`, for their code to be classified too.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn classify_declaration(
+    workspace: &Workspace,
+    catalog: &ProcedureCatalog,
+    location: &ProcedureLocation,
+    (tree, text, procedure): (&tree_sitter::Tree, &str, tree_sitter::Node<'_>),
+    (decision, reasons): (&mut RoutingDecision, &mut Vec<RoutingReason>),
+    reachable: bool,
+    handler_support: LocalHandlerSupport,
+    tables: &mut Vec<String>,
+) {
+    let bytes = text.as_bytes();
+    let resolver = al_syntax::TypeResolver::new(tree, text);
     let mut stack = vec![procedure];
     while let Some(node) = stack.pop() {
         if node != procedure
@@ -62,9 +90,9 @@ pub(super) fn classify_procedure_ast(
                     type_node,
                     bytes,
                     &location.file,
-                    decision,
-                    reasons,
+                    (decision, reasons),
                     reachable,
+                    tables,
                 );
             }
         } else if node.kind() == "postfix_expression" {
@@ -127,9 +155,9 @@ pub(super) fn classify_type_reference(
     type_node: tree_sitter::Node<'_>,
     source: &[u8],
     file: &std::path::Path,
-    decision: &mut RoutingDecision,
-    reasons: &mut Vec<RoutingReason>,
+    (decision, reasons): (&mut RoutingDecision, &mut Vec<RoutingReason>),
     reachable: bool,
+    tables: &mut Vec<String>,
 ) {
     let raw = type_node.utf8_text(source).unwrap_or("").trim();
     let (kind, subtype) = split_type_reference(raw);
@@ -166,7 +194,10 @@ pub(super) fn classify_type_reference(
         };
         let local_path = workspace.file_index.object_path_of_kind(&table, &["table"]);
         let (floor, message) = if let Some(path) = local_path {
-            if let Some(capability) = table_platform_capability(workspace, &path) {
+            if table_has_code(workspace, &path, &table) {
+                tables.push(table.clone());
+            }
+            if let Some(capability) = table_platform_capability(workspace, &path, &table) {
                 (
                     RoutingDecision::LiveBc,
                     format!("record table '{table}' {capability}"),
@@ -220,17 +251,84 @@ pub(super) fn classify_type_reference(
     }
 }
 
+/// The JSON type a lowercased type keyword names.
+pub(super) fn json_kind(type_name: &str) -> Option<al_runtime::interpreter::json::JsonKind> {
+    use al_runtime::interpreter::json::JsonKind;
+    match type_name {
+        "jsonobject" => Some(JsonKind::Object),
+        "jsonarray" => Some(JsonKind::Array),
+        "jsontoken" => Some(JsonKind::Token),
+        "jsonvalue" => Some(JsonKind::Value),
+        _ => None,
+    }
+}
+
+/// Why `Validate(Field, ...)` on table `table` must run on live BC: the
+/// field's TableRelation cannot be checked locally (the runtime's own
+/// [`al_runtime::interpreter::records::validate_relation`] decides).
+fn validate_blocker(
+    workspace: &Workspace,
+    table: &str,
+    call: tree_sitter::Node<'_>,
+    source: &[u8],
+) -> Option<String> {
+    let arguments = call.child_by_field_name("call")?.utf8_text(source).ok()?;
+    let inner = arguments.trim().strip_prefix('(')?.strip_suffix(')')?;
+    let field = first_argument(inner).unquote_identifier().into_owned();
+    al_runtime::interpreter::records::validate_relation(&*workspace.file_index, table, &field)
+        .err()
+        .map(|reason| format!("Validate: {reason}"))
+}
+
+/// The first comma-separated argument, outside quotes.
+fn first_argument(arguments: &str) -> &str {
+    let mut quote: Option<char> = None;
+    for (at, c) in arguments.char_indices() {
+        match (quote, c) {
+            (Some(open), _) if c == open => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, ',') => return arguments[..at].trim(),
+            _ => {}
+        }
+    }
+    arguments.trim()
+}
+
+/// Whether table `table` declares triggers or procedures, which then run
+/// locally and must be classified like any reachable code.
+fn table_has_code(workspace: &Workspace, path: &std::path::Path, table: &str) -> bool {
+    let Some((_, tree)) = workspace.file_index.get_cached_parse(path) else {
+        return false;
+    };
+    let scope = object_scope(workspace, path, &tree, table);
+    !table_code_declarations(scope).is_empty()
+}
+
+/// Every trigger (table and field) and procedure a table object declares.
+pub(super) fn table_code_declarations(object: tree_sitter::Node<'_>) -> Vec<tree_sitter::Node<'_>> {
+    let mut found = Vec::new();
+    let mut stack = vec![object];
+    while let Some(node) = stack.pop() {
+        if matches!(node.kind(), "trigger_declaration" | "procedure_declaration") {
+            found.push(node);
+            continue;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+    found
+}
+
 pub(super) fn table_platform_capability(
     workspace: &Workspace,
     path: &std::path::Path,
+    table: &str,
 ) -> Option<&'static str> {
     let (text, tree) = workspace.file_index.get_cached_parse(path)?;
     let bytes = text.as_bytes();
-    let mut stack = vec![tree.root_node()];
+    let mut stack = vec![object_scope(workspace, path, &tree, table)];
     while let Some(node) = stack.pop() {
-        if node.kind() == "trigger_declaration" {
-            return Some("declares triggers that require BC execution");
-        }
         if matches!(node.kind(), "property" | "property_assignment") {
             let property = node.utf8_text(bytes).unwrap_or("").to_ascii_lowercase();
             if property.contains("fieldclass") && property.contains("flowfilter") {
@@ -383,6 +481,38 @@ pub(super) fn classify_call(
         // procedure of the same object (followed through the call graph), or
         // a receiver-less native stub. Everything else has no local
         // implementation and must route to LiveBc.
+        // In table code a bare record method acts on the implicit Rec.
+        if al_runtime::interpreter::records::supports_record_method(&receiver)
+            && workspace
+                .file_index
+                .object_path_of_kind(object, &["table"])
+                .is_some()
+        {
+            if receiver.eq_ignore_ascii_case("validate") {
+                if let Some(blocker) = validate_blocker(workspace, object, suffix, source) {
+                    promote(
+                        decision,
+                        reasons,
+                        RoutingDecision::LiveBc,
+                        &blocker,
+                        file,
+                        primary,
+                        reachable,
+                    );
+                    return;
+                }
+            }
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::InterpRecord,
+                &format!("calls supported Record.{receiver}"),
+                file,
+                primary,
+                reachable,
+            );
+            return;
+        }
         let is_builtin = al_runtime::interpreter::dispatch::supports_global_builtin(&receiver);
         let is_same_object_procedure = is_builtin
             || catalog.contains_key(&(object.to_ascii_lowercase(), receiver.to_ascii_lowercase()));
@@ -477,9 +607,39 @@ pub(super) fn classify_call(
         return;
     };
     let type_name = decl.type_name.to_ascii_lowercase();
+    if type_name == "record" && method.eq_ignore_ascii_case("validate") {
+        let table = decl.type_subtype.as_deref().unwrap_or("");
+        if let Some(blocker) = validate_blocker(workspace, table, suffix, source) {
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::LiveBc,
+                &blocker,
+                file,
+                member_node,
+                reachable,
+            );
+            return;
+        }
+    }
     if type_name == "record" {
-        let local = al_runtime::interpreter::records::supports_record_method(&method);
-        let (floor, message) = if local {
+        // A procedure the table declares runs locally as table code, which
+        // is classified with the table.
+        let table_procedure = decl.type_subtype.as_deref().is_some_and(|table| {
+            catalog.contains_key(&(table.to_ascii_lowercase(), method.to_ascii_lowercase()))
+                && workspace
+                    .file_index
+                    .object_path_of_kind(table, &["table"])
+                    .is_some()
+        });
+        let local =
+            table_procedure || al_runtime::interpreter::records::supports_record_method(&method);
+        let (floor, message) = if table_procedure {
+            (
+                RoutingDecision::InterpRecord,
+                format!("calls table procedure {receiver}.{method}"),
+            )
+        } else if local {
             (
                 RoutingDecision::InterpRecord,
                 format!("calls supported Record.{method}"),
@@ -544,6 +704,33 @@ pub(super) fn classify_call(
                         subtype
                     }
                 ),
+                file,
+                member_node,
+                reachable,
+            );
+        }
+    } else if let Some(kind) = json_kind(&type_name) {
+        if !al_runtime::interpreter::json::supports_json_method(kind, &method) {
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::LiveBc,
+                &format!(
+                    "calls unsupported {}.{method} (requires BC semantics)",
+                    decl.type_name
+                ),
+                file,
+                member_node,
+                reachable,
+            );
+        }
+    } else if type_name == "textbuilder" {
+        if !al_runtime::interpreter::records::supports_textbuilder_method(&method) {
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::LiveBc,
+                &format!("calls unsupported TextBuilder.{method} (requires BC semantics)"),
                 file,
                 member_node,
                 reachable,

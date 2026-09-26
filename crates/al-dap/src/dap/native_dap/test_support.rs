@@ -36,6 +36,12 @@ pub(super) fn no_compile(_project_root: PathBuf) -> CompileFut {
     std::future::ready(Err("no compile in handler tests".to_string()))
 }
 
+/// An authoriser that lets every target through, for the handler tests that
+/// are about something other than the credential decision.
+pub(super) fn allow_every_target() -> super::TargetAuthorizer {
+    Arc::new(|_| Ok(()))
+}
+
 pub(super) fn test_state() -> TestState {
     let (cancel_tx, cancel_rx) = watch::channel(0u64);
     let (dap_event_tx, _dap_event_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
@@ -55,6 +61,7 @@ pub(super) fn test_state() -> TestState {
         cancel_rx,
         dap_event_tx,
         project_root: "/nonexistent/test-project".to_string(),
+        authorize_target: allow_every_target(),
         acquire_token: no_token,
         resolve_object: |_| None,
         resolve_path: |_, _| None,

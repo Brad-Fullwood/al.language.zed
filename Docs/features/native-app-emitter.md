@@ -1,8 +1,9 @@
 # Native `.app` Emitter & Build Pipeline
 
-**Modules:** `crates/al-emit/src/` (verification + emitter) + `crates/al-compile/src/`,
-`publish.rs`, `toolchain.rs`, `launch.rs`, `config.rs` · **Status:** ✅ shipped (verified native
-build is the default); `alc` compatibility/fallback retained
+**Modules:** `crates/al-emit/src/` (verification + emitter), `crates/al-compile/src/lib.rs`,
+`crates/al-publish/src/lib.rs`, `crates/al-project/src/{toolchain,config}.rs`,
+`crates/al-bc/src/{launch,bc_client}.rs`. **Status:** ✅ shipped (verified native
+build is the default). `alc` compatibility/fallback retained
 
 The pure-Rust compiler back end produces a Business Central `.app` directly from source without
 `alc`, .NET, or the C# bridge. It is the default for daemon `compile`, LSP `al.compile`, publish, and
@@ -19,8 +20,8 @@ A BC `.app` is a 40-byte **NAVX** header followed by a Deflated **ZIP** containi
 `NavxManifest.xml`, the AL source files, a `SymbolReference.json` (the compiled symbol surface),
 OPC metadata (`[Content_Types].xml`, `DocComments.xml`, `MediaIdListing.xml`), an implicit
 entitlement under `entitlement/<app-id>.xml` when permissions exist, per-profile
-symbol-reference files, and—when currently supported translatable properties are
-present—an XLIFF localization file. The native emitter builds the verified subset
+symbol-reference files, and, when supported translatable properties are
+present, an XLIFF localization file. The native emitter builds the verified subset
 from `app.json` + source + referenced package symbols.
 
 Current XLIFF extraction covers supported object/field captions, named page and
@@ -31,20 +32,20 @@ match `alc` byte-for-byte, including trans-unit IDs/order, object targets, notes
 and metadata. Report-layout captions are intentionally not extracted because
 current `alc` 17 omits them from XLIFF. Declared app logos and report layouts are
 copied byte-for-byte from validated project-relative paths. Loose files merely
-placed under `res/` are not copied; current `alc` 17 evidence omitted the measured
+placed under `res/` are not copied. Current `alc` 17 evidence omitted the measured
 `.res` input as well. Resource shapes outside these measured contracts use the
 explicit Microsoft compatibility profile.
 
-## Pipeline (`emit/`)
+## Pipeline (`crates/al-emit/src/`)
 
 | Stage | File | What it does |
 | --- | --- | --- |
 | Orchestrate | `project.rs` | Load `app.json`, scan `.al` files (sorted for determinism), parse external symbols (cached), build `SymbolReference.json`, assemble the `.app`. |
 | Extract objects | `symbol_extract.rs` | Walk tree-sitter trees → objects, fields, keys, methods, properties, enum values, page controls/actions, query elements, report layouts, permissions. |
-| Build symbol ref | `symbol_reference.rs` | Merge project + external symbols; emit groups in `alc`'s exact order; generate per-object JSON, method IDs, TypeDefinition shapes; per-profile symbol references. |
+| Build symbol ref | `symbol_reference.rs` | Merge project + external symbols. Emit groups in `alc`'s exact order. Generate per-object JSON, method IDs, TypeDefinition shapes. Per-profile symbol references. |
 | Method IDs | `method_id.rs` | Reverse-engineered `alc` method-ID hashing (FNV-1 over UTF-16LE + Microsoft `Hash.Combine`, system-codeunit adjustment). |
 | Manifest | `manifest.rs` | `app.json` → `NavxManifest.xml` (defaults, id ranges, dependencies, resource-exposure policy, `alc`'s casing quirks reproduced). |
-| Assemble | `assemble.rs` | Generate OPC parts, implicit entitlements (Table→TableData RIMD + Execute; others→Execute), XLIFF (FNV name-hash trans-unit IDs), then write the package. |
+| Assemble | `assemble.rs` | Generate OPC parts, implicit entitlements (Table→TableData RIMD + Execute, others→Execute), XLIFF (FNV name-hash trans-unit IDs), then write the package. |
 | Write package | `package.rs` | Build the 40-byte NAVX header (magic, format v2, random GUID, ZIP length) + Deflated ZIP. |
 
 ### `alc` compatibility
@@ -69,7 +70,7 @@ Compatibility depends heavily on the shape and identifiers in `SymbolReference.j
   properties, page customization defaults, a report layout, and an app logo.
 - `.app` selection prefers the manifest-derived `{publisher}_{name}_{version}.app` name.
 
-## Build orchestration (`crates/al-compile/src/lib.rs`, `toolchain.rs`)
+## Build orchestration (`crates/al-compile/src/lib.rs`, `al-project/src/toolchain.rs`)
 
 `al-compile` wraps the Microsoft `dotnet alc` path for when it is requested: it runs the compiler in a
 per-invocation temporary directory and moves the completed `.app` into the project root. It is
@@ -79,7 +80,7 @@ output is normalized into structured diagnostics. `toolchain.rs` discovers ALToo
 CodeAnalysis, the analyzer DLLs, and `.NET`, sets `DOTNET_ROLL_FORWARD=Major` so net8.0 tools run on
 newer runtimes, and locates `altool` for official-LSP delegation.
 
-## Native verification gate (`verification.rs`) — shipped
+## Native verification gate (`verification.rs`)
 
 The emitter consumes one source snapshot and uses the same parse tree for verification and symbol
 extraction. A native build succeeds only when the verifier has no blocking errors.
@@ -98,13 +99,13 @@ The shipped verifier performs:
 
 | Layer | Checks | Build behaviour |
 | --- | --- | --- |
-| Project input | parseable `app.json`; non-empty identity fields; valid app/dependency GUIDs and four-part versions; valid `idRanges`; unique dependency IDs; readable source files; declared dependency packages present in the exact configured package paths; object IDs inside `idRanges` | `ALN01xx` and project diagnostics block before emission. |
+| Project input | parseable `app.json`. Non-empty identity fields. Valid app/dependency GUIDs and four-part versions. Valid `idRanges`. Unique dependency IDs. Readable source files. Declared dependency packages present in the exact configured package paths. Object IDs inside `idRanges` | `ALN01xx` and project diagnostics block before emission. |
 | Syntax | tree-sitter `ERROR` and missing nodes in every `.al` file, including truncated constructs | `ALN0001` carries file and exact 1-based UTF-16 start/end range and always blocks. A file that is not valid UTF-8 blocks with `ALN0002` on that file rather than failing the build. |
-| Declarations | duplicate object IDs/names; duplicate field IDs/names; duplicate enum ordinals/names; duplicate procedure signatures/parameter names; unknown key/field-group fields | `ALN1xxx` diagnostics point at the complete object declaration range and block emission. |
-| Declared bindings and contracts | extension targets, implemented interfaces, declared object subtypes (`Record`, `Page`, `Codeunit`, `Report`, `XmlPort`, `Query`, `Enum`, `Interface`) and `SourceTable` references resolve against project plus dependency symbols; locally declared interface methods must be implemented | `ALN2xxx` diagnostics block emission. |
+| Declarations | duplicate object IDs/names. Duplicate field IDs/names. Duplicate enum ordinals/names. Duplicate procedure signatures/parameter names. Unknown key/field-group fields | `ALN1xxx` diagnostics point at the complete object declaration range and block emission. |
+| Declared bindings and contracts | extension targets, implemented interfaces, declared object subtypes (`Record`, `Page`, `Codeunit`, `Report`, `XmlPort`, `Query`, `Enum`, `Interface`) and `SourceTable` references resolve against project plus dependency symbols. Locally declared interface methods must be implemented | `ALN2xxx` diagnostics block emission. |
 | Permissions | permission object kinds/flags are validated and permission targets resolve against project plus dependency symbols | `ALN21xx` diagnostics block emission. |
-| Local procedure/event semantics | local call overload arity and ambiguity; value/no-value returns and scalar literal return types; `Break`/`Continue` without a loop; locally sourced publisher/subscriber parameter contracts | `ALN22xx`/`ALN23xx` diagnostics block emission. Publisher bodies/contracts absent from source-free dependency packages are an explicit Microsoft compatibility boundary. |
-| Artifact integrity | reopen NAVX/ZIP; reject duplicate/empty required entries; compare the exact embedded AL source-path set with the verified snapshot; parse the generated manifest and `SymbolReference.json`; compare package id/name/publisher/version with `app.json` | `ALN3xxx` failures discard the staged artifact. |
+| Local procedure/event semantics | local call overload arity and ambiguity. Value/no-value returns and scalar literal return types. `Break`/`Continue` without a loop. Locally sourced publisher/subscriber parameter contracts | `ALN22xx`/`ALN23xx` diagnostics block emission. Publisher bodies/contracts absent from source-free dependency packages are an explicit Microsoft compatibility boundary. |
+| Artifact integrity | reopen NAVX/ZIP. Reject duplicate/empty required entries. Compare the exact embedded AL source-path set with the verified snapshot. Parse the generated manifest and `SymbolReference.json`. Compare package id/name/publisher/version with `app.json` | `ALN3xxx` failures discard the staged artifact. |
 
 ### Native diagnostic codes
 
@@ -112,16 +113,20 @@ The JSON shape is stable across `pack-native`, shared `CompileResult`, daemon/MC
 publication: `file`, `line`, `column`, `endLine`, `endColumn`, `severity`, `code`, and `message`.
 Positions are 1-based at the build/daemon boundary and converted to 0-based UTF-16 ranges for LSP.
 The Microsoft `alc` text parser cannot recover an exact end range, so its `endLine`/`endColumn`
-remain `null`; native diagnostics preserve both endpoints.
+remain `null`. Native diagnostics preserve both endpoints.
 
 | Codes | Meaning |
 | --- | --- |
 | `ALN0000`–`ALN0002` | Native build infrastructure failure, AL syntax error, or a source file that is not valid UTF-8. |
 | `ALN0100`–`ALN0106` | Invalid JSON, missing/invalid identity fields, invalid ranges/dependencies, or duplicate dependency IDs. |
-| `ALN1001`–`ALN1007` | Duplicate/out-of-range object identity or missing dependency package. |
+| `ALN1001`–`ALN1003`, `ALN1007`, `ALN1008` | Duplicate object ID or name, an ID outside `idRanges`, a declared dependency with no loaded package, or two objects whose names map to the same package entry name. |
 | `ALN1101`–`ALN1107` | Duplicate fields, enum values, procedures/parameters, or invalid key/field-group field references. |
 | `ALN2001`–`ALN2004` | Unresolved extension target, interface, declared object subtype, or `SourceTable`. |
 | `ALN2101`–`ALN2106` | Unsupported permission object type, invalid permission flags, unresolved permission target, a missing local interface member, forbidden page-customization ToolTip, or a duplicate locally added page control. |
+| `ALN2201`–`ALN2211` | Local procedure contracts: no overload or more than one for the argument count, a Record passed to an Integer parameter, `Exit` with or without a value against the declared return, an incompatible literal return, a conditional `Exit(value)` with no unconditional return, `Break`/`Continue` outside a loop, an unknown local or Record method. |
+| `ALN2301` | An `[EventSubscriber]` whose parameters do not match a locally declared publisher. |
+| `ALN2401`–`ALN2405` | Body binding: unknown Record subtype, undeclared identifier, incompatible assignment, a Record field that neither the table nor any of its table extensions declares, an unknown field property. |
+| `ALN2501` | A report layout that names a file outside the project. |
 | `ALN3001`–`ALN3006` | Unreadable/corrupt artifact, missing/empty or duplicate entries, source-snapshot mismatch, generated metadata parse failure, or package identity mismatch. |
 
 `build_verified_app_from_project` preserves all structured diagnostics.
@@ -132,9 +137,9 @@ builds and `pack-native` therefore share the same native correctness boundary.
 
 Workspace-aware daemon builds add `al-analysis::native_workspace_diagnostics` before emission. With
 native lint enabled (the default), its `AL-NC*` object/project checks and resolved call/event-graph
-transaction rules are shared with editor diagnostics; error-severity findings block the build and
+transaction rules are shared with editor diagnostics. Error-severity findings block the build and
 warnings are returned with the successful result. The daemon reports
-`verificationLevel: native-syntax-project-binding-symbol-graph`; direct `pack-native` reports the
+`verificationLevel: native-syntax-project-binding-symbol-graph`. Direct `pack-native` reports the
 lower, always-on `native-syntax-project-binding` gate.
 
 ### Build profiles
@@ -147,15 +152,15 @@ lower, always-on `native-syntax-project-binding` gate.
 
 Microsoft compatibility checking does not sit on the default critical path:
 
-- never require .NET/ALTool for the default native profile;
-- run native syntax/project checks first, so obviously broken code never starts the CLR or `alc`;
-- invoke it only for explicit `--validate` compatibility checks or the explicit official build;
-- run it once per project, never once per file;
-- use differential verification in this repository's test suite: compare native diagnostics and
+- never require .NET/ALTool for the default native profile.
+- Run native syntax/project checks first, so obviously broken code never starts the CLR or `alc`.
+- Invoke it only for explicit `--validate` compatibility checks or the explicit official build.
+- Run it once per project, never once per file.
+- Use differential verification in this repository's test suite: compare native diagnostics and
   accept/reject decisions with `alc` across fixtures, then turn mismatches into focused native
   verifier work.
 
-If `--validate` is requested but Microsoft tooling is unavailable, the command fails closed; it does
+If `--validate` is requested but Microsoft tooling is unavailable, the command fails closed. It does
 not silently downgrade. This keeps Microsoft tooling an oracle and compatibility safety net rather
 than an architectural dependency.
 
@@ -166,22 +171,22 @@ package symbols remain cached in-process by the selected package-path fingerprin
 dominant warm-build optimization. The release harness measures process/package-index-cold,
 warm-unchanged, and one-file-edit states, alternates backend order, discards round zero, and records
 machine load for every sample. “Process cold” means a fresh benchmark process and fresh in-process
-indexes; it does not claim an OS page-cache flush. Native builds publish their input, dependency
+indexes. It does not claim an OS page-cache flush. Native builds publish their input, dependency
 index, verification, emission, artifact-check, and output-write phases. Microsoft `alc` exposes
 only total wall-clock time, so its total is never presented as a phase-equivalent comparison.
 
-## Publish (`publish.rs`, `launch.rs`, `bc_client.rs`)
+## Publish (`al-publish`, `al-bc/src/launch.rs`, `al-bc/src/bc_client.rs`)
 
-`publish.rs` resolves a `launch.json`/`.zed/debug.json` config, compiles (native by default), and
-uploads the `.app` to the BC dev API — optionally via **RAD** incremental deploy when `app.json` has
+`al-publish` resolves a `launch.json`/`.zed/debug.json` config, compiles (native by default), and
+uploads the `.app` to the BC dev API, optionally through **RAD** incremental deploy when `app.json` has
 an id, which must be a GUID. Each phase (`PublishPhase::Compile`/`Upload`/`Rad`) is tracked.
 `launch.rs` parses the debug configs and builds dev-endpoint URLs for on-prem vs cloud with tenant
 validation, sent as the BC dev API's documented `?tenant=` query parameter. `bc_client.rs` is the
-hardened REST client (size caps: 500 MB upload / 16 MB JSON / 500 MB binary; error-body redaction
+hardened REST client (size caps: 500 MB upload / 16 MB JSON / 500 MB binary, error-body redaction
 of bearer tokens, Basic credentials, passwords and secrets, case-insensitively).
 
 Reachable as `al-explorer publish [--config <name>] [--incremental]`, which calls the daemon's
-`publish` method; that method calls `al_publish::publish` and adds no pipeline of its own.
+`publish` method. That method calls `al_publish::publish` and adds no pipeline of its own.
 
 Native DAP launch does **not** go through `al-publish`. `al-dap`'s `bc_debug/rest.rs` posts a
 multipart form to `{base}/dev/apps` with `SchemaUpdateMode` and `DependencyPublishingOption`, using
@@ -190,12 +195,12 @@ the OAuth token from its own sign-in, while `al-publish` posts an octet-stream b
 Those are two different BC dev endpoints, so collapsing them needs a live server to settle which
 one each BC version accepts.
 
-`bc_client.rs` implements only the two BC dev endpoints publish actually uses — `POST
+`bc_client.rs` implements only the two BC dev endpoints publish uses: `POST
 /dev/extensions` (full upload) and `PATCH /dev/applications/{appId}` (RAD delta deploy). It does
 **not** implement extension install/uninstall, an application-status query, or an AAD device-code
-sign-in flow; `AuthMethod::AAD` requires a pre-provisioned bearer token in `BC_ACCESS_TOKEN` (or the
+sign-in flow. `AuthMethod::AAD` requires a pre-provisioned bearer token in `BC_ACCESS_TOKEN` (or the
 legacy `BC_TOKEN`) and otherwise fails fast with `MissingCredentials`. `AuthMethod::Windows`
-authenticates via plain HTTP Basic using `BC_USERNAME`/`BC_PASSWORD` — it is **not** a real
+authenticates via plain HTTP Basic using `BC_USERNAME`/`BC_PASSWORD`. It is **not** an
 NTLM/Negotiate handshake, so a BC server that requires genuine Windows-integrated auth (and rejects
 a Basic fallback) will not authenticate through this client.
 
@@ -222,10 +227,10 @@ package-semantic-equivalence check.
 | Implementation | pure Rust | .NET application |
 | Work performed | parse → native verify → emit → package integrity check | parse → bind → type-check → emit |
 | Comparative performance | Native phase telemetry plus total wall time | Total wall time (no comparable phase telemetry exposed) |
-| Build-time validation | **yes** — shipped native syntax/project/declaration/declared-binding checks | **yes** — authoritative Microsoft semantics |
+| Build-time validation | **yes**: native syntax/project/declaration/declared-binding checks | **yes**: authoritative Microsoft semantics |
 | Optional parity | `pack-native --validate` runs native first, then `alc` | reference |
-| Output fidelity | Archive/manifest/symbol parity on the measured self-contained, dependency, small-through-XL, and focused Base Application fixtures; byte-identical XLIFF on translatable fixtures | reference |
-| Availability | default; runs anywhere | `al.useOfficialCompiler: true` |
+| Output fidelity | Archive/manifest/symbol parity on the measured self-contained, dependency, small-through-XL, and focused Base Application fixtures. Byte-identical XLIFF on translatable fixtures | reference |
+| Availability | default. Runs anywhere | `al.useOfficialCompiler: true` |
 
 ## Why this approach
 
@@ -241,9 +246,9 @@ repeated verified builds reproducible without weakening the verification gate.
 - **CLI:** `al-explorer compile`, `al-explorer package`, and
   `al-explorer pack-native --project <dir> --out <path>` (verified native build). Add `--validate`
   for the Microsoft compatibility gate and global `--json` for machine-readable success metadata
-  and full diagnostics; validation failure exits non-zero and writes no `.app`.
+  and full diagnostics. Validation failure exits non-zero and writes no `.app`.
 - **LSP:** the `al.compile` execute command.
-- **MCP:** `al_build` is the named compile alias; the other shared build dispatcher methods, including
+- **MCP:** `al_build` is the named compile alias. The other shared build dispatcher methods, including
   `package`, are available through `al_call`.
 - **Force Microsoft `alc`:** set `al.useOfficialCompiler: true`.
 
@@ -252,7 +257,7 @@ repeated verified builds reproducible without weakening the verification gate.
 - Native verification is wired into every native build surface and invalid projects cannot replace
   the last good artifact.
 - Microsoft-wide expression type inference/overload selection, path-sensitive control-flow
-  reachability, source-free package event binding, and analyzer policy remain compatibility checks; native and authoritative
+  reachability, source-free package event binding, and analyzer policy remain compatibility checks. Native and authoritative
   diagnostics remain distinguishable.
 - XLIFF trans-unit IDs/order, metadata, and the measured extension-field/control extraction shape
   are locked to the current `alc` oracle. Base-app control/property/page-customization bindings,
@@ -264,6 +269,6 @@ repeated verified builds reproducible without weakening the verification gate.
   diagnostics remain at the LSP/daemon transport boundary because those
   processes own the live workspace index.
 - Business Central tenant publish/install/runtime behaviour is validated by
-  the strict `make live-bc-contracts` profile; missing inputs are unavailable
+  the strict `make live-bc-contracts` profile. Missing inputs are unavailable
   (exit 2), not a skipped pass, and tenant behavior cannot be inferred from an
   offline package comparison.

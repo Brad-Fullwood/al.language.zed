@@ -14,6 +14,10 @@ STALE_SECONDS=1800
 MODELS=(claude-fable-5-1 claude-opus-5)
 
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:$PATH"
+# claude -p ends a session 600 s after the orchestrator's last turn while agents it started
+# in the background are still running. That killed every agent of the 16:48 session on
+# 2026-09-26. Zero means wait for them.
+export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0
 mkdir -p "$STATE_DIR"
 log() { echo "$(date -Is) $*" >>"$LOG"; }
 

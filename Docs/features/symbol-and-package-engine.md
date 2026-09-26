@@ -1,6 +1,6 @@
 # Symbol & Package Engine
 
-**Module:** `crates/al-symbols/src/` · **Status:** ✅ shipped
+**Module:** `crates/al-symbols/src/`. **Status:** ✅ shipped
 
 The symbol engine is why this project can answer advanced AL questions (search, completion, object
 lookup, event discovery, impact) as ordinary in-memory queries instead of repeatedly invoking the
@@ -12,8 +12,8 @@ concurrent in-memory maps.
 
 | Capability | File | Summary |
 | --- | --- | --- |
-| Symbol index | `index.rs` | Concurrent (DashMap) multi-package index with secondary indexes |
-| Symbol model | `model.rs` | `ObjectKind` (20+ kinds) + `SymbolEntry`; `SymbolReference.json` parsing |
+| Symbol index | `index/` | Concurrent (DashMap) multi-package index with secondary indexes |
+| Symbol model | `model.rs` | `ObjectKind` (20+ kinds) + `SymbolEntry`. `SymbolReference.json` parsing |
 | Disk cache | `cache.rs` | mtime/size/schema-validated binary cache of parsed packages |
 | `.app` reader | `app_reader.rs` | NAVX header + ZIP → manifest + `SymbolReference.json` → entries |
 | `.app` inspector | `app_inspect.rs` | enumerate/classify archive entries (source vs compiled) |
@@ -22,26 +22,26 @@ concurrent in-memory maps.
 | Events | `events.rs` | discover publishers/subscribers across the index |
 | Source index | `source_index.rs` | map (kind,id,name) → embedded `.al` path for navigation |
 | Virtual files | `virtual_file.rs` | extract embedded source or render an outline for go-to-def |
-| NuGet | `nuget.rs` | resolve AL deps → NuGet package IDs; download `.nupkg`; extract `.app` |
+| NuGet | `nuget.rs` | resolve AL deps → NuGet package IDs. Download `.nupkg`. Extract `.app` |
 | BC server | `bc_server.rs` | download `.app` from the BC dev endpoint |
-| OAuth | `oauth.rs` | Microsoft Entra auth-code (PKCE) + device-code flows |
-| Language data | `language_data.rs` | object types + runtime enums from generated JSON |
+| OAuth | `oauth/` | Microsoft Entra auth-code (PKCE) + device-code flows |
+| Source availability | `source_availability.rs` | classify each object as workspace source, embedded source, generated outline or metadata only |
 
 ## How it works
 
-### The index (`index.rs`)
+### The index (`index/`)
 
 `SymbolIndex` stores shared `Arc<SymbolEntry>` and maintains parallel DashMap secondary indexes:
 by lowercase name, by kind+id, by kind, by extension target (`extends`), and a composed-object cache.
 Common queries become direct map lookups. Package ZIP/JSON parsing runs in parallel, while the much
-shorter index commit is applied in input order; reloading a package therefore replaces its previous
+shorter index commit is applied in input order. Reloading a package therefore replaces its previous
 generation deterministically instead of racing duplicate entries into secondary indexes. Package
-generations are keyed by a canonical identity — the manifest's app GUID, with the folded display
-name as fallback — so two vendors' apps that merely share a display name keep independent symbol
-generations and never evict each other on (re)load; name-based path lookups over an ambiguous
+generations are keyed by a canonical identity (the manifest's app GUID, with the folded display
+name as fallback), so two vendors' apps that merely share a display name keep independent symbol
+generations and never evict each other on (re)load. Name-based path lookups over an ambiguous
 display name resolve deterministically. Search is
 stable and relevance-ranked (exact name, prefix, then substring), with synthetic pseudo-types kept
-out of user-facing results; a lazily-built ordered name catalogue lets bounded searches stop as soon
+out of user-facing results. A lazily-built ordered name catalogue lets bounded searches stop as soon
 as the requested deterministic window is full, without taxing package load. A pre-computed 30-entry
 default-completions slice answers the "blank completion at top level" path in O(1). On package
 removal, all secondary indexes are pruned in lockstep, source/path
@@ -60,14 +60,14 @@ trailing NUL/EOF padding). Nested namespaces are flattened into a flat `Vec<Symb
 `app_inspect` separately enumerates every archive entry and classifies it (AL source / JSON / XML /
 .NET assembly / other) by name and magic bytes, so you can tell a source-bearing package from a
 symbol-only one. The read and extraction paths reject oversized packages/entries and excessive entry
-counts; full extraction is capped at 1 GiB, uses atomic per-file publication, and rejects traversal
+counts. Full extraction is capped at 1 GiB, uses atomic per-file publication, and rejects traversal
 through either archive paths or pre-existing destination symlinks.
 
 ### Caching (`cache.rs`)
 
 Parsed packages are cached under the user cache dir as `[len][header JSON][objects JSON]`, keyed by
 filename + FNV-1a path hash. The cache is validated against the `.app`'s mtime (sub-second precision)
-and size, plus a `CACHE_SCHEMA_VERSION`; any mismatch silently re-parses. Writes are atomic (temp +
+and size, plus a `CACHE_SCHEMA_VERSION`. Any mismatch silently re-parses. Writes are atomic (temp +
 rename), the cache directory is locked to 0700, and orphaned temp files from crashed writers are
 cleaned up. Warm starts therefore skip re-reading and re-parsing large `SymbolReference.json`
 payloads (the Base Application alone is ~6 MB). A bounded, best-effort garbage collection runs once
@@ -79,10 +79,10 @@ re-minted on every package update.
 ### Composition (`composition.rs`)
 
 `get_composed(kind, name)` returns a `ComposedObject` merging a base object with every applicable
-extension — fields (sorted by id, deduped), methods, controls, and enum values (sorted by ordinal).
+extension: fields (sorted by id, deduped), methods, controls, and enum values (sorted by ordinal).
 It is cycle-safe by construction because it only walks base → extensions, never extension →
-extension, and is cached with per-name invalidation. Field conflicts are rejected by either ID or name;
-enum conflicts by either ordinal or name. Concurrent cache misses converge on one shared result.
+extension, and is cached with per-name invalidation. Field conflicts are rejected by either ID or name.
+Enum conflicts by either ordinal or name. Concurrent cache misses converge on one shared result.
 
 ### Source navigation (`source_index.rs`, `virtual_file.rs`)
 
@@ -97,16 +97,16 @@ publication ensures a simultaneous navigation request never sees a partially-wri
 archive indexing is canonical-path deduped and bounded by package size, entry count, and a 32 MiB
 per-source extraction limit.
 
-### Symbol acquisition (`nuget.rs`, `bc_server.rs`, `oauth.rs`)
+### Symbol acquisition (`nuget.rs`, `bc_server.rs`, `oauth/`)
 
 Two download backends:
 
-- **NuGet (`nuget.rs`):** resolves `app.json` dependencies to NuGet v3 package IDs — including the
-  empirically-discovered, inconsistent Microsoft IDs (e.g. `Microsoft.Application.symbols`,
-  `Microsoft.BaseApplication.symbols.{GUID}`) and country-specific variants — caches the service
+- **NuGet (`nuget.rs`):** resolves `app.json` dependencies to NuGet v3 package IDs (including the
+  inconsistent Microsoft IDs found by observation, such as `Microsoft.Application.symbols` and
+  `Microsoft.BaseApplication.symbols.{GUID}`, and country-specific variants), caches the service
   index, downloads `.nupkg`s concurrently behind a four-request semaphore, dedupes concurrent requests
   for the same package, retries transient feed failures, and streams through a 200 MiB cap rather than
-  buffering a whole package in RAM. Version resolution is numeric and deterministic; a requested
+  buffering a whole package in RAM. Version resolution is numeric and deterministic. A requested
   release line never silently falls forward to an unrelated major/minor. The inner `.app` is
   size-capped, identity/version-validated against the requested dependency, and atomically published.
 - **BC server (`bc_server.rs`):** GETs `/dev/packages?publisher=…&appName=…&versionText=…` with auth,
@@ -114,9 +114,9 @@ Two download backends:
   transport/429/502/503/504 failures, and a 200 MiB streaming cap. It verifies NAVX plus manifest
   identity/minimum-version before atomically publishing a publisher/name/version-qualified filename.
   It caches the access token in an `RwLock` and clears it on 401/403 before retrying.
-- **OAuth (`oauth.rs`):** Microsoft Entra authorization-code flow with **PKCE** (browser → localhost
+- **OAuth (`oauth/`):** Microsoft Entra authorization-code flow with **PKCE** (browser → localhost
   redirect) and a **device-code** fallback for headless environments, with disk-cached refresh
-  tokens, tenant/GUID validation, env-var overrides (`BC_CLIENT_ID`/`BC_ACCESS_TOKEN`/`BC_TENANT`),
+  tokens, tenant/GUID validation, env-var overrides (`BC_CLIENT_ID`/`BC_ACCESS_TOKEN`),
   and **zeroized** token memory on drop.
 
 Freshly downloaded symbols are loaded into the workspace **without a daemon restart**.
@@ -127,7 +127,7 @@ Freshly downloaded symbols are loaded into the workspace **without a daemon rest
 | --- | --- | --- |
 | `.app` reading | native NAVX/ZIP reader, in-process | compiler/extension internal |
 | Symbol model | in-memory multi-dimensional index | flat symbol lists downloaded by the extension |
-| Caching | disk cache validated by mtime/size/schema; warm starts skip re-parse | server-side compile of system apps |
+| Caching | disk cache validated by mtime/size/schema. Warm starts skip re-parse | server-side compile of system apps |
 | Composition | explicit composed-object view (base + extensions) | resolved internally by the compiler |
 | Download | native NuGet **and** BC-server backends, concurrent, deduped, no restart | extension's download-symbols command |
 | Auth | native Entra PKCE + device code, token zeroization | extension/VS Code auth |
@@ -135,22 +135,24 @@ Freshly downloaded symbols are loaded into the workspace **without a daemon rest
 
 ## Why this approach
 
-Microsoft's symbol download gives you packages; this engine turns them into a queryable model once
+Microsoft's symbol download gives you packages. This engine turns them into a queryable model once
 and reuses it everywhere. The disk cache makes warm starts cheap, composition makes table/page
 extension workflows correct, and the dual NuGet/BC-server download with no-restart loading means
 dependency changes don't interrupt your session. Crucially, the same index powers completions, hover,
-definitions, event discovery, and impact analysis — so all of those are fast for the same reason.
+definitions, event discovery, and impact analysis, so all of those are fast for the same reason.
 
 ## How to use
 
 - **CLI:** `al-explorer search <q> [--limit N]`, `object <type> <name>`, `by-id <type> <id>`,
-  `source <name> [--kind <type>] [--package <name>] [--procedure <name>|--trigger <name>]`,
-  `composed [<kind>] <name>`, `packages`, `deps`, `events <name>`, `subscribers <event>`.
-- **Download:** `al-explorer download-symbols --source server|nuget`;
-  `al-explorer authenticate`; `al-explorer clear-cache`.
+  `source <name> [--kind <type>] [--package <name>] [--procedure <name>|--trigger <name>|--list-procedures]`,
+  `location <name> [--kind <type>] [--package <name>]` (prints `path:line`, materialising a package
+  object as a virtual file), `composed [<kind>] <name>`, `packages`, `deps`, `events <name>`,
+  `subscribers <event>`.
+- **Download:** `al-explorer download-symbols --source server|nuget`.
+  `al-explorer authenticate`. `al-explorer clear-cache`.
 - **LSP execute commands:** `al.downloadSymbols`, `al.downloadSymbolsServer`,
   `al.downloadSymbolsNuget`, `al.clearSymbolCache`.
-- **MCP:** named aliases `al_downloadsymbols` and `al_symbolsearch`; all other shared symbol/package
+- **MCP:** named aliases `al_downloadsymbols` and `al_symbolsearch`. All other shared symbol/package
   methods (`object`, `byId`, `composed`, `packages`, `deps`, events/subscribers, authentication, cache
   operations, and so on) are available through `al_call`.
 
@@ -158,13 +160,13 @@ definitions, event discovery, and impact analysis — so all of those are fast f
 
 The index loads `.app` packages from three places:
 
-- the configured `al.packageCachePath` (default `.alpackages/`);
-- packages downloaded on demand via the NuGet / BC-server backends above;
-- every configured `al.appLocalFolderPaths` directory.
+- the configured `al.packageCachePath` (default `.alpackages/`).
+- Packages downloaded on demand via the NuGet / BC-server backends above.
+- Every configured `al.appLocalFolderPaths` directory.
 
-The `al.appLocalFolderPaths` setting — the way the Microsoft AL extension points at extra local `.app`
-folders — is applied during LSP, daemon/CLI/TUI, and core-workspace initialization. Relative paths are
-resolved from the directory containing `app.json`; the package cache has first priority, followed by
+The `al.appLocalFolderPaths` setting (the way the Microsoft AL extension points at extra local `.app`
+folders) is applied during LSP, daemon/CLI/TUI, and core-workspace initialization. Relative paths are
+resolved from the directory containing `app.json`. The package cache has first priority, followed by
 local folders in configured order. Scans are deterministic, ignore non-files/non-`.app` entries, and
 keep the newest parseable versioned filename across folders (exact filename ties keep the earlier
 folder). LSP configuration changes replace the file-backed symbol generation in place, reload runtime
@@ -182,17 +184,18 @@ with the right filename but the wrong identity/version does not count as satisfi
 
 - `.app` symbols expose the **public API declaration, not call-site bodies**. A package entry carries
   an object's signatures, fields, keys, enum values and properties, but procedure *bodies* are
-  compiled away — they are never shipped in a symbol package. Consequences:
+  compiled away. A symbol package does not carry them. Consequences:
   - When a package has no embedded source, navigation opens a **reconstructed outline** (see
-    `virtual_file::render_outline`): valid AL with full signatures but no `begin…end` bodies —
-    name-scoped kinds (interface, profile, controladdin, …) render without a numeric object ID, and
+    `virtual_file::render_outline`): valid AL with full signatures but no `begin…end` bodies.
+    Name-scoped kinds (interface, profile, controladdin, …) render without a numeric object ID, and
     any name that is not a plain identifier is quoted (embedded quotes doubled). That
     virtual file is now prefixed with an explicit header (`virtual_file::OUTLINE_NOTE`) stating it is
     the public API only, with bodies unavailable, so the reader is never misled into thinking an empty
     body means an empty method.
   - The `source` query (`al-explorer source` / daemon `source`) returns the same outline with a
     structured availability value and note. It reports `embedded_source` only after extraction
-    succeeds; otherwise it returns `generated_outline` or `metadata_only`. Same-name ambiguities are
+    succeeds. Otherwise it returns `generated_outline` or `metadata_only`. Same-name ambiguities are
     rejected until `--kind` and/or `--package` identifies one object.
-  - Cross-package "who calls this" cannot be recovered from package symbols alone. Workspace source
-    fills this in; affected-test selection treats `.app`-only declarations as having no call sites.
+  - Cross-package "who calls this" cannot be recovered from package symbols alone. The call graph
+    reads it from workspace source and from the AL source a package embeds (the dependency source
+    index). Affected-test selection treats declarations with neither as having no call sites.

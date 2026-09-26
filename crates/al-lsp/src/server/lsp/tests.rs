@@ -672,7 +672,7 @@ mod trust_gate_tests {
     async fn no_root_uri_denies_every_privileged_setting() {
         let mut config = privileged_config();
 
-        let advisory = gate_repository_settings(None, &mut config).await;
+        let advisory = gate_repository_settings(None, &mut config);
 
         assert_eq!(
             config.code_analyzers,
@@ -687,13 +687,54 @@ mod trust_gate_tests {
         );
     }
 
+    /// A revoke reached the daemon on its next request but not a running
+    /// language server, which gated only at `initialize` and
+    /// `didChangeConfiguration`.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_revoke_reaches_a_running_language_server() {
+        let scratch = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", scratch.path());
+
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".vscode")).unwrap();
+        std::fs::write(
+            project.path().join(".vscode/settings.json"),
+            r#"{"al.codeAnalyzers": ["${CodeCop}", "./tools/Payload.dll"]}"#,
+        )
+        .unwrap();
+        al_project::trust::grant(project.path()).unwrap();
+
+        let (service, _socket) = LspService::new(AlServer::new);
+        let server = service.inner();
+        let root = Url::from_file_path(project.path()).unwrap();
+        *server.root_uri.write().await = Some(root.clone());
+        let mut config = al_project::config::AlConfig {
+            code_analyzers: vec!["${CodeCop}".to_string(), "./tools/Payload.dll".to_string()],
+            ..Default::default()
+        };
+        gate_repository_settings(Some(&root), &mut config);
+        *server.workspace.config.write().await = config;
+
+        al_project::trust::revoke_project(&project.path().canonicalize().unwrap()).unwrap();
+        server.refresh_trust().await;
+        let analyzers = server.workspace.config.read().await.code_analyzers.clone();
+
+        match previous {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        assert_eq!(analyzers, vec!["${CodeCop}".to_string()]);
+    }
+
     /// A non-`file:` root is the same situation: nothing local to read.
     #[tokio::test]
     async fn a_non_file_root_denies_every_privileged_setting() {
         let mut config = privileged_config();
         let root = Url::parse("untitled:workspace").expect("valid uri");
 
-        let advisory = gate_repository_settings(Some(&root), &mut config).await;
+        let advisory = gate_repository_settings(Some(&root), &mut config);
 
         assert_eq!(config.code_analyzers, vec!["${CodeCop}".to_string()]);
         assert!(advisory.is_some_and(|text| text.contains("no local project directory")));
@@ -1540,6 +1581,194 @@ mod project_diagnostics_convergence_tests {
     }
 }
 
+mod project_diagnostics_close_tests {
+    use super::*;
+    use futures::StreamExt;
+    use tower_service::Service;
+
+    const BROKEN: &str = "codeunit 50100 Ghost\n{\n    procedure Broken(\n    begin\n    end;\n}\n";
+    /// The saved text a close restores when the file exists on disk.
+    const SAVED: &str = "codeunit 50100 Ghost\n{\n    procedure Fixed()\n    begin\n    end;\n}\n";
+
+    /// Answer `initialize` through the service so the in-process client sends
+    /// notifications. Before that it drops every one of them.
+    async fn initialize(service: &mut LspService<AlServer>) {
+        futures::future::poll_fn(|cx| service.poll_ready(cx))
+            .await
+            .expect("the service accepts requests");
+        let request = tower_lsp::jsonrpc::Request::build("initialize")
+            .params(serde_json::json!({ "capabilities": {} }))
+            .id(1)
+            .finish();
+        let response = service
+            .call(request)
+            .await
+            .expect("initialize is answered")
+            .expect("initialize has a response");
+        assert!(response.is_ok(), "initialize failed: {response:?}");
+    }
+
+    /// Every diagnostics array sent to the client for `uri`, in order.
+    ///
+    /// The socket has to be read while the test runs: a client send completes
+    /// only once the receiver has taken the message, so an unread socket stalls
+    /// the pass inside its publish.
+    fn record_publishes(
+        mut socket: tower_lsp::ClientSocket,
+        uri: Url,
+    ) -> Arc<std::sync::Mutex<Vec<Vec<serde_json::Value>>>> {
+        let publishes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&publishes);
+        tokio::spawn(async move {
+            while let Some(message) = socket.next().await {
+                if message.method() != "textDocument/publishDiagnostics" {
+                    continue;
+                }
+                let params = message.params().expect("publishDiagnostics has params");
+                if params["uri"].as_str() == Some(uri.as_str()) {
+                    let diagnostics = params["diagnostics"]
+                        .as_array()
+                        .expect("publishDiagnostics carries a diagnostics array");
+                    sink.lock().unwrap().push(diagnostics.clone());
+                }
+            }
+        });
+        publishes
+    }
+
+    /// Let every other task on this current-thread runtime run until it waits
+    /// on something the test holds.
+    async fn settle() {
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// A project pass that staged its reports while a document was open must
+    /// not publish them after a close has cleared that document.
+    ///
+    /// The test holds the generation write guard and hands it over one
+    /// acquisition at a time. Each write queues behind the read guard the pass
+    /// was just given, so it runs as soon as the pass releases that guard, and
+    /// before the pass can take the next one. The writes alternately close the
+    /// document (as `did_close` does for a file that is not on disk: out of
+    /// the store and the index, then the clear under the write guard) and open
+    /// it again. Whatever the pass sends between two writes was sent under the
+    /// state the first of them left, so after a close it must be empty.
+    #[tokio::test]
+    async fn a_project_pass_never_republishes_a_document_its_close_cleared() {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            close_during_a_project_pass(None),
+        )
+        .await
+        .expect("the pass and the writes finish instead of waiting on each other");
+    }
+
+    /// The same, for a file that exists on disk: the close restores its saved
+    /// text, which has no errors, in place of the unsaved one.
+    #[tokio::test]
+    async fn a_project_pass_never_republishes_a_document_its_close_restored() {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            close_during_a_project_pass(Some(SAVED)),
+        )
+        .await
+        .expect("the pass and the writes finish instead of waiting on each other");
+    }
+
+    /// `saved` is the text on disk that a close restores, `None` when the file
+    /// is not on disk.
+    async fn close_during_a_project_pass(saved: Option<&str>) {
+        let (mut service, socket) = LspService::new(AlServer::new);
+        let uri = Url::parse("file:///proj/Ghost.Codeunit.al").unwrap();
+        let path = uri.to_file_path().unwrap();
+        let publishes = record_publishes(socket, uri.clone());
+        let take_publishes = || std::mem::take(&mut *publishes.lock().unwrap());
+        initialize(&mut service).await;
+        let server = service.inner();
+        let open = |version: i32| {
+            server
+                .workspace
+                .documents
+                .open_with_client_version(uri.clone(), BROKEN.to_string(), version)
+                .unwrap();
+            al_workspace::on_document_change(&server.workspace, &uri, BROKEN);
+        };
+        open(1);
+
+        let lock = &server.workspace.generation_lock;
+        let mut writer = lock.write().await;
+        let pass = tokio::spawn({
+            let workspace = Arc::clone(&server.workspace);
+            let client = server.client.clone();
+            let cache = Arc::clone(&server.semantic_diagnostic_cache);
+            let published = Arc::clone(&server.workspace_diagnostic_uris);
+            let session = server.session.clone();
+            async move {
+                diagnostics::publish_workspace_diagnostics_parts(
+                    workspace, client, cache, published, None, &session,
+                )
+                .await
+            }
+        });
+
+        let mut is_open = true;
+        let mut version = 1;
+        let mut sequence = Vec::new();
+        for _ in 0..32 {
+            settle().await;
+            drop(writer);
+            writer = lock.write().await;
+            settle().await;
+            for diagnostics in take_publishes() {
+                assert!(
+                    is_open || diagnostics.is_empty(),
+                    "the project pass published {diagnostics:?} for {uri} after its close \
+                     cleared it; publishes so far: {sequence:?}"
+                );
+                sequence.push(diagnostics.len());
+            }
+            if pass.is_finished() {
+                break;
+            }
+            if is_open {
+                assert!(server.workspace.documents.close(&uri));
+                match saved {
+                    Some(text) => server
+                        .workspace
+                        .file_index
+                        .add_file(path.clone(), text.to_string()),
+                    None => server.workspace.file_index.remove_file(&path),
+                }
+                al_workspace::on_document_close(&server.workspace, &uri);
+                server
+                    .client
+                    .publish_diagnostics(uri.clone(), Vec::new(), None)
+                    .await;
+            } else {
+                version += 1;
+                open(version);
+            }
+            is_open = !is_open;
+        }
+        drop(writer);
+
+        assert!(
+            pass.await.expect("the pass does not panic"),
+            "the pass must publish"
+        );
+        settle().await;
+        for diagnostics in take_publishes() {
+            assert!(
+                is_open || diagnostics.is_empty(),
+                "the project pass published {diagnostics:?} for {uri} after its close \
+                 cleared it; publishes so far: {sequence:?}"
+            );
+        }
+    }
+}
+
 mod did_change_offload_tests {
     use super::*;
 
@@ -1608,6 +1837,90 @@ mod did_change_offload_tests {
                 .iter()
                 .any(|name| name.eq_ignore_ascii_case("P200")),
             "the file index must reflect the same edit by the time did_change returns"
+        );
+    }
+}
+
+mod lock_order_tests {
+    use super::*;
+
+    /// Stand in for `did_change_configuration` publishing a symbol generation:
+    /// it holds the project write guard and then waits for the config write
+    /// guard. Returns whether the config guard was granted.
+    async fn publish_configuration(
+        server: &AlServer,
+        project: tokio::sync::RwLockWriteGuard<'_, Option<al_project::project::AlProject>>,
+    ) -> bool {
+        // Let the diagnostics pass reach its own lock waits first.
+        tokio::task::yield_now().await;
+        let config = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            server.workspace.config.write(),
+        )
+        .await;
+        let granted = config.is_ok();
+        drop(config);
+        drop(project);
+        granted
+    }
+
+    /// The pull path's syntax pass took the config read guard and then waited
+    /// for the project read guard. A configuration publish holds the project
+    /// and waits for the config, so each waited on the other for good.
+    #[tokio::test]
+    async fn pull_diagnostics_do_not_hold_the_config_while_waiting_for_the_project() {
+        let (service, _socket) = LspService::new(AlServer::new);
+        let server = service.inner();
+        server.workspace.config.write().await.enable_code_analysis = false;
+        let uri = Url::parse("file:///proj/Foo.Codeunit.al").unwrap();
+
+        let project = server.workspace.project.write().await;
+        let (_, granted) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(
+                diagnostics::compute_diagnostics(server, &uri, ""),
+                publish_configuration(server, project),
+            )
+        })
+        .await
+        .expect("the diagnostics pass finishes once the publisher lets go");
+
+        assert!(
+            granted,
+            "a configuration publish must not wait on a diagnostics pass that waits on it"
+        );
+    }
+
+    /// The push path shares the syntax pass, and with it the same lock order.
+    #[tokio::test]
+    async fn push_diagnostics_do_not_hold_the_config_while_waiting_for_the_project() {
+        let (service, _socket) = LspService::new(AlServer::new);
+        let server = service.inner();
+        server.workspace.config.write().await.enable_code_analysis = false;
+        let uri = Url::parse("file:///proj/Foo.Codeunit.al").unwrap();
+        server
+            .workspace
+            .documents
+            .open_with_client_version(uri.clone(), "codeunit 50100 Foo\n{\n}\n".to_string(), 1)
+            .unwrap();
+        let (text, version) = server
+            .workspace
+            .documents
+            .get_text_and_client_version(&uri)
+            .expect("the document is open");
+
+        let project = server.workspace.project.write().await;
+        let ((), granted) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(
+                diagnostics::publish_diagnostics(server, &uri, text, version),
+                publish_configuration(server, project),
+            )
+        })
+        .await
+        .expect("the diagnostics pass finishes once the publisher lets go");
+
+        assert!(
+            granted,
+            "a configuration publish must not wait on a diagnostics pass that waits on it"
         );
     }
 }

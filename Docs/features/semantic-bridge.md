@@ -1,11 +1,11 @@
 # Semantic Bridge (.NET CodeAnalysis)
 
-**Module:** `crates/al-semantic/src/` + `crates/al-semantic/bridge/Bridge.cs`, `AlBridge.csproj` ·
-**Status:** ✅ shipped and integration-tested (feature-gated) · **being retired** in favor of native Rust
+**Module:** `crates/al-semantic/src/` + `crates/al-semantic/bridge/Bridge.cs`, `AlBridge.csproj`.
+**Status:** ✅ shipped and integration-tested (feature-gated). **being retired** in favor of native Rust
 
 The semantic bridge is the project's link to Microsoft's actual AL compiler semantics. When you want
-*compiler-grade* diagnostics, type info, and completions — the things that need real name binding and
-type checking — the bridge loads the .NET CLR **in-process** and calls Microsoft's `CodeAnalysis` API
+*compiler-grade* diagnostics, type info, and completions (the things that need real name binding and
+type checking), the bridge loads the .NET CLR **in-process** and calls Microsoft's `CodeAnalysis` API
 through a JSON-over-FFI boundary. No subprocess, no socket: the bridge DLL and the Rust code share one
 process and communicate via C-ABI function pointers.
 
@@ -15,10 +15,9 @@ process and communicate via C-ABI function pointers.
 | --- | --- | --- |
 | `analyze(file, source, analyzers[], packageCache)` | compilation diagnostics + CodeCop/UICop/AppSourceCop/PerTenantCop | `server/diagnostics.rs` (phase 2) |
 | `typeAt(file, pos, [unsavedText], packageCache)` | hover fallback (semantic type at cursor) | `queries/hover.rs` |
-| `completions_at(file, pos, [unsavedText], packageCache)` | member-access completion fallback | `queries/completions.rs` |
+| `completions(file, pos, [unsavedText], packageCache)` | member-access completion fallback | `queries/completions.rs` |
 | `builtins()` | built-in types/methods catalog | LSP startup → `SemanticCache` |
 | `errorCodes()` | error-code → severity/message catalog | diagnostic message enrichment |
-| `compile(...)` | legacy Rust API; fails closed with `-32601` | **retired** — builds use `al-compile` |
 | `ping()` | health check | lifecycle |
 
 ## How it works
@@ -29,7 +28,7 @@ process and communicate via C-ABI function pointers.
 `Bridge.cs` entry points (`Init`, `GetLastError`, `HandleRequest`, `FreeBuffer`). Every request is JSON in both
 directions: `{ "method": ..., "params": ... }` → exactly one of `{ "result": ... }` or
 `{ "error": ... }`. Rust validates lengths, UTF-8, JSON, and the response envelope before exposing a
-result. CLR calls run via `tokio::task::spawn_blocking`; a process-wide semaphore and a host mutex
+result. CLR calls run via `tokio::task::spawn_blocking`. A process-wide semaphore and a host mutex
 serialize them. The process-wide gate matters after a restart: an abandoned blocking task from an old
 bridge generation cannot overlap the replacement generation.
 
@@ -41,14 +40,14 @@ one canonical CodeAnalysis path, rejects a second toolchain in the same process,
 minimum reflection surface before reporting success. `HandleRequest` validates and serializes one
 request at a time. Handlers parse AL, build a compilation against the selected package cache, obtain
 compiler diagnostics, run requested analyzer DLLs, and walk the semantic model for type and completion
-information. Missing/incompatible APIs and requested analyzers are errors; they are not converted into
+information. Missing/incompatible APIs and requested analyzers are errors. They are not converted into
 plausible empty results.
 
 ### Correctness contracts
 
 - **Position:** LSP 0-based UTF-16 `(line, column)` is passed through unchanged. .NET string
   indexes are UTF-16 code units. The bridge validates that the line exists and that the column is on
-  that line (including its end position); an invalid column cannot spill into a later line, and EOF is
+  that line (including its end position). An invalid column cannot spill into a later line, and EOF is
   not shifted back to the previous character.
 - **Unsaved text:** when `text` is supplied, the bridge uses the editor buffer instead of
   reading disk, so hover/completion reflect unsaved edits.
@@ -80,7 +79,7 @@ true) further gates whether the bridge is initialized at all.
 
 ## Microsoft comparison
 
-The bridge executes Microsoft's `CodeAnalysis` engine and compiler/analyzer diagnostic APIs; it does
+The bridge executes Microsoft's `CodeAnalysis` engine and compiler/analyzer diagnostic APIs. It does
 not reimplement their binding rules. It is not identical to the complete official AL Language Server:
 this project constructs a focused single-document compilation and forwards a package cache, while the
 official server owns more project/session configuration and editor behavior. Claims of parity should
@@ -93,13 +92,13 @@ The bridge is optional Microsoft enrichment, not a prerequisite for the native
 language server. Native workspace diagnostics, type/scope resolution, hover,
 member completion, the generated builtin-function catalog, symbol/package
 navigation, and verified `.app` emission all operate without a CLR. When a
-native query has a sound result it wins; the bridge is consulted only for
+native query has a sound result it wins. The bridge is consulted only for
 additional Microsoft type/completion detail or exact CodeAnalysis diagnostics.
 
 Version-specific Microsoft error-code descriptions and the complete built-in
 type/member catalog are cached from the installed toolchain. Without that
 toolchain, diagnostics still carry their native code and message and generated
-builtin functions remain available; the server does not invent Microsoft-only
+builtin functions remain available. The server does not invent Microsoft-only
 catalog entries.
 
 The same boundary applies to builds: the default verified native pipeline is
@@ -109,25 +108,29 @@ compatibility is required.
 
 ## How to use
 
-You normally don't call the bridge directly — it powers diagnostics, hover, and completion
+You normally don't call the bridge directly. It powers diagnostics, hover, and completion
 automatically. To control it:
 
-- `al.enableCodeAnalysis` (default true) — turn Microsoft bridge enrichment on/off.
+- `al.enableCodeAnalysis` (default true): turn Microsoft bridge enrichment on/off.
 - `al.backgroundCodeAnalysis`, `al.diagnosticsTrigger`, `al.diagnosticsScope`, `al.codeAnalyzers`,
-  and `al.packageCachePath` — control scheduling, analyzer selection, and dependency lookup (see the
+  and `al.packageCachePath`: control scheduling, analyzer selection, and dependency lookup (see the
   [settings reference](../reference/settings.md)).
 
 ## Limitations
 
-- No async inside a CLR call (sync mutex); single CLR per process (no multi-toolchain in one session);
-  a timeout prevents *new* calls during cooldown but cannot interrupt an in-flight CLR call.
-- ⛔ Bridge `compile` is disabled. `al.useOfficialCompiler` selects the maintained `al-compile`
-  subprocess backend; it does not route through this FFI bridge.
-- Analyzer names resolve only to shipped analyzer DLLs or explicit DLL paths. Custom analyzer DLLs run
-  in-process and must be treated as trusted code.
-- `al.enableExternalRulesets`, `al.ruleSetPath`, `al.assemblyProbingPaths`, and
-  `al.outputAnalyzerStatistics` intentionally apply to the official `alc` backend, where Microsoft
-  defines their behavior; they do not alter this focused per-document bridge.
+- No async inside a CLR call (sync mutex). Single CLR per process (no multi-toolchain in one session).
+  A timeout prevents *new* calls during cooldown but cannot interrupt an in-flight CLR call.
+- The bridge has no compile method. `al.useOfficialCompiler` selects the `al-compile`
+  subprocess backend, which does not route through this FFI bridge.
+- Analyzer names resolve through `al_project::analyzers::discover_custom_analyzer` to an installed
+  analyzer DLL or an explicit DLL path, and the project's own folders are searched only when the
+  project is trusted. Custom analyzer DLLs run in-process and must be treated as trusted code, so an
+  `al.codeAnalyzers` entry that is not a built-in token and comes from the repository's own
+  settings applies only after `al-explorer trust`. See [project trust](./project-trust.md).
+- `al.enableExternalRulesets`, `al.ruleSetPath`, and `al.outputAnalyzerStatistics` apply to the
+  official `alc` backend, where Microsoft defines their behavior, and do not alter this per-document
+  bridge. `al.assemblyProbingPaths` reaches `alc` as `/assemblyprobingpaths:` and is also where both
+  backends look for a named custom analyzer DLL.
 
 ## Verification
 
@@ -141,13 +144,13 @@ automatically. To control it:
   unsaved-buffer type lookup, invalid-position rejection, member completion, shipped CodeCop loading,
   built-ins, and error codes. Set `AL_PACKAGE_CACHE_PATH` as well to exercise package-reference loading.
 - `AL_TOOL_PATH=<official-extension>/bin/<platform> make record-methods` regenerates the checked-in,
-  shared AL `Record` method catalog from Microsoft's `TableClass` metadata; syntax highlighting and
+  shared AL `Record` method catalog from Microsoft's `TableClass` metadata. Syntax highlighting and
   native verification consume that same catalog instead of separate hand-maintained lists.
 - `scripts/check-release-hygiene.sh --full-regenerate` finds that same CodeAnalysis DLL below the
   pinned `AL_EXTENSION_PATH` and requires a byte-identical catalog as part of generated-asset CI.
 - `cargo test -p al-workspace`, `cargo test -p al-analysis`, `cargo test -p al-test`, and
   `cargo test -p al-lsp --lib --features semantic` are the consumer finish gate. They prove that the
   lifecycle, hover/completion, diagnostics, test routing/runtime, and semantic-enabled LSP wiring
-  compile and pass together; a passing bridge-only test is not considered sufficient.
+  compile and pass together. A passing bridge-only test is not considered sufficient.
 
 The full finish gate and the package-backed live contract were last run successfully on 2026-07-21.

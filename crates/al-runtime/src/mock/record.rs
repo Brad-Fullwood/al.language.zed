@@ -349,7 +349,6 @@ impl MockRecord {
     // Several `*_in` methods below take `&self` without touching it: they
     // only mutate the caller's view, but keep the uniform
     // `table.op_in(view, …)` receiver shape shared by every view operation.
-    #[allow(clippy::unused_self)]
     pub fn field_set_in(&self, view: &mut RecordView, field: FieldNo, value: Value) {
         view.current.insert(field, value);
     }
@@ -358,7 +357,6 @@ impl MockRecord {
         self.view.current.insert(field, value);
     }
 
-    #[allow(clippy::unused_self)]
     pub fn field_get_in<'a>(&self, view: &'a RecordView, field: FieldNo) -> Option<&'a Value> {
         view.current.get(&field)
     }
@@ -430,6 +428,18 @@ impl MockRecord {
     }
 
     /// `GET(key_parts…)` — look up a row by primary key; load into buffer.
+    /// Load the stored row with the view's current primary key into the view,
+    /// if the table holds one; otherwise leave the view as it is. This is
+    /// `xRec` for Modify, Delete and Rename: the row as the table has it.
+    pub fn reload_stored_in(&self, view: &mut RecordView) {
+        if let Ok(key) = self.current_primary_key(view) {
+            if let Some(row) = self.rows.get(&normalize_key(&key)) {
+                view.current = row.clone();
+                view.x_rec = row.clone();
+            }
+        }
+    }
+
     pub fn get_in(&self, view: &mut RecordView, key: PrimaryKey) -> Result<(), RecordError> {
         let key = normalize_key(&key);
         let row = self.rows.get(&key).ok_or(RecordError::NotFound)?;
@@ -602,7 +612,6 @@ impl MockRecord {
 
     /// `SETCURRENTKEY(fields…)` — change iteration sort order. The direction
     /// set by `Ascending` is kept.
-    #[allow(clippy::unused_self)]
     pub fn set_current_key_in(&self, view: &mut RecordView, fields: Vec<FieldNo>) {
         view.sort_key.fields = fields;
         view.iter_set.clear();
@@ -610,7 +619,6 @@ impl MockRecord {
     }
 
     /// `ASCENDING(flag)` — iterate the current key forwards or backwards.
-    #[allow(clippy::unused_self)]
     pub fn set_ascending_in(&self, view: &mut RecordView, ascending: bool) {
         view.sort_key.descending = !ascending;
         view.iter_set.clear();
@@ -618,7 +626,6 @@ impl MockRecord {
     }
 
     /// `ASCENDING()` — whether the view iterates forwards.
-    #[allow(clippy::unused_self)]
     pub fn is_ascending_in(&self, view: &RecordView) -> bool {
         !view.sort_key.descending
     }
@@ -628,7 +635,6 @@ impl MockRecord {
     }
 
     /// `SETRANGE(field, low, high)` — filter a field to an inclusive value range.
-    #[allow(clippy::unused_self)]
     pub fn set_range_in(&self, view: &mut RecordView, field: FieldNo, low: Value, high: Value) {
         view.filters.insert(field, FieldFilter::Range(low, high));
         view.iter_set.clear();
@@ -640,7 +646,6 @@ impl MockRecord {
     }
 
     /// Remove the active filter for one field.
-    #[allow(clippy::unused_self)]
     pub fn clear_filter_in(&self, view: &mut RecordView, field: FieldNo) {
         view.filters.remove(&field);
         view.iter_set.clear();
@@ -652,7 +657,6 @@ impl MockRecord {
     }
 
     /// `SETFILTER(field, expr)` — set a BC filter expression on a field.
-    #[allow(clippy::unused_self)]
     pub fn set_filter_in(
         &self,
         view: &mut RecordView,

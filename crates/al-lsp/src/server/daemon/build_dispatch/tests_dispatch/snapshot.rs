@@ -362,7 +362,11 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_capture(
                 );
             }
         };
-        let Some(info) = workspace.file_index.object_info.get(&file_path) else {
+        // The object around the line, not the file's first: BC routes the
+        // breakpoint by object type and ID.
+        let Some(info) =
+            crate::server::daemon::debug_dispatch::object_at_line(workspace, &file_path, line)
+        else {
             return rpc_error(
                 id,
                 error_codes::INVALID_PARAMS,
@@ -386,14 +390,14 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_capture(
                 "Breakpoint line is outside the indexed source file",
             );
         }
-        let Some(object_id) = info.value().id.and_then(|value| i32::try_from(value).ok()) else {
+        let Some(object_id) = info.id.and_then(|value| i32::try_from(value).ok()) else {
             return rpc_error(
                 id,
                 error_codes::INVALID_PARAMS,
                 "Breakpoint file has no valid AL object ID",
             );
         };
-        let object_type = al_dap::dap::native_dap::kind_to_object_type(&info.value().kind);
+        let object_type = al_dap::dap::native_dap::kind_to_object_type(&info.kind);
         if !seen_breakpoints.insert((file_path.clone(), line)) {
             return rpc_error(
                 id,

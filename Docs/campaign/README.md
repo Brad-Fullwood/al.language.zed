@@ -44,8 +44,15 @@ resumes from the files in this directory.
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --exclude zed-al --all-targets -- -D warnings
+cargo clippy -p al-semantic -p al-lsp --features semantic --all-targets -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc --workspace --exclude zed-al --no-deps
 cargo test --workspace --exclude zed-al
 ```
+
+The second clippy line is what CI's semantic bridge job runs. It sees code behind the `semantic`
+feature that the workspace run does not, and it failed PR 32 once on an allow attribute the
+workspace run had judged dead. The rustdoc line is CI's ubuntu job; it failed the same PR on two
+intra-doc links to private items.
 
 After merging a fix branch also run `cargo test -p al-test-harness --no-fail-fast`. It is the
 only suite that crosses crates, and it caught two regressions that no fix agent's own gates
@@ -66,6 +73,12 @@ The watchdog holds `flock` on `.campaign/headless.lock` while a headless session
 interactive session checks `flock -n .campaign/headless.lock true` at the start of each loop
 tick and does nothing when the lock is held, so two orchestrators do not edit the branch at
 once. `touch .campaign/STOP` stops the watchdog from starting new sessions.
+
+`claude -p` ends a headless session 600 s after the orchestrator's last message while agents
+it started in the background are still running. The 16:48 session on 2026-09-26 lost six agents
+that way. The watchdog exports `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`, and the headless
+orchestrator keeps its turn open while agents run: it dispatches short agents in the foreground
+and writes no final message while a background agent is in flight.
 
 ## Public repository
 

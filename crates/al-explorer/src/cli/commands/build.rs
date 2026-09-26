@@ -377,22 +377,6 @@ fn validation_analyzers(requested: Option<&str>, project_setting: &[String]) -> 
     }
 }
 
-/// The requested analyzers that resolve through the project's own folders: a
-/// custom name is looked up in `packages/` and `.netpackages/` before the
-/// NuGet cache, and a relative path is joined to the project root. Built-in
-/// cops come from the toolchain and an absolute path is the caller's choice.
-fn project_local_analyzers(requested: &[String]) -> Vec<&str> {
-    requested
-        .iter()
-        .map(|entry| entry.trim())
-        .filter(|entry| {
-            !entry.is_empty()
-                && !al_project::analyzers::is_builtin_analyzer(entry)
-                && !std::path::Path::new(entry).is_absolute()
-        })
-        .collect()
-}
-
 /// Compile `dir` with the Microsoft AL compiler (alc) and, if it reports
 /// errors (or no toolchain is available), return an exit code so the caller
 /// refuses to emit. Returns `None` when validation passes and the native emit
@@ -422,22 +406,10 @@ fn validate_with_alc(
             eprintln!("{advisory}");
         }
     }
+    // An analyzer the untrusted repository ships is refused inside
+    // `al_project::analyzers::discover_custom_analyzer`, which every compile
+    // path shares.
     let analyzers = validation_analyzers(analyzers, &settings.config.code_analyzers);
-    if !settings.decision.is_trusted() {
-        let project_local = project_local_analyzers(&analyzers);
-        if !project_local.is_empty() {
-            return Some(report_error(
-                &format!(
-                    "--analyzers {} would load an analyzer from this untrusted repository's own \
-                     folders into alc. Run `{}` in the project to allow it, or pass the \
-                     analyzer's absolute path.",
-                    project_local.join(","),
-                    al_project::trust::TRUST_COMMAND
-                ),
-                json,
-            ));
-        }
-    }
     let toolchain = match al_project::toolchain::find_toolchain() {
         Ok(t) => t,
         Err(e) => {
@@ -738,7 +710,7 @@ mod validation_tempdir_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{project_local_analyzers, validation_analyzers};
+    use super::validation_analyzers;
 
     fn project_setting() -> Vec<String> {
         vec!["CodeCop".to_string(), "UICop".to_string()]
@@ -757,27 +729,6 @@ mod tests {
         assert_eq!(
             validation_analyzers(Some(" AppSourceCop , PerTenantCop,"), &project_setting()),
             vec!["AppSourceCop".to_string(), "PerTenantCop".to_string()]
-        );
-    }
-
-    /// An untrusted repository could ship `packages/LinterCop.dll`; only the
-    /// toolchain's own cops and absolute paths skip the project's folders.
-    #[test]
-    fn custom_names_and_relative_paths_resolve_through_the_project() {
-        let absolute = std::env::temp_dir()
-            .join("Custom.dll")
-            .to_string_lossy()
-            .into_owned();
-        let requested = vec![
-            "CodeCop".to_string(),
-            "UICop.dll".to_string(),
-            "LinterCop".to_string(),
-            "tools/Mine.dll".to_string(),
-            absolute,
-        ];
-        assert_eq!(
-            project_local_analyzers(&requested),
-            vec!["LinterCop", "tools/Mine.dll"]
         );
     }
 

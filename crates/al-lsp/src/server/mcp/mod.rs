@@ -1638,6 +1638,7 @@ async fn write_mcp_frame(
     stdout: &Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
     frame: &serde_json::Value,
 ) -> std::io::Result<()> {
+    // One frame per guard, so concurrent responses never interleave bytes.
     let mut guard = stdout.lock().await;
     guard.write_all(frame.to_string().as_bytes()).await?;
     guard.write_all(b"\n").await?;
@@ -1660,6 +1661,7 @@ pub async fn run_mcp(project_root: PathBuf) -> Result<(), Box<dyn std::error::Er
         tracing::warn!("mcp: {msg}");
     }));
     super::daemon::initialize_daemon_workspace(&workspace, &project_root).await?;
+    super::daemon::persist_dependency_source_summaries(&workspace, &project_root);
 
     // Same warm-up as the daemon. An MCP server owns its workspace in process,
     // so without this the first event or impact question pays the whole

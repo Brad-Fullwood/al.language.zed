@@ -788,17 +788,20 @@ fn unknown_table_field_fails_instead_of_getting_a_synthetic_id() {
     assert!(message.contains("is not declared"), "got: {message}");
 }
 
+/// Insert(true) runs the table's OnInsert trigger; a table that declares
+/// none inserts exactly as Insert() does.
 #[test]
-fn requested_record_trigger_fails_instead_of_running_as_a_noop() {
+fn insert_true_without_an_oninsert_trigger_inserts() {
     let cu = r#"codeunit 50101 "Item Tests"
 {
-    procedure InsertWithTrigger()
+    procedure InsertWithTrigger(): Boolean
     var
         Item: Record "Item";
     begin
         Item.Init();
         Item."No." := 'X';
         Item.Insert(true);
+        exit(Item.Get('X'));
     end;
 }
 "#;
@@ -808,11 +811,7 @@ fn requested_record_trigger_fails_instead_of_running_as_a_noop() {
         "InsertWithTrigger",
         vec![],
     );
-    let message = error_message(result);
-    assert!(
-        message.contains("requires live Business Central"),
-        "got: {message}"
-    );
+    assert_eq!(ok(result), Value::Boolean(true));
 }
 
 #[test]
@@ -2781,5 +2780,613 @@ fn enum_variables_and_methods_run_locally() {
     assert_eq!(
         call("UnassignedFormatAndNames"),
         Value::Text("Red|Blue".into())
+    );
+}
+
+const MISC_PROBE: &str = r#"codeunit 50193 "Misc Probe"
+{
+    procedure Builder(): Text
+    var
+        B: TextBuilder;
+    begin
+        B.Append('ab');
+        B.AppendLine('c');
+        B.Insert(1, '>');
+        B.Replace('b', 'B');
+        B.Remove(2, 1);
+        exit(Format(B.Length()) + '|' + B.ToText().TrimEnd());
+    end;
+
+    procedure Guids(): Text
+    var
+        Id: Guid;
+        Seen: Text;
+    begin
+        if IsNullGuid(Id) then
+            Seen := 'null';
+        Id := CreateGuid();
+        if not IsNullGuid(Id) then
+            Seen += '|created';
+        exit(Seen);
+    end;
+
+    procedure RenameAndTest(): Text
+    var
+        Item: Record Item;
+    begin
+        Item.Init();
+        Item."No." := 'A';
+        Item.Description := 'Chair';
+        Item.Insert();
+        Item.Rename('B');
+        if Item.Get('A') then
+            exit('old key still there');
+        Item.Get('B');
+        Item.TestField(Description);
+        Item.TestField(Description, 'Chair');
+        exit(Item."No.");
+    end;
+
+    procedure TestFieldEmpty()
+    var
+        Item: Record Item;
+    begin
+        Item.Init();
+        Item."No." := 'C';
+        Item.TestField("Unit Price");
+    end;
+
+    procedure TestFieldValue()
+    var
+        Item: Record Item;
+    begin
+        Item.Init();
+        Item.Description := 'Chair';
+        Item.TestField(Description, 'Table');
+    end;
+}
+"#;
+
+/// TextBuilder, CreateGuid, IsNullGuid, Rename and TestField were
+/// unsupported, so tests using them were routed to live BC.
+#[test]
+fn textbuilder_guids_rename_and_testfield_run_locally() {
+    let call = |proc: &str| {
+        run(
+            &[("/ws/Misc.al", MISC_PROBE), ("/ws/Item.al", ITEM_TABLE)],
+            "Misc Probe",
+            proc,
+            vec![],
+        )
+    };
+    // '>' + 'aBc' + CRLF, then the 'a' at position 2 removed: '>Bc' + CRLF.
+    assert_eq!(ok(call("Builder")), Value::Text("5|>Bc".into()));
+    assert_eq!(ok(call("Guids")), Value::Text("null|created".into()));
+    assert_eq!(ok(call("RenameAndTest")), Value::Code("B".into()));
+    let empty = error_message(call("TestFieldEmpty"));
+    assert!(
+        empty.contains("Unit Price must have a value in Item"),
+        "{empty}"
+    );
+    let wrong = error_message(call("TestFieldValue"));
+    assert!(
+        wrong.contains("Description must be equal to 'Table' in Item. Current value is 'Chair'."),
+        "{wrong}"
+    );
+}
+
+const MEMBER_TABLE: &str = r#"table 50180 "Tour Member"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Name; Text[50])
+        {
+            trigger OnValidate()
+            begin
+                "Search Name" := UpperCase(Name);
+                if Name <> xRec.Name then
+                    Changes += 1;
+            end;
+        }
+        field(3; "Search Name"; Code[50]) { }
+        field(4; Balance; Decimal) { }
+        field(5; Changes; Integer) { }
+        field(6; "Item No."; Code[20]) { TableRelation = Item; }
+        field(7; "Last Balance"; Decimal) { }
+    }
+    keys
+    {
+        key(PK; "No.") { Clustered = true; }
+    }
+
+    trigger OnInsert()
+    begin
+        if Balance = 0 then
+            Balance := 100;
+    end;
+
+    trigger OnModify()
+    begin
+        "Last Balance" := xRec.Balance;
+    end;
+
+    trigger OnDelete()
+    begin
+        if Balance > 0 then
+            Error('Cannot delete %1 with a balance', "No.");
+    end;
+
+    procedure Deposit(Amount: Decimal): Decimal
+    begin
+        Balance += Amount;
+        Touch();
+        exit(Balance);
+    end;
+
+    local procedure Touch()
+    begin
+        TestField(Name);
+    end;
+}
+"#;
+
+const MEMBER_PROBE: &str = r#"codeunit 50194 "Member Probe"
+{
+    procedure ValidateRunsOnValidate(): Text
+    var
+        Member: Record "Tour Member";
+    begin
+        Member.Init();
+        Member."No." := 'M1';
+        Member.Validate(Name, 'alice');
+        Member.Validate(Name, 'alice');
+        Member.Validate(Name, 'bob');
+        exit(Member."Search Name" + '|' + Format(Member.Changes));
+    end;
+
+    procedure InsertTrueRunsOnInsert(): Text
+    var
+        Member: Record "Tour Member";
+        Plain: Record "Tour Member";
+    begin
+        Member."No." := 'M1';
+        Member.Insert(true);
+        Plain."No." := 'M2';
+        Plain.Insert();
+        Member.Get('M1');
+        Plain.Get('M2');
+        exit(Format(Member.Balance) + '|' + Format(Plain.Balance));
+    end;
+
+    procedure ModifyTrueSeesStoredRow(): Decimal
+    var
+        Member: Record "Tour Member";
+    begin
+        Member."No." := 'M1';
+        Member.Balance := 10;
+        Member.Insert();
+        Member.Balance := 25;
+        Member.Modify(true);
+        Member.Get('M1');
+        exit(Member."Last Balance");
+    end;
+
+    procedure DeleteTrueCanRefuse()
+    var
+        Member: Record "Tour Member";
+    begin
+        Member."No." := 'M1';
+        Member.Insert(true);
+        Member.Delete(true);
+    end;
+
+    procedure TableProcedure(): Decimal
+    var
+        Member: Record "Tour Member";
+    begin
+        Member."No." := 'M1';
+        Member.Name := 'x';
+        Member.Balance := 5;
+        exit(Member.Deposit(7) + Member.Balance);
+    end;
+
+    procedure TableProcedureRaises(): Decimal
+    var
+        Member: Record "Tour Member";
+    begin
+        exit(Member.Deposit(1));
+    end;
+
+    procedure RelationChecked(): Text
+    var
+        Item: Record Item;
+        Member: Record "Tour Member";
+    begin
+        Item."No." := 'CHAIR';
+        Item.Insert();
+        Member.Validate("Item No.", 'CHAIR');
+        Member.Validate("Item No.", '');
+        exit('ok');
+    end;
+
+    procedure RelationRefused()
+    var
+        Member: Record "Tour Member";
+    begin
+        Member.Validate("Item No.", 'TABLE');
+    end;
+}
+"#;
+
+/// Tables with triggers were refused outright and none of their code ran
+/// locally: no OnValidate, no Insert(true) trigger, no table procedures,
+/// and bare field names in table code were unbound identifiers.
+#[test]
+fn table_triggers_validate_and_procedures_run_on_the_record() {
+    let call = |proc: &str| {
+        run(
+            &[
+                ("/ws/Member.al", MEMBER_TABLE),
+                ("/ws/Probe.al", MEMBER_PROBE),
+                ("/ws/Item.al", ITEM_TABLE),
+            ],
+            "Member Probe",
+            proc,
+            vec![],
+        )
+    };
+    // alice (a change from blank), alice again (no change), bob (a change).
+    assert_eq!(
+        ok(call("ValidateRunsOnValidate")),
+        Value::Text("BOB|2".into())
+    );
+    assert_eq!(
+        ok(call("InsertTrueRunsOnInsert")),
+        Value::Text("100|0".into())
+    );
+    assert_eq!(
+        ok(call("ModifyTrueSeesStoredRow")),
+        Value::Decimal(dec!(10))
+    );
+    let refused = error_message(call("DeleteTrueCanRefuse"));
+    assert!(
+        refused.contains("Cannot delete M1 with a balance"),
+        "{refused}"
+    );
+    // Deposit returns 12 and leaves Balance at 12 on the caller's record.
+    assert_eq!(ok(call("TableProcedure")), Value::Decimal(dec!(24)));
+    let untested = error_message(call("TableProcedureRaises"));
+    assert!(untested.contains("Name must have a value"), "{untested}");
+    assert_eq!(ok(call("RelationChecked")), Value::Text("ok".into()));
+    let missing = error_message(call("RelationRefused"));
+    assert!(
+        missing.contains("cannot be found in the related table (Item)"),
+        "{missing}"
+    );
+}
+
+const EVENT_PUBLISHER: &str = r#"codeunit 50170 Publisher
+{
+    procedure Post(var Total: Integer; Label: Text): Integer
+    begin
+        OnBeforePost(Total, Label);
+        exit(Total);
+    end;
+
+    procedure Bonus(): Integer
+    begin
+        exit(100);
+    end;
+
+    [IntegrationEvent(true, false)]
+    local procedure OnBeforePost(var Total: Integer; Label: Text)
+    begin
+    end;
+}
+"#;
+
+const EVENT_SUBSCRIBERS: &str = r#"codeunit 50171 Subscribers
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::Publisher, 'OnBeforePost', '', false, false)]
+    local procedure AddTen(var Total: Integer)
+    begin
+        Total += 10;
+    end;
+
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::Publisher, 'OnBeforePost', '', false, false)]
+    local procedure AddFromSender(sender: Codeunit Publisher; var Total: Integer)
+    begin
+        Total += sender.Bonus();
+    end;
+
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::50170, 'OnBeforePost', '', false, false)]
+    local procedure AddLabelLength(Label: Text; var Total: Integer)
+    begin
+        Total += StrLen(Label);
+    end;
+
+    [EventSubscriber(ObjectType::Table, Database::"Tour Member", 'OnAfterInsertEvent', '', false, false)]
+    local procedure StampInsert(var Rec: Record "Tour Member"; RunTrigger: Boolean)
+    begin
+        if Rec.IsTemporary() or (Rec."No." = 'MOD') then
+            exit;
+        Rec."Last Balance" := 999;
+        Rec.Modify();
+    end;
+
+    [EventSubscriber(ObjectType::Table, Database::"Tour Member", 'OnAfterModifyEvent', '', false, false)]
+    local procedure ReportChange(var Rec: Record "Tour Member"; var xRec: Record "Tour Member")
+    begin
+        if Rec."No." = 'MOD' then
+            Error('changed %1 to %2', xRec.Balance, Rec.Balance);
+    end;
+
+    [EventSubscriber(ObjectType::Table, Database::"Tour Member", 'OnBeforeValidateEvent', 'Name', false, false)]
+    local procedure RefuseBlankName(var Rec: Record "Tour Member")
+    begin
+        if Rec.Name = '' then
+            Error('A name is required');
+    end;
+}
+"#;
+
+const MANUAL_SUBSCRIBERS: &str = r#"codeunit 50173 "Manual Subscribers"
+{
+    EventSubscriberInstance = Manual;
+
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::Publisher, 'OnBeforePost', '', false, false)]
+    local procedure AddThousand(var Total: Integer)
+    begin
+        Total += 1000;
+    end;
+}
+"#;
+
+const EVENT_PROBE: &str = r#"codeunit 50172 "Event Probe"
+{
+    procedure PostRunsSubscribers(): Integer
+    var
+        P: Codeunit Publisher;
+        Total: Integer;
+    begin
+        Total := 1;
+        P.Post(Total, 'abc');
+        exit(Total);
+    end;
+
+    procedure InsertRaisesTableEvent(): Text
+    var
+        Member: Record "Tour Member";
+        Temp: Record "Tour Member" temporary;
+    begin
+        Member."No." := 'M1';
+        Member.Insert();
+        Member.Get('M1');
+        Temp."No." := 'T1';
+        Temp.Insert();
+        Temp.Get('T1');
+        exit(Format(Member."Last Balance") + '|' + Format(Temp."Last Balance"));
+    end;
+
+    procedure ModifySubscriberSeesStoredRow()
+    var
+        Member: Record "Tour Member";
+    begin
+        Member."No." := 'MOD';
+        Member.Balance := 10;
+        Member.Insert();
+        Member.Balance := 25;
+        Member.Modify();
+    end;
+
+    procedure ValidateRaisesFieldEvent()
+    var
+        Member: Record "Tour Member";
+    begin
+        Member.Validate(Name, '');
+    end;
+}
+"#;
+
+/// Subscribers never ran locally, yet the router followed the publisher's
+/// edges to them and kept such tests local: a test that relied on one
+/// failed here and passed on BC.
+#[test]
+fn events_run_their_automatic_subscribers() {
+    let call = |proc: &str| {
+        run(
+            &[
+                ("/ws/Publisher.al", EVENT_PUBLISHER),
+                ("/ws/Subscribers.al", EVENT_SUBSCRIBERS),
+                ("/ws/Manual.al", MANUAL_SUBSCRIBERS),
+                ("/ws/Member.al", MEMBER_TABLE),
+                ("/ws/Item.al", ITEM_TABLE),
+                ("/ws/Probe.al", EVENT_PROBE),
+            ],
+            "Event Probe",
+            proc,
+            vec![],
+        )
+    };
+    // 1 + 10 (by name) + 100 (from the sender) + 3 (by ID, 'abc'); the
+    // manual subscriber is unbound.
+    assert_eq!(ok(call("PostRunsSubscribers")), Value::Integer(114));
+    assert_eq!(
+        ok(call("InsertRaisesTableEvent")),
+        Value::Text("999|0".into())
+    );
+    // OnAfterModifyEvent's xRec is the row as stored before the Modify.
+    let changed = error_message(call("ModifySubscriberSeesStoredRow"));
+    assert!(changed.contains("changed 10 to 25"), "{changed}");
+    let refused = error_message(call("ValidateRaisesFieldEvent"));
+    assert!(refused.contains("A name is required"), "{refused}");
+}
+
+/// A table then a codeunit in one file: the codeunit's calls took the
+/// file's first object (the table) as their identity and read globals from
+/// the whole file, failing as "stateful codeunit 'Tour Member'". Label
+/// globals were never bound.
+#[test]
+fn second_object_of_a_file_runs_as_itself_with_its_label_globals() {
+    let file = r#"table 50195 "Greeting Log"
+{
+    fields
+    {
+        field(1; "No."; Integer) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+    var
+        TableCounter: Integer;
+}
+
+codeunit 50196 "Greeter"
+{
+    var
+        GreetingLbl: Label 'Hello %1, it''s %2', Comment = '%1 = name, %2 = day';
+
+    procedure Greet(): Text
+    begin
+        exit(Compose('Ann'));
+    end;
+
+    local procedure Compose(Name: Text): Text
+    begin
+        exit(StrSubstNo(GreetingLbl, Name, 'Monday'));
+    end;
+}
+"#;
+    assert_eq!(
+        ok(run(&[("/ws/Greeter.al", file)], "Greeter", "Greet", vec![])),
+        Value::Text("Hello Ann, it's Monday".into())
+    );
+}
+
+const JSON_PROBE: &str = r#"codeunit 50197 "Json Probe"
+{
+    procedure BuildAndWrite(): Text
+    var
+        Customer: JsonObject;
+        Address: JsonObject;
+        Lines: JsonArray;
+        Out: Text;
+    begin
+        Customer.Add('name', 'Ann');
+        Customer.Add('balance', 12.5);
+        Customer.Add('vip', true);
+        Address.Add('city', 'Oslo');
+        Customer.Add('address', Address);
+        Lines.Add(1);
+        Lines.Add('two');
+        Customer.Add('lines', Lines);
+        // Address was added by reference: later changes show in Customer.
+        Address.Add('zip', '0150');
+        Customer.WriteTo(Out);
+        exit(Out);
+    end;
+
+    procedure ReadAndNavigate(): Text
+    var
+        Doc: JsonObject;
+        Token: JsonToken;
+        Items: JsonArray;
+        Total: Decimal;
+        i: Integer;
+    begin
+        if not Doc.ReadFrom('{"order":{"no":"SO1","items":[{"qty":2,"price":1.25},{"qty":1,"price":10}]}}') then
+            exit('unreadable');
+        Doc.SelectToken('$.order.items', Token);
+        Items := Token.AsArray();
+        for i := 0 to Items.Count() - 1 do begin
+            Items.Get(i, Token);
+            Total += Token.AsObject().GetDecimal('qty') * Token.AsObject().GetDecimal('price');
+        end;
+        Doc.SelectToken('order.no', Token);
+        exit(Token.AsValue().AsText() + '|' + Format(Total) + '|' + Format(Doc.Contains('order')));
+    end;
+
+    procedure SharedReference(): Integer
+    var
+        A: JsonObject;
+        B: JsonObject;
+        Token: JsonToken;
+    begin
+        A.Add('n', 1);
+        B := A;
+        B.Replace('n', 2);
+        A.Get('n', Token);
+        exit(Token.AsValue().AsInteger());
+    end;
+
+    procedure SharedBeforeFirstUse(): Text
+    var
+        A: JsonObject;
+        B: JsonObject;
+        Out: Text;
+    begin
+        B := A;
+        A.Add('a', 1);
+        Fill(B);
+        B.WriteTo(Out);
+        exit(Out);
+    end;
+
+    local procedure Fill(Target: JsonObject)
+    begin
+        Target.Add('b', 2);
+    end;
+
+    procedure UnassignedTokenReads(): Text
+    var
+        Token: JsonToken;
+    begin
+        if not Token.ReadFrom('{"a":[1,2]}') then
+            exit('unreadable');
+        exit(Format(Token.IsObject()) + '|' + Format(Token.AsObject().Contains('a')));
+    end;
+
+    procedure DuplicateKey()
+    var
+        A: JsonObject;
+    begin
+        A.Add('n', 1);
+        A.Add('n', 2);
+    end;
+}
+"#;
+
+/// JSON types were unsupported, so any test using them went to live BC.
+#[test]
+fn json_objects_arrays_and_tokens_run_locally() {
+    let call = |proc: &str| run(&[("/ws/Json.al", JSON_PROBE)], "Json Probe", proc, vec![]);
+    assert_eq!(
+        ok(call("BuildAndWrite")),
+        Value::Text(
+            r#"{"name":"Ann","balance":12.5,"vip":true,"address":{"city":"Oslo","zip":"0150"},"lines":[1,"two"]}"#
+                .into()
+        )
+    );
+    assert_eq!(
+        ok(call("ReadAndNavigate")),
+        Value::Text("SO1|12.5|Yes".into())
+    );
+    assert_eq!(ok(call("SharedReference")), Value::Integer(2));
+    // JSON values are references even before first use, and a by-value
+    // parameter passes the reference.
+    assert_eq!(
+        ok(call("SharedBeforeFirstUse")),
+        Value::Text(r#"{"a":1,"b":2}"#.into())
+    );
+    assert_eq!(
+        ok(call("UnassignedTokenReads")),
+        Value::Text("Yes|Yes".into())
+    );
+    let duplicate = error_message(call("DuplicateKey"));
+    assert!(
+        duplicate.contains("the key 'n' already exists"),
+        "{duplicate}"
     );
 }

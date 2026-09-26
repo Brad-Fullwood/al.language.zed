@@ -790,7 +790,15 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
             None => launch_cfg.configs.first(),
         };
         match selected {
-            Some(c) => Some(c.clone()),
+            Some(c) => {
+                let mut config = c.clone();
+                if let Err(message) =
+                    crate::server::daemon::authorize_live_test_target(&project_root, &mut config)
+                {
+                    return rpc_error(id, error_codes::INVALID_PARAMS, &message);
+                }
+                Some(config)
+            }
             None => {
                 let message = match config_name {
                     Some(name) => {

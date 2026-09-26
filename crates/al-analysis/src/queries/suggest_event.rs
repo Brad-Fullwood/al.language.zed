@@ -55,8 +55,15 @@ fn resolve_object_kind(
         .into_iter()
         .map(|entry| entry.kind)
         .collect::<Vec<_>>();
+    // A file can declare several objects; only those named `object_name`
+    // count, not whichever object the file happens to declare first.
     for path in workspace.file_index.object_paths(object_name) {
-        if let Some(info) = workspace.file_index.object_info.get(&path) {
+        for info in workspace
+            .file_index
+            .object_infos_in(&path)
+            .into_iter()
+            .filter(|info| info.name.eq_ignore_ascii_case(object_name))
+        {
             let kind = info.kind.parse::<ObjectKind>().map_err(|reason| {
                 SuggestEventError::InvalidObjectKind {
                     kind: info.kind.clone(),
@@ -988,6 +995,29 @@ mod tests {
         let json = serde_json::to_value(&cut).unwrap();
         assert_eq!(json["maxDepth"], MAX_TRACE_DEPTH);
         assert!(json.get("withoutSource").is_none());
+    }
+
+    /// A codeunit declared after a table in the same file took the table's
+    /// kind, because only the file's first object was read.
+    #[test]
+    fn the_kind_of_a_second_object_in_a_file_is_its_own() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/Posting.al"),
+            "table 50200 \"Posting Buffer\" { }\n\ncodeunit 50100 \"Posting Mgt\"\n{\n    procedure Post()\n    begin\n    end;\n}\n"
+                .to_string(),
+        );
+        assert_eq!(
+            resolve_object_kind(&ws, "Posting Mgt", None).unwrap(),
+            ObjectKind::Codeunit
+        );
+        assert!(
+            matches!(
+                resolve_object_kind(&ws, "Posting Mgt", Some("table")),
+                Err(SuggestEventError::ObjectNotFound { .. })
+            ),
+            "no table is named Posting Mgt"
+        );
     }
     use al_symbols::*;
 

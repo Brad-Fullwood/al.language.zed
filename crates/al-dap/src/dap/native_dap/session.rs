@@ -97,6 +97,10 @@ where
             self.reply_failure(out, request_seq, command, error).await?;
             return Ok(());
         }
+        if let Err(error) = (self.authorize_target)(&config) {
+            self.reply_failure(out, request_seq, command, error).await?;
+            return Ok(());
+        }
         self.variable_handles.lock().await.reset();
         *self.configured.lock().await = false;
         // Store config for use in the configurationDone handler.
@@ -585,6 +589,110 @@ mod tests {
             .contains("Authentication failed"));
     }
 
+    /// A launch whose target the authoriser refuses is answered with the
+    /// refusal before anything is compiled, a token is read, or a request
+    /// leaves. The configuration is what a cloned repository's
+    /// `.zed/debug.json` can hold.
+    #[tokio::test]
+    async fn dap_refuses_a_launch_the_authoriser_refuses_before_any_token_or_request() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let collector = wiremock::MockServer::start().await;
+        let (cancel_tx, cancel_rx) = watch::channel(0u64);
+        let (dap_event_tx, _dap_event_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+        std::mem::forget(_dap_event_rx);
+        let compiled = Arc::new(AtomicBool::new(false));
+        let compiled_by_hook = Arc::clone(&compiled);
+        let token_read = Arc::new(AtomicBool::new(false));
+        let token_read_by_hook = Arc::clone(&token_read);
+        let authorised = Arc::new(std::sync::Mutex::new(None::<(Option<String>, u16)>));
+        let authorised_by_hook = Arc::clone(&authorised);
+        let state = NativeDapState {
+            seq: Arc::new(AtomicU64::new(1)),
+            session: Arc::new(Mutex::new(None)),
+            debug_config: Arc::new(Mutex::new(None)),
+            breakpoints: Arc::new(Mutex::new(HashMap::new())),
+            pending_breakpoints: Arc::new(Mutex::new(HashMap::new())),
+            configured: Arc::new(Mutex::new(false)),
+            variable_handles: Arc::new(Mutex::new(VariableHandleStore::default())),
+            cancel_tx,
+            cancel_rx,
+            dap_event_tx,
+            project_root: "/test/project".to_string(),
+            authorize_target: Arc::new(move |config: &BcDebugConfig| {
+                *authorised_by_hook.lock().unwrap() = Some((config.server.clone(), config.port));
+                Err("Refusing to send a cached Business Central token: not trusted".to_string())
+            }),
+            acquire_token: move |_: String| {
+                token_read_by_hook.store(true, Ordering::SeqCst);
+                std::future::ready(Ok("test-token".to_string()))
+            },
+            resolve_object: |_: &str| -> Option<ResolvedObject> { None },
+            resolve_path: |_: i32, _: i32| -> Option<PathBuf> { None },
+            compile: move |_: PathBuf| {
+                compiled_by_hook.store(true, Ordering::SeqCst);
+                std::future::ready(Ok(String::new()))
+            },
+            find_app: |_: &Path| -> std::result::Result<Option<PathBuf>, String> { Ok(None) },
+        };
+
+        let port = url::Url::parse(&collector.uri()).unwrap().port().unwrap();
+        for command in ["launch", "attach"] {
+            let (mut client, server) = tokio::io::duplex(64 * 1024);
+            state
+                .handle_request(
+                    &mut client,
+                    command,
+                    7,
+                    &serde_json::json!({
+                        "environmentType": "OnPrem",
+                        "server": "http://127.0.0.1",
+                        "port": port,
+                        "serverInstance": "BC",
+                        "authentication": "AAD",
+                        "tenant": "organizations",
+                    }),
+                )
+                .await
+                .expect("launch handler");
+            use tokio::io::AsyncWriteExt;
+            client.shutdown().await.expect("shutdown");
+            drop(client);
+            let mut reader = tokio::io::BufReader::new(server);
+            let mut frames: Vec<serde_json::Value> = Vec::new();
+            while let Ok(body) = read_dap_body(&mut reader).await {
+                frames.push(serde_json::from_slice(&body).expect("DAP JSON"));
+            }
+            let response = frames.last().expect("a response");
+            assert_eq!(response["success"], false, "{command}: {frames:?}");
+            assert!(
+                response["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("not trusted"),
+                "{command}: {frames:?}"
+            );
+        }
+        assert_eq!(
+            *authorised.lock().unwrap(),
+            Some((Some("http://127.0.0.1".to_string()), port)),
+            "the authoriser must judge the server and port the session would use"
+        );
+        assert!(!compiled.load(Ordering::SeqCst), "compiled before refusing");
+        assert!(
+            !token_read.load(Ordering::SeqCst),
+            "read a token before refusing"
+        );
+        assert!(
+            collector
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .is_empty(),
+            "a request reached the server the scenario named"
+        );
+    }
+
     #[tokio::test]
     async fn launch_compiles_then_rejects_missing_manifest_selected_artifact() {
         let (cancel_tx, cancel_rx) = watch::channel(0u64);
@@ -604,6 +712,7 @@ mod tests {
             cancel_rx,
             dap_event_tx,
             project_root: "/test/project".to_string(),
+            authorize_target: allow_every_target(),
             acquire_token: |_: String| std::future::ready(Ok("test-token".to_string())),
             resolve_object: |_: &str| -> Option<ResolvedObject> { None },
             resolve_path: |_: i32, _: i32| -> Option<PathBuf> { None },

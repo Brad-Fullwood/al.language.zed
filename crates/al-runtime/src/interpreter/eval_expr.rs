@@ -146,7 +146,11 @@ fn eval_expr_inner(
                     // not shadowed by a bound variable of the same name.
                     None => match niladic_clock_builtin(name, ctx) {
                         Some(v) => Eval::Normal(v),
-                        None => Eval::Error(error_info(format!("unbound identifier: {name}"))),
+                        None => {
+                            records::implicit_field_get(name, stack, ctx).unwrap_or_else(|| {
+                                Eval::Error(error_info(format!("unbound identifier: {name}")))
+                            })
+                        }
                     },
                 }
             }
@@ -843,6 +847,31 @@ fn eval_expression_node(
             return Eval::Error(error_info(
                 "expression: cannot resolve LHS name for assignment",
             ));
+        }
+
+        // In table code a bare field name that is not a variable is a field
+        // of the implicit record.
+        if stack.lookup(&lhs_name).is_none() {
+            let field_value = match kind {
+                AssignKind::Plain => Some(rhs_val.clone()),
+                AssignKind::Compound(base_op) => {
+                    match records::implicit_field_get(&lhs_name, stack, ctx) {
+                        Some(Eval::Normal(current)) => {
+                            match apply_binary(base_op, current, rhs_val.clone()) {
+                                Eval::Normal(value) => Some(value),
+                                other => return other,
+                            }
+                        }
+                        Some(other) => return other,
+                        None => None,
+                    }
+                }
+            };
+            if let Some(value) = field_value {
+                if let Some(result) = records::implicit_field_set(&lhs_name, &value, stack, ctx) {
+                    return result;
+                }
+            }
         }
 
         // Compound assignment (`x += rhs`) is `x := x <op> rhs`: load the

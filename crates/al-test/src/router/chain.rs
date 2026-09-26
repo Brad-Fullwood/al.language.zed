@@ -7,8 +7,10 @@
 
 use al_runtime::interpreter::dispatch::supports_global_builtin;
 use al_runtime::interpreter::enums::supports_enum_method;
+use al_runtime::interpreter::json::{supports_json_method, JsonKind};
 use al_runtime::interpreter::records::{
     supports_dict_method, supports_list_method, supports_record_method, supports_text_method,
+    supports_textbuilder_method,
 };
 use al_syntax::IdentifierText;
 
@@ -19,6 +21,8 @@ enum Step {
     List,
     Dictionary,
     Record,
+    TextBuilder,
+    Json(JsonKind),
     /// A value of a workspace enum.
     Enum,
     /// A workspace enum type itself (`Enum::Colour`), for FromInteger,
@@ -166,6 +170,8 @@ pub(super) fn route(
                     Step::Dictionary => supports_dict_method(&lower),
                     Step::Record => supports_record_method(&lower),
                     Step::Enum => supports_enum_method(&lower),
+                    Step::TextBuilder => supports_textbuilder_method(&lower),
+                    Step::Json(kind) => supports_json_method(kind, &lower),
                     Step::EnumType => {
                         matches!(lower.as_str(), "frominteger" | "names" | "ordinals")
                     }
@@ -205,7 +211,11 @@ fn declared_step(type_name: &str) -> Step {
         "list" => Step::List,
         "dictionary" => Step::Dictionary,
         "record" => Step::Record,
-        _ => Step::Unknown,
+        "textbuilder" => Step::TextBuilder,
+        other => match super::ast::json_kind(other) {
+            Some(kind) => Step::Json(kind),
+            None => Step::Unknown,
+        },
     }
 }
 
@@ -221,6 +231,16 @@ fn method_result(receiver: Step, method: &str) -> Step {
             Step::Scalar
         }
         (Step::Dictionary, "keys" | "values") => Step::List,
+        (Step::Json(_), "asobject") => Step::Json(JsonKind::Object),
+        (Step::Json(_), "asarray") => Step::Json(JsonKind::Array),
+        (Step::Json(_), "asvalue") => Step::Json(JsonKind::Value),
+        (Step::Json(_), "astoken") => Step::Json(JsonKind::Token),
+        (Step::Json(kind), "clone") => Step::Json(kind),
+        (Step::Json(_), "astext" | "ascode" | "gettext" | "getcode") => Step::Text,
+        (Step::Json(JsonKind::Object), "keys" | "values") => Step::List,
+        (Step::Json(_), _) => Step::Scalar,
+        (Step::TextBuilder, "totext") => Step::Text,
+        (Step::TextBuilder, _) => Step::Scalar,
         (Step::Enum | Step::EnumType, "names" | "ordinals") => Step::List,
         (Step::Enum, "asinteger") => Step::Scalar,
         (Step::EnumType, "frominteger") => Step::Enum,
@@ -236,6 +256,8 @@ fn step_name(step: Step) -> &'static str {
         Step::List => "List",
         Step::Dictionary => "Dictionary",
         Step::Record => "Record",
+        Step::TextBuilder => "TextBuilder",
+        Step::Json(_) => "JSON value",
         Step::Enum => "enum value",
         Step::EnumType => "enum type",
         Step::Scalar => "value without methods",

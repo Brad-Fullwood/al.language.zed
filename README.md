@@ -9,28 +9,28 @@ The toolchain is available from Zed, the terminal, CI, and MCP clients. Microsof
 > Business Central projects. Report exact commands, project shape, platform,
 > expected/actual result, and whether an issue also reproduces through the
 > explicit Microsoft backend. [Current limitations](./Docs/current-limitations.md)
-> distinguish deliberate compatibility boundaries from regressions.
+> lists the known compatibility limits, so they can be told apart from regressions.
 
 ## Why this exists
 
-Most Microsoft AL tooling is coupled to the VS Code extension, the official language server, Business Central service assumptions, and opaque editor commands. That makes it hard to build deep Zed integration, hard to run narrow analysis from CI, hard to expose AL-aware tools to agents, and hard to test behavior outside the Microsoft extension boundary.
+Most Microsoft AL tooling is tied to the VS Code extension, the official language server, Business Central service assumptions, and undocumented editor commands. That makes Zed integration, narrow analysis in CI, AL-aware tools for agents, and testing outside the Microsoft extension hard to build.
 
-This project rewrites a large part of that experience in native Rust:
+This project reimplements a large part of that tooling in Rust:
 
 - AL parsing and Zed grammar integration are generated from AL language data and maintained in the bundled `tree-sitter-al` submodule.
 - Workspace state is owned by `al-lsp`: file indexes, parse trees, symbol maps, package maps, document caches, insight graphs, call graphs, test discovery, and daemon command routing.
-- `.app` symbol packages are read directly, with manifest parsing, `SymbolReference.json` extraction, virtual package navigation, and bounded archive safety checks. Every object reports whether navigation uses workspace source, extractable embedded source, a generated public-API outline, or identity-only metadata; extraction failures are downgraded to the representation actually returned.
-- Symbol discovery is an in-memory indexed data model instead of repeated ad hoc package scans.
+- `.app` symbol packages are read directly, with manifest parsing, `SymbolReference.json` extraction, virtual package navigation, and bounded archive safety checks. Every object reports whether navigation uses workspace source, extractable embedded source, a generated public-API outline, or identity-only metadata. When extraction fails, the object reports the representation that was returned instead.
+- Symbol discovery reads an in-memory index instead of scanning packages on each request.
 - Native `.app` compilation is implemented in Rust: source is syntax/project/declaration/binding verified, packaged into NAVX/ZIP `.app` artifacts, reopened for integrity checks, and atomically handed off only after all blocking checks pass.
 - Business Central-specific workflows such as impact analysis, event tracing, subscriber lookup, dead-code detection, SQL anti-pattern detection, audit checks, and upgrade reports are exposed through the CLI, daemon JSON-RPC, and MCP tools.
 - Batch test execution includes native interpreter paths for pure-logic codeunits and the supported workspace-record subset, with conservative routing back to live Business Central for base-app/package records, unsupported record behavior, mixed/unknown codeunits, and platform-dependent behavior.
-- Zed talks to the same engine through LSP, DAP, and the `al-tools` MCP context server; the language package also ships an AL task list and inline test/event runnables that drive `al-explorer`, and repository contributors have extra CLI tasks in `.zed/tasks.json`.
+- Zed talks to the same engine through LSP, DAP, and the `al-tools` MCP context server. The language package also ships an AL task list and inline test/event runnables that drive `al-explorer`, and repository contributors have extra CLI tasks in `.zed/tasks.json`.
 
 The goal is full native implementation where that is realistic, with Microsoft compatibility and fallback where exact compiler or runtime behavior still belongs to Microsoft.
 
 ## Native Vs Microsoft-Backed
 
-The project is intentionally honest about what is native today and what still delegates to Microsoft components.
+The table shows what is native and what still uses Microsoft components.
 
 | Area | Native in this repository | Microsoft-backed or fallback |
 | --- | --- | --- |
@@ -38,22 +38,22 @@ The project is intentionally honest about what is native today and what still de
 | Parsing | Tree-sitter AL grammar and Rust syntax helpers | Microsoft TextMate grammar is used as generator input |
 | Language server | `al-lsp` LSP transport, workspace indexing, document store, completions, hover, definitions, references, rename, formatting, folding, symbols, semantic tokens, inlay hints, CodeLens, code actions, diagnostics plumbing | Optional official AL LSP via `al.useOfficialLsp` |
 | Semantic compiler checks | Native bridge host, daemon plumbing, caching, command surfaces | .NET AL CodeAnalysis bridge and Microsoft compiler semantics |
-| Build/package | Pure-Rust verifier + `.app` emitter in `crates/al-emit`: syntax, project/dependency, declaration, declared-symbol binding and package-integrity diagnostics; atomic artifact handoff; native defaults for daemon `compile`, LSP `al.compile`, publish, and DAP launch | `pack-native --validate` adds an explicit `alc` compatibility gate; `al.useOfficialCompiler=true` opts into Microsoft emission and full compiler semantics |
-| `.app` inspection and emit fidelity | Native NAVX/ZIP inspection, manifest parsing, generated `SymbolReference.json`, profile symbol references, supported-subset XLIFF/navigation/resources, control-add-in bundles, entitlements, permissions, and ALC golden tests | Broader real-world resource shapes still require `pack-native --validate` or official `alc`; Business Central publish/runtime behavior is the final compatibility validator |
+| Build/package | Pure-Rust verifier + `.app` emitter in `crates/al-emit`: syntax, project/dependency, declaration, declared-symbol binding and package-integrity diagnostics. Atomic artifact handoff. Native defaults for daemon `compile`, LSP `al.compile`, publish, and DAP launch | `pack-native --validate` adds an explicit `alc` compatibility gate. `al.useOfficialCompiler=true` opts into Microsoft emission and full compiler semantics |
+| `.app` inspection and emit fidelity | Native NAVX/ZIP inspection, manifest parsing, generated `SymbolReference.json`, profile symbol references, supported-subset XLIFF/navigation/resources, control-add-in bundles, entitlements, permissions, and ALC golden tests | Broader real-world resource shapes still require `pack-native --validate` or official `alc`. Business Central publish/runtime behavior is the final compatibility validator |
 | Symbols | Native `.app` reader, symbol model, package cache, source map, composed objects, NuGet/server download orchestration | Symbol package contents and compiler output formats come from the Business Central ecosystem |
 | Analysis | Native impact, event, call graph, dead code, SQL scan, duplicates, architecture lint, breaking/upgrade/obsolete/audit reports | Package-only call-site bodies cannot be recovered when Microsoft `.app` symbols do not contain source bodies |
 | Tests | Native discovery, resolved transitive per-codeunit routing, pure-logic and supported workspace-record interpreters, local initialize/cleanup plus deterministic Message/Confirm/StrMenu/Hyperlink handlers, live breakpoint-snapshot capture/replay, JUnit output, static call-graph and opt-in dynamic statement/path/MC/DC Cobertura coverage, and scoped mutation testing for interpreter-routed tests | Base-app/package record schemas, unsupported record/platform behavior, HTTP, UI, report, XmlPort, session, transaction, and mixed/unknown codeunits use live BC |
 | Debugging | Native Zed DAP adapter mode, config conversion, compile/publish/deploy plumbing, SignalR and BC debug data mapping | Business Central runtime/debug service remains the execution backend |
-| Automation | `al-explorer`, daemon JSON-RPC, MCP server, contributor-only `.zed` tasks | None required for pure analysis; BC credentials/runtime required for publish/debug/live-test workflows |
+| Automation | `al-explorer`, daemon JSON-RPC, MCP server, contributor-only `.zed` tasks | None required for pure analysis. BC credentials/runtime required for publish/debug/live-test workflows |
 
-Native coverage is deliberately bounded. Explicit Microsoft-backed profiles preserve compatibility
-where source-free dependencies, platform runtime behaviour, or authoritative Microsoft semantics
-cannot be reconstructed locally.
+Native coverage has limits. Where source-free dependencies, platform runtime behaviour, or
+Microsoft's own semantics cannot be reproduced locally, the explicit Microsoft-backed profiles keep
+compatibility.
 
-## Why The Native Approach Matters
+## Caching And Build Design
 
-This section describes the architecture that avoids repeated work in real projects. Quantitative
-claims appear only in the dated benchmark report and its committed raw results.
+This section describes how the engine avoids repeated work in real projects. Numbers appear only in
+the dated benchmark report and its committed raw results.
 
 ### Cached symbol discovery
 
@@ -63,7 +63,7 @@ Package symbols are loaded in parallel, validated against a disk cache under the
 
 ### Cached analysis queries
 
-The daemon keeps a real workspace model, not just text open in the editor. `FileIndex` caches file text, object metadata, parse trees, document symbols, procedure definitions, event subscribers, and reverse indexes. `DocumentStore` keeps open-document text as shared strings and bounds parse-tree caching to avoid unbounded memory growth.
+The daemon keeps a model of the whole workspace, beyond the text open in the editor. `FileIndex` caches file text, object metadata, parse trees, document symbols, procedure definitions, event subscribers, and reverse indexes. `DocumentStore` keeps open-document text as shared strings and bounds parse-tree caching to avoid unbounded memory growth.
 
 Queries such as definitions, references, composed objects, impact analysis, event tracing, and call graph traversal reuse those maps. Insight graphs and call graphs are cached and invalidated based on the kind of edit: body-only edits do not need the same rebuild path as object topology changes.
 
@@ -81,7 +81,7 @@ Symbol acquisition is native and parallel where it is safe:
 
 ### Less memory churn
 
-The indexing path is built around shared ownership and bounded caches. Large file limits, archive payload limits, parse-tree LRU limits, lazy TUI hydration, and `Arc<String>` document text all exist to stop editor workflows from exploding into repeated copies or unbounded state. Default completion results also have a small cache for the common "blank completion at top level" path.
+The indexing path is built around shared ownership and bounded caches. Large file limits, archive payload limits, parse-tree LRU limits, on-demand member loading in the TUI, and `Arc<String>` document text keep editor workflows from making repeated copies or growing state without bound. Default completion results also have a small cache for the common "blank completion at top level" path.
 
 ### Native Compile And Deterministic Build Loop
 
@@ -89,31 +89,31 @@ The default `.app` build path is verified native Rust. Microsoft `alc` remains a
 
 - The daemon `compile` dispatcher, LSP `al.compile`, publish path, and native DAP launch compile default to the pure-Rust verifier and `.app` emitter: no `alc`, no C# bridge.
 - Native builds reject syntax errors, malformed manifests, invalid dependencies/id ranges, duplicate declarations, unresolved declared object types/targets/interfaces/SourceTable bindings, and malformed emitted packages with structured `ALNxxxx` diagnostics and exact native UTF-16 start/end ranges.
-- Workspace-aware daemon/LSP/MCP builds also run the shared native `AL-NC*` semantic checks and resolved call/event-graph transaction diagnostics before emission. Available Microsoft/third-party AL bodies embedded in loaded `.app` packages participate in that graph; error-severity findings gate the build.
+- Workspace-aware daemon/LSP/MCP builds also run the shared native `AL-NC*` semantic checks and resolved call/event-graph transaction diagnostics before emission. Available Microsoft/third-party AL bodies embedded in loaded `.app` packages participate in that graph. Error-severity findings gate the build.
 - Native artifacts are staged, synced, reopened, and atomically persisted only after generated metadata parses, package identity matches `app.json`, and the exact embedded source-path set matches the verified snapshot, so a failed build preserves the previous `.app`.
-- `al-explorer pack-native --validate` runs native checks first and invokes `alc` only after they pass, providing an explicit authoritative compatibility gate without putting Microsoft tooling on the default path.
+- `al-explorer pack-native --validate` runs native checks first and invokes `alc` only after they pass, so Microsoft's compiler checks compatibility on request and stays off the default path.
 - `al.useOfficialCompiler=true` opts into Rust-managed `dotnet alc` where Microsoft compile-time validation is required.
 - The native emitter builds the package directly from `app.json`, source files, package symbols, generated manifest data, and generated `SymbolReference.json`.
-- The old Microsoft compiler subprocess path remains asynchronous, cancellable, timeout-aware, and killed on drop when used.
-- Analyzer-backed package diagnostics and analyzer selection still belong to the Microsoft compiler path today.
+- The Microsoft compiler subprocess path is asynchronous, cancellable, and has a timeout, and the process is killed on drop.
+- Analyzer-backed package diagnostics and analyzer selection belong to the Microsoft compiler path.
 - The Rust-managed `dotnet alc` fallback writes output to a per-invocation temporary directory and moves it into the project root when possible.
 - `.app` selection prefers the manifest-derived `{publisher}_{name}_{version}.app` rather than arbitrary directory order.
-- DAP deploy now reuses the same package-selection logic, so launch/deploy does not accidentally publish an older `.app` left in the project root.
-- The emit test suite compares native output against ALC-shaped fixtures, including semantically-identical `SymbolReference.json` golden coverage (matching JSON values and method-id hashes, not raw zip-entry byte equality — zip timestamps make that comparison meaningless) for the supported project fixture.
+- DAP deploy uses the same package-selection logic, so launch/deploy does not publish an older `.app` left in the project root.
+- The emit test suite compares native output against ALC-shaped fixtures, including semantically identical `SymbolReference.json` golden coverage for the supported project fixture. It matches JSON values and method-id hashes rather than raw zip-entry bytes, because zip timestamps make a byte comparison meaningless.
 
-The practical benefit is a safer and usually faster-feeling development loop: the editor and CLI keep using already-built indexes for most questions, and the compile path becomes a deterministic build step instead of the only way to understand the project.
+In practice the editor and CLI answer most questions from indexes already built, and compiling is a deterministic build step rather than the only way to learn about the project.
 
 ## MCP Automation
 
-The extension registers a Zed context server named `AL Tools`, which launches `al-lsp mcp` from the
-extension's resolved cache or downloads the current release when the cache is empty. If LSP or DAP
-already resolved an explicit/PATH binary, that cached path is reused. The MCP server speaks
-newline-delimited JSON-RPC over stdio and forwards tool calls into the same daemon dispatcher used by
-the CLI.
+The extension registers a Zed context server named `AL Tools`, which launches `al-lsp mcp`. It uses
+the binary LSP or DAP already resolved in this Zed session (which may be the one on `PATH`),
+otherwise a downloaded release, the same way as step 3 of the resolution order under
+[Zed Integration](#zed-integration). The MCP server speaks newline-delimited JSON-RPC over stdio and
+forwards tool calls into the same daemon dispatcher used by the CLI.
 
 Current MCP tools:
 
-- `al_call` - invoke any method in the shared daemon tool catalog; this keeps the complete tool set available to MCP without a separate allow-list.
+- `al_call` - invoke any method in the shared daemon tool catalog, so every daemon method is reachable from MCP.
 - `al_debug` - retain and drive a Business Central debug session across agent calls (start/attach,
   conditional breakpoints, state, stack, locals/globals/expansion, evaluate, step, continue,
   history, stop).
@@ -121,26 +121,26 @@ Current MCP tools:
 - `al_downloadsymbols` - download dependency symbol packages into `.alpackages`.
 - `al_symbolsearch` - fuzzy-search symbols across workspace and packages.
 - `al_getdiagnostics` - run diagnostics for an AL file.
-- `al_runtests` - discover tests and delegate to batch routing: `Interp` and supported `InterpRecord` codeunits run locally; unsupported or platform-dependent codeunits require live BC configuration. Results include each method's classified/actual backend, local/live status, and routing reasons.
+- `al_runtests` - discover tests and delegate to batch routing: `Interp` and supported `InterpRecord` codeunits run locally. Unsupported or platform-dependent codeunits require live BC configuration. Results include each method's classified/actual backend, local/live status, and routing reasons.
 - `al_deadcode` - find unused procedures, fields, and orphaned subscribers.
 - `al_sqlscan` - detect SQL anti-patterns.
 - `al_entrypoints` - list procedures with no incoming calls.
 - `al_trace_event` - trace publisher/subscriber event propagation.
 - `al_impact` - answer "who consumes this symbol?"
 - `al_suggestevent` - suggest integration event publishers to subscribe to, by tracing the call/event graph from a procedure, table, or event.
-- `al_testclassify` - classify every discovered AL test by where it actually runs today (local interpreter vs. requires live BC), with the reasons behind each decision.
-- `al_testcoverage` - report conservative qualified/transitive static coverage across the workspace. Ambiguous overload targets are returned in `unresolvedCalls` and are not falsely credited. No live BC required.
+- `al_testclassify` - classify every discovered AL test by where it runs (local interpreter or live BC), with the reasons behind each decision.
+- `al_testcoverage` - report conservative qualified/transitive static coverage across the workspace. Ambiguous overload targets are returned in `unresolvedCalls` and are not credited. No live BC required.
 - `al_testsnapshot` - capture breakpoint-sampled variables while one exact test method runs on live BC.
 - `al_testsnapshotreplay` - re-run the exact test recorded by a baseline snapshot on live BC and return field-level divergences.
 - `al_depgraph` - build a GUID-keyed graph from the current `app.json` and loaded `.app` manifests, including implicit/transitive dependencies, missing packages, and real minimum-version conflicts, as JSON or Graphviz `dot`.
 - `al_freeids` - pick the next free object ID, table field number or enum value ordinal inside the `app.json` idRanges, counting every object in the workspace and every dependency package object in the same range. A table extension's fields are checked against the base table and the other extensions of it.
 
-The named tools intentionally mirror Microsoft's AL agent tool surface where possible, while adding analysis tools the official surface does not expose. They are ergonomic aliases, not an availability boundary: `al_call` forwards any method and parameter object to the same daemon JSON-RPC dispatcher used by the CLI and contributor tasks. Native LSP requests and execute commands use LSP server handlers, while sharing lower-level workspace, query, build, symbol, and test code.
+The named tools match Microsoft's AL agent tools where possible and add analysis tools Microsoft's set does not have. They are shortcuts and do not limit what MCP can reach: `al_call` forwards any method and parameter object to the same daemon JSON-RPC dispatcher used by the CLI and contributor tasks. Native LSP requests and execute commands use LSP server handlers, while sharing lower-level workspace, query, build, symbol, and test code.
 
 Every named tool advertises a result-specific MCP output schema. Tool results also carry structured
 agent diagnostics when work is incomplete because package symbols, live-BC configuration, semantic
-bridge enrichment, or original package source are unavailable. `al_call` keeps the generic result
-shape required to forward the complete heterogeneous daemon catalog.
+bridge enrichment, or original package source are unavailable. `al_call` has a generic result
+shape because it forwards every method in the daemon catalog, each with its own result.
 
 ## Claude Code Plugin
 
@@ -188,12 +188,14 @@ itself when a question matches one:
 | `bc-workspace-health` | Pre-build and pre-deploy audit: duplicate or out-of-range IDs, SQL anti-patterns, dead code, missing annotations, permission coverage |
 
 Two subagents. `bc-symbol-scout` runs the lookups on a cheap model and returns
-the answer instead of the payload, which matters because several of these calls
-return hundreds of kilobytes today. `bc-cop-fixer` drives lint diagnostics to
+the answer instead of the payload, because several of these calls return
+hundreds of kilobytes. `bc-cop-fixer` drives lint diagnostics to
 zero on a named set of files.
 
-One `SessionStart` hook. It emits a short routing note when the working
-directory holds an AL `app.json`, and nothing at all anywhere else.
+Two hooks. `SessionStart` emits a short routing note when the working
+directory holds an AL `app.json`, and nothing anywhere else. `SessionEnd` runs
+`al-explorer daemon-shutdown` in the same kind of directory, so the daemon and
+its dependency source index do not outlive the session.
 
 ### Notes
 
@@ -208,43 +210,41 @@ Validate a change with `make plugin-validate`.
 
 ## Native AL Test Runtime
 
-Yes, this project includes a native AL language runner for tests.
-
-The local runner interprets a supported subset of AL test bodies directly from tree-sitter trees, without a .NET runtime or live Business Central server. It has enforced pure-logic and workspace-record modes, with conservative live-BC fallback for platform semantics. It handles:
+The local runner interprets a supported subset of AL test bodies directly from tree-sitter trees, without a .NET runtime or live Business Central server. It enforces a pure-logic mode and a workspace-record mode, and routes tests that need platform semantics to live BC. It handles:
 
 - A defined subset of statement execution for blocks, `if`, `while`, `for`, `foreach`, `repeat`, `case`, assignment, expression statements, `exit`, and `asserterror`.
 - A defined subset of expression evaluation for literals, identifiers, unary and binary operators, arithmetic, comparisons, boolean logic, string concatenation, and parenthesized expressions.
-- A small set of built-ins and stubs such as `Error`, `Message`, `StrSubstNo`, `Format`, `StrLen`, `CopyStr`, `LowerCase`, `UpperCase`, `IndexOf`, `Library Assert`, `Library - Variable Storage`, `Library Random`, and `Any`.
-- Static, BC-free test discovery. Codeunits are discovered by `Subtype = Test` or contained `[Test]` procedures, but only `[Test]` methods are returned as executable tests; lifecycle methods are not listed as tests.
+- A listed set of built-ins (`Error`, `Message`, `StrSubstNo`, `Format`, string, math and date functions including `CalcDate` and `Evaluate`), `Text`, `List`, `Dictionary` and enum methods, arrays, and the `Library Assert`, `Library - Variable Storage`, `Library Random` and `Any` test libraries. [Native test runtime](Docs/features/native-test-runtime.md) has the full list.
+- Static, BC-free test discovery. Codeunits are discovered by `Subtype = Test` or contained `[Test]` procedures, but only `[Test]` methods are returned as executable tests. Lifecycle methods are not listed as tests.
 - JUnit XML, default static-call-graph Cobertura, and opt-in dynamic executed-line/decision coverage from interpreter runs.
-- Interpreter-backed mutation testing over both local tiers, including stable parallel mutant execution; mutants without interpreter-runnable coverage are reported as survived.
+- Interpreter-backed mutation testing over both local tiers, including stable parallel mutant execution. Mutants without interpreter-runnable coverage are reported as survived.
 
 The conservative router classifies resolved syntax bodies across the transitive workspace call/event
 graph, including test initialize/cleanup procedures, configured handlers, and codeunit-wide shared
 state. `Interp` and supported `InterpRecord` codeunits run locally from `test-run`, `test-run-all`,
-the TUI, and MCP `al_runtests`; codeunits that need base-app/package tables, unsupported record
+the TUI, and MCP `al_runtests`. Codeunits that need base-app/package tables, unsupported record
 behavior, HTTP, UI, reports, sessions, or transactions route to live BC.
 
-The record runtime is wired to workspace table definitions, with isolated in-memory data, keys, BC-style filters, common CRUD/navigation methods, and CalcFormula-backed FlowFields. It intentionally does not emulate platform triggers, transactions, permissions, RecordRef/FieldRef, or package-only table schemas.
+The record runtime reads workspace table definitions and provides isolated in-memory data, keys, BC-style filters, common CRUD/navigation methods, and CalcFormula-backed FlowFields. It does not emulate platform triggers, transactions, permissions, RecordRef/FieldRef, or package-only table schemas.
 
-`test-run-all --filter` applies a case-insensitive method glob with `*` wildcard semantics before
-backend routing, including when the initial request targets a whole codeunit.
+`test-run-all --filter` applies a case-insensitive method glob, where `*` matches any run of
+characters, before backend routing, including when the initial request targets a whole codeunit.
 
 `test-snapshot capture` runs one exact test method on live Business Central and writes breakpoint
 samples to a snapshot file. `replay` resolves and re-runs that recorded method, recreates its
-breakpoints, and compares the live samples with the baseline. `validate` validates an existing file
-and `diff` compares two files; each operation remains explicit.
+breakpoints, and compares the live samples with the baseline. `validate` checks an existing file
+and `diff` compares two files. Each runs only when asked for.
 
 ## Specialized AL Workflows
 
-The native engine enables workflows that are difficult to get from a generic editor action.
+The native engine supports workflows that a generic editor action does not cover.
 
 - Impact analysis: ask what consumes `Customer`, `Customer."Credit Limit"`, `Sales-Post.PostDocument`, or another object/member symbol.
 - Table impact: see record variables, record parameters, table relations, extensions, and consuming objects grouped by table.
 - Event source resolution: resolve the publisher behind an `EventSubscriber`.
 - Subscriber discovery: find subscribers for an integration/business event.
 - Event tracing: follow publisher to subscriber chains, including multi-hop propagation trees.
-- Integration event suggestion: start from an object, procedure, table, or event and get candidate integration events to subscribe to, with ready-to-paste `[EventSubscriber]` examples and path breadcrumbs.
+- Integration event suggestion: start from an object, procedure, table, or event and get candidate integration events to subscribe to, with `[EventSubscriber]` examples to paste and the path that leads to each event.
 - Entrypoint discovery: identify procedures with no incoming calls from the workspace-enriched graph.
 - Dead-code detection: report unused procedures, unreferenced fields, and orphaned subscribers with confidence levels.
 - SQL scan: find patterns such as `FindFirst` in loops, `Get` in loops, `CalcFields` in loops, and unfiltered `FindSet`.
@@ -253,15 +253,20 @@ The native engine enables workflows that are difficult to get from a generic edi
 - Breaking-change and upgrade analysis: compare public surfaces, obsolete metadata, permissions,
   and upgrade risk against a previous `.app` supplied with `--baseline-app`. Without a baseline the
   commands report that the analysis was not evaluated.
+- Dependency upgrades: `package-diff <old.app> <new.app>` lists the changes between two versions
+  of a dependency that this workspace's code uses (`--all` lists every change), and
+  `obsolete --used` lists the workspace's calls to obsolete procedures.
+- ID allocation: `free-ids` returns the next free object ID, table field number or enum ordinal
+  inside the `app.json` `idRanges`, counting workspace and dependency objects in the same range.
 - Permission and data audits: inspect permission sets, table data classification, and missing metadata.
 - XLIFF tooling: generate, refresh, inspect untranslated entries, and suggest translations from workspace symbols.
 - Bulk fixes: add application areas, tooltips, data classification, organize files, and sort members.
 
-The shared daemon catalog is available from both CLI and MCP (`al_call` provides complete dispatcher
-coverage); contributor tasks and editor actions use the same lower-level implementations. XLIFF
-refresh/untranslated/suggest and code actions are callable through `al_call` even when they do not
-have a dedicated named alias. Low-level `.app` inspection remains a Rust library API rather than a
-daemon or MCP method. Repository contributor tasks call the same CLI surface.
+The shared daemon catalog is available from the CLI and from MCP, where `al_call` reaches every
+dispatcher method. Contributor tasks call the same CLI, and editor actions use the same lower-level
+implementations. XLIFF refresh/untranslated/suggest and code actions are callable through
+`al_call` without a named alias. Low-level `.app` inspection is a Rust library API and has no
+daemon or MCP method.
 
 ## Command And Feature Surface
 
@@ -281,9 +286,11 @@ The Zed extension resolves `al-lsp` in this order:
 
 1. An in-memory cache from an earlier resolution in the same Zed session.
 2. `al-lsp` on `PATH`.
-3. A previously downloaded extension binary already on disk, reused without any
-   network access — this is what lets a cached install start fully offline.
-4. The latest GitHub release asset for the current platform (requires network).
+3. The latest GitHub release. The extension looks up the latest release version,
+   uses the downloaded copy of that version if one is on disk (and removes older
+   downloads), and otherwise downloads the asset for the current platform. When
+   the lookup fails, as it does offline, it starts the newest download already on
+   disk.
 
 `lsp.al-lsp.binary.path`, `lsp.al-lsp.binary.arguments` and the debug adapter path
 are not in that list. Zed hands the extension one value with a worktree's
@@ -311,19 +318,17 @@ LSP execute commands include:
 
 Code actions include quick fixes plus source actions such as add doc comment, wrap in region, add using, convert `if` to `case`, eliminate `with`, make method local, implement interface stubs, add parentheses to bare calls, convert event subscriber literals, move `ToolTip` to table field, convert promoted actions to `actionRef`, set `ApplicationArea`, and fix report layout.
 
-CodeLens currently emits lenses with these command IDs:
+CodeLens emits lenses with three more execute commands, which the same dispatcher handles:
 
 - `al.findReferences`
 - `al.showProfiler`
 - `al.runTest`
 
-Those CodeLens IDs are separate from the native execute-command dispatcher above.
-
 ### Commands that need no `PATH` install
 
 The installed language package ships 55 static tasks in `languages/al/tasks.json` plus the inline
 runnables in `languages/al/runnables.scm`. Every one of them runs `command = "al-explorer"`, so they
-work once `al-explorer` is on `PATH` — stable Zed task definitions cannot address a binary the
+work once `al-explorer` is on `PATH`. Stable Zed task definitions cannot address a binary the
 extension downloaded into its own work directory. See
 [Language assets](Docs/features/language-assets.md#al-explorer-must-be-on-path) for the install step.
 
@@ -335,7 +340,7 @@ complete shared daemon command catalog.
 
 ### `al-explorer` CLI/TUI
 
-`al-explorer` is the terminal companion to `al-lsp`. In command mode it is a JSON-RPC client for the daemon and supports `--json` for scripts and CI. With no subcommand, it opens a TUI with object browsing, event chains, call graphs, profiler views, and test runner views on Linux, macOS, and Windows.
+`al-explorer` is the terminal client for `al-lsp`. In command mode it is a JSON-RPC client for the daemon and supports `--json` for scripts and CI. With no subcommand, it opens a TUI with object browsing, event chains, call graphs, profiler views, and test runner views on Linux, macOS, and Windows.
 
 The CLI command surface includes:
 
@@ -344,29 +349,29 @@ The CLI command surface includes:
 - LSP-style queries: `hover`, `definition`, `references`, `signature`, `completions`, `symbols`, `folding`, `tokens`, `parse`, `rename`, `hints`.
 - Symbols and objects: `search`, `object`, `by-id`, `source`, `location`, `composed`, `builtins`, `rules`, `error-codes`, `generate-completions`, `version`.
 - Events and insight: `events`, `subscribers`, `event-source`, `trace`, `intercept`, `entrypoints`, `graph`, `impact`, `suggest-event`, `insight-stats`.
-- Analysis: `metrics`, `dead-code`, `sql-scan`, `duplicates`, `arch-lint`, `native-check`, `free-ids`, `breaking`, `upgrade`, `obsolete`, `audit-data`, `permission-audit`, `profiler-hints`.
+- Analysis: `metrics`, `dead-code`, `sql-scan`, `duplicates`, `arch-lint`, `native-check`, `free-ids`, `breaking`, `upgrade`, `obsolete`, `package-diff`, `audit-data`, `permission-audit`, `profiler-hints`.
 - Formatting/refactoring/codegen: `format`, `lint`, `fix`, `permissions`, `generate`, `add-application-area`, `add-tooltips`, `add-data-classification`, `sort-members`, `organize-files`.
 - Debug/profiling: `debug`, `snapshot`, `profile`.
 - Tests: `tests`, `test-run`, `test-run-all`, `test-coverage`, `test-mutate`, `test-affected`, `test-classify`, `test-snapshot`, `test-results`.
 - Translation: `xlf`.
 
-Nested command groups include `debug start|breakpoint|state|eval|continue|step|history|stop`, `snapshot start|list|download`, `profile start|stop|analyze`, `test-snapshot capture|validate|replay|diff`, and `xlf generate|refresh|untranslated|suggest`. `daemon-shutdown` stops an existing daemon for the current project without starting one, which makes cold-start checks explicit.
+Nested command groups include `debug start|breakpoint|state|eval|continue|step|history|stop`, `snapshot start|list|download`, `profile start|stop|analyze`, `test-snapshot capture|validate|replay|diff`, and `xlf generate|refresh|untranslated|suggest`. `daemon-shutdown` stops an existing daemon for the current project without starting one, so a cold-start check can begin with no daemon running.
 
 ### Daemon Protocol
 
-`al-lsp daemon` is the shared backend used by the CLI and contributor `.zed` tasks; the MCP bridge
+`al-lsp daemon` is the shared backend used by the CLI and contributor `.zed` tasks. The MCP bridge
 calls the same dispatcher in-process. Native `al-lsp --stdio` LSP mode uses LSP handlers over the
 same workspace/query/build modules rather than the daemon dispatcher. `al-lsp --dap` is a separate
 stdio DAP mode with its own debug session plumbing.
 
 ## Symbol And Package Architecture
 
-The symbol engine is one of the key reasons the project can support advanced AL queries.
+The symbol engine reads and indexes `.app` packages natively:
 
 - `.app` files are read natively as NAVX/ZIP packages.
 - `NavxManifest.xml` and `SymbolReference.json` are parsed directly.
 - The `al-symbols::app_inspect` library API can list, classify, and safely extract package entries
-  for format and provenance audits. It is not currently exposed through `al-explorer` or MCP.
+  for format and provenance audits. `al-explorer` and MCP do not expose it.
 - Source files embedded in `.app` packages can be exposed as virtual source for navigation. Source indexes are warmed during package loading, and user-facing results distinguish workspace source, embedded source, generated public-API outlines, and identity-only metadata without scanning archives on ordinary request paths.
 - Archive entries, manifest size, symbol size, and total package size are bounded.
 - Parsed package data is cached on disk and validated before reuse.
@@ -375,53 +380,53 @@ The symbol engine is one of the key reasons the project can support advanced AL 
 - NuGet package IDs are resolved from AL dependencies, including country-specific symbol packages where applicable.
 - Symbol downloads are deduplicated, concurrent, bounded, and loaded without daemon restart.
 
-This is why symbol search, completions, object lookup, event discovery, and impact analysis can run as regular editor/CLI queries rather than repeatedly invoking the compiler or crawling packages.
+So symbol search, completions, object lookup, event discovery, and impact analysis run as ordinary editor and CLI queries, without invoking the compiler or crawling packages each time.
 
 ## Build, Package, And Debug Pipeline
 
-`al-lsp` and `al-explorer` do not pretend the Microsoft AL compiler is irrelevant. Instead, they put a better native control plane around it.
+`al-lsp` and `al-explorer` keep the Microsoft AL compiler as an option and handle the steps around a build natively:
 
 - Toolchain discovery finds ALTool, `.NET`, compiler paths, bridge files, and project manifests.
 - The daemon `compile` dispatcher, LSP `al.compile`, publish path, and native DAP launch compile default to the pure-Rust verified `.app` pipeline and return structured native diagnostics.
 - `al.useOfficialCompiler=true` opts every shared compile/package surface into
-  Rust-managed `dotnet alc`; otherwise daemon `compile` and `package`, LSP,
+  Rust-managed `dotnet alc`. Otherwise daemon `compile` and `package`, LSP,
   publish, and native DAP use the verified native emitter.
 - Compiler output from the Microsoft path is normalized into structured diagnostics.
 - The package cache path is selected explicitly.
 - Analyzer lists can be passed through command surfaces.
 - The Rust-managed `dotnet alc` fallback uses deterministic temp output and final handoff when possible.
-- Native `.app` emission is the default build path, with live Business Central publish/runtime validation still treated as the compatibility backstop.
+- Native `.app` emission is the default build path, and publishing to live Business Central remains the final compatibility check.
 - Launch/debug workflows compile on launch, locate the correct `.app`, publish/deploy where needed, and connect Zed to the BC debug backend through the native adapter.
 
-For Zed users, this means the extension can provide first-class launch/attach workflows without being a VS Code extension clone.
+Zed users get launch and attach workflows from the extension itself, without a copy of the VS Code extension.
 
 ## Generated Files And Repository Invariants
 
-Several directories are generated or synchronized output. This matters because manual edits in the wrong place will be overwritten or will desynchronize Zed from the native parser.
+Several directories are generated or synchronized output. A manual edit in the wrong place is overwritten by the next generation run, or puts Zed out of step with the native parser.
 
 - `tree-sitter-al/generator/tools/al-gen/src/main.rs` is the main generator.
 - `tree-sitter-al/generator/tools/al-gen/src/zed_language.rs` and `tree-sitter-al/generator/tools/al-gen/templates/zed-language/` own the generated Zed language package.
 - `tree-sitter-al/grammar.js`, `tree-sitter-al/src/parser.c`, `tree-sitter-al/src/scanner.c`, `tree-sitter-al/src/keywords.c`, and `tree-sitter-al/src/node-types.json` are generated grammar/parser artifacts.
 - `tree-sitter-al/queries/*.scm` are generated query artifacts.
 - `tree-sitter-al/data/*.json` contains committed language metadata consumed by `al-syntax`. Some files are generated by `al-gen`, some by `al-extract`, and some are static curated data.
-- `languages/al/` is tracked generated output. Do not edit it by hand. Canonical parser queries are copied from `tree-sitter-al/queries`; Zed-specific config, overrides, injections, inline values, bracket rules, outline rules, and semantic token rules are generated from templates in `tree-sitter-al/generator`.
+- `languages/al/` is tracked generated output. Do not edit it by hand. Canonical parser queries are copied from `tree-sitter-al/queries`. Zed-specific config, overrides, injections, inline values, bracket rules, outline rules, and semantic token rules are generated from templates in `tree-sitter-al/generator`.
 - `themes/bc-themes.json` is generated from Business Central VS Code theme data.
 
 Release-critical invariants:
 
 - `extension.toml` `[grammars.al].rev` must match the submodule commit recorded in the superproject gitlink for the release commit. A leading `+` in `git submodule status` is a release blocker.
-- Product versions for `zed-al`, `extension.toml`, `al-lsp`, and their lockfile entries move
+- Product versions for `zed-al`, `extension.toml`, `al-lsp`, `al-explorer`, and their lockfile entries move
   together. Library crates keep independent semantic versions.
 - `zed_extension_api` must stay pinned to a released crates.io API in committed release state.
 - Release asset names in `src/lib.rs` must stay aligned with `.github/workflows/release.yml`.
-- `languages/al` must be current against `al-gen --zed-language-only`; CI and release hygiene fail when those generated files drift.
+- `languages/al` must be current against `al-gen --zed-language-only`. CI and release hygiene fail when those generated files drift.
 - Dirty submodule changes must be committed inside `tree-sitter-al` and then the superproject pointer must be updated before tagging a reproducible release.
 
 ## Installation
 
 Install the published extension from Zed's extension UI when using a release.
 
-Auto-download release assets are published for Linux x86_64/aarch64, macOS x86_64/aarch64, and Windows x86_64. 32-bit x86 is not currently published.
+Auto-download release assets are published for Linux x86_64/aarch64, macOS x86_64/aarch64, and Windows x86_64. No 32-bit x86 build is published.
 
 GitHub release assets are binary/update artifacts:
 
@@ -435,21 +440,24 @@ GitHub release assets are binary/update artifacts:
 - `checksums.txt`
 - `binary-checksums.txt`
 
-The Zed extension archive also includes tracked repository assets such as `languages/al`, `snippets/*.json`, and `themes/bc-themes.json`. These are not separate GitHub release assets; Zed packages them as part of the extension install archive.
+The Zed extension archive also includes tracked repository assets such as `languages/al`, `snippets/*.json`, and `themes/bc-themes.json`. These are not separate GitHub release assets. Zed packages them as part of the extension install archive.
 
 Every native archive includes `al-lsp`, `al-explorer`, and the semantic bridge files (`.exe` binaries on Windows). Daemon IPC uses Unix-domain sockets on Linux/macOS and named pipes on Windows.
 
 The two checksum assets cover different things. `checksums.txt` lists a SHA-256 per released asset
 and is what `sha256sum -c` verifies after a manual download. `binary-checksums.txt` lists a SHA-256
-per executable inside each archive, keyed `<archive>/<binary>`, and is what the extension checks on
-the automatic download path: it extracts `al-lsp` and `al-explorer`, compares both against that
-listing, and only then makes them executable. A mismatch deletes the directory and reports the
-expected and actual digests. See [Current limitations](./Docs/current-limitations.md#releases) for
-why the archive itself cannot be checked there.
+per file inside each archive, keyed `<archive>/<path>`, and is what the extension checks on the
+automatic download path: it extracts the archive, compares `al-lsp`, `al-explorer` and every file
+under `bridge/` (which `al-lsp` loads into its own process) against that listing, refuses a bridge
+file the listing does not name, and only then marks the two programs executable. A mismatch deletes
+the directory and reports the expected and actual digests. See
+[Current limitations](./Docs/current-limitations.md#releases) for why the archive itself cannot be
+checked there.
 
 Zed auto-resolves or downloads `al-lsp` for LSP, DAP, and the MCP context server. Release archives
-also ship `al-explorer`, but stable Zed cannot address an extension-private sidecar from static task
-JSON, so the language package's `tasks.json` and `runnables.scm` expect `al-explorer` on `PATH` — see
+also ship `al-explorer`, but static task JSON in stable Zed cannot address a binary inside the
+extension's directory, so the language package's `tasks.json` and `runnables.scm` expect
+`al-explorer` on `PATH`. See
 [Language assets](Docs/features/language-assets.md#al-explorer-must-be-on-path) for the install step.
 `.zed/tasks.json` in this checkout carries additional contributor-only tasks under the same
 expectation. LSP commands and the **AL Tools** MCP server cover the same operations without `PATH`.
@@ -475,18 +483,17 @@ Common AL settings:
 }
 ```
 
-`al.useOfficialLsp` is the explicit escape hatch for delegating to Microsoft's official AL LSP. The
-default path is this project's native `al-lsp`. Set `AL_DOTNET_PATH` to select a specific executable
-for Microsoft .NET-hosted AL tools; otherwise the toolchain resolves `dotnet` from `PATH`.
+`al.useOfficialLsp` hands the session to Microsoft's official AL LSP. By default the extension runs
+this project's native `al-lsp`. Set `AL_DOTNET_PATH` to select a specific executable
+for Microsoft .NET-hosted AL tools. Otherwise the toolchain resolves `dotnet` from `PATH`.
 
-Every setting, with its type, default, and description, is documented in the
-[settings reference](Docs/reference/settings.md), and a ready-to-copy template is available at
-[examples/zed-settings.jsonc](examples/zed-settings.jsonc). `al.enableNativeLint` and
+The [settings reference](Docs/reference/settings.md) lists each setting with its type, default, and
+description, and [examples/zed-settings.jsonc](examples/zed-settings.jsonc) is a template to copy. `al.enableNativeLint` and
 `al.nativeLintRules` control the native file, project-semantic, transaction, obsolete, and
-architecture rules (`AL-NL*`/`AL-NC*`); for example, set `"AL-NL005": false` to disable the
-SetLoadFields rule. Microsoft's CodeAnalysis bridge is optional and additive.
+architecture rules (`AL-NL*`/`AL-NC*`). For example, set `"AL-NL005": false` to disable the
+SetLoadFields rule. Microsoft's CodeAnalysis bridge is optional and adds to the native diagnostics.
 
-On Zed Dev/Nightly (extension API >= 0.8) the `lsp.al-lsp.settings` keys autocomplete and validate as you type; on Stable Zed the settings still apply, just without in-editor autocomplete (use the template above). This lights up on Stable automatically once the 0.8 extension API reaches the registry.
+On Zed Dev/Nightly (extension API >= 0.8) the `lsp.al-lsp.settings` keys autocomplete and validate as you type. On Stable Zed the settings apply without in-editor autocomplete (use the template above). The registration code is compiled in by the `zed_api_0_8` cfg, so Stable gets autocomplete once the 0.8 extension API reaches the registry.
 
 ### Settings that need project trust
 
@@ -494,7 +501,7 @@ Settings a repository carries in its own `.vscode/settings.json`, `.zed/settings
 `.vscode/launch.json` apply on a clone, which makes a few of them a way to choose what runs on
 your machine: analyzer assemblies, raw `alc` switches, assembly probing paths, package feeds, and
 the Business Central server a cached token is sent to. Those apply only after
-`al-explorer trust`. Everything else applies as before. See
+`al-explorer trust`. Everything else applies without trust. See
 [project trust](Docs/features/project-trust.md) for the full list, the message you get when
 something is ignored, and how agents are treated.
 
@@ -510,17 +517,17 @@ Zed's bundled JSON language server using the `json.schemas` block in
 
 The extension registers the `al` debug adapter and debug locator. Snippets cover common Business
 Central launch and attach configurations, including browser launch, tenant/environment settings,
-sandbox attach, and agent-session fields. Debug-config schemas are tracked for reference;
-configurations are authored through the bundled snippets. See [Zed Settings](#zed-settings) and the
+sandbox attach, and agent-session fields. Debug-config schemas are tracked for reference.
+Configurations are authored through the bundled snippets. See [Zed Settings](#zed-settings) and the
 [settings reference](Docs/reference/settings.md) for language-server and project-file schemas.
 
-Debug support has two important layers:
+Debug support has three layers:
 
 - Native Zed/DAP integration in `al-lsp --dap`.
 - Stateful MCP debug control through the `al_debug` tool in `al-lsp mcp`.
 - Business Central runtime/debug service integration for actual AL execution.
 
-The native adapter currently implements the core launch/attach, publish, breakpoint, stepping, stack, scopes, variables, and evaluate flow against BC REST/SignalR. MCP clients can attach, set conditional breakpoints, inspect state, stack, locals, globals, and expanded values, evaluate expressions in a selected frame, continue, step, inspect history, and stop. The MCP process retains the native session between tool calls; it exposes structured debug operations rather than raw DAP frames. The BC runtime remains the source of truth for executing AL in a server environment. See [the DAP feature guide](Docs/features/debugging-dap.md#mcp-debug-control).
+The native adapter implements launch/attach, publish, breakpoint, stepping, stack, scopes, variables, and evaluate flow against BC REST/SignalR. MCP clients can attach, set conditional breakpoints, inspect state, stack, locals, globals, and expanded values, evaluate expressions in a selected frame, continue, step, inspect history, and stop. The MCP process retains the native session between tool calls. It exposes structured debug operations rather than raw DAP frames. AL itself executes on the BC runtime. See [the DAP feature guide](Docs/features/debugging-dap.md#mcp-debug-control).
 
 ## Development
 
@@ -531,7 +538,7 @@ Prerequisites:
 
 - Rust stable.
 - `wasm32-wasip2` target (Zed loads the Rust extension as a WebAssembly
-  component; a Preview 1 core module is invalid).
+  component. A Preview 1 core module is invalid).
 - .NET SDK 8.0.
 - `git submodule update --init --recursive`.
 
@@ -573,10 +580,10 @@ make language
 
 Daemon IPC is tested against the host's real transport: Unix-domain sockets on Linux/macOS and
 named pipes on Windows. CI's native `windows-latest` job builds `al-lsp` and `al-explorer`, runs the
-protocol tests, and runs `cli_smoke` plus `extension_smoke` end to end; a cross-compile alone is not
-treated as sufficient named-pipe coverage. See the [testing guide](Docs/testing-guide.md#daemon-ipc-on-linux-macos-and-windows).
+protocol tests, and runs `cli_smoke` plus `extension_smoke` end to end, because a cross-compile
+alone does not run the named-pipe code. See the [testing guide](Docs/testing-guide.md#daemon-ipc-on-linux-macos-and-windows).
 
-The semantic bridge is feature-gated. Release binaries build `al-lsp` with `--features semantic` so the in-process .NET bridge and `AlBridge.dll` are included.
+The semantic bridge is behind the `semantic` cargo feature. Release binaries build `al-lsp` with `--features semantic` so the in-process .NET bridge and `AlBridge.dll` are included.
 
 ## Release Process
 
@@ -590,10 +597,10 @@ Before tagging:
 4. Update the superproject gitlink and `extension.toml` revision to that commit.
 5. Regenerate `languages/al` and confirm `git submodule status` has no leading `+`.
 6. Bump the synchronized product versions in `extension.toml`, root `Cargo.toml`, `al-lsp`,
-   `al-explorer`, and `Cargo.lock`; version library crates independently when their APIs change.
+   `al-explorer`, and `Cargo.lock`. Version library crates independently when their APIs change.
 7. Make the tag name match the product version, for example `v0.3.0` for version `0.3.0`.
 8. Run repository consistency checks, release hygiene checks, and the relevant test suite.
-9. Require green CI on the exact commit being tagged; the tag workflow enforces this before building artifacts.
+9. Require green CI on the exact commit being tagged. The tag workflow enforces this before building artifacts.
 10. Push the superproject commit only after the referenced grammar commit is available remotely.
 11. Tag from the exact commit you want users to install.
 
