@@ -260,3 +260,24 @@ Append-only. Newest entry last.
 - Router: a table with triggers is no longer refused; its code is classified as reachable. `Validate` on a conditional TableRelation or one to a table outside the workspace routes live. TextBuilder was typed as Text.
 - Multi-object files: the stopped audit agent's uncommitted work (17 files: definition, hover, object/byId, debugger breakpoints, transaction lint, symbol invalidation) merged as 87ff59eb; the interpreter's own dispatch and the local test runner took a file's first object as the callee (a codeunit after a table failed as "stateful codeunit 'Tour Member'"), fixed in 901586e2.
 - Left: JSON types; List and Dictionary are values in the interpreter where AL has reference semantics; Manual subscribers and `BindSubscription`.
+
+## 2026-09-26 18:32 BST: headless session, three merges, five agents
+
+- Origin was five commits ahead of the local checkout: a cloud session had pushed runtime and test
+  router work straight to the campaign branch between 16:57 and 17:30 UTC (4859b011..901586e2,
+  39 files, 3,502 insertions): table code runs on its record, event subscribers run, TextBuilder,
+  Guids, Rename and TestField run locally, labels bind, a codeunit declared after a table in one
+  file runs as itself. CI on PR 32 passed on each push. No reviewer has read them, so the round 8
+  review starts with them.
+- The 17:35 headless session left an empty log and no commits.
+- Merged three complete agent branches: `campaign/fix-ghost-race-2` (3c2f2e12: the project pass
+  skips a report whose input changed after staging, `findings/ghost-race-2.md`, both harness tests
+  0 of 16 failures at load 22 to 26), `campaign/fix-profile-extension` (900e2174:
+  `ProfileExtensions` read from `SymbolReference.json`, so Base Application indexes 7,969 of
+  7,969 objects) and `campaign/ai-persisted-index-2` (a10e5eea: the summary key covers the builder
+  through a fixture hash and a checked-in snapshot, `entrypoints` and `impact` rows come back in
+  one order, entries are shared across projects under one store with a 1 GiB limit per user).
+- The mutants worktree held a mutation that `cargo mutants --in-place` left when its agent died
+  (`mock/record.rs`, `next` returning `Ok(1)`). Restored before the re-dispatch.
+- `target/debug` (30 GB) deleted, 31 GB free after.
+- Five agents dispatched at 18:40, listed in `STATE.md`.

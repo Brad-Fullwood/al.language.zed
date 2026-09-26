@@ -224,6 +224,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tower-lsp",
+ "tower-service",
  "tracing",
  "tracing-subscriber",
  "tree-sitter",

@@ -173,10 +173,17 @@ fn canonical_path_for(project_root: &std::path::Path) -> Result<PathBuf, Persist
 ///
 /// `None` when the user has no data directory.
 pub fn project_data_dir(project_root: &std::path::Path) -> Option<PathBuf> {
-    let mut path = al_project::project::user_data_dir()?;
-    path.push("al-lsp");
-    path.push(short_hash(project_root.to_string_lossy().as_bytes()));
-    Some(path)
+    al_project::project::user_data_dir().map(|data| project_data_dir_under(&data, project_root))
+}
+
+/// [`project_data_dir`] with `data_dir` as the user data directory.
+pub(crate) fn project_data_dir_under(
+    data_dir: &std::path::Path,
+    project_root: &std::path::Path,
+) -> PathBuf {
+    data_dir
+        .join("al-lsp")
+        .join(short_hash(project_root.to_string_lossy().as_bytes()))
 }
 
 fn short_hash(bytes: &[u8]) -> String {

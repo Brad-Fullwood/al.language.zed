@@ -1,0 +1,610 @@
+{
+  "schema_version": 1,
+  "summary": {
+    "files": [
+      {
+        "archive_path": "src/Fixture.al",
+        "objects": [
+          {
+            "kind": "interface",
+            "id": null,
+            "name": "Fixture Shipper",
+            "start_byte": 0,
+            "call_suffixes": 0,
+            "procedures": [
+              {
+                "name": "Ship",
+                "attributes": [],
+                "is_local": false
+              }
+            ],
+            "calls": {
+              "ship": {
+                "call_sites": [],
+                "record_vars": {},
+                "object_vars": {}
+              }
+            }
+          },
+          {
+            "kind": "codeunit",
+            "id": 50300,
+            "name": "Fixture Truck",
+            "start_byte": 67,
+            "call_suffixes": 2,
+            "procedures": [
+              {
+                "name": "Ship",
+                "attributes": [],
+                "is_local": false
+              },
+              {
+                "name": "OnAfterShip",
+                "attributes": [
+                  [
+                    "IntegrationEvent",
+                    "[IntegrationEvent(false, false)]"
+                  ]
+                ],
+                "is_local": true
+              }
+            ],
+            "calls": {
+              "onaftership": {
+                "call_sites": [],
+                "record_vars": {},
+                "object_vars": {}
+              },
+              "ship": {
+                "call_sites": [
+                  {
+                    "BareCall": {
+                      "name": "OnAfterShip"
+                    }
+                  },
+                  {
+                    "RecordOp": {
+                      "variable": "Entry",
+                      "op": "Insert",
+                      "run_trigger": true
+                    }
+                  }
+                ],
+                "record_vars": {
+                  "entry": "Fixture Entry"
+                },
+                "object_vars": {}
+              }
+            }
+          },
+          {
+            "kind": "codeunit",
+            "id": 50301,
+            "name": "Fixture Dispatcher",
+            "start_byte": 388,
+            "call_suffixes": 17,
+            "procedures": [
+              {
+                "name": "OnRun",
+                "attributes": [],
+                "is_local": false
+              },
+              {
+                "name": "Dispatch",
+                "attributes": [],
+                "is_local": false
+              },
+              {
+                "name": "Helper",
+                "attributes": [],
+                "is_local": true
+              },
+              {
+                "name": "Helper",
+                "attributes": [],
+                "is_local": true
+              },
+              {
+                "name": "TryPost",
+                "attributes": [
+                  [
+                    "TryFunction",
+                    "[TryFunction]"
+                  ]
+                ],
+                "is_local": false
+              },
+              {
+                "name": "HandleShip",
+                "attributes": [
+                  [
+                    "EventSubscriber",
+                    "[EventSubscriber(ObjectType::Codeunit, Codeunit::\"Fixture Truck\", 'OnAfterShip', '', false, false)]"
+                  ]
+                ],
+                "is_local": true
+              },
+              {
+                "name": "HandleEntryInsert",
+                "attributes": [
+                  [
+                    "EventSubscriber",
+                    "[EventSubscriber(ObjectType::Table, Database::\"Fixture Entry\", 'OnAfterInsertEvent', '', false, false)]"
+                  ]
+                ],
+                "is_local": true
+              },
+              {
+                "name": "Tidy",
+                "attributes": [],
+                "is_local": false
+              }
+            ],
+            "calls": {
+              "dispatch": {
+                "call_sites": [
+                  {
+                    "BareCall": {
+                      "name": "Helper"
+                    }
+                  },
+                  {
+                    "BareCall": {
+                      "name": "Helper"
+                    }
+                  },
+                  {
+                    "CodeunitRun": {
+                      "target": "Fixture Truck"
+                    }
+                  },
+                  {
+                    "MemberCall": {
+                      "object": "Truck",
+                      "method": "Ship"
+                    }
+                  },
+                  {
+                    "MemberCall": {
+                      "object": "Shipper",
+                      "method": "Ship"
+                    }
+                  }
+                ],
+                "record_vars": {},
+                "object_vars": {
+                  "shipper": "Fixture Shipper",
+                  "truck": "Fixture Truck"
+                }
+              },
+              "handleentryinsert": {
+                "call_sites": [
+                  {
+                    "BareCall": {
+                      "name": "Helper"
+                    }
+                  }
+                ],
+                "record_vars": {
+                  "rec": "Fixture Entry"
+                },
+                "object_vars": {}
+              },
+              "handleship": {
+                "call_sites": [
+                  {
+                    "BareCall": {
+                      "name": "Dispatch"
+                    }
+                  }
+                ],
+                "record_vars": {},
+                "object_vars": {}
+              },
+              "helper": {
+                "call_sites": [
+                  {
+                    "RecordOp": {
+                      "variable": "Entry",
+                      "op": "Modify",
+                      "run_trigger": false
+                    }
+                  }
+                ],
+                "record_vars": {
+                  "entry": "Fixture Entry"
+                },
+                "object_vars": {}
+              },
+              "onrun": {
+                "call_sites": [
+                  {
+                    "BareCall": {
+                      "name": "TryPost"
+                    }
+                  }
+                ],
+                "record_vars": {},
+                "object_vars": {}
+              },
+              "tidy": {
+                "call_sites": [
+                  {
+                    "MemberCall": {
+                      "object": "Card",
+                      "method": "RunModal"
+                    }
+                  },
+                  {
+                    "RecordOp": {
+                      "variable": "Target",
+                      "op": "Modify",
+                      "run_trigger": false
+                    }
+                  },
+                  {
+                    "MemberCall": {
+                      "object": "Entry",
+                      "method": "DeleteAll"
+                    }
+                  },
+                  {
+                    "MemberCall": {
+                      "object": "Entry",
+                      "method": "ModifyAll"
+                    }
+                  },
+                  {
+                    "RecordOp": {
+                      "variable": "Entry",
+                      "op": "Validate",
+                      "run_trigger": true
+                    }
+                  }
+                ],
+                "record_vars": {
+                  "entry": "Fixture Entry"
+                },
+                "object_vars": {
+                  "card": "Fixture Card"
+                }
+              },
+              "trypost": {
+                "call_sites": [
+                  {
+                    "RecordOp": {
+                      "variable": "Buffer",
+                      "op": "Insert",
+                      "run_trigger": false
+                    }
+                  },
+                  {
+                    "RecordOp": {
+                      "variable": "Entry",
+                      "op": "Delete",
+                      "run_trigger": false
+                    }
+                  }
+                ],
+                "record_vars": {
+                  "buffer": "Fixture Entry",
+                  "entry": "Fixture Entry"
+                },
+                "object_vars": {}
+              }
+            }
+          },
+          {
+            "kind": "table",
+            "id": 50302,
+            "name": "Fixture Entry",
+            "start_byte": 1890,
+            "call_suffixes": 0,
+            "procedures": [
+              {
+                "name": "OnInsert",
+                "attributes": [],
+                "is_local": false
+              }
+            ],
+            "calls": {
+              "oninsert": {
+                "call_sites": [],
+                "record_vars": {},
+                "object_vars": {}
+              }
+            }
+          }
+        ],
+        "effects": [
+          {
+            "name": "OnInsert",
+            "attributes": [],
+            "declaration_range": {
+              "start_line": 93,
+              "start_character": 12,
+              "end_line": 93,
+              "end_character": 20
+            },
+            "writes": [],
+            "commits": []
+          },
+          {
+            "name": "Tidy",
+            "attributes": [],
+            "declaration_range": {
+              "start_line": 73,
+              "start_character": 14,
+              "end_line": 73,
+              "end_character": 18
+            },
+            "writes": [
+              {
+                "range": {
+                  "start_line": 79,
+                  "start_character": 14,
+                  "end_line": 79,
+                  "end_character": 23
+                },
+                "byte_start": 1772,
+                "label": "database write Entry.ModifyAll()"
+              },
+              {
+                "range": {
+                  "start_line": 80,
+                  "start_character": 14,
+                  "end_line": 80,
+                  "end_character": 23
+                },
+                "byte_start": 1815,
+                "label": "database write Entry.DeleteAll()"
+              },
+              {
+                "range": {
+                  "start_line": 81,
+                  "start_character": 15,
+                  "end_line": 81,
+                  "end_character": 21
+                },
+                "byte_start": 1843,
+                "label": "database write Target.Modify()"
+              }
+            ],
+            "commits": []
+          },
+          {
+            "name": "HandleEntryInsert",
+            "attributes": [
+              [
+                "EventSubscriber",
+                "[EventSubscriber(ObjectType::Table, Database::\"Fixture Entry\", 'OnAfterInsertEvent', '', false, false)]"
+              ]
+            ],
+            "declaration_range": {
+              "start_line": 68,
+              "start_character": 20,
+              "end_line": 68,
+              "end_character": 37
+            },
+            "writes": [],
+            "commits": []
+          },
+          {
+            "name": "HandleShip",
+            "attributes": [
+              [
+                "EventSubscriber",
+                "[EventSubscriber(ObjectType::Codeunit, Codeunit::\"Fixture Truck\", 'OnAfterShip', '', false, false)]"
+              ]
+            ],
+            "declaration_range": {
+              "start_line": 62,
+              "start_character": 20,
+              "end_line": 62,
+              "end_character": 30
+            },
+            "writes": [],
+            "commits": []
+          },
+          {
+            "name": "TryPost",
+            "attributes": [
+              [
+                "TryFunction",
+                "[TryFunction]"
+              ]
+            ],
+            "declaration_range": {
+              "start_line": 52,
+              "start_character": 14,
+              "end_line": 52,
+              "end_character": 21
+            },
+            "writes": [
+              {
+                "range": {
+                  "start_line": 57,
+                  "start_character": 14,
+                  "end_line": 57,
+                  "end_character": 20
+                },
+                "byte_start": 1113,
+                "label": "database write Entry.Delete()"
+              }
+            ],
+            "commits": []
+          },
+          {
+            "name": "Helper",
+            "attributes": [],
+            "declaration_range": {
+              "start_line": 44,
+              "start_character": 20,
+              "end_line": 44,
+              "end_character": 26
+            },
+            "writes": [
+              {
+                "range": {
+                  "start_line": 48,
+                  "start_character": 14,
+                  "end_line": 48,
+                  "end_character": 20
+                },
+                "byte_start": 930,
+                "label": "database write Entry.Modify()"
+              }
+            ],
+            "commits": []
+          },
+          {
+            "name": "Helper",
+            "attributes": [],
+            "declaration_range": {
+              "start_line": 39,
+              "start_character": 20,
+              "end_line": 39,
+              "end_character": 26
+            },
+            "writes": [],
+            "commits": [
+              {
+                "range": {
+                  "start_line": 41,
+                  "start_character": 8,
+                  "end_line": 41,
+                  "end_character": 14
+                },
+                "byte_start": 796,
+                "label": "Commit()"
+              }
+            ]
+          },
+          {
+            "name": "Dispatch",
+            "attributes": [],
+            "declaration_range": {
+              "start_line": 28,
+              "start_character": 14,
+              "end_line": 28,
+              "end_character": 22
+            },
+            "writes": [],
+            "commits": []
+          },
+          {
+            "name": "OnRun",
+            "attributes": [],
+            "declaration_range": {
+              "start_line": 23,
+              "start_character": 12,
+              "end_line": 23,
+              "end_character": 17
+            },
+            "writes": [],
+            "commits": []
+          },
+          {
+            "name": "OnAfterShip",
+            "attributes": [
+              [
+                "IntegrationEvent",
+                "[IntegrationEvent(false, false)]"
+              ]
+            ],
+            "declaration_range": {
+              "start_line": 16,
+              "start_character": 20,
+              "end_line": 16,
+              "end_character": 31
+            },
+            "writes": [],
+            "commits": []
+          },
+          {
+            "name": "Ship",
+            "attributes": [],
+            "declaration_range": {
+              "start_line": 7,
+              "start_character": 14,
+              "end_line": 7,
+              "end_character": 18
+            },
+            "writes": [
+              {
+                "range": {
+                  "start_line": 11,
+                  "start_character": 14,
+                  "end_line": 11,
+                  "end_character": 20
+                },
+                "byte_start": 233,
+                "label": "database write Entry.Insert()"
+              }
+            ],
+            "commits": []
+          },
+          {
+            "name": "Ship",
+            "attributes": [],
+            "declaration_range": {
+              "start_line": 2,
+              "start_character": 14,
+              "end_line": 2,
+              "end_character": 18
+            },
+            "writes": [],
+            "commits": []
+          }
+        ]
+      },
+      {
+        "archive_path": "src/Other.al",
+        "objects": [
+          {
+            "kind": "codeunit",
+            "id": 50400,
+            "name": "Cache Other",
+            "start_byte": 0,
+            "call_suffixes": 1,
+            "procedures": [
+              {
+                "name": "Run",
+                "attributes": [],
+                "is_local": false
+              }
+            ],
+            "calls": {
+              "run": {
+                "call_sites": [
+                  {
+                    "BareCall": {
+                      "name": "Message"
+                    }
+                  }
+                ],
+                "record_vars": {},
+                "object_vars": {}
+              }
+            }
+          }
+        ],
+        "effects": [
+          {
+            "name": "Run",
+            "attributes": [],
+            "declaration_range": {
+              "start_line": 2,
+              "start_character": 14,
+              "end_line": 2,
+              "end_character": 17
+            },
+            "writes": [],
+            "commits": []
+          }
+        ]
+      }
+    ],
+    "skipped_files": 2
+  }
+}
