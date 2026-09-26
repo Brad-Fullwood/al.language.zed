@@ -250,3 +250,13 @@ Append-only. Newest entry last.
   `campaign/ai-persisted-index-2` and `campaign/slop-batch-11` had nothing committed: the persisted
   index agent had not started, the desloppify agent had run its scan and written nothing down.
 - All five re-dispatched onto their branches (see `STATE.md`).
+
+## 2026-09-26 18:45 BST: local interpreter runs ordinary AL tests (second session)
+
+- A second session worked on the local test interpreter and router beside the orchestrator, pushing to this branch (4859b011 to 826b06a9). Driven by two bench test codeunits, a language tour (8 tests) and a second one with a table that has triggers, labels, TextBuilder and Guids (4 tests): at the start of the day every test in both needed live BC; now all 12 run locally except one JSON test, and a changed assertion fails where it should.
+- Interpreter: arrays and `Txt[i]`; chained calls run every step (`S.Trim().ToUpper()` had returned `' A,B '`, only the last call ran); enums (variables, `AsInteger`, `Names`, `FromInteger`); TextBuilder; `CalcDate`, `Date2DWY`, `Evaluate`, `DelStr`, `Maximum`, `ArrayLen`, `CreateGuid`, `IsNullGuid`; `Rename`, `TestField`, `ModifyAll`, `Ascending`, `IsTemporary`; `Format` picture strings, and numbers group thousands as BC's standard format does (`1,234,567`).
+- Table code runs on its record: `Validate` with OnValidate and a TableRelation check, `Insert/Modify/Delete(true)` triggers, `Rename`'s OnRename, table procedures, bare field names and bare record methods in table code.
+- Event subscribers run: integration, business and internal events, and table events (OnBefore/OnAfter Insert, Modify, Delete, Rename, Validate). Before this the router followed a publisher to its subscribers and kept the test local while the interpreter never ran them, so such a test failed locally and passed on BC.
+- Router: a table with triggers is no longer refused; its code is classified as reachable. `Validate` on a conditional TableRelation or one to a table outside the workspace routes live. TextBuilder was typed as Text.
+- Multi-object files: the stopped audit agent's uncommitted work (17 files: definition, hover, object/byId, debugger breakpoints, transaction lint, symbol invalidation) merged as 87ff59eb; the interpreter's own dispatch and the local test runner took a file's first object as the callee (a codeunit after a table failed as "stateful codeunit 'Tour Member'"), fixed in 901586e2.
+- Left: JSON types; List and Dictionary are values in the interpreter where AL has reference semantics; Manual subscribers and `BindSubscription`.
