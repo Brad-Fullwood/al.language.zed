@@ -318,3 +318,6 @@ Append-only. Newest entry last.
 - Six agents dispatched at 21:50 (`STATE.md`): round 7 fixes, round 8 fixes, round 8 review
   continuation, audit triage (third attempt, writes every five items), `cargo mutants` (the last
   five files), plugin leftovers (third attempt).
+- Gates on the mutants merge (7e4c02f3): fmt, release build, both clippy runs and rustdoc clean.
+  94 suites, 5209 passed, 0 failed, 10 ignored, at load average 9 with six agents starting.
+  Pushed.
