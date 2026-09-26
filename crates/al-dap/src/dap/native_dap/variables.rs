@@ -113,7 +113,7 @@ where
                 Ok((0, String::new(), Vec::new()))
             }
         } else if let Some((group, frame_id)) = decode_scope_reference(vars_ref) {
-            match session.get_variables(frame_id).await {
+            match session.variables(frame_id).await {
                 Ok(root_nodes) if group == SCOPE_LOCALS => Ok((
                     frame_id,
                     String::new(),
@@ -121,7 +121,7 @@ where
                 )),
                 Ok(root_nodes) => match inline_global_nodes(&root_nodes) {
                     Some(nodes) => Ok((frame_id, String::new(), nodes)),
-                    None => session.get_globals(frame_id).await.map(|expanded| {
+                    None => session.globals(frame_id).await.map(|expanded| {
                         let (parent_path, nodes) = expanded_global_nodes(&expanded);
                         (frame_id, parent_path, nodes)
                     }),

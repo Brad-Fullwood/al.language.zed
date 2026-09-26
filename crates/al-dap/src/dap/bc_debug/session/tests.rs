@@ -618,12 +618,9 @@ async fn variable_inspection_requests_have_correct_targets_and_params() {
         .await
         .unwrap();
 
-    assert_eq!(
-        session.get_call_stack().await.unwrap()[0]["name"],
-        "Customer"
-    );
-    assert_eq!(session.get_variables(7).await.unwrap()[0]["name"], "x");
-    assert_eq!(session.get_globals(7).await.unwrap()[0]["name"], "g");
+    assert_eq!(session.call_stack().await.unwrap()[0]["name"], "Customer");
+    assert_eq!(session.variables(7).await.unwrap()[0]["name"], "x");
+    assert_eq!(session.globals(7).await.unwrap()[0]["name"], "g");
     assert_eq!(
         session.expand_node(7, "Customer.Address").await.unwrap()[0]["name"],
         "child"
@@ -693,14 +690,8 @@ async fn null_results_fall_back_to_empty_collections() {
     event_tx.send(completion("1", None, None)).await.unwrap();
     event_tx.send(completion("2", None, None)).await.unwrap();
     event_tx.send(completion("3", None, None)).await.unwrap();
-    assert_eq!(
-        session.get_call_stack().await.unwrap(),
-        serde_json::json!([])
-    );
-    assert_eq!(
-        session.get_variables(0).await.unwrap(),
-        serde_json::json!([])
-    );
+    assert_eq!(session.call_stack().await.unwrap(), serde_json::json!([]));
+    assert_eq!(session.variables(0).await.unwrap(), serde_json::json!([]));
     assert_eq!(
         session.evaluate(0, "x").await.unwrap(),
         serde_json::Value::Null
