@@ -851,8 +851,18 @@ mod tests {
         }
     }
 
+    /// A name the user wrote resolves to the project's own `.netpackages` copy
+    /// only once the project is trusted. Before, a clone that shipped a DLL of
+    /// that name had it passed to alc as `/analyzer:` on every build.
+    ///
+    /// The only test in this crate that points `XDG_CONFIG_HOME` somewhere
+    /// else, and every other one reads an untrusted store either way.
     #[test]
-    fn named_custom_analyzer_is_discovered_for_official_compile() {
+    fn named_custom_analyzer_in_the_project_needs_trust() {
+        let config = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", config.path());
+
         let root = tempfile::tempdir().unwrap();
         let dll = root.path().join(
             ".netpackages/businesscentral.lintercop/1.0.0/lib/net8.0/BusinessCentral.LinterCop.dll",
@@ -860,16 +870,21 @@ mod tests {
         std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
         std::fs::write(&dll, b"analyzer").unwrap();
         let toolchain = analyzer_test_toolchain(root.path());
+        let requested = ["BusinessCentral.LinterCop".to_string()];
 
-        let resolved = resolve_analyzer_paths(
-            &toolchain,
-            Some(&["BusinessCentral.LinterCop".to_string()]),
-            root.path(),
-            &[],
-        )
-        .unwrap();
+        let untrusted = resolve_analyzer_paths(&toolchain, Some(&requested), root.path(), &[]);
+        let granted = al_project::trust::grant(root.path()).map(|_| ());
+        let trusted = resolve_analyzer_paths(&toolchain, Some(&requested), root.path(), &[]);
+        match previous {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+
+        let error = untrusted.expect_err("an untrusted project's copy must not reach alc");
+        assert!(error.to_string().contains("not trusted"), "{error}");
+        granted.unwrap();
         assert_eq!(
-            resolved,
+            trusted.unwrap(),
             [dll.canonicalize().unwrap().display().to_string()]
         );
     }

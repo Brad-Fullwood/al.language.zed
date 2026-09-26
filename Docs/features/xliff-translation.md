@@ -88,6 +88,11 @@ package has an *AL: XLIFF Generate Translation File* task, and this repository's
 `.zed/tasks.json` adds refresh, untranslated and suggestion tasks. MCP can invoke every XLIFF method
 through `al_call` (for example, `method: "xlf.refresh"`).
 
+Every `.xlf` path these methods take must resolve inside the project the daemon serves, and
+a file is read only when it is a regular file under the 64 MiB cap. `generate` writes to the
+project's own `Translations` directory, refuses one that resolves outside the project, and
+replaces a symbolic link at the generated file's name rather than writing through it.
+
 ## Limitations
 
 - `suggest` reuses translations already present in the supplied language file and workspace symbol

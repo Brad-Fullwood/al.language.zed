@@ -777,6 +777,44 @@ fn extract_al_settings(value: serde_json::Value) -> serde_json::Value {
     value.get("al").cloned().unwrap_or(value)
 }
 
+/// `al_project::trust::inputs_fingerprint` as it was when the configuration
+/// was last gated.
+static GATED_TRUST_INPUTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+impl AlServer {
+    /// Gate the configuration again when anything the trust decision reads has
+    /// changed since it was last gated.
+    ///
+    /// `initialize` and `didChangeConfiguration` gate the settings the editor
+    /// sends, and a language server lives for the whole editor session in
+    /// between. An `al-explorer trust --revoke`, or a commit that makes the
+    /// record stale, reached the daemon on its next request and never reached
+    /// this process, so its build command and semantic analysis kept loading
+    /// what the user had withdrawn. This costs six `stat` calls when nothing
+    /// moved. Gating only removes values, so trust granted mid-session takes
+    /// effect at the next configuration change or restart.
+    pub(crate) async fn refresh_trust(&self) {
+        let root_uri = self.root_uri.read().await.clone();
+        let Some(root) = root_uri.as_ref().and_then(|uri| uri.to_file_path().ok()) else {
+            return;
+        };
+        let fingerprint = al_project::trust::inputs_fingerprint(&root);
+        if GATED_TRUST_INPUTS.load(std::sync::atomic::Ordering::Relaxed) == fingerprint {
+            return;
+        }
+        let advisory = {
+            let mut config = self.workspace.config.write().await;
+            gate_repository_settings(root_uri.as_ref(), &mut config)
+        };
+        self.semantic_diagnostic_cache.lock().await.clear();
+        if let Some(advisory) = advisory {
+            self.client
+                .show_message(MessageType::WARNING, advisory)
+                .await;
+        }
+    }
+}
+
 /// Remove from `config` the privileged settings this project's own files ask
 /// for, unless the project is trusted, and return the message for the user.
 ///
@@ -805,6 +843,12 @@ fn gate_repository_settings(
             );
         }
     };
+    // Recorded before the gate reads anything, so a write during it costs one
+    // extra re-gate in `refresh_trust` rather than being missed.
+    GATED_TRUST_INPUTS.store(
+        al_project::trust::inputs_fingerprint(&root),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     let dotnet_advisory = al_project::trust::enforce_dotnet_path(&root);
     match al_project::trust::gate(&root, config) {
         Ok(decision) => match (decision.advisory(), dotnet_advisory) {
@@ -2201,6 +2245,9 @@ impl LanguageServer for AlServer {
         // cache, packages and config up front) or takes its own guard while
         // publishing a replacement generation.
         drop(self.await_ready().await?);
+        // A command can build, run tests or download from feeds, so it uses
+        // the trust decision as it stands now.
+        self.refresh_trust().await;
 
         // An optional `config` argument names the launch configuration to act
         // on, following the convention `al_debug` already established.

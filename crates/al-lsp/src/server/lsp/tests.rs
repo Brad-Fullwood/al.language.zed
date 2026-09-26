@@ -687,6 +687,47 @@ mod trust_gate_tests {
         );
     }
 
+    /// A revoke reached the daemon on its next request but not a running
+    /// language server, which gated only at `initialize` and
+    /// `didChangeConfiguration`.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_revoke_reaches_a_running_language_server() {
+        let scratch = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", scratch.path());
+
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".vscode")).unwrap();
+        std::fs::write(
+            project.path().join(".vscode/settings.json"),
+            r#"{"al.codeAnalyzers": ["${CodeCop}", "./tools/Payload.dll"]}"#,
+        )
+        .unwrap();
+        al_project::trust::grant(project.path()).unwrap();
+
+        let (service, _socket) = LspService::new(AlServer::new);
+        let server = service.inner();
+        let root = Url::from_file_path(project.path()).unwrap();
+        *server.root_uri.write().await = Some(root.clone());
+        let mut config = al_project::config::AlConfig {
+            code_analyzers: vec!["${CodeCop}".to_string(), "./tools/Payload.dll".to_string()],
+            ..Default::default()
+        };
+        gate_repository_settings(Some(&root), &mut config);
+        *server.workspace.config.write().await = config;
+
+        al_project::trust::revoke_project(&project.path().canonicalize().unwrap()).unwrap();
+        server.refresh_trust().await;
+        let analyzers = server.workspace.config.read().await.code_analyzers.clone();
+
+        match previous {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        assert_eq!(analyzers, vec!["${CodeCop}".to_string()]);
+    }
+
     /// A non-`file:` root is the same situation: nothing local to read.
     #[tokio::test]
     async fn a_non_file_root_denies_every_privileged_setting() {

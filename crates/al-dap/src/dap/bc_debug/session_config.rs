@@ -423,7 +423,15 @@ impl BcDebugConfig {
     /// Build the base URL prefix for on-prem: `{server}:{port}/{instance}`.
     /// Uses the same pattern as the BC server client.
     pub(crate) fn onprem_base(&self) -> String {
-        let server = self.server.as_deref().unwrap_or("http://localhost");
+        // A bare host gets the scheme the credential authorisation judged it
+        // by, through the same function.
+        let server = self
+            .server
+            .as_deref()
+            .map(|server| {
+                al_bc::launch::server_with_scheme(server).unwrap_or_else(|| server.to_string())
+            })
+            .unwrap_or_else(|| "http://localhost".to_string());
         let instance = self.server_instance.as_deref().unwrap_or("BC");
         let host = format!("{}:{}", server.trim_end_matches('/'), self.port);
         format!("{host}/{instance}")
@@ -968,6 +976,15 @@ mod tests {
             cfg.debug_hub_url(),
             "http://localhost:7049/BC/dev/DebuggerHub"
         );
+    }
+
+    /// The authorisation reads a bare host as `https`, so the session has to
+    /// connect to it as `https`. It used to build `bc.local:7049/BC`, which is
+    /// no URL at all.
+    #[test]
+    fn onprem_base_sends_a_bare_host_as_https() {
+        let cfg = onprem_config("bc.local", "BC", 7049);
+        assert_eq!(cfg.base_url(), "https://bc.local:7049/BC/dev");
     }
 
     #[test]

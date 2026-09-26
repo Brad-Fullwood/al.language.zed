@@ -1,33 +1,95 @@
 //! XLIFF translation-file dispatchers.
 
+use super::super::containment;
 use super::super::{blocking, require_project_root, rpc_error};
 use super::serialized_response;
 use al_protocol::jsonrpc::Response;
 use al_workspace::Workspace;
+
+/// Resolve the path parameter `key` inside the loaded project, or return the
+/// refusal message.
+///
+/// Every XLIFF method used to take any absolute path: `xlf.refresh` read one
+/// file and atomically replaced another anywhere the daemon's user could
+/// write, and `xlf.untranslated` and `xlf.suggest` read any file.
+fn contained_param(
+    workspace: &Workspace,
+    key: &str,
+    requested: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    containment::resolve_within_project(workspace, requested)
+        .map_err(|message| format!("'{key}' {message}"))
+}
+
+/// The answer for a path parameter the project boundary refused.
+fn path_refused(id: u64, message: &str) -> Response {
+    rpc_error(
+        id,
+        al_protocol::jsonrpc::error_codes::PATH_NOT_AUTHORIZED,
+        message,
+    )
+}
+
+/// Read an `.xlf` file with the size cap applied to the bytes read.
+///
+/// The cap used to be `metadata().len()`, which is 0 for a character device,
+/// so a device path made `read_to_string` grow without bound. Only a regular
+/// file is read, and never more than one byte past the cap.
+fn read_xlf_capped(path: &std::path::Path) -> Result<String, String> {
+    use std::io::Read;
+    let limit = al_analysis::xliff::MAX_XLF_FILE_BYTES;
+    let file =
+        std::fs::File::open(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
+    let is_file = file
+        .metadata()
+        .map_err(|e| format!("Cannot read {}: {e}", path.display()))?
+        .is_file();
+    if !is_file {
+        return Err(format!("{} is not a regular file", path.display()));
+    }
+    let mut bytes = Vec::new();
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
+    if bytes.len() as u64 > limit {
+        return Err(format!(
+            "{} exceeds the {limit} byte .xlf size limit, refusing to parse",
+            path.display()
+        ));
+    }
+    String::from_utf8(bytes).map_err(|e| format!("Cannot read {}: {e}", path.display()))
+}
 
 pub(in crate::server::daemon) async fn dispatch_xlf_generate(
     workspace: &Workspace,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    // Use the loaded workspace project root by default; only accept an explicit
-    // "project" override if it is an absolute path (prevents path traversal).
-    let project_root = if let Some(p) = params.get("project").and_then(|v| v.as_str()) {
-        let pb = std::path::PathBuf::from(p);
-        if !pb.is_absolute() {
+    // The daemon serves one project and writes its `Translations` directory.
+    // `project` is accepted only when it names that project, since it used to
+    // let a caller write a generated file under any absolute path.
+    let project_root = match require_project_root(workspace, id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    if let Some(requested) = params.get("project").and_then(|v| v.as_str()) {
+        let same = std::path::Path::new(requested)
+            .canonicalize()
+            .ok()
+            .zip(project_root.canonicalize().ok())
+            .is_some_and(|(requested, root)| requested == root);
+        if !same {
             return rpc_error(
                 id,
-                al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
-                "'project' must be an absolute path",
+                al_protocol::jsonrpc::error_codes::PATH_NOT_AUTHORIZED,
+                &format!(
+                    "'project' names '{}', and this daemon serves the project at '{}'",
+                    containment::display_path(std::path::Path::new(requested)),
+                    containment::display_path(&project_root)
+                ),
             );
         }
-        pb
-    } else {
-        match require_project_root(workspace, id) {
-            Ok(r) => r,
-            Err(e) => return e,
-        }
-    };
+    }
 
     match al_analysis::xliff::build_xliff(workspace, &project_root) {
         Ok(Some((path, count))) => Response {
@@ -194,6 +256,10 @@ pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
             "'xlf' must be an absolute path",
         );
     }
+    let xlf_path = match contained_param(workspace, "xlf", &xlf_path) {
+        Ok(path) => path,
+        Err(message) => return path_refused(id, &message),
+    };
 
     let generated_path = if let Some(g) = params.get("generated").and_then(|v| v.as_str()) {
         std::path::PathBuf::from(g)
@@ -203,41 +269,23 @@ pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
             .and_then(|dir| blocking(|| pick_generated_xlf(dir)))
             .unwrap_or_else(|| xlf_path.with_extension("g.xlf"))
     };
+    let generated_path = match contained_param(workspace, "generated", &generated_path) {
+        Ok(path) => path,
+        Err(message) => return path_refused(id, &message),
+    };
 
-    // refuse to load either .xlf past the 64 MB cap.
-    for (label, p) in [
-        ("generated", generated_path.as_path()),
-        ("lang", xlf_path.as_path()),
-    ] {
-        if matches!(al_analysis::xliff::xlf_exceeds_cap(p), Some(true)) {
+    let (gen_content, lang_content) = match blocking(|| {
+        Ok::<_, String>((
+            read_xlf_capped(&generated_path)?,
+            read_xlf_capped(&xlf_path)?,
+        ))
+    }) {
+        Ok(contents) => contents,
+        Err(message) => {
             return rpc_error(
                 id,
                 al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
-                &format!(
-                    "{label} xlf {} exceeds {} byte size limit — refusing to parse",
-                    p.display(),
-                    al_analysis::xliff::MAX_XLF_FILE_BYTES
-                ),
-            );
-        }
-    }
-    let gen_content = match tokio::fs::read_to_string(&generated_path).await {
-        Ok(c) => c,
-        Err(e) => {
-            return rpc_error(
-                id,
-                al_protocol::jsonrpc::error_codes::INTERNAL_ERROR,
-                &format!("Cannot read {}: {e}", generated_path.display()),
-            );
-        }
-    };
-    let lang_content = match tokio::fs::read_to_string(&xlf_path).await {
-        Ok(c) => c,
-        Err(e) => {
-            return rpc_error(
-                id,
-                al_protocol::jsonrpc::error_codes::INTERNAL_ERROR,
-                &format!("Cannot read {}: {e}", xlf_path.display()),
+                &message,
             );
         }
     };
@@ -283,10 +331,10 @@ pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
         );
     }
 
-    let _ = workspace;
     serialized_response(id, &refresh_result, "XLIFF refresh result")
 }
 pub(in crate::server::daemon) fn dispatch_xlf_untranslated(
+    workspace: &Workspace,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
@@ -307,29 +355,17 @@ pub(in crate::server::daemon) fn dispatch_xlf_untranslated(
             "'xlf' must be an absolute path",
         );
     }
-    // refuse to load .xlf files past the 64 MB cap. Real BC
-    // translation files are tiny; anything larger is a misconfigured or
-    // hostile input we shouldn't even start to parse.
-    if matches!(
-        al_analysis::xliff::xlf_exceeds_cap(std::path::Path::new(xlf_path)),
-        Some(true)
-    ) {
-        return rpc_error(
-            id,
-            al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
-            &format!(
-                "{xlf_path} exceeds {} byte .xlf size limit — refusing to parse",
-                al_analysis::xliff::MAX_XLF_FILE_BYTES
-            ),
-        );
-    }
-    let xlf_content = match blocking(|| std::fs::read_to_string(xlf_path)) {
+    let xlf_path = match contained_param(workspace, "xlf", std::path::Path::new(xlf_path)) {
+        Ok(path) => path,
+        Err(message) => return path_refused(id, &message),
+    };
+    let xlf_content = match blocking(|| read_xlf_capped(&xlf_path)) {
         Ok(c) => c,
-        Err(e) => {
+        Err(message) => {
             return rpc_error(
                 id,
-                al_protocol::jsonrpc::error_codes::INTERNAL_ERROR,
-                &format!("Cannot read {xlf_path}: {e}"),
+                al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
+                &message,
             );
         }
     };
@@ -379,27 +415,17 @@ pub(in crate::server::daemon) async fn dispatch_xlf_suggest(
         );
     }
 
-    // refuse to load .xlf files past the 64 MB cap.
-    if matches!(
-        al_analysis::xliff::xlf_exceeds_cap(std::path::Path::new(xlf_path)),
-        Some(true)
-    ) {
-        return rpc_error(
-            id,
-            al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
-            &format!(
-                "{xlf_path} exceeds {} byte .xlf size limit — refusing to parse",
-                al_analysis::xliff::MAX_XLF_FILE_BYTES
-            ),
-        );
-    }
-    let xlf_content = match blocking(|| std::fs::read_to_string(xlf_path)) {
+    let xlf_path = match contained_param(workspace, "xlf", std::path::Path::new(xlf_path)) {
+        Ok(path) => path,
+        Err(message) => return path_refused(id, &message),
+    };
+    let xlf_content = match blocking(|| read_xlf_capped(&xlf_path)) {
         Ok(c) => c,
-        Err(e) => {
+        Err(message) => {
             return rpc_error(
                 id,
-                al_protocol::jsonrpc::error_codes::INTERNAL_ERROR,
-                &format!("Cannot read {xlf_path}: {e}"),
+                al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
+                &message,
             );
         }
     };
@@ -484,13 +510,17 @@ mod tests {
 
     #[test]
     fn xlf_untranslated_missing_param_is_invalid_params() {
-        let resp = dispatch_xlf_untranslated(1, &serde_json::json!({}));
+        let resp = dispatch_xlf_untranslated(&empty_ws(), 1, &serde_json::json!({}));
         assert_eq!(resp.error.expect("err").code, error_codes::INVALID_PARAMS);
     }
 
     #[test]
     fn xlf_untranslated_rejects_relative_path() {
-        let resp = dispatch_xlf_untranslated(2, &serde_json::json!({ "xlf": "rel/de-DE.xlf" }));
+        let resp = dispatch_xlf_untranslated(
+            &empty_ws(),
+            2,
+            &serde_json::json!({ "xlf": "rel/de-DE.xlf" }),
+        );
         let err = resp.error.expect("err");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("absolute"));
@@ -582,6 +612,7 @@ mod tests {
     async fn refresh_output_is_stable_and_preserves_the_app_name() {
         let ws = empty_ws();
         let dir = tempfile::tempdir().unwrap();
+        crate::server::daemon::set_test_project_root(&ws, dir.path());
         let generated = dir.path().join("My Test App.g.xlf");
         let language = dir.path().join("de-DE.xlf");
         // Enough units that a randomised HashMap order would almost certainly
@@ -637,6 +668,23 @@ mod tests {
         expected.sort();
         expected.push("Table 9 - Field 9 - Property Caption");
         assert_eq!(ids, expected);
+    }
+
+    /// A character device reports a length of 0, which passed the old size
+    /// check and then grew `read_to_string` without bound.
+    #[cfg(unix)]
+    #[test]
+    fn read_xlf_capped_refuses_anything_but_a_regular_file() {
+        let error = read_xlf_capped(std::path::Path::new("/dev/zero")).unwrap_err();
+        assert!(error.contains("not a regular file"), "{error}");
+    }
+
+    #[test]
+    fn read_xlf_capped_reads_a_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("de-DE.xlf");
+        std::fs::write(&path, "<xliff/>").unwrap();
+        assert_eq!(read_xlf_capped(&path).unwrap(), "<xliff/>");
     }
 
     #[tokio::test]

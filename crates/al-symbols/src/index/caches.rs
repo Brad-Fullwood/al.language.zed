@@ -120,6 +120,7 @@ impl SymbolIndex {
     }
 
     /// Count source representations for every object in one package.
+    /// Synthetic Option enums are not objects and are left out.
     ///
     /// The `.app` path is resolved **once** for the whole package rather than
     /// per entry: [`Self::app_path`] scans every `app_paths` record with a
@@ -130,7 +131,7 @@ impl SymbolIndex {
         let mut summary = SourceAvailabilitySummary::default();
         let app_path = self.app_path(package);
         if let Some(entries) = self.by_package.get(&fold_name(package)) {
-            for symbol in entries.value() {
+            for symbol in entries.value().iter().filter(|symbol| !symbol.synthetic) {
                 summary.record(source_availability::classify(symbol, app_path.as_deref()));
             }
         }
@@ -156,7 +157,7 @@ impl SymbolIndex {
         let mut summary = SourceAvailabilitySummary::default();
         for entry in self.all.iter() {
             let indexed = entry.value();
-            if indexed.package_key == identity {
+            if indexed.package_key == identity && !indexed.arc.synthetic {
                 summary.record(source_availability::classify(
                     &indexed.arc,
                     app_path.as_deref(),
