@@ -3907,3 +3907,257 @@ fn objects_are_found_by_kind_when_another_kind_shares_the_name() {
     );
     assert_eq!(ok(call("EnumMembersComeFromTheEnum")), Value::Integer(1));
 }
+
+const BULK_PARENT_TABLE: &str = r#"table 50270 "Bulk Parent"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Status; Text[20]) { }
+        field(3; Touched; Integer) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+
+    trigger OnDelete()
+    var
+        Log: Codeunit "Bulk Log";
+    begin
+        Log.Add('OnDelete ' + "No.");
+    end;
+
+    trigger OnModify()
+    var
+        Log: Codeunit "Bulk Log";
+    begin
+        Log.Add('OnModify ' + "No." + ' ' + xRec.Status + '>' + Status);
+        Touched := Touched + 1;
+    end;
+}
+"#;
+
+const BULK_CHILD_TABLE: &str = r#"table 50271 "Bulk Child"
+{
+    fields
+    {
+        field(1; "Entry No."; Integer) { }
+        field(2; "Parent No."; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; "Entry No.") { }
+    }
+}
+"#;
+
+const BULK_LOG_TABLE: &str = r#"table 50272 "Bulk Log Entry"
+{
+    fields
+    {
+        field(1; "Entry No."; Integer) { }
+        field(2; Step; Text[100]) { }
+    }
+    keys
+    {
+        key(PK; "Entry No.") { }
+    }
+}
+"#;
+
+const BULK_LOG: &str = r#"codeunit 50273 "Bulk Log"
+{
+    procedure Add(Step: Text)
+    var
+        Entry: Record "Bulk Log Entry";
+    begin
+        Entry."Entry No." := Entry.Count() + 1;
+        Entry.Step := Step;
+        Entry.Insert();
+    end;
+
+    procedure Read(): Text
+    var
+        Entry: Record "Bulk Log Entry";
+        Seen: Text;
+    begin
+        if Entry.FindSet() then
+            repeat
+                Seen += Entry.Step + '|';
+            until Entry.Next() = 0;
+        exit(Seen);
+    end;
+}
+"#;
+
+const BULK_SUBSCRIBERS: &str = r#"codeunit 50274 "Bulk Subscribers"
+{
+    [EventSubscriber(ObjectType::Table, Database::"Bulk Parent", 'OnBeforeDeleteEvent', '', false, false)]
+    local procedure BeforeDelete(var Rec: Record "Bulk Parent"; RunTrigger: Boolean)
+    var
+        Log: Codeunit "Bulk Log";
+    begin
+        Log.Add('BeforeDelete ' + Rec."No." + ' ' + Format(RunTrigger));
+    end;
+
+    [EventSubscriber(ObjectType::Table, Database::"Bulk Parent", 'OnAfterDeleteEvent', '', false, false)]
+    local procedure DeleteChildren(var Rec: Record "Bulk Parent")
+    var
+        Child: Record "Bulk Child";
+        Log: Codeunit "Bulk Log";
+    begin
+        Log.Add('AfterDelete ' + Rec."No.");
+        Child.SetRange("Parent No.", Rec."No.");
+        Child.DeleteAll();
+    end;
+
+    [EventSubscriber(ObjectType::Table, Database::"Bulk Parent", 'OnBeforeModifyEvent', '', false, false)]
+    local procedure RefuseClosing(var Rec: Record "Bulk Parent"; var xRec: Record "Bulk Parent")
+    var
+        Log: Codeunit "Bulk Log";
+    begin
+        if Rec.Status = 'Closed' then
+            Error('%1 cannot be closed', Rec."No.");
+        Log.Add('BeforeModify ' + Rec."No." + ' ' + xRec.Status + '>' + Rec.Status);
+    end;
+
+    [EventSubscriber(ObjectType::Table, Database::"Bulk Parent", 'OnAfterModifyEvent', '', false, false)]
+    local procedure AfterModify(var Rec: Record "Bulk Parent")
+    var
+        Log: Codeunit "Bulk Log";
+    begin
+        Log.Add('AfterModify ' + Rec."No.");
+    end;
+}
+"#;
+
+const BULK_PROBE: &str = r#"codeunit 50275 "Bulk Probe"
+{
+    local procedure Seed()
+    var
+        Parent: Record "Bulk Parent";
+        Child: Record "Bulk Child";
+    begin
+        Parent."No." := 'P1';
+        Parent.Status := 'Open';
+        Parent.Insert();
+        Parent."No." := 'P2';
+        Parent.Insert();
+        Parent."No." := 'Q1';
+        Parent.Insert();
+        Child."Entry No." := 1;
+        Child."Parent No." := 'P1';
+        Child.Insert();
+        Child."Entry No." := 2;
+        Child."Parent No." := 'P2';
+        Child.Insert();
+        Child."Entry No." := 3;
+        Child."Parent No." := 'Q1';
+        Child.Insert();
+    end;
+
+    procedure DeleteAllRaisesDeleteEvents(): Text
+    var
+        Parent: Record "Bulk Parent";
+        Child: Record "Bulk Child";
+        Log: Codeunit "Bulk Log";
+    begin
+        Seed();
+        Parent.SetRange("No.", 'P1', 'P2');
+        Parent.DeleteAll();
+        Parent.Reset();
+        exit(Log.Read() + Format(Parent.Count()) + Format(Child.Count()));
+    end;
+
+    procedure DeleteAllTrueRunsOnDelete(): Text
+    var
+        Parent: Record "Bulk Parent";
+        Log: Codeunit "Bulk Log";
+    begin
+        Seed();
+        Parent.SetRange("No.", 'P1');
+        Parent.DeleteAll(true);
+        exit(Log.Read());
+    end;
+
+    procedure ModifyAllRaisesModifyEvents(): Text
+    var
+        Parent: Record "Bulk Parent";
+        Log: Codeunit "Bulk Log";
+    begin
+        Seed();
+        Parent.SetRange("No.", 'P1', 'P2');
+        Parent.ModifyAll(Status, 'Held');
+        Parent.Get('P2');
+        exit(Log.Read() + Parent.Status + Format(Parent.Touched));
+    end;
+
+    procedure ModifyAllTrueRunsOnModify(): Text
+    var
+        Parent: Record "Bulk Parent";
+        Log: Codeunit "Bulk Log";
+    begin
+        Seed();
+        Parent.SetRange("No.", 'P1');
+        Parent.ModifyAll(Status, 'Held', true);
+        Parent.Get('P1');
+        exit(Log.Read() + Parent.Status + Format(Parent.Touched));
+    end;
+
+    procedure ModifyAllGuardRefuses()
+    var
+        Parent: Record "Bulk Parent";
+    begin
+        Seed();
+        Parent.ModifyAll(Status, 'Closed');
+    end;
+}
+"#;
+
+/// Business Central raises OnBeforeDeleteEvent and OnAfterDeleteEvent for
+/// each row of a DeleteAll, and OnBeforeModifyEvent and OnAfterModifyEvent
+/// for each row of a ModifyAll, and runs OnDelete or OnModify when
+/// RunTrigger is true. Both removed or wrote the rows in one pass, so no
+/// subscriber ran, and RunTrigger true failed.
+#[test]
+fn deleteall_and_modifyall_raise_the_table_events_for_each_row() {
+    let call = |proc: &str| {
+        run(
+            &[
+                ("/ws/BulkParent.al", BULK_PARENT_TABLE),
+                ("/ws/BulkChild.al", BULK_CHILD_TABLE),
+                ("/ws/BulkLogEntry.al", BULK_LOG_TABLE),
+                ("/ws/BulkLog.al", BULK_LOG),
+                ("/ws/BulkSubscribers.al", BULK_SUBSCRIBERS),
+                ("/ws/BulkProbe.al", BULK_PROBE),
+            ],
+            "Bulk Probe",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(
+        ok(call("DeleteAllRaisesDeleteEvents")),
+        Value::Text(
+            "BeforeDelete P1 No|AfterDelete P1|BeforeDelete P2 No|AfterDelete P2|11".into()
+        )
+    );
+    assert_eq!(
+        ok(call("DeleteAllTrueRunsOnDelete")),
+        Value::Text("BeforeDelete P1 Yes|OnDelete P1|AfterDelete P1|".into())
+    );
+    assert_eq!(
+        ok(call("ModifyAllRaisesModifyEvents")),
+        Value::Text(
+            "BeforeModify P1 Open>Held|AfterModify P1|BeforeModify P2 Open>Held|AfterModify P2|Held0"
+                .into()
+        )
+    );
+    assert_eq!(
+        ok(call("ModifyAllTrueRunsOnModify")),
+        Value::Text("BeforeModify P1 Open>Held|OnModify P1 Open>Held|AfterModify P1|Held1".into())
+    );
+    let refused = error_message(call("ModifyAllGuardRefuses"));
+    assert!(refused.contains("P1 cannot be closed"), "{refused}");
+}
