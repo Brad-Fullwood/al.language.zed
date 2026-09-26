@@ -9,8 +9,11 @@ Quick lookup for the native language server (`al-lsp --stdio`). Behavior is docu
 `documentSymbol`, `formatting`, `rangeFormatting`, `foldingRange`, `rename`, `prepareRename`,
 `semanticTokens/full`, `signatureHelp`, `codeAction`, `codeLens`, `inlayHint`, `diagnostic` (pull),
 plus the document lifecycle (`didOpen`, `didChange`, `didClose`, `didSave`). `workspace/`: `symbol`,
-`diagnostic`, `executeCommand`, `didChangeConfiguration`. Lifecycle: `initialize`, `initialized`,
-`shutdown`. Custom: `experimental/runnables` (Zed runnables; with a `position` it returns only the
+`diagnostic`, `executeCommand`, `didChangeConfiguration`, `didChangeWatchedFiles`. Lifecycle:
+`initialize`, `initialized`, `shutdown`. On `initialized` the server registers a `**/*.al` file
+watcher when the client supports dynamic registration of `workspace/didChangeWatchedFiles`, and
+the handler re-reads `.al` files changed outside the editor, skipping documents that are open.
+Custom: `experimental/runnables` (Zed runnables; with a `position` it returns only the
 test at the cursor).
 
 ## Advertised capabilities
@@ -30,6 +33,7 @@ receive the `source` actions (*AL: Format File*, *AL: Lint File*).
 | --- | --- |
 | `textDocument.definition.linkSupport` | `LocationLink[]` vs `Location[]` |
 | `textDocument.documentSymbol.hierarchicalDocumentSymbolSupport` | nested `DocumentSymbol[]` vs flat `SymbolInformation[]` |
+| `workspace.didChangeWatchedFiles.dynamicRegistration` | registers the `**/*.al` file watcher |
 
 ## Execute commands (`workspace/executeCommand`)
 
