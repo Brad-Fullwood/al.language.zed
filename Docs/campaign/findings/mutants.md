@@ -20,6 +20,15 @@ None found so far.
   `.cargo/mutants.toml` excludes `build.rs`, `impl Debug`, `impl Display` and `fn fmt`.
 - `-p <crate>` runs only that crate's tests. A mutant that another crate's tests would
   catch still counts as missed here.
+- An `--in-place` run writes proptest seeds. When a mutant makes a property test fail,
+  proptest appends the failing seed to the `.proptest-regressions` file next to the test,
+  and the seed stays after cargo-mutants restores the source. The `sort.rs` run left three
+  seeds in `crates/al-syntax/tests/property_formatting.proptest-regressions`. All three pass
+  on the clean source (`cargo test -p al-syntax --test property_formatting`, at the default
+  128 cases and at `PROPTEST_CASES=1`), so they were mutant artifacts and were discarded
+  with `git checkout`. After every later run, `git status` is checked and any changed seed
+  file is restored the same way. `PROPTEST_DISABLE_FAILURE_PERSISTENCE=1` would stop the
+  writes, but it also stops proptest from replaying the committed seeds, so it is not used.
 
 ## Shortlist mapped to current paths
 
