@@ -119,9 +119,9 @@ omitted above or drawn dashed):
   (it gates the NuGet/BC-server download path). `al-workspace`, `al-analysis`
   and `al-insight` depend on `al-symbols` with `default-features = false`, so
   they do **not** pull `al-bc` transitively.
-- `al-syntax → tree-sitter-al` and `al-lsp → tree-sitter-al` are path
-  dependencies on the grammar submodule, which has its own release cadence and
-  is excluded from the workspace.
+- `al-syntax → tree-sitter-al` is the one path dependency on the grammar
+  submodule, which has its own release cadence and is excluded from the
+  workspace. Every other crate reaches the grammar through `al-syntax`.
 - Dev-only `al-*` edges are intentionally **not** drawn: `al-dap` and
   `al-source` reference `al-syntax` under `[dev-dependencies]` (test fixtures).
   `al-source` and `al-runtime` also depend on it in production, so those arrows
@@ -168,7 +168,6 @@ graph TD
     al_analysis["al-analysis"]
     al_publish["al-publish"]
     al_test["al-test"]
-    ts_al["tree-sitter-al (submodule)"]
   end
 
   al_lsp --> al_protocol
@@ -189,7 +188,6 @@ graph TD
   al_lsp --> al_workspace
   al_lsp --> al_publish
   al_lsp --> al_analysis
-  al_lsp -.-> ts_al
 
   al_explorer --> al_protocol
   al_explorer --> al_types
