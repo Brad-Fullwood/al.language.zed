@@ -1587,6 +1587,8 @@ mod project_diagnostics_close_tests {
     use tower_service::Service;
 
     const BROKEN: &str = "codeunit 50100 Ghost\n{\n    procedure Broken(\n    begin\n    end;\n}\n";
+    /// The saved text a close restores when the file exists on disk.
+    const SAVED: &str = "codeunit 50100 Ghost\n{\n    procedure Fixed()\n    begin\n    end;\n}\n";
 
     /// Answer `initialize` through the service so the in-process client sends
     /// notifications. Before that it drops every one of them.
@@ -1649,21 +1651,35 @@ mod project_diagnostics_close_tests {
     /// acquisition at a time. Each write queues behind the read guard the pass
     /// was just given, so it runs as soon as the pass releases that guard, and
     /// before the pass can take the next one. The writes alternately close the
-    /// document (as `did_close` does: out of the store and the index, then the
-    /// clear under the write guard) and open it again. Whatever the pass sends
-    /// between two writes was sent under the state the first of them left, so
-    /// after a close it must be empty.
+    /// document (as `did_close` does for a file that is not on disk: out of
+    /// the store and the index, then the clear under the write guard) and open
+    /// it again. Whatever the pass sends between two writes was sent under the
+    /// state the first of them left, so after a close it must be empty.
     #[tokio::test]
     async fn a_project_pass_never_republishes_a_document_its_close_cleared() {
         tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            close_during_a_project_pass(),
+            close_during_a_project_pass(None),
         )
         .await
         .expect("the pass and the writes finish instead of waiting on each other");
     }
 
-    async fn close_during_a_project_pass() {
+    /// The same, for a file that exists on disk: the close restores its saved
+    /// text, which has no errors, in place of the unsaved one.
+    #[tokio::test]
+    async fn a_project_pass_never_republishes_a_document_its_close_restored() {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            close_during_a_project_pass(Some(SAVED)),
+        )
+        .await
+        .expect("the pass and the writes finish instead of waiting on each other");
+    }
+
+    /// `saved` is the text on disk that a close restores, `None` when the file
+    /// is not on disk.
+    async fn close_during_a_project_pass(saved: Option<&str>) {
         let (mut service, socket) = LspService::new(AlServer::new);
         let uri = Url::parse("file:///proj/Ghost.Codeunit.al").unwrap();
         let path = uri.to_file_path().unwrap();
@@ -1718,7 +1734,13 @@ mod project_diagnostics_close_tests {
             }
             if is_open {
                 assert!(server.workspace.documents.close(&uri));
-                server.workspace.file_index.remove_file(&path);
+                match saved {
+                    Some(text) => server
+                        .workspace
+                        .file_index
+                        .add_file(path.clone(), text.to_string()),
+                    None => server.workspace.file_index.remove_file(&path),
+                }
                 al_workspace::on_document_close(&server.workspace, &uri);
                 server
                     .client
