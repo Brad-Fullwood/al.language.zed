@@ -58,14 +58,69 @@ pub fn populate_call_edges_in_object(
     ) else {
         return;
     };
-    let call_sites = call_sites_in_node(proc_node, source);
-    let var_types = procedure_var_types_in_node(proc_node, source);
-    // Collect object-typed variable declarations (codeunit / page /
-    // report / xmlport / query / interface), not just Record. Used to resolve
-    // `MyVar.Method()` where `MyVar` is e.g. `Codeunit "Sales-Post"` — the
-    // prior code looked up `MyVar` itself in the symbol index, only matching
-    // when the variable name happened to equal a real object name.
-    let object_var_types = procedure_object_var_types_in_node(proc_node, source);
+    let calls = ProcedureCalls::from_node(proc_node, source);
+    resolve_procedure_calls(
+        &calls,
+        object_kind,
+        object_name,
+        procedure_name,
+        symbols,
+        insight,
+        call_graph,
+    );
+}
+
+/// What resolving one procedure's outgoing edges reads from its body, kept
+/// without the tree it came from.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ProcedureCalls {
+    /// The calls the body makes, in the order the walk finds them.
+    pub call_sites: Vec<CallSite>,
+    /// Lowercase variable or parameter name to table, for `Record` types.
+    pub record_vars: std::collections::BTreeMap<String, String>,
+    /// Lowercase variable or parameter name to object, for codeunit, page,
+    /// report, xmlport, query and interface types.
+    pub object_vars: std::collections::BTreeMap<String, String>,
+}
+
+impl ProcedureCalls {
+    /// Read the calls and variable types of one declaration node.
+    pub fn from_node(proc_node: tree_sitter::Node<'_>, source: &str) -> Self {
+        Self {
+            call_sites: call_sites_in_node(proc_node, source),
+            record_vars: procedure_var_types_in_node(proc_node, source)
+                .into_iter()
+                .collect(),
+            // Object-typed variables (codeunit / page / report / xmlport /
+            // query / interface), not just Record. Used to resolve
+            // `MyVar.Method()` where `MyVar` is e.g. `Codeunit "Sales-Post"`:
+            // looking up `MyVar` itself in the symbol index matched only when
+            // the variable name happened to equal a real object name.
+            object_vars: procedure_object_var_types_in_node(proc_node, source)
+                .into_iter()
+                .collect(),
+        }
+    }
+}
+
+/// Add the edges `calls` gives the callable member `procedure_name` of the
+/// object `object_name`.
+///
+/// The tree path ([`populate_call_edges_in_object`]) and the summary path
+/// both resolve through this function, so a graph built from summaries has
+/// the edges a graph built from trees has.
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_procedure_calls(
+    calls: &ProcedureCalls,
+    object_kind: ObjectKind,
+    object_name: &str,
+    procedure_name: &str,
+    symbols: &SymbolIndex,
+    insight: &InsightGraph,
+    call_graph: &mut CallGraph,
+) {
+    let var_types = &calls.record_vars;
+    let object_var_types = &calls.object_vars;
 
     // A callable workspace member can be represented by three graph node
     // variants. Event publishers and subscribers used to be registered as
@@ -79,7 +134,7 @@ pub fn populate_call_edges_in_object(
         None => return,
     };
 
-    for site in &call_sites {
+    for site in &calls.call_sites {
         match site {
             CallSite::BareCall { name } => {
                 let name_lower = name.to_lowercase();
@@ -447,11 +502,15 @@ pub(super) fn tier1_threshold(
         usize,
     )],
 ) -> usize {
-    if files.is_empty() {
+    tier1_threshold_of(files.iter().map(|(_, _, _, _, s)| *s).collect())
+}
+
+/// [`tier1_threshold`] over the objects' fanout scores alone.
+pub(super) fn tier1_threshold_of(mut scores: Vec<usize>) -> usize {
+    if scores.is_empty() {
         return 5;
     }
 
-    let mut scores: Vec<usize> = files.iter().map(|(_, _, _, _, s)| *s).collect();
     scores.sort_unstable();
     let cutoff_idx = scores.len() * 8 / 10; // 80th percentile index
     let percentile_threshold = scores.get(cutoff_idx).copied().unwrap_or(5);

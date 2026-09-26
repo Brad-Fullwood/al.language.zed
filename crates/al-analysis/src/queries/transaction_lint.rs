@@ -5,7 +5,6 @@
 //! event, trigger, interface, and dependency graph. A file-local token scan
 //! cannot see the transaction stack that gives either operation its meaning.
 
-use al_syntax::IdentifierText;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
@@ -75,6 +74,16 @@ struct EffectSite {
     range: Range,
     byte_start: usize,
     label: String,
+}
+
+impl From<&al_insight::calls::EffectSite> for EffectSite {
+    fn from(site: &al_insight::calls::EffectSite) -> Self {
+        Self {
+            range: al_syntax::types::SyntaxRange::from(site.range).into(),
+            byte_start: site.byte_start,
+            label: site.label.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -356,98 +365,52 @@ fn collect_effects(
     let mut effects = Vec::new();
 
     for (path, object) in snapshot {
-        let object_kind = object.kind.parse::<ObjectKind>().map_err(|_| {
-            al_insight::calls::SourceGraphError::InvalidObjectKind {
-                path: path.clone(),
-                kind: object.kind.clone(),
-            }
-        })?;
-        object_kind
-            .normalize_declaration_id(object.id)
-            .map_err(|error| match error {
-                al_symbols::DeclarationIdError::Missing { .. } => {
-                    al_insight::calls::SourceGraphError::MissingObjectId { path: path.clone() }
-                }
-                al_symbols::DeclarationIdError::OutOfRange { id, .. } => {
-                    al_insight::calls::SourceGraphError::ObjectIdOutOfRange {
-                        path: path.clone(),
-                        id,
-                    }
-                }
-                al_symbols::DeclarationIdError::Unexpected { id, .. } => {
-                    al_insight::calls::SourceGraphError::UnexpectedObjectId {
-                        path: path.clone(),
-                        id,
-                    }
-                }
-            })?;
+        let object_kind = al_insight::calls::declared_object_kind(&path, &object.kind)?;
+        al_insight::calls::declared_object_id(&path, object.id, object_kind)?;
         let (source, tree) = file_index.get_cached_parse(&path).ok_or_else(|| {
             al_insight::calls::SourceGraphError::MissingCachedParse { path: path.clone() }
         })?;
-        let mut stack = vec![tree.root_node()];
-        while let Some(node) = stack.pop() {
-            if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
-                if let Some(effect) = effects_for_procedure(
-                    &path,
-                    &object.name,
-                    object_kind,
-                    node,
-                    &tree,
-                    &source,
-                    insight,
-                    reportable,
-                ) {
-                    effects.push(effect);
-                }
-                continue;
-            }
-            let mut cursor = node.walk();
-            stack.extend(node.children(&mut cursor));
+        for sites in al_insight::calls::file_effect_sites(&tree, &source) {
+            effects.extend(procedure_effects(
+                &path,
+                &object.name,
+                object_kind,
+                &sites,
+                insight,
+                reportable,
+            ));
         }
     }
     Ok(effects)
 }
 
-// The file path, object identity and reportable flag identify the caller,
-// while the node, tree, source and insight graph are the walk inputs. Each
-// varies independently per call, so a bundling struct would be built at the
-// call site and destructured here for no reduction.
-#[allow(clippy::too_many_arguments)]
-fn effects_for_procedure(
+/// Resolve one procedure's effect sites against the graph. `None` when the
+/// graph has no callable node for it.
+fn procedure_effects(
     path: &std::path::Path,
     object_name: &str,
     object_kind: ObjectKind,
-    procedure: tree_sitter::Node<'_>,
-    tree: &tree_sitter::Tree,
-    source: &str,
+    sites: &al_insight::calls::ProcedureEffectSites,
     insight: &InsightGraph,
     reportable: bool,
 ) -> Option<ProcedureEffects> {
-    let bytes = source.as_bytes();
-    let name_node = procedure.child_by_field_name("name")?;
-    let name = name_node
-        .utf8_text(bytes)
-        .ok()?
-        .unquote_identifier()
-        .to_string();
-    let attributes = procedure_attributes(procedure, bytes);
-    let node_key = callable_key(object_kind, object_name, &name, &attributes);
+    let attributes = &sites.attributes;
+    let node_key = callable_key(object_kind, object_name, &sites.name, attributes);
     let node = CallGraph::node_id_for(insight, &node_key)?;
     let is_try_function = attributes
         .iter()
         .any(|(attr, _)| attr.eq_ignore_ascii_case("TryFunction"));
-    let subscriber_target = subscriber_target(&attributes)
+    let subscriber_target = subscriber_target(attributes)
         .filter(|(object, event)| subscriber_event_is_resolved(insight, object, event));
-    let (writes, commits) = collect_effect_sites(procedure, tree, source);
 
     Some(ProcedureEffects {
         node,
         file: path.to_path_buf(),
-        declaration_range: al_syntax::ts_range_to_syntax(&name_node.range(), bytes).into(),
+        declaration_range: al_syntax::types::SyntaxRange::from(sites.declaration_range).into(),
         reportable,
         is_try_function,
-        writes,
-        commits,
+        writes: sites.writes.iter().map(EffectSite::from).collect(),
+        commits: sites.commits.iter().map(EffectSite::from).collect(),
         subscriber_target,
     })
 }
@@ -473,32 +436,6 @@ fn callable_key(
     } else {
         NodeKey::Procedure(object_kind, object, procedure)
     }
-}
-
-/// Attributes normally belong to the procedure node in the current grammar.
-/// Keep the preceding-sibling fallback for older grammar trees and malformed
-/// but recoverable source, where decorators can be emitted as member siblings.
-fn procedure_attributes(procedure: tree_sitter::Node<'_>, source: &[u8]) -> Vec<(String, String)> {
-    let mut attrs = al_insight::calls::collect_procedure_attributes(procedure, source);
-    if attrs.is_empty() {
-        let mut sibling = procedure.prev_named_sibling();
-        while let Some(node) = sibling {
-            if node.kind() != "attribute" {
-                break;
-            }
-            let name = node
-                .child_by_field_name("name")
-                .and_then(|n| n.utf8_text(source).ok())
-                .unwrap_or("")
-                .to_string();
-            let raw = node.utf8_text(source).unwrap_or("").to_string();
-            if !name.is_empty() {
-                attrs.push((name, raw));
-            }
-            sibling = node.prev_named_sibling();
-        }
-    }
-    attrs
 }
 
 fn subscriber_target(attributes: &[(String, String)]) -> Option<(String, String)> {
@@ -535,137 +472,6 @@ fn subscriber_event_is_resolved(insight: &InsightGraph, object: &str, event: &st
             ))
             .is_some()
     })
-}
-
-fn collect_effect_sites(
-    procedure: tree_sitter::Node<'_>,
-    tree: &tree_sitter::Tree,
-    source: &str,
-) -> (Vec<EffectSite>, Vec<EffectSite>) {
-    let bytes = source.as_bytes();
-    let resolver = al_syntax::TypeResolver::new(tree, source);
-    let mut writes = Vec::new();
-    let mut commits = Vec::new();
-    let mut stack = vec![procedure];
-    while let Some(node) = stack.pop() {
-        if node.kind() == "postfix_expression" {
-            let mut cursor = node.walk();
-            let children: Vec<_> = node.children(&mut cursor).collect();
-            let Some(last) = children.last().copied() else {
-                continue;
-            };
-            match last.kind() {
-                "call_suffix" => {
-                    let Some(primary) = children.first().copied() else {
-                        continue;
-                    };
-                    let name = primary.utf8_text(bytes).unwrap_or("").trim();
-                    if name.eq_ignore_ascii_case("Commit") {
-                        commits.push(effect_site(primary, bytes, "Commit()"));
-                    }
-                }
-                "member_call_suffix" | "scope_call_suffix" => {
-                    let Some(member) = last.child_by_field_name("member") else {
-                        continue;
-                    };
-                    let method = member.utf8_text(bytes).unwrap_or("").unquote_identifier();
-                    if !is_database_write_method(&method) {
-                        continue;
-                    }
-                    let Some(receiver_node) = children.first().copied() else {
-                        continue;
-                    };
-                    let receiver = receiver_node
-                        .utf8_text(bytes)
-                        .unwrap_or("")
-                        .unquote_identifier();
-                    let pos = syntax_position(source, receiver_node.start_position());
-                    let Some(decl) = resolver.resolve_type(&receiver, pos) else {
-                        continue;
-                    };
-                    if !matches!(
-                        decl.type_name.to_ascii_lowercase().as_str(),
-                        "record" | "recordref"
-                    ) || declaration_is_temporary(tree, source, &decl)
-                    {
-                        continue;
-                    }
-                    writes.push(effect_site(
-                        member,
-                        bytes,
-                        &format!("database write {receiver}.{method}()"),
-                    ));
-                }
-                _ => {}
-            }
-            // A postfix expression owns its nested suffixes; do not descend and
-            // accidentally report the same call twice.
-            continue;
-        }
-        let mut cursor = node.walk();
-        stack.extend(node.children(&mut cursor));
-    }
-    writes.sort_by_key(|site| site.byte_start);
-    commits.sort_by_key(|site| site.byte_start);
-    (writes, commits)
-}
-
-fn effect_site(node: tree_sitter::Node<'_>, source: &[u8], label: &str) -> EffectSite {
-    EffectSite {
-        range: al_syntax::ts_range_to_syntax(&node.range(), source).into(),
-        byte_start: node.start_byte(),
-        label: label.to_string(),
-    }
-}
-
-fn syntax_position(source: &str, point: tree_sitter::Point) -> al_syntax::SyntaxPosition {
-    let line = source.lines().nth(point.row).unwrap_or("");
-    al_syntax::SyntaxPosition {
-        line: point.row as u32,
-        character: al_syntax::byte_col_to_utf16_col(line, point.column),
-    }
-}
-
-fn declaration_is_temporary(
-    tree: &tree_sitter::Tree,
-    source: &str,
-    decl: &al_syntax::VariableDecl,
-) -> bool {
-    let point = decl.range.start_point;
-    let Some(mut node) = tree.root_node().descendant_for_point_range(point, point) else {
-        return false;
-    };
-    loop {
-        if matches!(
-            node.kind(),
-            "regular_variable_declaration"
-                | "variable_declaration"
-                | "object_variable_declaration"
-                | "parameter"
-        ) && node.utf8_text(source.as_bytes()).is_ok_and(|text| {
-            text.split(|ch: char| !ch.is_alphanumeric())
-                .any(|word| word.eq_ignore_ascii_case("temporary"))
-        }) {
-            return true;
-        }
-        if matches!(
-            node.kind(),
-            "var_section" | "object_var_section" | "procedure_declaration" | "trigger_declaration"
-        ) {
-            return false;
-        }
-        let Some(parent) = node.parent() else {
-            return false;
-        };
-        node = parent;
-    }
-}
-
-fn is_database_write_method(method: &str) -> bool {
-    matches!(
-        method.to_ascii_lowercase().as_str(),
-        "insert" | "insertifnotexists" | "modify" | "modifyall" | "delete" | "deleteall" | "rename"
-    )
 }
 
 fn is_post_database_event(event: &str) -> bool {
