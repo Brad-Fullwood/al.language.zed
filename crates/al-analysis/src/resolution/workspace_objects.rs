@@ -2,8 +2,9 @@
 //!
 //! The file index is keyed by name alone, so a table and a page sharing a name
 //! resolve to whichever was indexed last. Every entry point here takes the AL
-//! type keyword when the caller has one and scans `object_info`, which is keyed
-//! by path, for the entry whose kind matches.
+//! type keyword when the caller has one and scans `object_infos`, which is
+//! keyed by path and lists every object a file declares, for the entry whose
+//! kind matches.
 
 use al_syntax::IdentifierText;
 use std::path::{Path, PathBuf};
@@ -24,33 +25,33 @@ use super::{ResolvedMember, ResolvedMemberKind, ResolvedType};
 /// `file_index.objects`, which is keyed by name only — so when a `table` and a
 /// `page` share a name, whichever was indexed last wins. When the
 /// reference carries an AL type keyword (e.g. `Record Customer` → `Record`,
-/// which denotes a table), scan `object_info` (keyed by path, so it holds
-/// *every* object) for the entry whose name matches and whose kind maps to that
-/// AL type, and return that one. Falls back to the name-only resolver when no
-/// kind is supplied or no kind-matching object exists.
+/// which denotes a table), scan `object_infos` (keyed by path, listing every
+/// object of every file, not only a file's first) for the entry whose name
+/// matches and whose kind maps to that AL type, and return that one. Falls
+/// back to the name-only resolver when no kind is supplied or no
+/// kind-matching object exists.
 pub(crate) fn resolve_workspace_object_definition_of_type(
     workspace: &Workspace,
     name: &str,
     al_type_keyword: Option<&str>,
 ) -> Option<(Url, Range)> {
     if let Some(al_type) = al_type_keyword {
-        for entry in workspace.file_index.object_info.iter() {
-            let info = entry.value();
-            if info.name.eq_ignore_ascii_case(name)
-                && al_syntax::type_resolver::object_kind_to_al_type(&info.kind)
-                    .eq_ignore_ascii_case(al_type)
-            {
-                let path = entry.key().clone();
-                // A kind match whose file is transiently uncached or whose path
-                // is non-absolute must not abort the whole resolution — fall
-                // through to the name-only resolver below instead of returning
-                // None (which would make go-to-definition yield nothing).
-                let (Ok(uri), Some((file_source, _tree))) = (
-                    Url::from_file_path(&path),
-                    workspace.file_index.get_cached_parse(&path),
-                ) else {
-                    break;
-                };
+        let typed = al_insight::calls::indexed_objects(&workspace.file_index)
+            .into_iter()
+            .find(|(_, info)| {
+                info.name.eq_ignore_ascii_case(name)
+                    && al_syntax::type_resolver::object_kind_to_al_type(&info.kind)
+                        .eq_ignore_ascii_case(al_type)
+            });
+        if let Some((path, info)) = typed {
+            // A kind match whose file is transiently uncached or whose path
+            // is non-absolute must not abort the whole resolution — fall
+            // through to the name-only resolver below instead of returning
+            // None (which would make go-to-definition yield nothing).
+            if let (Ok(uri), Some((file_source, _tree))) = (
+                Url::from_file_path(&path),
+                workspace.file_index.get_cached_parse(&path),
+            ) {
                 return Some((
                     uri,
                     al_syntax::ts_range_to_syntax(&info.range, file_source.as_bytes()).into(),
@@ -67,12 +68,17 @@ pub(crate) fn resolve_workspace_object_definition(
 ) -> Option<(Url, Range)> {
     let path = resolve_object_path(workspace, None, name, None)?;
     let (file_source, tree) = workspace.file_index.get_cached_parse(&path)?;
-    let obj = al_syntax::find_object_declaration(&tree, &file_source)?;
+    // The declaration named `name`: the file's first object is another one
+    // when the file declares several.
+    let range = match workspace.file_index.object_info_named(&path, name, None) {
+        Some(info) => info.range,
+        None => al_syntax::find_object_declaration(&tree, &file_source)?.range,
+    };
     let uri = Url::from_file_path(&path).ok()?;
     // Keep transport-specific LSP types out of the analysis layer.
     Some((
         uri,
-        al_syntax::ts_range_to_syntax(&obj.range, file_source.as_bytes()).into(),
+        al_syntax::ts_range_to_syntax(&range, file_source.as_bytes()).into(),
     ))
 }
 
@@ -101,28 +107,26 @@ pub(super) fn resolve_object_path(
     name: &str,
     al_type: Option<&str>,
 ) -> Option<PathBuf> {
-    let matches_type = |path: &Path| {
-        let Some(al_type) = al_type else {
-            return true;
-        };
+    // Any object of the current file counts, not only its first: a file can
+    // declare a table and then the codeunit that refers to it.
+    let declares_here = |path: &Path| {
         workspace
             .file_index
-            .object_info
-            .get(path)
-            .is_some_and(|info| {
-                al_syntax::type_resolver::object_kind_to_al_type(&info.kind)
-                    .eq_ignore_ascii_case(al_type)
+            .object_infos_in(path)
+            .iter()
+            .any(|info| {
+                info.name.eq_ignore_ascii_case(name)
+                    && al_type.is_none_or(|al_type| {
+                        al_syntax::type_resolver::object_kind_to_al_type(&info.kind)
+                            .eq_ignore_ascii_case(al_type)
+                    })
             })
     };
 
     let mut referring_path = None;
     if let Some(uri) = current_uri {
         if let Ok(current_path) = uri.to_file_path() {
-            if workspace_object_name(workspace, &current_path)
-                .as_deref()
-                .is_some_and(|object_name| object_name.eq_ignore_ascii_case(name))
-                && matches_type(&current_path)
-            {
+            if declares_here(&current_path) {
                 tracing::debug!(name = %name, source = "current_file", "resolve_object_path: matched current file");
                 return Some(current_path);
             }
@@ -155,14 +159,6 @@ pub(super) fn resolve_object_path(
 
     tracing::debug!(name = %name, "resolve_object_path: not found");
     None
-}
-
-pub(super) fn workspace_object_name(workspace: &Workspace, path: &Path) -> Option<String> {
-    workspace
-        .file_index
-        .object_info
-        .get(path)
-        .map(|info| info.name.clone())
 }
 
 /// A member that an extension object in the workspace adds to `base`: a
@@ -436,6 +432,32 @@ codeunit 50103 Helper
             "a codeunit sharing the table extension's file is not the extension"
         );
         assert!(workspace_extension_member(&ws, "Codeunit", "Customer", "Refresh").is_none());
+    }
+
+    /// The referring file declares the object itself, as its second object.
+    /// Only the file's first object was compared, so the reference went to a
+    /// same-named object elsewhere in the workspace.
+    #[test]
+    fn resolve_object_path_prefers_the_current_file_s_second_object() {
+        let ws = Workspace::new();
+        let elsewhere = std::path::PathBuf::from("/other/Helper.al");
+        let current = std::path::PathBuf::from("/proj/Posting.al");
+        ws.file_index
+            .add_file(elsewhere, "codeunit 60100 Helper\n{\n}\n".to_string());
+        ws.file_index.add_file(
+            current.clone(),
+            "table 50200 \"Posting Buffer\"\n{\n}\n\ncodeunit 50100 Helper\n{\n}\n".to_string(),
+        );
+        let uri = Url::from_file_path(&current).unwrap();
+
+        assert_eq!(
+            resolve_object_path(&ws, Some(&uri), "Helper", Some("Codeunit")),
+            Some(current.clone())
+        );
+        assert_eq!(
+            resolve_object_path(&ws, Some(&uri), "Helper", None),
+            Some(current)
+        );
     }
 
     /// A setup table and its card share a name, which is the usual AL

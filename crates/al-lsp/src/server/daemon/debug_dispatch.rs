@@ -91,23 +91,44 @@ fn optional_i32_param(params: &serde_json::Value, key: &str) -> Result<Option<i3
     }
 }
 
-/// Resolve `(objectType, objectId)` from the workspace file index for
-/// a given file path, so daemon breakpoints land at the correct BC object
-/// instead of `(0, 0)`. Returns `None` when the file isn't indexed yet — the
-/// caller must then either supply the metadata explicitly or surface an error.
-fn resolve_object_metadata(workspace: &Workspace, file: &str) -> Option<(i32, i32)> {
+/// The object a breakpoint on 1-based `line` of `path` belongs to.
+///
+/// A file can declare several objects, and BC routes a breakpoint by object
+/// type and ID, so a breakpoint inside a file's second object set on the
+/// first never hit. The object is the last one declared at or above the
+/// line; a line above every declaration belongs to the first.
+pub(in crate::server::daemon) fn object_at_line(
+    workspace: &Workspace,
+    path: &std::path::Path,
+    line: u32,
+) -> Option<al_source::file_index::CachedObjectInfo> {
+    let row = usize::try_from(line.saturating_sub(1)).ok()?;
+    let mut objects = workspace.file_index.object_infos_in(path).into_iter();
+    let first = objects.next()?;
+    Some(
+        objects
+            .rfind(|info| info.range.start_point.row <= row)
+            .unwrap_or(first),
+    )
+}
+
+/// Resolve `(objectType, objectId)` from the workspace file index for the
+/// object around 1-based `line` of a file, so daemon breakpoints land at the
+/// correct BC object instead of `(0, 0)`. Returns `None` when the file isn't
+/// indexed yet — the caller must then either supply the metadata explicitly
+/// or surface an error.
+fn resolve_object_metadata(workspace: &Workspace, file: &str, line: u32) -> Option<(i32, i32)> {
     use al_dap::dap::native_dap::kind_to_object_type;
     // The CLI sends `file` as a `file://` URI (via `file_to_uri`); internal
-    // callers may pass a plain filesystem path. `file_index.object_info` is
-    // keyed by plain paths, so `PathBuf::from("file:///…")` never matched and
-    // every CLI breakpoint failed with "file is not indexed". Accept both forms.
+    // callers may pass a plain filesystem path. The file index is keyed by
+    // plain paths, so `PathBuf::from("file:///…")` never matched and every
+    // CLI breakpoint failed with "file is not indexed". Accept both forms.
     let path = url::Url::parse(file)
         .ok()
         .filter(|u| u.scheme() == "file")
         .and_then(|u| u.to_file_path().ok())
         .unwrap_or_else(|| std::path::PathBuf::from(file));
-    let entry = workspace.file_index.object_info.get(&path)?;
-    let info = entry.value();
+    let info = object_at_line(workspace, &path, line)?;
     // BC object IDs are i32; reject (return None) rather than silently wrap an
     // out-of-range cached i64 so breakpoints never land on the wrong object.
     let id = i32::try_from(info.id?).ok()?;
@@ -528,7 +549,7 @@ async fn debug_breakpoint(workspace: &Workspace, id: u64, params: &serde_json::V
     // `as i32` would silently wrap an out-of-range value; `try_from`
     // rejects it so an upstream caller bug surfaces instead of
     // silently routing at the wrong object.
-    let resolved = resolve_object_metadata(workspace, &file);
+    let resolved = resolve_object_metadata(workspace, &file, line);
     let explicit_type = match optional_i32_param(params, "objectType") {
         Ok(value) => value,
         Err(message) => {
@@ -1240,8 +1261,38 @@ mod acquire_bc_token_tests {
 
 #[cfg(test)]
 mod resolve_object_metadata_tests {
-    use super::resolve_object_metadata;
+    use super::{object_at_line, resolve_object_metadata};
     use al_workspace::Workspace;
+
+    /// `object_at_line` is what a snapshot capture's breakpoints are routed
+    /// by as well: each line belongs to the object declared at or above it.
+    #[test]
+    fn object_at_line_picks_the_object_declared_at_or_above_the_line() {
+        let ws = Workspace::new();
+        let path = std::path::PathBuf::from("/tmp/ObjectAtLine.al");
+        let src = "// header\ntable 50200 \"Posting Buffer\"\n{\n}\n\ncodeunit 50100 \"Posting Mgt\"\n{\n}\n\n";
+        ws.file_index.add_file(path.clone(), src.to_string());
+        let name_at = |line| object_at_line(&ws, &path, line).map(|info| info.name);
+
+        assert_eq!(
+            name_at(1).as_deref(),
+            Some("Posting Buffer"),
+            "above every object"
+        );
+        assert_eq!(name_at(3).as_deref(), Some("Posting Buffer"));
+        assert_eq!(
+            name_at(5).as_deref(),
+            Some("Posting Buffer"),
+            "between objects"
+        );
+        assert_eq!(name_at(6).as_deref(), Some("Posting Mgt"));
+        assert_eq!(
+            name_at(10).as_deref(),
+            Some("Posting Mgt"),
+            "after the last"
+        );
+        assert!(object_at_line(&ws, std::path::Path::new("/tmp/None.al"), 1).is_none());
+    }
 
     #[test]
     fn resolves_indexed_codeunit_to_object_type_and_id() {
@@ -1250,7 +1301,7 @@ mod resolve_object_metadata_tests {
         let src = "codeunit 50100 \"Some Codeunit\"\n{\n}\n".to_string();
         ws.file_index.add_file(path.clone(), src);
 
-        let (obj_type, obj_id) = resolve_object_metadata(&ws, "/tmp/SomeCodeunit.al")
+        let (obj_type, obj_id) = resolve_object_metadata(&ws, "/tmp/SomeCodeunit.al", 1)
             .expect("indexed file should resolve");
         // codeunit kind → bc_object_type::CODEUNIT (don't pin the exact int —
         // assert it's non-zero, which is the invariant).
@@ -1261,10 +1312,28 @@ mod resolve_object_metadata_tests {
         assert_eq!(obj_id, 50100);
     }
 
+    /// A breakpoint inside the second object of a file routes to that
+    /// object, not the file's first.
+    #[test]
+    fn resolves_the_object_around_the_breakpoint_line() {
+        let ws = Workspace::new();
+        let path = std::path::PathBuf::from("/tmp/Posting.al");
+        let src = "table 50200 \"Posting Buffer\"\n{\n}\n\ncodeunit 50100 \"Posting Mgt\"\n{\n    procedure Post()\n    begin\n    end;\n}\n";
+        ws.file_index.add_file(path, src.to_string());
+
+        let (table_type, table_id) =
+            resolve_object_metadata(&ws, "/tmp/Posting.al", 2).expect("the table resolves");
+        assert_eq!(table_id, 50200);
+        let (codeunit_type, codeunit_id) =
+            resolve_object_metadata(&ws, "/tmp/Posting.al", 8).expect("the codeunit resolves");
+        assert_eq!(codeunit_id, 50100, "line 8 is inside the codeunit");
+        assert_ne!(codeunit_type, table_type);
+    }
+
     #[test]
     fn returns_none_for_unindexed_file() {
         let ws = Workspace::new();
-        assert!(resolve_object_metadata(&ws, "/nonexistent/Foo.al").is_none());
+        assert!(resolve_object_metadata(&ws, "/nonexistent/Foo.al", 1).is_none());
     }
 
     #[test]
@@ -1288,7 +1357,7 @@ mod resolve_object_metadata_tests {
             },
         );
         assert!(
-            resolve_object_metadata(&ws, "/tmp/Overflow.al").is_none(),
+            resolve_object_metadata(&ws, "/tmp/Overflow.al", 1).is_none(),
             "out-of-range cached id must not be silently truncated"
         );
     }

@@ -334,13 +334,15 @@ pub fn hover_native(
         }
     }
 
-    // Clone the file_path out of the first DashMap entry and drop the ref
-    // before doing the second lookup, so we are never holding two shard
-    // locks across the format! call.
+    // The declaration named `clean_name`, not the file's first object: a
+    // file can declare a table and then a codeunit. `object_info_named`
+    // returns an owned copy, so no shard lock is held across the format!.
     let file_path = workspace.file_index.object_path(clean_name);
     if let Some(file_path) = file_path {
-        if let Some(cached) = workspace.file_index.object_info.get(&file_path) {
-            let info = cached.value();
+        if let Some(info) = workspace
+            .file_index
+            .object_info_named(&file_path, clean_name, None)
+        {
             let content = format!(
                 "```al\n{} {} \"{}\"\n```\n*(workspace)*",
                 info.kind,
@@ -861,6 +863,41 @@ mod tests {
         .expect("hover on a declared local variable should resolve");
         assert!(
             r.contents.contains("Counter: Integer"),
+            "got: {:?}",
+            r.contents
+        );
+    }
+
+    /// The hovered object is the second one its file declares; the card
+    /// showed the file's first object, a table, instead.
+    #[test]
+    fn hover_on_a_workspace_object_shows_that_object_not_its_file_s_first() {
+        let ws = Workspace::new();
+        let helper_src = "table 50161 \"Helper Buffer\"\n{\n}\n\ncodeunit 50160 \"MyHelper\"\n{\n    procedure Run() begin end;\n}\n";
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/tmp/MyHelper.al"),
+            helper_src.to_string(),
+        );
+
+        let src = "codeunit 50150 \"Caller\"\n{\n    var\n        H: Codeunit \"MyHelper\";\n}\n";
+        let uri = open_doc(&ws, src);
+
+        let r = hover(
+            &ws,
+            &uri,
+            Position {
+                line: 3,
+                character: 22,
+            },
+        )
+        .expect("hover on a workspace object should resolve via the file index");
+        assert!(
+            r.contents.contains("codeunit 50160 \"MyHelper\""),
+            "got: {:?}",
+            r.contents
+        );
+        assert!(
+            !r.contents.contains("Helper Buffer"),
             "got: {:?}",
             r.contents
         );

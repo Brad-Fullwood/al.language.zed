@@ -13,7 +13,7 @@ use crate::workspace_sources::{self, WorkspaceSource};
 use al_workspace::Workspace;
 
 /// How a consumer references the symbol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ImpactType {
     /// Field displayed on a page.
@@ -38,7 +38,7 @@ pub enum ImpactType {
 
 /// How sure the analysis is that the reported consumer really uses the queried
 /// symbol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ImpactConfidence {
     /// The reference was bound to the queried symbol — through the symbol
@@ -188,7 +188,7 @@ pub fn impact(workspace: &Workspace, symbol: &str) -> Result<Vec<ImpactEntry>, I
         search_workspace_files(&workspace_sources, &object_part, None, &mut results);
     }
 
-    dedupe(&mut results);
+    sort_and_dedupe(&mut results);
     Ok(results)
 }
 
@@ -272,7 +272,7 @@ impl WorkspaceImpactIndex {
             ),
             None => search_workspace_files(&self.sources, &object_part, kind, &mut results),
         }
-        dedupe(&mut results);
+        sort_and_dedupe(&mut results);
         results
     }
 }
@@ -786,13 +786,14 @@ fn is_field_declaration_name(text: &str, offset: usize) -> bool {
         && before[before.len() - 5..].eq_ignore_ascii_case("field")
 }
 
-/// Drop rows that repeat another: an exact duplicate, an object-level row
-/// (no procedure or field) that a more specific row of the same object and
-/// type already reports, and an object-level `read` of an object that has a
-/// row saying more. `Cust Subs read` was listed once from its symbol entry,
-/// with the procedure, and again from the source scan; `Cust Ext` was both
-/// `extends` and `read` because its header names the table.
-fn dedupe(results: &mut Vec<ImpactEntry>) {
+/// Sort the rows, workspace rows first, then drop rows that repeat another:
+/// an exact duplicate, an object-level row (no procedure or field) that a
+/// more specific row of the same object and type already reports, and an
+/// object-level `read` of an object that has a row saying more.
+/// `Cust Subs read` was listed once from its symbol entry, with the
+/// procedure, and again from the source scan. `Cust Ext` was both `extends`
+/// and `read` because its header names the table.
+fn sort_and_dedupe(results: &mut Vec<ImpactEntry>) {
     // Workspace rows omit `package`: the source scan never set it, and rows
     // from the workspace's symbol entries said "workspace", so the same kind
     // of row came back in two shapes and did not dedupe against each other.
@@ -805,6 +806,24 @@ fn dedupe(results: &mut Vec<ImpactEntry>) {
             entry.package = None;
         }
     }
+    // The scans walk `SymbolIndex::all_entries`, whose order is the iteration
+    // order of a `DashMap` and differs between two builds over the same
+    // packages. Sorting on every field fixes the row order, and which of two
+    // duplicates the `retain` below keeps.
+    results.sort_by_cached_key(|entry| {
+        (
+            entry.package.clone(),
+            entry.kind,
+            entry.name.to_lowercase(),
+            entry.name.clone(),
+            entry.id,
+            entry.proc.clone(),
+            entry.field.clone(),
+            entry.impact_type,
+            entry.confidence,
+            entry.note.clone(),
+        )
+    });
     let key = |entry: &ImpactEntry| (entry.kind, entry.name.to_lowercase(), entry.impact_type);
     let object_level = |entry: &ImpactEntry| entry.proc.is_none() && entry.field.is_none();
     let specific: std::collections::HashSet<_> = results
@@ -1205,7 +1224,7 @@ mod tests {
             row(Some("OnInsert")),
             row(None),
         ];
-        dedupe(&mut rows);
+        sort_and_dedupe(&mut rows);
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0].proc.as_deref(), Some("OnInsert"));
 
@@ -1214,7 +1233,7 @@ mod tests {
         let mut extends = row(None);
         extends.impact_type = ImpactType::Extends;
         let mut rows = vec![extends, row(None)];
-        dedupe(&mut rows);
+        sort_and_dedupe(&mut rows);
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0].impact_type, ImpactType::Extends);
     }
@@ -1266,6 +1285,66 @@ mod tests {
             extends: Some(extends.to_string()),
             package: "ExtPkg".to_string(),
             ..Default::default()
+        }
+    }
+
+    /// The member and object scans walk `SymbolIndex::all_entries`, whose
+    /// order is the iteration order of a `DashMap` and differs between two
+    /// indexes over the same entries. Two daemon starts gave the same rows in
+    /// a different order.
+    #[test]
+    fn impact_rows_come_back_in_one_order_from_every_build() {
+        let mut entries = vec![make_table(18, "Customer")];
+        for id in 0..30 {
+            entries.push(make_page_for_table(
+                100 + id,
+                &format!("Page {id:02}"),
+                "Customer",
+            ));
+            entries.push(make_table_ext(
+                200 + id,
+                &format!("Ext {id:02}"),
+                "Customer",
+            ));
+            entries.push(SymbolEntry {
+                kind: ObjectKind::Codeunit,
+                id: 300 + id,
+                name: format!("Codeunit {id:02}"),
+                package: format!("Pkg {}", id % 3),
+                methods: vec![MethodSymbol {
+                    name: "Post".to_string(),
+                    parameters: vec![ParameterSymbol {
+                        name: "Cust".to_string(),
+                        type_name: "Record Customer".to_string(),
+                        is_var: true,
+                    }],
+                    return_type: None,
+                    attributes: Vec::new(),
+                    is_local: false,
+                }],
+                ..Default::default()
+            });
+        }
+        let rows = |entries: &[SymbolEntry], symbol: &str| -> Vec<String> {
+            let ws = workspace_with_files(vec![
+                ("/proj/Mgt.al", LOYALTY_MGT),
+                ("/proj/Test.al", LOYALTY_TEST),
+            ]);
+            ws.symbols.add_entries(entries);
+            impact(&ws, symbol)
+                .unwrap()
+                .iter()
+                .map(|row| serde_json::to_string(row).unwrap())
+                .collect()
+        };
+        let reversed: Vec<SymbolEntry> = entries.iter().rev().cloned().collect();
+        for symbol in ["Customer", "Customer.\"No.\""] {
+            let first = rows(&entries, symbol);
+            assert!(first.len() > 30, "{symbol}: {first:#?}");
+            for _ in 0..3 {
+                assert_eq!(rows(&entries, symbol), first, "{symbol}");
+                assert_eq!(rows(&reversed, symbol), first, "{symbol}");
+            }
         }
     }
 

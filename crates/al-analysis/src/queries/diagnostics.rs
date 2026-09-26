@@ -230,7 +230,7 @@ pub fn native_workspace_diagnostics_at_root(
             || diagnostic_anchor_path(workspace, project_root),
             std::path::PathBuf::from,
         );
-        let location = native_finding_range(workspace, &path);
+        let location = native_finding_range(workspace, &path, &finding);
         let severity = SyntaxDiagnosticSeverity::from(finding.severity);
         let (range, severity, message) = match location {
             Ok(range) => (range, severity, finding.message),
@@ -455,17 +455,32 @@ fn diagnostic_anchor_path(
         .unwrap_or_else(|| std::path::PathBuf::from("app.json"))
 }
 
+/// Where a native finding is shown: the declaration of the object it is
+/// about. A file can declare several objects, so the finding's own object is
+/// looked up by kind and name; a finding that names no object of the file
+/// (a source or configuration error) falls back to the file's first object.
 fn native_finding_range(
     workspace: &Workspace,
     path: &std::path::Path,
+    finding: &super::native_check::NativeFinding,
 ) -> Result<crate::queries::Range, String> {
     if let Some((text, _)) = workspace.file_index.get_cached_parse(path) {
-        let info = workspace.file_index.object_info.get(path).ok_or_else(|| {
-            format!(
-                "indexed source has no matching object metadata (workspace generation {})",
-                workspace.generation_revision()
-            )
-        })?;
+        let info = workspace
+            .file_index
+            .object_info_named(path, &finding.object_name, Some(&finding.object_type))
+            .or_else(|| {
+                workspace
+                    .file_index
+                    .object_infos_in(path)
+                    .into_iter()
+                    .next()
+            })
+            .ok_or_else(|| {
+                format!(
+                    "indexed source has no matching object metadata (workspace generation {})",
+                    workspace.generation_revision()
+                )
+            })?;
         return Ok(ts_range_to_query_range(
             info.range,
             &al_syntax::SourceLines::new(text.as_bytes()),
@@ -761,6 +776,32 @@ mod tests {
         assert!(diagnostics.iter().all(|(_, diagnostic)| {
             diagnostic.code != "AL-NC001" || diagnostic.severity == SyntaxDiagnosticSeverity::Error
         }));
+    }
+
+    /// The duplicate is the second object of its file; the diagnostic sat on
+    /// the file's first object, a table that has nothing wrong with it.
+    #[test]
+    fn a_native_finding_is_placed_on_its_own_object_in_a_multi_object_file() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/First.al"),
+            r#"codeunit 50100 "First" { }"#.to_string(),
+        );
+        let second = std::path::PathBuf::from("/proj/Second.al");
+        ws.file_index.add_file(
+            second.clone(),
+            "table 50200 \"Second Buffer\"\n{\n}\n\ncodeunit 50100 \"Second\"\n{\n}\n".to_string(),
+        );
+
+        let diagnostics = native_workspace_diagnostics(&ws, &AlConfig::default());
+        let (_, duplicate) = diagnostics
+            .iter()
+            .find(|(path, diagnostic)| path == &second && diagnostic.code == "AL-NC001")
+            .expect("the second file's duplicate codeunit is reported");
+        assert_eq!(
+            duplicate.range.start.line, 4,
+            "on codeunit \"Second\", not the table: {duplicate:?}"
+        );
     }
 
     #[test]

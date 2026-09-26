@@ -1,9 +1,12 @@
-//! Dependency source summaries on disk, one entry per package.
+//! Dependency source summaries on disk, one entry per package, in one store
+//! that every project of the user shares.
 //!
 //! An entry stands in for a package only while the package's bytes, the
-//! summary schema and the grammar are the ones it was written for, so a
-//! changed package misses and is summarized again on its own. Loading an
-//! entry decodes plain data and runs nothing. Every failure is a miss.
+//! summary schema, the grammar and the summary builder are the ones it was
+//! written for, so a changed package misses and is summarized again on its
+//! own. A summary depends on nothing else, so two projects on the same
+//! package read the same entry. Loading an entry decodes plain data and runs
+//! nothing. Every failure is a miss.
 //!
 //! Layout, following `al_symbols::cache`: a 4-byte little-endian header
 //! length, a JSON [`EntryHeader`], then the JSON [`PackageSourceSummary`].
@@ -20,20 +23,27 @@ use sha2::{Digest, Sha256};
 use crate::dependency_sources::PackageSourceSummary;
 
 /// Bump whenever `PackageSourceSummary`, or anything it holds, changes what
-/// it means. Older entries then miss and are rewritten.
+/// it means, or the code that builds one gives other output. Older entries
+/// then miss and are rewritten. The snapshot test
+/// `fixture_summaries_match_the_snapshot_of_this_schema_version` fails until
+/// this constant and its snapshot change together.
 pub const SCHEMA_VERSION: u32 = 1;
 /// Base Application summarizes to about 60 MB of JSON. Anything past this is
 /// corrupt or not ours, and is refused before it is read.
 const MAX_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
 /// A temporary file older than this was left by a writer that died.
 const MAX_TMP_FILE_AGE: Duration = Duration::from_secs(60);
-/// An entry no generation has used for this long is deleted.
+/// An entry no generation of any project has used for this long is deleted.
 const MAX_UNUSED_ENTRY_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
-/// Past this many bytes in one project's cache, unused entries are deleted,
-/// least recently used first.
+/// Past this many bytes in the store, entries the current generation does
+/// not use are deleted, least recently used first.
 const MAX_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
+/// The store's directory under `<user data dir>/al-lsp`, and the name of the
+/// directory each project kept its own entries in before the store was
+/// shared.
+const STORE_DIR: &str = "source-index";
 const ENTRY_EXTENSION: &str = "summary";
-/// Longest part of a package file name kept in an entry name.
+/// Longest package name and version kept in an entry name.
 const MAX_STEM_BYTES: usize = 120;
 
 /// What an entry must match to stand in for a package.
@@ -42,6 +52,9 @@ pub struct PackageKey {
     pub schema_version: u32,
     /// [`al_syntax::grammar_fingerprint`] of the build that wrote the entry.
     pub grammar: u64,
+    /// [`al_insight::calls::summary_builder_fingerprint`] of the build that
+    /// wrote the entry.
+    pub builder: u64,
     /// SHA-256 of the `.app` bytes, lowercase hex.
     pub sha256: String,
     pub byte_len: u64,
@@ -79,6 +92,7 @@ impl PackageKey {
         Ok(Self {
             schema_version: SCHEMA_VERSION,
             grammar: al_syntax::grammar_fingerprint(),
+            builder: al_insight::calls::summary_builder_fingerprint(),
             sha256,
             byte_len,
             app_id,
@@ -87,27 +101,39 @@ impl PackageKey {
         })
     }
 
-    /// The file name of this key's entry for the package at `app_path`.
-    fn entry_name(&self, app_path: &Path) -> OsString {
-        let stem = app_path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "package".to_string());
-        let mut end = stem.len().min(MAX_STEM_BYTES);
-        while !stem.is_char_boundary(end) {
-            end -= 1;
-        }
+    /// The file name of this key's entry: the package name and version from
+    /// its manifest, for a person reading the directory, then a hash of the
+    /// fields an entry must match. The package's file name is left out, so
+    /// the same bytes under two file names share one entry.
+    fn entry_name(&self) -> OsString {
+        let label = if self.name.is_empty() {
+            "package".to_string()
+        } else {
+            format!("{}_{}", self.name, self.version)
+        };
+        let stem: String = label
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .take(MAX_STEM_BYTES)
+            .collect();
         let mut hash: u64 = 0xcbf29ce484222325;
-        for byte in self.schema_version.to_le_bytes().iter().chain(
-            self.grammar
-                .to_le_bytes()
-                .iter()
-                .chain(self.sha256.as_bytes()),
-        ) {
+        let fields = [
+            &self.schema_version.to_le_bytes()[..],
+            &self.grammar.to_le_bytes(),
+            &self.builder.to_le_bytes(),
+            self.sha256.as_bytes(),
+        ];
+        for byte in fields.into_iter().flatten() {
             hash ^= u64::from(*byte);
             hash = hash.wrapping_mul(0x00000100000001b3);
         }
-        OsString::from(format!("{}.{hash:016x}.{ENTRY_EXTENSION}", &stem[..end]))
+        OsString::from(format!("{stem}.{hash:016x}.{ENTRY_EXTENSION}"))
     }
 }
 
@@ -118,7 +144,7 @@ struct EntryHeader {
     key: PackageKey,
 }
 
-/// The dependency source summaries of one project, on disk.
+/// Dependency source summaries on disk.
 #[derive(Debug, Clone)]
 pub struct SourceSummaryCache {
     dir: PathBuf,
@@ -130,10 +156,22 @@ impl SourceSummaryCache {
         Self { dir }
     }
 
-    /// The cache of the project at `project_root`:
-    /// `<user data dir>/al-lsp/<project hash>/source-index`.
+    /// The cache the project at `project_root` uses: the store every project
+    /// shares, `<user data dir>/al-lsp/source-index`. Deletes the entries
+    /// earlier builds kept for this project alone, in
+    /// `<user data dir>/al-lsp/<project hash>/source-index`. `None` when the
+    /// user has no data directory.
     pub fn for_project(project_root: &Path) -> Option<Self> {
-        crate::project_data_dir(project_root).map(|dir| Self::at(dir.join("source-index")))
+        al_project::project::user_data_dir()
+            .map(|data_dir| Self::for_project_under(&data_dir, project_root))
+    }
+
+    /// [`Self::for_project`] with `data_dir` as the user data directory.
+    pub(crate) fn for_project_under(data_dir: &Path, project_root: &Path) -> Self {
+        remove_project_store(
+            &crate::test_results::project_data_dir_under(data_dir, project_root).join(STORE_DIR),
+        );
+        Self::at(data_dir.join("al-lsp").join(STORE_DIR))
     }
 
     pub fn dir(&self) -> &Path {
@@ -154,16 +192,17 @@ impl SourceSummaryCache {
         }
     }
 
-    /// Where the entry for `key` of the package at `app_path` lives.
-    pub fn entry_path(&self, app_path: &Path, key: &PackageKey) -> PathBuf {
-        self.dir.join(key.entry_name(app_path))
+    /// Where the entry for `key` lives.
+    pub fn entry_path(&self, key: &PackageKey) -> PathBuf {
+        self.dir.join(key.entry_name())
     }
 
     /// The summary stored for `key`, or `None` on any miss: no entry, an
     /// entry another user could have written, an oversized or corrupt entry,
-    /// or one written for other bytes, another schema or another grammar.
-    pub fn load(&self, app_path: &Path, key: &PackageKey) -> Option<PackageSourceSummary> {
-        let path = self.entry_path(app_path, key);
+    /// or one written for other bytes, another schema, another grammar or
+    /// another summary builder.
+    pub fn load(&self, key: &PackageKey) -> Option<PackageSourceSummary> {
+        let path = self.entry_path(key);
         if !self.is_readable() {
             return None;
         }
@@ -207,17 +246,12 @@ impl SourceSummaryCache {
         }
     }
 
-    /// Write the summary of the package at `app_path` under `key`.
+    /// Write the summary of the package `key` names.
     ///
     /// The entry is written to a temporary file and renamed into place, so a
     /// reader sees the old entry or the new one. Nothing is written into a
     /// directory another user could replace.
-    pub fn save(
-        &self,
-        app_path: &Path,
-        key: &PackageKey,
-        summary: &PackageSourceSummary,
-    ) -> std::io::Result<()> {
+    pub fn save(&self, key: &PackageKey, summary: &PackageSourceSummary) -> std::io::Result<()> {
         create_private_dir(&self.dir)?;
         private_to_this_user(&self.dir, true)
             .map_err(|reason| std::io::Error::new(std::io::ErrorKind::PermissionDenied, reason))?;
@@ -229,8 +263,8 @@ impl SourceSummaryCache {
 
         static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = self.entry_path(app_path, key);
-        let mut tmp_name = key.entry_name(app_path);
+        let path = self.entry_path(key);
+        let mut tmp_name = key.entry_name();
         tmp_name.push(format!(".tmp.{}.{sequence}", std::process::id()));
         let tmp_path = self.dir.join(tmp_name);
         let written = (|| {
@@ -257,24 +291,26 @@ impl SourceSummaryCache {
     /// Garbage collection after a generation is built, where `keep` names the
     /// entries the generation uses. Best effort: failures are logged.
     ///
-    /// An entry the generation does not use is deleted when a kept entry has
-    /// the same package file name (the file was rewritten, so the old entry
-    /// can never match again), or when it was last used more than 30 days
-    /// ago. Entries of packages that are only absent for now, during a
-    /// symbol download or on another branch, survive. Past 1 GiB in all, the
-    /// least recently used unused entries go first. Temporary files a dead
-    /// writer left are deleted after a minute.
+    /// An entry the generation does not use may be one another project uses,
+    /// or one of a package that is absent for now, during a symbol download
+    /// or on another branch. It is deleted once no generation has loaded or
+    /// written it for 30 days. An older entry for a package of the same name
+    /// and version stays too: another project may hold that package with
+    /// other bytes, such as another localization of Base Application. Past
+    /// 1 GiB in all, the least recently used unused entries go first.
+    /// Temporary files a dead writer left are deleted after a minute.
     pub fn retain(&self, keep: &HashSet<OsString>) {
+        self.retain_within(keep, MAX_TOTAL_BYTES);
+    }
+
+    /// [`Self::retain`] with `max_total_bytes` as the size limit.
+    pub(crate) fn retain_within(&self, keep: &HashSet<OsString>, max_total_bytes: u64) {
         if private_to_this_user(&self.dir, true).is_err() {
             return;
         }
         let Ok(entries) = fs::read_dir(&self.dir) else {
             return;
         };
-        let kept_stems: HashSet<String> = keep
-            .iter()
-            .filter_map(|name| entry_stem(&name.to_string_lossy()).map(str::to_string))
-            .collect();
         let now = SystemTime::now();
         let age = |metadata: &fs::Metadata| {
             metadata
@@ -292,20 +328,20 @@ impl SourceSummaryCache {
             let Ok(metadata) = entry.metadata() else {
                 continue;
             };
-            if text.contains(".tmp.") {
+            if is_temporary_name(&text) {
                 if age(&metadata) > MAX_TMP_FILE_AGE {
                     remove_entry(&path);
                 }
                 continue;
             }
-            let Some(stem) = entry_stem(&text) else {
+            if !is_entry_name(&text) {
                 continue;
-            };
+            }
             if keep.contains(&name) {
                 total += metadata.len();
                 continue;
             }
-            if kept_stems.contains(stem) || age(&metadata) > MAX_UNUSED_ENTRY_AGE {
+            if age(&metadata) > MAX_UNUSED_ENTRY_AGE {
                 remove_entry(&path);
                 continue;
             }
@@ -315,7 +351,7 @@ impl SourceSummaryCache {
         // Oldest first.
         unused.sort_by_key(|(age, _, _)| std::cmp::Reverse(*age));
         for (_, size, path) in unused {
-            if total <= MAX_TOTAL_BYTES {
+            if total <= max_total_bytes {
                 break;
             }
             remove_entry(&path);
@@ -323,18 +359,54 @@ impl SourceSummaryCache {
         }
     }
 
-    /// The entry name `key` gives the package at `app_path`, for [`Self::retain`].
-    pub fn entry_name(&self, app_path: &Path, key: &PackageKey) -> OsString {
-        key.entry_name(app_path)
+    /// The entry name of `key`, for [`Self::retain`].
+    pub fn entry_name(&self, key: &PackageKey) -> OsString {
+        key.entry_name()
     }
 }
 
-/// The package file name part of an entry name, or `None` for a file that is
-/// not an entry.
-fn entry_stem(name: &str) -> Option<&str> {
-    let rest = name.strip_suffix(ENTRY_EXTENSION)?.strip_suffix('.')?;
-    let (stem, hash) = rest.rsplit_once('.')?;
-    (hash.len() == 16 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(stem)
+/// Whether `name` is an entry name: `<stem>.<16 hex digits>.summary`.
+fn is_entry_name(name: &str) -> bool {
+    name.strip_suffix(ENTRY_EXTENSION)
+        .and_then(|rest| rest.strip_suffix('.'))
+        .and_then(|rest| rest.rsplit_once('.'))
+        .is_some_and(|(_, hash)| {
+            hash.len() == 16 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+}
+
+/// Whether `name` is a temporary file a writer renames into an entry.
+fn is_temporary_name(name: &str) -> bool {
+    name.contains(".tmp.")
+}
+
+/// Delete the entries and temporary files in `dir`, the store one project
+/// kept before the store was shared, then `dir` itself once it is empty.
+/// Leaves `dir` alone when it is a symbolic link or not this user's alone.
+fn remove_project_store(dir: &Path) {
+    if private_to_this_user(dir, true).is_err() {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let text = name.to_string_lossy();
+        if is_entry_name(&text) || is_temporary_name(&text) {
+            remove_entry(&entry.path());
+            removed += 1;
+        }
+    }
+    let _ = fs::remove_dir(dir);
+    if removed > 0 {
+        tracing::info!(
+            dir = %dir.display(),
+            removed,
+            "source summary cache: removed a project's own store, which the shared store replaces"
+        );
+    }
 }
 
 fn remove_entry(path: &Path) {
@@ -356,7 +428,7 @@ fn decode(bytes: &[u8], key: &PackageKey) -> Result<PackageSourceSummary, String
         serde_json::from_slice(header).map_err(|error| format!("unreadable header: {error}"))?;
     if header.key != *key {
         return Err(format!(
-            "written for another package, schema or grammar: {:?}",
+            "written for another package, schema, grammar or builder: {:?}",
             header.key
         ));
     }

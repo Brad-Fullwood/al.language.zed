@@ -428,6 +428,18 @@ impl MockRecord {
     }
 
     /// `GET(key_parts…)` — look up a row by primary key; load into buffer.
+    /// Load the stored row with the view's current primary key into the view,
+    /// if the table holds one; otherwise leave the view as it is. This is
+    /// `xRec` for Modify, Delete and Rename: the row as the table has it.
+    pub fn reload_stored_in(&self, view: &mut RecordView) {
+        if let Ok(key) = self.current_primary_key(view) {
+            if let Some(row) = self.rows.get(&normalize_key(&key)) {
+                view.current = row.clone();
+                view.x_rec = row.clone();
+            }
+        }
+    }
+
     pub fn get_in(&self, view: &mut RecordView, key: PrimaryKey) -> Result<(), RecordError> {
         let key = normalize_key(&key);
         let row = self.rows.get(&key).ok_or(RecordError::NotFound)?;

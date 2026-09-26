@@ -46,6 +46,8 @@ pub fn bind_object_globals(root: tree_sitter::Node<'_>, source: &[u8], frame: &m
                     if regular.kind() == "regular_variable_declaration" {
                         bind_regular_var_decl(regular, source, frame);
                         bind_structured_var_decl(regular, source, frame);
+                    } else if regular.kind() == "label_declaration" {
+                        bind_label_decl(regular, source, frame);
                     }
                 }
             }
@@ -290,10 +292,11 @@ pub(super) fn bind_local_vars(
             // (the only kind that carries `name:`/`type:` fields we default).
             let mut dc = decl.walk();
             for reg in decl.named_children(&mut dc) {
-                if reg.kind() != "regular_variable_declaration" {
-                    continue;
+                match reg.kind() {
+                    "regular_variable_declaration" => bind_regular_var_decl(reg, source, frame),
+                    "label_declaration" => bind_label_decl(reg, source, frame),
+                    _ => {}
                 }
-                bind_regular_var_decl(reg, source, frame);
             }
         }
     }
@@ -346,6 +349,25 @@ fn bind_regular_var_decl(reg: tree_sitter::Node<'_>, source: &[u8], frame: &mut 
         }
         if frame.get(&name).is_none() {
             frame.bind(&name, default.clone());
+        }
+    }
+}
+
+/// Bind a `Name: Label 'Hello %1', Comment = '...';` declaration to its
+/// text, with `''` read as one quote.
+fn bind_label_decl(label: tree_sitter::Node<'_>, source: &[u8], frame: &mut CallFrame) {
+    let name = label
+        .child_by_field_name("name")
+        .and_then(|name| name.utf8_text(source).ok())
+        .map(|name| name.unquote_identifier().into_owned());
+    let text = label
+        .child_by_field_name("value")
+        .and_then(|value| value.utf8_text(source).ok())
+        .and_then(|value| value.trim().strip_prefix('\'')?.strip_suffix('\''))
+        .map(|text| text.replace("''", "'"));
+    if let (Some(name), Some(text)) = (name, text) {
+        if frame.get(&name).is_none() {
+            frame.bind(&name, Value::Text(text));
         }
     }
 }

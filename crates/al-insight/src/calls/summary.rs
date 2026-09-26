@@ -163,6 +163,31 @@ impl SourceFileSummary {
     }
 }
 
+/// An AL file that exercises every part of [`SourceFileSummary::from_tree`]:
+/// several objects in one file, interface dispatch, an event with a
+/// subscriber, record triggers, `Codeunit.Run`, an overloaded name, a
+/// temporary record, database writes and a `Commit()`.
+pub const SUMMARY_FIXTURE: &str = include_str!("summary_fixture.al");
+
+/// A fingerprint of the code that summarizes a file: FNV-1a over the JSON of
+/// the summary [`SourceFileSummary::from_tree`] makes of [`SUMMARY_FIXTURE`].
+///
+/// Summaries kept on disk record it, so a build whose summary code gives
+/// other output for the fixture does not read summaries an older build
+/// wrote. A change the fixture does not exercise leaves it the same.
+pub fn summary_builder_fingerprint() -> u64 {
+    static FINGERPRINT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *FINGERPRINT.get_or_init(|| {
+        let parsed = al_syntax::AlParser::parse_quick(SUMMARY_FIXTURE);
+        let summary = SourceFileSummary::from_tree("fixture.al", &parsed.tree, SUMMARY_FIXTURE);
+        // Serializing plain structs with string map keys does not fail.
+        let json = serde_json::to_vec(&summary).unwrap_or_default();
+        json.iter().fold(0xcbf29ce484222325, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x00000100000001b3)
+        })
+    })
+}
+
 /// A summarized file under the path the graph reports it by.
 pub type SummarizedFile<'a> = (&'a Path, &'a SourceFileSummary);
 

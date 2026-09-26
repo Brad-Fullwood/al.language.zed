@@ -323,3 +323,147 @@ dependency fixtures through transaction lint once from the summaries and once fr
 over the same embedded files, and compares the diagnostics. It fails when the summary path drops
 the effects of one procedure. Step 4 also added two assertions: a directory others can write
 rebuilds to the same summaries, and one changed byte of the `.app` names a different entry.
+
+## 4. Follow-ups
+
+### The key covers the summary builder
+
+`PackageKey` holds a third fingerprint beside the schema version and the grammar:
+`al_insight::calls::summary_builder_fingerprint`, the FNV-1a hash of the JSON summary that
+`SourceFileSummary::from_tree` makes of `SUMMARY_FIXTURE`. The fixture is an AL file in
+`crates/al-insight/src/calls/summary_fixture.al` with several objects in one file, interface
+dispatch, an event and its subscribers, record triggers, `Codeunit.Run`, overloads, a temporary
+record, five kinds of database write and a `Commit()`. The hash is computed once per process, and
+it goes into the entry name and the header, so a build whose summary code gives other output for
+the fixture misses on every old entry. A change the fixture does not exercise leaves the
+fingerprint the same. For that case `fixture_summaries_match_the_snapshot_of_this_schema_version`
+builds a fixture package (the fixture file, a second codeunit, a file that does not parse and a
+file with no object) and compares its summaries with `crates/al-workspace/testdata/summary_snapshot.json`
+byte for byte. The snapshot records `SCHEMA_VERSION`, and `UPDATE_SUMMARY_SNAPSHOT=1` rewrites it
+only when it was written under another version, so the snapshot and the constant change together.
+`an_entry_written_by_another_summary_builder_is_a_miss` checks that another builder fingerprint
+names another entry and that an entry whose header carries one is summarized again, and
+`the_builder_fingerprint_hashes_the_fixture_summary` in al-insight checks the hash. Commit
+`7d9c97c3`.
+
+### `entrypoints` and `impact` rows in one order
+
+Both queries listed rows in the order the symbol index hands out its entries. That is the
+iteration order of a `DashMap`, whose hasher is seeded per map, so two daemon starts over the same
+packages gave the same rows in a different order. `find_entry_points` in
+`crates/al-insight/src/search.rs` now sorts its rows by object kind, then object name and
+procedure name ignoring case, then as written. The impact dedupe in
+`crates/al-analysis/src/queries/impact.rs`, now `sort_and_dedupe`, sorts on every field of a row
+before it drops repeats, workspace rows first, so it also keeps the same one of two duplicates on
+every start. `entry_points_come_back_in_one_order_from_every_build` and
+`impact_rows_come_back_in_one_order_from_every_build` build the index several times, from the
+entries in order and reversed, and compare the serialized rows. Both fail with the sort removed.
+Commit `ffb4c65d`.
+
+### Entries shared across projects
+
+Each project kept its own store, `<user data dir>/al-lsp/<project hash>/source-index/`, and an
+entry name began with the package's file name. Two projects on the same packages each stored a
+full copy, and the second project summarized every package again on its first start.
+
+A summary depends on the package bytes, the schema version, the grammar and the summary builder,
+and the key covers all four. It holds archive paths inside the package and no path of the project
+or of the `.app`, and `parse_quick` takes no project setting, so two projects on the same bytes
+build the same summary. The directory for each project did two things besides keeping projects
+apart. Garbage collection deleted an unused entry when a kept entry had the same package file
+name, which is right only while one project uses the directory: in a shared store, two projects
+with a package of one name and version but other bytes, such as two localizations of Base
+Application, would delete each other's entry on every start. And the 1 GiB limit applied to each
+project.
+
+What changed:
+
+- Commit `e4d047a6` names an entry by the package name and version from its manifest, then the
+  key hash. The file name is no longer part of it, so one package under two file names reads one
+  entry. `load`, `save`, `entry_path` and `entry_name` take the key alone.
+  `the_same_bytes_under_another_file_name_read_the_same_entry` covers it.
+- Commit `98c818e4` makes `SourceSummaryCache::for_project` return
+  `<user data dir>/al-lsp/source-index` for every project. It deletes the entries and temporary
+  files of the project's old store, and the directory once it is empty, but only when that
+  directory is a real directory that this user alone owns and can write. Garbage collection no longer deletes an entry
+  for sharing a package name with a kept one. An unused entry goes after 30 days without a load or
+  a write, or, least recently used first, once the store passes 1 GiB, which is now a limit for
+  the user. The 0700 directory, the 0600 entries, the owner checks and the fallback on a corrupt
+  or foreign entry are unchanged.
+
+Tests in `crates/al-workspace/src/source_cache_tests.rs`:
+
+| Behaviour | Test |
+| --- | --- |
+| Two projects on the same packages use one directory, and the second reads the entries the first wrote | `two_projects_on_the_same_packages_share_their_entries` |
+| Two projects with other bytes under one package name and version both keep their entry across alternating starts | `projects_with_other_bytes_under_one_package_name_keep_both_entries` |
+| An unused entry with the same package name as a kept one stays | `garbage_collection_keeps_entries_another_project_may_use` |
+| Past the size limit the least recently used unused entries go, and an entry in use stays | `garbage_collection_past_the_size_limit_drops_the_least_recently_used` |
+| A project's old store is deleted, the project's other files stay | `the_store_a_project_kept_before_is_removed` |
+| An old store that is a symbolic link is not followed | `a_linked_project_store_is_not_followed` |
+
+`a_rewritten_package_is_rebuilt_alone` now expects the entry of the old bytes to stay. Each test
+in the table except the size limit test fails with its part of the change put back: the directory
+for each project, the rule on package names, the removal of the old store, and the owner check
+before that removal. The size limit test passes before and after. It pins the existing rule now
+that the limit covers every project.
+
+Measured with debug builds of `al-explorer` and `al-lsp` at `e4d047a6` (before) and `98c818e4`
+(after), on two copies of the medium benchmark project in a scratch directory, with
+`XDG_DATA_HOME`, `XDG_CACHE_HOME` and `XDG_RUNTIME_DIR` in that directory. Each project ran
+`impact "Sales-Post"` from a stopped daemon, which waits for the dependency source index, then
+stopped the daemon. Sizes are `du -sb` of `<data>/al-lsp` without the log. The upgrade row runs
+the before build on both projects, then the after build on the same data directory.
+
+| Run | Store on disk | Second project, packages read from disk |
+| --- | --- | --- |
+| Before | 123,611,796 bytes, 61,805,898 in each project's store | 0 of 5 |
+| After | 61,805,898 bytes in `al-lsp/source-index` | 4 of 5 |
+| Upgrade, after build on the before build's data | 61,805,898 bytes, both old stores removed (4 entries each) | 4 of 5 |
+
+On the upgrade, the first project summarizes its packages once more, because the old entries are
+deleted rather than moved. Moving them would need the header of each entry read to build its new
+name, which saves one build per package set once.
+
+The doc comment on `persist_dependency_source_summaries` in
+`crates/al-lsp/src/server/daemon/mod.rs` still says the summaries live in the project's data
+directory. That file belongs to another branch in this campaign, so the comment is left for it.
+
+### The package header scan
+
+The scan is contained: `AppSourceIndex::from_app_path` in `crates/al-symbols/src/source_index.rs`
+reads the first 256 KiB of every embedded `.al` file and returns plain data, two maps from object
+kind with id or name to an archive path, and the list of every `.al` path. Timed in one release
+process on the medium package set at load 11 to 15, it takes 0.49 to 0.54 s for Base Application,
+which sets the length of the step because packages load in parallel, and SHA-256 of the same
+45 MB takes 0.03 s. The same key and store still do not fit. The grammar and builder fingerprints
+in the summary key do not describe the scan, which is a byte scanner (`parse_object_headers`)
+without tree-sitter, and nothing fingerprints that scanner, so a change to it would keep old
+entries in use. The scan also runs where the store cannot reach it: al-symbols runs it while it
+loads packages (`prewarm_source_index` in `crates/al-symbols/src/index/loading.rs`), below
+al-workspace, which owns the store, and the daemon sets the store after that load
+(`crates/al-lsp/src/server/daemon/mod.rs`, lines 212 and 214). A summary cannot replace the scan
+either, since it leaves out the 107 embedded files that do not parse cleanly or declare no object,
+and the scan still lists every file and reads the object headers of files that do not parse. The
+alternative is the symbol cache in `crates/al-symbols/src/cache.rs`. `load_package_via_cache`
+reads that cache's entry for the same package just before it runs the scan, and the entry is
+checked on modification time and size, the check the in-memory scan cache already uses. Storing
+the two maps and the path list in that entry, 2 MB in memory for Base Application, with a bump of
+`CACHE_SCHEMA_VERSION` and a snapshot test of the scan like the summary snapshot, would save up
+to 0.5 s of a second start that section 3 measured at 1.25 s.
+
+## Follow-ups complete
+
+Done:
+
+- The key covers the summary builder: `7d9c97c3`.
+- `entrypoints` and `impact` return their rows in one order: `ffb4c65d`.
+- Entries are named by the package and shared by every project: `e4d047a6` and `98c818e4`.
+
+Left:
+
+- The header scan through the al-symbols symbol cache, as the paragraph above describes.
+- The doc comment on `persist_dependency_source_summaries` in
+  `crates/al-lsp/src/server/daemon/mod.rs`, which still names the project's data directory.
+- From section 3: a first start still parses every embedded file, 3.5 s on 12 threads at load
+  0.6 and more with fewer cores or more load.

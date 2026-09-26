@@ -377,13 +377,7 @@ async fn run() {
                 })
             },
             move |object_type, object_id| {
-                fi2.object_info
-                    .iter()
-                    .find(|entry| {
-                        al_dap::dap::native_dap::kind_to_object_type(&entry.kind) == object_type
-                            && entry.id == Some(object_id as i64)
-                    })
-                    .map(|entry| entry.key().clone())
+                al_lsp::server::dap_mode::native_dap_object_path(&fi2, object_type, object_id)
             },
             |project_root: PathBuf| async move {
                 // Native DAP is a separate process, so it cannot borrow the

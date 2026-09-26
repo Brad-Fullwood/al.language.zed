@@ -189,13 +189,59 @@ pub(crate) async fn compute_workspace_diagnostics(
     Ok(reports)
 }
 
+/// What the project pass read for one URI while staging its report: the file
+/// index entry and, when the document is open, its text and client version.
+///
+/// Every write to either one stores a new `Arc`, and this input holds the
+/// staged `Arc`s, so pointer equality tells whether either was replaced.
+struct StagedInput {
+    /// The file index key the report was computed from.
+    path: std::path::PathBuf,
+    source: Option<Arc<(String, tree_sitter::Tree)>>,
+    document: Option<(Arc<String>, i32)>,
+}
+
+impl StagedInput {
+    fn read(workspace: &al_workspace::Workspace, path: std::path::PathBuf, uri: &Url) -> Self {
+        Self {
+            source: workspace.file_index.cached_parse_entry(&path),
+            document: workspace.documents.get_text_and_client_version(uri),
+            path,
+        }
+    }
+
+    fn client_version(&self) -> Option<i32> {
+        self.document.as_ref().map(|(_, version)| *version)
+    }
+
+    /// Whether the file index entry and the document text and version for
+    /// `uri` are still the ones this input was read from.
+    fn is_current(&self, workspace: &al_workspace::Workspace, uri: &Url) -> bool {
+        let source = workspace.file_index.cached_parse_entry(&self.path);
+        let same_source = match (&self.source, &source) {
+            (Some(staged), Some(current)) => Arc::ptr_eq(staged, current),
+            (None, None) => true,
+            _ => false,
+        };
+        let document = workspace.documents.get_text_and_client_version(uri);
+        let same_document = match (&self.document, &document) {
+            (Some((staged, staged_version)), Some((current, current_version))) => {
+                staged_version == current_version && Arc::ptr_eq(staged, current)
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        same_source && same_document
+    }
+}
+
 /// Compute the bridge-free project diagnostic generation used by push
 /// diagnostics. Cached semantic diagnostics are merged only when they belong
 /// to the exact current open-document `Arc` and client version.
 async fn compute_workspace_push_diagnostics(
     workspace: std::sync::Arc<al_workspace::Workspace>,
     semantic_cache: &tokio::sync::Mutex<std::collections::HashMap<Url, CachedSemanticDiagnostics>>,
-) -> Result<Vec<(Url, Option<i32>, Vec<Diagnostic>)>, WorkspaceDiagnosticError> {
+) -> Result<Vec<(Url, StagedInput, Vec<Diagnostic>)>, WorkspaceDiagnosticError> {
     let config = workspace.config.read().await.clone();
     let project_root = workspace
         .project
@@ -218,22 +264,23 @@ async fn compute_workspace_push_diagnostics(
     let semantic_cache = semantic_cache.lock().await;
     let mut reports = Vec::new();
     for (path, diagnostics) in native {
-        let uri = Url::from_file_path(&path)
-            .map_err(|()| WorkspaceDiagnosticError::InvalidFilePath(path))?;
+        let Ok(uri) = Url::from_file_path(&path) else {
+            return Err(WorkspaceDiagnosticError::InvalidFilePath(path));
+        };
         if is_cache_path(&uri) {
             continue;
         }
         let mut diagnostics: Vec<Diagnostic> = diagnostics.iter().map(syntax_diag_to_lsp).collect();
-        let snapshot = workspace.documents.get_text_and_client_version(&uri);
-        let version = snapshot.as_ref().map(|(_, version)| *version);
-        if let (Some((text, version)), Some(cached)) = (snapshot.as_ref(), semantic_cache.get(&uri))
+        let input = StagedInput::read(&workspace, path, &uri);
+        if let (Some((text, version)), Some(cached)) =
+            (input.document.as_ref(), semantic_cache.get(&uri))
         {
             if *version == cached.client_version && Arc::ptr_eq(text, &cached.text) {
                 diagnostics.extend(cached.diagnostics.clone());
             }
         }
         if !diagnostics.is_empty() {
-            reports.push((uri, version, diagnostics));
+            reports.push((uri, input, diagnostics));
         }
     }
     Ok(reports)
@@ -286,8 +333,10 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
     // gaps an unbounded loop recomputed forever and published nothing: with
     // `diagnosticsScope: "project"` the user saw no diagnostics at all while
     // typing. After MAX_STAGING_ATTEMPTS the newest computed result is
-    // published against the versions it was computed from, and the debounced
-    // pass that the last keystroke armed corrects it.
+    // published for every URI whose input is unchanged since staging. A URI
+    // that changed is left to whatever changed it: the document's own
+    // publish, the pass `did_close` runs, or the debounced pass that the last
+    // keystroke or file change on disk armed.
     const MAX_STAGING_ATTEMPTS: u32 = 3;
     for attempt in 1..=MAX_STAGING_ATTEMPTS {
         if session.is_cancelled() {
@@ -330,8 +379,8 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
         }
 
         let mut current = std::collections::BTreeMap::new();
-        for (uri, version, diagnostics) in reports {
-            current.insert(uri, (version, diagnostics));
+        for (uri, input, diagnostics) in reports {
+            current.insert(uri, (input, diagnostics));
         }
         let mut published = published_uris.lock().await;
         let mut stale: Vec<Url> = published
@@ -352,12 +401,22 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
             let version = workspace.documents.get_client_version(&uri);
             client.publish_diagnostics(uri, Vec::new(), version).await;
         }
-        for (uri, (version, diagnostics)) in &current {
+        for (uri, (input, diagnostics)) in &current {
             if session.is_cancelled() {
                 return false;
             }
+            // On the last attempt the revision may have moved since staging.
+            // A URI whose document or file index entry changed in between
+            // gets no report from this pass: `did_close` may already have
+            // sent its clear, and a report staged before the close would land
+            // after it. The URI stays in `published`, so a later pass clears
+            // it if it has no diagnostics by then.
+            if !input.is_current(&workspace, uri) {
+                tracing::debug!(uri = %uri, "project diagnostics: input changed after staging, report skipped");
+                continue;
+            }
             client
-                .publish_diagnostics(uri.clone(), diagnostics.clone(), *version)
+                .publish_diagnostics(uri.clone(), diagnostics.clone(), input.client_version())
                 .await;
         }
         *published = current.into_keys().collect();
