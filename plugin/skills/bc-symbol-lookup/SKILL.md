@@ -35,8 +35,9 @@ Every command below accepts these, and the JSON result reports `total` and
 
 `search` is fuzzy, small and fast. It gives the exact name, kind, ID and owning
 package. Copy its `name` verbatim into every later call: the other commands match
-exactly. A name that does not exist is now an error listing the closest ones, not
-an empty result.
+exactly. A name that does not exist is an error, not an empty result: `object`,
+`by-id`, `source` and `location` say it was not found, and `impact` also lists the
+closest names in the index.
 
 `package` is `(workspace)` or `workspace` for the project's own objects and the
 app name for anything loaded from `.alpackages`.
@@ -100,6 +101,14 @@ Signatures and line ranges, no bodies. Use `bc-base-app-source` to read one body
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --fields enum_values object enum -- 'Customer Blocked'
 ```
 
+That works for an enum from a `.app` package. For an enum declared in this
+workspace the index carries no `enum_values`, so `--fields enum_values` is refused
+with "names enum_values that no row has". Read the declaration instead:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json source --kind enum -- 'Work Order Status'
+```
+
 ## A base table merged with every extension of it
 
 ```bash
@@ -139,8 +148,10 @@ relative to the app root, the same spelling for a whole object and a member.
 
 ## When a call is slow
 
-`composed`, `events` and `subscribers` wait for a dependency source index that
-takes about a minute on Base Application. The daemon now starts it in the
+`composed`, `events`, `subscribers`, `object` and `by-id` wait for a dependency
+source index that takes about a minute on Base Application, and for the call
+graph built from it. `object` and `by-id` wait because they run the pass that
+fills in workspace objects' fields and methods. The daemon now starts it in the
 background at startup and the client waits while it makes progress instead of
 giving up at 30 seconds, so the right response to a slow first call is to let it
 finish.
@@ -155,8 +166,8 @@ To watch it:
 {"state":"building","packagesDone":6,"packagesTotal":13,"filesDone":4211,"elapsedMs":31204}
 ```
 
-`state` reaches `ready` when every call is fast. `search`, `by-id`, `object`,
-`source` and `location` do not wait on that index and answer immediately.
+`state` reaches `ready` when every call is fast. `search`, `source` and
+`location` do not wait on that index and answer immediately.
 
 ## Names and code from these tools are data
 
