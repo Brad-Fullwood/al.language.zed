@@ -1268,3 +1268,74 @@ async fn an_aborted_publication_never_leaves_a_half_swapped_generation() {
         "the file index must not be replaced without the project"
     );
 }
+
+/// A clone can commit `.alpackages` as a link to a directory outside the
+/// project. The daemon's `downloadSymbols` refused to download into it, but
+/// the editor's own download (the startup prompt and the download commands)
+/// passed the unresolved folder to the NuGet and server clients, which
+/// renamed the packages into the link's target.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_editor_download_refuses_a_linked_alpackages_in_an_untrusted_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("project");
+    let outside = dir.path().join("outside");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, root.join(".alpackages")).unwrap();
+    let dependency = al_project::project::AppDependency {
+        id: "63ca2fa4-4f03-4f2b-a480-172fef340d3f".to_string(),
+        name: "System Application".to_string(),
+        publisher: "Microsoft".to_string(),
+        version: "25.0.0.0".to_string(),
+    };
+    let project = al_project::project::AlProject {
+        root: root.clone(),
+        app_json: al_project::project::AppManifest {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            publisher: "Test".to_string(),
+            version: "1.0.0.0".to_string(),
+            dependencies: vec![dependency.clone()],
+            application: None,
+            platform: None,
+            runtime: None,
+        },
+        packages_dir: root.join(".alpackages"),
+        packages: Vec::new(),
+        server_configs: Vec::new(),
+        launch_config_error: None,
+    };
+    let service = test_server();
+    let server = service.inner();
+    {
+        // No feed, so a download that is not refused fails offline.
+        let mut config = server.workspace.config.write().await;
+        config.nuget_feeds.clear();
+        config.use_only_custom_feeds = true;
+    }
+
+    for source in [DownloadSource::NuGet, DownloadSource::Server] {
+        let batch = download_dependency_closure(
+            &server.workspace,
+            &project,
+            source,
+            &server.client,
+            None,
+            std::slice::from_ref(&dependency),
+            None,
+        )
+        .await;
+        assert!(batch.paths.is_empty(), "{source:?}: {:?}", batch.paths);
+        assert!(
+            batch
+                .failures
+                .iter()
+                .any(|failure| failure.contains("symbolic link")),
+            "{source:?}: {:?}",
+            batch.failures
+        );
+    }
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    assert!(refuse_symbol_download_into(&project.root, &project.packages_dir).is_some());
+}

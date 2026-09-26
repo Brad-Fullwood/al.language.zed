@@ -51,8 +51,9 @@ file of that name in the project is not loaded.
 A repository can also point outside itself without a setting, by committing `.alpackages`
 as a symbolic link. A symbol folder written inside the project that resolves outside it is
 treated like `al.packageCachePath` outside the project: until the project is trusted its
-packages are not read, `downloadSymbols` refuses to write into it, and the daemon does not
-count it as a containment root. `al_project::trust::escapes_untrusted_project` is the one
+packages are not read, `downloadSymbols` and the editor's symbol download refuse to write
+into it, the editor shows why the symbols are missing in place of the download prompt, and the
+daemon does not count it as a containment root. `al_project::trust::escapes_untrusted_project` is the one
 check.
 
 Everything else in a repository's settings applies without trust: formatting, inlay hints,
