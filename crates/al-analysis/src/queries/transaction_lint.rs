@@ -905,7 +905,9 @@ mod tests {
 
     #[test]
     fn dependency_summaries_lint_like_dependency_trees() {
-        let fixtures: [(&str, &str, &[(&str, &str)]); 3] = [
+        // (project file name, its source, the dependency package's files)
+        type Fixture<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)]);
+        let fixtures: [Fixture<'_>; 3] = [
             (
                 "Subscriber.al",
                 SUBSCRIBER_TO_DEPENDENCY,
