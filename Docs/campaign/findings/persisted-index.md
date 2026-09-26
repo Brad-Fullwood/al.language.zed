@@ -81,3 +81,113 @@ about 2.4 GB, is the 9,743 tree-sitter trees, which no accounting counts.
 What reads the trees: only the call graph build (`register_dependency_source_nodes`,
 `populate_workspace_call_edges`) and transaction lint (`resolve_all_workspace_call_edges`,
 `collect_effects`). Nothing else takes the dependency `FileIndex`.
+
+## 2. Design
+
+### What is cached
+
+The dependency source index, in a smaller form. Today it is a `FileIndex` holding every embedded
+file's text twice plus its tree-sitter tree. A tree cannot be written to disk, and the two
+consumers read only a little from it. The new index keeps, per package, one summary per embedded
+file:
+
+- the file's archive path and its object declarations (kind, id, name) in document order
+- per object, how many call suffixes it holds, which ranks it for eager edge resolution
+- per procedure or trigger, in document order: name, attributes as written, the `local` modifier,
+  call sites, record variable types, object variable types, and the database writes and
+  `Commit()` calls with their positions and labels
+
+The summary is what the call graph build and transaction lint read. The build parses each file,
+summarizes it and drops the tree, so neither the trees nor the source text stay in memory, and
+neither is written to disk. The first start still parses every file, and it now parses and
+summarizes them on the rayon pool instead of one thread.
+
+Not cached:
+
+- Call graph edges. Edges out of dependency code depend on the workspace: a workspace codeunit
+  implementing a dependency interface receives the edges of interface dispatch, and a workspace
+  subscriber is linked from every dependency publisher that raises its event. Edges are resolved
+  from the summaries on every start, with the same resolver the tree path uses.
+- The package symbol index. It already has a disk cache (`~/.cache/al-lsp/index/`), measured
+  above at no gain, and the package phase is 1.4 s against 40 s for the source index and graph.
+  The header scan inside it (about 1 s) could use the same key and directory later.
+
+### Format
+
+`serde_json`, which every existing cache in the repository already uses. `Cargo.lock` has no
+binary serde format outside dev dependencies (`ciborium` comes from `criterion`). The file layout
+follows `crates/al-symbols/src/cache.rs`: a 4-byte little-endian header length, a JSON header,
+then the JSON body, so a stale or foreign entry is rejected after parsing only the header. If
+decoding JSON turns out to cost more than the step it replaces, a binary format is the first
+thing to revisit, with `cargo deny check`.
+
+### Key and location
+
+Per package, one file:
+`<user data dir>/al-lsp/<project-hash>/source-index/<app file name>.<key>.summary`.
+`<project-hash>` is the FNV-1a hash of the project root that `test-results.json` already uses.
+`<key>` is an FNV-1a hash over the schema version constant, a fingerprint of the grammar
+(FNV-1a of `tree-sitter-al`'s `NODE_TYPES`) and the SHA-256 of the `.app` bytes. The header
+repeats all of these plus the app id, name, version and byte length, and a load checks every one.
+A summary schema change bumps the constant. A grammar change changes the fingerprint.
+
+The daemon sets the directory after it finds the project. A workspace without one (the LSP
+path, unit tests, no data directory) builds without persistence, exactly as today.
+
+### Invalidation and garbage collection
+
+Per package. A package whose bytes change gets a new key, misses, and is rebuilt alone. The
+others load. After a generation is built, files in the project's `source-index/` directory that
+no current package uses are deleted, and temporary files older than 60 s are swept, the same rule
+as `cache.rs`. A package without embedded source writes no file. Directories of projects that no
+longer exist are not collected, which is already true of `test-results.json`.
+
+### Corrupt or stale files
+
+Any failure is a miss: a file that cannot be opened, is over the 256 MB limit, has a mismatched
+header, or does not decode. The package is rebuilt from its `.app` and the entry rewritten. A
+failed write is logged and ignored. Writes go to a temporary file in the same directory and are
+renamed into place, so a reader never sees half a file. No cache failure fails a request.
+
+### Trust and ownership
+
+Loading an entry runs nothing. It decodes plain data structs with `serde_json`. It does not
+load analyzers, start `dotnet`, or read repository settings, so it needs no trust decision. The
+entries live in the user's data directory, outside every repository, and their input is the
+same `.app` bytes the build would parse. `al.packageCachePath` is already a privileged setting,
+so an untrusted repository cannot move the package folder either.
+
+Before reading, the loader checks the `source-index/` directory and the entry with
+`symlink_metadata`: neither may be a symbolic link, both must be owned by the effective uid, and
+neither may be writable by group or other. This is the rule the daemon socket directory uses
+(`crates/al-protocol/src/endpoint.rs`), without its exception for root, since an entry root owns
+is not one this user wrote. A failed check is a miss, and nothing is written into a directory
+another user owns. The directory is created with mode 0700 and entries with 0600.
+
+### Kept as fallback
+
+The lazy build stays the entry point: `get_or_build_dependency_source_index` builds on first
+need, and the daemon's startup warm-up calls it. Inside, each package is loaded from its entry or
+built from its `.app`.
+
+### Tests
+
+- The key: changes with the schema constant, the grammar fingerprint and one byte of the `.app`.
+- Invalidation per package: rewriting one of two packages rebuilds that package and loads the
+  other.
+- Equality: summaries of a fixture package built from source equal the same summaries loaded
+  from disk, and the call graph built from them equals the graph the tree path builds from the
+  same sources, node for node and edge for edge. The fixture packs the harness project
+  `crates/al-test-harness/data/test_al_project/src` plus a file with interface dispatch, record
+  triggers, `Codeunit.Run`, events, subscribers, a `[TryFunction]` with a write, a `Commit()`,
+  two objects in one file and overloads.
+- A corrupt entry, an entry with a foreign header, and an entry in a directory with open
+  permissions each fall back to a rebuild and give the same index.
+- Transaction lint gives the same diagnostics from summaries as from trees on the existing
+  dependency fixtures in `transaction_lint.rs`.
+
+### Expected effect
+
+A second start loads summaries instead of parsing 9,743 files (27 s) and filling a `FileIndex`
+(8 s). Edge resolution (about 10 s of the 14 s graph step) still runs. Resident memory should
+fall by the size of the trees, about 2.4 GB. Step 4 measures both.
