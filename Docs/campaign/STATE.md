@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-26 12:20 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-26 12:25 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -24,6 +24,12 @@ branches the 07:00 session left, each in its existing worktree under `.claude/wo
 - `${CodeCop}` token refusal (blog finding 4): worktree branch `campaign/fix-blog-findings`, Sonnet.
   `pack-native --validate` refuses the `${Name}` spelling of a built-in analyzer as if the repository
   shipped it, and names `--analyzers` when the list came from settings.
+- Round 7 adversarial review (A), dispatched 12:12: reads `git diff 94700cf7..HEAD -- crates` (67
+  files): the 14 security fixes tried another way, the two hand merges, the lock batch, the blog
+  fixes. Writes `findings/r7-session-review.md` in the main checkout and commits it there.
+- Blog re-read (I), dispatched 12:13: articles 7, 8, 9 against the closed security round and the
+  merged blog fixes, `blog-plan.md` numbers, unsloppify and humanizer, `pnpm validate`. Appends
+  `### Re-read 2026-09-26 after the security round` to `findings/blog-progress.md`.
 
 Merged this session: `campaign/fix-r4-security` (14 of 14), `campaign/fix-blog-findings` (3 of 4),
 `origin/dev`, `campaign/docs-review` (done, 12:20). Gate result on the merge is in `LOG.md`.
