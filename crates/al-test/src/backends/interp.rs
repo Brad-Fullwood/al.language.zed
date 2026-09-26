@@ -132,7 +132,6 @@ impl InterpMode {
     }
 }
 
-#[allow(async_fn_in_trait)]
 impl TestSession for InterpMode {
     async fn run(
         &self,

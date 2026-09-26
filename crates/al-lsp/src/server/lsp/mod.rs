@@ -329,26 +329,37 @@ impl AlServer {
             Err(_) => true,
         };
 
-        if let Some(guard) = self.get_or_init_bridge().await {
-            if let Some(bridge) = guard.as_ref() {
-                match bridge.builtin_types().await {
-                    Ok(types) => {
-                        tracing::info!(count = types.len(), "Loaded built-in types via bridge");
-                        let version = bridge.version().to_string();
-                        crate::semantic::set_builtins(&self.workspace, types, &version);
-                        return Ok(());
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "Failed to load built-in types via bridge");
-                        self.client
-                            .show_message(
-                                MessageType::WARNING,
-                                format!("Failed to load AL built-in types: {error}"),
-                            )
-                            .await;
-                    }
-                }
+        // The bridge read guard ends with this match arm, before the warning
+        // below waits on the client: a bridge restart must not queue behind a
+        // user notification.
+        let fetched = match self.get_or_init_bridge().await {
+            Some(guard) => match guard.as_ref() {
+                Some(bridge) => Some(
+                    bridge
+                        .builtin_types()
+                        .await
+                        .map(|types| (types, bridge.version().to_string())),
+                ),
+                None => None,
+            },
+            None => None,
+        };
+        match fetched {
+            Some(Ok((types, version))) => {
+                tracing::info!(count = types.len(), "Loaded built-in types via bridge");
+                crate::semantic::set_builtins(&self.workspace, types, &version);
+                return Ok(());
             }
+            Some(Err(error)) => {
+                tracing::warn!(%error, "Failed to load built-in types via bridge");
+                self.client
+                    .show_message(
+                        MessageType::WARNING,
+                        format!("Failed to load AL built-in types: {error}"),
+                    )
+                    .await;
+            }
+            None => {}
         }
         if poisoned {
             return Err(internal_error(
@@ -363,28 +374,34 @@ impl AlServer {
             return;
         }
 
-        if let Some(guard) = self.get_or_init_bridge().await {
-            if let Some(bridge) = guard.as_ref() {
-                match bridge.error_codes().await {
-                    Ok(codes) => {
-                        tracing::info!(count = codes.len(), "Loaded error codes via bridge");
-                        for ec in codes {
-                            self.workspace
-                                .error_codes
-                                .insert(ec.code.clone(), ec.message.clone());
-                        }
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "Failed to load error codes via bridge");
-                        self.client
-                            .show_message(
-                                MessageType::WARNING,
-                                format!("Failed to load AL error codes: {error}"),
-                            )
-                            .await;
-                    }
+        // As in `ensure_builtins_loaded`, the bridge read guard ends with the
+        // match arm, before the warning waits on the client.
+        let fetched = match self.get_or_init_bridge().await {
+            Some(guard) => match guard.as_ref() {
+                Some(bridge) => Some(bridge.error_codes().await),
+                None => None,
+            },
+            None => None,
+        };
+        match fetched {
+            Some(Ok(codes)) => {
+                tracing::info!(count = codes.len(), "Loaded error codes via bridge");
+                for ec in codes {
+                    self.workspace
+                        .error_codes
+                        .insert(ec.code.clone(), ec.message.clone());
                 }
             }
+            Some(Err(error)) => {
+                tracing::warn!(%error, "Failed to load error codes via bridge");
+                self.client
+                    .show_message(
+                        MessageType::WARNING,
+                        format!("Failed to load AL error codes: {error}"),
+                    )
+                    .await;
+            }
+            None => {}
         }
     }
 
@@ -532,6 +549,7 @@ impl AlServer {
     /// without blocking edits. Project scope finishes with a bridge-free native
     /// generation that merges only still-current semantic cache entries.
     async fn refresh_diagnostics_after_configuration(&self) {
+        // Held through the clearing publishes, as in `publish_if_current`.
         let generation = self.workspace.generation_lock.read().await;
         let stale: Vec<Url> = {
             let mut published = self.workspace_diagnostic_uris.lock().await;
@@ -716,6 +734,7 @@ impl AlServer {
     /// keystroke is exactly what keeps a typing burst from paying O(workspace)
     /// per pause.
     async fn schedule_workspace_diagnostics(&self) {
+        // The awaits below run in the spawned task, not under this guard.
         let mut guard = self.workspace_diag_task.lock().await;
         if let Some(old) = guard.take() {
             old.abort();
@@ -770,7 +789,7 @@ fn extract_al_settings(value: serde_json::Value) -> serde_json::Value {
 /// whatever `.zed/settings.json` contributed, and nothing here can tell which
 /// ones those are. Containment answers the same situation the same way, with
 /// "No project is loaded, so no file path can be authorised".
-async fn gate_repository_settings(
+fn gate_repository_settings(
     root_uri: Option<&Url>,
     config: &mut al_project::config::AlConfig,
 ) -> Option<String> {
@@ -872,7 +891,7 @@ impl LanguageServer for AlServer {
                         "settings in initializationOptions were not applied"
                     );
                 }
-                let advisory = gate_repository_settings(root_uri.as_ref(), &mut config).await;
+                let advisory = gate_repository_settings(root_uri.as_ref(), &mut config);
                 (config.max_document_size_bytes, advisory)
             };
             if let Some(advisory) = advisory {
@@ -1142,14 +1161,15 @@ impl LanguageServer for AlServer {
             .send_replace(WorkspaceInitState::Failed(
                 "language server is shutting down".to_string(),
             ));
+        // Each handle is taken out of its slot before it is awaited. A guard
+        // in the `for` or `if let` head would otherwise stay held until the
+        // aborted task has finished.
         let pending_diagnostics: Vec<tokio::task::JoinHandle<()>> = {
             let mut guard = self.diag_tasks.lock().await;
             guard.drain().map(|(_, task)| task).collect()
         };
-        for task in pending_diagnostics
-            .into_iter()
-            .chain(self.workspace_diag_task.lock().await.take())
-        {
+        let workspace_diagnostics = self.workspace_diag_task.lock().await.take();
+        for task in pending_diagnostics.into_iter().chain(workspace_diagnostics) {
             task.abort();
             if let Err(error) = task.await {
                 if !error.is_cancelled() {
@@ -1159,7 +1179,8 @@ impl LanguageServer for AlServer {
                 }
             }
         }
-        if let Some(task) = self.init_task.lock().await.take() {
+        let init_task = self.init_task.lock().await.take();
+        if let Some(task) = init_task {
             task.abort();
             if let Err(error) = task.await {
                 if !error.is_cancelled() {
@@ -1169,7 +1190,8 @@ impl LanguageServer for AlServer {
                 }
             }
         }
-        if let Some(task) = self.reindex_task.lock().await.take() {
+        let reindex_task = self.reindex_task.lock().await.take();
+        if let Some(task) = reindex_task {
             task.abort();
             if let Err(error) = task.await {
                 if !error.is_cancelled() {
@@ -1430,6 +1452,8 @@ impl LanguageServer for AlServer {
 
             // A transient URI is no longer part of the workspace, and even a
             // saved file may have become clean after discarding its overlay.
+            // The clear is sent under the write guard so that no
+            // `publish_if_current` can land after it.
             self.client
                 .publish_diagnostics(uri.clone(), vec![], None)
                 .await;
@@ -1492,9 +1516,7 @@ impl LanguageServer for AlServer {
         let old_local_paths = staged_config.app_local_folder_paths.clone();
         let report = staged_config.merge_reporting(&al_settings);
         let root_uri = self.root_uri.read().await.clone();
-        if let Some(advisory) =
-            gate_repository_settings(root_uri.as_ref(), &mut staged_config).await
-        {
+        if let Some(advisory) = gate_repository_settings(root_uri.as_ref(), &mut staged_config) {
             self.client
                 .show_message(MessageType::WARNING, advisory)
                 .await;
@@ -1625,7 +1647,9 @@ impl LanguageServer for AlServer {
 
             // Both guards are taken before the first swap, so the publication
             // sequence below has no await point that a cancelled handler could
-            // unwind from with the indexes and the project disagreeing.
+            // unwind from with the indexes and the project disagreeing. The
+            // order is project, then config: a task that holds a config guard
+            // while it waits for the project deadlocks against this one.
             let mut published_project = self.workspace.project.write().await;
             let mut published_config = self.workspace.config.write().await;
             self.workspace.symbols.replace_with(&symbols);

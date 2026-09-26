@@ -231,12 +231,14 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
                             let _ = writeln!(f, ">>> ZED→ES: {}", redact_dap_body_for_log(&body));
                         }
                     }
-                    let patched = {
-                        let mut guard = stdout_writer_out.lock().await;
-                        let writer: &mut io::Stdout = &mut guard;
-                        patch_outgoing(&body, &toolchain, &project_root, writer, seq_counter_ref)
-                            .await
-                    };
+                    let patched = patch_outgoing(
+                        &body,
+                        &toolchain,
+                        &project_root,
+                        &stdout_writer_out,
+                        seq_counter_ref,
+                    )
+                    .await;
                     write_dap_frame(&mut stdin_writer, &patched).await?;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
@@ -298,7 +300,7 @@ async fn patch_outgoing(
     body: &[u8],
     toolchain: &AlToolchain,
     project_root: &str,
-    output_writer: &mut io::Stdout,
+    output_writer: &tokio::sync::Mutex<io::Stdout>,
     seq_counter: &AtomicI64,
 ) -> Vec<u8> {
     let mut msg: serde_json::Value = match serde_json::from_slice(body) {
@@ -350,8 +352,10 @@ async fn patch_outgoing(
     serde_json::to_vec(&msg).unwrap_or_else(|_| body.to_vec())
 }
 
+/// Write one `output` event. The writer lock is held for this frame only, so a
+/// `launch` compile does not stop `child_to_stdout` forwarding frames.
 async fn send_output_event(
-    writer: &mut io::Stdout,
+    writer: &tokio::sync::Mutex<io::Stdout>,
     seq_counter: &AtomicI64,
     text: &str,
 ) -> Result<(), std::io::Error> {
@@ -367,7 +371,8 @@ async fn send_output_event(
     });
     let body = serde_json::to_vec(&event)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    write_dap_frame(writer, &body).await
+    let mut writer = writer.lock().await;
+    write_dap_frame(&mut *writer, &body).await
 }
 
 fn patch_launch_args(args: &mut serde_json::Map<String, serde_json::Value>) {
@@ -761,9 +766,9 @@ mod tests {
         // compile/spawn (command extraction never happens).
         let toolchain = dummy_toolchain();
         let seq = AtomicI64::new(1);
-        let mut out = io::stdout();
+        let out = tokio::sync::Mutex::new(io::stdout());
         let body = b"not json at all";
-        let patched = patch_outgoing(body, &toolchain, "/tmp", &mut out, &seq).await;
+        let patched = patch_outgoing(body, &toolchain, "/tmp", &out, &seq).await;
         assert_eq!(patched, body);
     }
 
@@ -773,10 +778,10 @@ mod tests {
         // structurally unchanged — no compile, no arg patching.
         let toolchain = dummy_toolchain();
         let seq = AtomicI64::new(1);
-        let mut out = io::stdout();
+        let out = tokio::sync::Mutex::new(io::stdout());
         let body =
             br#"{"type":"request","command":"setBreakpoints","arguments":{"breakOnError":"All"}}"#;
-        let patched = patch_outgoing(body, &toolchain, "/tmp", &mut out, &seq).await;
+        let patched = patch_outgoing(body, &toolchain, "/tmp", &out, &seq).await;
         let v: serde_json::Value = serde_json::from_slice(&patched).unwrap();
         // breakOnError must remain the original string — patch_launch_args is
         // only applied to launch/attach.
@@ -794,9 +799,9 @@ mod tests {
         // compile the project (only `launch` compiles).
         let toolchain = dummy_toolchain();
         let seq = AtomicI64::new(1);
-        let mut out = io::stdout();
+        let out = tokio::sync::Mutex::new(io::stdout());
         let body = br#"{"type":"request","command":"attach","arguments":{"breakOnError":"none"}}"#;
-        let patched = patch_outgoing(body, &toolchain, "/tmp", &mut out, &seq).await;
+        let patched = patch_outgoing(body, &toolchain, "/tmp", &out, &seq).await;
         let v: serde_json::Value = serde_json::from_slice(&patched).unwrap();
         assert_eq!(
             v.pointer("/arguments/breakOnError"),

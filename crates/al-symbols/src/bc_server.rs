@@ -152,6 +152,8 @@ impl BcServerClient {
     ) -> Result<PathBuf, BcServerError> {
         let output_path = dest.join(package_filename(&dep.publisher, &dep.name, &dep.version));
         let lock = self.lock_for(&output_path)?;
+        // Held across the download: a second caller for the same package waits
+        // and then reuses the first one's file.
         let _guard = lock.lock().await;
 
         let completed = self

@@ -672,7 +672,7 @@ mod trust_gate_tests {
     async fn no_root_uri_denies_every_privileged_setting() {
         let mut config = privileged_config();
 
-        let advisory = gate_repository_settings(None, &mut config).await;
+        let advisory = gate_repository_settings(None, &mut config);
 
         assert_eq!(
             config.code_analyzers,
@@ -693,7 +693,7 @@ mod trust_gate_tests {
         let mut config = privileged_config();
         let root = Url::parse("untitled:workspace").expect("valid uri");
 
-        let advisory = gate_repository_settings(Some(&root), &mut config).await;
+        let advisory = gate_repository_settings(Some(&root), &mut config);
 
         assert_eq!(config.code_analyzers, vec!["${CodeCop}".to_string()]);
         assert!(advisory.is_some_and(|text| text.contains("no local project directory")));
@@ -1608,6 +1608,90 @@ mod did_change_offload_tests {
                 .iter()
                 .any(|name| name.eq_ignore_ascii_case("P200")),
             "the file index must reflect the same edit by the time did_change returns"
+        );
+    }
+}
+
+mod lock_order_tests {
+    use super::*;
+
+    /// Stand in for `did_change_configuration` publishing a symbol generation:
+    /// it holds the project write guard and then waits for the config write
+    /// guard. Returns whether the config guard was granted.
+    async fn publish_configuration(
+        server: &AlServer,
+        project: tokio::sync::RwLockWriteGuard<'_, Option<al_project::project::AlProject>>,
+    ) -> bool {
+        // Let the diagnostics pass reach its own lock waits first.
+        tokio::task::yield_now().await;
+        let config = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            server.workspace.config.write(),
+        )
+        .await;
+        let granted = config.is_ok();
+        drop(config);
+        drop(project);
+        granted
+    }
+
+    /// The pull path's syntax pass took the config read guard and then waited
+    /// for the project read guard. A configuration publish holds the project
+    /// and waits for the config, so each waited on the other for good.
+    #[tokio::test]
+    async fn pull_diagnostics_do_not_hold_the_config_while_waiting_for_the_project() {
+        let (service, _socket) = LspService::new(AlServer::new);
+        let server = service.inner();
+        server.workspace.config.write().await.enable_code_analysis = false;
+        let uri = Url::parse("file:///proj/Foo.Codeunit.al").unwrap();
+
+        let project = server.workspace.project.write().await;
+        let (_, granted) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(
+                diagnostics::compute_diagnostics(server, &uri, ""),
+                publish_configuration(server, project),
+            )
+        })
+        .await
+        .expect("the diagnostics pass finishes once the publisher lets go");
+
+        assert!(
+            granted,
+            "a configuration publish must not wait on a diagnostics pass that waits on it"
+        );
+    }
+
+    /// The push path shares the syntax pass, and with it the same lock order.
+    #[tokio::test]
+    async fn push_diagnostics_do_not_hold_the_config_while_waiting_for_the_project() {
+        let (service, _socket) = LspService::new(AlServer::new);
+        let server = service.inner();
+        server.workspace.config.write().await.enable_code_analysis = false;
+        let uri = Url::parse("file:///proj/Foo.Codeunit.al").unwrap();
+        server
+            .workspace
+            .documents
+            .open_with_client_version(uri.clone(), "codeunit 50100 Foo\n{\n}\n".to_string(), 1)
+            .unwrap();
+        let (text, version) = server
+            .workspace
+            .documents
+            .get_text_and_client_version(&uri)
+            .expect("the document is open");
+
+        let project = server.workspace.project.write().await;
+        let ((), granted) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(
+                diagnostics::publish_diagnostics(server, &uri, text, version),
+                publish_configuration(server, project),
+            )
+        })
+        .await
+        .expect("the diagnostics pass finishes once the publisher lets go");
+
+        assert!(
+            granted,
+            "a configuration publish must not wait on a diagnostics pass that waits on it"
         );
     }
 }

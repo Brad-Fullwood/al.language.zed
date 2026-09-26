@@ -1228,14 +1228,17 @@ Build failed.";
         let _g = COMPILE_TIMEOUT_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "0");
         }
         assert_eq!(compile_timeout().unwrap(), None);
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "-1");
         }
         assert_eq!(compile_timeout().unwrap(), None);
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
         unsafe {
             std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
         }
@@ -1246,6 +1249,7 @@ Build failed.";
         let _g = COMPILE_TIMEOUT_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "30");
         }
@@ -1253,6 +1257,7 @@ Build failed.";
             compile_timeout().unwrap(),
             Some(std::time::Duration::from_secs(30))
         );
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
         unsafe {
             std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
         }
@@ -1263,10 +1268,12 @@ Build failed.";
         let _g = COMPILE_TIMEOUT_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "not-a-number");
         }
         assert!(compile_timeout().is_err());
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
         unsafe {
             std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
         }

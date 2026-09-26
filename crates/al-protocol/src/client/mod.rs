@@ -200,6 +200,10 @@ fn read_bounded_pipe_line(
         while reader.buffer().is_empty() {
             let Stream::NamedPipe(pipe) = reader.get_ref();
             let mut available = 0_u32;
+            // SAFETY: the handle belongs to the pipe `reader` borrows for this
+            // call. The null buffer, length 0 and null out pointers are the
+            // documented "peek the byte count only" form, and `available` is a
+            // live u32 for the call to write.
             let ok = unsafe {
                 PeekNamedPipe(
                     pipe.as_handle().as_raw_handle(),

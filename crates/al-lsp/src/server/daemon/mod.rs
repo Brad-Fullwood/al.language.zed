@@ -1562,6 +1562,8 @@ pub(crate) fn serialized_response<T: serde::Serialize>(
 /// perfectly healthy workspace into "No project loaded".
 pub(crate) const LOCK_WAIT: Duration = Duration::from_millis(500);
 
+// Err is a ready-to-send JSON-RPC `Response` (cold path). Boxing it would only
+// scatter `*` derefs across every caller.
 #[allow(clippy::result_large_err)]
 pub(crate) fn require_project_root(workspace: &Workspace, id: u64) -> Result<PathBuf, Response> {
     match project_root_with_wait(workspace) {
@@ -1618,7 +1620,6 @@ pub(crate) fn project_state_with_wait<T>(
 
 /// Get document text without blocking the async runtime, loading it from disk
 /// when the document store does not already contain the file.
-#[allow(clippy::result_large_err)]
 pub(crate) async fn require_document_text(
     workspace: &Workspace,
     uri: &url::Url,
@@ -1674,6 +1675,7 @@ pub(crate) fn blocking<T>(work: impl FnOnce() -> T) -> T {
 
 /// Ensure a file is loaded in the document store. If not found, read it through
 /// the same bounded, regular-file-only ingestion path used by workspace scans.
+// Err is a ready-to-send JSON-RPC `Response` (cold path); see require_project_root.
 #[allow(clippy::result_large_err)]
 pub(crate) fn ensure_document(
     workspace: &Workspace,
@@ -1911,6 +1913,7 @@ pub(crate) fn reads_document(method: &str) -> bool {
 /// 2. a document already open in the store, which the editor put there. No
 ///    filesystem access, so containment has nothing to guard.
 /// 3. the path itself, contained in the project and read from disk.
+// Err is a ready-to-send JSON-RPC `Response` (cold path); see require_project_root.
 #[allow(clippy::result_large_err)]
 pub(crate) fn read_document_from_params<'a>(
     workspace: &'a Workspace,
