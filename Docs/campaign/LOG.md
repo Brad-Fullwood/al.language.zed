@@ -239,3 +239,14 @@ Append-only. Newest entry last.
 - Merged `campaign/ai-persisted-index` (workstream G, `findings/persisted-index.md` section 3). Dependency source is kept as per-procedure summaries instead of syntax trees, the call graph is built from the summaries, and the summaries are persisted per package under the user's data directory (0700, owner-checked, keyed by schema version, grammar fingerprint and the `.app` bytes). On the medium benchmark project, alternating before and after runs at load 0.6 to 7.7: first start `impact "Sales-Post"` 17.2 s to 4.6 s, second start 23.6 s to 1.25 s, peak memory 2,857 MB to 526 MB on the first start and 2,834 MB to 371 MB after. Graph sizes identical, `impact` (760 rows) and `entrypoints` (34,420 rows) equal as sets. 59 MB of summaries per project. Tests: key, invalidation, equality of summaries and graphs built and loaded, corrupt and foreign and open-permission entries fall back to a rebuild, transaction lint equality. A documented example `crates/al-workspace/examples/dep_profile.rs` times each phase.
 - Left, queued: the cache key does not cover the summary builder's code, so a change in al-insight without a `SCHEMA_VERSION` bump answers from stale entries (a checked-in summary snapshot of a fixture would catch it); entries are per project, so two projects on one Base Application store it twice; the package header scan could use the same cache; `entrypoints` and `impact` rows come back in a different order per start.
 - Gates on the merge (0d11fc88): fmt, release build, both clippy runs clean. Rustdoc failed on one intra-doc link to a private item in `al-insight/src/calls/nodes.rs`, fixed. 92 suites, 5135 passed, 1 failed (the ghost publish, `test_completeness_d03_close_file_clears_diagnostics`), 10 ignored. Pushed.
+
+## 2026-09-26 16:48 BST: headless session after an hour of usage limits
+
+- Every headless start from 15:40 to 16:40 exited at once with a session limit on both models
+  (`.campaign/watchdog.log`). This session started at the 16:47 tick.
+- Five agent worktrees, three with unmerged commits and none with a live agent: `campaign/fix-r7-review`
+  (9 commits, 6 findings fixed, 9 open), `campaign/fix-ghost-race-2` (the mechanism written up, the
+  test uncommitted), `campaign/test-mutants` (8 commits, 4 of 10 files, `filter.rs` tests uncommitted).
+  `campaign/ai-persisted-index-2` and `campaign/slop-batch-11` had nothing committed: the persisted
+  index agent had not started, the desloppify agent had run its scan and written nothing down.
+- All five re-dispatched onto their branches (see `STATE.md`).

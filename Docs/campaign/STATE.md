@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-26 13:50 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-26 16:55 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -8,29 +8,32 @@ Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two 
 
 ## In flight
 
-Session 2026-09-26 11:50 BST (headless, Fable orchestrator). Five agents re-dispatched onto the
-branches the 07:00 session left, each in its existing worktree under `.claude/worktrees/`:
+Session 2026-09-26 16:48 BST (headless, Fable orchestrator, after both models were limited from
+15:40 to 16:40). Five agents re-dispatched onto the branches the 11:50 session left, each in its
+existing worktree under `.claude/worktrees/`:
 
-- `cargo mutants` (E): worktree branch `campaign/test-mutants`, 3 of 10 files done (`method_id.rs`
-  42 mutants 2 missed, `http_auth.rs` 26 and 3, `sort.rs` 107 and 20, tests added for the misses).
-  Three uncommitted proptest seeds in `property_formatting.proptest-regressions` were written while
-  mutants were active and are checked against clean code first. Seven files left.
-- Ghost race (A): worktree branch `campaign/fix-ghost-race-2`, nothing committed by the first agent.
-  Told to name the mechanism and whether it predates the lock batch before changing code, and to
-  write `findings/ghost-race-2.md`.
-- Persisted index follow-ups (G), dispatched 13:50: worktree branch `campaign/ai-persisted-index-2`.
-  Cache key to cover the summary builder (snapshot test plus crate version in the key), sorted
-  `entrypoints` and `impact` rows, shared entry storage across projects, the package header scan
-  if contained. Writes section 4 of `findings/persisted-index.md`.
-- desloppify re-score and batch 11 (C), dispatched 13:20, Sonnet: worktree branch
-  `campaign/slop-batch-11`. Fresh scan against the 79.9 baseline, then the documentation and API
-  hygiene batch in crates no other agent is editing. Writes section 5 of `findings/desloppify.md`.
-- Round 7 fixes (A, D): review done 13:00 (`findings/r7-session-review.md`, 15 findings: 1 high,
-  5 medium, 9 low, 6 of the 14 round 4 fixes have a gap). Fix agent on worktree branch
-  `campaign/fix-r7-review`, highs first.
+- Round 7 fixes (A, D), Opus: worktree branch `campaign/fix-r7-review`. The first agent fixed 6 of
+  15 (SEC-1, SEC-4, SEC-8, BLOG-1, BUG-1, and SEC-5 at 20b6bdcc with its status line still
+  `open`). Nine open, PERF-1 and the SEC items first.
+- Ghost race (A), Opus: worktree branch `campaign/fix-ghost-race-2`. Mechanism found and written
+  in `findings/ghost-race-2.md`: the project pass's last staging attempt publishes stale reports
+  after `did_close` cleared the URI (the waiver came with 0255a549). An in-process test was left
+  uncommitted. The agent commits the test, fixes the send, loops the two harness tests under load.
+- `cargo mutants` (E), Sonnet: worktree branch `campaign/test-mutants`, 4 of 10 files recorded in
+  `findings/mutants.md` (`method_id.rs`, `http_auth.rs`, `sort.rs`, `documents.rs`), `filter.rs`
+  tests uncommitted. Five files left.
+- Persisted index follow-ups (G), Opus: worktree branch `campaign/ai-persisted-index-2`, nothing
+  committed by the first agent. Cache key covers the summary builder, sorted `entrypoints` and
+  `impact` rows, shared entry storage across projects, the package header scan if contained.
+  Writes section 4 of `findings/persisted-index.md`.
+- desloppify re-score and batch 11 (C), Sonnet: worktree branch `campaign/slop-batch-11`. The scan
+  ran at 12:55 (code quality 88.7 strict 85.2, file health 64.2 strict 59.9, duplication 97.8
+  strict 96.6, test health 92.5 strict 91.0, security 100) and was not written down. The agent
+  records it as section 5 and works batch 11 in crates no other agent edits.
 
-Merged this session: `campaign/fix-r4-security` (14 of 14), `campaign/fix-blog-findings` (3 of 4),
-`origin/dev`, `campaign/docs-review` (done, 12:20), `campaign/fix-blog-findings` again for finding 4 (12:50), `campaign/ai-persisted-index` (13:40). Gate result on the merge is in `LOG.md`.
+Merged 2026-09-26 before this session: `campaign/fix-r4-security` (14 of 14),
+`campaign/fix-blog-findings` (4 of 4 over two merges), `origin/dev`, `campaign/docs-review`,
+`campaign/ai-persisted-index`. Gate results are in `LOG.md`.
 
 PR 30 was merged into `dev` on 2026-09-25 (afec75d1). CI runs on pushes to `main` and `dev` and on
 pull requests, so draft PR 32 (https://github.com/Brad-Fullwood/al.language.zed/pull/32, base `dev`)
