@@ -65,6 +65,9 @@ pub(crate) fn dispatch_call_scoped(
     // Statement position matters only to builtins that fail differently as a
     // statement (Evaluate); take it so it never leaks into a callee's body.
     let statement = std::mem::take(&mut ctx.stmt_position);
+    // The codeunit instance a variable's call is made on; only a workspace
+    // procedure of that codeunit uses it, never a stub or builtin.
+    let instance = ctx.pending_instance.take();
     // An enum variable never assigned carries only its ordinal; name it
     // before any builtin or stub shows it.
     let args = if args
@@ -303,6 +306,7 @@ pub(crate) fn dispatch_call_scoped(
             Ok(result) => return result,
             Err(args) => args,
         };
+    ctx.pending_instance = instance;
     dispatch_workspace_procedure(receiver, procedure, args, stack, ctx)
 }
 
