@@ -323,3 +323,25 @@ dependency fixtures through transaction lint once from the summaries and once fr
 over the same embedded files, and compares the diagnostics. It fails when the summary path drops
 the effects of one procedure. Step 4 also added two assertions: a directory others can write
 rebuilds to the same summaries, and one changed byte of the `.app` names a different entry.
+
+## 4. Follow-ups
+
+### The key covers the summary builder
+
+`PackageKey` holds a third fingerprint beside the schema version and the grammar:
+`al_insight::calls::summary_builder_fingerprint`, the FNV-1a hash of the JSON summary that
+`SourceFileSummary::from_tree` makes of `SUMMARY_FIXTURE`. The fixture is an AL file in
+`crates/al-insight/src/calls/summary_fixture.al` with several objects in one file, interface
+dispatch, an event and its subscribers, record triggers, `Codeunit.Run`, overloads, a temporary
+record, five kinds of database write and a `Commit()`. The hash is computed once per process, and
+it goes into the entry name and the header, so a build whose summary code gives other output for
+the fixture misses on every old entry. A change the fixture does not exercise leaves the
+fingerprint the same. For that case `fixture_summaries_match_the_snapshot_of_this_schema_version`
+builds a fixture package (the fixture file, a second codeunit, a file that does not parse and a
+file with no object) and compares its summaries with `crates/al-workspace/testdata/summary_snapshot.json`
+byte for byte. The snapshot records `SCHEMA_VERSION`, and `UPDATE_SUMMARY_SNAPSHOT=1` rewrites it
+only when it was written under another version, so the snapshot and the constant change together.
+`an_entry_written_by_another_summary_builder_is_a_miss` checks that another builder fingerprint
+names another entry and that an entry whose header carries one is summarized again, and
+`the_builder_fingerprint_hashes_the_fixture_summary` in al-insight checks the hash. Commit
+`7d9c97c3`.
