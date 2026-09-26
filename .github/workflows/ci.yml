@@ -46,6 +46,7 @@ jobs:
           shellcheck \
             scripts/*.sh \
             plugin/scripts/*.sh \
+            plugin/evals/*.sh \
             crates/al-test-harness/editor-e2e/*.sh \
             crates/al-test-harness/editor-e2e/container/*.sh \
             tree-sitter-al/tests/*.sh

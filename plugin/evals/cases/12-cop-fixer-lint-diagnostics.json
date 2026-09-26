@@ -1,0 +1,16 @@
+{
+  "id": "12-cop-fixer-lint-diagnostics",
+  "question": "What lint diagnostics does src/HelloWorld.al have?",
+  "skill": "al-bc:bc-cop-fixer",
+  "fixture": "crates/al-test-harness/data/test_al_project",
+  "overlay": null,
+  "source": "plugin/ROADMAP.md left-for-next-agent item: bc-cop-fixer has no agent run yet",
+  "checks": [
+    {
+      "args": ["--compact", "lint", "src/HelloWorld.al"],
+      "jq": ".[0].code",
+      "expect_exact": "AL-NL010",
+      "expect_contains": ["never referenced"]
+    }
+  ]
+}

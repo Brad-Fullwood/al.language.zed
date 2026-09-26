@@ -1,0 +1,16 @@
+{
+  "id": "04-base-app-source-procedure",
+  "question": "Show me the source of the InsertJournalLine procedure in the Work Order Post Task codeunit.",
+  "skill": "al-bc:bc-base-app-source",
+  "fixture": "crates/al-test-harness/data/test_al_project",
+  "overlay": null,
+  "source": "plugin/TESTING.md question 4",
+  "checks": [
+    {
+      "args": ["--compact", "source", "Work Order Post Task", "--procedure", "InsertJournalLine"],
+      "jq": ".range.l",
+      "expect_exact": "22",
+      "expect_contains": ["Amount must not be zero", "LocalCounter := PostedEntryNo + 1"]
+    }
+  ]
+}

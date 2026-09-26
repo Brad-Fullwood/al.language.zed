@@ -1,0 +1,16 @@
+{
+  "id": "10-upgrade-impact-missing-deps",
+  "question": "What does this extension depend on, and are any of those dependencies missing?",
+  "skill": "al-bc:bc-upgrade-impact",
+  "fixture": "crates/al-test-harness/data/test_al_project",
+  "overlay": null,
+  "source": "plugin/ROADMAP.md left-for-next-agent item: bc-upgrade-impact has no agent run yet",
+  "checks": [
+    {
+      "args": ["--compact", "deps-graph"],
+      "jq": ".missing | length",
+      "expect_exact": "5",
+      "expect_contains": ["Base Application", "System Application"]
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "id": "06-object-id-allocator-free-ids",
+  "question": "I want to add a new table to this extension. What is the next free table object ID?",
+  "skill": "al-bc:bc-object-id-allocator",
+  "fixture": "crates/al-test-harness/data/test_al_project",
+  "overlay": null,
+  "source": "plugin/TESTING.md question 6",
+  "checks": [
+    {
+      "args": ["--compact", "free-ids", "--kind", "table"],
+      "jq": ".nextFree",
+      "expect_exact": "50101"
+    }
+  ]
+}

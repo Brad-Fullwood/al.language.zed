@@ -86,14 +86,18 @@ done
 [ "$agent_count" -gt 0 ] || problem "no agents found under plugin/agents/"
 
 # ── Scripts ──────────────────────────────────────────────────────
-for script in "$plugin"/scripts/*.sh; do
+# plugin/evals/run.sh is a dev-facing harness rather than something the
+# plugin runtime invokes, but it ships in the same repository and CI holds it
+# to the same bar, so it gets the same executable, syntax and shellcheck
+# checks as everything under plugin/scripts/.
+for script in "$plugin"/scripts/*.sh "$plugin"/evals/*.sh; do
 	[ -f "$script" ] || continue
 	[ -x "$script" ] || problem "$(basename "$script") is not executable"
 	bash -n "$script" || problem "$(basename "$script") has a syntax error"
 done
 
 if command -v shellcheck >/dev/null 2>&1; then
-	shellcheck "$plugin"/scripts/*.sh || problem "shellcheck reported findings"
+	shellcheck "$plugin"/scripts/*.sh "$plugin"/evals/*.sh || problem "shellcheck reported findings"
 else
 	printf 'plugin-validate: shellcheck not installed, skipping (install it to run this check)\n' >&2
 fi
