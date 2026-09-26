@@ -643,6 +643,8 @@ pub(crate) struct SymbolReferenceJson {
     pub profiles: Vec<ObjectJson>,
     #[serde(alias = "PageCustomizations")]
     pub page_customizations: Vec<ObjectJson>,
+    #[serde(alias = "ProfileExtensions")]
+    pub profile_extensions: Vec<ObjectJson>,
     #[serde(alias = "ControlAddIns")]
     pub control_add_ins: Vec<ObjectJson>,
     #[serde(alias = "Entitlements")]
@@ -964,6 +966,7 @@ impl SymbolReferenceJson {
             ),
             (ObjectKind::Profile, self.profiles),
             (ObjectKind::PageCustomization, self.page_customizations),
+            (ObjectKind::ProfileExtension, self.profile_extensions),
             (ObjectKind::ControlAddIn, self.control_add_ins),
             (ObjectKind::Entitlement, self.entitlements),
         ];
@@ -1654,6 +1657,27 @@ mod tests {
         assert!(entries.iter().any(|e| e.name == "DeeplyNested"
             && e.kind == ObjectKind::Codeunit
             && e.namespace == "Contoso.Sales"));
+    }
+
+    /// `ProfileExtensions` was missing a struct field, so profile extensions
+    /// read from `SymbolReference.json` (a real Base Application package is
+    /// short one object versus its declared count for exactly this reason)
+    /// disappeared during flattening.
+    #[test]
+    fn test_profile_extensions_are_read_from_symbol_reference_json() {
+        let json = r#"{
+            "ProfileExtensions": [
+                { "Id": 50100, "Name": "MyProfileExt", "TargetObject": "Business Manager" }
+            ]
+        }"#;
+        let sr: SymbolReferenceJson = serde_json::from_str(json).unwrap();
+        let entries = sr.into_entries("Pkg");
+        assert_eq!(entries.len(), 1);
+        assert!(entries
+            .iter()
+            .any(|e| e.kind == ObjectKind::ProfileExtension
+                && e.id == 50100
+                && e.name == "MyProfileExt"));
     }
 
     /// Same-named Option fields on different objects stay SEPARATE synthetic
