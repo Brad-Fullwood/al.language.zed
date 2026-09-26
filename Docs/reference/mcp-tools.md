@@ -13,14 +13,14 @@ MCP without a way to invoke it.
 | `al_call` | selected by `method` | `method: string` (required), `params: object = {}` | the selected daemon method's result |
 | `al_debug` | `debug` | `cmd: start\|breakpoint\|state\|stack\|variables\|globals\|expand\|eval\|continue\|step\|history\|stop` plus command-specific fields | persistent debug-session control and inspection result |
 | `al_build` | `compile` | _(none)_ | verified-native (or configured `alc`) success, structured diagnostics, `.app` path |
-| `al_downloadsymbols` | `downloadSymbols` | _(none)_ | downloaded package list |
-| `al_symbolsearch` | `search` | `query: string`, `limit: number = 50` | matching symbols |
+| `al_downloadsymbols` | `downloadSymbols` | `source: nuget \| server = nuget`, `config: string` (launch configuration for `source=server`, first one when omitted) | downloaded package list |
+| `al_symbolsearch` | `search` | `query: string` (required), `limit: number = 50`, `summary: boolean = true` (false includes every member) | matching objects with kind, id, name and package |
 | `al_getdiagnostics` | `lint` | `file: string` or `uri: string`, plus `text: string` for a file outside the project | diagnostics for the file |
 | `al_runtests` | `tests.run_auto` | _(none)_ | test results plus per-method classified/actual backend, local/live status, and reasons; unsupported/platform behavior needs live BC |
 | `al_deadcode` | `deadCode` | _(none)_ | unused procedures/fields/orphaned subscribers |
 | `al_sqlscan` | `sqlPatterns` | _(none)_ | SQL anti-pattern findings |
 | `al_entrypoints` | `entrypoints` | `scope: workspace \| packages \| all = workspace` | procedures with no incoming calls |
-| `al_trace_event` | `trace` | `event: string`, `depth: number = 10` | event propagation chain |
+| `al_trace_event` | `trace` | `event: string` (required), `depth: number = 10` (max 50) | event propagation chain |
 | `al_impact` | `impact` | `symbol: string` (required), `scope: workspace \| packages \| all = workspace` | consumers of the symbol; a name that is not loaded is an error naming the closest ones |
 | `al_suggestevent` | `suggestEvent` | `query: object` (required) | suggested integration events and paths |
 | `al_testclassify` | `tests.classify` | _(none)_ | per-test execution routing and reasons |
