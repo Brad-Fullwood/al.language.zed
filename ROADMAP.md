@@ -1,13 +1,12 @@
 # Completion Roadmap And Release Evidence
 
-The project is not currently declared production- or release-ready. The
-blocking work and evidence states are maintained in
-[Completion Evidence Ledger](./Docs/gaps-and-future-work.md).
-Confirmed external-service and compatibility boundaries are listed separately
-in [Current Limitations](./Docs/current-limitations.md). That boundary document
-must never be used to hide actionable implementation or verification work.
+The project is not yet declared production- or release-ready. The
+[Completion Evidence Ledger](./Docs/gaps-and-future-work.md) tracks the blocking
+work and its evidence. [Current Limitations](./Docs/current-limitations.md) lists
+the known external-service and compatibility limits, and must not be used to
+hide implementation or verification work this project can do.
 
-## Candidate Implemented Scope Requiring Final Gates
+## Implemented Scope Awaiting Final Gates
 
 ### Parser and language data
 
@@ -18,8 +17,8 @@ must never be used to hide actionable implementation or verification work.
   a corpus parse rate alone cannot prove node-shape correctness.
 - Grammar, queries, language metadata, themes, and the complete Zed language
   package have generator-owned sources and drift checks. Schemas and snippets
-  are canonical hand-maintained contracts: repository tests validate their JSON
-  shape and cross-check settings, debug-snippet fields, and runtime consumers.
+  are maintained by hand: repository tests validate their JSON shape and
+  cross-check settings, debug-snippet fields, and runtime consumers.
 
 ### Build, verification, and package emission
 
@@ -28,9 +27,10 @@ must never be used to hide actionable implementation or verification work.
 - The request owns backend selection, compiler-setting conversion, exact
   configured dependency packages, analyzer selection, timeout/cancellation,
   normalized diagnostics, manifest-selected artifacts, and atomic handoff.
-- Native verification fails closed on syntax, project/dependency integrity,
-  declarations, declared bindings, permissions, local procedure/event/interface
-  contracts, conservative body semantics, and final package integrity.
+- Native verification rejects the build on a failure in syntax,
+  project/dependency integrity, declarations, declared bindings, permissions,
+  local procedure/event/interface contracts, conservative body semantics, or
+  final package integrity.
 - The isolated accuracy corpus measures native build at 14/14 planted defects
   with zero clean-control false positives. Microsoft `alc` 17 measures 13/14
   under the same source-line scoring method.
@@ -52,7 +52,7 @@ must never be used to hide actionable implementation or verification work.
   profiler views, and symbol operations share lower-level implementations across
   LSP, daemon, CLI/TUI, and MCP.
 - The generic MCP `al_call` exposes the complete daemon catalog. Named aliases
-  add discoverability without forming an allow-list.
+  make common methods easier to find and do not limit what `al_call` reaches.
 - Gallery-installed LSP, DAP, and MCP processes run `al-lsp` from `PATH` or
   from the release archive the extension downloads and verifies. The language
   package ships 55 tasks and inline runnables that run `al-explorer`, which has
@@ -64,17 +64,17 @@ must never be used to hide actionable implementation or verification work.
 - Native DAP owns launch/attach, publish/deploy, breakpoints, stack, scopes,
   variables, evaluate, stepping, continue, and disconnect over the current BC
   REST/SignalR protocol family.
-- The native test router follows transitive workspace calls/events and fails
-  closed to live BC for unsupported platform behavior.
+- The native test router follows transitive workspace calls/events and routes
+  unsupported platform behavior to live BC.
 - Local execution covers pure logic and the supported workspace-record subset,
   deterministic lifecycle/handlers, statement/path/MC/DC coverage, scoped
   mutation testing, and live snapshot capture orchestration.
-- File snapshot validation/diff remain BC-free. Platform-object behavior stays
-  authoritative on live Business Central.
+- File snapshot validation/diff remain BC-free. Platform-object behavior runs
+  on live Business Central.
 
 ## Compatibility Boundaries
 
-Boundaries are explicit product contracts, not silent partial implementations:
+Each limit below is stated and handled explicitly:
 
 - Microsoft-wide compiler type inference, analyzer policy, and unmeasured
   package formats use the explicit `alc` validation/backend.
@@ -82,7 +82,8 @@ Boundaries are explicit product contracts, not silent partial implementations:
 - Dependency packages without source expose declarations, not executable
   call-site bodies.
 - Stable Zed extension API 0.7 does not expose settings-schema registration.
-  The schema and gated implementation are in-tree for an API line that does.
+  The schema and the registration code are in the repository, compiled in by
+  the `zed_api_0_8` cfg once the resolved API is 0.8.0 or later.
 - Full grammar/data/theme regeneration consumes a pinned Microsoft AL extension
   archive. Ordinary generation remains self-contained.
 
@@ -104,14 +105,14 @@ effects and fallback behavior.
   it through the `tree-sitter-al` Rust dependency alias.
 - Product versions in the extension, binaries, lockfile, and release tag stay
   synchronized. Library crates retain independent semantic versions.
-- External inputs are pinned or explicitly supplied. Tests never turn a missing
-  credential, unpublished dependency, or skipped live environment into a
-  successful validation claim.
+- External inputs are pinned or explicitly supplied. A test does not report a
+  missing credential, unpublished dependency, or skipped live environment as a
+  passed validation.
 
 ## Release Gates
 
-The release evidence is produced by the testing guide, not by prose in this
-file. A release candidate runs, at minimum:
+The commands in the testing guide produce the release evidence. A release
+candidate runs at least:
 
 ```bash
 # Grammar repository
@@ -136,8 +137,8 @@ Microsoft extension and runs
 `scripts/check-release-hygiene.sh --full-regenerate`. The Microsoft differential
 profile sets `AL_TOOL_PATH`/package-cache inputs and runs the emitter, verifier,
 and semantic bridge comparisons. Live BC credentials enable publish, DAP, test,
-and snapshot-capture integration profiles. Each profile reports unavailable
-external inputs as unavailable, never passed.
+and snapshot-capture integration profiles. Each profile reports missing
+external inputs as unavailable, not passed.
 
 `make crates-publish-dryrun` is the separate strict crates.io-resolution gate.
 It is not part of publishing the Zed extension and fails while any independent
