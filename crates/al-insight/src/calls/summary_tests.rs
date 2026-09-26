@@ -5,98 +5,7 @@ use super::*;
 use al_source::file_index::FileIndex;
 use petgraph::visit::EdgeRef;
 
-/// Constructs the summary path must keep: interface dispatch, record
-/// triggers, `Codeunit.Run`, an event with a same-file subscriber, a
-/// `[TryFunction]` with a write, a `Commit()`, an overloaded name, a
-/// temporary record, and several objects in one file.
-const TRICKY: &str = r#"interface "Fixture Shipper"
-{
-    procedure Ship(Qty: Integer);
-}
-
-codeunit 50300 "Fixture Truck" implements "Fixture Shipper"
-{
-    procedure Ship(Qty: Integer)
-    var
-        Entry: Record "Fixture Entry";
-    begin
-        Entry.Insert(true);
-        OnAfterShip(Qty);
-    end;
-
-    [IntegrationEvent(false, false)]
-    local procedure OnAfterShip(Qty: Integer)
-    begin
-    end;
-}
-
-codeunit 50301 "Fixture Dispatcher"
-{
-    trigger OnRun()
-    begin
-        TryPost();
-    end;
-
-    procedure Dispatch(Shipper: Interface "Fixture Shipper")
-    var
-        Truck: Codeunit "Fixture Truck";
-    begin
-        Shipper.Ship(1);
-        Truck.Ship(2);
-        Codeunit.Run(Codeunit::"Fixture Truck");
-        Helper();
-        Helper(1);
-    end;
-
-    local procedure Helper()
-    begin
-        Commit();
-    end;
-
-    local procedure Helper(Value: Integer)
-    var
-        Entry: Record "Fixture Entry";
-    begin
-        Entry.Modify();
-    end;
-
-    [TryFunction]
-    procedure TryPost()
-    var
-        Entry: Record "Fixture Entry";
-        Buffer: Record "Fixture Entry" temporary;
-    begin
-        Entry.Delete();
-        Buffer.Insert();
-    end;
-
-    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Fixture Truck", 'OnAfterShip', '', false, false)]
-    local procedure HandleShip(Qty: Integer)
-    begin
-        Dispatch(Qty);
-    end;
-
-    [EventSubscriber(ObjectType::Table, Database::"Fixture Entry", 'OnAfterInsertEvent', '', false, false)]
-    local procedure HandleEntryInsert(var Rec: Record "Fixture Entry"; RunTrigger: Boolean)
-    begin
-        Helper();
-    end;
-}
-
-table 50302 "Fixture Entry"
-{
-    fields
-    {
-        field(1; "No."; Code[20]) { }
-    }
-
-    trigger OnInsert()
-    begin
-    end;
-}
-"#;
-
-/// The harness project's sources plus [`TRICKY`], under dependency-like paths.
+/// The harness project's sources plus [`SUMMARY_FIXTURE`], under dependency-like paths.
 fn fixture_sources() -> Vec<(std::path::PathBuf, String)> {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../al-test-harness/data/test_al_project/src");
@@ -116,7 +25,7 @@ fn fixture_sources() -> Vec<(std::path::PathBuf, String)> {
         .collect();
     sources.push((
         std::path::PathBuf::from("/deps/fixture/Tricky.al"),
-        TRICKY.to_string(),
+        SUMMARY_FIXTURE.to_string(),
     ));
     sources.sort();
     assert!(sources.len() > 20, "fixture project is missing");
@@ -334,8 +243,8 @@ fn summary_graph_equals_tree_graph_node_for_node_and_edge_for_edge() {
 
 #[test]
 fn summary_keeps_every_object_of_a_multi_object_file_and_its_effects() {
-    let parsed = al_syntax::AlParser::parse_quick(TRICKY);
-    let summary = SourceFileSummary::from_tree("Tricky.al", &parsed.tree, TRICKY);
+    let parsed = al_syntax::AlParser::parse_quick(SUMMARY_FIXTURE);
+    let summary = SourceFileSummary::from_tree("Tricky.al", &parsed.tree, SUMMARY_FIXTURE);
     let names: Vec<&str> = summary.objects.iter().map(|o| o.name.as_str()).collect();
     assert_eq!(
         names,
@@ -346,7 +255,10 @@ fn summary_keeps_every_object_of_a_multi_object_file_and_its_effects() {
             "Fixture Entry"
         ]
     );
-    assert_eq!(summary.effects, file_effect_sites(&parsed.tree, TRICKY));
+    assert_eq!(
+        summary.effects,
+        file_effect_sites(&parsed.tree, SUMMARY_FIXTURE)
+    );
 
     let try_post = summary
         .effects
@@ -373,4 +285,17 @@ fn summary_survives_a_json_round_trip() {
         let back: SourceFileSummary = serde_json::from_slice(&json).unwrap();
         assert_eq!(&back, summary, "{}", path.display());
     }
+}
+
+#[test]
+fn the_builder_fingerprint_hashes_the_fixture_summary() {
+    let parsed = al_syntax::AlParser::parse_quick(SUMMARY_FIXTURE);
+    assert!(parsed.errors.is_empty(), "the fixture parses cleanly");
+    let summary = SourceFileSummary::from_tree("fixture.al", &parsed.tree, SUMMARY_FIXTURE);
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in serde_json::to_vec(&summary).unwrap() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x00000100000001b3);
+    }
+    assert_eq!(summary_builder_fingerprint(), hash);
 }

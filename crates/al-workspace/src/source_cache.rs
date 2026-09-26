@@ -1,8 +1,9 @@
 //! Dependency source summaries on disk, one entry per package.
 //!
 //! An entry stands in for a package only while the package's bytes, the
-//! summary schema and the grammar are the ones it was written for, so a
-//! changed package misses and is summarized again on its own. Loading an
+//! summary schema, the grammar and the summary builder are the ones it was
+//! written for, so a changed package misses and is summarized again on its
+//! own. Loading an
 //! entry decodes plain data and runs nothing. Every failure is a miss.
 //!
 //! Layout, following `al_symbols::cache`: a 4-byte little-endian header
@@ -20,7 +21,10 @@ use sha2::{Digest, Sha256};
 use crate::dependency_sources::PackageSourceSummary;
 
 /// Bump whenever `PackageSourceSummary`, or anything it holds, changes what
-/// it means. Older entries then miss and are rewritten.
+/// it means, or the code that builds one gives other output. Older entries
+/// then miss and are rewritten. The snapshot test
+/// `fixture_summaries_match_the_snapshot_of_this_schema_version` fails until
+/// this constant and its snapshot change together.
 pub const SCHEMA_VERSION: u32 = 1;
 /// Base Application summarizes to about 60 MB of JSON. Anything past this is
 /// corrupt or not ours, and is refused before it is read.
@@ -42,6 +46,9 @@ pub struct PackageKey {
     pub schema_version: u32,
     /// [`al_syntax::grammar_fingerprint`] of the build that wrote the entry.
     pub grammar: u64,
+    /// [`al_insight::calls::summary_builder_fingerprint`] of the build that
+    /// wrote the entry.
+    pub builder: u64,
     /// SHA-256 of the `.app` bytes, lowercase hex.
     pub sha256: String,
     pub byte_len: u64,
@@ -79,6 +86,7 @@ impl PackageKey {
         Ok(Self {
             schema_version: SCHEMA_VERSION,
             grammar: al_syntax::grammar_fingerprint(),
+            builder: al_insight::calls::summary_builder_fingerprint(),
             sha256,
             byte_len,
             app_id,
@@ -98,12 +106,13 @@ impl PackageKey {
             end -= 1;
         }
         let mut hash: u64 = 0xcbf29ce484222325;
-        for byte in self.schema_version.to_le_bytes().iter().chain(
-            self.grammar
-                .to_le_bytes()
-                .iter()
-                .chain(self.sha256.as_bytes()),
-        ) {
+        let fields = [
+            &self.schema_version.to_le_bytes()[..],
+            &self.grammar.to_le_bytes(),
+            &self.builder.to_le_bytes(),
+            self.sha256.as_bytes(),
+        ];
+        for byte in fields.into_iter().flatten() {
             hash ^= u64::from(*byte);
             hash = hash.wrapping_mul(0x00000100000001b3);
         }
@@ -161,7 +170,8 @@ impl SourceSummaryCache {
 
     /// The summary stored for `key`, or `None` on any miss: no entry, an
     /// entry another user could have written, an oversized or corrupt entry,
-    /// or one written for other bytes, another schema or another grammar.
+    /// or one written for other bytes, another schema, another grammar or
+    /// another summary builder.
     pub fn load(&self, app_path: &Path, key: &PackageKey) -> Option<PackageSourceSummary> {
         let path = self.entry_path(app_path, key);
         if !self.is_readable() {
@@ -356,7 +366,7 @@ fn decode(bytes: &[u8], key: &PackageKey) -> Result<PackageSourceSummary, String
         serde_json::from_slice(header).map_err(|error| format!("unreadable header: {error}"))?;
     if header.key != *key {
         return Err(format!(
-            "written for another package, schema or grammar: {:?}",
+            "written for another package, schema, grammar or builder: {:?}",
             header.key
         ));
     }

@@ -376,6 +376,128 @@ fn the_key_follows_the_bytes_the_schema_and_the_grammar() {
 }
 
 #[test]
+fn an_entry_written_by_another_summary_builder_is_a_miss() {
+    let fixture = Fixture::new();
+    let fresh = fixture.start();
+    let cache = fixture.cache();
+    let key = PackageKey::of(&fixture.fixture_app).unwrap();
+    assert_eq!(
+        key.builder,
+        al_insight::calls::summary_builder_fingerprint()
+    );
+    let other_builder = PackageKey {
+        builder: key.builder ^ 1,
+        ..key.clone()
+    };
+    assert_ne!(
+        cache.entry_path(&fixture.fixture_app, &other_builder),
+        cache.entry_path(&fixture.fixture_app, &key),
+        "another builder names a different entry"
+    );
+    assert!(cache.load(&fixture.fixture_app, &other_builder).is_none());
+
+    // An entry another builder wrote, found where this build looks for its
+    // own, is refused on its header and summarized again.
+    let summary = PackageSourceSummary::build(&fixture.fixture_app, || {}).unwrap();
+    cache
+        .save(&fixture.fixture_app, &other_builder, &summary)
+        .unwrap();
+    std::fs::rename(
+        cache.entry_path(&fixture.fixture_app, &other_builder),
+        cache.entry_path(&fixture.fixture_app, &key),
+    )
+    .unwrap();
+    let rebuilt = fixture.start();
+    assert_eq!(rebuilt.from_disk, 1, "only the other package loads");
+    assert_eq!(rebuilt.summaries(), fresh.summaries());
+}
+
+/// The snapshot of the summaries of [`snapshot_package`], kept in the repository.
+const SUMMARY_SNAPSHOT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/testdata/summary_snapshot.json"
+);
+
+/// A package holding `al_insight`'s summary fixture, a file that does not
+/// parse and a file that declares no object.
+fn snapshot_package(dir: &Path) -> PathBuf {
+    let app = dir.join("Snapshot.app");
+    let sources = [
+        ("src/Fixture.al", al_insight::calls::SUMMARY_FIXTURE),
+        ("src/Other.al", OTHER),
+        (
+            "src/Broken.al",
+            "codeunit 50500 Broken\n{\n    procedure X(\n}\n",
+        ),
+        ("src/Comment.al", "// Declares nothing.\n"),
+    ]
+    .map(|(path, source)| (path.to_string(), source.to_string()));
+    std::fs::write(
+        &app,
+        app_bytes("00000000-0000-0000-0000-0000000000c5", "Snapshot", &sources),
+    )
+    .unwrap();
+    app
+}
+
+#[derive(serde::Serialize)]
+struct SummarySnapshot<'a> {
+    schema_version: u32,
+    summary: &'a PackageSourceSummary,
+}
+
+/// Rule: the snapshot and `SCHEMA_VERSION` in `source_cache.rs` change in the
+/// same commit.
+///
+/// An entry on disk is used while its schema version, grammar fingerprint
+/// and summary builder fingerprint match. The builder fingerprint covers only
+/// what `al_insight::calls::SUMMARY_FIXTURE` exercises, and nothing covers
+/// the rest of the code that builds a `PackageSourceSummary`. When this test
+/// fails, that code now writes other summaries than the entries users hold.
+/// Bump `SCHEMA_VERSION`, then run the test once with
+/// `UPDATE_SUMMARY_SNAPSHOT=1` to rewrite the snapshot. The rewrite refuses
+/// while the snapshot on disk was written under the current `SCHEMA_VERSION`.
+#[test]
+fn fixture_summaries_match_the_snapshot_of_this_schema_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = snapshot_package(dir.path());
+    let summary = PackageSourceSummary::build(&app, || {}).unwrap();
+    assert_eq!(summary.skipped_files, 2, "the broken and the empty file");
+    let mut actual = serde_json::to_string_pretty(&SummarySnapshot {
+        schema_version: crate::source_cache::SCHEMA_VERSION,
+        summary: &summary,
+    })
+    .unwrap();
+    actual.push('\n');
+
+    let committed = std::fs::read_to_string(SUMMARY_SNAPSHOT).unwrap_or_default();
+    if committed == actual {
+        return;
+    }
+    let committed_version = serde_json::from_str::<serde_json::Value>(&committed)
+        .ok()
+        .and_then(|value| value.get("schema_version")?.as_u64());
+    let current = u64::from(crate::source_cache::SCHEMA_VERSION);
+    if std::env::var_os("UPDATE_SUMMARY_SNAPSHOT").is_some() {
+        assert_ne!(
+            committed_version,
+            Some(current),
+            "the summaries changed but SCHEMA_VERSION did not: bump SCHEMA_VERSION in \
+             crates/al-workspace/src/source_cache.rs, then rewrite the snapshot"
+        );
+        std::fs::write(SUMMARY_SNAPSHOT, &actual).unwrap();
+        return;
+    }
+    let committed_version = committed_version.map_or("unknown".to_string(), |v| v.to_string());
+    panic!(
+        "the summaries of the fixture package differ from {SUMMARY_SNAPSHOT} \
+         (written under SCHEMA_VERSION {committed_version}, current {current}). \
+         Bump SCHEMA_VERSION in crates/al-workspace/src/source_cache.rs and rerun \
+         with UPDATE_SUMMARY_SNAPSHOT=1 to rewrite the snapshot."
+    );
+}
+
+#[test]
 fn a_package_without_source_writes_no_entry() {
     let root = tempfile::tempdir().unwrap();
     let app = root.path().join("Empty.app");
