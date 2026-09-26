@@ -15,10 +15,9 @@ process and communicate via C-ABI function pointers.
 | --- | --- | --- |
 | `analyze(file, source, analyzers[], packageCache)` | compilation diagnostics + CodeCop/UICop/AppSourceCop/PerTenantCop | `server/diagnostics.rs` (phase 2) |
 | `typeAt(file, pos, [unsavedText], packageCache)` | hover fallback (semantic type at cursor) | `queries/hover.rs` |
-| `completions_at(file, pos, [unsavedText], packageCache)` | member-access completion fallback | `queries/completions.rs` |
+| `completions(file, pos, [unsavedText], packageCache)` | member-access completion fallback | `queries/completions.rs` |
 | `builtins()` | built-in types/methods catalog | LSP startup → `SemanticCache` |
 | `errorCodes()` | error-code → severity/message catalog | diagnostic message enrichment |
-| `compile(...)` | legacy Rust API; fails closed with `-32601` | **retired** — builds use `al-compile` |
 | `ping()` | health check | lifecycle |
 
 ## How it works
@@ -121,10 +120,12 @@ automatically. To control it:
 
 - No async inside a CLR call (sync mutex); single CLR per process (no multi-toolchain in one session);
   a timeout prevents *new* calls during cooldown but cannot interrupt an in-flight CLR call.
-- ⛔ Bridge `compile` is disabled. `al.useOfficialCompiler` selects the maintained `al-compile`
-  subprocess backend; it does not route through this FFI bridge.
+- The bridge has no compile method. `al.useOfficialCompiler` selects the `al-compile`
+  subprocess backend, which does not route through this FFI bridge.
 - Analyzer names resolve only to shipped analyzer DLLs or explicit DLL paths. Custom analyzer DLLs run
-  in-process and must be treated as trusted code.
+  in-process and must be treated as trusted code, so an `al.codeAnalyzers` entry that is not a
+  built-in token and comes from the repository's own settings applies only after
+  `al-explorer trust`. See [project trust](./project-trust.md).
 - `al.enableExternalRulesets`, `al.ruleSetPath`, `al.assemblyProbingPaths`, and
   `al.outputAnalyzerStatistics` intentionally apply to the official `alc` backend, where Microsoft
   defines their behavior; they do not alter this focused per-document bridge.
