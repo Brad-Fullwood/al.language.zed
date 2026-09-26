@@ -1,0 +1,16 @@
+{
+  "id": "11-upgrade-impact-breaking-no-baseline",
+  "question": "What breaking changes has this app introduced compared to its previous release?",
+  "skill": "al-bc:bc-upgrade-impact",
+  "fixture": "crates/al-test-harness/data/test_al_project",
+  "overlay": null,
+  "source": "plugin/skills/bc-upgrade-impact/SKILL.md, the --baseline-app refusal contract",
+  "checks": [
+    {
+      "args": ["--compact", "breaking"],
+      "jq": ".evaluated",
+      "expect_exact": "false",
+      "expect_contains": ["No --baseline-app supplied; breaking-change analysis was not evaluated"]
+    }
+  ]
+}

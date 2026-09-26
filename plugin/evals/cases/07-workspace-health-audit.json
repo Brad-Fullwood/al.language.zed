@@ -1,0 +1,22 @@
+{
+  "id": "07-workspace-health-audit",
+  "question": "Audit this extension before I deploy it. What problems does it have?",
+  "skill": "al-bc:bc-workspace-health",
+  "fixture": "crates/al-test-harness/data/test_al_project",
+  "overlay": null,
+  "source": "plugin/TESTING.md question 7",
+  "checks": [
+    {
+      "args": ["--compact", "native-check"],
+      "jq": ". | length",
+      "expect_exact": "1",
+      "expect_contains": ["\"code\":\"AL-NC005\"", "Sales Order Pageext"]
+    },
+    {
+      "args": ["--compact", "sql-scan"],
+      "jq": ". | length",
+      "expect_exact": "2",
+      "expect_contains": ["findSetWithoutFilters", "Work Order Helper"]
+    }
+  ]
+}

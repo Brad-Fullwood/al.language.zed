@@ -1,0 +1,21 @@
+{
+  "id": "09-test-locally-coverage",
+  "question": "What does this extension's test suite cover, and what is untested?",
+  "skill": "al-bc:bc-test-locally",
+  "fixture": "crates/al-test-harness/data/test_al_project",
+  "overlay": null,
+  "source": "plugin/ROADMAP.md left-for-next-agent item: bc-test-locally has no agent run yet",
+  "checks": [
+    {
+      "args": ["--compact", "test-coverage"],
+      "jq": ".coverage | length",
+      "expect_exact": "2",
+      "expect_contains": ["\"testProcedure\":\"TestAddition\"", "\"testProcedure\":\"TestStringConcat\""]
+    },
+    {
+      "args": ["--compact", "test-coverage"],
+      "jq": ".untested | length",
+      "expect_exact": "31"
+    }
+  ]
+}

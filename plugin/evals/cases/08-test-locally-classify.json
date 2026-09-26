@@ -1,0 +1,20 @@
+{
+  "id": "08-test-locally-classify",
+  "question": "Which tests in this extension can run locally without a BC tenant?",
+  "skill": "al-bc:bc-test-locally",
+  "fixture": "crates/al-test-harness/data/test_al_project",
+  "overlay": null,
+  "source": "plugin/ROADMAP.md left-for-next-agent item: bc-test-locally has no agent run yet",
+  "checks": [
+    {
+      "args": ["--compact", "test-classify"],
+      "jq": ".classifications | length",
+      "expect_exact": "2",
+      "expect_contains": [
+        "\"codeunitName\":\"Pure Logic Test\"",
+        "\"decision\":\"interp\"",
+        "\"runsLocally\":true"
+      ]
+    }
+  ]
+}

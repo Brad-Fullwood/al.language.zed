@@ -22,16 +22,28 @@
       grep-for-the-file fallback, the hand-rolled ID allocator and the
       retry-a-timeout advice are gone.
 
+- [x] Ground-truth eval cases under `plugin/evals/`, one per `TESTING.md`
+      question plus `bc-test-locally`, `bc-upgrade-impact` and `bc-cop-fixer`,
+      run with `plugin/evals/run.sh` (`make plugin-evals`) against
+      `al-explorer` directly, no LLM. Each checks a `jq` expression against an
+      exact value, a list of substrings, or both. See `plugin/evals/README.md`.
+
 Left for the next agent:
 
 - [ ] Agent runs for `bc-test-locally`, `bc-upgrade-impact` and `bc-cop-fixer`.
-      Their commands are verified by hand, but none has been through a Haiku
-      session. The other five skills have one each, recorded in `TESTING.md`.
+      Their commands are verified by hand and now have a ground-truth eval
+      case each, but none has been through a Haiku session. The other five
+      skills have one each, recorded in `TESTING.md`.
 - [ ] An agent run against a project with `.alpackages`, which is the only way
-      to exercise the base-app lookups and the dependency source index.
-- [ ] `claude plugin eval` cases under `plugin/evals/`, one per question in
-      section 2 of `Docs/campaign/findings/ai-tooling-ideas.md`, so triggering
-      is measured rather than sampled.
+      to exercise the base-app lookups and the dependency source index. The
+      same gap applies to `plugin/evals/`: the bundled fixture declares no
+      dependencies, so there is no ground-truth case for `package-diff` or a
+      base-app `source` lookup either.
+- [ ] `claude plugin eval` cases (LLM-scored, not ground-truth) for the twenty
+      questions in section 2 of `Docs/campaign/findings/ai-tooling-ideas.md`.
+      Those were measured against a real workspace with Base Application
+      loaded, which is not something this public repository can bundle, so
+      they need a different fixture strategy than `plugin/evals/`.
 - [ ] A `Setup` hook that offers to download a release archive into
       `$CLAUDE_PLUGIN_DATA/bin` when `al-bin.sh` finds nothing.
 
