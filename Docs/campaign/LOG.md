@@ -281,3 +281,24 @@ Append-only. Newest entry last.
   (`mock/record.rs`, `next` returning `Ok(1)`). Restored before the re-dispatch.
 - `target/debug` (30 GB) deleted, 31 GB free after.
 - Five agents dispatched at 18:40, listed in `STATE.md`.
+
+## 2026-09-26 19:17 BST: headless session, round 8 queued, five agents again
+
+- The 18:32 session's five agents were dead at the start: no live process, an empty session log,
+  no commits from the mutants and triage agents, five findings from the round 8 reviewer
+  (`findings/r8-session-review.md`, committed as 32ca741f), and the fix-r7 worktree still holding
+  its uncommitted SEC-7 fix, now 296 lines.
+- Origin was six commits ahead (1a081fbe..aa01cb97), pushed by the second session between 18:30 and
+  19:08 BST: JSON types run in the interpreter (`json.rs`, reference semantics through an arena),
+  table events get the stored row as `xRec`, a subscriber's `sender` parameter is passed, one
+  `validate_relation` decides Validate routing for the router and the runtime, XML `Format` no
+  longer groups thousands. Its own review fixed two of the five round 8 findings before the
+  reviewer wrote them up (RT-3, and the `xRec` half of RT-1). CI on PR 32 passed on every push
+  except the ubuntu job still running at 19:20. Fast-forwarded.
+- Merged `campaign/slop-batch-11` (2b7bce37): the desloppify re-score (overall 80.2 unchanged,
+  strict 79.6, the scan surface grew with the merges, section 5 of `findings/desloppify.md`),
+  the `get_` prefix dropped from three al-dap hub accessors, a crate doc for zed-al. The agent
+  found `desloppify scan` returns 7 files and 0 lines while sibling worktrees are busy and wrote
+  down how to spot it.
+- Five agents dispatched at 19:30 (`STATE.md`): round 7 fixes, round 8 review continuation, round 8
+  fixes on a new branch `campaign/fix-r8-review`, the audit backlog triage, `cargo mutants`.
