@@ -66,8 +66,8 @@ proprietary package download in CI.
 | `symbols/warm_lookup/get_by_id` | Object lookup by `(kind, id)` |
 | `symbols/warm_lookup/search_substring` | Substring search over the whole index |
 | `insight/build_graph_from_index` | Build the object/event/call graph (cold) |
-| `insight/trace_event` | `al trace` — walk subscriber/publisher chains |
-| `insight/table_impact` | `al impact` — find every object touching a table |
+| `insight/trace_event` | `al-explorer trace`: walk subscriber/publisher chains |
+| `insight/table_impact` | `al-explorer impact --table`: find every object touching a table |
 | `insight/callgraph_from_insight` | Build the call graph from the insight graph |
 | `completion/type_position` | Completion in a type position (drives the symbol index) |
 | `completion/default` | Completion in the default keystroke context |
