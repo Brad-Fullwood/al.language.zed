@@ -1,6 +1,6 @@
 # CLI & TUI (`al-explorer`)
 
-**Crate:** `crates/al-explorer`. **Status:** ✅ Linux, macOS, Windows
+**Crate:** `crates/al-explorer`. **Status:** ✅ shipped (Linux, macOS, Windows)
 
 `al-explorer` is the terminal client for `al-lsp`. `main.rs` picks the mode at startup: with a
 subcommand it is a **JSON-RPC CLI** client of the daemon, with a global `--json` flag for scripts

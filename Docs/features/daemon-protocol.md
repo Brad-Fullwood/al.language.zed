@@ -1,7 +1,7 @@
 # Daemon Protocol
 
-**Modules:** `crates/al-lsp/src/server/daemon/` + `crates/al-protocol/`. **Status:** ✅ Linux,
-macOS, and Windows
+**Modules:** `crates/al-lsp/src/server/daemon/` + `crates/al-protocol/`. **Status:** ✅ shipped
+(Linux, macOS, and Windows)
 
 `al-lsp daemon --project <path>` is the shared backend whose dispatcher the CLI, contributor tasks,
 and the MCP bridge use. Daemon mode serves JSON-RPC 2.0 over a Unix-domain socket on Linux/macOS and

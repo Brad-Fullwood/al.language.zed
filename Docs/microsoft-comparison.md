@@ -6,8 +6,10 @@ feature pages for implementation details and limitations.
 
 ## Legend
 
-✅ native here · 🟡 partial / phase-gated here · ❌ not provided · 🔷 Microsoft-authoritative (we
-delegate by design)
+- ✅ native here
+- 🟡 partial or phase-gated here
+- ❌ not provided
+- 🔷 Microsoft is the authority, and this project delegates to it
 
 ## Editing & language server
 
