@@ -886,13 +886,20 @@ impl BcTarget {
     /// URL rather than supplied beside it.
     ///
     /// For a caller that passes one `serverUrl` string and nothing else, such
-    /// as the daemon's `snapshot` and `profiling` methods.
+    /// as the daemon's `snapshot` and `profiling` methods. Their client
+    /// connects to the URL as written, so the port is the URL's own or its
+    /// scheme's default. Leaving it unset let [`Self::endpoint`] fill in 7049,
+    /// so `https://host/BC` was authorised as `host:7049` and connected to
+    /// `host:443`.
     #[must_use]
     pub fn on_prem_url(server_url: &str) -> Self {
+        let port = al_bc::launch::server_with_scheme(server_url)
+            .and_then(|url| url::Url::parse(&url).ok())
+            .and_then(|url| url.port_or_known_default());
         Self {
             on_prem: true,
             server: Some(server_url.to_string()),
-            port: None,
+            port,
         }
     }
 
@@ -2075,6 +2082,36 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("{server}: {error}"));
         }
+    }
+
+    /// The snapshot client connects to `serverUrl` as written, so the check
+    /// compares the port it will connect to: 443 for `https://host/BC`, not the
+    /// 7049 a launch configuration without a port means.
+    #[test]
+    fn an_inline_url_is_judged_on_the_port_the_client_connects_to() {
+        let _config = ScratchConfig::new();
+        let project = project_with_launch(
+            r#"[{"name":"Dev","type":"al","request":"launch","environmentType":"OnPrem",
+                 "server":"https://erp.example.com","serverInstance":"BC","authentication":"AAD"}]"#,
+        );
+        grant(project.path()).unwrap();
+
+        let refusal = authorize_cached_credential(
+            project.path(),
+            &BcTarget::on_prem_url("https://erp.example.com/BC"),
+            CredentialKind::Basic,
+            TargetSource::Inline,
+        )
+        .unwrap_err();
+        assert!(refusal.contains(":443"), "{refusal}");
+
+        authorize_cached_credential(
+            project.path(),
+            &BcTarget::on_prem_url("https://erp.example.com:7049/BC"),
+            CredentialKind::Basic,
+            TargetSource::Inline,
+        )
+        .expect("the launch configuration's own port is authorised");
     }
 
     #[test]

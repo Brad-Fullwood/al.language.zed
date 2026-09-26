@@ -1224,8 +1224,8 @@ dispatch_table! {
             build_dispatch::dispatch_download_symbols(workspace, id, &params).await
         },
         "debug" [authorized] => debug_dispatch::dispatch_debug(workspace, id, &params).await,
-        "snapshot" [] => build_dispatch::dispatch_snapshot(workspace, id, &params).await,
-        "profiling" [] => build_dispatch::dispatch_profiling(workspace, id, &params).await,
+        "snapshot" [authorized] => build_dispatch::dispatch_snapshot(workspace, id, &params).await,
+        "profiling" [authorized] => build_dispatch::dispatch_profiling(workspace, id, &params).await,
         "xlf.generate" [] => build_dispatch::dispatch_xlf_generate(workspace, id, &params).await,
         "xlf.refresh" [named] => build_dispatch::dispatch_xlf_refresh(workspace, id, &params).await,
         "xlf.untranslated" [named] => build_dispatch::dispatch_xlf_untranslated(workspace, id, &params),

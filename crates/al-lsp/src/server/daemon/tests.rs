@@ -579,7 +579,9 @@ mod dispatch_tests {
             BTreeSet::from([
                 "debug",
                 "downloadSymbols",
+                "profiling",
                 "publish",
+                "snapshot",
                 "tests.run",
                 "tests.run_auto",
                 "tests.run_batch",

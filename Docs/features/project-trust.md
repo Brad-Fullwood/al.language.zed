@@ -178,12 +178,13 @@ writing a sentence.
 
 ## Credentials
 
-Eight daemon methods reach a credential the daemon holds, or send the user's own to a
-server the repository's launch file names, and all eight go through one authorisation
-function: `debug` (the `start` command), `publish`, `downloadSymbols` from a BC server,
-`tests.run`, `tests.run_batch`, `tests.run_auto`, `tests.snapshot_capture` and
-`tests.snapshot_replay`. The daemon's dispatch table declares which methods those are, and a
-test holds this list and that declaration together.
+Ten daemon methods reach a credential the daemon holds, send the user's own to a server the
+repository's launch file names, or send one to a server the request names, and all ten go
+through one authorisation function: `debug` (the `start` command), `publish`,
+`downloadSymbols` from a BC server, `tests.run`, `tests.run_batch`, `tests.run_auto`,
+`tests.snapshot_capture`, `tests.snapshot_replay`, `snapshot` and `profiling`. The daemon's
+dispatch table declares which methods those are, and a test holds this list and that
+declaration together.
 
 - Microsoft's Business Central online endpoints are always allowed. The endpoint is fixed, so
   a repository cannot redirect the token.
@@ -217,19 +218,20 @@ the target is authorised and the refusal says "Business Central credentials" rat
 naming a cached token. The Run Test code lens in the language server runs the same check
 before it starts a live test.
 
+`snapshot` and `profiling` take `serverUrl`, `username` and `password` from the request.
+The credential is the caller's, but the server is a string an agent can choose through
+`al_call`, so an inline `serverUrl` must match a launch configuration of a trusted project,
+compared on scheme, host and the port the client connects to (the URL's own, or 443 or 80 by
+scheme). Their `acceptInvalidCerts` is refused unless that launch configuration sets it for
+the same server. A request with no `serverUrl` gets the daemon's loopback default, which no
+caller chose, and `acceptInvalidCerts` is dropped for it.
+
 ### Where the caller brings its own credential
 
-These methods take the credential and the server from the request, so there is no cached
-credential to protect and no trust decision to make. They are as trusted as the caller that
-calls them:
-
-- `snapshot` and `profiling` take `serverUrl`, `username`, `password` and their own
-  `acceptInvalidCerts`, which is honoured because the caller chose both the server and the
-  setting.
-- `debug start` with an explicit `accessToken` spends that token rather than the cached one.
-  `acceptInvalidCerts` is still refused unless the project's own configuration asks for it
-  and the project is trusted: turning off TLS verification is about the target, not the
-  token.
+`debug start` with an explicit `accessToken` spends that token rather than the cached one,
+so there is no cached credential to protect. `acceptInvalidCerts` is still refused unless the
+project's own configuration asks for it and the project is trusted: turning off TLS
+verification is about the target, not the token.
 
 ## Limits
 
