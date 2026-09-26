@@ -549,6 +549,7 @@ impl AlServer {
     /// without blocking edits. Project scope finishes with a bridge-free native
     /// generation that merges only still-current semantic cache entries.
     async fn refresh_diagnostics_after_configuration(&self) {
+        // Held through the clearing publishes, as in `publish_if_current`.
         let generation = self.workspace.generation_lock.read().await;
         let stale: Vec<Url> = {
             let mut published = self.workspace_diagnostic_uris.lock().await;
@@ -733,6 +734,7 @@ impl AlServer {
     /// keystroke is exactly what keeps a typing burst from paying O(workspace)
     /// per pause.
     async fn schedule_workspace_diagnostics(&self) {
+        // The awaits below run in the spawned task, not under this guard.
         let mut guard = self.workspace_diag_task.lock().await;
         if let Some(old) = guard.take() {
             old.abort();
@@ -1450,6 +1452,8 @@ impl LanguageServer for AlServer {
 
             // A transient URI is no longer part of the workspace, and even a
             // saved file may have become clean after discarding its overlay.
+            // The clear is sent under the write guard so that no
+            // `publish_if_current` can land after it.
             self.client
                 .publish_diagnostics(uri.clone(), vec![], None)
                 .await;

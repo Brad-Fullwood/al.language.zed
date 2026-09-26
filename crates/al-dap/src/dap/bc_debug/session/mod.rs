@@ -574,6 +574,7 @@ impl BcDebugSession {
     /// - No race: the channel is unbounded, so a `Break` that arrives before
     ///   this method is called is buffered and returned on the first `recv`.
     pub async fn wait_for_break_event(&self) -> bool {
+        // Nothing else takes this receiver. The guard is how `&self` waits on it.
         let mut rx = self.break_event_rx.lock().await;
         rx.recv().await.unwrap_or(false)
     }

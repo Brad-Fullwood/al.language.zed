@@ -317,6 +317,10 @@ pub struct Workspace {
     pub package_info: std::sync::RwLock<Vec<PackageInfo>>,
     /// In-memory cache of builtin types indexed by name for O(1) lookups.
     pub semantic_cache: std::sync::RwLock<SemanticCache>,
+    /// The daemon's native debug session. Its methods take `&mut self`, so each
+    /// debug command holds this lock across its Business Central call. Each such
+    /// call ends at the SignalR invoke timeout, and nothing it awaits takes this
+    /// lock.
     pub debug_session: tokio::sync::Mutex<Option<al_dap::native_debug::NativeDebugSession>>,
     /// Optional callback for user-visible notifications (bridge failures, etc.).
     ///
