@@ -56,6 +56,9 @@ CLI front end:
 
 ## 1.2 Workspace layout
 
+The articles carry the numbers re-measured on 2026-09-26 (`blog-progress.md`, fact pass and
+re-read sections). This section keeps the 2026-09-21 baseline.
+
 **21 crates** under `crates/`, plus the `tree-sitter-al` submodule, which is excluded from the
 workspace and published separately as `tree-sitter-al-bc` (`Cargo.toml:6`, `ROADMAP.md:102`).
 
@@ -171,6 +174,9 @@ parses, 203 failures), 159 keywords, 313 properties, 127+ triggers, 158 builtin 
 conflicts. None of those match the current repository.
 
 ## 1.4 The LSP, the daemon and the protocol
+
+The articles carry the numbers re-measured on 2026-09-26 (`blog-progress.md`, fact pass and
+re-read sections). This section keeps the 2026-09-21 baseline.
 
 One `Workspace` owns everything: documents, symbols, the semantic bridge, the file index, merged
 config, the cached insight and call graphs, the profiler session and the test-result store
