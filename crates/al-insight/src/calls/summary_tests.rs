@@ -255,12 +255,31 @@ fn summary_keeps_every_object_of_a_multi_object_file_and_its_effects() {
             "Fixture Entry"
         ]
     );
-    assert_eq!(
-        summary.effects,
-        file_effect_sites(&parsed.tree, SUMMARY_FIXTURE)
-    );
+    // Each object keeps the effects of its own declaration, which is what
+    // the tree path reads for it.
+    let declarations =
+        al_source::file_index::collect_object_declarations(&parsed.tree, SUMMARY_FIXTURE);
+    assert_eq!(declarations.len(), summary.objects.len());
+    for (object, info) in summary.objects.iter().zip(&declarations) {
+        let scope = object_node(&parsed.tree, info);
+        assert_eq!(
+            object.effects,
+            node_effect_sites(scope, &parsed.tree, SUMMARY_FIXTURE),
+            "{}",
+            object.name
+        );
+    }
+    let effect_names = |object: &ObjectSummary| -> Vec<String> {
+        let mut names: Vec<String> = object.effects.iter().map(|e| e.name.clone()).collect();
+        names.sort();
+        names
+    };
+    assert_eq!(effect_names(&summary.objects[0]), ["Ship"]);
+    assert_eq!(effect_names(&summary.objects[1]), ["OnAfterShip", "Ship"]);
+    assert_eq!(effect_names(&summary.objects[3]), ["OnInsert"]);
 
-    let try_post = summary
+    let dispatcher = &summary.objects[2];
+    let try_post = dispatcher
         .effects
         .iter()
         .find(|effect| effect.name == "TryPost")
@@ -271,7 +290,7 @@ fn summary_keeps_every_object_of_a_multi_object_file_and_its_effects() {
         ["database write Entry.Delete()"],
         "a temporary record is not a write"
     );
-    assert!(summary
+    assert!(dispatcher
         .effects
         .iter()
         .any(|effect| effect.name == "Helper" && effect.commits.len() == 1));

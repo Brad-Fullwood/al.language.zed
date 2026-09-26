@@ -91,25 +91,15 @@ fn optional_i32_param(params: &serde_json::Value, key: &str) -> Result<Option<i3
     }
 }
 
-/// The object a breakpoint on 1-based `line` of `path` belongs to.
-///
-/// A file can declare several objects, and BC routes a breakpoint by object
-/// type and ID, so a breakpoint inside a file's second object set on the
-/// first never hit. The object is the last one declared at or above the
-/// line; a line above every declaration belongs to the first.
+/// The object a breakpoint on 1-based `line` of `path` belongs to, by the
+/// rule the native debug adapter uses as well
+/// ([`crate::server::dap_mode::object_at_line`]).
 pub(in crate::server::daemon) fn object_at_line(
     workspace: &Workspace,
     path: &std::path::Path,
     line: u32,
 ) -> Option<al_source::file_index::CachedObjectInfo> {
-    let row = usize::try_from(line.saturating_sub(1)).ok()?;
-    let mut objects = workspace.file_index.object_infos_in(path).into_iter();
-    let first = objects.next()?;
-    Some(
-        objects
-            .rfind(|info| info.range.start_point.row <= row)
-            .unwrap_or(first),
-    )
+    crate::server::dap_mode::object_at_line(&workspace.file_index, path, line)
 }
 
 /// Resolve `(objectType, objectId)` from the workspace file index for the
