@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-24 12:30 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-26 07:10 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -8,9 +8,24 @@ Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two 
 
 ## In flight
 
-Nothing. The three unmerged fix branches (`fix-formatter-idempotence`, `fix-ghost-diagnostics`,
-`slop-splits-2`) are merged. `campaign/ai-persisted-index` never reached origin, so the
-persisted index is queued again below.
+Session 2026-09-26 (interactive, Fable orchestrator, Opus subagents). The headless watchdog
+session that started 06:48 was stopped at 06:53 so two orchestrators do not edit the branch.
+Five agents dispatched at 07:05:
+
+- Security round 4 review (D): read-only, writes `findings/r4-security.md`. Done when the
+  file ends with `## Review complete`.
+- Persisted symbol index (G): worktree branch `campaign/ai-persisted-index`, writes
+  `findings/persisted-index.md` with before and after numbers.
+- `cargo mutants` on the shortlist (E): worktree branch `campaign/test-mutants`, writes
+  `findings/mutants.md`.
+- Blog (I): articles 2, 4, 5, 8 revised against current code, article 9 written, fact pass,
+  unsloppify, `pnpm validate`. Commits on blog branch `campaign/2026-09-rewrite`. Rebuilds
+  `target/release` first.
+- desloppify batch 10, async locking (C): worktree branch `campaign/slop-async-locking`,
+  writes `findings/async-locking.md`.
+
+A fix branch on origin or in `.claude/worktrees/` with commits not in this branch and no live
+agent means the agent died: re-dispatch onto that branch.
 
 Remote branch cleanup: every `campaign/*` branch except this one is merged into it. Cloud
 sessions can push only to `campaign/2026-09-21`, so deleting them is left to Brad (the list is in
@@ -20,8 +35,6 @@ Draft PR: https://github.com/Brad-Fullwood/al.language.zed/pull/30 (base `dev`, 
 
 Queued:
 
-- Persisted symbol and source index on disk (cold start 54 s and 2.9 GB RSS), keyed by app id, version and content hash.
-- Rebuild `target/release` before measuring for articles (it predates `publish` and `free-ids`).
 - al-dap and al-publish post to different BC dev endpoints (needs a live server to settle).
 - desloppify fix batches (`findings/desloppify.md` section 4), file splits after the owning fix branch merges.
 - Workstream E (tests): coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis. Start when a build slot frees.
