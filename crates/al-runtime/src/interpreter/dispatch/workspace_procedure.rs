@@ -48,8 +48,8 @@ pub(super) fn dispatch_workspace_procedure(
     let target_object = receiver
         .map(str::to_string)
         .or_else(|| stack.top().map(|frame| frame.object.clone()));
-    let candidate_paths: Vec<std::path::PathBuf> = if let Some(target_object) = target_object {
-        match ctx.source.find_by_object_name(&target_object) {
+    let candidate_paths: Vec<std::path::PathBuf> = if let Some(target_object) = &target_object {
+        match ctx.source.find_by_object_name(target_object) {
             Some(path) => vec![path],
             None => {
                 return eval_error(format!("object '{}' not found in workspace", target_object));
@@ -70,9 +70,17 @@ pub(super) fn dispatch_workspace_procedure(
         };
 
         let source = text.as_bytes();
-        let root = tree.root_node();
+        // The target object's own declaration: a file may declare several
+        // objects, and the procedure, its globals and the object's identity
+        // all come from this one.
+        let root = target_object
+            .as_deref()
+            .and_then(|target| object_declaration_named(tree.root_node(), source, target))
+            .unwrap_or_else(|| tree.root_node());
 
-        let Some(object_name) = ctx.source.object_name(path) else {
+        let Some(object_name) =
+            declared_object_name(root, source).or_else(|| ctx.source.object_name(path))
+        else {
             return eval_error(format!(
                 "object source '{}' has no indexed object identity",
                 path.display()
@@ -358,6 +366,32 @@ pub(super) fn run_declaration(
         Eval::Continue => eval_error("continue statement not inside a loop"),
         other => other,
     }
+}
+
+/// The `object_declaration` named `name` among `root`'s objects.
+pub fn object_declaration_named<'t>(
+    root: tree_sitter::Node<'t>,
+    source: &[u8],
+    name: &str,
+) -> Option<tree_sitter::Node<'t>> {
+    let mut cursor = root.walk();
+    let found = root.named_children(&mut cursor).find(|object| {
+        object.kind() == "object_declaration"
+            && declared_object_name(*object, source)
+                .is_some_and(|declared| declared.eq_ignore_ascii_case(name))
+    });
+    found
+}
+
+/// The name an `object_declaration` declares.
+fn declared_object_name(object: tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
+    if object.kind() != "object_declaration" {
+        return None;
+    }
+    object
+        .child_by_field_name("name")
+        .and_then(|name| name.utf8_text(source).ok())
+        .map(|name| name.unquote_identifier().into_owned())
 }
 
 /// Raise the event `procedure` publishes, with the parameter values in the

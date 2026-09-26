@@ -35,6 +35,7 @@ pub(crate) mod test_support;
 
 pub use frames::{bind_object_globals, bind_procedure_locals};
 pub use routing::{dispatch_call, supports_global_builtin};
+pub use workspace_procedure::object_declaration_named;
 
 pub(crate) use datetime::{clock_current_datetime, clock_time, clock_today};
 pub(crate) use frames::declared_text_length;

@@ -3189,3 +3189,45 @@ fn events_run_their_automatic_subscribers() {
     let refused = error_message(call("ValidateRaisesFieldEvent"));
     assert!(refused.contains("A name is required"), "{refused}");
 }
+
+/// A table then a codeunit in one file: the codeunit's calls took the
+/// file's first object (the table) as their identity and read globals from
+/// the whole file, failing as "stateful codeunit 'Tour Member'". Label
+/// globals were never bound.
+#[test]
+fn second_object_of_a_file_runs_as_itself_with_its_label_globals() {
+    let file = r#"table 50195 "Greeting Log"
+{
+    fields
+    {
+        field(1; "No."; Integer) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+    var
+        TableCounter: Integer;
+}
+
+codeunit 50196 "Greeter"
+{
+    var
+        GreetingLbl: Label 'Hello %1, it''s %2', Comment = '%1 = name, %2 = day';
+
+    procedure Greet(): Text
+    begin
+        exit(Compose('Ann'));
+    end;
+
+    local procedure Compose(Name: Text): Text
+    begin
+        exit(StrSubstNo(GreetingLbl, Name, 'Monday'));
+    end;
+}
+"#;
+    assert_eq!(
+        ok(run(&[("/ws/Greeter.al", file)], "Greeter", "Greet", vec![])),
+        Value::Text("Hello Ann, it's Monday".into())
+    );
+}
