@@ -359,3 +359,72 @@ every start. `entry_points_come_back_in_one_order_from_every_build` and
 `impact_rows_come_back_in_one_order_from_every_build` build the index several times, from the
 entries in order and reversed, and compare the serialized rows. Both fail with the sort removed.
 Commit `ffb4c65d`.
+
+### Entries shared across projects
+
+Each project kept its own store, `<user data dir>/al-lsp/<project hash>/source-index/`, and an
+entry name began with the package's file name. Two projects on the same packages each stored a
+full copy, and the second project summarized every package again on its first start.
+
+A summary depends on the package bytes, the schema version, the grammar and the summary builder,
+and the key covers all four. It holds archive paths inside the package and no path of the
+project or of the `.app`, and `parse_quick` takes no project setting, so two projects on the same
+bytes build the same summary. The per-project directory did two things besides keeping projects
+apart. Garbage collection deleted an unused entry when a kept entry had the same package file
+name, which is right only while one project uses the directory: in a shared store, two projects
+with a package of one name and version but other bytes, such as two localizations of Base
+Application, would delete each other's entry on every start. And the 1 GiB limit applied to each
+project.
+
+What changed:
+
+- Commit `e4d047a6` names an entry by the package name and version from its manifest, then the
+  key hash. The file name is no longer part of it, so one package under two file names reads one
+  entry. `load`, `save`, `entry_path` and `entry_name` take the key alone.
+  `the_same_bytes_under_another_file_name_read_the_same_entry` covers it.
+- Commit `98c818e4` makes `SourceSummaryCache::for_project` return
+  `<user data dir>/al-lsp/source-index` for every project. It deletes the entries and temporary
+  files of the project's old store, and the directory once it is empty, but only when that
+  directory is a real directory that this user alone owns and can write. Garbage collection no
+  longer has the same-name rule. An unused entry goes after 30 days without a load or a write,
+  or, least recently used first, once the store passes 1 GiB, which is now a limit for the user.
+  The 0700 directory, the 0600 entries, the owner checks and the fallback on a corrupt or foreign
+  entry are unchanged.
+
+Tests in `crates/al-workspace/src/source_cache_tests.rs`:
+
+| Behaviour | Test |
+| --- | --- |
+| Two projects on the same packages use one directory, and the second reads the entries the first wrote | `two_projects_on_the_same_packages_share_their_entries` |
+| Two projects with other bytes under one package name and version both keep their entry across alternating starts | `projects_with_other_bytes_under_one_package_name_keep_both_entries` |
+| An unused entry with the same package name as a kept one stays | `garbage_collection_keeps_entries_another_project_may_use` |
+| Past the size limit the least recently used unused entries go, and an entry in use stays | `garbage_collection_past_the_size_limit_drops_the_least_recently_used` |
+| The old per-project store is deleted, the project's other files stay | `the_store_a_project_kept_before_is_removed` |
+| An old store that is a symbolic link is not followed | `a_linked_project_store_is_not_followed` |
+
+`a_rewritten_package_is_rebuilt_alone` now expects the entry of the old bytes to stay. Each test in
+the table except the size limit test fails with its part of the change put back: the
+per-project directory, the same-name rule, the removal of the old store, and the owner check
+before that removal. The size limit test passes before and after. It pins the existing rule now
+that the limit covers every project.
+
+Measured with debug builds of `al-explorer` and `al-lsp` at `e4d047a6` (before) and `98c818e4`
+(after), on two copies of the medium benchmark project in a scratch directory, with
+`XDG_DATA_HOME`, `XDG_CACHE_HOME` and `XDG_RUNTIME_DIR` in that directory. Each project ran
+`impact "Sales-Post"` from a stopped daemon, which waits for the dependency source index, then
+stopped the daemon. Sizes are `du -sb` of `<data>/al-lsp` without the log. The upgrade row runs
+the before build on both projects, then the after build on the same data directory.
+
+| Run | Store on disk | Second project, packages read from disk |
+| --- | --- | --- |
+| Before | 123,611,796 bytes, 61,805,898 in each project's store | 0 of 5 |
+| After | 61,805,898 bytes in `al-lsp/source-index` | 4 of 5 |
+| Upgrade, after build on the before build's data | 61,805,898 bytes, both old stores removed (4 entries each) | 4 of 5 |
+
+On the upgrade, the first project summarizes its packages once more, because the old entries are
+deleted rather than moved. Moving them would need the header of each entry read to build its new
+name, which saves one build per package set once.
+
+The doc comment on `persist_dependency_source_summaries` in
+`crates/al-lsp/src/server/daemon/mod.rs` still says the summaries live in the project's data
+directory. That file belongs to another branch in this campaign, so the comment is left for it.
