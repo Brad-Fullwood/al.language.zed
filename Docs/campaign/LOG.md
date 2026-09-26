@@ -346,3 +346,17 @@ Append-only. Newest entry last.
   table with a real global variable to run locally. Open question for round 9: a table's globals get
   a fresh frame per trigger call locally, where BC keeps them per record variable.
 - al-runtime 610 and al-test 163 tests pass on the merge, fmt and clippy clean. Full gates running.
+- Gates on 6b4be394: fmt, release, both clippy runs and rustdoc clean, 94 suites, 5225 passed,
+  0 failed, 10 ignored. Pushed.
+
+## 2026-09-26 22:55 BST: round 8 multi-object fixes merged
+
+- Merged `campaign/fix-r8-multi` (bd76f89f): each `ObjectSummary` keeps the effect sites of its own
+  declaration, so transaction lint warns about a write in a TryFunction of a dependency file's
+  second object (`SourceFileSummary::effects` and `file_effect_sites` removed, `SCHEMA_VERSION` 3,
+  snapshot rewritten). The native debug adapter resolves every breakpoint to the last object
+  declared at or above its line, through `dap_mode::object_at_line`, which the daemon now shares. A
+  `setBreakpoints` that resolves to no object now removes the file's earlier BC breakpoints.
+- Gates on the merge: fmt, release, both clippy runs and rustdoc clean, 94 suites, 5227 passed,
+  1 failed, 10 ignored. The failure is the snapshot profiling mock test again (3 of 4 workspace
+  runs tonight, green alone every time), so a Sonnet agent now isolates its shared state. Pushed.

@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-26 22:35 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-26 22:55 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -18,6 +18,12 @@ tests for `method_id.rs`, `http_auth.rs`, `sort.rs`, `documents.rs`, `filter.rs`
 `findings/mutants.md`). The merged `slop-11` worktree removed (4.3 GB). Gates on 7e4c02f3 run in
 the background (`.campaign/run-gates.sh`, which now also runs the semantic clippy and rustdoc
 lines), results go in `LOG.md`.
+
+Merged 22:50: `campaign/fix-r8-multi` (bd76f89f): summaries keep effect sites per object so
+transaction lint credits a dependency file's second object, the native debug adapter sets each
+breakpoint on the object around its line through one `dap_mode::object_at_line` rule shared with
+the daemon, `SCHEMA_VERSION` 3. Also merged 22:45: the second session's codeunit instances
+(6b4be394, `LOG.md` 22:55).
 
 Done since 21:50: the round 8 reviewer finished (13 findings in all, 4 high, 9 medium, `## Review
 complete`), the round 8 fix agent fixed its four (merged as a1afe8e6: labels are not state, `Rename`
@@ -37,10 +43,9 @@ Agents in flight (dispatched 21:50 to 22:30):
   branch `campaign/fix-r8-review`: RT-4 (table lookup by kind), EV-1 (`DeleteAll` and `ModifyAll`
   events), JSON-1 (`ReadFrom` detaches), JSON-2 (statement position), JSON-4 (`DefaultIfNotFound`),
   JSON-3 (`SelectToken` filters and `..`), the table-publisher half of RT-3.
-- Round 8 multi-object fixes (A), Opus, dispatched 22:20: worktree
-  `.claude/worktrees/agent-audit-triage`, new branch `campaign/fix-r8-multi`: MULTI-1 (transaction
-  lint credits a dependency file's effects to its first object), MULTI-2 (native DAP breakpoints on
-  the first object).
+- Snapshot profiling flake (A), Sonnet, dispatched 22:52: worktree `.claude/worktrees/agent-audit-triage`,
+  branch `campaign/fix-snapshot-flake`: `snapshot_start_server_error_maps_to_internal_error` failed
+  in 3 of 4 workspace runs tonight with -32602 for -32603, green alone. Finds the shared mock state.
 - `cargo mutants` (E), Sonnet: worktree `.claude/worktrees/agent-a34708a3121ce8ac2`, branch
   `campaign/test-mutants`, resumed 22:25 after its `lint.rs` run: `lint.rs`, `mock/record.rs`,
   `composition.rs`, `cobertura.rs`, the formatting module.
@@ -114,7 +119,7 @@ whichever ones pay off most. Record progress per workstream below so gaps are vi
 
 | # | Workstream | Progress | Next step |
 |---|------------|----------|-----------|
-| A | Correctness: review rounds, triage, fixes with a failing test first | Rounds 1 to 7 fixed or queued. Round 7: 9 of 15 fixed, agent on the 6. Round 8 complete: 13 findings, 4 merged (a1afe8e6), two agents on the other 9 | Merge `campaign/fix-r7-review`, `campaign/fix-r8-review` and `campaign/fix-r8-multi`, then round 9 over everything merged since round 8 |
+| A | Correctness: review rounds, triage, fixes with a failing test first | Rounds 1 to 7 fixed or queued. Round 7: 9 of 15 fixed, agent on the 6. Round 8 complete: 13 findings, 6 merged (a1afe8e6, bd76f89f), an agent on the other 7 | Merge `campaign/fix-r7-review` and `campaign/fix-r8-review`, then round 9 over everything merged since round 8 |
 | B | Old audit: mark each of the 227 `AUDIT-BACKLOG.md` findings fixed or open | Done 2026-09-26 (`findings/audit-backlog-triage.md`): 253 rows, 249 fixed with the commit or code named, 3 open (queued above), 1 unclear | Spot-check ten `fixed` verdicts in round 9, since one Sonnet pass decided all 253 |
 | C | Slop and simplification: desloppify plan, per-crate simplify pass | Batch 11 merged 2026-09-26 (re-score: overall 80.2 unchanged, strict 79.9 to 79.6 as the scan surface grew, `findings/desloppify.md` section 5, `desloppify scan` is unreliable with sibling worktrees active). 2026-09-24: test modules split out of six large files, rustdoc warnings 46 to 0 (CI gated), bulk-fix errors typed | The 63 deferred items (typed RPC boundary is the largest), batch 10 (async locking) done, remaining file splits (`resolution.rs` 2754 lines, `dispatch.rs` 3243, `tests_dispatch.rs` 4216, `lsp.rs` 3415, `native_dap.rs` 3636), a holistic desloppify review to re-score the subjective dimensions |
 | D | Security: credentials, archive parsing, MCP and daemon input, extension binary download, supply chain | Four review rounds (8, 19, 10, 14 findings), all fixed and merged. Project trust, dispatcher capability registry, peer-checked endpoint, trust digest over analyzer and dotnet file hashes, credential authorisation on every DAP and test path | Windows named pipe owner check. A fifth round over what changed after 2026-09-26 |
@@ -149,6 +154,7 @@ round on the areas with the most findings.
 
 ## Done
 
+- 2026-09-26 round 8 multi-object fixes merged (bd76f89f): per-object effect sites in the dependency summaries (transaction lint credits the right object), native DAP breakpoints resolve to the object around the line, one `object_at_line` rule for the daemon and `--dap`, `SCHEMA_VERSION` 3.
 - 2026-09-26 round 8 first batch merged (a1afe8e6, `findings/r8-session-review.md`): labels are not object state for the router or the interpreter, `Rename` is a call graph record operation and `Rec`, `xRec` and bare record methods in table code are calls on the table, OnRename and OnBeforeRenameEvent see the new key as `Rec` and the stored row as `xRec`, a rename updates every field whose plain table relation names the renamed key and refuses conditional or composite relations (the router sends those tests live), summaries `SCHEMA_VERSION` 2.
 - 2026-09-26 plugin leftovers merged (cf0f794c): `plugin/evals/` (12 cases, ground truth through `al-explorer`, `make plugin-evals` 12 of 12), the SessionStart download of a checksum-verified release archive (https only, checksum before extraction, refuses on any failure).
 - 2026-09-26 audit backlog triage (`findings/audit-backlog-triage.md`): 253 rows, 249 fixed, 3 open, 1 unclear.
