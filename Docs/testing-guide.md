@@ -1,4 +1,4 @@
-# Testing guide — how to verify each layer
+# Testing guide: how to verify each layer
 
 A change is **not verified by `cargo build`**, and often not by unit tests
 alone. Match the verification to the layer you touched, **run it**, and assert on
@@ -8,10 +8,10 @@ real output (or inspect the screenshot), not just an exit code.
 |---|---|
 | Parser / symbols / semantic / formatting / lint / metrics in a single crate | `cargo test -p <crate>` |
 | Anything crossing crates, or `al-lsp` LSP/daemon/MCP protocol behavior | crate unit tests **plus** the native harness: `cargo test -p al-test-harness` |
-| Daemon endpoint, framing, connection, timeout, auto-start, or platform code | `cargo test -p al-protocol` plus `cargo test -p al-test-harness --test cli_smoke --test extension_smoke`; named-pipe changes must also pass native Windows CI |
+| Daemon endpoint, framing, connection, timeout, auto-start, or platform code | `cargo test -p al-protocol` plus `cargo test -p al-test-harness --test cli_smoke --test extension_smoke`. Named-pipe changes must also pass native Windows CI |
 | `al-explorer` CLI / TUI | `cargo test -p al-test-harness --test cli_smoke --test tui_smoke` |
 | tree-sitter grammar or generator | Grammar crate/generator tests, fixture build, and `tree-sitter-al/tests/run_repo_tests.sh` |
-| `languages/al/*.scm`, `extension.toml`, language-server wiring, in-editor behavior | GUI e2e: `crates/al-test-harness/editor-e2e/drive.sh` — **open the screenshot** |
+| `languages/al/*.scm`, `extension.toml`, language-server wiring, in-editor behavior | GUI e2e: `crates/al-test-harness/editor-e2e/drive.sh`, then **open the screenshot** |
 | Native `.app` emit / `alc` / live semantic bridge | env-gated harness tests with `AL_TOOL_PATH=…` (see below) |
 | Publish/install, native DAP, live-routed tests, or test snapshots | strict live service profile: `make live-bc-contracts` (see below) |
 | Generated artifacts (`languages/al`, grammar, themes) | `make repro-artifacts` (and `scripts/check-release-hygiene.sh`) |
@@ -27,10 +27,16 @@ cargo test --workspace --exclude zed-al   # whole engine (zed-al is a wasm-only 
 `zed-al` is excluded from the native workspace command because its release
 artifact targets `wasm32-wasip2` and must be a WebAssembly component. Run its host-side unit tests with
 `cargo test -p zed-al`, then build the actual extension with `make wasm`. Unit
-tests do not prove the behavior survives the real binary transport; that is what
+tests do not prove the behavior survives the real binary transport. That is what
 the native harness covers.
 
-## 2. Native harness — the real binaries (`al-test-harness`)
+Property tests (`proptest`) run inside the workspace suite at their default budget of 128 cases
+(32 in `al-emit`). The nightly `Property tests (deep)` workflow
+(`.github/workflows/property-nightly.yml`) runs them with `PROPTEST_CASES=8192` and uploads any
+`*.proptest-regressions` file a failure writes. Commit that file, so every later run replays the
+failing input first.
+
+## 2. Native harness: the real binaries (`al-test-harness`)
 
 `cargo test -p al-test-harness` drives the **compiled** `al-lsp` and
 `al-explorer` binaries as subprocesses and asserts on their actual output. This
@@ -42,21 +48,26 @@ cargo build -p al-lsp -p al-explorer        # the harness drives these
 cargo test  -p al-test-harness              # all default (non-env-gated) tests
 ```
 
+The harness fails a run whose `al-lsp` or `al-explorer` binary is older than the sources of the
+crates it links, because `cargo test -p al-test-harness` does not rebuild them and the run would
+describe the previous build. Set `AL_HARNESS_ALLOW_STALE_BINARY=1` to run against an older binary
+on purpose.
+
 Representative tests under `crates/al-test-harness/tests/` (run one with
 `--test <name>`):
 
-- `cli_smoke`, `cli_analysis` — `al-explorer` JSON-RPC CLI surfaces; `cli_smoke` auto-starts the
+- `cli_smoke`, `cli_analysis`: `al-explorer` JSON-RPC CLI surfaces. `cli_smoke` auto-starts the
   daemon and uses the host's real local IPC transport.
-- `extension_smoke` — compiled binary resolution plus daemon auto-start/response and MCP startup;
-  this is wiring coverage, not rendered-editor coverage.
-- `tui_smoke` — drives `al-explorer` in a real PTY and renders the screen with a
+- `extension_smoke`: compiled binary resolution plus daemon auto-start/response and MCP startup.
+  This is wiring coverage, not rendered-editor coverage.
+- `tui_smoke`: drives `al-explorer` in a real PTY and renders the screen with a
   `vt100` parser (the Rust replacement for the former `tui.py`).
-- `mcp_stdio` — the MCP server over stdio.
-- `transport` — in-memory LSP `Content-Length` framing and malformed-message edge cases; it does not
+- `mcp_stdio`: the MCP server over stdio.
+- `transport`: in-memory LSP `Content-Length` framing and malformed-message edge cases. It does not
   exercise daemon IPC.
 - `e2e`, `integration_full`, `edit_lifecycle`, `cancellation`,
   `test_engine_e2e`, `real_world`, `regression`, `completeness`,
-  `data_driven`, `performance`, `zed_fidelity`, `zed_simulation` — broader
+  `data_driven`, `performance`, `zed_fidelity`, `zed_simulation`: broader
   end-to-end and fidelity coverage.
 
 These run with **no** Microsoft toolchain and **no** GUI.
@@ -100,7 +111,7 @@ For grammar / `languages/al/*.scm` / `extension.toml` / language-server-wiring
 changes, or anything about how the extension behaves **in the editor**, use the
 container harness (see [run-al-extension-in-zed] skill /
 `crates/al-test-harness/editor-e2e/README.md`). It runs a **real headless Zed in
-an isolated Podman container** — never the host desktop.
+an isolated Podman container**, not on the host desktop.
 
 ```bash
 crates/al-test-harness/editor-e2e/drive.sh                 # screenshot AL in Zed
@@ -118,10 +129,10 @@ Traps that make a "passing" e2e run lie:
   `grammars/al.wasm` from the current checkout before launch. It fails before
   Zed starts if the Rust artifact is a Preview 1 core module.
 - **Grammar rev drift.** `extension.toml` `[grammars.al].rev` (Zed highlighting)
-  must equal the `tree-sitter-al` submodule HEAD (native parsing);
+  must equal the `tree-sitter-al` submodule HEAD (native parsing).
   `make release-dryrun` checks this.
-- **Never launch Zed/VS Code on the host, and never `pkill` an editor** — Zed
-  shares one process across windows; a broad kill takes down the developer's
+- **Never launch Zed/VS Code on the host, and never `pkill` an editor**. Zed
+  shares one process across windows. A broad kill takes down the developer's
   real windows. The container exists precisely to isolate this.
 
 ## 4. Microsoft `alc` / semantic contract profile
@@ -129,7 +140,7 @@ Traps that make a "passing" e2e run lie:
 These external-contract tests are `#[ignore]` in the self-contained Rust suite,
 so `cargo test` reports them as ignored rather than passed. The strict profile
 requires Microsoft's AL toolchain, a coherent dependency package cache, and
-`dotnet`; a missing input prints `UNAVAILABLE` and exits non-zero.
+`dotnet`. A missing input prints `UNAVAILABLE` and exits non-zero.
 
 ```bash
 AL_TOOL_PATH=<ext>/bin/linux \
@@ -137,7 +148,7 @@ AL_PACKAGE_CACHE_PATH=<project>/.alpackages \
   make microsoft-contracts
 ```
 
-`AL_TOOL_PATH` accepts either directory Microsoft ships the compiler in — the
+`AL_TOOL_PATH` accepts either directory Microsoft ships the compiler in: the
 VS Code extension's `ms-dynamics-smb.al-<version>/bin/<platform>`, or the
 `tools/<tfm>/any` directory of the
 `microsoft.dynamics.businesscentral.development.tools` dotnet tool. Version
@@ -162,11 +173,11 @@ unknown-method verification. Generation fails if Microsoft returns fewer than
 50 unique methods, and the Rust tests enforce uniqueness plus representative
 methods that were absent from the former hand-written allowlists.
 `make check-record-methods` regenerates to a temporary file and requires an
-exact byte match without modifying the checkout; `make microsoft-contracts`
+exact byte match without modifying the checkout. `make microsoft-contracts`
 runs that drift check before its live bridge and compiler contracts. Both
 mismatch kinds fail the gate, but they are reported apart: `DRIFT` means the
 method set itself changed, while `PROVENANCE DRIFT` means the methods are
-identical and only `AL_TOOL_PATH`'s build differs from the pinned one — point
+identical and only `AL_TOOL_PATH`'s build differs from the pinned one. Point
 it at the pinned toolchain, or move the pin deliberately with
 `make record-methods`.
 
@@ -182,7 +193,7 @@ cargo test -p al-lsp --lib --features semantic
 ```
 
 Reminder: a plain `cargo build --workspace` links `al-lsp` against the **no-op
-semantic stub** and rewrites `target/debug/al-lsp`; only a `--features semantic`
+semantic stub** and rewrites `target/debug/al-lsp`. Only a `--features semantic`
 build has the real bridge. Don't symlink the plain `target/debug/al-lsp` onto `PATH`.
 
 ## 5. Live Business Central contract profile
@@ -207,10 +218,10 @@ BC_ACCESS_TOKEN='<headless AAD bearer token>' \
   make live-bc-contracts
 ```
 
-`BC_ACCESS_TOKEN` must be a Microsoft Entra/AAD bearer token; a username and
+`BC_ACCESS_TOKEN` must be a Microsoft Entra/AAD bearer token. A username and
 password are not accepted by the native profile. `BC_TOKEN` remains an alias
 for existing automation. If both token variables are present they must contain
-the same value; disagreement fails closed before network access.
+the same value. Disagreement fails closed before network access.
 
 To exercise a different app, set `AL_LIVE_BC_PROJECT` and the complete custom
 contract instead:
@@ -248,8 +259,8 @@ deterministic at the captured sample. The profile:
 The generated local project and snapshots are removed when the command exits.
 A custom project receives normal build output and a temporary snapshot
 directory, which is removed afterward. The fixture extension is intentionally
-published/installed in the selected tenant and is not automatically uninstalled;
-use a disposable sandbox. Never commit credentials, tenant launch files, or
+published/installed in the selected tenant and is not automatically uninstalled.
+Use a disposable sandbox. Never commit credentials, tenant launch files, or
 captured service data.
 
 ## 6. Reproducible generated artifacts
@@ -259,17 +270,17 @@ from their sources with **no diff**:
 
 - It regenerates the committed Zed language package (`make language`) and runs
   `git diff --exit-code -- languages/`. A non-empty diff means a generator input
-  changed without `languages/al` being regenerated — run `make language` and
+  changed without `languages/al` being regenerated. Run `make language` and
   commit.
 - It runs `gen-zed-index` twice and diffs the two outputs to prove the Zed
   `extensions/index.json` generator is deterministic. `gen-zed-index` writes to
   stdout and has **no committed baseline** in this repo (the editor-e2e harness
   generates it on demand into `target/`), so the committed-artifact diff target
-  is `languages/al`; the index is checked for determinism only.
+  is `languages/al`. The index is checked for determinism only.
 
 `scripts/check-release-hygiene.sh` independently enforces that `languages/al` is
 current (it runs the generator and fails on any diff), and that the generated
-grammar/query/data/theme artifacts exist — `make release-dryrun` calls it.
+grammar/query/data/theme artifacts exist. `make release-dryrun` calls it.
 Its pinned `--full-regenerate` profile also derives `AL_TOOL_PATH` from the same
 Microsoft extension snapshot and requires the checked-in Record method catalog
 to match that DLL exactly.
@@ -288,21 +299,21 @@ tests/run_repo_tests.sh
 
 The repository suite clones the repositories configured in
 `tests/test_repos.toml` and reports the parse rate. Record the tested repository
-revisions and the per-repository results. The corpus measures compatibility; it
+revisions and the per-repository results. The corpus measures compatibility. It
 does not replace focused valid/invalid fixtures or editor inspection.
 
 ## 7. Release dry-run
 
-`make release-dryrun` is a **read-only** release-readiness gate — it never
-publishes. Its numbered output is the authoritative order:
+`make release-dryrun` is a **read-only** release-readiness gate and does not
+publish. Its numbered output is the authoritative order:
 
 1. Grammar crate tests.
 2. Grammar generator tests.
 3. Focused grammar fixtures and the pinned external repository corpus.
 4. Grammar package-manifest listing.
 5. Binary-download repository-slug consistency.
-6. ShellCheck over `scripts/`, the editor-e2e harness scripts and the grammar
-   test scripts, the same file set as the `test` job in `ci.yml`.
+6. ShellCheck over `scripts/`, `plugin/scripts/`, the editor-e2e harness scripts
+   and the grammar test scripts, the same file set as the `ci` job in `ci.yml`.
 7. Stale `crates/<name>` documentation-path rejection.
 8. Release hygiene: product-version alignment (root `zed-al` =
    `extension.toml` = `al-lsp` = `al-explorer` = their `Cargo.lock` entries),
@@ -310,7 +321,9 @@ publishes. Its numbered output is the authoritative order:
    action, required generated assets, and `languages/al` currency.
 9. `make repro-artifacts`, including language-package regeneration/diff and
    deterministic Zed-index generation.
-10. Workspace formatting plus `clippy -D warnings`.
+10. Workspace formatting, `clippy -D warnings` for the workspace and for
+    `zed-al`, and the benchmark harness contract tests
+    (`python3 -m unittest` over `benchmarks/scripts`).
 11. `cargo deny --workspace check`: the `deny.toml` license, advisory, source
     and banned-crate policy.
 12. Native workspace build plus the real semantic-feature `al-lsp` binary.
@@ -359,7 +372,7 @@ evidence):
   <the exact command you ran>
   ```
 - **Expected:** <what correct output/behavior looks like>
-- **Actual:** <the real output — paste it, don't paraphrase>
+- **Actual:** <the real output, pasted rather than paraphrased>
   ```text
   <relevant output / assertion failure / screenshot path>
   ```

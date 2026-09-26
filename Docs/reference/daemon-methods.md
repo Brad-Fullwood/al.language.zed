@@ -1,9 +1,9 @@
 # Daemon Method Reference
 
 JSON-RPC methods handled by `server/daemon/dispatch_request`. The daemon transport, CLI, and
-checkout-local contributor tasks route here; MCP calls the same dispatcher in-process. Every method
-below is available through MCP's `al_call`, whether or not it also has a named MCP alias. Transport and lifecycle:
-[daemon-protocol](../features/daemon-protocol.md).
+checkout-local contributor tasks route here. MCP calls the same dispatcher in-process. Every method
+below is available through MCP's `al_call`, whether or not it also has a named MCP alias.
+[daemon-protocol](../features/daemon-protocol.md) covers transport and lifecycle.
 
 ## LSP-style (`lsp_dispatch.rs`)
 
@@ -19,7 +19,7 @@ below is available through MCP's `al_call`, whether or not it also has a named M
 `clearCache`, `authenticate`, `downloadSymbols`, `snapshot`, `profiling`, `generate`, `obsolete`,
 `obsoleteUsages`, `packageDiff`,
 `audit.dataClassification`, `permissions.audit`, `deps.graph`, `breaking`, `arch.lint`, `duplicates`,
-`upgrade`, `profiler.hints`, `nativeCheck`, `freeIds`, `diag`.
+`upgrade`, `profiler.hints`, `freeIds`. `diag` is answered in `daemon/mod.rs`.
 
 XLIFF: `xlf.generate`, `xlf.refresh`, `xlf.untranslated`, `xlf.suggest`.
 
@@ -31,37 +31,37 @@ launch configuration.
 `obsoleteUsages` lists the calls in the workspace to procedures that are obsolete, each with
 `file`, `range` and a `message` naming the reason and tag. A call on a variable of a package
 object is judged against that object's overloads, chosen by argument count and by the types of
-arguments that are variables or literals; any other call counts only when every definition of the
+arguments that are variables or literals. Any other call counts only when every definition of the
 name is obsolete. `obsolete` lists every pending obsoletion in the loaded packages
 instead.
 
 `packageDiff` compares two versions of a dependency and keeps the changes the workspace uses.
-Params: `from` and `to` (paths to the two `.app` files, inside the project or its package
-folders; relative paths resolve against the project root), `all` (boolean, default false: also
+Params: `from` and `to`, paths to the two `.app` files inside the project or its package folders
+(a relative path resolves against the project root), and `all` (boolean, default false: also
 return the changes nothing in the workspace uses). The result names both packages and carries
 `totalChanges`, `breakingChanges`, `affectingWorkspace`, `possiblyAffecting` and `changes`, where
 each change has the `kind`, `object`, `objectKind`, `member`, `description` and `isBreaking` of
 `breaking` plus `uses`, the workspace consumers whose receiver resolves to the changed object in
 `impact`'s row shape, and `possibleUses`, name matches whose receiver did not resolve. A change to
-a member counts only code that uses the member; extending the object is not a use of each of its
+a member counts only code that uses the member. Extending the object is not a use of each of its
 members. A use has to name the changed kind: `Record "Payment Terms"` is not a use of page
 "Payment Terms".
 
 `freeIds` allocates inside the `idRanges` declared in `app.json`. Params: `kind` (object kind
-keyword, omit for a per-kind summary), `object` (a table, tableextension, enum or enumextension
-whose next free field number or enum ordinal is wanted; wins over `kind`, which then disambiguates
-the name), `count` (1 to 100, default 1) and `includeUsed` (default false). Used numbers come from
+keyword, omit for a per-kind summary), `object`, `count` (1 to 100, default 1) and `includeUsed`
+(default false). `object` names a table, tableextension, enum or enumextension whose next free
+field number or enum ordinal is wanted, and wins over `kind`, which then disambiguates the name. Used numbers come from
 every object declared in the workspace, including the second and later objects in a multi-object
 file, plus the package objects that sit inside a declared range. A tableextension's fields must fall
-inside `idRanges` and avoid the base table and every other extension of it that is visible; an
+inside `idRanges` and avoid the base table and every other extension of it that is visible. An
 enumextension's ordinals work the same way. An exhausted range is an `INVALID_PARAMS` error naming
 the range, and an `app.json` without `idRanges` returns a `warnings` entry.
 
 `compile` is native by default. A native response includes `backend: "native"`, `validated: true`,
 `verificationLevel: "native-syntax-project-binding-symbol-graph"`, `appPath` (or `null` on
 rejection), and diagnostics with 1-based `line`/`column` plus exact native `endLine`/`endColumn`.
-Workspace semantic/call-graph errors gate emission; warnings are returned with a successful build.
-Set `al.useOfficialCompiler: true` to select the explicit Microsoft `alc` backend; there is no
+Workspace semantic/call-graph errors gate emission. Warnings are returned with a successful build.
+Set `al.useOfficialCompiler: true` to select the Microsoft `alc` backend. There is no
 silent fallback from native to Microsoft tooling.
 
 Tests: `tests.discover`, `tests.run`, `tests.coverage`, `tests.run_batch`, `tests.run_auto`,
@@ -70,16 +70,16 @@ Tests: `tests.discover`, `tests.run`, `tests.coverage`, `tests.run_batch`, `test
 
 ## Insight (`insight_dispatch.rs`)
 
-`trace`, `traceChain`, `entrypoints`, `graphExport`, `insightStats`, `deadCode`, `impact`,
-`tableImpact`, `suggestEvent`, `eventMap`.
+`trace`, `traceChain`, `entrypoints`, `graphExport`, `insightStats`, `deadCode`, `nativeCheck`,
+`impact`, `tableImpact`, `suggestEvent`, `eventMap`.
 
 ## Debug (`debug_dispatch.rs`)
 
 `debug` with `params.cmd` ∈ { `start`, `breakpoint`, `state`, `stack`, `variables`, `globals`,
 `expand`, `eval`, `continue`, `step`, `history`, `stop` }. Inspection/evaluation commands accept
-`frameId`; `expand` also requires `path`; `step` accepts `stepType: over|in|out`. This stateful method
-backs both the CLI debug commands and the MCP `al_debug` tool; the process must remain alive between
-calls.
+`frameId`. `expand` also requires `path`. `step` accepts `stepType: over|in|into|out` (`into` is a
+synonym for `in`). The method backs both the CLI debug commands and the MCP `al_debug` tool. It
+keeps the session in the daemon, so the daemon process must stay alive between calls.
 
 ## Projection: `limit`, `offset`, `fields`
 
@@ -91,7 +91,7 @@ A method whose result is the array answers `{items, total, returned, offset, tru
 of the three is supplied, and the bare array when none is. A method whose result is an object
 around one array keeps its other fields and gains `total`, `returned`, `offset` and `truncated`
 beside them. `total` counts the rows before the window, and `truncated` is true when rows follow
-the page, so a full page is never mistaken for a complete answer.
+the page, so a caller can tell a full page from a complete answer.
 
 Root-array methods: `search`, `object`, `byId`, `events`, `subscribers`, `entrypoints`, `deadCode`,
 `nativeCheck`, `trace`, `packages`, `sqlPatterns`, `obsolete`, `obsoleteUsages`, `rules`, `errorCodes`,
@@ -105,7 +105,7 @@ Object-with-array methods, with the field projected: `impact` (`impacted`), `tab
 
 `fields` is refused when no row has any of the names. A name that only some results carry is not
 refused, because rows leave optional keys out when they are empty (a workspace `impact` row has no
-`package`); the result names it in `absentFields` instead.
+`package`). The result names it in `absentFields` instead.
 
 `object` and `byId` also take `signatures: true`, which renders each field, procedure and global
 variable as one line (`1 "No.": Code[20]`, `AssistEdit(OldCust: Record "Customer"): Boolean`)
@@ -122,32 +122,35 @@ context window. An explicit `limit` always wins, including `limit: 0` for a coun
 
 ## Scope: `workspace`, `packages`, `all`
 
-`impact`, `tableImpact`, `entrypoints`, `eventMap` and `graphExport` accept `scope`. For
-`graphExport`, `workspace` keeps the nodes of the project's objects and the nodes one edge away from
-them. `workspace` keeps the rows
-from the open project, `packages` keeps the rows from loaded `.app` files, and `all` keeps
-everything. The result reports the `scope` it used and `outOfScopeCount`, so a short answer is not
-read as a small workspace.
+`impact`, `tableImpact`, `entrypoints`, `eventMap` and `graphExport` accept `scope`. `workspace`
+keeps the rows from the open project, `packages` keeps the rows from loaded `.app` files, and `all`
+keeps everything. For `graphExport`, `workspace` keeps the nodes of the project's objects and the
+nodes one edge away from them. The result reports the `scope` it used and `outOfScopeCount`, so a
+caller can tell a filtered answer from a small workspace.
 
 The filter is applied before `limit`, so a page counts rows that survived the scope. A daemon
-caller that passes no `scope` gets every row, which is what these methods did before. MCP callers
-default to `workspace`, because that is the code the project can change.
+caller that passes no `scope` gets every row. MCP callers default to `workspace`, because that is
+the code the project can change.
 
 ## Conventions & limits
 
-- Lifecycle methods: `ping` returns an empty object, `status` returns daemon/workspace state,
-  `shutdown` requests an orderly daemon stop, and `handshake` returns `{version, build, pid}` — the
-  build this daemon was started from. A client compares `version` and `build` with its own before
-  it uses a daemon it did not start, and replaces one that does not match, because a daemon from
-  other code answers with that code's response shapes.
+- Lifecycle methods: `ping` returns the string `"pong"`, `status` returns daemon/workspace state,
+  `shutdown` requests an orderly daemon stop, and `handshake` returns `{version, build, pid}`: the
+  version and build this daemon was started from, and its process ID. When the request carries a `nonce`, `handshake` also
+  returns `proof`, an HMAC over the nonce and the identity keyed by a file only the current user can
+  read, so a process that did not start from this user's key cannot answer it. A client compares
+  `version` and `build` with its own before it uses a daemon it did not start, and replaces one that
+  does not match, because a daemon from other code answers with that code's response shapes.
 - `status` reports `memory` and `diag/summary` reports `process`, both
   `{residentBytes, peakResidentBytes}`. `residentBytes` is null off Linux. These are what the
   operating system sees, unlike the per-structure byte totals in `diag`, which count only
   allocations the workspace owns.
 - `status` and `diag` report `sourceIndex` as `{state, packagesDone, packagesTotal, filesDone,
   elapsedMs}`, where `state` is `idle`, `building`, `ready` or `failed`. The dependency AL source
-  index takes about a minute on Base Application, and `subscribers`, `composed`, `events`, `lint`,
-  `trace`, `impact` and `entrypoints` all wait for it. The daemon and the MCP server start it in
+  index takes about a minute on Base Application. `lint` and the methods that read the call graph
+  (`subscribers`, `events`, `composed`, `generate`, `trace`, `traceChain`, `impact`,
+  `tableImpact`, `entrypoints`, `eventMap`, `graphExport`, `insightStats`, and `object` and `byId`
+  with `waitForMembers: true`) wait for it. The daemon and the MCP server start it in
   the background at startup, and the build is single-flight, so concurrent and retried callers join
   one build rather than starting their own.
 - `status` reports `callGraph` as `{state, elapsedMs}` with the same four states. The call graph
@@ -155,18 +158,17 @@ default to `workspace`, because that is the code the project can change.
   A client whose request reaches its deadline keeps waiting while either one is `building`, up to
   600 s.
 - `status` reports `launchConfigError` when the project's debug configuration file could not be
-  read. Symbol queries are unaffected by that; the Business Central connection commands are the
-  ones that need the file.
-- JSON-RPC 2.0 over newline-delimited frames; error codes include standard set plus `-32000`
+  read. Symbol queries do not need the file. The Business Central connection commands do.
+- JSON-RPC 2.0 over newline-delimited frames. Error codes include the standard set plus `-32000`
   (code analysis), `-32001` (file not found) and `-32002` (the daemon will not touch this path).
   `null` results are serialized explicitly.
-- `duplicates` clamps `minTokens` and `minSimilarity`; `graphExport` is capped at
-  50k nodes+edges; `trace`/`traceChain` depth bounded; 64 MB max request line; ≤64 concurrent
-  connections; 30-minute idle shutdown, skipped while a request is in flight or a debug session is
+- `duplicates` clamps `minTokens` and `minSimilarity`. `graphExport` is capped at
+  50k nodes+edges. `trace` and `traceChain` depth is bounded. 64 MB max request line. ≤64 concurrent
+  connections. 30-minute idle shutdown, skipped while a request is in flight or a debug session is
   open, and settable with `--idle-timeout-secs` or `AL_DAEMON_IDLE_SECS` (`0` never exits). A daemon
   also stops once its project directory no longer exists, whatever the idle window.
 - Local-only IPC: Unix-domain socket at `$XDG_RUNTIME_DIR/al-lsp/{hash}.sock` (with platform
-  runtime-directory fallbacks) on Linux/macOS; per-user named pipe on Windows.
+  runtime-directory fallbacks) on Linux/macOS. Per-user named pipe on Windows.
 
 ## Paths and the project boundary
 
@@ -182,29 +184,28 @@ analyses that text and never opens the path, and the document it holds for the r
 when the request is answered. `rename` belongs here because it returns a `WorkspaceEdit` for the
 client to apply and writes nothing itself. `text` is refused for a path inside the project, where
 the daemon's own copy is authoritative, and refused outright by any method that rewrites the file it
-names (`format`, `fix*`, `sortMembers`, `organizeFiles`): supplied content is analysed, never
-written back.
+names (`format`, `fix`, `sortMembers`): supplied content is analysed, never written back.
 
 `al-explorer` uses that: on `-32002` from a read-only method it reads the file itself and asks
 again with `text`, so `al-explorer parse ../elsewhere/Foo.al` works while the daemon still opens
 nothing outside the project. A write command reports the refusal instead.
 
-Common parameter shapes: position queries accept `uri` plus `{line, character}`; `breaking` and
-`upgrade` accept `baselineSymbols`; `tests.snapshot_validate` accepts `snapshotPath`;
-`tests.snapshot_replay` accepts `snapshotPath`, `bcVersion`, and optional `config`/`timeoutMs`; and
+Common parameter shapes: position queries accept `uri` plus `{line, character}`. `breaking` and
+`upgrade` accept `baselineSymbols`. `tests.snapshot_validate` accepts `snapshotPath`.
+`tests.snapshot_replay` accepts `snapshotPath`, `bcVersion`, and optional `config`/`timeoutMs`, and
 `tests.snapshot_diff` accepts `pathA` and `pathB`. Snapshot paths must resolve inside the current
-project. `source` requires `name` and accepts the
-disambiguators `kind`, `package`, `proc`, or `trigger` (`proc` and `trigger` are mutually exclusive);
-it returns `source_availability` as `workspace_source`, `embedded_source`, `generated_outline`, or
+project. `source` requires `name` and accepts the disambiguators `kind`, `package`, `proc`, or
+`trigger` (`proc` and `trigger` are mutually exclusive).
+It returns `source_availability` as `workspace_source`, `embedded_source`, `generated_outline`, or
 `metadata_only`. `source` also accepts `listProcedures` (boolean), which returns
 `{k, id, n, pkg, source_availability, members, total}` where each member carries `name`, `kind`,
 `signature`, `startLine` and `endLine` and no body. A `proc` or `trigger` that does not exist is an
 `INVALID_PARAMS` error naming the members the object does declare. A whole-object lookup of a
 workspace object returns `range` with the declaring file's path and line span. `location` accepts
 the same object identity selectors (`name`, `kind`, `package`, and `id`) and rejects ambiguous
-matches. Other method shapes are defined beside their dispatcher and
-mirrored by `al-explorer`; MCP passes the same object through `al_call`.
+matches. Other method shapes are defined beside their dispatcher and mirrored by `al-explorer`.
+MCP passes the same object through `al_call`.
 
 `deps.graph` rereads and validates the current `app.json`, reads dependency metadata from every
 configured `.app` package, and fails explicitly on an unreadable/malformed manifest. Identity is the
-app GUID; minimum versions are treated as compatible when a loaded version satisfies them.
+app GUID. Minimum versions are treated as compatible when a loaded version satisfies them.

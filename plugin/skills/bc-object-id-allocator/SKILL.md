@@ -15,12 +15,13 @@ first: the daemon binds to the directory the command runs in.
 ```
 
 ```json
-{"mode":"object","kind":"table","next":[50101],
- "ranges":[{"from":50100,"to":50199,"used":2,"free":98}]}
+{"mode":"object","kind":"table","ranges":[{"from":50100,"to":50199,"used":2,"free":98}],
+ "nextFree":50101,"free":[50101],"usedCount":2,"freeCount":98}
 ```
 
-`--count 5` asks for five. `free-ids` with no `--kind` returns a per-kind
-summary, which is the right first call when you are creating several objects.
+`--count 5` puts five numbers in `free`. `free-ids` with no `--kind` returns a
+per-kind summary (`kinds`, each with `used`, `free` and `nextFree`), which is the
+right first call when you are creating several objects.
 
 Used numbers come from every object declared in the workspace, including the
 second and later objects in a multi-object file, plus the package objects that
@@ -37,13 +38,17 @@ An exhausted range is an error naming the range. An `app.json` with no
 ```
 
 ```json
-{"mode":"field","object":"Customer Ext","baseObject":"Customer","next":[50102],
- "ranges":[{"from":50100,"to":50199,"used":2,"free":98}]}
+{"mode":"field","kind":"tableextension","object":"Customer Ext","baseObject":"Customer",
+ "ranges":[{"from":50100,"to":50199,"used":2,"free":98}],
+ "nextFree":50102,"free":[50102],"usedCount":7,"freeCount":98,"sources":["Customer","Customer Ext"]}
 ```
+
+`sources` names every object whose numbers were counted. An enum or enum
+extension answers with `"mode":"value"` and the next free ordinal.
 
 Pass a table, tableextension, enum or enumextension name. A table extension's
 field numbers must sit inside the app's `idRanges`, and must avoid the base
-table and every other visible extension of it; `free-ids` accounts for all of
+table and every other visible extension of it. `free-ids` accounts for all of
 that. An enum extension's ordinals work the same way. Add `--kind` when the name
 exists as more than one kind.
 
@@ -55,7 +60,7 @@ exists as more than one kind.
 
 `native-check` runs in about 30 ms and reports duplicate object IDs, IDs outside
 `app.json`'s `idRanges`, and duplicate object names, as `AL-NC*` codes. An empty
-`items` array means the ID is clean.
+array means the ID is clean.
 
 ## Do not
 
