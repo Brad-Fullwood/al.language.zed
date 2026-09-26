@@ -12,8 +12,8 @@
     "auto_resolved": 611,
     "deferred": 0,
     "false_positive": 19,
-    "fixed": 66,
-    "open": 1244,
+    "fixed": 67,
+    "open": 1243,
     "triaged_out": 0,
     "wontfix": 66,
     "by_tier": {
@@ -39,8 +39,8 @@
         "auto_resolved": 252,
         "deferred": 0,
         "false_positive": 19,
-        "fixed": 1,
-        "open": 995,
+        "fixed": 2,
+        "open": 994,
         "triaged_out": 0,
         "wontfix": 1
       },
@@ -54707,11 +54707,11 @@
       "detail": {
         "line": 771
       },
-      "status": "open",
-      "note": null,
+      "status": "fixed",
+      "note": "Renamed BcDebugSession::get_call_stack to call_stack (and get_variables/get_globals to variables/globals for consistency), updated every call site in al-dap.",
       "first_seen": "2026-09-26T11:48:02+00:00",
       "last_seen": "2026-09-26T11:48:02+00:00",
-      "resolved_at": null,
+      "resolved_at": "2026-09-26T16:59:59+00:00",
       "reopen_count": 0,
       "work_item_kind": "mechanical_defect",
       "issue_kind": "mechanical_defect",
@@ -54720,7 +54720,13 @@
       "zone": "production",
       "suppressed": false,
       "suppressed_at": null,
-      "suppression_pattern": null
+      "suppression_pattern": null,
+      "resolution_attestation": {
+        "kind": "manual",
+        "text": "I have actually Renamed BcDebugSession::get_call_stack to call_stack (and get_variables/get_globals to variables/globals for consistency), updated every call site in al-dap. and I am not gaming the score.",
+        "attested_at": "2026-09-26T16:59:59+00:00",
+        "scan_verified": false
+      }
     },
     "rust_error_boundary::crates/al-lsp/src/server/mcp/mod.rs::error_type::run_mcp": {
       "id": "rust_error_boundary::crates/al-lsp/src/server/mcp/mod.rs::error_type::run_mcp",
@@ -106229,7 +106235,7 @@
       "strict": 85.2,
       "verified_strict_score": 88.7,
       "checks": 4039,
-      "failing": 686,
+      "failing": 685,
       "tier": 3,
       "detectors": {
         "smells": {
@@ -106276,9 +106282,9 @@
         },
         "rust_api_convention": {
           "potential": 355,
-          "pass_rate": 0.992112676056338,
-          "failing": 4,
-          "weighted_failures": 2.8
+          "pass_rate": 0.9940845070422535,
+          "failing": 3,
+          "weighted_failures": 2.0999999999999996
         },
         "rust_error_boundary": {
           "potential": 355,
