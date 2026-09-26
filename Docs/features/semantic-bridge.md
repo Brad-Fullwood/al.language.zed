@@ -4,8 +4,8 @@
 **Status:** ✅ shipped and integration-tested (feature-gated). **being retired** in favor of native Rust
 
 The semantic bridge is the project's link to Microsoft's actual AL compiler semantics. When you want
-*compiler-grade* diagnostics, type info, and completions — the things that need real name binding and
-type checking — the bridge loads the .NET CLR **in-process** and calls Microsoft's `CodeAnalysis` API
+*compiler-grade* diagnostics, type info, and completions (the things that need real name binding and
+type checking), the bridge loads the .NET CLR **in-process** and calls Microsoft's `CodeAnalysis` API
 through a JSON-over-FFI boundary. No subprocess, no socket: the bridge DLL and the Rust code share one
 process and communicate via C-ABI function pointers.
 
@@ -108,12 +108,12 @@ compatibility is required.
 
 ## How to use
 
-You normally don't call the bridge directly — it powers diagnostics, hover, and completion
+You normally don't call the bridge directly. It powers diagnostics, hover, and completion
 automatically. To control it:
 
-- `al.enableCodeAnalysis` (default true) — turn Microsoft bridge enrichment on/off.
+- `al.enableCodeAnalysis` (default true): turn Microsoft bridge enrichment on/off.
 - `al.backgroundCodeAnalysis`, `al.diagnosticsTrigger`, `al.diagnosticsScope`, `al.codeAnalyzers`,
-  and `al.packageCachePath` — control scheduling, analyzer selection, and dependency lookup (see the
+  and `al.packageCachePath`: control scheduling, analyzer selection, and dependency lookup (see the
   [settings reference](../reference/settings.md)).
 
 ## Limitations

@@ -32,17 +32,17 @@ symbols, folding, formatting, and analysis all consume. It is transport-agnostic
 `AlParser` loads the grammar through the Rust binding's `tree_sitter_al::LANGUAGE` constant and
 offers three entry points:
 
-- `parse(text)` — full parse → `ParseResult`.
-- `parse_incremental(text, old_tree)` — reuses the previous tree for edited documents (this is what
+- `parse(text)`: full parse → `ParseResult`.
+- `parse_incremental(text, old_tree)`: reuses the previous tree for edited documents (this is what
   keeps editing fast under the document store).
-- `parse_quick(text)` — a thread-local cached parser for one-shot use.
+- `parse_quick(text)`: a thread-local cached parser for one-shot use.
 
 Errors are collected from both `is_error()` nodes and `is_missing()` nodes (the latter reported as
 `Missing {kind}`), so syntactic diagnostics reflect both garbage and absent-but-required tokens.
 
 ### Semantic tokens (`tokens.rs`)
 
-A single tree walk classifies every meaningful node into one of **43** token types — the 12 standard
+A single tree walk classifies every meaningful node into one of **43** token types: the 12 standard
 LSP types plus 31 AL-specific ones (e.g. `OBJECT_KEYWORD`, `BUILTIN_TYPE`, `TABLE_FIELD`,
 `PAGE_CONTROL`, `PAGE_ACTION`, `TRIGGER_NAME`, `EVENT_CREATION`, `EVENT_SUBSCRIPTION`,
 `QUERY_DATA_ITEM`, `XMLPORT_FIELD_ELEMENT`, `EXCLUDED_CODE`, …). Tokens are delta-encoded per the LSP
@@ -56,19 +56,19 @@ via a cursor and walks them in reverse for a stack-based DFS to avoid O(n²) beh
 
 Position-aware helpers used by go-to-definition, references, and rename:
 
-- `find_node_at_position` — LSP position → tree-sitter node (UTF-16 → byte conversion).
+- `find_node_at_position`: LSP position → tree-sitter node (UTF-16 → byte conversion).
 - `find_object_declaration` → `ObjectInfo { kind, id, name, range }`.
 - `find_procedure_at` → `ProcedureInfo { name, parameters, return_type, is_local, range }`.
 - `find_variable_references`, `find_call_references`, `find_event_subscriber_references`,
-  `collect_call_site_names` — reference collection with exact-span dedup.
+  `collect_call_site_names`: reference collection with exact-span dedup.
 
 Because object names are not a named field in the grammar, `extract_object_name` scans children for
 identifier/quoted-identifier/string/name nodes.
 
 ### Type resolution (`type_resolver.rs`)
 
-`TypeResolver` collects all variables visible at a cursor — local, parameter, global, implicit
-`self`, and trigger-implicit (Rec, xRec, CurrPage, …) — and resolves a name to a
+`TypeResolver` collects all variables visible at a cursor (local, parameter, global, implicit
+`self`, and trigger-implicit such as Rec, xRec, CurrPage, …) and resolves a name to a
 `VariableDecl { name, type_name, type_subtype, is_var, scope, range }`. Object kinds map to AL types
 (`table`/`tableextension` → `Record`, `page`/`pageextension` → `Page`, etc.), and tables expose
 implicit `Rec`/`xRec` in triggers and pages. This is what powers member-access completion, hover, and
@@ -102,8 +102,8 @@ single, non-nested object.
 
 ### Language data (`language_data.rs`)
 
-All AL vocabulary — keywords, builtin functions, object types, implicit variables, page controls,
-single-statement openers, token classification — is loaded **from JSON** in `tree-sitter-al/data/`
+All AL vocabulary (keywords, builtin functions, object types, implicit variables, page controls,
+single-statement openers, token classification) is loaded **from JSON** in `tree-sitter-al/data/`
 via `LazyLock` singletons, not hard-coded. The Record method catalog is the exception: it lives in
 `crates/al-syntax/data/record_methods.json` and is regenerated from Microsoft's CodeAnalysis
 assembly with `make record-methods`. This is how the project keeps parity with Microsoft's
@@ -122,7 +122,7 @@ keyword/type/builtin lists from a single source of truth.
 ## Why this approach
 
 A tree-sitter front end gives error-resilient, incremental parsing that runs in-process in Rust on
-every surface — the editor, the CLI, CI, and MCP tools — instead of being locked behind a .NET
+every surface (the editor, the CLI, CI, and MCP tools) instead of only inside a .NET
 language server. Driving the vocabulary from generated JSON data (rather than hard-coded lists) keeps
 the parser and the analysis layer in sync with the grammar and avoids the classic "the highlighter
 and the analyzer disagree about what a keyword is" drift.
@@ -130,13 +130,13 @@ and the analyzer disagree about what a keyword is" drift.
 ## How to use
 
 - **Implicitly** through every editor feature (highlighting, outline, folding) and analysis command.
-- **`al-explorer parse <file>`** — node/error counts and parse time.
-- **`al-explorer tokens <file>`** — semantic tokens.
-- **`al-explorer metrics <file> [--all] [--threshold-cyclomatic N] [--threshold-cognitive N]`** —
+- **`al-explorer parse <file>`**: node/error counts and parse time.
+- **`al-explorer tokens <file>`**: semantic tokens.
+- **`al-explorer metrics <file> [--all] [--threshold-cyclomatic N] [--threshold-cognitive N]`**:
   complexity (Zed task: *AL: Complexity Metrics*).
 - **MCP:** use `al_call` for the matching shared methods (`parse`, `metrics`, `documentSymbols`,
   `foldingRanges`, and `semanticTokens`).
-- **`al-explorer format <file> [--check] [--all]`** and **`sort-members`** — formatting/sort.
+- **`al-explorer format <file> [--check] [--all]`** and **`sort-members`**: formatting/sort.
 
 ## Limitations
 

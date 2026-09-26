@@ -20,8 +20,8 @@ A BC `.app` is a 40-byte **NAVX** header followed by a Deflated **ZIP** containi
 `NavxManifest.xml`, the AL source files, a `SymbolReference.json` (the compiled symbol surface),
 OPC metadata (`[Content_Types].xml`, `DocComments.xml`, `MediaIdListing.xml`), an implicit
 entitlement under `entitlement/<app-id>.xml` when permissions exist, per-profile
-symbol-reference files, and—when currently supported translatable properties are
-present—an XLIFF localization file. The native emitter builds the verified subset
+symbol-reference files, and, when supported translatable properties are
+present, an XLIFF localization file. The native emitter builds the verified subset
 from `app.json` + source + referenced package symbols.
 
 Current XLIFF extraction covers supported object/field captions, named page and
@@ -80,7 +80,7 @@ output is normalized into structured diagnostics. `toolchain.rs` discovers ALToo
 CodeAnalysis, the analyzer DLLs, and `.NET`, sets `DOTNET_ROLL_FORWARD=Major` so net8.0 tools run on
 newer runtimes, and locates `altool` for official-LSP delegation.
 
-## Native verification gate (`verification.rs`) — shipped
+## Native verification gate (`verification.rs`)
 
 The emitter consumes one source snapshot and uses the same parse tree for verification and symbol
 extraction. A native build succeeds only when the verifier has no blocking errors.
@@ -178,7 +178,7 @@ only total wall-clock time, so its total is never presented as a phase-equivalen
 ## Publish (`al-publish`, `al-bc/src/launch.rs`, `al-bc/src/bc_client.rs`)
 
 `al-publish` resolves a `launch.json`/`.zed/debug.json` config, compiles (native by default), and
-uploads the `.app` to the BC dev API — optionally via **RAD** incremental deploy when `app.json` has
+uploads the `.app` to the BC dev API, optionally through **RAD** incremental deploy when `app.json` has
 an id, which must be a GUID. Each phase (`PublishPhase::Compile`/`Upload`/`Rad`) is tracked.
 `launch.rs` parses the debug configs and builds dev-endpoint URLs for on-prem vs cloud with tenant
 validation, sent as the BC dev API's documented `?tenant=` query parameter. `bc_client.rs` is the
@@ -195,12 +195,12 @@ the OAuth token from its own sign-in, while `al-publish` posts an octet-stream b
 Those are two different BC dev endpoints, so collapsing them needs a live server to settle which
 one each BC version accepts.
 
-`bc_client.rs` implements only the two BC dev endpoints publish actually uses — `POST
+`bc_client.rs` implements only the two BC dev endpoints publish uses: `POST
 /dev/extensions` (full upload) and `PATCH /dev/applications/{appId}` (RAD delta deploy). It does
 **not** implement extension install/uninstall, an application-status query, or an AAD device-code
 sign-in flow. `AuthMethod::AAD` requires a pre-provisioned bearer token in `BC_ACCESS_TOKEN` (or the
 legacy `BC_TOKEN`) and otherwise fails fast with `MissingCredentials`. `AuthMethod::Windows`
-authenticates via plain HTTP Basic using `BC_USERNAME`/`BC_PASSWORD` — it is **not** a real
+authenticates via plain HTTP Basic using `BC_USERNAME`/`BC_PASSWORD`. It is **not** an
 NTLM/Negotiate handshake, so a BC server that requires genuine Windows-integrated auth (and rejects
 a Basic fallback) will not authenticate through this client.
 
@@ -227,7 +227,7 @@ package-semantic-equivalence check.
 | Implementation | pure Rust | .NET application |
 | Work performed | parse → native verify → emit → package integrity check | parse → bind → type-check → emit |
 | Comparative performance | Native phase telemetry plus total wall time | Total wall time (no comparable phase telemetry exposed) |
-| Build-time validation | **yes** — shipped native syntax/project/declaration/declared-binding checks | **yes** — authoritative Microsoft semantics |
+| Build-time validation | **yes**: native syntax/project/declaration/declared-binding checks | **yes**: authoritative Microsoft semantics |
 | Optional parity | `pack-native --validate` runs native first, then `alc` | reference |
 | Output fidelity | Archive/manifest/symbol parity on the measured self-contained, dependency, small-through-XL, and focused Base Application fixtures. Byte-identical XLIFF on translatable fixtures | reference |
 | Availability | default. Runs anywhere | `al.useOfficialCompiler: true` |

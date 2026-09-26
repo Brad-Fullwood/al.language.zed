@@ -5,7 +5,7 @@
 **Status:** ✅ shipped
 
 The toolchain can create whole AL projects, generate common objects from existing symbols, and emit
-permission sets — all natively, with consistent identifier escaping and atomic writes.
+permission sets, all natively, with consistent identifier escaping and atomic writes.
 
 ## Project scaffolding (`scaffold.rs`)
 
@@ -36,10 +36,10 @@ From workspace symbols. Without `--id`, `al-explorer generate` gives the object 
 of its kind inside the `app.json` `idRanges` (the same allocation as `free-ids`), and an `--id`
 outside those ranges prints a warning.
 
-- `generate_page` — a List/Card/Document page with a repeater/layout built from a table's fields
+- `generate_page`: a List/Card/Document page with a repeater/layout built from a table's fields
   (skips FlowFields and system fields like `SystemId`/`SystemCreatedAt`).
-- `generate_report` — a report with a dataset dataitem + columns from a table's fields.
-- `generate_test` — a test codeunit with `[Test]` stubs for each public method of a subject symbol.
+- `generate_report`: a report with a dataset dataitem + columns from a table's fields.
+- `generate_test`: a test codeunit with `[Test]` stubs for each public method of a subject symbol.
 
 All generated identifiers are escaped via `permissions::al_escape_name()` (`"` → `""`), shared with
 scaffolding and permission generation for consistency.
@@ -56,7 +56,7 @@ profile…) are skipped. Output is **AL** (`permissionset <id> "Name" { Assignab
 ## Shell completion generation
 
 `al-explorer generate-completions <shell>` generates a tab-completion script for the `al-explorer`
-CLI itself (bash, zsh, fish, elvish, or PowerShell) via `clap_complete` — it has nothing to do with
+CLI itself (bash, zsh, fish, elvish, or PowerShell) via `clap_complete`. It has nothing to do with
 symbol data. `--json` returns `{ shell, script }`. Without it, the script is printed to stdout for
 sourcing/installing into the shell's completion directory. See the
 [CLI reference](../reference/cli-commands.md).

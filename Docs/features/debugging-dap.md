@@ -8,7 +8,7 @@ glue) + `debug_adapter_schemas/al.json`.
 consumed by Zed or the native adapter
 
 The debugger is a **native Rust Debug Adapter Protocol (DAP) server** that talks directly to a
-Business Central server over SignalR + REST — no Microsoft `EditorServices.Host` required (it remains
+Business Central server over SignalR + REST, with no Microsoft `EditorServices.Host` (it remains
 available as a legacy fallback). Zed launches `al-lsp --dap`. The adapter selects the shared verified
 native build by default (or the explicit persisted `al.useOfficialCompiler` backend), publishes the
 manifest-selected `.app`, connects to BC's debug hub, and drives breakpoints/stepping/inspection.
@@ -53,13 +53,13 @@ MCP client ── al_debug ─────► debug_dispatch.rs
 `initialize`, `configurationDone`, `launch`, `attach`, `setBreakpoints` (incl. **conditional**),
 `continue`, `next`, `stepIn`, `stepOut`, `threads` (single "AL Thread"), `stackTrace`, `scopes`
 (Locals + Globals), `variables`, `evaluate` (watch), `disconnect`, `terminate`. `pause` returns an
-explicit error — **BC's debug hub has no pause-while-running API**. Requests for
+explicit error, because **BC's debug hub has no pause-while-running API**. Requests for
 `setFunctionBreakpoints`, `setVariable`, `completions`, `restart`, and `stepBack` also receive
 command-specific failure responses. They are never silently acknowledged. Events emitted: `initialized`,
 `stopped`, `output`, `al/openUri` (browser launch), `terminated`.
 
 Advertised capabilities include conditional breakpoints, evaluate-for-hovers, terminate, and delayed
-stack-trace loading (`stackTrace`'s `startFrame`/`levels` are honored — the response pages the real
+stack-trace loading (`stackTrace`'s `startFrame`/`levels` are honored: the response pages the real
 stack instead of always returning every frame from 0). Function breakpoints, set-variable, completions,
 restart/restart-frame, and step-back remain explicitly `false`.
 
@@ -121,7 +121,7 @@ and convert BC's 0-based line/column to DAP's 1-based ones.
   unbounded channel for `Break` events so a paused breakpoint is never dropped under back-pressure.
   Completion replies to `invoke` have their own 32-entry channel.
 - **`configurationDone` retry:** current BC online rejects `DebugAdapterConfigurationDone` until
-  `OnAttachedToConnection` fires — which for break-on-next web-client launches happens only after the
+  `OnAttachedToConnection` fires, which for break-on-next web-client launches happens only after the
   browser attaches, i.e. often after the client already sent `configurationDone` once. The handler
   attempts immediately when already attached, and the background event-forwarding task retries on
   every poll afterward until BC accepts it (mirrors the MCP path's `NativeDebugSession` retry).
@@ -207,8 +207,8 @@ runtime must be available and authenticated. Connection details can come from `.
 The native DAP server gives Zed launch/attach support, reuses the native emitter, and allows the BC
 protocol handling to enforce
 (per-operation timeouts, secret redaction, back-pressure-safe break events) in ways a black-box proxy
-can't. The BC runtime remains the source of truth for *executing* AL — this is a better control plane
-around it, not a reimplementation of it.
+can't. AL still *executes* on the BC runtime. The adapter controls and inspects that runtime and does
+not reimplement it.
 
 The service-backed contract is `make live-bc-contracts`. It drives the real
 DAP framing and BC service through launch compilation, publication, attach,
@@ -240,5 +240,5 @@ environment inputs. Missing external inputs exit as `UNAVAILABLE`, never passed.
   behavior (`useMcpServerForDebugging`, `mcpServicePort`, `userId`,
   `useVsCodeAuthentication`, `primaryTenantDomain`, snapshot/profiling config) were **removed** from
   `debug_adapter_schemas/al.json` (with a `$comment` pointing to `al-explorer snapshot`/`profile`).
-  When a launch config omits `breakOnNext`, attach defaults to `WebServiceClient` — matching the
+  When a launch config omits `breakOnNext`, attach defaults to `WebServiceClient`, the
   schema's documented default.

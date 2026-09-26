@@ -36,14 +36,14 @@ Event traversal detects cycles and enforces a 10,000-node global bound.
 
 | Analysis | File | Question it answers |
 | --- | --- | --- |
-| **Impact** | `queries/impact.rs` | "If I change this object/member, what breaks?" — extensions, pages/reports sourced from a table, record variables/parameters, callers, TableRelation filters, event subscribers. `--table` groups all consumers of a table. |
+| **Impact** | `queries/impact.rs` | "If I change this object/member, what breaks?": extensions, pages/reports sourced from a table, record variables/parameters, callers, TableRelation filters, event subscribers. `--table` groups all consumers of a table. |
 | **Table impact** | `insight/analysis.rs` | Record variables, parameters, relations, extensions touching a table, grouped by object. |
-| **Event tracing** | `insight/search.rs` | `trace` lists all subscribers of an event and follows only the events a subscriber's body actually raises (each publisher of a same-named event is traced independently). `trace --tree` follows the full multi-hop publisher→subscriber→call chain. A node already expanded elsewhere in the traversal is marked `cycle` with its children omitted — that covers both real back-edges and diamond fan-ins, which the flag does not distinguish. |
+| **Event tracing** | `insight/search.rs` | `trace` lists all subscribers of an event and follows only the events a subscriber's body actually raises (each publisher of a same-named event is traced independently). `trace --tree` follows the full multi-hop publisher→subscriber→call chain. A node already expanded elsewhere in the traversal is marked `cycle` with its children omitted. That covers both real back-edges and diamond fan-ins, which the flag does not distinguish. |
 | **Subscriber/source resolution** | `symbols/events.rs`, `insight/discovery.rs` | Find subscribers of an event. Resolve the publisher behind an `[EventSubscriber]`. Full interception map incl. orphan subscribers. |
 | **Suggest event** | `queries/suggest_event.rs` | "What integration events can I subscribe to along this path?" with ready-to-paste `[EventSubscriber(...)]` examples. Flags `partial` when source is unindexed. |
 | **Entry points** | `insight/search.rs` | Procedures with no incoming call, subscription, or trigger edge in the **call graph** (test/root-cause candidates). |
-| **Dead code** | `queries/dead_code.rs` | Unused procedures, unreferenced fields, orphaned subscribers — with **confidence levels** (high for provably-unreachable locals, medium for public symbols extensions might call). |
-| **SQL anti-patterns** | `queries/sql_patterns.rs` | `FindFirst`/`Get`/`CalcFields` in loops, unfiltered `FindSet` — the classic N+1 and table-scan patterns. |
+| **Dead code** | `queries/dead_code.rs` | Unused procedures, unreferenced fields, orphaned subscribers, with **confidence levels** (high for provably-unreachable locals, medium for public symbols extensions might call). |
+| **SQL anti-patterns** | `queries/sql_patterns.rs` | `FindFirst`/`Get`/`CalcFields` in loops, unfiltered `FindSet`: the classic N+1 and table-scan patterns. |
 | **Architecture lint** | `queries/arch_lint.rs` | Project rules from `.alarch.json`: naming conventions, forbidden patterns, required properties, max complexity. |
 | **Breaking changes** | `queries/breaking_changes.rs` | Cross-version public-surface diff: removed objects/procedures/fields/enum values, signature/return-type changes. |
 | **Upgrade report** | `queries/upgrade.rs` | Breaking changes + data-migration hints + obsolete-symbol warnings, with guidance. |
@@ -68,8 +68,8 @@ Event traversal detects cycles and enforces a 10,000-node global bound.
   It is quote- and comment-aware so
   `Message('FindFirst()')` and fields inside `/* */` don't create false positives, and it excludes
   event publishers (they're entry points). Orphaned subscribers are reported both when the publisher
-  *object* is gone (`publisherRemoved`) and — for codeunit publishers, whose events are all declared
-  in source — when the named *event* is gone (`eventRemoved`). Platform events on tables/pages are
+  *object* is gone (`publisherRemoved`) and, for codeunit publishers, whose events are all declared
+  in source, when the named *event* is gone (`eventRemoved`). Platform events on tables/pages are
   never flagged, since they are declared nowhere.
 - **SQL scan** is a quote-aware text state machine tracking loop nesting via a block stack, so a
   loop's `end;` pops the loop and a single-statement loop body (`for … do stmt;`) is popped after
@@ -81,7 +81,7 @@ Event traversal detects cycles and enforces a 10,000-node global bound.
   skipped individually with a warning. Only *incoherence* (an indexed path missing from the parse
   cache, or the workspace changing mid-collection) fails the query, because a partial report there
   would be indistinguishable from a complete one.
-- **Impact** on a member (`Object.Member`) binds each workspace occurrence by its receiver — the
+- **Impact** on a member (`Object.Member`) binds each workspace occurrence by its receiver: the
   object name itself, a variable declared of that type, or `Rec`/`xRec` inside the object. A file
   where the name matches but nothing binds is still listed, marked `confidence: "low"` with a note,
   rather than asserted as a consumer.
@@ -116,7 +116,7 @@ Event traversal detects cycles and enforces a 10,000-node global bound.
 
 These analyses share one graph and one set of parse trees, so adding a new question is cheap and
 every answer is fast. Because they live in `queries/`/`insight/` (transport-agnostic), each is a CLI
-subcommand with `--json` and a daemon method — which means you can gate a build on "no new dead code"
+subcommand with `--json` and a daemon method, so you can gate a build on "no new dead code"
 or "no SQL anti-patterns" in CI, and MCP clients can call the same analyses. Deterministic output
 makes results safe to diff in CI.
 

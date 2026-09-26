@@ -1,7 +1,7 @@
 # Language Assets & Schemas
 
 **Locations:** `languages/al/`, `snippets/`, `themes/`, `schemas/`. **Status:** ✅ shipped
-(all of `languages/al/` and `themes/` are **generated** — see warning)
+(all of `languages/al/` and `themes/` are **generated**, see the warning)
 
 These are the static assets Zed loads to make AL feel native: the language config, tree-sitter query
 files, snippets, themes, and JSON schemas for project files.
@@ -29,7 +29,7 @@ files, snippets, themes, and JSON schemas for project files.
 | `injections.scm` | language injection points |
 | `overrides.scm` | tree-sitter quirk overrides |
 | `semantic_token_rules.json` | maps the LSP semantic token types (from `al-lsp`) to Zed theme classes (e.g. `builtinType→@type.builtin`, `tableField→@property`, `excludedCode→@comment.unused`) |
-| `tasks.json` | the AL task list Zed's task picker shows: compile, package, download symbols, authenticate, lint/format/fix, symbol and dependency queries, analysis reports, workspace fixups, and test runs — all `al-explorer` subcommands |
+| `tasks.json` | the AL task list Zed's task picker shows: compile, package, download symbols, authenticate, lint/format/fix, symbol and dependency queries, analysis reports, workspace fixups, and test runs, all `al-explorer` subcommands |
 | `runnables.scm` | inline run buttons next to `[Test]`, `[TestPermissions]`, `[HandlerFunctions]`, `[EventSubscriber]`, `[IntegrationEvent]` and `[BusinessEvent]` procedures, tagged `al-test` / `al-event-subscriber` / `al-event-publisher` |
 
 ### `al-explorer` must be on `PATH`
@@ -40,7 +40,7 @@ one needs a task in the other or the inline run button resolves to nothing. The 
 `every_runnable_tag_has_a_task_that_subscribes_to_it` enforces that.
 
 Both invoke a bare `al-explorer`. Stable Zed task JSON cannot address a binary inside the extension
-work directory, so the extension's own downloaded sidecar is not reachable from a task — the tasks
+work directory, so the extension's own downloaded copy is not reachable from a task. The tasks
 resolve only once `al-explorer` is on `PATH`. Install it from the release archive, or symlink the
 copy the extension already downloaded:
 
@@ -54,10 +54,10 @@ same operations are also available without `PATH` through LSP commands (`al.down
 
 ## Snippets
 
-- `snippets/al.json` — 78 AL code snippets with tab stops: procedures, triggers, events and event
+- `snippets/al.json`: 78 AL code snippets with tab stops: procedures, triggers, events and event
   subscribers, control flow (if/case/for/foreach/while/repeat), assertions, `with…do`, error handling,
   test attributes, integration/business events, test setup/teardown.
-- `snippets/json.json` — launch/attach debug configurations for on-premises and cloud Business
+- `snippets/json.json`: launch/attach debug configurations for on-premises and cloud Business
   Central environments. Every emitted field is checked against `debug_adapter_schemas/al.json`.
 
 ## Themes

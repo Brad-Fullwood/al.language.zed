@@ -36,8 +36,8 @@ by lowercase name, by kind+id, by kind, by extension target (`extends`), and a c
 Common queries become direct map lookups. Package ZIP/JSON parsing runs in parallel, while the much
 shorter index commit is applied in input order. Reloading a package therefore replaces its previous
 generation deterministically instead of racing duplicate entries into secondary indexes. Package
-generations are keyed by a canonical identity — the manifest's app GUID, with the folded display
-name as fallback — so two vendors' apps that merely share a display name keep independent symbol
+generations are keyed by a canonical identity (the manifest's app GUID, with the folded display
+name as fallback), so two vendors' apps that merely share a display name keep independent symbol
 generations and never evict each other on (re)load. Name-based path lookups over an ambiguous
 display name resolve deterministically. Search is
 stable and relevance-ranked (exact name, prefix, then substring), with synthetic pseudo-types kept
@@ -79,7 +79,7 @@ re-minted on every package update.
 ### Composition (`composition.rs`)
 
 `get_composed(kind, name)` returns a `ComposedObject` merging a base object with every applicable
-extension — fields (sorted by id, deduped), methods, controls, and enum values (sorted by ordinal).
+extension: fields (sorted by id, deduped), methods, controls, and enum values (sorted by ordinal).
 It is cycle-safe by construction because it only walks base → extensions, never extension →
 extension, and is cached with per-name invalidation. Field conflicts are rejected by either ID or name.
 Enum conflicts by either ordinal or name. Concurrent cache misses converge on one shared result.
@@ -101,9 +101,9 @@ per-source extraction limit.
 
 Two download backends:
 
-- **NuGet (`nuget.rs`):** resolves `app.json` dependencies to NuGet v3 package IDs — including the
-  empirically-discovered, inconsistent Microsoft IDs (e.g. `Microsoft.Application.symbols`,
-  `Microsoft.BaseApplication.symbols.{GUID}`) and country-specific variants — caches the service
+- **NuGet (`nuget.rs`):** resolves `app.json` dependencies to NuGet v3 package IDs (including the
+  inconsistent Microsoft IDs found by observation, such as `Microsoft.Application.symbols` and
+  `Microsoft.BaseApplication.symbols.{GUID}`, and country-specific variants), caches the service
   index, downloads `.nupkg`s concurrently behind a four-request semaphore, dedupes concurrent requests
   for the same package, retries transient feed failures, and streams through a 200 MiB cap rather than
   buffering a whole package in RAM. Version resolution is numeric and deterministic. A requested
@@ -139,7 +139,7 @@ Microsoft's symbol download gives you packages. This engine turns them into a qu
 and reuses it everywhere. The disk cache makes warm starts cheap, composition makes table/page
 extension workflows correct, and the dual NuGet/BC-server download with no-restart loading means
 dependency changes don't interrupt your session. Crucially, the same index powers completions, hover,
-definitions, event discovery, and impact analysis — so all of those are fast for the same reason.
+definitions, event discovery, and impact analysis, so all of those are fast for the same reason.
 
 ## How to use
 
@@ -164,8 +164,8 @@ The index loads `.app` packages from three places:
 - Packages downloaded on demand via the NuGet / BC-server backends above.
 - Every configured `al.appLocalFolderPaths` directory.
 
-The `al.appLocalFolderPaths` setting — the way the Microsoft AL extension points at extra local `.app`
-folders — is applied during LSP, daemon/CLI/TUI, and core-workspace initialization. Relative paths are
+The `al.appLocalFolderPaths` setting (the way the Microsoft AL extension points at extra local `.app`
+folders) is applied during LSP, daemon/CLI/TUI, and core-workspace initialization. Relative paths are
 resolved from the directory containing `app.json`. The package cache has first priority, followed by
 local folders in configured order. Scans are deterministic, ignore non-files/non-`.app` entries, and
 keep the newest parseable versioned filename across folders (exact filename ties keep the earlier
@@ -184,10 +184,10 @@ with the right filename but the wrong identity/version does not count as satisfi
 
 - `.app` symbols expose the **public API declaration, not call-site bodies**. A package entry carries
   an object's signatures, fields, keys, enum values and properties, but procedure *bodies* are
-  compiled away — they are never shipped in a symbol package. Consequences:
+  compiled away. A symbol package does not carry them. Consequences:
   - When a package has no embedded source, navigation opens a **reconstructed outline** (see
-    `virtual_file::render_outline`): valid AL with full signatures but no `begin…end` bodies —
-    name-scoped kinds (interface, profile, controladdin, …) render without a numeric object ID, and
+    `virtual_file::render_outline`): valid AL with full signatures but no `begin…end` bodies.
+    Name-scoped kinds (interface, profile, controladdin, …) render without a numeric object ID, and
     any name that is not a plain identifier is quoted (embedded quotes doubled). That
     virtual file is now prefixed with an explicit header (`virtual_file::OUTLINE_NOTE`) stating it is
     the public API only, with bodies unavailable, so the reader is never misled into thinking an empty

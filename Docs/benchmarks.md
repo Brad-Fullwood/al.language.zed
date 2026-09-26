@@ -11,7 +11,7 @@ There are three benchmark targets:
 |-------|-------|-----------|
 | `al-syntax` | `parser` | `parse`, `parse_incremental`, `format_al` (keystroke path) |
 | `al-test` | `interpreter` | arithmetic / string ops / record CRUD / filters / router classify |
-| `al-lsp` | `perf` | symbol and insight engine — cold load, warm lookup, completion, impact, trace |
+| `al-lsp` | `perf` | symbol and insight engine: cold load, warm lookup, completion, impact, trace |
 
 This note focuses on the `al-lsp perf` bench. The other two are documented in their bench file
 headers.
@@ -19,10 +19,10 @@ headers.
 ## Running
 
 ```sh
-# Full run (warm-up 3s + measurement 5s per benchmark — a few minutes):
+# Full run (warm-up 3s + measurement 5s per benchmark, a few minutes):
 cargo bench -p al-lsp --bench perf
 
-# Quick smoke run (seconds) — enough to see the numbers move:
+# Quick run (seconds), enough to see the numbers move:
 cargo bench -p al-lsp --bench perf -- --warm-up-time 1 --measurement-time 2
 
 # One group at a time (substring filter on the benchmark id):
@@ -49,7 +49,7 @@ constants at the top of `crates/al-lsp/benches/perf.rs` (default ~640 objects:
 form an event ring (each publishes one integration event and subscribes to the
 previous one) and every table relates to `BenchTable0`, so the `impact` and
 `trace` queries against object 0 exercise a realistic fan-in. To grow the
-workload, bump the SCALE constants — the generator is a pure function of them.
+workload, bump the SCALE constants. The generator is a pure function of them.
 
 The second cold-load benchmark uses
 `crates/al-lsp/benches/fixtures/representative.app`, a committed NAVX package
@@ -83,7 +83,7 @@ symbols/warm_lookup/get_by_name
 
 The middle value is the **median**. The brackets are the confidence interval.
 On a re-run Criterion appends `change: [...] (p = ...)` and flags
-`Performance has regressed` / `improved` — that is the regression signal.
+`Performance has regressed` / `improved`. That is the regression signal.
 
 ### The memory metric
 
@@ -94,13 +94,13 @@ to stderr exactly once per run, before the timings:
 [MEMORY] indexed_symbols=642 symbol_bytes=… lookup_bytes=… package_metadata_bytes=… document_bytes=… file_text_bytes=… file_index_bytes=… insight_bytes=… call_graph_bytes=… insight_nodes=… insight_edges=… rss=external
 ```
 
-- `symbol_bytes` / `lookup_bytes` — symbol payloads and owned lookup/index keys.
-- `package_metadata_bytes` — retained package display metadata.
-- `document_bytes`, `file_text_bytes`, `file_index_bytes` — open-document text/keys and the
+- `symbol_bytes` / `lookup_bytes`: symbol payloads and owned lookup/index keys.
+- `package_metadata_bytes`: retained package display metadata.
+- `document_bytes`, `file_text_bytes`, `file_index_bytes`: open-document text/keys and the
   workspace file-index text/secondary indexes. Cached tree counts are exposed through daemon
   diagnostics rather than converted into invented byte totals.
-- `insight_bytes` / `call_graph_bytes` — retained node, edge, key, and adjacency-list allocations.
-- `rss=external` — process RSS is allocator/OS-dependent and must be captured separately when it is
+- `insight_bytes` / `call_graph_bytes`: retained node, edge, key, and adjacency-list allocations.
+- `rss=external`: process RSS is allocator/OS-dependent and must be captured separately when it is
   useful. It is not derivable from owned allocations.
 
 The numbers are deterministic fixture accounting, not a claim about exact process RSS. CI runs the

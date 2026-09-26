@@ -20,8 +20,8 @@ commands. Beyond the standard methods it also serves the custom `experimental/ru
 used by Zed's runnables UI.
 
 Text sync is `TextDocumentSyncKind::INCREMENTAL`: `did_change` applies ranged edits (with UTF-16
-column handling) through `al-source`'s document store. A change notification without a range — a
-full replacement — is applied by the same path, so clients that only send full text keep working.
+column handling) through `al-source`'s document store. A change notification without a range (a
+full replacement) is applied by the same path, so clients that only send full text keep working.
 
 ### Client capability gating
 
@@ -79,7 +79,7 @@ bridge's error-code catalog. Virtual symbol-cache files are skipped.
 rather than erroring, and cancels only *that document's* stale debounced diagnostics. Requests that
 call the semantic bridge (hover, completion, inlay hints) take the workspace generation read guard
 only long enough to capture a document snapshot and release it before awaiting the bridge, so a slow
-bridge call cannot queue a `did_change` writer — and every reader behind it — for seconds.
+bridge call cannot queue a `did_change` writer, and every reader behind it, for seconds.
 `did_close` aborts pending diagnostics and clears state. `did_save` always re-publishes.
 
 When the client supports dynamic registration, the server registers a `**/*.al` watcher on
@@ -129,8 +129,8 @@ delegation. See [semantic-bridge](./semantic-bridge.md).
 Native parsing + a cached workspace model means most language requests are answered from in-memory
 indexes without a compiler round-trip, and the slow compiler-grade work (the bridge) is debounced and
 isolated so it never blocks typing. The transport-boundary rule means the very same query code serves
-the editor, the CLI (`al-explorer hover/definition/references/...`), and MCP clients — one
-implementation, no drift.
+the editor, the CLI (`al-explorer hover/definition/references/...`), and MCP clients, so all three
+give the same answers.
 
 ## How to use
 
