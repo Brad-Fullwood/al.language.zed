@@ -13,7 +13,7 @@ Other global flags, which work on every subcommand:
 | `--offset N` | Skip the first N rows, for reading past a truncated page |
 | `--fields a,b,c` | Keep only these fields on each row |
 | `--scope workspace\|packages\|all` | Which code `impact` (and `impact --table`), `entrypoints`, `intercept` and `graph` report on. The result reports `outOfScopeCount` |
-| `--timeout-ms N` | Per-request deadline, overriding `AL_REQUEST_TIMEOUT_MS`. A request blocked on the dependency source index keeps waiting while that index makes progress, whatever this is set to |
+| `--timeout-ms N` | Per-request deadline, overriding `AL_REQUEST_TIMEOUT_MS`. A request that reaches it while the dependency source index is making progress or the call graph is building keeps waiting, up to 600 s from when it was sent |
 
 The projection flags are the daemon's `limit`, `offset`, `fields` and `scope` parameters, described
 in the [daemon method reference](./daemon-methods.md). A command that sets one of them itself keeps
