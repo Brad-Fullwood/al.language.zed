@@ -53,6 +53,7 @@ None found so far.
 | `al-bc/src/http_auth.rs` | 26 | 21 | 3 | 2 | 0 |
 | `al-syntax/src/sort.rs` | 107 | 78 | 20 | 1 | 8 |
 | `al-source/src/documents.rs` | 147 | 76 | 29 | 42 | 0 |
+| `al-runtime/src/mock/filter.rs` | 112 | 97 | 1 | 9 | 5 |
 
 ## Runs
 
@@ -240,3 +241,49 @@ crates/al-source/src/documents.rs:550:9: replace DocumentStore::open_uris -> Vec
   test added 055f1110 (`len_is_empty_and_open_uris_follow_open_and_close`).
 
 Re-run with `--iterate` after 055f1110: 29 mutants, 29 caught.
+
+### al-runtime: `crates/al-runtime/src/mock/filter.rs`
+
+```bash
+cargo mutants --in-place -p al-runtime --file crates/al-runtime/src/mock/filter.rs
+```
+
+112 mutants in 13 minutes: 96 caught, 2 missed, 9 unviable, 5 timeout. The 5 timeouts are
+loops in `Parser::remaining`, `Parser::peek` and `Parser::advance` that stop advancing. A
+timeout fails the test run, so they count as detected. The 9 unviable mutants replace a
+parser method that returns `Result<FilterExpr, FilterParseError>`, `Result<FilterAtom,
+FilterParseError>`, `Result<Pattern, FilterParseError>`, `Result<OrderableValue,
+FilterParseError>` or `Option<std::cmp::Ordering>` with `Ok(Default::default())` or
+`Some(Default::default())`. None of `FilterExpr`, `FilterAtom`, `Pattern`, `OrderableValue`
+or `std::cmp::Ordering` implement `Default`, so the replacement does not compile.
+
+`missed.txt`:
+
+```text
+crates/al-runtime/src/mock/filter.rs:173:13: delete match arm None in Parser<'a>::parse_atom
+crates/al-runtime/src/mock/filter.rs:380:9: delete match arm Value::Option{member, ..} in value_to_filter_string
+```
+
+- `filter.rs:173`, `None` arm deleted in `parse_atom`: equivalent. `peek()` returns `None`
+  exactly when `at_end()` is true. The catch-all arm below calls `read_token`, which on an
+  empty remainder also returns `FilterParseError::UnexpectedEnd` without moving `self.pos`.
+  Deleting the direct return produces the same error through the same fallback path.
+- `filter.rs:380`, `Value::Option { member, .. }` arm deleted in `value_to_filter_string`:
+  test added c1e5bb57. The function's only caller already matches `Value::Option` and
+  returns before reaching it, so the arm was dead from that call site. The function is
+  still private-module API that the test module can call directly, and the member-name
+  rendering is a real, documented behaviour, so a direct test pins it.
+
+The `97dd3c56` test commit predates this record. It added `whitespace_around_operators_is_skipped`,
+`scalar_cells_match_their_text_form`, `integer_cell_compares_with_a_decimal_bound`,
+`option_cell_compares_by_ordinal` and `empty_cell_compares_as_zero_against_decimal_and_text_bounds`,
+which is why the missed count above is already down to 2 mutants.
+
+Re-run with `--iterate` after c1e5bb57: 4 mutants, 1 caught, 1 missed (the equivalent
+`None` arm), 2 timeouts.
+
+The run left proptest seeds in `crates/al-runtime/proptest-regressions/mock/filter.txt`
+and `crates/al-runtime/tests/property_filter.proptest-regressions`. Both pass on clean
+source (`cargo test -p al-runtime --lib mock::filter` and
+`cargo test -p al-runtime --test property_filter`), so they were mutant artifacts and were
+deleted.
