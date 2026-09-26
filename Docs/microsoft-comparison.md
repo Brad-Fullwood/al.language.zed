@@ -27,8 +27,8 @@ delegate by design)
 
 | Capability | This project | Microsoft |
 | --- | --- | --- |
-| Produce `.app` | ✅ pure-Rust verified emitter for the documented subset; real-world packages can differ in symbols, path encoding, and bundled resources | 🔷 `alc` (parse→bind→type-check→emit) |
-| Compile-time validation | ✅ native syntax/project/declaration/declared-binding/integrity checks; optional `alc` compatibility gate | 🔷 `alc` (authoritative complete semantics) |
+| Produce `.app` | ✅ pure-Rust verified emitter for the documented subset. Real-world packages can differ in symbols, path encoding, and bundled resources | 🔷 `alc` (parse→bind→type-check→emit) |
+| Compile-time validation | ✅ native syntax/project/declaration/declared-binding/integrity checks, optional `alc` compatibility gate | 🔷 `alc` (authoritative complete semantics) |
 | `.app` reading / inspection | ✅ native NAVX/ZIP, cached, composed objects | internal |
 | Symbol download | ✅ NuGet + BC server, concurrent, deduped, no restart | ✅ download-symbols |
 | OAuth (Entra) | ✅ PKCE + device code, token zeroization | ✅ |
@@ -79,7 +79,7 @@ delegate by design)
 
 | Capability | This project | Microsoft |
 | --- | --- | --- |
-| Scriptable CLI (`--json`) for exposed query/analysis commands; complete daemon catalog through MCP `al_call` | ✅ | ❌ |
+| Scriptable CLI (`--json`) for exposed query/analysis commands, complete daemon catalog through MCP `al_call` | ✅ | ❌ |
 | Interactive terminal TUI | ✅ (5 views) | ❌ |
 | Shared daemon (JSON-RPC) | ✅ | ❌ |
 | MCP server | ✅ complete shared dispatcher via `al_call`, plus named aliases | ✅ AL agent tools |
@@ -93,7 +93,7 @@ The project does not replace these. The Microsoft path is one setting away:
 
 - **Compile-time semantic validation & analyzer behavior:** `alc` + CodeAnalysis
   (`al.useOfficialCompiler`, and the semantic bridge for editor diagnostics).
-- **Authoritative AL runtime semantics:** the Business Central server executes AL; publish/runtime is
+- **Authoritative AL runtime semantics:** the Business Central server executes AL, and publish/runtime is
   the final compatibility validator for emitted `.app`s and for record/DB/HTTP/UI/report tests.
 - **Official AL Language Server:** `al.useOfficialLsp` delegates the whole editor session.
 - **Official debug adapter:** `al.useOfficialDap` uses `EditorServices.Host`.
