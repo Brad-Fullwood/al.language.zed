@@ -18,7 +18,7 @@ impl<F, Fut, R, P, C, CompileFut, A> NativeDapState<F, R, P, C, A>
 where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send,
-    R: Fn(&str) -> Option<ResolvedObject> + Send + Sync + 'static,
+    R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
     P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
     CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send,

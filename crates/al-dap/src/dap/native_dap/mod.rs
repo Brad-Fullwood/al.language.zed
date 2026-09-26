@@ -87,7 +87,7 @@ pub fn kind_to_object_type(kind: &str) -> i32 {
 }
 
 /// Object info resolved from the workspace symbol index.
-/// Used to map file paths to BC object types and IDs for breakpoints.
+/// Used to map a breakpoint's file and line to a BC object type and ID.
 #[derive(Debug, Clone)]
 pub struct ResolvedObject {
     /// BC ObjectTypeWrapper value — use `bc_object_type` constants.
@@ -232,7 +232,8 @@ pub(crate) struct NativeDapState<F, R, P, C, A> {
 /// `authorize_target` decides whether the launch configuration's server may
 /// receive the user's credential, before anything is compiled or sent.
 /// `acquire_token` is a callback to get an OAuth access token for the given tenant.
-/// `resolve_object` maps a file path to its AL object type + ID using the workspace index.
+/// `resolve_object` maps a file path and a 1-based line to the type and ID of
+/// the AL object around that line, using the workspace index.
 /// `resolve_path` is the reverse: given a BC (ObjectType, ObjectNumber) returns the source file.
 /// Both are provided by the caller (al-lsp binary) since they depend on `crate::symbols`.
 pub async fn run_native_dap<F, Fut, R, P, C, CompileFut, A>(
@@ -247,7 +248,7 @@ pub async fn run_native_dap<F, Fut, R, P, C, CompileFut, A>(
 where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send,
-    R: Fn(&str) -> Option<ResolvedObject> + Send + Sync + 'static,
+    R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
     P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
     CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send,
