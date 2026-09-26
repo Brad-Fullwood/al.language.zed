@@ -96,11 +96,11 @@ struct DependencySourceProgress {
     started_at: std::sync::RwLock<Option<std::time::Instant>>,
 }
 
-/// What the dependency source index is doing right now.
+/// What the dependency source index, or the call graph, is doing right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DependencySourceState {
-    /// No query has needed the index yet.
+    /// No query has needed it yet.
     Idle,
     Building,
     Ready,
@@ -208,6 +208,96 @@ pub struct DependencySourceProgressSnapshot {
     /// Files indexed so far. While building this only grows; there is no total
     /// because the file count of a package is not known until it is opened.
     pub files_done: usize,
+    pub elapsed_ms: u64,
+}
+
+/// Whether the call graph is being built, for `status`.
+///
+/// The build starts when the dependency source index is ready. On the medium
+/// benchmark project the index was ready at 23.5 s and a cold `trace`
+/// answered at 35.5 s, so a client that stopped waiting when the index
+/// reported ready gave up in the middle of the build.
+#[derive(Debug, Default)]
+struct CallGraphProgress {
+    /// Codes as in [`DependencySourceState`]. `ready` means the last build
+    /// finished: an edit since then makes the next query build again.
+    state: std::sync::atomic::AtomicU8,
+    /// Milliseconds the last finished build took.
+    elapsed_ms: std::sync::atomic::AtomicU64,
+    started_at: std::sync::RwLock<Option<std::time::Instant>>,
+}
+
+impl CallGraphProgress {
+    fn begin(&self) -> CallGraphBuildMark<'_> {
+        if let Ok(mut started) = self.started_at.write() {
+            *started = Some(std::time::Instant::now());
+        }
+        self.state.store(
+            DependencySourceState::Building.code(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        CallGraphBuildMark {
+            progress: self,
+            succeeded: false,
+        }
+    }
+
+    fn elapsed_now(&self) -> u64 {
+        self.started_at
+            .read()
+            .ok()
+            .and_then(|started| *started)
+            .map(|started| started.elapsed().as_millis().min(u64::MAX as u128) as u64)
+            .unwrap_or(0)
+    }
+
+    fn snapshot(&self) -> CallGraphProgressSnapshot {
+        use std::sync::atomic::Ordering::Relaxed;
+        let state = DependencySourceState::from_code(self.state.load(Relaxed));
+        let elapsed_ms = if state == DependencySourceState::Building {
+            self.elapsed_now()
+        } else {
+            self.elapsed_ms.load(Relaxed)
+        };
+        CallGraphProgressSnapshot { state, elapsed_ms }
+    }
+}
+
+/// Ends a call graph build in [`CallGraphProgress`] when dropped: `failed`
+/// unless [`Self::succeeded`] ran, so an error or a panic in the build does
+/// not leave `status` reporting `building`.
+struct CallGraphBuildMark<'a> {
+    progress: &'a CallGraphProgress,
+    succeeded: bool,
+}
+
+impl CallGraphBuildMark<'_> {
+    fn succeeded(mut self) {
+        self.succeeded = true;
+    }
+}
+
+impl Drop for CallGraphBuildMark<'_> {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.progress
+            .elapsed_ms
+            .store(self.progress.elapsed_now(), Relaxed);
+        let state = if self.succeeded {
+            DependencySourceState::Ready
+        } else {
+            DependencySourceState::Failed
+        };
+        self.progress.state.store(state.code(), Relaxed);
+    }
+}
+
+/// A snapshot of the call graph build, for `status`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CallGraphProgressSnapshot {
+    pub state: DependencySourceState,
+    /// Milliseconds the running build has taken so far, or the last one took.
     pub elapsed_ms: u64,
 }
 
@@ -381,6 +471,8 @@ pub struct Workspace {
     /// caller's only observation is a timeout, and the natural response to a
     /// timeout is a retry into the next one.
     dependency_source_progress: DependencySourceProgress,
+    /// Whether the call graph build is running, readable while it runs.
+    call_graph_progress: CallGraphProgress,
     /// How many times the call graph has actually been built.
     ///
     /// Exists so single-flight is testable: a cold build is 86 s on a project
@@ -462,6 +554,7 @@ impl Workspace {
             call_graph_revision: std::sync::RwLock::new(None),
             dependency_source_index: std::sync::RwLock::new(None),
             dependency_source_progress: DependencySourceProgress::default(),
+            call_graph_progress: CallGraphProgress::default(),
             call_graph_builds: std::sync::atomic::AtomicU64::new(0),
             profiler_session: std::sync::RwLock::new(None),
             test_results: std::sync::RwLock::new(None),
@@ -816,6 +909,12 @@ impl Workspace {
         self.dependency_source_progress.snapshot()
     }
 
+    /// Whether the call graph is being built, and how long it has taken.
+    /// Readable while the build runs.
+    pub fn call_graph_progress(&self) -> CallGraphProgressSnapshot {
+        self.call_graph_progress.snapshot()
+    }
+
     /// How many times the call graph has been built since this workspace was
     /// created. Callers that join an in-flight build do not add to it.
     pub fn call_graph_build_count(&self) -> u64 {
@@ -1008,6 +1107,7 @@ impl Workspace {
         // re-check, and never reach here.
         self.call_graph_builds
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let build_mark = self.call_graph_progress.begin();
         let build = || {
             let mut graph = InsightGraph::new();
             graph.build_from_index(&self.symbols);
@@ -1073,6 +1173,7 @@ impl Workspace {
         drop(fingerprint_guard);
         drop(cg_guard);
         drop(ig_guard);
+        build_mark.succeeded();
 
         let guard = self
             .call_graph

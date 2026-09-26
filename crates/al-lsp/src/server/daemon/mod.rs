@@ -1346,6 +1346,10 @@ dispatch_table! {
                 // `impact` and `entrypoints` all wait for this. A client that
                 // sees `building` should keep waiting rather than retry.
                 "sourceIndex": workspace.dependency_source_progress(),
+                // The call graph those methods wait on builds after the
+                // source index is ready, so `ready` above is not the end of
+                // the wait.
+                "callGraph": workspace.call_graph_progress(),
                 // What the process costs the machine, which the per-structure
                 // totals in `diag` do not show.
                 "memory": process_memory::ResidentMemory::read().to_json(),

@@ -27,7 +27,7 @@ const INIT_WAIT_TOTAL: Duration = Duration::from_secs(60);
 /// overrides it for a whole process.
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Ceiling on progress-aware waiting. A request that waits past this gives up
-/// even while the dependency source index is still advancing.
+/// even while the dependency source index or the call graph is still building.
 const MAX_INDEX_WAIT: Duration = Duration::from_secs(600);
 /// Deadline for the `handshake` call that checks which build a daemon is.
 /// It reads two constants, so anything slower than this is a wedged daemon,
@@ -44,14 +44,102 @@ const ENDPOINT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 /// anything slower is not the binary this client is looking for.
 const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// What the daemon's dependency source index is doing, as seen by a client
-/// whose own request has reached its deadline.
+/// What the daemon's dependency source index and call graph builds are doing,
+/// as seen by a client whose own request has reached its deadline.
 struct IndexProgress {
     building: bool,
     packages_done: usize,
     packages_total: usize,
     files_done: usize,
     elapsed_ms: u64,
+    /// The call graph build, which starts when the source index is ready and
+    /// is what `trace`, `impact` and `entrypoints` wait on after that. `false`
+    /// from a daemon that does not report it.
+    call_graph_building: bool,
+    call_graph_elapsed_ms: u64,
+}
+
+impl IndexProgress {
+    /// Read a `status` answer. `None` when it carries neither `sourceIndex`
+    /// nor `callGraph`.
+    fn from_status(status: &serde_json::Value) -> Option<Self> {
+        let source_index = status.get("sourceIndex");
+        let call_graph = status.get("callGraph");
+        if source_index.is_none() && call_graph.is_none() {
+            return None;
+        }
+        let number = |section: Option<&serde_json::Value>, key: &str| {
+            section
+                .and_then(|section| section.get(key))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+        };
+        let building = |section: Option<&serde_json::Value>| {
+            section
+                .and_then(|section| section.get("state"))
+                .and_then(|state| state.as_str())
+                == Some("building")
+        };
+        Some(Self {
+            building: building(source_index),
+            packages_done: number(source_index, "packagesDone") as usize,
+            packages_total: number(source_index, "packagesTotal") as usize,
+            files_done: number(source_index, "filesDone") as usize,
+            elapsed_ms: number(source_index, "elapsedMs"),
+            call_graph_building: building(call_graph),
+            call_graph_elapsed_ms: number(call_graph, "elapsedMs"),
+        })
+    }
+}
+
+/// What a request whose response deadline has expired does next.
+#[derive(Debug, PartialEq, Eq)]
+enum DeadlineAction {
+    /// The daemon is still building what the request waits on: read again.
+    KeepWaiting,
+    /// Stop, with this message in place of the timeout error.
+    GiveUp(String),
+    /// Stop with the timeout error: nothing is known to be building.
+    TimeOut,
+}
+
+/// Decide whether a request keeps waiting past its deadline, from what the
+/// daemon's `status` reported. `waited` is the time since the request was
+/// sent, `last_files_done` the file count seen at the previous deadline.
+fn after_deadline(
+    method: &str,
+    progress: Option<&IndexProgress>,
+    waited: Duration,
+    last_files_done: &mut usize,
+) -> DeadlineAction {
+    match progress {
+        Some(progress)
+            if progress.building
+                && waited < MAX_INDEX_WAIT
+                && progress.files_done >= *last_files_done =>
+        {
+            *last_files_done = progress.files_done;
+            DeadlineAction::KeepWaiting
+        }
+        Some(progress) if progress.building => DeadlineAction::GiveUp(format!(
+            "{method} is waiting on the dependency source index, which is still building \
+             ({} of {} packages, {} files, {} s elapsed). Call `status` to watch it, or raise \
+             AL_REQUEST_TIMEOUT_MS.",
+            progress.packages_done,
+            progress.packages_total,
+            progress.files_done,
+            progress.elapsed_ms / 1000
+        )),
+        Some(progress) if progress.call_graph_building && waited < MAX_INDEX_WAIT => {
+            DeadlineAction::KeepWaiting
+        }
+        Some(progress) if progress.call_graph_building => DeadlineAction::GiveUp(format!(
+            "{method} is waiting on the call graph, which is still building ({} s elapsed). \
+             Call `status` to watch it, or raise AL_REQUEST_TIMEOUT_MS.",
+            progress.call_graph_elapsed_ms / 1000
+        )),
+        _ => DeadlineAction::TimeOut,
+    }
 }
 
 /// Whether an error came from the response deadline rather than a broken
@@ -717,32 +805,23 @@ impl DaemonClient {
                 Err(error) if is_timeout_message(&error) => {
                     // The deadline is not evidence that the daemon is stuck.
                     // On a fresh project it is usually the dependency AL
-                    // source index, which takes about a minute, and retrying
-                    // into the next deadline was the whole first-minute
-                    // experience. Ask a second connection what the daemon is
-                    // doing and keep waiting while it makes progress.
-                    match self.index_progress() {
-                        Some(progress)
-                            if progress.building
-                                && started.elapsed() < MAX_INDEX_WAIT
-                                && progress.files_done >= last_files_done =>
-                        {
-                            last_files_done = progress.files_done;
-                            continue;
-                        }
-                        Some(progress) if progress.building => {
+                    // source index and then the call graph, which together
+                    // take about a minute, and retrying into the next
+                    // deadline was the whole first-minute experience. Ask a
+                    // second connection what the daemon is doing and keep
+                    // waiting while it makes progress.
+                    match after_deadline(
+                        method,
+                        self.index_progress().as_ref(),
+                        started.elapsed(),
+                        &mut last_files_done,
+                    ) {
+                        DeadlineAction::KeepWaiting => continue,
+                        DeadlineAction::GiveUp(message) => {
                             self.abandoned_ids.insert(expected_id);
-                            return Err(format!(
-                                "{method} is waiting on the dependency source index, which is \
-                                 still building ({} of {} packages, {} files, {} s elapsed). \
-                                 Call `status` to watch it, or raise AL_REQUEST_TIMEOUT_MS.",
-                                progress.packages_done,
-                                progress.packages_total,
-                                progress.files_done,
-                                progress.elapsed_ms / 1000
-                            ));
+                            return Err(message);
                         }
-                        _ => {
+                        DeadlineAction::TimeOut => {
                             self.abandoned_ids.insert(expected_id);
                             return Err(error);
                         }
@@ -779,8 +858,8 @@ impl DaemonClient {
     }
 
     /// Ask the daemon, on a second connection, how far the dependency source
-    /// index has got. `None` when there is no project root, no daemon to ask,
-    /// or the answer does not carry `sourceIndex`.
+    /// index and the call graph have got. `None` when there is no project
+    /// root, no daemon to ask, or the answer carries neither.
     fn index_progress(&self) -> Option<IndexProgress> {
         let project_root = self.project_root.as_ref()?;
         let mut probe = Self::connect_existing(project_root).ok()?;
@@ -788,20 +867,7 @@ impl DaemonClient {
         // even while a build holds the index write lock.
         probe.request_timeout = Duration::from_secs(5);
         let status = probe.request("status", None).ok()?;
-        let source_index = status.get("sourceIndex")?;
-        let number = |key: &str| {
-            source_index
-                .get(key)
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0)
-        };
-        Some(IndexProgress {
-            building: source_index.get("state").and_then(|v| v.as_str()) == Some("building"),
-            packages_done: number("packagesDone") as usize,
-            packages_total: number("packagesTotal") as usize,
-            files_done: number("filesDone") as usize,
-            elapsed_ms: number("elapsedMs"),
-        })
+        IndexProgress::from_status(&status)
     }
 
     fn send_request(

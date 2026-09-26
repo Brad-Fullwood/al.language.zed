@@ -1085,3 +1085,37 @@ mod workspace_lifecycle_tests {
         assert!(workspace.project.read().await.is_none());
     }
 }
+
+mod call_graph_progress_tests {
+    use super::*;
+
+    #[test]
+    fn the_call_graph_state_moves_from_idle_to_ready_with_a_build() {
+        let workspace = Workspace::new();
+        assert_eq!(
+            workspace.call_graph_progress().state,
+            DependencySourceState::Idle
+        );
+        drop(
+            workspace
+                .get_or_build_call_graph()
+                .expect("empty graph builds"),
+        );
+        assert_eq!(
+            workspace.call_graph_progress().state,
+            DependencySourceState::Ready
+        );
+    }
+
+    #[test]
+    fn a_build_reports_building_while_it_runs_and_failed_when_it_stops_early() {
+        let progress = CallGraphProgress::default();
+        let mark = progress.begin();
+        assert_eq!(progress.snapshot().state, DependencySourceState::Building);
+        drop(mark);
+        assert_eq!(progress.snapshot().state, DependencySourceState::Failed);
+
+        progress.begin().succeeded();
+        assert_eq!(progress.snapshot().state, DependencySourceState::Ready);
+    }
+}

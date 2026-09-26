@@ -145,6 +145,10 @@ default to `workspace`, because that is the code the project can change.
   `trace`, `impact` and `entrypoints` all wait for it. The daemon and the MCP server start it in
   the background at startup, and the build is single-flight, so concurrent and retried callers join
   one build rather than starting their own.
+- `status` reports `callGraph` as `{state, elapsedMs}` with the same four states. The call graph
+  builds after the source index is ready, and `trace`, `impact` and `entrypoints` wait for both.
+  A client whose request reaches its deadline keeps waiting while either one is `building`, up to
+  600 s.
 - `status` reports `launchConfigError` when the project's debug configuration file could not be
   read. Symbol queries are unaffected by that; the Business Central connection commands are the
   ones that need the file.

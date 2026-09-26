@@ -1005,6 +1005,38 @@ mod dispatch_tests {
         );
     }
 
+    /// A cold `trace` waits on the call graph for about 12 s after the source
+    /// index reports ready. A client that sees only `sourceIndex` stopped
+    /// extending its deadline in the middle of that wait.
+    #[tokio::test]
+    async fn status_reports_call_graph_progress() {
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+        let shutdown = Notify::new();
+        let state = |status: &serde_json::Value| {
+            status
+                .get("callGraph")
+                .and_then(|graph| graph.get("state"))
+                .and_then(|state| state.as_str())
+                .map(str::to_string)
+        };
+        let before = dispatch_request(&ws, Request::new(4, "status", None), &shutdown)
+            .await
+            .result
+            .expect("status must return a result");
+        assert_eq!(state(&before).as_deref(), Some("idle"), "{before}");
+        assert!(
+            before["callGraph"]["elapsedMs"].is_u64(),
+            "callGraph must report elapsedMs: {before}"
+        );
+
+        drop(ws.get_or_build_call_graph().expect("empty graph builds"));
+        let after = dispatch_request(&ws, Request::new(5, "status", None), &shutdown)
+            .await
+            .result
+            .expect("result");
+        assert_eq!(state(&after).as_deref(), Some("ready"), "{after}");
+    }
+
     #[tokio::test]
     async fn diag_summary_reports_dependency_source_index_progress() {
         let ws = std::sync::Arc::new(al_workspace::Workspace::new());
