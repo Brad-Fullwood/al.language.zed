@@ -774,9 +774,11 @@ impl BcTarget {
         if server.is_empty() {
             return None;
         }
-        let parsed = url::Url::parse(server)
-            .or_else(|_| url::Url::parse(&format!("https://{server}")))
-            .ok()?;
+        // The request builders add a scheme to a bare host through the same
+        // function, so this judges the URL the request will use. Parsing the
+        // text first read `bc.corp.example:7049` as the scheme
+        // `bc.corp.example`.
+        let parsed = url::Url::parse(&al_bc::launch::server_with_scheme(server)?).ok()?;
         let scheme = parsed.scheme().to_ascii_lowercase();
         let host = parsed.host_str()?.to_ascii_lowercase();
         // The BC dev endpoint port comes from the configuration, not the URL,
@@ -1896,6 +1898,34 @@ mod tests {
         .unwrap_err();
 
         assert!(refusal.contains("cleartext"), "{refusal}");
+    }
+
+    /// A bare host is judged as the `https` URL the request builders send to,
+    /// in both spellings a launch file uses. `bc.corp.example:7049` used to
+    /// parse with `bc.corp.example` as its scheme.
+    #[test]
+    fn a_bare_host_is_judged_as_the_https_url_the_request_uses() {
+        let _config = ScratchConfig::new();
+        let project = project_with_launch(
+            r#"[{"name":"Dev","type":"al","request":"launch","environmentType":"OnPrem",
+                 "server":"bc.corp.example:7049","serverInstance":"BC","authentication":"UserPassword"}]"#,
+        );
+        grant(project.path()).unwrap();
+
+        for server in ["bc.corp.example", "bc.corp.example:7049"] {
+            assert_eq!(
+                onprem(server).endpoint(),
+                Some(("https".to_string(), "bc.corp.example".to_string(), 7049)),
+                "{server}"
+            );
+            authorize_cached_credential(
+                project.path(),
+                &onprem(server),
+                CredentialKind::Environment,
+                TargetSource::Repository,
+            )
+            .unwrap_or_else(|error| panic!("{server}: {error}"));
+        }
     }
 
     #[test]

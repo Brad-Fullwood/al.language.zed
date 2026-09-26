@@ -535,7 +535,7 @@ fn host_has_explicit_port(host: &str) -> bool {
 
 /// Build the base URL for the BC Dev API from a server config.
 ///
-/// On-prem:  `http://{server}:{port}/{serverInstance}`
+/// On-prem:  `https://{server}:{port}/{serverInstance}`, or the scheme `server` names
 /// Cloud:    `https://api.businesscentral.dynamics.com/v2.0/{tenant}/{envName}`
 fn build_base_url(config: &BcServerConfig) -> String {
     match config.environment_type {
@@ -646,7 +646,7 @@ mod tests {
         config.server = Some("bc.example.com".to_string());
         config.port = None;
         let url = build_base_url(&config);
-        assert_eq!(url, "http://bc.example.com:7049/BC");
+        assert_eq!(url, "https://bc.example.com:7049/BC");
     }
 
     #[test]

@@ -161,6 +161,13 @@ which methods those are, and a test holds this list and that declaration togethe
 - `http://` is refused for bearer and basic credentials unless the host is loopback. Set
   `AL_ALLOW_INSECURE_BC_HTTP=1` to allow a cleartext server elsewhere on a network you trust.
   An environment variable is a user-level decision, so it needs no project trust.
+- A server written without a scheme (`bc.corp.example`, `bc.corp.example:7049`) is
+  `https`. The authorisation and every request builder read it through one function,
+  `al_bc::launch::server_with_scheme`, so the scheme that was judged is the scheme the
+  request uses. To reach a cleartext server, write `http://` in the launch configuration,
+  and set `AL_ALLOW_INSECURE_BC_HTTP=1` when the host is not loopback. A bare host used to be
+  sent as `http://` while the check read it as `https`, so the cleartext rule passed a
+  request that then sent Basic credentials in the clear.
 - `acceptInvalidCerts` from the project's own debug configuration is honoured only for the
   same target and only when the project is trusted.
 
