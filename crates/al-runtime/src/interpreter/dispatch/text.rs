@@ -340,14 +340,16 @@ pub(super) fn builtin_evaluate(args: &[Value]) -> Result<(bool, Option<Value>), 
         _ => return Err("Evaluate expects (var Variable, Text)".to_string()),
     };
     let text = raw.trim();
+    // Numbers as Format shows them group thousands: `1,234.5`.
+    let number = text.replace(',', "");
     let parsed = match target {
-        Value::Integer(_) => text.parse::<i64>().ok().map(Value::Integer),
-        Value::BigInteger(_) => text
+        Value::Integer(_) => number.parse::<i64>().ok().map(Value::Integer),
+        Value::BigInteger(_) => number
             .trim_end_matches(['l', 'L'])
             .parse::<i64>()
             .ok()
             .map(Value::BigInteger),
-        Value::Decimal(_) => text
+        Value::Decimal(_) => number
             .parse::<rust_decimal::Decimal>()
             .ok()
             .map(Value::Decimal),

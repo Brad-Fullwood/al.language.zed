@@ -36,6 +36,11 @@ Five agents dispatched at 18:40:
   a10e5eea, writes `findings/audit-backlog-triage.md` in the main checkout: one row per
   `AUDIT-BACKLOG.md` finding (fixed, open, not a defect, moot), then a queue for workstream A.
 
+A second session (interactive, not the watchdog's) works on the local test interpreter and the
+test router and pushes straight to this branch (`LOG.md`, 18:45 entry). The orchestrator fetches
+and merges `origin/campaign/2026-09-21` before every push and runs the gates on the merge. Its
+commits get a reviewer in the next review round.
+
 A review or triage file in the main checkout without its `## ... complete` line means the agent died:
 commit what it wrote and re-dispatch from the last entry.
 

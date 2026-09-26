@@ -37,16 +37,16 @@ pub(super) fn builtin_format(args: &[Value]) -> Eval {
     let rendered = match args.get(2) {
         None | Some(Value::Integer(0)) => render_value(value),
         Some(Value::Integer(9)) => render_value_xml(value),
-        Some(Value::Integer(n)) => {
-            return eval_error(format!(
-                "Format: format number {n} is not supported by the local runtime (supported: 0, 9)"
-            ))
-        }
+        Some(Value::Integer(n)) => match super::picture::render_standard(value, *n) {
+            Ok(text) => text,
+            Err(error) => return eval_error(format!("Format: {error}")),
+        },
         Some(Value::Text(s)) | Some(Value::Code(s)) if s.is_empty() => render_value(value),
         Some(Value::Text(s)) | Some(Value::Code(s)) => {
-            return eval_error(format!(
-                "Format: custom format strings are not supported by the local runtime: '{s}'"
-            ))
+            match super::picture::render_picture(value, s) {
+                Ok(text) => text,
+                Err(error) => return eval_error(format!("Format: {error}")),
+            }
         }
         Some(other) => {
             return eval_error(format!(
@@ -84,7 +84,7 @@ pub(super) fn builtin_format(args: &[Value]) -> Eval {
 }
 
 /// Render a value with Format's XML format (format number 9).
-fn render_value_xml(v: &Value) -> String {
+pub(super) fn render_value_xml(v: &Value) -> String {
     match v {
         Value::Boolean(b) => b.to_string(),
         Value::Date(0) | Value::Time(0) | Value::DateTime(0) => String::new(),
@@ -124,8 +124,29 @@ fn render_time_ms(ms: i64) -> String {
 /// BC.
 pub(crate) fn render_value(v: &Value) -> String {
     match v {
-        Value::Integer(n) | Value::BigInteger(n) => n.to_string(),
-        Value::Decimal(n) => n.normalize().to_string(),
+        // BC's standard format 0 for numbers groups thousands:
+        // `<Sign><Integer Thousand><Decimals>`.
+        Value::Integer(n) | Value::BigInteger(n) => {
+            let sign = if *n < 0 { "-" } else { "" };
+            format!(
+                "{sign}{}",
+                super::picture::group_thousands(&n.unsigned_abs().to_string())
+            )
+        }
+        Value::Decimal(n) => {
+            let text = n.normalize().to_string();
+            let (sign, digits) = match text.strip_prefix('-') {
+                Some(digits) => ("-", digits),
+                None => ("", text.as_str()),
+            };
+            match digits.split_once('.') {
+                Some((integer, fraction)) => format!(
+                    "{sign}{}.{fraction}",
+                    super::picture::group_thousands(integer)
+                ),
+                None => format!("{sign}{}", super::picture::group_thousands(digits)),
+            }
+        }
         Value::Boolean(true) => "Yes".to_string(),
         Value::Boolean(false) => "No".to_string(),
         Value::Text(s) | Value::Code(s) | Value::TextBuilder(s) => s.clone(),
@@ -359,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn format_supports_length_and_format_number_and_rejects_format_strings() {
+    fn format_supports_length_standard_formats_and_pictures() {
         let mut ctx = ctx();
         assert_eq!(
             ok(dispatch_call(
@@ -392,22 +413,46 @@ mod tests {
             Value::Text("2024-01-31".into()),
             "format 9 is the XML rendering"
         );
-        // Unsupported format arguments must error, not be silently ignored.
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "Format",
+                vec![
+                    Value::Decimal(rust_decimal_macros::dec!(1234.5)),
+                    Value::Integer(0),
+                    Value::Text("<Precision,2:2><Standard Format,0>".into())
+                ],
+                &mut ctx
+            )),
+            Value::Text("1,234.50".into()),
+            "a picture string renders its components"
+        );
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "Format",
+                vec![Value::Integer(-1234567)],
+                &mut ctx
+            )),
+            Value::Text("-1,234,567".into()),
+            "the standard format groups thousands"
+        );
+        // A format the runtime cannot render must error, not be ignored.
         assert!(dispatch_call(
             None,
             "Format",
-            vec![
-                Value::Decimal(rust_decimal_macros::dec!(1.5)),
-                Value::Integer(0),
-                Value::Text("<Precision,2:2><Standard Format,0>".into())
-            ],
+            vec![Value::Integer(1), Value::Integer(0), Value::Integer(7)],
             &mut ctx
         )
         .is_error());
         assert!(dispatch_call(
             None,
             "Format",
-            vec![Value::Integer(1), Value::Integer(0), Value::Integer(4)],
+            vec![
+                Value::Integer(1),
+                Value::Integer(0),
+                Value::Text("<Galaxy>".into())
+            ],
             &mut ctx
         )
         .is_error());
