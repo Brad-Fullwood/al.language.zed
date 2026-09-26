@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-26 13:10 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-26 13:20 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -21,6 +21,9 @@ branches the 07:00 session left, each in its existing worktree under `.claude/wo
 - Ghost race (A): worktree branch `campaign/fix-ghost-race-2`, nothing committed by the first agent.
   Told to name the mechanism and whether it predates the lock batch before changing code, and to
   write `findings/ghost-race-2.md`.
+- desloppify re-score and batch 11 (C), dispatched 13:20, Sonnet: worktree branch
+  `campaign/slop-batch-11`. Fresh scan against the 79.9 baseline, then the documentation and API
+  hygiene batch in crates no other agent is editing. Writes section 5 of `findings/desloppify.md`.
 - Round 7 fixes (A, D): review done 13:00 (`findings/r7-session-review.md`, 15 findings: 1 high,
   5 medium, 9 low, 6 of the 14 round 4 fixes have a gap). Fix agent on worktree branch
   `campaign/fix-r7-review`, highs first.
