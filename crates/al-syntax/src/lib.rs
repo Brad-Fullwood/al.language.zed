@@ -35,7 +35,7 @@ pub use navigation::{
     find_variable_references_under, procedure_keyword_row, EventSubscriberAttribute, ObjectInfo,
     ParameterInfo, ProcedureInfo, SubscriberArgument,
 };
-pub use parser::{AlParser, ParseResult, SyntaxError};
+pub use parser::{grammar_fingerprint, AlParser, ParseResult, SyntaxError};
 pub use sort::sort_members;
 pub use source_lines::{get_source_line, SourceLines};
 pub use symbols::{extract_document_symbols, extract_document_symbols_under};

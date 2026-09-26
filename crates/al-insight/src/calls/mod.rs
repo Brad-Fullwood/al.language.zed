@@ -64,12 +64,7 @@ fn indexed_object_kind(
     path: &Path,
     info: &al_source::file_index::CachedObjectInfo,
 ) -> Result<ObjectKind, SourceGraphError> {
-    info.kind
-        .parse()
-        .map_err(|_| SourceGraphError::InvalidObjectKind {
-            path: path.to_path_buf(),
-            kind: info.kind.clone(),
-        })
+    declared_object_kind(path, &info.kind)
 }
 
 fn indexed_object_id(
@@ -77,7 +72,26 @@ fn indexed_object_id(
     info: &al_source::file_index::CachedObjectInfo,
     kind: ObjectKind,
 ) -> Result<i32, SourceGraphError> {
-    kind.normalize_declaration_id(info.id)
+    declared_object_id(path, info.id, kind)
+}
+
+/// The [`ObjectKind`] of an object declared in the source file at `path`.
+pub fn declared_object_kind(path: &Path, kind: &str) -> Result<ObjectKind, SourceGraphError> {
+    kind.parse()
+        .map_err(|_| SourceGraphError::InvalidObjectKind {
+            path: path.to_path_buf(),
+            kind: kind.to_string(),
+        })
+}
+
+/// The numeric id of an object declared in the source file at `path`, as the
+/// graph stores it: 0 for the kinds that declare none.
+pub fn declared_object_id(
+    path: &Path,
+    id: Option<i64>,
+    kind: ObjectKind,
+) -> Result<i32, SourceGraphError> {
+    kind.normalize_declaration_id(id)
         .map_err(|error| match error {
             al_symbols::DeclarationIdError::Missing { .. } => SourceGraphError::MissingObjectId {
                 path: path.to_path_buf(),
@@ -108,7 +122,7 @@ fn indexed_parse(
         })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RecordOp {
     Insert,
     Modify,
@@ -137,7 +151,7 @@ impl RecordOp {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CallSite {
     BareCall {
         name: String,
@@ -162,14 +176,20 @@ pub enum CallSite {
 
 mod call_sites;
 mod edges;
+mod effects;
 mod nodes;
 mod object_symbols;
+mod summary;
+#[cfg(test)]
+mod summary_tests;
 #[cfg(test)]
 mod tests;
 mod var_types;
 
 pub use call_sites::*;
 pub use edges::*;
+pub use effects::*;
 pub use nodes::*;
 use object_symbols::*;
+pub use summary::*;
 pub use var_types::*;
