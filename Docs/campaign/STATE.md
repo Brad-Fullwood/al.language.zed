@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-26 13:40 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-26 13:50 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -18,6 +18,10 @@ branches the 07:00 session left, each in its existing worktree under `.claude/wo
 - Ghost race (A): worktree branch `campaign/fix-ghost-race-2`, nothing committed by the first agent.
   Told to name the mechanism and whether it predates the lock batch before changing code, and to
   write `findings/ghost-race-2.md`.
+- Persisted index follow-ups (G), dispatched 13:50: worktree branch `campaign/ai-persisted-index-2`.
+  Cache key to cover the summary builder (snapshot test plus crate version in the key), sorted
+  `entrypoints` and `impact` rows, shared entry storage across projects, the package header scan
+  if contained. Writes section 4 of `findings/persisted-index.md`.
 - desloppify re-score and batch 11 (C), dispatched 13:20, Sonnet: worktree branch
   `campaign/slop-batch-11`. Fresh scan against the 79.9 baseline, then the documentation and API
   hygiene batch in crates no other agent is editing. Writes section 5 of `findings/desloppify.md`.
@@ -45,10 +49,6 @@ Queued:
 - desloppify fix batches (`findings/desloppify.md` section 4), file splits after the owning fix branch merges.
 - Workstream E (tests): coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis. Start when a build slot frees.
 - Blog: done for now (re-read 13:10). Before publishing: timings on a quiet machine, article 9's final re-read when the campaign ends, `readTime`, four articles over the word range. Merge to `main` is Brad's call.
-- Persisted index follow-ups: the cache key does not cover the summary builder's code (add a
-  fixture summary snapshot test or fold a builder version into the key), per-project storage
-  duplicates shared packages, the package header scan could use the cache, `entrypoints` and
-  `impact` row order differs per start (sort).
 - Symbol reader has no field for profile extensions (`crates/al-symbols/src/model.rs:630-652`), so Base Application indexes 7,968 of 7,969 objects (`findings/blog-progress.md`, re-read section).
 - `pack-native --validate` on a new untrusted project prints the "not trusted" notice twice.
 - Plugin leftovers: `plugin/evals/`, release binary download hook, test on a project with `.alpackages`.
