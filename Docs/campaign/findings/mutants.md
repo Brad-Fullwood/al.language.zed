@@ -42,6 +42,7 @@ None found so far.
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `al-emit/src/method_id.rs` | 42 | 40 | 2 | 0 | 0 |
 | `al-bc/src/http_auth.rs` | 26 | 21 | 3 | 2 | 0 |
+| `al-syntax/src/sort.rs` | 107 | 78 | 20 | 1 | 8 |
 
 ## Runs
 
@@ -102,3 +103,81 @@ Re-run of the whole file after c13d58b5: 26 mutants, 24 caught, 2 unviable.
 Not covered by any mutant: `danger_accept_invalid_certs(accept_invalid_certs)`.
 cargo-mutants does not mutate a boolean argument, and checking it needs a TLS server with
 a self-signed certificate.
+
+### al-syntax: `crates/al-syntax/src/sort.rs`
+
+```bash
+cargo mutants --in-place -p al-syntax --file crates/al-syntax/src/sort.rs
+```
+
+107 mutants in 11 minutes: 78 caught, 20 missed, 1 unviable, 8 timeout. The 8 timeouts
+are loops in `contains_begin_keyword` and `procedure_name_part` that stop advancing. A
+timeout fails the test run, so they count as detected.
+
+`missed.txt`:
+
+```text
+crates/al-syntax/src/sort.rs:99:43: replace || with && in object_body_spans
+crates/al-syntax/src/sort.rs:228:5: replace is_pure_reordering -> bool with true
+crates/al-syntax/src/sort.rs:280:31: replace > with < in split_into_members
+crates/al-syntax/src/sort.rs:282:32: replace += with -= in split_into_members
+crates/al-syntax/src/sort.rs:282:32: replace += with *= in split_into_members
+crates/al-syntax/src/sort.rs:283:19: replace += with -= in split_into_members
+crates/al-syntax/src/sort.rs:283:19: replace += with *= in split_into_members
+crates/al-syntax/src/sort.rs:292:42: replace && with || in split_into_members
+crates/al-syntax/src/sort.rs:308:32: replace += with -= in split_into_members
+crates/al-syntax/src/sort.rs:308:32: replace += with *= in split_into_members
+crates/al-syntax/src/sort.rs:314:19: delete ! in split_into_members
+crates/al-syntax/src/sort.rs:330:15: replace += with -= in split_into_members
+crates/al-syntax/src/sort.rs:330:15: replace += with *= in split_into_members
+crates/al-syntax/src/sort.rs:346:9: replace || with && in is_plain_var_start
+crates/al-syntax/src/sort.rs:354:9: replace || with && in is_var_start
+crates/al-syntax/src/sort.rs:393:5: replace extract_member_name -> String with String::new()
+crates/al-syntax/src/sort.rs:393:5: replace extract_member_name -> String with "xyzzy".into()
+crates/al-syntax/src/sort.rs:399:35: replace || with && in extract_member_name
+crates/al-syntax/src/sort.rs:399:28: replace == with != in extract_member_name
+crates/al-syntax/src/sort.rs:409:35: replace || with && in extract_member_name_procedure
+```
+
+- `sort.rs:99`, `||` to `&&`: test added 43aeae8f (`declines_a_brace_that_shares_its_line`).
+  No test had an object whose `{` or `}` shares a line with other code.
+- `sort.rs:228`, `is_pure_reordering` returns true: test added 43aeae8f
+  (`a_dropped_or_repeated_line_is_not_a_reordering`). The guard never fires on today's
+  splitter, so only a direct test of the helper reaches it.
+- `sort.rs:280`, `>` to `<`: test added 43aeae8f
+  (`a_three_line_attribute_moves_with_its_procedure`). The existing multi-line attribute
+  test put the attribute on the procedure that sorts first, so a detached attribute (sort
+  key `""`) still landed right above it.
+- `sort.rs:282`, `+=` to `-=` and `*=`: test added 43aeae8f, same test. `*=` needs an
+  attribute of three lines or more.
+- `sort.rs:283`, `+=` to `-=` and `*=`: equivalent. The line is an attribute continuation,
+  which in AL that parses has no brace outside a literal, so the added count is 0, and
+  `depth` is 0 there.
+- `sort.rs:292`, `&&` to `||`: test added 43aeae8f
+  (`a_trigger_inside_a_field_stays_in_its_field`). No sort test had a trigger nested in a
+  field.
+- `sort.rs:308`, `+=` to `-=` and `*=`: test added 43aeae8f
+  (`a_three_line_attribute_moves_with_its_procedure`).
+- `sort.rs:314`, `!` deleted: test added 43aeae8f
+  (`a_comment_between_an_attribute_and_its_procedure_keeps_them_together`).
+- `sort.rs:330`, `+=` to `-=`: equivalent. `depth` is only compared with 0, and negating
+  every step keeps the zero crossings.
+- `sort.rs:330`, `+=` to `*=`: test added 43aeae8f
+  (`a_trigger_inside_a_field_stays_in_its_field`). `depth` stays 0 under this mutant.
+- `sort.rs:346` and `sort.rs:354`, `||` to `&&`: test added 43aeae8f
+  (`a_var_section_with_a_declaration_on_its_header_line_hoists`). Every var test put the
+  declarations on the lines after `var`, and `var Counter: Integer;` on one line was not
+  covered.
+- `sort.rs:393`, `extract_member_name` returns a constant, and `sort.rs:399:28`, `==` to
+  `!=`: test added 43aeae8f (`triggers_sort_alphabetically`). No test had two triggers, so
+  trigger order was unchecked.
+- `sort.rs:399:35`, `||` to `&&`: equivalent. The key becomes the rest of the line, such
+  as `oninsert()`. Object triggers have unique names, and the next character after a name
+  is `(` or whitespace, which sorts below every identifier character, so the order is the
+  same.
+- `sort.rs:409`, `||` to `&&`: test added 43aeae8f (`overloads_keep_their_source_order`).
+  With the mutant the key includes the parameter list, and two overloads swap.
+
+Re-run with `--iterate` after 43aeae8f, then `--re 'is_var_start|is_plain_var_start'`
+after the var test was tightened: the 4 equivalent mutants above remain missed, every
+other missed mutant is caught, and the 8 timeouts repeat.
