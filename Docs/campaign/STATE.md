@@ -12,8 +12,9 @@ Session 2026-09-26 (interactive, Fable orchestrator, Opus subagents). The headle
 session that started 06:48 was stopped at 06:53 so two orchestrators do not edit the branch.
 Five agents dispatched at 07:05:
 
-- Security round 4 review (D): read-only, writes `findings/r4-security.md`. Done when the
-  file ends with `## Review complete`.
+- Security round 4 review (D): done 07:25, 14 findings (4 high, 4 medium, 6 low) in
+  `findings/r4-security.md`, committed f3ed5b6c. Fix agent dispatched 07:30 on worktree branch
+  `campaign/fix-r4-security`, highs first.
 - Persisted symbol index (G): worktree branch `campaign/ai-persisted-index`, writes
   `findings/persisted-index.md` with before and after numbers.
 - `cargo mutants` on the shortlist (E): worktree branch `campaign/test-mutants`, writes
