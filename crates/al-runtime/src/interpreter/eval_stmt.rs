@@ -948,13 +948,30 @@ pub(crate) fn eval_call_parts(
                     &value, &proc_name, &args, ctx,
                 );
             }
-            Some(Value::Codeunit { object_name }) => {
+            Some(Value::Codeunit {
+                object_name,
+                instance,
+            }) => {
                 let object_name = object_name.clone();
+                // The variable's instance, given on its first call so its
+                // globals persist between calls and copies share them.
+                let instance = match instance {
+                    Some(instance) => *instance,
+                    None => {
+                        ctx.next_codeunit_instance += 1;
+                        let fresh = ctx.next_codeunit_instance;
+                        if let Some(Value::Codeunit { instance, .. }) = stack.lookup_mut(recv) {
+                            *instance = Some(fresh);
+                        }
+                        fresh
+                    }
+                };
                 let args = match eval_args_opt(args_node, source, stack, ctx) {
                     Ok(v) => v,
                     Err(ArgsShort::Error(e)) => return Eval::Error(e),
                     Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
                 };
+                ctx.pending_instance = Some(instance);
                 let result = dispatch_call_scoped(Some(&object_name), &proc_name, args, stack, ctx);
                 apply_var_writebacks(args_node, source, stack, ctx);
                 return result;

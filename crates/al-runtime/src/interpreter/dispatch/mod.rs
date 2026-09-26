@@ -47,6 +47,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::interpreter::records::RecordStore;
+use crate::interpreter::scope::CallFrame;
 use crate::interpreter::value::{ErrorInfo, Value};
 
 /// Stack size for the thread an interpreted AL body runs on.
@@ -188,6 +189,22 @@ pub struct DispatchCtx {
     /// Every JSON node the running code has made; JSON values refer into it.
     #[doc(hidden)]
     pub json: crate::interpreter::json::JsonArena,
+    /// Codeunit instances' globals, by instance, while no call of that
+    /// instance is running (a running instance's frame is on the stack).
+    #[doc(hidden)]
+    pub codeunit_instances: HashMap<u64, CallFrame>,
+    /// Instances with a call running, whose globals are on the stack.
+    #[doc(hidden)]
+    pub active_instances: std::collections::HashSet<u64>,
+    /// The instance each `SingleInstance` codeunit uses, by lowercased name.
+    #[doc(hidden)]
+    pub single_instances: HashMap<String, u64>,
+    #[doc(hidden)]
+    pub next_codeunit_instance: u64,
+    /// The instance the call being dispatched is made on, set by a call
+    /// through a codeunit variable and taken by the dispatcher.
+    #[doc(hidden)]
+    pub pending_instance: Option<u64>,
 }
 
 /// Fixed default seed for the deterministic `Random` builtin.
@@ -215,6 +232,11 @@ impl DispatchCtx {
             expr_fragment_cache: HashMap::new(),
             event_subscribers: None,
             json: Default::default(),
+            codeunit_instances: HashMap::new(),
+            active_instances: Default::default(),
+            single_instances: HashMap::new(),
+            next_codeunit_instance: 0,
+            pending_instance: None,
         }
     }
 

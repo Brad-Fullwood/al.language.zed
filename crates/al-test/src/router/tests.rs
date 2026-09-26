@@ -889,13 +889,31 @@ end;
     assert_eq!(results.len(), 2);
 }
 
+/// A helper codeunit with globals runs locally now: each codeunit variable
+/// is an instance with its own globals. Only a SingleInstance codeunit,
+/// whose state outlives a test on BC, still needs live BC.
 #[test]
-fn stateful_helper_codeunit_routes_to_live_bc() {
+fn stateful_helpers_run_locally_unless_single_instance() {
     let workspace = Workspace::new();
     workspace.file_index.add_file(
         std::path::PathBuf::from("/tmp/StatefulHelper.Codeunit.al"),
         r#"codeunit 50164 "Stateful Helper"
 {
+var Counter: Integer;
+
+procedure Next(): Integer
+begin
+    Counter := Counter + 1;
+    exit(Counter);
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/SessionHelper.Codeunit.al"),
+        r#"codeunit 50166 "Session Helper"
+{
+SingleInstance = true;
 var Counter: Integer;
 
 procedure Next(): Integer
@@ -921,16 +939,45 @@ end;
 }"#
         .to_string(),
     );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/SessionHelperTests.Codeunit.al"),
+        r#"codeunit 50167 "Session Helper Tests"
+{
+Subtype = Test;
 
-    let result = classify_all(&workspace).unwrap().remove(0);
-    assert_eq!(result.decision, RoutingDecision::LiveBc);
+[Test]
+procedure UsesSessionHelper()
+var Helper: Codeunit "Session Helper";
+begin
+    Helper.Next();
+end;
+}"#
+        .to_string(),
+    );
+
+    let results = classify_all(&workspace).unwrap();
+    let local = results
+        .iter()
+        .find(|result| result.method_name == "UsesStatefulHelper")
+        .expect("stateful classification");
+    assert_eq!(
+        local.decision,
+        RoutingDecision::Interp,
+        "{:?}",
+        local.reasons
+    );
+    let session = results
+        .iter()
+        .find(|result| result.method_name == "UsesSessionHelper")
+        .expect("session classification");
+    assert_eq!(session.decision, RoutingDecision::LiveBc);
     assert!(
-        result
+        session
             .reasons
             .iter()
-            .any(|reason| reason.message.contains("object-level state")),
+            .any(|reason| reason.message.contains("is SingleInstance")),
         "unexpected reasons: {:?}",
-        result.reasons
+        session.reasons
     );
 }
 

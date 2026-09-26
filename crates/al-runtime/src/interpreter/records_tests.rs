@@ -124,8 +124,11 @@ fn same_codeunit_nested_call_preserves_object_globals() {
     assert_eq!(ok(result), Value::Integer(2));
 }
 
+/// A codeunit with globals called through a variable failed closed
+/// ("stateful codeunit requires live BC"): each variable is an instance
+/// whose globals persist between its calls, as in BC.
 #[test]
-fn stateful_cross_codeunit_call_fails_closed() {
+fn codeunit_variables_keep_their_own_globals() {
     let stateful = r#"codeunit 50187 "Stateful Helper"
 {
     var
@@ -138,33 +141,52 @@ fn stateful_cross_codeunit_call_fails_closed() {
     end;
 }
 "#;
+    let single = r#"codeunit 50189 "Session Counter"
+{
+    SingleInstance = true;
+
+    var
+        Counter: Integer;
+
+    procedure Next(): Integer
+    begin
+        Counter += 1;
+        exit(Counter);
+    end;
+}
+"#;
     let caller = r#"codeunit 50188 "Stateful Caller"
 {
-    procedure Run(): Integer
+    procedure Run(): Text
     var
-        Helper: Codeunit "Stateful Helper";
+        First: Codeunit "Stateful Helper";
+        Second: Codeunit "Stateful Helper";
+        Copy: Codeunit "Stateful Helper";
+        SessionA: Codeunit "Session Counter";
+        SessionB: Codeunit "Session Counter";
     begin
-        exit(Helper.Next());
+        First.Next();
+        First.Next();
+        Second.Next();
+        Copy := First;
+        SessionA.Next();
+        exit(Format(First.Next()) + Format(Second.Next()) + Format(Copy.Next()) + Format(SessionB.Next()));
     end;
 }
 "#;
     let result = run(
         &[
             ("/ws/StatefulHelper.al", stateful),
+            ("/ws/SessionCounter.al", single),
             ("/ws/StatefulCaller.al", caller),
         ],
         "Stateful Caller",
         "Run",
         vec![],
     );
-    let Eval::Error(error) = result else {
-        panic!("stateful helper must fail closed");
-    };
-    assert!(
-        error.message.contains("requires live BC"),
-        "{}",
-        error.message
-    );
+    // First: 3; Second: 2; Copy shares First: 4; the SingleInstance
+    // codeunit is one instance whichever variable calls it: 2.
+    assert_eq!(ok(result), Value::Text("3242".into()));
 }
 
 #[test]
@@ -3389,4 +3411,65 @@ fn json_objects_arrays_and_tokens_run_locally() {
         duplicate.contains("the key 'n' already exists"),
         "{duplicate}"
     );
+}
+
+/// A subscriber codeunit with globals failed as a stateful codeunit. BC
+/// runs an automatic subscriber on a new instance each time the event is
+/// raised, so its globals start afresh on every call.
+#[test]
+fn subscriber_codeunits_with_globals_run_on_a_fresh_instance() {
+    let publisher = r#"codeunit 50198 Ticker
+{
+    procedure Tick(var Seen: Integer)
+    begin
+        OnTick(Seen);
+    end;
+
+    [IntegrationEvent(false, false)]
+    local procedure OnTick(var Seen: Integer)
+    begin
+    end;
+}
+"#;
+    // The var section follows the subscriber: an attributed `local
+    // procedure` straight after a var section loses its attribute in the
+    // current grammar (Docs/campaign/findings/grammar-attribute-after-var.md).
+    let subscriber = r#"codeunit 50199 "Tick Counter"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::Ticker, 'OnTick', '', false, false)]
+    local procedure Count(var Seen: Integer)
+    begin
+        Calls += 1;
+        Seen := Seen * 10 + Calls;
+    end;
+
+    var
+        Calls: Integer;
+}
+"#;
+    let probe = r#"codeunit 50200 "Tick Probe"
+{
+    procedure TickTwice(): Integer
+    var
+        T: Codeunit Ticker;
+        Seen: Integer;
+    begin
+        T.Tick(Seen);
+        T.Tick(Seen);
+        exit(Seen);
+    end;
+}
+"#;
+    let result = run(
+        &[
+            ("/ws/Ticker.al", publisher),
+            ("/ws/TickCounter.al", subscriber),
+            ("/ws/TickProbe.al", probe),
+        ],
+        "Tick Probe",
+        "TickTwice",
+        vec![],
+    );
+    // Calls is 1 on both events: 0 * 10 + 1 = 1, then 1 * 10 + 1 = 11.
+    assert_eq!(ok(result), Value::Integer(11));
 }

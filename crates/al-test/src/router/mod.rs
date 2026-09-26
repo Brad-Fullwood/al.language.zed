@@ -136,7 +136,9 @@ struct ProcedureLocation {
     file: PathBuf,
     object: String,
     name: String,
-    has_object_globals: bool,
+    /// `SingleInstance = true` with globals: its state outlives a test on
+    /// BC, where the local runner starts every test afresh.
+    single_instance_state: bool,
 }
 
 type ProcedureCatalog = HashMap<(String, String), ProcedureLocation>;
@@ -417,7 +419,8 @@ fn build_procedure_catalog(workspace: &Workspace) -> ProcedureCatalog {
         };
         let bytes = text.as_bytes();
         let scope = object_scope(workspace, &path, &tree, &object_name);
-        let has_object_globals = has_object_global_declarations(scope);
+        let single_instance_state =
+            has_object_global_declarations(scope) && declares_single_instance(scope, bytes);
         let mut stack = vec![scope];
         while let Some(node) = stack.pop() {
             if matches!(
@@ -435,7 +438,7 @@ fn build_procedure_catalog(workspace: &Workspace) -> ProcedureCatalog {
                             file: path.clone(),
                             object: object_name.clone(),
                             name: clean,
-                            has_object_globals,
+                            single_instance_state,
                         },
                     );
                 }
@@ -516,7 +519,7 @@ fn classify_reachable(
             info.name.to_ascii_lowercase(),
         );
         if let Some(location) = catalog.get(&key) {
-            if location.has_object_globals
+            if location.single_instance_state
                 && !root_object
                     .as_deref()
                     .is_some_and(|root| root.eq_ignore_ascii_case(&location.object))
@@ -526,7 +529,7 @@ fn classify_reachable(
                     &mut reasons,
                     RoutingReason {
                         message: format!(
-                            "reachable helper codeunit '{}' has object-level state that requires live BC execution",
+                            "reachable helper codeunit '{}' is SingleInstance: its state lasts across tests on BC, while the local runner starts each test afresh",
                             location.object
                         ),
                         file: Some(location.file.to_string_lossy().into_owned()),
@@ -596,7 +599,7 @@ fn classify_table_code(
         file: path.clone(),
         object: table.to_string(),
         name: String::new(),
-        has_object_globals: false,
+        single_instance_state: false,
     };
     for declaration in ast::table_code_declarations(scope) {
         ast::classify_declaration(
@@ -735,6 +738,25 @@ fn callable_has_attribute(callable: tree_sitter::Node<'_>, source: &[u8], wanted
         sibling = node.prev_sibling();
     }
     false
+}
+
+/// `SingleInstance = true;` on the object.
+fn declares_single_instance(object: tree_sitter::Node<'_>, source: &[u8]) -> bool {
+    let Some(body) = object.child_by_field_name("body") else {
+        return false;
+    };
+    let mut cursor = body.walk();
+    let single = body.named_children(&mut cursor).any(|child| {
+        child.kind() == "property_assignment"
+            && child
+                .utf8_text(source)
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .split_whitespace()
+                .collect::<String>()
+                .starts_with("singleinstance=true")
+    });
+    single
 }
 
 fn has_object_global_declarations(root: tree_sitter::Node<'_>) -> bool {
