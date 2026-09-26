@@ -15,7 +15,7 @@ For a field, the symbol is `<Table>.<Field>`. For a procedure it is
 `<Object>.<Procedure>`, with the object name exactly as `search` printed it.
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json search -- 'Work Order Staging'
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --fields kind,id,name,package,source_availability search -- 'Work Order Staging'
 ```
 
 A name that does not exist is an error naming the closest matches, and a

@@ -25,7 +25,7 @@ Every command below accepts these, and the JSON result reports `total` and
 ## Always search first
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json search -- 'Sales-Post'
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --fields kind,id,name,package,source_availability search -- 'Sales-Post'
 ```
 
 ```json
@@ -33,8 +33,10 @@ Every command below accepts these, and the JSON result reports `total` and
  "total":1,"returned":1,"offset":0,"truncated":false}
 ```
 
-`search` is fuzzy, small and fast. It gives the exact name, kind, ID and owning
-package. Copy its `name` verbatim into every later call: the other commands match
+`search` is fuzzy and fast, and with `--fields` it is small: from the CLI each
+row otherwise carries every method and field of the object (MCP's
+`al_symbolsearch` leaves them out by default). It gives the exact name, kind, ID
+and owning package. Copy its `name` verbatim into every later call: the other commands match
 exactly. A name that does not exist is an error, not an empty result: `object`,
 `by-id`, `source` and `location` say it was not found, and `impact` also lists the
 closest names in the index.
