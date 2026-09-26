@@ -428,3 +428,42 @@ name, which saves one build per package set once.
 The doc comment on `persist_dependency_source_summaries` in
 `crates/al-lsp/src/server/daemon/mod.rs` still says the summaries live in the project's data
 directory. That file belongs to another branch in this campaign, so the comment is left for it.
+
+### The package header scan
+
+The scan is contained: `AppSourceIndex::from_app_path` in `crates/al-symbols/src/source_index.rs`
+reads the first 256 KiB of every embedded `.al` file and returns plain data, two maps from object
+kind with id or name to an archive path, and the list of every `.al` path. Timed in one release
+process on the medium package set at load 11 to 15, it takes 0.49 to 0.54 s for Base Application,
+which sets the length of the step because packages load in parallel, and SHA-256 of the same
+45 MB takes 0.03 s. The same key and store still do not fit. The grammar and builder fingerprints
+in the summary key do not describe the scan, which is a byte scanner (`parse_object_headers`)
+without tree-sitter, and nothing fingerprints that scanner, so a change to it would keep old
+entries in use. The scan also runs where the store cannot reach it: al-symbols runs it while it
+loads packages (`prewarm_source_index` in `crates/al-symbols/src/index/loading.rs`), below
+al-workspace, which owns the store, and the daemon sets the store after that load
+(`crates/al-lsp/src/server/daemon/mod.rs`, lines 212 and 214). A summary cannot replace the scan
+either, since it leaves out the 107 embedded files that do not parse cleanly or declare no object,
+and the scan still lists every file and reads the object headers of files that do not parse. The
+alternative is the symbol cache in `crates/al-symbols/src/cache.rs`. `load_package_via_cache`
+reads that cache's entry for the same package just before it runs the scan, and the entry is
+checked on modification time and size, the check the in-memory scan cache already uses. Storing
+the two maps and the path list in that entry, 2 MB in memory for Base Application, with a bump of
+`CACHE_SCHEMA_VERSION` and a snapshot test of the scan like the summary snapshot, would save up
+to 0.5 s of a second start that section 3 measured at 1.25 s.
+
+## Follow-ups complete
+
+Done:
+
+- The key covers the summary builder: `7d9c97c3`.
+- `entrypoints` and `impact` return their rows in one order: `ffb4c65d`.
+- Entries are named by the package and shared by every project: `e4d047a6` and `98c818e4`.
+
+Left:
+
+- The header scan through the al-symbols symbol cache, as the paragraph above describes.
+- The doc comment on `persist_dependency_source_summaries` in
+  `crates/al-lsp/src/server/daemon/mod.rs`, which still names the project's data directory.
+- From section 3: a first start still parses every embedded file, 3.5 s on 12 threads at load
+  0.6 and more with fewer cores or more load.
