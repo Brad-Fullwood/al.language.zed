@@ -27,6 +27,17 @@ else
 	grep -q '"publisher"' "$app_json" 2>/dev/null || exit 0
 fi
 
+# When al-bin.sh would find neither al-lsp nor al-explorer, fetch a
+# checksum-verified release archive into the plugin's cache directory before
+# anything else runs. Only its stdout (installed, or refused for an
+# actionable reason) reaches this session's context; the common case, where
+# both binaries are already available, stays on its stderr.
+fetch_script="${CLAUDE_PLUGIN_ROOT:-$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)}/scripts/al-fetch-release.sh"
+fetch_note=""
+if [ -x "$fetch_script" ]; then
+	fetch_note="$("$fetch_script" 2>/dev/null || true)"
+fi
+
 context=$(
 	cat <<'EOF'
 This is a Business Central AL project. The al-bc plugin indexes every object in
@@ -55,6 +66,12 @@ symbol index and the call and event graphs, so they also see .app package code
 that no grep can reach.
 EOF
 )
+
+if [ -n "$fetch_note" ]; then
+	context="$context
+
+$fetch_note"
+fi
 
 if command -v jq >/dev/null 2>&1; then
 	jq -n --arg c "$context" \

@@ -159,10 +159,18 @@ symbol-index lookup that also covers Base Application and every other dependency
 The plugin drives `al-lsp` and `al-explorer` and does not ship them.
 `plugin/scripts/al-bin.sh` looks for both, in this order: `$AL_BIN_DIR`, a
 `target/release` or `target/debug` directory in an enclosing checkout of this
-repository, `PATH`, then `$CLAUDE_PLUGIN_DATA/bin`. If it finds neither, it
-prints the `cargo install` commands and the release-download URL. The two
-binaries have to sit in the same directory, because `al-explorer` starts the
-daemon by looking next to itself first.
+repository, `PATH`, then `$CLAUDE_PLUGIN_DATA/bin`. The two binaries have to
+sit in the same directory, because `al-explorer` starts the daemon by looking
+next to itself first.
+
+If none of those has both binaries, the `SessionStart` hook tries one more
+thing before `al-bin.sh` has to print installation instructions: it downloads
+the release archive for the current platform, checks every file it contains
+against the release's published `binary-checksums.txt`, and only on a match
+extracts it into `$CLAUDE_PLUGIN_DATA/bin`. It fetches over https only, never
+makes anything executable before its digest matches, and never touches the
+network at all once both binaries are found. See `plugin/TESTING.md` for what
+it does on a refusal and how it was tested.
 
 To try it without installing:
 
@@ -193,9 +201,11 @@ hundreds of kilobytes. `bc-cop-fixer` drives lint diagnostics to
 zero on a named set of files.
 
 Two hooks. `SessionStart` emits a short routing note when the working
-directory holds an AL `app.json`, and nothing anywhere else. `SessionEnd` runs
-`al-explorer daemon-shutdown` in the same kind of directory, so the daemon and
-its dependency source index do not outlive the session.
+directory holds an AL `app.json`, and nothing anywhere else; in that
+directory it also downloads and verifies `al-lsp`/`al-explorer` when neither
+is available (see above). `SessionEnd` runs `al-explorer daemon-shutdown` in
+the same kind of directory, so the daemon and its dependency source index do
+not outlive the session.
 
 ### Notes
 

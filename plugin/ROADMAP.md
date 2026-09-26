@@ -27,6 +27,11 @@
       run with `plugin/evals/run.sh` (`make plugin-evals`) against
       `al-explorer` directly, no LLM. Each checks a `jq` expression against an
       exact value, a list of substrings, or both. See `plugin/evals/README.md`.
+- [x] `scripts/al-fetch-release.sh`, called from the `SessionStart` hook, downloads
+      and verifies a release archive into `$CLAUDE_PLUGIN_DATA/bin` when
+      `al-bin.sh` would otherwise find nothing: https only, checksum-verified
+      against `binary-checksums.txt` before anything is made executable, one
+      line printed either way. See `plugin/TESTING.md`.
 
 Left for the next agent:
 
@@ -44,8 +49,14 @@ Left for the next agent:
       Those were measured against a real workspace with Base Application
       loaded, which is not something this public repository can bundle, so
       they need a different fixture strategy than `plugin/evals/`.
-- [ ] A `Setup` hook that offers to download a release archive into
-      `$CLAUDE_PLUGIN_DATA/bin` when `al-bin.sh` finds nothing.
+- [ ] No tagged release publishes `binary-checksums.txt` yet (see
+      `BINARY_CHECKSUMS_ASSET` in `src/lib.rs` and the "Collect per-binary
+      checksums" step in `.github/workflows/release.yml`; both were added
+      after `v0.2.2`). Until one does, `al-fetch-release.sh` correctly
+      refuses every real download rather than installing an unverified
+      binary; `plugin/TESTING.md` records that refusal as the honest result
+      of testing it against the real repository. Cut a release, then bump
+      `AL_PIN_RELEASE_TAG` in that script.
 
 ## Workarounds removed
 
