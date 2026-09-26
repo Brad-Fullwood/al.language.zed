@@ -44,8 +44,13 @@ resumes from the files in this directory.
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --exclude zed-al --all-targets -- -D warnings
+cargo clippy -p al-semantic -p al-lsp --features semantic --all-targets -- -D warnings
 cargo test --workspace --exclude zed-al
 ```
+
+The second clippy line is what CI's semantic bridge job runs. It sees code behind the `semantic`
+feature that the workspace run does not, and it failed PR 32 once on an allow attribute the
+workspace run had judged dead.
 
 After merging a fix branch also run `cargo test -p al-test-harness --no-fail-fast`. It is the
 only suite that crosses crates, and it caught two regressions that no fix agent's own gates
