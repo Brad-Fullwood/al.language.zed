@@ -1703,6 +1703,88 @@ fn dictionary_keys_are_converted_to_the_declared_key_type() {
     assert_eq!(probe("TextKeyFromChar"), Value::Text("found".into()));
 }
 
+const VAR_RESULT_FORMS: &str = r#"codeunit 50308 "Var Result Forms"
+{
+    procedure ListGetVar(): Text
+    var
+        L: List of [Integer];
+        V: Integer;
+    begin
+        L.AddRange(4, 5);
+        if not L.Get(2, V) then
+            exit('false');
+        if L.Get(9, V) then
+            exit('found 9');
+        exit(Format(V));
+    end;
+
+    procedure ListGetVarStatement()
+    var
+        L: List of [Integer];
+        V: Integer;
+    begin
+        L.Add(4);
+        L.Get(2, V);
+    end;
+
+    procedure ListSetVar(): Text
+    var
+        L: List of [Integer];
+        Old: Integer;
+    begin
+        L.AddRange(4, 5);
+        L.Set(1, 7, Old);
+        exit(Format(Old) + '/' + Format(L.Get(1)));
+    end;
+
+    procedure ListSetVarOutOfRange(): Text
+    var
+        L: List of [Integer];
+        Old: Integer;
+    begin
+        L.Add(4);
+        Old := 1;
+        if L.Set(3, 7, Old) then
+            exit('set');
+        exit(Format(Old) + '/' + Format(L.Count()));
+    end;
+
+    procedure DictSetVar(): Text
+    var
+        D: Dictionary of [Integer, Integer];
+        Old: Integer;
+        Other: Integer;
+        Replaced: Boolean;
+    begin
+        D.Add(1, 10);
+        D.Set(1, 20, Old);
+        Replaced := D.Set(2, 30, Other);
+        exit(Format(Old) + '/' + Format(D.Get(1)) + '/' + Format(Replaced) + '/' + Format(D.Get(2)));
+    end;
+}
+"#;
+
+/// `List.Get(Index, var Result)`, `List.Set(Index, Value, var OldValue)` and
+/// `Dictionary.Set(Key, Value, var OldValue)` write the element or the old
+/// value to the variable and return whether it was there. A List index out
+/// of range returns false, or raises when the call is a statement.
+#[test]
+fn var_forms_of_list_get_list_set_and_dictionary_set_run_locally() {
+    let files = [("/ws/VarResultForms.al", VAR_RESULT_FORMS)];
+    let probe = |proc: &str| ok(run(&files, "Var Result Forms", proc, vec![]));
+    assert_eq!(probe("ListGetVar"), Value::Text("5".into()));
+    assert_eq!(probe("ListSetVar"), Value::Text("4/7".into()));
+    assert_eq!(probe("ListSetVarOutOfRange"), Value::Text("1/1".into()));
+    assert_eq!(probe("DictSetVar"), Value::Text("10/20/No/30".into()));
+    let message = error_message(run(
+        &files,
+        "Var Result Forms",
+        "ListGetVarStatement",
+        vec![],
+    ));
+    assert!(message.contains("index 2 out of range"), "got: {message}");
+}
+
 #[test]
 fn compound_assignment_to_record_field_accumulates() {
     // Regression: `Rec.Amount += 5` must store Amount + 5, not the raw RHS.

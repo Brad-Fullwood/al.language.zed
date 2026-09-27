@@ -2425,13 +2425,19 @@ pub fn supports_list_method(method: &str) -> bool {
     )
 }
 
-/// Execute a `List of [T]` method call on the list bound to `recv`.
+/// Execute a `List of [T]` method call on the list bound to `recv`. The
+/// element or old value of the `var` forms of `Get` and `Set` goes to
+/// `ctx.var_writebacks`. `statement` says the call is a statement, where an
+/// index out of range raises instead of returning false.
 pub(crate) fn dispatch_list_method(
     recv: &str,
     method: &str,
     args: Vec<Value>,
+    statement: bool,
     stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
 ) -> Eval {
+    ctx.var_writebacks.clear();
     let lower = method.to_ascii_lowercase();
     let Some(slot) = stack.lookup_mut(recv) else {
         return eval_error(format!("list variable '{recv}' is not bound"));
@@ -2501,6 +2507,14 @@ pub(crate) fn dispatch_list_method(
             Err(_) => eval_error("List.Count exceeds the supported Integer range"),
         },
         "count" => eval_error("List.Count expects no arguments"),
+        "get" if args.len() == 2 => match list_index("List.Get", &args[..1], items.len()) {
+            Ok(index) => {
+                ctx.var_writebacks.push((1, items[index].clone()));
+                Eval::Normal(Value::Boolean(true))
+            }
+            Err(_) if !statement => Eval::Normal(Value::Boolean(false)),
+            Err(error) => eval_error(error),
+        },
         "get" => match list_index("List.Get", &args, items.len()) {
             Ok(index) => Eval::Normal(items[index].clone()),
             Err(error) => eval_error(error),
@@ -2549,7 +2563,18 @@ pub(crate) fn dispatch_list_method(
             }
             Err(error) => eval_error(error),
         },
-        "set" => eval_error("List.Set expects exactly an Integer index and one value"),
+        "set" if args.len() == 3 => match list_index("List.Set", &args[..1], items.len()) {
+            Ok(index) => {
+                let old = std::mem::replace(&mut items[index], args[1].clone());
+                ctx.var_writebacks.push((2, old));
+                Eval::Normal(Value::Boolean(true))
+            }
+            Err(_) if !statement => Eval::Normal(Value::Boolean(false)),
+            Err(error) => eval_error(error),
+        },
+        "set" => eval_error(
+            "List.Set expects an Integer index, a value and an optional var for the old value",
+        ),
         // `Insert(index, value)`: 1-based, up to one past the end.
         "insert" => match args.as_slice() {
             [Value::Integer(index), value] => {
@@ -3043,13 +3068,16 @@ fn dict_key(value: &Value) -> Result<String, String> {
 }
 
 /// Execute a `Dictionary of [K, V]` method call on the dictionary bound to
-/// `recv`.
+/// `recv`. The old value of `Set(key, value, var old)` goes to
+/// `ctx.var_writebacks`.
 pub(crate) fn dispatch_dict_method(
     recv: &str,
     method: &str,
     args: Vec<Value>,
     stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
 ) -> Eval {
+    ctx.var_writebacks.clear();
     let lower = method.to_ascii_lowercase();
     let Some(slot) = stack.lookup_mut(recv) else {
         return eval_error(format!("dictionary variable '{recv}' is not bound"));
@@ -3095,7 +3123,21 @@ pub(crate) fn dispatch_dict_method(
                 }
                 Err(error) => eval_error(error),
             },
-            _ => eval_error("Dictionary.Set expects exactly a key and a value"),
+            // True and the old value when the key was there, false when the
+            // value was added.
+            [key, value, _] => match dict_key(key) {
+                Ok(key_text) => match entries.insert(key_text, (key.clone(), value.clone())) {
+                    Some((_, old)) => {
+                        ctx.var_writebacks.push((2, old));
+                        Eval::Normal(Value::Boolean(true))
+                    }
+                    None => Eval::Normal(Value::Boolean(false)),
+                },
+                Err(error) => eval_error(error),
+            },
+            _ => eval_error(
+                "Dictionary.Set expects a key, a value and an optional var for the old value",
+            ),
         },
         "get" => match args.as_slice() {
             [key] => match dict_key(key) {

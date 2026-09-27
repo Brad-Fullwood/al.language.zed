@@ -74,12 +74,15 @@ Instance methods that run locally:
 
 - `Text`: `Contains`, `StartsWith`, `EndsWith`, `IndexOf`, `LastIndexOf`, `Replace`, `Split`,
   `Substring`, `Trim`/`TrimStart`/`TrimEnd`, `ToLower`/`ToUpper`, `PadLeft`/`PadRight`, `Remove`.
-- `List`: `Add`, `AddRange`, `Get`, `GetRange`, `Set`, `Insert`, `Remove`, `RemoveAt`,
-  `RemoveRange`, `Reverse`, `Count`, `Contains`, `IndexOf`, `LastIndexOf`.
-- `Dictionary`: `Add`, `Get` (including `Get(key, var value)`), `Set`, `Remove`, `ContainsKey`,
-  `Count`, `Keys`, `Values`. A key argument is converted to the declared key type, so `'abc'` is
-  the key `ABC` of a `Dictionary of [Code[20], Integer]`, and `Keys` returns keys of that type.
-  The local runtime keeps the keys in insertion order. BC documents no order.
+- `List`: `Add`, `AddRange`, `Get` (including `Get(index, var value)`), `GetRange`, `Set`
+  (including `Set(index, value, var old)`), `Insert`, `Remove`, `RemoveAt`, `RemoveRange`,
+  `Reverse`, `Count`, `Contains`, `IndexOf`, `LastIndexOf`. The `var` form of `GetRange` runs on
+  live BC.
+- `Dictionary`: `Add`, `Get` (including `Get(key, var value)`), `Set` (including
+  `Set(key, value, var old)`), `Remove`, `ContainsKey`, `Count`, `Keys`, `Values`. A key argument
+  is converted to the declared key type, so `'abc'` is the key `ABC` of a
+  `Dictionary of [Code[20], Integer]`, and `Keys` returns keys of that type. The local runtime
+  keeps the keys in insertion order. BC documents no order.
 - `List`, `Dictionary` and `TextBuilder` are references, as in AL: assigning one, or passing it
   without `var`, shares it. `GetRange(1, L.Count())` makes a copy of a list.
 - `TextBuilder`: `Append`, `AppendLine` (CRLF), `Length`, `ToText`, `Clear`, `Insert`, `Remove`,

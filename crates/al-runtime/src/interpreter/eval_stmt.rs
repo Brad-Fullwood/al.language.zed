@@ -879,7 +879,10 @@ pub(crate) fn eval_call_parts(
                     Err(ArgsShort::Error(e)) => return Eval::Error(e),
                     Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
                 };
-                return records::dispatch_list_method(recv, &proc_name, args, stack);
+                let result =
+                    records::dispatch_list_method(recv, &proc_name, args, statement, stack, ctx);
+                let written = apply_var_writebacks(args_node, source, stack, ctx);
+                return first_error(result, written);
             }
             Some(Value::Text(_) | Value::Code(_)) if records::supports_text_method(&proc_name) => {
                 let recv = recv.to_string();
@@ -911,7 +914,9 @@ pub(crate) fn eval_call_parts(
                         Err(error) => crate::interpreter::eval_error(error),
                     };
                 }
-                return records::dispatch_dict_method(&recv, &proc_name, args, stack);
+                let result = records::dispatch_dict_method(&recv, &proc_name, args, stack, ctx);
+                let written = apply_var_writebacks(args_node, source, stack, ctx);
+                return first_error(result, written);
             }
             Some(Value::Json(json))
                 if crate::interpreter::json::supports_json_method(json.kind, &proc_name) =>
