@@ -78,10 +78,10 @@ fn eval_index(
     }
 }
 
-/// Evaluate `text` as an AL expression in the caller's scope. Coverage is
-/// paused so the throwaway tree's positions are not recorded against the
-/// caller's file.
-fn eval_standalone_expression(
+/// Evaluate `text` as an AL expression in the caller's scope: an index, or
+/// a case label with a leading minus. Coverage is paused so the throwaway
+/// tree's positions are not recorded against the caller's file.
+pub(crate) fn eval_standalone_expression(
     text: &str,
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
@@ -91,7 +91,7 @@ fn eval_standalone_expression(
     let root = parsed.tree.root_node();
     let expression = find_exit_expression(root)
         .filter(|_| !root.has_error())
-        .ok_or_else(|| eval_error(format!("'{text}' is not an index expression")))?;
+        .ok_or_else(|| eval_error(format!("'{text}' is not an expression")))?;
     let coverage = ctx.coverage.take();
     let result = eval_expr(expression, wrapper.as_bytes(), stack, ctx);
     ctx.coverage = coverage;

@@ -3159,7 +3159,7 @@ const EVENT_SUBSCRIBERS: &str = r#"codeunit 50171 Subscribers
         Total += sender.Bonus();
     end;
 
-    [EventSubscriber(ObjectType::Codeunit, Codeunit::50170, 'OnBeforePost', '', false, false)]
+    [EventSubscriber(ObjectType::Codeunit, 50170, 'OnBeforePost', '', false, false)]
     local procedure AddLabelLength(Label: Text; var Total: Integer)
     begin
         Total += StrLen(Label);
@@ -4611,5 +4611,319 @@ fn selecttoken_follows_filters_and_recursive_descent() {
     assert!(
         unsupported.contains("'[0:2]'") && unsupported.contains("not supported"),
         "{unsupported}"
+    );
+}
+
+const TABLE_PUBLISHER: &str = r#"table 50280 "Table Pub"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Note; Text[50]) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+
+    procedure Stamp()
+    begin
+        OnStamp(5);
+    end;
+
+    [IntegrationEvent(true, false)]
+    local procedure OnStamp(Times: Integer)
+    begin
+    end;
+}
+"#;
+
+const TABLE_PUBLISHER_SUBSCRIBER: &str = r#"codeunit 50281 "Table Pub Sub"
+{
+    [EventSubscriber(ObjectType::Table, Database::"Table Pub", 'OnStamp', '', false, false)]
+    local procedure OnStampSub(var Sender: Record "Table Pub"; Times: Integer)
+    begin
+        Sender.Note := 'stamped ' + Sender."No." + ' ' + Format(Times);
+    end;
+}
+"#;
+
+const TABLE_PUBLISHER_PROBE: &str = r#"codeunit 50282 "Table Pub Probe"
+{
+    procedure StampRunsTheSubscriber(): Text
+    var
+        Pub: Record "Table Pub";
+    begin
+        Pub."No." := 'P1';
+        Pub.Insert();
+        Pub.Stamp();
+        exit(Pub.Note);
+    end;
+}
+"#;
+
+/// An event a table procedure publishes with IncludeSender passes the
+/// record as `Sender`. The subscriber failed as declaring a parameter the
+/// event does not publish.
+#[test]
+fn table_publisher_passes_its_record_as_sender() {
+    let result = run(
+        &[
+            ("/ws/TablePub.al", TABLE_PUBLISHER),
+            ("/ws/TablePubSub.al", TABLE_PUBLISHER_SUBSCRIBER),
+            ("/ws/TablePubProbe.al", TABLE_PUBLISHER_PROBE),
+        ],
+        "Table Pub Probe",
+        "StampRunsTheSubscriber",
+        vec![],
+    );
+    assert_eq!(ok(result), Value::Text("stamped P1 5".into()));
+}
+
+const KEYWORD_NAMED_VARIABLES: &str = r#"table 50283 "Keyword Named"
+{
+    fields
+    {
+        field(1; Code; Code[20]) { }
+        field(2; Description; Text[50]) { }
+        field(3; Value; Text[50])
+        {
+            trigger OnValidate()
+            begin
+                Description := Code + '=' + Value;
+            end;
+        }
+    }
+    keys
+    {
+        key(PK; Code) { }
+    }
+}
+
+enum 50285 "Keyword Kind"
+{
+    value(0; First) { }
+    value(1; Second) { }
+}
+
+codeunit 50284 "Keyword Probe"
+{
+    procedure Reads(): Text
+    var
+        Value: Text;
+        Code: Code[10];
+        Text: Text;
+        Date: Date;
+        Time: Time;
+        Version: Integer;
+        File: Text;
+        Page: Integer;
+        Report: TextBuilder;
+    begin
+        Value := 'abc';
+        Code := Value;
+        Text := Value + Code;
+        Date := 20240101D;
+        Time := 120000T;
+        Report.Append(Value);
+        Version := Report.Length + StrLen(Code);
+        File := Value.ToUpper();
+        Page := Version * 2;
+        exit(Text + '|' + Format(Date, 0, 9) + '|' + Format(Time, 0, 9) + '|' + Format(Version) + '|' + File + '|' + Format(Page));
+    end;
+
+    procedure Parameters(Value: Text; var Code: Code[10]): Text
+    begin
+        Code := CopyStr(Value, 1, 2);
+        Append(Value);
+        exit(Value + '|' + Code);
+    end;
+
+    procedure PassesVar(): Text
+    var
+        Code: Code[10];
+    begin
+        exit(Parameters('xyz', Code) + '|' + Code);
+    end;
+
+    local procedure Append(var Value: Text)
+    begin
+        Value += '!';
+    end;
+
+    procedure BuiltinsStillWork(): Integer
+    var
+        Keyed: Record "Keyword Named";
+    begin
+        Keyed.Code := 'K1';
+        Keyed.Validate(Value, 'v1');
+        if Keyed.Description <> 'K1=v1' then
+            Error('bare field names read %1', Keyed.Description);
+        exit(Enum::"Keyword Kind"::Second.AsInteger() + Enum::"Keyword Kind".FromInteger(1).AsInteger());
+    end;
+}
+"#;
+
+/// A variable, parameter or field named `Value`, `Code`, `Text`, `Date`,
+/// `Time`, `Version`, `File`, `Page` or `Report` parses as an object or type
+/// keyword node. Every read failed with `unsupported expression kind`.
+/// `Report.Length` also calls a method without its parentheses.
+#[test]
+fn variables_named_after_keywords_read_and_write() {
+    let call = |proc: &str| {
+        run(
+            &[("/ws/Keyword.al", KEYWORD_NAMED_VARIABLES)],
+            "Keyword Probe",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(
+        ok(call("Reads")),
+        Value::Text("abcABC|2024-01-01|12:00:00|6|ABC|12".into())
+    );
+    assert_eq!(ok(call("PassesVar")), Value::Text("xyz!|XY|XY".into()));
+    assert_eq!(ok(call("BuiltinsStillWork")), Value::Integer(2));
+}
+
+const SIGNED_CASE_LABELS: &str = r#"codeunit 50286 "Signed Labels"
+{
+    procedure ByInteger(X: Integer): Integer
+    var
+        Limit: Integer;
+    begin
+        Limit := 7;
+        case X of
+            -1:
+                exit(1);
+            -2, 2:
+                exit(2);
+            -Limit:
+                exit(7);
+            else
+                exit(0);
+        end;
+    end;
+
+    procedure ByDecimal(D: Decimal): Integer
+    begin
+        case D of
+            -2.5:
+                exit(1);
+            2.5:
+                exit(2);
+        end;
+        exit(0);
+    end;
+}
+"#;
+
+/// A case label with a leading minus is one `signed_case_label` node,
+/// which `eval_expr` rejected as an unsupported expression kind.
+#[test]
+fn case_labels_with_a_leading_minus_match() {
+    let call = |proc: &str, arg: Value| {
+        run(
+            &[("/ws/Signed.al", SIGNED_CASE_LABELS)],
+            "Signed Labels",
+            proc,
+            vec![arg],
+        )
+    };
+    assert_eq!(ok(call("ByInteger", Value::Integer(-1))), Value::Integer(1));
+    assert_eq!(ok(call("ByInteger", Value::Integer(-2))), Value::Integer(2));
+    assert_eq!(ok(call("ByInteger", Value::Integer(2))), Value::Integer(2));
+    assert_eq!(ok(call("ByInteger", Value::Integer(-7))), Value::Integer(7));
+    assert_eq!(ok(call("ByInteger", Value::Integer(1))), Value::Integer(0));
+    assert_eq!(
+        ok(call("ByDecimal", Value::Decimal(dec!(-2.5)))),
+        Value::Integer(1)
+    );
+    assert_eq!(
+        ok(call("ByDecimal", Value::Decimal(dec!(2.5)))),
+        Value::Integer(2)
+    );
+    assert_eq!(
+        ok(call("ByDecimal", Value::Decimal(dec!(-1.5)))),
+        Value::Integer(0)
+    );
+}
+
+const ID_BOUND_PUBLISHER: &str = r#"codeunit 50287 "Id Publisher"
+{
+    procedure Raise(): Integer
+    var
+        Total: Integer;
+    begin
+        OnRaise(Total);
+        exit(Total);
+    end;
+
+    [IntegrationEvent(false, false)]
+    local procedure OnRaise(var Total: Integer)
+    begin
+    end;
+}
+
+table 50288 "Id Table"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Note; Text[50]) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+}
+
+codeunit 50289 "Id Subscribers"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Id Publisher", 'OnRaise', '', false, false)]
+    local procedure AddOne(var Total: Integer)
+    begin
+        Total += 1;
+    end;
+
+    [EventSubscriber(ObjectType::Codeunit, 50287, 'OnRaise', '', false, false)]
+    local procedure AddTen(var Total: Integer)
+    begin
+        Total += 10;
+    end;
+
+    [EventSubscriber(ObjectType::Table, 50288, 'OnBeforeInsertEvent', '', false, false)]
+    local procedure StampInsert(var Rec: Record "Id Table")
+    begin
+        Rec.Note := 'by id';
+    end;
+}
+
+codeunit 50290 "Id Probe"
+{
+    procedure Inserts(): Text
+    var
+        Row: Record "Id Table";
+    begin
+        Row."No." := 'R1';
+        Row.Insert();
+        Row.Get('R1');
+        exit(Row.Note);
+    end;
+}
+"#;
+
+/// An EventSubscriber may name its publisher by a bare object ID. Only the
+/// `Codeunit::Name` form was bound, so the ID subscriber never ran.
+#[test]
+fn subscribers_bound_by_object_id_run() {
+    let files = [("/ws/IdEvents.al", ID_BOUND_PUBLISHER)];
+    assert_eq!(
+        ok(run(&files, "Id Publisher", "Raise", vec![])),
+        Value::Integer(11)
+    );
+    assert_eq!(
+        ok(run(&files, "Id Probe", "Inserts", vec![])),
+        Value::Text("by id".into())
     );
 }

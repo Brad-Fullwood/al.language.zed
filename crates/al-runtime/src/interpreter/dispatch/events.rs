@@ -107,7 +107,7 @@ impl SubscriberIndex {
         }
         let mut by_event: HashMap<EventKey, Vec<Subscriber>> = HashMap::new();
         for (subscriber, kind, publisher, event, element) in pending {
-            // `Codeunit::50100` names its publisher by ID.
+            // A bare `50100` names its publisher by ID.
             let publisher = match publisher.parse::<i64>() {
                 Ok(id) => match objects_by_id.get(&(kind.clone(), id)) {
                     Some(name) => name.to_ascii_lowercase(),
@@ -169,7 +169,8 @@ pub(crate) fn has_subscribers(
 /// name for a validate event) published by `publisher_kind` object
 /// `publisher`. `names` and `values` are the publisher's parameters; a
 /// subscriber's `var` parameters write their final values back into
-/// `values`.
+/// `values`. `sender` is the publishing object when the event includes it
+/// (`IncludeSender = true`), which a subscriber receives as `sender`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn raise(
     publisher_kind: &str,
@@ -178,6 +179,7 @@ pub(crate) fn raise(
     element: &str,
     names: &[&str],
     values: &mut [Value],
+    sender: Option<&Value>,
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Result<(), Eval> {
@@ -188,10 +190,7 @@ pub(crate) fn raise(
         for param in &subscriber.params {
             match names.iter().position(|name| name.eq_ignore_ascii_case(param)) {
                 Some(position) => positions.push(Some(position)),
-                // `IncludeSender = true`: the publishing codeunit itself.
-                None if param == "sender" && publisher_kind.eq_ignore_ascii_case("codeunit") => {
-                    positions.push(None)
-                }
+                None if param == "sender" && sender.is_some() => positions.push(None),
                 None => {
                     return Err(eval_error(format!(
                         "subscriber {}.{} declares parameter '{param}', which event {event} does not publish",
@@ -204,10 +203,7 @@ pub(crate) fn raise(
             .iter()
             .map(|at| match at {
                 Some(at) => values[*at].clone(),
-                None => Value::Codeunit {
-                    object_name: publisher.unquote_identifier().into_owned(),
-                    instance: None,
-                },
+                None => sender.cloned().unwrap_or(Value::Null),
             })
             .collect();
         match dispatch_workspace_procedure(
@@ -231,7 +227,30 @@ pub(crate) fn raise(
 
 /// Whether `procedure` publishes an event, and so raises it when called.
 pub(crate) fn is_publisher(procedure: tree_sitter::Node<'_>, source: &[u8]) -> bool {
-    attributes(procedure, source).iter().any(|attribute| {
+    publisher_attribute(procedure, source).is_some()
+}
+
+/// Whether the event `procedure` publishes passes its publisher to
+/// subscribers: the first argument of `[IntegrationEvent(true, ...)]`,
+/// `[BusinessEvent(true)]` or `[InternalEvent(true)]`.
+pub(crate) fn includes_sender(procedure: tree_sitter::Node<'_>, source: &[u8]) -> bool {
+    let Some(attribute) = publisher_attribute(procedure, source) else {
+        return false;
+    };
+    let (Some(open), Some(close)) = (attribute.find('('), attribute.rfind(')')) else {
+        return false;
+    };
+    attribute
+        .get(open + 1..close)
+        .map(split_arguments)
+        .and_then(|args| args.into_iter().next())
+        .is_some_and(|first| first.eq_ignore_ascii_case("true"))
+}
+
+/// The `[IntegrationEvent]`, `[BusinessEvent]` or `[InternalEvent]`
+/// attribute text on `procedure`.
+fn publisher_attribute(procedure: tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
+    attributes(procedure, source).into_iter().find(|attribute| {
         let name = attribute_name(attribute);
         ["integrationevent", "businessevent", "internalevent"].contains(&name.as_str())
     })
@@ -249,11 +268,18 @@ fn subscriber_binding(
     let open = attribute.find('(')?;
     let close = attribute.rfind(')')?;
     let args = split_arguments(attribute.get(open + 1..close)?);
-    let [_, publisher, event, element, ..] = args.as_slice() else {
+    let [object_type, publisher, event, element, ..] = args.as_slice() else {
         return None;
     };
-    // `Codeunit::"Sales-Post"`, `Database::Customer`, `Page::50100`.
-    let (kind, target) = publisher.split_once("::")?;
+    // `Codeunit::"Sales-Post"` or `Database::Customer`, or a bare object ID
+    // (`50100`) whose kind is the first argument (`ObjectType::Codeunit`).
+    let (kind, target) = match publisher.split_once("::") {
+        Some((kind, target)) => (kind, target),
+        None if publisher.trim().parse::<i64>().is_ok() => {
+            (object_type.split_once("::")?.1, publisher.as_str())
+        }
+        None => return None,
+    };
     let kind = match kind.trim().to_ascii_lowercase().as_str() {
         "database" => "table".to_string(),
         other => other.to_string(),

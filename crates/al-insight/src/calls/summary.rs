@@ -36,9 +36,9 @@ pub struct ObjectSummary {
     pub call_suffixes: usize,
     /// Every procedure and trigger, in registration order.
     pub procedures: Vec<ProcedureDecl>,
-    /// Lowercase procedure name to the calls of the declaration the tree path
-    /// resolves for that name.
-    pub calls: BTreeMap<String, ProcedureCalls>,
+    /// Lowercase procedure name to the calls of every declaration of that
+    /// name, in document order: each field's `OnValidate`, each overload.
+    pub calls: BTreeMap<String, Vec<ProcedureCalls>>,
     /// The effects of every procedure and trigger of this object, in the
     /// order [`node_effect_sites`] finds them. Transaction lint credits them
     /// to this object.
@@ -66,10 +66,12 @@ impl SourceFileSummary {
                     if calls.contains_key(&key) {
                         continue;
                     }
-                    // The declaration the tree path resolves for this name,
-                    // which for an overloaded name is not always the first.
-                    if let Some(proc_node) = find_procedure_in_node(node, bytes, &key) {
-                        calls.insert(key, ProcedureCalls::from_node(proc_node, source));
+                    let declared: Vec<ProcedureCalls> = find_procedures_in_node(node, bytes, &key)
+                        .into_iter()
+                        .map(|proc_node| ProcedureCalls::from_node(proc_node, source))
+                        .collect();
+                    if !declared.is_empty() {
+                        calls.insert(key, declared);
                     }
                 }
                 ObjectSummary {
@@ -145,12 +147,17 @@ impl SourceFileSummary {
                     + object
                         .calls
                         .iter()
-                        .map(|(name, calls)| {
+                        .map(|(name, declared)| {
                             name.capacity()
-                                + std::mem::size_of::<ProcedureCalls>()
-                                + calls.call_sites.iter().map(site).sum::<usize>()
-                                + map(&calls.record_vars)
-                                + map(&calls.object_vars)
+                                + declared
+                                    .iter()
+                                    .map(|calls| {
+                                        std::mem::size_of::<ProcedureCalls>()
+                                            + calls.call_sites.iter().map(site).sum::<usize>()
+                                            + map(&calls.record_vars)
+                                            + map(&calls.object_vars)
+                                    })
+                                    .sum::<usize>()
                         })
                         .sum::<usize>()
                     + object.effects.iter().map(procedure_effects).sum::<usize>()
@@ -162,8 +169,9 @@ impl SourceFileSummary {
 
 /// An AL file that exercises every part of [`SourceFileSummary::from_tree`]:
 /// several objects in one file, interface dispatch, an event with a
-/// subscriber, record triggers, `Codeunit.Run`, an overloaded name, a
-/// temporary record, database writes and a `Commit()`.
+/// subscriber, record triggers, `Codeunit.Run`, an overloaded name, two
+/// fields with an `OnValidate` each, a temporary record, database writes and
+/// a `Commit()`.
 pub const SUMMARY_FIXTURE: &str = include_str!("summary_fixture.al");
 
 /// A fingerprint of the code that summarizes a file: FNV-1a over the JSON of
@@ -293,7 +301,12 @@ fn resolve_summary_objects<'a>(
                 continue;
             }
             call_graph.set_resolution_state(proc_id, EdgeResolutionState::Resolving);
-            if let Some(calls) = object.calls.get(&decl.name.to_lowercase()) {
+            for calls in object
+                .calls
+                .get(&decl.name.to_lowercase())
+                .into_iter()
+                .flatten()
+            {
                 resolve_procedure_calls(
                     calls,
                     object_kind,

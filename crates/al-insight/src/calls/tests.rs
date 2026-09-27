@@ -1237,6 +1237,142 @@ end;
     );
 }
 
+/// An EventSubscriber may name its publisher by a bare object ID, with the
+/// kind in the first argument. Both a codeunit event and a table event
+/// bound that way are reached from the code that raises them.
+#[test]
+fn subscribers_bound_by_object_id_are_reached() {
+    let publisher = r#"codeunit 50320 "Id Publisher"
+{
+procedure Raise()
+begin
+    OnRaise();
+end;
+
+[IntegrationEvent(false, false)]
+local procedure OnRaise()
+begin
+end;
+}
+"#;
+    let table = r#"table 50321 "Id Table"
+{
+fields { field(1; "No."; Code[20]) { } }
+keys { key(PK; "No.") { } }
+}
+"#;
+    let subscriber = r#"codeunit 50322 "Id Subscriber"
+{
+[EventSubscriber(ObjectType::Codeunit, 50320, 'OnRaise', '', false, false)]
+local procedure OnRaiseById()
+begin
+end;
+
+[EventSubscriber(ObjectType::Table, 50321, 'OnAfterInsertEvent', '', false, false)]
+local procedure OnInsertById(var Rec: Record "Id Table"; RunTrigger: Boolean)
+begin
+end;
+}
+"#;
+    let caller = r#"codeunit 50323 "Id Caller"
+{
+procedure Inserts()
+var
+    Row: Record "Id Table";
+begin
+    Row.Insert();
+end;
+}
+"#;
+    let (insight, cg) = build_resolved_call_graph(&[
+        ("/ws/IdPublisher.Codeunit.al", publisher),
+        ("/ws/IdTable.Table.al", table),
+        ("/ws/IdSubscriber.Codeunit.al", subscriber),
+        ("/ws/IdCaller.Codeunit.al", caller),
+    ]);
+    let subscriber_node = |name: &str| {
+        CallGraph::node_id_for(
+            &insight,
+            &NodeKey::Subscriber(ObjectKind::Codeunit, "id subscriber".into(), name.into()),
+        )
+        .unwrap_or_else(|| panic!("subscriber node {name}"))
+    };
+    let reaches = |from: NodeId, to: NodeId| cg.callees_of(from).iter().any(|e| e.to == to);
+    let raise = proc_node(&insight, ObjectKind::Codeunit, "Id Publisher", "Raise");
+    assert!(
+        reaches(raise, subscriber_node("onraisebyid")),
+        "Raise reaches the subscriber bound by codeunit ID"
+    );
+    let inserts = proc_node(&insight, ObjectKind::Codeunit, "Id Caller", "Inserts");
+    assert!(
+        reaches(inserts, subscriber_node("oninsertbyid")),
+        "Row.Insert reaches the subscriber bound by table ID"
+    );
+}
+
+/// Every field of a table can declare its own `OnValidate`, and they share
+/// one graph node. Only one of them gave the node its edges, so a
+/// `Rec.Modify()` in the other field's trigger missed the Modify event
+/// subscribers.
+#[test]
+fn every_same_named_trigger_gives_the_node_its_edges() {
+    for (first, second) in [("Rec.Modify();", ""), ("", "Rec.Modify();")] {
+        let table = format!(
+            r#"table 50330 "Two Validates"
+{{
+fields
+{{
+    field(1; "No."; Code[20]) {{ }}
+    field(2; Name; Text[50])
+    {{
+        trigger OnValidate()
+        begin
+            {first}
+        end;
+    }}
+    field(3; City; Text[50])
+    {{
+        trigger OnValidate()
+        begin
+            {second}
+        end;
+    }}
+}}
+keys {{ key(PK; "No.") {{ }} }}
+}}
+"#
+        );
+        let subscriber = r#"codeunit 50331 "Two Validates Sub"
+{
+[EventSubscriber(ObjectType::Table, Database::"Two Validates", 'OnAfterModifyEvent', '', false, false)]
+local procedure AfterModify(var Rec: Record "Two Validates"; var xRec: Record "Two Validates"; RunTrigger: Boolean)
+begin
+end;
+}
+"#;
+        let (insight, cg) = build_resolved_call_graph(&[
+            ("/ws/TwoValidates.Table.al", &table),
+            ("/ws/TwoValidatesSub.Codeunit.al", subscriber),
+        ]);
+        let on_validate = proc_node(&insight, ObjectKind::Table, "Two Validates", "OnValidate");
+        let after_modify = CallGraph::node_id_for(
+            &insight,
+            &NodeKey::Subscriber(
+                ObjectKind::Codeunit,
+                "two validates sub".into(),
+                "aftermodify".into(),
+            ),
+        )
+        .expect("subscriber node");
+        assert!(
+            cg.callees_of(on_validate)
+                .iter()
+                .any(|edge| edge.to == after_modify),
+            "OnValidate reaches AfterModify with Name: {first:?} and City: {second:?}"
+        );
+    }
+}
+
 #[test]
 fn implements_clause_extracted_from_header() {
     let src = r#"codeunit 50100 "Impl A" implements "IFoo", IBar
