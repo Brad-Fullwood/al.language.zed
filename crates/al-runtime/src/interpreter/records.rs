@@ -2446,10 +2446,10 @@ pub(crate) fn dispatch_list_method(
         return eval_error(format!("'{recv}' is not a List"));
     };
     let list = list.clone();
-    // `AddRange(Other)` adds Other's elements. Read them before the list is
-    // locked: `L.AddRange(L)` doubles L.
+    // `AddRange(Other)` for a `List of [T]` adds Other's elements. Read them
+    // before the list is locked: `L.AddRange(L)` doubles L.
     let args = match (lower.as_str(), args.as_slice()) {
-        ("addrange", [Value::List(other)]) => other.snapshot(),
+        ("addrange", [Value::List(other)]) if adds_elements(&list, other) => other.snapshot(),
         _ => args,
     };
     // Comparing with the list itself would lock it twice.
@@ -2469,7 +2469,10 @@ pub(crate) fn dispatch_list_method(
         }
         "addrange" => eval_error("List.AddRange expects at least one value or a List"),
         "getrange" => match list_range("List.GetRange", &args, items.len()) {
-            Ok(range) => Eval::Normal(Value::list(items[range].to_vec())),
+            Ok(range) => Eval::Normal(Value::List(Collection::new(
+                items[range].to_vec(),
+                list.member_type(),
+            ))),
             Err(error) => eval_error(error),
         },
         "removerange" => match list_range("List.RemoveRange", &args, items.len()) {
@@ -2477,6 +2480,7 @@ pub(crate) fn dispatch_list_method(
                 items.drain(range);
                 Eval::Normal(Value::Boolean(true))
             }
+            Err(_) if !statement => Eval::Normal(Value::Boolean(false)),
             Err(error) => eval_error(error),
         },
         "reverse" if args.is_empty() => {
@@ -2596,6 +2600,35 @@ pub(crate) fn dispatch_list_method(
             _ => eval_error("List.Insert expects an Integer index and one value"),
         },
         other => eval_error(format!("unsupported List method: {other}")),
+    }
+}
+
+/// Whether `list.AddRange(other)` is the `AddRange(List of [T])` overload,
+/// which adds the elements of `other`, or `AddRange(T)` for a list whose
+/// elements are lists, which adds `other` as one element. A list with no
+/// declared element type takes the first, and an argument with none is judged
+/// by its elements.
+fn adds_elements(list: &Collection<Vec<Value>>, other: &Collection<Vec<Value>>) -> bool {
+    let is_list_type = |type_text: &str| {
+        type_text
+            .trim_start()
+            .to_ascii_lowercase()
+            .starts_with("list of")
+    };
+    let normalised = |type_text: &str| {
+        type_text
+            .split_whitespace()
+            .collect::<String>()
+            .to_ascii_lowercase()
+    };
+    match (list.member_type(), other.member_type()) {
+        (Some(element), _) if !is_list_type(element) => true,
+        (Some(element), Some(other_element)) => normalised(element) == normalised(other_element),
+        (Some(_), None) => other
+            .lock()
+            .iter()
+            .any(|item| matches!(item, Value::List(_))),
+        (None, _) => true,
     }
 }
 
@@ -3230,7 +3263,11 @@ pub(crate) fn default_for_structured(type_text: &str) -> Option<Value> {
         }
     }
     if lower.starts_with("list of") {
-        return Some(Value::list(Vec::new()));
+        let arguments = type_arguments(&trimmed["list of".len()..]);
+        return Some(Value::List(Collection::new(
+            Vec::new(),
+            arguments.first().copied(),
+        )));
     }
     if lower.starts_with("dictionary of") {
         let arguments = type_arguments(&trimmed["dictionary of".len()..]);

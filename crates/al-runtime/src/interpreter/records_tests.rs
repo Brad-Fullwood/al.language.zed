@@ -1785,6 +1785,93 @@ fn var_forms_of_list_get_list_set_and_dictionary_set_run_locally() {
     assert!(message.contains("index 2 out of range"), "got: {message}");
 }
 
+const LIST_RANGE_OVERLOADS: &str = r#"codeunit 50309 "List Range Overloads"
+{
+    procedure RemoveRangeUsed(): Text
+    var
+        L: List of [Integer];
+    begin
+        L.AddRange(1, 2);
+        if not L.RemoveRange(5, 10) then
+            exit('false/' + Format(L.Count()));
+        exit('true');
+    end;
+
+    procedure RemoveRangeStatement()
+    var
+        L: List of [Integer];
+    begin
+        L.AddRange(1, 2);
+        L.RemoveRange(5, 10);
+    end;
+
+    procedure AddRangeNested(): Text
+    var
+        Outer: List of [List of [Integer]];
+        Inner: List of [Integer];
+    begin
+        Inner.AddRange(1, 2, 3);
+        Outer.AddRange(Inner);
+        exit(Format(Outer.Count()) + '/' + Format(Outer.Get(1).Count()));
+    end;
+
+    procedure AddRangeNestedEmpty(): Integer
+    var
+        Outer: List of [List of [Integer]];
+        Inner: List of [Integer];
+    begin
+        Outer.AddRange(Inner);
+        exit(Outer.Count());
+    end;
+
+    procedure AddRangeListOfLists(): Integer
+    var
+        Outer: List of [List of [Integer]];
+        Other: List of [List of [Integer]];
+        Inner: List of [Integer];
+    begin
+        Other.Add(Inner);
+        Other.Add(Inner);
+        Outer.AddRange(Other);
+        exit(Outer.Count());
+    end;
+
+    procedure AddRangeAfterClear(): Integer
+    var
+        Outer: List of [List of [Integer]];
+        Inner: List of [Integer];
+    begin
+        Outer.Add(Inner);
+        Clear(Outer);
+        Inner.AddRange(1, 2);
+        Outer.AddRange(Inner);
+        exit(Outer.Count());
+    end;
+}
+"#;
+
+/// `RemoveRange` returns false for a range out of bounds when its result is
+/// used and raises as a statement. `AddRange` with one List argument adds its
+/// elements for `AddRange(List of [T])`, and adds the list as one element
+/// when the declared element type is a List, for `AddRange(T)`.
+#[test]
+fn removerange_result_and_addrange_overloads_follow_the_declared_types() {
+    let files = [("/ws/ListRangeOverloads.al", LIST_RANGE_OVERLOADS)];
+    let probe = |proc: &str| ok(run(&files, "List Range Overloads", proc, vec![]));
+    assert_eq!(probe("RemoveRangeUsed"), Value::Text("false/2".into()));
+    assert_eq!(probe("AddRangeNested"), Value::Text("1/3".into()));
+    assert_eq!(probe("AddRangeNestedEmpty"), Value::Integer(1));
+    assert_eq!(probe("AddRangeListOfLists"), Value::Integer(2));
+    assert_eq!(probe("AddRangeAfterClear"), Value::Integer(1));
+    let message = error_message(run(
+        &files,
+        "List Range Overloads",
+        "RemoveRangeStatement",
+        vec![],
+    ));
+    assert!(message.contains("out of range"), "got: {message}");
+}
+
 #[test]
 fn compound_assignment_to_record_field_accumulates() {
     // Regression: `Rec.Amount += 5` must store Amount + 5, not the raw RHS.

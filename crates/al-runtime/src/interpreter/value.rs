@@ -237,7 +237,7 @@ pub enum Value {
     Array(Vec<Value>),
     /// AL `List of [T]`. A reference type: copies of the value, and a
     /// parameter passed without `var`, share one list.
-    List(Shared<Vec<Value>>),
+    List(Collection<Vec<Value>>),
     /// AL `Dictionary of [K, V]`, keyed by the serialised K after it is
     /// converted to the declared key type. A reference type like `List`.
     Dict(Collection<DictEntries>),
@@ -543,9 +543,9 @@ impl Value {
         }
     }
 
-    /// A new `List` holding `items`.
+    /// A new `List` holding `items`, with no declared element type.
     pub fn list(items: Vec<Value>) -> Value {
-        Value::List(Shared::new(items))
+        Value::List(Collection::new(items, None))
     }
 
     /// A new `TextBuilder` holding `text`.
