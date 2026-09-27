@@ -82,7 +82,7 @@ over its sections, each read against the code at a0e85e0b.
 | Row (triage line) | Holds | Checked at |
 | --- | --- | --- |
 | 73: tokens.rs `classify_name_like_node` dead `field_declaration` branch | holds | crates/al-syntax/src/tokens.rs:446 calls `classify_table_field_name` (:653), which yields `TABLE_FIELD` |
-| 81: `collect_global_vars` merges globals across objects | holds | crates/al-syntax/src/type_resolver.rs:197 uses `collect_object_global_vars` for the enclosing object; :328 is the fallback for no enclosing object |
+| 81: `collect_global_vars` merges globals across objects | holds | crates/al-syntax/src/type_resolver.rs:197 uses `collect_object_global_vars` for the enclosing object, and :328 is the fallback for no enclosing object |
 | 92: docs claim and/or counted in complexity, code did not | holds | crates/al-syntax/src/complexity.rs:127 reads the `operator_word` child |
 | 121: `workspace_sources.rs` snapshot fails the whole query on one bad file | holds | crates/al-analysis/src/workspace_sources.rs:140-150, `snapshot_with_skipped` skips files without a usable declaration |
 | 41: blocking work on async executors | holds | crates/al-lsp/src/server/daemon/mod.rs:747 `offload` with 10 call sites; `did_change` (crates/al-lsp/src/server/lsp/mod.rs:1300) reindexes under `spawn_blocking` at :1342 |
