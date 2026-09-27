@@ -15,12 +15,13 @@
 #
 # al-explorer is resolved in this order: $AL_EXPLORER_BIN, PATH, then
 # target/release/al-explorer under the repository this script lives in.
-# al-lsp is resolved the way a resolved al-explorer resolves it to start the
-# daemon (crates/al-protocol/src/client/mod.rs): $AL_LSP_BIN, then beside
-# al-explorer, then PATH. A case whose fixture is missing fails; if no
-# al-explorer is found, or no al-lsp is found once al-explorer is, every case
-# is reported as skipped rather than failed, since that is a missing
-# prerequisite, not a wrong answer.
+# al-explorer resolves its own al-lsp the same way to start the daemon
+# (crates/al-protocol/src/client/mod.rs, find_al_lsp_binary): beside
+# al-explorer, then PATH, refusing a PATH al-lsp of a different version. A
+# case whose fixture is missing fails; if no al-explorer is found, or a
+# preflight call through al-explorer reports an error, every case is reported
+# as skipped rather than failed, since that is a missing prerequisite, not a
+# wrong answer.
 
 set -uo pipefail
 
@@ -55,42 +56,6 @@ if found="$(resolve_al_explorer)"; then
 	al_explorer="$found"
 fi
 
-# Every case needs the daemon, and a resolved al-explorer starts it from
-# al-lsp beside its own binary before it falls back to PATH. Resolving that
-# same pair here, once, catches a missing or unrelated al-lsp before any case
-# runs: without this, each of the twelve cases answered al-explorer's
-# "Cannot find al-lsp" error on stdout, which read as twelve wrong answers
-# instead of one missing prerequisite.
-resolve_al_lsp() {
-	if [ -n "${AL_LSP_BIN-}" ] && [ -x "$AL_LSP_BIN" ]; then
-		printf '%s\n' "$AL_LSP_BIN"
-		return 0
-	fi
-	if [ -n "$al_explorer" ]; then
-		local sibling_dir
-		sibling_dir="$(CDPATH='' cd -- "$(dirname -- "$al_explorer")" && pwd)"
-		if [ -x "$sibling_dir/al-lsp" ]; then
-			printf '%s\n' "$sibling_dir/al-lsp"
-			return 0
-		fi
-	fi
-	if command -v al-lsp >/dev/null 2>&1; then
-		command -v al-lsp
-		return 0
-	fi
-	return 1
-}
-
-al_lsp=""
-lsp_skip_reason=""
-if [ -n "$al_explorer" ]; then
-	if found="$(resolve_al_lsp)"; then
-		al_lsp="$found"
-	else
-		lsp_skip_reason="no al-lsp binary beside $al_explorer or on PATH"
-	fi
-fi
-
 run_with_timeout() {
 	if command -v timeout >/dev/null 2>&1; then
 		timeout 60 "$@"
@@ -98,6 +63,34 @@ run_with_timeout() {
 		"$@"
 	fi
 }
+
+# Reads the .error field of a JSON object on stdout, or prints nothing when
+# there is none.
+stdout_error() {
+	printf '%s' "$1" | jq -r 'if type == "object" and (.error != null) then .error else empty end' 2>/dev/null
+}
+
+# Every case needs the daemon, and al-explorer starts it from its own al-lsp
+# resolution (crates/al-protocol/src/client/mod.rs, find_al_lsp_binary): beside
+# its own binary, then PATH, refusing a PATH al-lsp of a different version.
+# Asking al-explorer itself, once, before any case runs, catches a missing or
+# mismatched al-lsp the same way al-explorer reports it to a case: as
+# {"error": "..."} on stdout. Without this, each of the twelve cases answered
+# that error as a failed check, which read as twelve wrong answers instead of
+# one missing prerequisite.
+preflight_error=""
+if [ -n "$al_explorer" ]; then
+	preflight_fixture="$root/crates/al-test-harness/data/test_al_project"
+	if [ -f "$preflight_fixture/app.json" ]; then
+		preflight_dir="$(mktemp -d "${TMPDIR:-/tmp}/al-eval-preflight.XXXXXX")"
+		cp -r "$preflight_fixture/." "$preflight_dir/"
+		rm -rf "${preflight_dir:?}/.vscode/.alcache"
+		preflight_stdout="$(cd "$preflight_dir" && run_with_timeout "$al_explorer" --compact doctor 2>/dev/null)"
+		preflight_error="$(stdout_error "$preflight_stdout")"
+		(cd "$preflight_dir" && run_with_timeout "$al_explorer" daemon-shutdown >/dev/null 2>&1)
+		rm -rf "$preflight_dir"
+	fi
+fi
 
 case_files=("$@")
 if [ "$#" -eq 0 ]; then
@@ -127,8 +120,8 @@ for case_file in "${case_files[@]}"; do
 		continue
 	fi
 
-	if [ -z "$al_lsp" ]; then
-		printf 'SKIP  %s -- %s\n' "$id" "$lsp_skip_reason"
+	if [ -n "$preflight_error" ]; then
+		printf 'SKIP  %s -- %s\n' "$id" "$preflight_error"
 		skip=$((skip + 1))
 		continue
 	fi
@@ -190,10 +183,18 @@ for case_file in "${case_files[@]}"; do
 
 		# A wrong answer and a refused answer look the same on stdout (both
 		# fail their check), but only one is this tool getting the question
-		# wrong. Dropping stderr here is what made a missing or mismatched
-		# al-lsp read as twelve wrong answers instead of one clear refusal.
-		if [ "$check_failed" -eq 1 ] && [ -s "$stderr_file" ]; then
-			reasons+=("check $i: stderr: $(cat "$stderr_file")")
+		# wrong. al-explorer reports a refusal as {"error": "..."} on stdout,
+		# so check that first, then stderr: dropping both is what made a
+		# missing or mismatched al-lsp read as twelve wrong answers instead of
+		# one clear refusal.
+		if [ "$check_failed" -eq 1 ]; then
+			check_stdout_error="$(stdout_error "$stdout")"
+			if [ -n "$check_stdout_error" ]; then
+				reasons+=("check $i: error on stdout: $check_stdout_error")
+			fi
+			if [ -s "$stderr_file" ]; then
+				reasons+=("check $i: stderr: $(cat "$stderr_file")")
+			fi
 		fi
 		rm -f "$stderr_file"
 
