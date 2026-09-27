@@ -36,7 +36,9 @@ use crate::interpreter::dispatch::DispatchMode;
 use crate::interpreter::eval_expr::eval_expr;
 use crate::interpreter::eval_stmt::arg_expr_nodes;
 use crate::interpreter::scope::{Eval, ScopeStack};
-use crate::interpreter::value::{Collection, RecordValue, Value};
+use crate::interpreter::value::{
+    check_collection_len, check_text_size, Collection, RecordValue, Value,
+};
 use crate::mock::calcformula_parser::{self, CalcFormula, FormulaType, WhereValue};
 use crate::mock::filter;
 use crate::mock::record::{FieldNo, FlowAgg, FlowFilter, MockRecord, RecordView};
@@ -2476,6 +2478,16 @@ pub(crate) fn dispatch_list_method(
         return search_list(&list, &lower, needle);
     }
     let mut items = list.lock();
+    let added = match lower.as_str() {
+        "addrange" => args.len(),
+        "add" | "insert" => 1,
+        _ => 0,
+    };
+    if let Err(error) =
+        check_collection_len(&format!("List.{method}"), items.len().saturating_add(added))
+    {
+        return eval_error(error);
+    }
     match lower.as_str() {
         "addrange" if !args.is_empty() => {
             items.extend(args);
@@ -2774,6 +2786,9 @@ pub(crate) fn dispatch_text_method(
         "replace" => match args.as_slice() {
             [old, new] => match (text_arg(old), text_arg(new)) {
                 (Some(old), Some(new)) if !old.is_empty() => {
+                    if let Err(error) = check_replace_size("Text.Replace", &s, &old, &new) {
+                        return eval_error(error);
+                    }
                     Eval::Normal(Value::Text(s.replace(&old, &new)))
                 }
                 (Some(_), Some(_)) => eval_error("Text.Replace: the old value cannot be empty"),
@@ -2800,6 +2815,13 @@ pub(crate) fn dispatch_text_method(
             }
             let mut parts = vec![s];
             for sep in &separators {
+                let count = parts
+                    .iter()
+                    .map(|part| part.matches(sep.as_str()).count() + 1)
+                    .sum();
+                if let Err(error) = check_collection_len("Text.Split", count) {
+                    return eval_error(error);
+                }
                 parts = parts
                     .into_iter()
                     .flat_map(|part| {
@@ -2886,6 +2908,12 @@ pub(crate) fn dispatch_text_method(
             let missing = usize::try_from(count)
                 .unwrap_or(0)
                 .saturating_sub(s.chars().count());
+            let size = missing
+                .saturating_mul(pad.len_utf8())
+                .saturating_add(s.len());
+            if let Err(error) = check_text_size(&format!("Text.{method}"), size) {
+                return eval_error(error);
+            }
             let padding: String = std::iter::repeat_n(pad, missing).collect();
             Eval::Normal(Value::Text(if lower == "padleft" {
                 padding + &s
@@ -2926,6 +2954,24 @@ pub(crate) fn dispatch_text_method(
         }
         other => eval_error(format!("unsupported Text method: {other}")),
     }
+}
+
+/// Refuse a replacement of `old` by `new` in `text` whose result is longer
+/// than [`crate::interpreter::value::MAX_TEXT_BYTES`]. Replacing `x` with
+/// `xx` doubles a text.
+fn check_replace_size(operation: &str, text: &str, old: &str, new: &str) -> Result<(), String> {
+    if new.len() <= old.len() {
+        return Ok(());
+    }
+    let most = (text.len() / old.len()).saturating_mul(new.len() - old.len());
+    if check_text_size(operation, text.len().saturating_add(most)).is_ok() {
+        return Ok(());
+    }
+    let growth = text
+        .matches(old)
+        .count()
+        .saturating_mul(new.len() - old.len());
+    check_text_size(operation, text.len().saturating_add(growth))
 }
 
 /// True if `method` is a `TextBuilder` method implemented by the local
@@ -2974,17 +3020,34 @@ pub(crate) fn dispatch_textbuilder_method(
         text.char_indices().nth(zero).map(|(at, _)| at)
     };
     let lower = method.to_ascii_lowercase();
+    let grow_by = |text: &str, added: usize| {
+        check_text_size(
+            &format!("TextBuilder.{method}"),
+            text.len().saturating_add(added),
+        )
+    };
     match (lower.as_str(), args.as_slice()) {
         ("append", [value]) => {
-            text.push_str(&as_text(value));
+            let value = as_text(value);
+            if let Err(error) = grow_by(text, value.len()) {
+                return eval_error(error);
+            }
+            text.push_str(&value);
             Eval::Normal(Value::Boolean(true))
         }
         ("appendline", []) => {
+            if let Err(error) = grow_by(text, 2) {
+                return eval_error(error);
+            }
             text.push_str("\r\n");
             Eval::Normal(Value::Boolean(true))
         }
         ("appendline", [value]) => {
-            text.push_str(&as_text(value));
+            let value = as_text(value);
+            if let Err(error) = grow_by(text, value.len() + 2) {
+                return eval_error(error);
+            }
+            text.push_str(&value);
             text.push_str("\r\n");
             Eval::Normal(Value::Boolean(true))
         }
@@ -3013,7 +3076,11 @@ pub(crate) fn dispatch_textbuilder_method(
         }
         ("insert", [Value::Integer(index), value]) => match byte_at(text, *index) {
             Some(at) => {
-                text.insert_str(at, &as_text(value));
+                let value = as_text(value);
+                if let Err(error) = grow_by(text, value.len()) {
+                    return eval_error(error);
+                }
+                text.insert_str(at, &value);
                 Eval::Normal(Value::Boolean(true))
             }
             None => eval_error(format!("TextBuilder.Insert: index {index} is out of range")),
@@ -3035,6 +3102,9 @@ pub(crate) fn dispatch_textbuilder_method(
             let (old, new) = (as_text(old), as_text(new));
             if old.is_empty() {
                 return eval_error("TextBuilder.Replace: the old value cannot be empty");
+            }
+            if let Err(error) = check_replace_size("TextBuilder.Replace", text, &old, &new) {
+                return eval_error(error);
             }
             *text = text.replace(&old, &new);
             Eval::Normal(Value::Boolean(true))
@@ -3154,6 +3224,22 @@ pub(crate) fn dispatch_dict_method(
         }
     }
     let mut entries = dict.lock();
+    if matches!(lower.as_str(), "add" | "set") {
+        if let Err(error) = check_collection_len(
+            &format!("Dictionary.{method}"),
+            entries.len().saturating_add(1),
+        ) {
+            // Set on a key that is there replaces a value.
+            let replaces = lower == "set"
+                && args
+                    .first()
+                    .and_then(|key| dict_key(key).ok())
+                    .is_some_and(|key| entries.contains_key(&key));
+            if !replaces {
+                return eval_error(error);
+            }
+        }
+    }
     match lower.as_str() {
         "add" => match args.as_slice() {
             [key, value] => match dict_key(key) {
@@ -3314,6 +3400,9 @@ fn default_for_array(type_text: &str) -> Option<Value> {
     let rest = rest.strip_prefix('[')?;
     let close = rest.find(']')?;
     let length: usize = rest[..close].trim().parse().ok()?;
+    // Business Central does not compile an array this long, so it is left
+    // unbound, as an array of several dimensions is.
+    check_collection_len("array", length).ok()?;
     let element = strip_keyword(rest[close + 1..].trim_start(), "of")?.trim();
     let base = element.split('[').next()?.trim();
     // Each element on its own: clones of one JSON default share its node.

@@ -469,6 +469,49 @@ impl PartialOrd for Value {
     }
 }
 
+/// The longest Text, Code or TextBuilder value the local test runtime builds,
+/// in bytes of UTF-8.
+///
+/// Business Central's Text is a .NET string, which holds about a billion
+/// characters. The local runtime runs tests inside the language server's
+/// daemon, and the deadline is checked only between loop iterations, so a
+/// test that doubles a text used to exhaust memory before the deadline
+/// stopped it. 64 MiB is far more text than a test fixture needs, and a
+/// doubling loop reaches it in 26 steps.
+pub const MAX_TEXT_BYTES: usize = 64 * 1024 * 1024;
+
+/// The most elements a List, Dictionary or array holds in the local test
+/// runtime. Business Central refuses an array of more than 1,000,000
+/// elements when it compiles it (AL0146), and does not cap a List or
+/// Dictionary. The runtime uses the array limit for all three: a value takes
+/// 56 bytes before any text it holds, so a full list of numbers takes 53 MiB.
+pub const MAX_COLLECTION_LEN: usize = 1_000_000;
+
+/// Refuse a text of `bytes` bytes that is longer than [`MAX_TEXT_BYTES`].
+/// `operation` names what would build it, for the message.
+pub(crate) fn check_text_size(operation: &str, bytes: usize) -> Result<(), String> {
+    if bytes <= MAX_TEXT_BYTES {
+        return Ok(());
+    }
+    Err(format!(
+        "{operation} would make a text of {bytes} bytes, over the local test runtime's \
+         limit of {} MiB for one text",
+        MAX_TEXT_BYTES / (1024 * 1024)
+    ))
+}
+
+/// Refuse a List, Dictionary or array of `len` elements that is longer than
+/// [`MAX_COLLECTION_LEN`]. `operation` names what would build it.
+pub(crate) fn check_collection_len(operation: &str, len: usize) -> Result<(), String> {
+    if len <= MAX_COLLECTION_LEN {
+        return Ok(());
+    }
+    Err(format!(
+        "{operation} would make {len} elements, over the local test runtime's limit of \
+         {MAX_COLLECTION_LEN} elements for one List, Dictionary or array"
+    ))
+}
+
 /// Reject a string that does not fit a declared `Text[N]`/`Code[N]` capacity.
 /// BC traps this at the assignment rather than truncating, and counts
 /// characters, not bytes. The message mirrors the server's.

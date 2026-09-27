@@ -6663,3 +6663,218 @@ fn searching_a_list_in_a_cycle_returns() {
         Value::Text("Yes/1/1/Yes/0".into())
     );
 }
+
+/// Values that double or grow to a length the test gives, the shapes of the
+/// round 6 security finding SEC6-5.
+const GROWING_VALUES: &str = r#"codeunit 50393 "Growing Values"
+{
+    procedure DoubleText(): Integer
+    var
+        T: Text;
+        I: Integer;
+    begin
+        T := 'x';
+        for I := 1 to 40 do
+            T := T + T;
+        exit(StrLen(T));
+    end;
+
+    procedure DoubleTextBuilder(): Integer
+    var
+        TB: TextBuilder;
+        I: Integer;
+    begin
+        TB.Append('x');
+        for I := 1 to 40 do
+            TB.Append(TB);
+        exit(TB.Length());
+    end;
+
+    procedure DoubleTextBySubstitution(): Integer
+    var
+        T: Text;
+        I: Integer;
+    begin
+        T := 'x';
+        for I := 1 to 40 do
+            T := StrSubstNo('%1%1', T);
+        exit(StrLen(T));
+    end;
+
+    procedure GrowTextByReplace(): Integer
+    var
+        T: Text;
+        I: Integer;
+    begin
+        T := 'x';
+        for I := 1 to 40 do
+            T := T.Replace('x', 'xxxxxxxxxxxxxxxx');
+        exit(StrLen(T));
+    end;
+
+    procedure DoubleList(): Integer
+    var
+        L: List of [Integer];
+        I: Integer;
+    begin
+        L.Add(1);
+        for I := 1 to 40 do
+            L.AddRange(L);
+        exit(L.Count());
+    end;
+
+    procedure PadText(): Integer
+    begin
+        exit(StrLen(PadStr('', 2000000000)));
+    end;
+
+    procedure PadTextLeft(): Integer
+    var
+        T: Text;
+    begin
+        T := '';
+        exit(StrLen(T.PadLeft(2000000000)));
+    end;
+
+    procedure FormatToWidth(): Integer
+    begin
+        exit(StrLen(Format(1, 2000000000)));
+    end;
+
+    procedure SplitIntoManyParts(): Integer
+    var
+        T: Text;
+    begin
+        T := PadStr('', 2000000, ',');
+        exit(T.Split(',').Count());
+    end;
+
+    procedure HugeArray(): Integer
+    var
+        A: array[2000000000] of Integer;
+    begin
+        A[1] := 5;
+        exit(A[1]);
+    end;
+
+    procedure ArrayAtTheLimit(): Integer
+    var
+        A: array[1000000] of Integer;
+    begin
+        A[1000000] := 5;
+        exit(ArrayLen(A) + A[1000000]);
+    end;
+
+    procedure LargeTextsStillWork(): Integer
+    var
+        T: Text;
+        TB: TextBuilder;
+        L: List of [Integer];
+        I: Integer;
+    begin
+        T := PadStr('', 1000000, 'x');
+        TB.Append(T);
+        TB.Append(T);
+        for I := 1 to 1000 do
+            L.Add(I);
+        L.AddRange(L);
+        exit(StrLen(T + T) + TB.Length() + L.Count());
+    end;
+}
+"#;
+
+fn run_growing(proc: &str) -> Eval {
+    run(
+        &[("/ws/Growing.al", GROWING_VALUES)],
+        "Growing Values",
+        proc,
+        vec![],
+    )
+}
+
+/// `T := T + T` in a loop asked for 1 TiB well inside the test's deadline.
+/// Each way of growing a text now stops at `MAX_TEXT_BYTES` with an error.
+#[test]
+fn growing_a_text_past_the_limit_fails_the_test() {
+    for proc in [
+        "DoubleText",
+        "DoubleTextBuilder",
+        "DoubleTextBySubstitution",
+        "GrowTextByReplace",
+        "PadText",
+        "PadTextLeft",
+        "FormatToWidth",
+    ] {
+        let start = std::time::Instant::now();
+        let message = error_message(run_growing(proc));
+        assert!(message.contains("64 MiB"), "{proc}: {message}");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(20),
+            "{proc} took {:?}",
+            start.elapsed()
+        );
+    }
+}
+
+/// `L.AddRange(L)` in a loop doubles a list, and `Split` makes a list of
+/// one element for each separator. Both stop at `MAX_COLLECTION_LEN`.
+#[test]
+fn growing_a_list_past_the_limit_fails_the_test() {
+    for proc in ["DoubleList", "SplitIntoManyParts"] {
+        let message = error_message(run_growing(proc));
+        assert!(message.contains("1000000 elements"), "{proc}: {message}");
+    }
+}
+
+#[test]
+fn texts_and_lists_under_the_limits_still_grow() {
+    assert_eq!(
+        ok(run_growing("LargeTextsStillWork")),
+        Value::Integer(2_000_000 + 2_000_000 + 2_000)
+    );
+}
+
+/// `array[2000000000] of Integer` made two billion values when declared.
+/// Business Central does not compile an array of more than 1,000,000
+/// elements, so the local runtime leaves such an array unbound.
+#[test]
+fn an_array_past_the_limit_is_not_made() {
+    assert_eq!(
+        error_message(run_growing("HugeArray")),
+        "unbound identifier: a"
+    );
+    assert_eq!(
+        ok(run_growing("ArrayAtTheLimit")),
+        Value::Integer(1_000_005)
+    );
+}
+
+/// A Dictionary stops at `MAX_COLLECTION_LEN` entries. Filling one through AL
+/// takes a million statements, so the test starts from a full one.
+#[test]
+fn a_dictionary_past_the_limit_fails_the_test() {
+    use crate::interpreter::scope::{CallFrame, ScopeStack};
+    use crate::interpreter::value::{Collection, DictEntries, MAX_COLLECTION_LEN};
+    let entries: DictEntries = (0..MAX_COLLECTION_LEN)
+        .map(|n| (n.to_string(), (Value::Integer(n as i64), Value::Integer(0))))
+        .collect();
+    let mut frame = CallFrame::new("Test", "Test");
+    frame.bind("D", Value::Dict(Collection::new(entries, Some("Integer"))));
+    let mut stack = ScopeStack::new();
+    stack.push(frame);
+    let mut ctx = DispatchCtx::new_pure(Arc::new(Workspace::new()));
+    let mut call = |method: &str, key: i64| {
+        crate::interpreter::records::dispatch_dict_method(
+            "D",
+            method,
+            vec![Value::Integer(key), Value::Integer(1)],
+            &mut stack,
+            &mut ctx,
+        )
+    };
+    let limit = MAX_COLLECTION_LEN as i64;
+    assert!(error_message(call("Add", limit)).contains("1000000 elements"));
+    assert!(error_message(call("Set", limit)).contains("1000000 elements"));
+    // Set on a key that is there replaces its value.
+    assert!(!call("Set", 7).is_error());
+}
