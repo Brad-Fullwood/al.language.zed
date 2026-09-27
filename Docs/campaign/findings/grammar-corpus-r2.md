@@ -93,7 +93,7 @@ from `target/debug` on a scratch project to check what the interpreter does with
   ```
   The label is `(case_label_expression (signed_case_label))`. `al-explorer test-run` fails the test with `unsupported expression kind: signed_case_label`. No crate reads the `signed_case_label` kind.
 - fix: in the interpreter, evaluate a `signed_case_label` by parsing its text as an expression, the way `indexing.rs` evaluates the text of an index. Pinned in the grammar by `test/corpus/statements.txt` "case labels with a leading minus".
-- status: open
+- status: fixed f2cec26c. `eval_expr` evaluates a `signed_case_label` through `indexing::eval_standalone_expression`, so `-1`, `-2.5` and `-Limit` labels match. Pinned by `case_labels_with_a_leading_minus_match`. A negative range label such as `-5..-2` still fails: the scanner makes `-5..` one `signed_case_label` token followed by a subtraction, and the runtime reports "'-5..' is not an expression". That is a scanner defect of the GR2-4 kind.
 
 ### [GR2-4] a minus followed by a space in a case label is an error, and `-X::Y` splits at the scope operator
 - where: tree-sitter-al/src/scanner.c, the `SIGNED_CASE_LABEL` branch of `tree_sitter_al_external_scanner_scan`
