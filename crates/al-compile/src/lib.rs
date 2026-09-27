@@ -862,6 +862,14 @@ mod tests {
         );
         std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
         std::fs::write(&dll, b"analyzer").unwrap();
+        // The project's settings name the analyzer, so the trust record lists
+        // the copy. A copy the record does not list is refused.
+        std::fs::create_dir_all(root.path().join(".vscode")).unwrap();
+        std::fs::write(
+            root.path().join(".vscode/settings.json"),
+            r#"{"al.codeAnalyzers": ["BusinessCentral.LinterCop"]}"#,
+        )
+        .unwrap();
         let toolchain = analyzer_test_toolchain(root.path());
         let requested = ["BusinessCentral.LinterCop".to_string()];
 

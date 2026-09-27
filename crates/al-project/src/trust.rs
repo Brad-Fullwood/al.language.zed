@@ -519,6 +519,29 @@ fn project_analyzer_copies(config: &AlConfig, project_root: &Path) -> Vec<Privil
     settings
 }
 
+/// Whether `decision` lists `found`, the file inside the project a bare
+/// analyzer name resolved to, with the hash it has now.
+///
+/// [`project_analyzer_copies`] records a copy under the relative path it sits
+/// at, so only that entry can match: a settings value has a settings file as
+/// its source. The hash is taken again here, so a file replaced after the
+/// decision was made does not match either.
+pub(crate) fn lists_project_copy(decision: &TrustDecision, found: &Path) -> bool {
+    let relative = shown_within(found, &decision.root);
+    let mut unhashable = None;
+    let contents =
+        file_and_neighbours_sha256(found, &decision.root, Beside::Assemblies, &mut unhashable);
+    if unhashable.is_some() {
+        return false;
+    }
+    let recorded = format!(" resolves to {relative} ({contents})");
+    decision.privileged.iter().any(|setting| {
+        setting.key == "al.codeAnalyzers"
+            && setting.source == relative
+            && setting.value.ends_with(&recorded)
+    })
+}
+
 /// The trust state of `project_root` for the values `ask` holds.
 fn decision_for(project_root: &Path, ask: &RepositoryAsk) -> TrustDecision {
     // A root that does not resolve cannot match a stored record either, so the
@@ -3243,6 +3266,95 @@ mod tests {
         };
         assert!(refusal.contains("./tools/TeamCop.dll"), "{refusal}");
         assert_eq!(decide(root).unwrap().state, TrustState::Untrusted);
+    }
+
+    /// Sets an environment variable for one test and restores it after.
+    struct EnvVar {
+        name: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVar {
+        fn set(name: &'static str, value: &Path) -> Self {
+            let previous = std::env::var_os(name);
+            std::env::set_var(name, value);
+            Self { name, previous }
+        }
+    }
+
+    impl Drop for EnvVar {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
+    }
+
+    const LINTER_COP_COPY: &str =
+        ".netpackages/businesscentral.lintercop/9.9.9/lib/net8.0/BusinessCentral.LinterCop.dll";
+
+    /// A name from Zed user settings reaches the language server's
+    /// configuration and not the record, which learns names from
+    /// `~/.config/al-lsp/settings.json` and the repository's files. A copy of
+    /// that name committed under `.netpackages` after the grant was found
+    /// before the NuGet cache and loaded under a record that still matched.
+    #[test]
+    fn a_project_copy_the_record_does_not_list_is_refused() {
+        let _config = ScratchConfig::new();
+        let nuget = tempfile::tempdir().unwrap();
+        write_file(
+            nuget.path(),
+            "businesscentral.lintercop/0.30.0/lib/net8.0/BusinessCentral.LinterCop.dll",
+            b"the real LinterCop",
+        );
+        let _nuget = EnvVar::set("NUGET_PACKAGES", nuget.path());
+        let project = project_with_launch(
+            r#"[{"name":"dev","type":"al","request":"launch","environmentType":"OnPrem",
+                 "server":"https://bc.corp.example","serverInstance":"BC"}]"#,
+        );
+        let root = project.path();
+        grant(root).unwrap();
+        let before = crate::analyzers::CustomAnalyzerSearch::new(root, &[])
+            .resolve("BusinessCentral.LinterCop")
+            .unwrap()
+            .unwrap();
+        assert!(before.starts_with(nuget.path().canonicalize().unwrap()));
+
+        write_file(root, LINTER_COP_COPY, b"a later commit's analyzer");
+
+        assert_eq!(decide(root).unwrap().state, TrustState::Trusted);
+        let error = crate::analyzers::CustomAnalyzerSearch::new(root, &[])
+            .resolve("BusinessCentral.LinterCop")
+            .expect_err("the record does not list the project's copy");
+        assert!(
+            matches!(
+                error,
+                crate::analyzers::AnalyzerDiscoveryError::UnrecordedProjectAnalyzer { .. }
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().contains("does not list"), "{error}");
+    }
+
+    /// A name the record learns from `~/.config/al-lsp/settings.json` still
+    /// resolves to the project copy the record lists.
+    #[test]
+    fn a_name_in_al_lsp_user_settings_resolves_to_its_recorded_copy() {
+        let _config = ScratchConfig::new();
+        let user = AlConfig::default_settings_path().unwrap();
+        std::fs::create_dir_all(user.parent().unwrap()).unwrap();
+        std::fs::write(&user, r#"{"codeAnalyzers": ["BusinessCentral.LinterCop"]}"#).unwrap();
+        let project = project_with_settings("{}");
+        let root = project.path();
+        write_file(root, LINTER_COP_COPY, b"the team's pinned LinterCop");
+        grant(root).unwrap();
+
+        let found = crate::analyzers::CustomAnalyzerSearch::new(root, &[])
+            .resolve("BusinessCentral.LinterCop")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found, root.join(LINTER_COP_COPY).canonicalize().unwrap());
     }
 
     /// A file that appears after the project was trusted changes the record

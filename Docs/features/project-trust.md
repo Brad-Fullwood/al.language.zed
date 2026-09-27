@@ -200,8 +200,18 @@ absolute probing path or the editor extension folders, and a name found only ins
 project is refused with a message saying so. A relative analyzer path names a file the
 repository ships and is refused the same way. The name was the user's, but the repository
 chose which file answered to it, and that file is loaded into alc and into the language
-server's semantic bridge. The rule sits in `al_project::analyzers::discover_custom_analyzer`,
-which every build, publish, debug launch and semantic analysis goes through.
+server's semantic bridge.
+
+In a trusted project, a copy found inside the project for a name loads only when the trust
+record lists that file with the hash it has now. The record learns names from the project's
+settings files and `~/.config/al-lsp/settings.json`, and lists the copy each of them resolves
+to. A name written only in Zed or VS Code user settings, or passed to `al-explorer build` as a
+flag, is not in the record, so a copy of it that a later commit adds under `.netpackages` is
+refused, with a message naming the file, where it used to be found ahead of the NuGet cache
+and loaded. To use a project copy, name the analyzer in the project's settings or in
+`~/.config/al-lsp/settings.json`. The rule sits in
+`al_project::analyzers::CustomAnalyzerSearch`, which every build, publish, debug launch and
+semantic analysis goes through.
 
 A credential you supply yourself is the same: `BC_USERNAME`, `BC_PASSWORD` and
 `BC_ACCESS_TOKEN` apply without trust. What still needs trust is the *server* those

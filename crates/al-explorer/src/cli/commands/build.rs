@@ -808,10 +808,17 @@ mod validation_trust_tests {
         }
     }
 
-    /// A project that ships LinterCop in `.netpackages`.
+    /// A project that ships LinterCop in `.netpackages` and names it in its
+    /// settings, so a trust record lists that copy.
     fn project_with_lintercop() -> (tempfile::TempDir, PathBuf) {
         let project = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join("app.json"), "{}").unwrap();
+        std::fs::create_dir_all(project.path().join(".vscode")).unwrap();
+        std::fs::write(
+            project.path().join(".vscode/settings.json"),
+            r#"{"al.codeAnalyzers": ["BusinessCentral.LinterCop"]}"#,
+        )
+        .unwrap();
         let dll = project
             .path()
             .join(".netpackages/businesscentral.lintercop/1.0.0/BusinessCentral.LinterCop.dll");
