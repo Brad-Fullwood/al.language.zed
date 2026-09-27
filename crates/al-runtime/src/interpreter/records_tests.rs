@@ -3159,7 +3159,7 @@ const EVENT_SUBSCRIBERS: &str = r#"codeunit 50171 Subscribers
         Total += sender.Bonus();
     end;
 
-    [EventSubscriber(ObjectType::Codeunit, Codeunit::50170, 'OnBeforePost', '', false, false)]
+    [EventSubscriber(ObjectType::Codeunit, 50170, 'OnBeforePost', '', false, false)]
     local procedure AddLabelLength(Label: Text; var Total: Integer)
     begin
         Total += StrLen(Label);
@@ -4846,5 +4846,84 @@ fn case_labels_with_a_leading_minus_match() {
     assert_eq!(
         ok(call("ByDecimal", Value::Decimal(dec!(-1.5)))),
         Value::Integer(0)
+    );
+}
+
+const ID_BOUND_PUBLISHER: &str = r#"codeunit 50287 "Id Publisher"
+{
+    procedure Raise(): Integer
+    var
+        Total: Integer;
+    begin
+        OnRaise(Total);
+        exit(Total);
+    end;
+
+    [IntegrationEvent(false, false)]
+    local procedure OnRaise(var Total: Integer)
+    begin
+    end;
+}
+
+table 50288 "Id Table"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Note; Text[50]) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+}
+
+codeunit 50289 "Id Subscribers"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Id Publisher", 'OnRaise', '', false, false)]
+    local procedure AddOne(var Total: Integer)
+    begin
+        Total += 1;
+    end;
+
+    [EventSubscriber(ObjectType::Codeunit, 50287, 'OnRaise', '', false, false)]
+    local procedure AddTen(var Total: Integer)
+    begin
+        Total += 10;
+    end;
+
+    [EventSubscriber(ObjectType::Table, 50288, 'OnBeforeInsertEvent', '', false, false)]
+    local procedure StampInsert(var Rec: Record "Id Table")
+    begin
+        Rec.Note := 'by id';
+    end;
+}
+
+codeunit 50290 "Id Probe"
+{
+    procedure Inserts(): Text
+    var
+        Row: Record "Id Table";
+    begin
+        Row."No." := 'R1';
+        Row.Insert();
+        Row.Get('R1');
+        exit(Row.Note);
+    end;
+}
+"#;
+
+/// An EventSubscriber may name its publisher by a bare object ID. Only the
+/// `Codeunit::Name` form was bound, so the ID subscriber never ran.
+#[test]
+fn subscribers_bound_by_object_id_run() {
+    let files = [("/ws/IdEvents.al", ID_BOUND_PUBLISHER)];
+    assert_eq!(
+        ok(run(&files, "Id Publisher", "Raise", vec![])),
+        Value::Integer(11)
+    );
+    assert_eq!(
+        ok(run(&files, "Id Probe", "Inserts", vec![])),
+        Value::Text("by id".into())
     );
 }

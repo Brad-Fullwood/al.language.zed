@@ -107,7 +107,7 @@ impl SubscriberIndex {
         }
         let mut by_event: HashMap<EventKey, Vec<Subscriber>> = HashMap::new();
         for (subscriber, kind, publisher, event, element) in pending {
-            // `Codeunit::50100` names its publisher by ID.
+            // A bare `50100` names its publisher by ID.
             let publisher = match publisher.parse::<i64>() {
                 Ok(id) => match objects_by_id.get(&(kind.clone(), id)) {
                     Some(name) => name.to_ascii_lowercase(),
@@ -268,11 +268,18 @@ fn subscriber_binding(
     let open = attribute.find('(')?;
     let close = attribute.rfind(')')?;
     let args = split_arguments(attribute.get(open + 1..close)?);
-    let [_, publisher, event, element, ..] = args.as_slice() else {
+    let [object_type, publisher, event, element, ..] = args.as_slice() else {
         return None;
     };
-    // `Codeunit::"Sales-Post"`, `Database::Customer`, `Page::50100`.
-    let (kind, target) = publisher.split_once("::")?;
+    // `Codeunit::"Sales-Post"` or `Database::Customer`, or a bare object ID
+    // (`50100`) whose kind is the first argument (`ObjectType::Codeunit`).
+    let (kind, target) = match publisher.split_once("::") {
+        Some((kind, target)) => (kind, target),
+        None if publisher.trim().parse::<i64>().is_ok() => {
+            (object_type.split_once("::")?.1, publisher.as_str())
+        }
+        None => return None,
+    };
     let kind = match kind.trim().to_ascii_lowercase().as_str() {
         "database" => "table".to_string(),
         other => other.to_string(),

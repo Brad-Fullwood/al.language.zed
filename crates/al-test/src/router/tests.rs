@@ -1365,6 +1365,58 @@ end;
     );
 }
 
+/// A subscriber that names its publisher by a bare object ID is reached like
+/// one bound by name, so what it does decides the route.
+#[test]
+fn subscribers_bound_by_object_id_are_reached() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/IdPub.Codeunit.al"),
+        r#"codeunit 50290 "Id Pub"
+{
+procedure Post()
+begin
+    OnPost();
+end;
+
+[IntegrationEvent(false, false)]
+local procedure OnPost()
+begin
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/IdSub.Codeunit.al"),
+        r#"codeunit 50291 "Id Sub"
+{
+[EventSubscriber(ObjectType::Codeunit, 50290, 'OnPost', '', false, false)]
+local procedure OnPostById()
+begin
+    Page.RunModal(0);
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/IdTests.Codeunit.al"),
+        r#"codeunit 50292 "Id Tests"
+{
+Subtype = Test;
+[Test]
+procedure Posts()
+var
+    P: Codeunit "Id Pub";
+begin
+    P.Post();
+end;
+}"#
+        .to_string(),
+    );
+    let result = classify_all(&workspace).unwrap().remove(0);
+    assert_reaches_the_subscriber(&result);
+}
+
 /// Validate checks the field's TableRelation, which the local runtime can
 /// do only for a plain relation to a workspace table.
 #[test]
