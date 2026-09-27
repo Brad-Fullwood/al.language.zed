@@ -7,7 +7,7 @@ until it is removed.
 ## Where the work is
 
 - Code: every change the campaign made is on `dev`. Pull request 32 (`campaign/2026-09-21` into
-  `dev`) was merged after CI passed on the commit that adds this file. `campaign/2026-09-21` stays on origin as the
+  `dev`) was merged after CI passed on the checkpoint tip. The first CI run failed one macOS test, whose assertion read a display line that a long macOS temp path pushed past its 120 character cap. The test now reads the recorded value. `campaign/2026-09-21` stays on origin as the
   resume branch and equals `dev`. The other 27 remote campaign branches and 80 local branches
   (agent branches and worktree placeholders) were merged into it already and are deleted.
 - Grammar (`tree-sitter-al`, the AL-Tree-Sitter repository): its `campaign/2026-09-21` branch is
