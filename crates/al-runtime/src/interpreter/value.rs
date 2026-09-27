@@ -60,6 +60,67 @@ impl<T: Clone> Shared<T> {
     }
 }
 
+/// A `List` or `Dictionary` value: its shared contents and the member type
+/// its declaration gives it, written as in source (`Code[20]`). The member
+/// type is the element type of a List and the key type of a Dictionary.
+/// `None` when no declaration made the value.
+#[derive(Debug)]
+pub struct Collection<T> {
+    contents: Shared<T>,
+    member_type: Option<Arc<str>>,
+}
+
+impl<T> Clone for Collection<T> {
+    fn clone(&self) -> Self {
+        Self {
+            contents: self.contents.clone(),
+            member_type: self.member_type.clone(),
+        }
+    }
+}
+
+impl<T> Collection<T> {
+    pub fn new(contents: T, member_type: Option<&str>) -> Self {
+        Self {
+            contents: Shared::new(contents),
+            member_type: member_type.map(Arc::from),
+        }
+    }
+
+    /// The contents, locked until the guard drops.
+    pub fn lock(&self) -> MutexGuard<'_, T> {
+        self.contents.lock()
+    }
+
+    /// Whether both values name the same contents.
+    pub fn same(&self, other: &Self) -> bool {
+        self.contents.same(&other.contents)
+    }
+
+    /// The declared element type of a List, or key type of a Dictionary.
+    pub fn member_type(&self) -> Option<&str> {
+        self.member_type.as_deref()
+    }
+
+    /// New empty contents with the same member type, as `Clear` leaves.
+    pub fn emptied(&self) -> Self
+    where
+        T: Default,
+    {
+        Self {
+            contents: Shared::new(T::default()),
+            member_type: self.member_type.clone(),
+        }
+    }
+}
+
+impl<T: Clone> Collection<T> {
+    /// A copy of the contents, detached from the value.
+    pub fn snapshot(&self) -> T {
+        self.contents.snapshot()
+    }
+}
+
 /// AL `Date` carrier: days since 0001-01-01.
 pub type AlDate = i64;
 /// AL `Time` carrier: milliseconds since midnight, in `[0, 86_400_000)`.
@@ -177,9 +238,9 @@ pub enum Value {
     /// AL `List of [T]`. A reference type: copies of the value, and a
     /// parameter passed without `var`, share one list.
     List(Shared<Vec<Value>>),
-    /// AL `Dictionary of [K, V]` — keyed by serialised K. A reference type
-    /// like `List`.
-    Dict(Shared<DictEntries>),
+    /// AL `Dictionary of [K, V]`, keyed by the serialised K after it is
+    /// converted to the declared key type. A reference type like `List`.
+    Dict(Collection<DictEntries>),
     /// AL `Blob` / `InStream` / `OutStream` — raw bytes.
     Blob(Vec<u8>),
     /// AL `ErrorInfo` — structured error captured by `asserterror` / `Error`.
@@ -492,9 +553,9 @@ impl Value {
         Value::TextBuilder(Shared::new(text))
     }
 
-    /// A new `Dictionary` holding `entries`.
+    /// A new `Dictionary` holding `entries`, with no declared key type.
     pub fn dict(entries: DictEntries) -> Value {
-        Value::Dict(Shared::new(entries))
+        Value::Dict(Collection::new(entries, None))
     }
 
     /// Short type-name for diagnostic output. Stable identifiers; do not

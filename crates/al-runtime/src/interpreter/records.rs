@@ -36,7 +36,7 @@ use crate::interpreter::dispatch::DispatchMode;
 use crate::interpreter::eval_expr::eval_expr;
 use crate::interpreter::eval_stmt::arg_expr_nodes;
 use crate::interpreter::scope::{Eval, ScopeStack};
-use crate::interpreter::value::{RecordValue, Value};
+use crate::interpreter::value::{Collection, RecordValue, Value};
 use crate::mock::calcformula_parser::{self, CalcFormula, FormulaType, WhereValue};
 use crate::mock::filter;
 use crate::mock::record::{FieldNo, FlowAgg, FlowFilter, MockRecord, RecordView};
@@ -2981,13 +2981,39 @@ pub(crate) fn dict_lookup(
     key: &Value,
     stack: &ScopeStack,
 ) -> Result<Option<Value>, String> {
-    let Some(Value::Dict(entries)) = stack.lookup(recv) else {
+    let Some(Value::Dict(dict)) = stack.lookup(recv) else {
         return Err(format!("'{recv}' is not a Dictionary"));
     };
-    Ok(entries
+    let key = declared_key(key, dict.member_type())?;
+    Ok(dict
         .lock()
-        .get(&dict_key(key)?)
+        .get(&dict_key(&key)?)
         .map(|(_, value)| value.clone()))
+}
+
+/// `key` converted to the dictionary's declared key type, as BC converts an
+/// argument to a typed parameter: a Code key is trimmed and upper-cased, one
+/// character of Text becomes a Char, a Char becomes Text or Code, and an
+/// Integer becomes a Decimal.
+fn declared_key(key: &Value, key_type: Option<&str>) -> Result<Value, String> {
+    let Some(key_type) = key_type else {
+        return Ok(key.clone());
+    };
+    let base = key_type.split('[').next().unwrap_or_default().trim();
+    let Some(slot) = Value::default_for(base) else {
+        return Ok(key.clone());
+    };
+    let capacity = crate::interpreter::dispatch::declared_text_length(key_type);
+    match (&slot, key) {
+        (Value::Char(_), Value::Text(text) | Value::Code(text)) => {
+            crate::interpreter::value::check_string_capacity(text, Some(1))?;
+            Ok(Value::Char(text.chars().next().unwrap_or('\0')))
+        }
+        (Value::Text(_) | Value::Code(_), Value::Char(c)) => {
+            Value::coerce_into_slot(&slot, Value::Text(c.to_string()), capacity)
+        }
+        _ => Value::coerce_into_slot(&slot, key.clone(), capacity),
+    }
 }
 
 /// Serialise a dictionary key value into the `Dict` map's string key space.
@@ -3032,6 +3058,18 @@ pub(crate) fn dispatch_dict_method(
         return eval_error(format!("'{recv}' is not a Dictionary"));
     };
     let dict = dict.clone();
+    let mut args = args;
+    if matches!(
+        lower.as_str(),
+        "add" | "set" | "get" | "containskey" | "remove"
+    ) {
+        if let Some(key) = args.first_mut() {
+            match declared_key(key, dict.member_type()) {
+                Ok(converted) => *key = converted,
+                Err(error) => return eval_error(error),
+            }
+        }
+    }
     let mut entries = dict.lock();
     match lower.as_str() {
         "add" => match args.as_slice() {
@@ -3153,7 +3191,11 @@ pub(crate) fn default_for_structured(type_text: &str) -> Option<Value> {
         return Some(Value::list(Vec::new()));
     }
     if lower.starts_with("dictionary of") {
-        return Some(Value::dict(Default::default()));
+        let arguments = type_arguments(&trimmed["dictionary of".len()..]);
+        return Some(Value::Dict(Collection::new(
+            Default::default(),
+            arguments.first().copied(),
+        )));
     }
     if lower == "variant" {
         return Some(Value::Variant(Box::new(Value::Null)));
@@ -3176,6 +3218,35 @@ fn default_for_array(type_text: &str) -> Option<Value> {
     // Each element on its own: clones of one JSON default share its node.
     let elements = (0..length).map(|_| Value::default_for(base));
     Some(Value::Array(elements.collect::<Option<_>>()?))
+}
+
+/// The types between the brackets of `List of [T]` or `Dictionary of [K, V]`,
+/// given the text after `of`, split at the commas outside nested brackets and
+/// quotes.
+fn type_arguments(after_of: &str) -> Vec<&str> {
+    let inner = after_of
+        .trim()
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'));
+    let Some(inner) = inner else {
+        return Vec::new();
+    };
+    let mut arguments = Vec::new();
+    let (mut depth, mut quoted, mut start) = (0usize, false, 0);
+    for (at, c) in inner.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            '[' if !quoted => depth += 1,
+            ']' if !quoted => depth = depth.saturating_sub(1),
+            ',' if !quoted && depth == 0 => {
+                arguments.push(inner[start..at].trim());
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    arguments.push(inner[start..].trim());
+    arguments
 }
 
 /// `text` after a leading `keyword`, compared without case.

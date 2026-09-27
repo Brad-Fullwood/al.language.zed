@@ -1579,6 +1579,130 @@ fn textbuilders_are_shared_by_assignment_and_by_value_parameters() {
     assert_eq!(probe("TextBuilderMultiName"), Value::Text(String::new()));
 }
 
+const TYPED_DICTIONARY_KEYS: &str = r#"codeunit 50307 "Typed Dictionary Keys"
+{
+    procedure CodeKeyFromText(): Text
+    var
+        D: Dictionary of [Code[20], Integer];
+        K: Code[20];
+    begin
+        D.Add('abc', 1);
+        if not D.ContainsKey('ABC') then
+            exit('missing');
+        foreach K in D.Keys() do
+            exit(K);
+    end;
+
+    procedure CodeKeyFromCodeThenText(): Text
+    var
+        D: Dictionary of [Code[20], Integer];
+        C: Code[20];
+    begin
+        C := 'xyz';
+        D.Add(C, 1);
+        if not D.ContainsKey('xyz') then
+            exit('missing');
+        exit('found');
+    end;
+
+    procedure ClearedKeepsKeyType(): Text
+    var
+        D: Dictionary of [Code[20], Integer];
+    begin
+        D.Add('x', 1);
+        Clear(D);
+        D.Add('abc', 1);
+        if not D.ContainsKey('ABC') then
+            exit('missing');
+        exit('found');
+    end;
+
+    procedure LearnCharCounter(): Integer
+    var
+        counter: Dictionary of [Char, Integer];
+    begin
+        CountCharactersInCustomerName('abca', counter);
+        exit(counter.Get('a'));
+    end;
+
+    procedure LearnCharCounterCount(): Text
+    var
+        counter: Dictionary of [Char, Integer];
+        k: Char;
+        r: Text;
+    begin
+        CountCharactersInCustomerName('abca', counter);
+        foreach k in counter.Keys() do
+            r += Format(k) + '=' + Format(counter.Get(k)) + ';';
+        exit(Format(counter.Count()) + ':' + r);
+    end;
+
+    procedure CountCharactersInCustomerName(customerName: Text; counter: Dictionary of [Char, Integer])
+    var
+        i: Integer;
+        c: Integer;
+    begin
+        for i := 1 to StrLen(customerName) do
+            if counter.Get(customerName[i], c) then
+                counter.Set(customerName[i], c + 1)
+            else
+                counter.Add(customerName[i], 1);
+    end;
+
+    procedure CharKeyFromIndex(): Text
+    var
+        counter: Dictionary of [Char, Integer];
+        s: Text;
+    begin
+        s := 'abc';
+        counter.Add(s[1], 1);
+        if counter.ContainsKey('a') then
+            exit('found');
+        exit('missing');
+    end;
+
+    procedure TextKeyFromChar(): Text
+    var
+        D: Dictionary of [Text, Integer];
+        s: Text;
+    begin
+        s := 'abc';
+        D.Add(s[2], 1);
+        if D.ContainsKey('b') then
+            exit('found');
+        exit('missing');
+    end;
+}
+"#;
+
+/// A key argument takes the dictionary's declared key type, as BC converts
+/// any argument to its parameter type: Text to Code, one character of Text to
+/// Char, and Char to Text.
+#[test]
+fn dictionary_keys_are_converted_to_the_declared_key_type() {
+    let probe = |proc: &str| {
+        ok(run(
+            &[("/ws/TypedDictionaryKeys.al", TYPED_DICTIONARY_KEYS)],
+            "Typed Dictionary Keys",
+            proc,
+            vec![],
+        ))
+    };
+    assert_eq!(probe("CodeKeyFromText"), Value::Code("ABC".into()));
+    assert_eq!(
+        probe("CodeKeyFromCodeThenText"),
+        Value::Text("found".into())
+    );
+    assert_eq!(probe("ClearedKeepsKeyType"), Value::Text("found".into()));
+    assert_eq!(probe("LearnCharCounter"), Value::Integer(2));
+    assert_eq!(
+        probe("LearnCharCounterCount"),
+        Value::Text("3:a=2;b=1;c=1;".into())
+    );
+    assert_eq!(probe("CharKeyFromIndex"), Value::Text("found".into()));
+    assert_eq!(probe("TextKeyFromChar"), Value::Text("found".into()));
+}
+
 #[test]
 fn compound_assignment_to_record_field_accumulates() {
     // Regression: `Rec.Amount += 5` must store Amount + 5, not the raw RHS.

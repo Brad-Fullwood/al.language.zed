@@ -361,7 +361,7 @@ fn cleared(value: &Value, ctx: &mut DispatchCtx) -> Result<Value, String> {
         // List and Dictionary are references: the variable gets new empty
         // contents, and copies keep the old ones.
         Value::List(_) => Value::list(Vec::new()),
-        Value::Dict(_) => Value::dict(Default::default()),
+        Value::Dict(dict) => Value::Dict(dict.emptied()),
         Value::Blob(_) => Value::Blob(Vec::new()),
         Value::Array(items) => Value::Array(
             items
