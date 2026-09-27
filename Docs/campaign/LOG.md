@@ -425,3 +425,23 @@ Append-only. Newest entry last.
   03:17.
 - Three more agents (`STATE.md`): round 9 runtime fixes, round 9 plugin script fixes with a shell
   test wired into `make plugin-validate`, and GR2-4 in a grammar worktree.
+
+## 2026-09-27 07:49 BST: the 03:25 session's gates pushed, seven agents re-dispatched
+
+- Gates on e64b982a (the 03:17 run): fmt, release, both clippy runs and rustdoc clean, 94 suites,
+  5302 passed, 0 failed, 10 ignored. The 03:25 session died before pushing. Pushed 07:50
+  (8feb7c8e, 24 commits).
+- All seven agents of the 03:25 session were dead with the machine idle. Security round 5 had six
+  findings committed on `campaign/r5-security` (SEC5-1 to SEC5-6: a symlink moves the loaded code
+  outside the hashed tree, a tree over 50,000 entries hashes to a constant, native libraries beside
+  an analyzer are not hashed, the legacy proxy forwards a Sandbox or Production scenario with
+  Windows or UserPassword authentication to its `server`, an analyzer named in
+  `al.compilationOptions` is recorded as text, a replaced runtime beside a trusted `dotnet` does
+  not move `inputs_fingerprint`) with coverage items 2, 3, 6 to 9 unread. Its scratch tests are
+  saved as `.campaign/sec5-scratch-tests.patch`. The plugin runs agent had committed two doc fixes
+  and no round 5. The mutants agent had two uncommitted `composition.rs` tests. The other four had
+  written nothing.
+- Seven agents re-dispatched onto the same worktrees and branches (`STATE.md`). The flake agent
+  now has the two test names (`snapshot_start_posts_and_parses_id`,
+  `snapshot_start_server_error_maps_to_internal_error`, al-lsp) and the wrong value (-32602 for
+  -32603 at load), which the first two attempts lacked.

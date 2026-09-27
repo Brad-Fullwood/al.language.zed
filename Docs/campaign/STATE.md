@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-27 03:25 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-27 07:55 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -8,60 +8,38 @@ Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two 
 
 ## In flight
 
-Session 2026-09-27 02:41 BST (headless, Fable orchestrator). The 21:44 session's six agents were
-dead at 02:41 with the machine idle and origin level with local. The grammar corpus agent had
-finished (12 grammar commits, `findings/grammar-corpus-r2.md` complete, GR2-1 fixed in the
-scanner, GR2-2 to GR2-5 open for the interpreter). The round 8 fix agent had fixed six more (RT-4,
-EV-1, JSON-1 to JSON-4) and left the RT-3 table publisher test uncommitted (saved as
-`.campaign/r8-rt3-test-wip.patch`). The round 7 fix agent had fixed 12 of 15 and left the BLOG-3
-fix and the DOC-2 tests uncommitted in its worktree. The mutants agent had committed `lint.rs` and
-`mock/record.rs`. The flake agent had written nothing. The merged plugin worktree is removed.
+Session 2026-09-27 07:49 BST (headless, Fable orchestrator). The 03:25 session's gates on
+e64b982a were green (94 suites, 5302 passed, 0 failed) and it died before pushing. Pushed 07:50
+(8feb7c8e). Its seven agents were dead with the machine idle. The security reviewer had recorded
+six findings on `campaign/r5-security` (SEC5-1 to SEC5-6, coverage items unticked) and left
+scratch tests uncommitted (saved as `.campaign/sec5-scratch-tests.patch`). The plugin runs agent
+had committed two doc fixes (b82c2b01, e593ba08) and written no round 5. The mutants agent had
+two uncommitted `composition.rs` tests. The round 9 runtime, round 9 plugin, snapshot flake and
+GR2-4 agents had written nothing.
 
-Merged 02:46: `campaign/fix-r8-review` (12b1778a, six findings, `SCHEMA_VERSION` 4) and
-`campaign/test-mutants` (58781aa7, tests for `lint.rs` and `mock/record.rs`). Grammar gates on
-cc31863 all pass (tree-sitter test, 46,389 of 46,389 corpus files, crate and generator tests,
-package, wasm, drift). The grammar is pushed to its `campaign/2026-09-21`, and the submodule
-pointer and `extension.toml` rev moved (4c1b0ae6). Gates on 4c1b0ae6: 94 suites, 5261 passed, 0
-failed. Merged 03:00: `campaign/fix-r7-review` (fac24900, the last three findings, all 15 fixed).
-Gates on fac24900: 94 suites, 5291 passed, 0 failed. Both pushed.
+Agents in flight (dispatched 07:55, all onto the existing worktrees and branches):
 
-Merged 03:17: `campaign/fix-r8-runtime` (8f70b75e: a table publisher passes its record as
-`Sender`, variables named after keywords read as names, signed case labels evaluate, a subscriber
-bound by a bare object ID runs, a call graph node gets the edges of every declaration of its name
-so a second `OnValidate` and overloads keep their calls, `SCHEMA_VERSION` 5), `campaign/docs-r8`
-(6516172a: six claims corrected in `native-test-runtime.md` and `debugging-dap.md`) and
-`campaign/r9-review` (e64b982a: `findings/r9-session-review.md`, 7 findings, 1 high, 2 medium, 4
-low, ten audit triage spot-checks all hold). Gates on e64b982a run in the background. Push after.
+- Round 9 runtime fixes (A), Opus: `.claude/worktrees/agent-fix-r9`, `campaign/fix-r9-review`.
+  R9-RT-1, R9-CU-2, R9-CU-1, R9-CACHE-1. Ends with `## Fixes complete`.
+- Round 9 plugin fixes (G, D), Sonnet: `.claude/worktrees/agent-fix-r9-plugin`,
+  `campaign/fix-r9-plugin`. R9-PLUGIN-1 to R9-PLUGIN-3 with a shell test in `make plugin-validate`.
+  Ends with `## Fixes complete`.
+- Security round 5 (D), Opus, continuation: `.claude/worktrees/agent-sec5`, `campaign/r5-security`.
+  Coverage items 2, 3, 6 to 9, and ticks 1, 4, 5. Ends with `## Review complete`.
+- `cargo mutants` (E), Sonnet, continuation: `.claude/worktrees/agent-a34708a3121ce8ac2`,
+  `campaign/test-mutants`. Commits the `composition.rs` tests, then `cobertura.rs` and the
+  formatting module. Ends with `## Mutation pass complete`.
+- Plugin runs (G), Sonnet, continuation: `.claude/worktrees/agent-plugin-runs`,
+  `campaign/plugin-runs`. Round 5 in `plugin/TESTING.md`. Ends with `## Plugin runs complete`.
+- Grammar GR2-4 (F), Opus: `.claude/worktrees/grammar-gr2-4`, grammar branch `campaign/gr2-4`.
+  Ends with `## Grammar fix complete`.
+- Snapshot profiling flake (E), Sonnet, third attempt, now with the two test names and the wrong
+  value: `.claude/worktrees/agent-audit-triage`, `campaign/fix-snapshot-flake`. Ends with
+  `## Flake fix complete`.
 
-Agents in flight (dispatched 02:48 to 03:25):
-
-- Snapshot profiling flake (E), Sonnet, second attempt: worktree
-  `.claude/worktrees/agent-audit-triage`, branch `campaign/fix-snapshot-flake`. Reproduces under
-  load, isolates the shared mock state.
-- `cargo mutants` (E), Sonnet: worktree `.claude/worktrees/agent-a34708a3121ce8ac2`, branch
-  `campaign/test-mutants`: `composition.rs`, `cobertura.rs`, the formatting module. Ends with
-  `## Mutation pass complete`.
-- Security round 5 (D), Opus, dispatched 03:12: worktree `.claude/worktrees/agent-sec5`, branch
-  `campaign/r5-security`, scope `git diff 2b7bce37..fac24900` over al-project, al-bc, al-lsp,
-  al-explorer, al-dap, al-semantic and `al-session-context.sh` (the trust record's directory
-  hashes, the analyzer search, the bridge, the legacy proxy's online judgement, the settings gate,
-  the download refusal, `--validate`). Writes `findings/r5-security.md`, ends with `## Review complete`.
-- Plugin runs (G), Sonnet, dispatched 03:14: worktree `.claude/worktrees/agent-plugin-runs`, branch
-  `campaign/plugin-runs`. Headless Haiku sessions for `bc-test-locally`, `bc-upgrade-impact`, the
-  cop fixer agent and a `.alpackages` project, results in `plugin/TESTING.md` round 5.
-- Round 9 runtime fixes (A), Opus, dispatched 03:20: worktree `.claude/worktrees/agent-fix-r9`,
-  branch `campaign/fix-r9-review`: R9-RT-1 (a table's globals live with the record variable, or
-  the router rule from 391bbaa2 back as the fallback), R9-CU-2 (`Clear` is a builtin, unqualified
-  calls resolve builtins before stub catalogs), R9-CU-1 (a subscriber gets a fresh instance even
-  when its codeunit is on the stack), R9-CACHE-1 (hash the bytes the summarizer parsed).
-- Round 9 plugin fixes (G, D), Sonnet, dispatched 03:25: worktree
-  `.claude/worktrees/agent-fix-r9-plugin`, branch `campaign/fix-r9-plugin`: R9-PLUGIN-1 (refuse
-  symlink or directory members), R9-PLUGIN-2 (install steps chained, refusal names the step),
-  R9-PLUGIN-3 (the eval runner resolves `al-lsp`), with a shell test wired into `make plugin-validate`.
-- Grammar GR2-4 (F), Opus, dispatched 03:25: grammar worktree `.claude/worktrees/grammar-gr2-4`
-  (a checkout of the grammar repository), branch `campaign/gr2-4`: `- 2:`, `-X::Y:` and `-5..-2:`
-  case labels. The orchestrator merges into the grammar's `campaign/2026-09-21`, runs the grammar
-  gates, pushes, moves the pointer, and has the interpreter test for the range label written.
+Next in this session: merge each branch as it completes, gates on the merge, push. After the
+round 9 fixes merge: the docs re-check (H) for table globals, `Clear` and subscriber instances,
+and round 10 over `a0e85e0b..HEAD`.
 
 A second session (interactive, not the watchdog's) works on the local test interpreter and the
 test router and pushes straight to this branch (`LOG.md`, 18:45 entry). The orchestrator fetches
