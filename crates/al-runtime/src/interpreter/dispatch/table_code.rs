@@ -118,8 +118,16 @@ pub(crate) fn run_table_code(
             ctx,
         ));
     };
-    if ctx.active_record_globals.contains_key(&handle) {
-        return Some(run_declaration(declaration, site(None), args, stack, ctx));
+    if let Some(index) = ctx.active_record_globals.get(&handle).copied() {
+        return Some(run_on_active_globals(
+            handle,
+            index,
+            declaration,
+            site(None),
+            args,
+            stack,
+            ctx,
+        ));
     }
     let frame = ctx
         .record_globals
@@ -133,6 +141,37 @@ pub(crate) fn run_table_code(
         ctx.record_globals.insert(handle, frame);
     }
     Some(result)
+}
+
+/// Run table code on the record on view `handle`, whose own table code is
+/// running with its globals frame at `index`. Name lookup takes the nearest
+/// globals frame with the table's name, and table code of another record of
+/// the same table may have pushed one above `index`. So the frame moves to
+/// the top of the stack for the call and goes back to its slot afterwards. A
+/// frame that is not a globals frame holds the slot meanwhile, so the indices
+/// of the other frames stay valid.
+fn run_on_active_globals(
+    handle: u64,
+    index: usize,
+    declaration: Declaration<'_>,
+    site: DeclarationSite<'_>,
+    args: Vec<Value>,
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    let Some(slot) = stack.frame_mut(index) else {
+        return run_declaration(declaration, site, args, stack, ctx);
+    };
+    let holder = CallFrame::new(slot.object.clone(), "<globals moved to the top>");
+    let frame = std::mem::replace(slot, holder);
+    let top = stack.push(frame);
+    ctx.active_record_globals.insert(handle, top);
+    let result = run_declaration(declaration, site, args, stack, ctx);
+    ctx.active_record_globals.insert(handle, index);
+    if let (Some(frame), Some(slot)) = (stack.pop(), stack.frame_mut(index)) {
+        *slot = frame;
+    }
+    result
 }
 
 /// Table `object`'s globals at their defaults.

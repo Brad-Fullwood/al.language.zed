@@ -6432,3 +6432,101 @@ fn an_array_element_passed_to_a_var_parameter_takes_the_value_back() {
     assert_eq!(call("BumpElement"), Value::Integer(12));
     assert_eq!(call("BumpQuotedName"), Value::Integer(1));
 }
+
+const CALLBACK_MEMBER: &str = r#"table 50957 "Callback Member"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+
+    var
+        Strict: Boolean;
+
+    trigger OnInsert()
+    var
+        Other: Record "Callback Member";
+    begin
+        Other.MarkStrict(Rec);
+        if Strict then
+            Error('strict via other');
+    end;
+
+    procedure MarkStrict(var Target: Record "Callback Member")
+    begin
+        Target.SetStrict();
+    end;
+
+    procedure SetStrict()
+    begin
+        Strict := true;
+    end;
+
+    procedure IsStrict(): Boolean
+    begin
+        exit(Strict);
+    end;
+
+    procedure AskOther(): Boolean
+    var
+        Other: Record "Callback Member";
+    begin
+        exit(Other.ReadOther(Rec));
+    end;
+
+    procedure ReadOther(var Target: Record "Callback Member"): Boolean
+    begin
+        exit(Target.IsStrict());
+    end;
+}
+"#;
+
+const CALLBACK_PROBE: &str = r#"codeunit 50958 "Callback Probe"
+{
+    procedure CallBackThroughOther(): Text
+    var
+        M: Record "Callback Member";
+    begin
+        M."No." := 'A';
+        M.Insert(true);
+        exit('inserted, M strict ' + Format(M.IsStrict()));
+    end;
+
+    procedure AskOtherReadsBack(): Boolean
+    var
+        M: Record "Callback Member";
+    begin
+        M.SetStrict();
+        exit(M.AskOther());
+    end;
+}
+"#;
+
+/// A record whose table code is running, passed by `var` to table code of a
+/// second record of the same table and called there, reads and writes its
+/// own globals. The call bound the second record's globals, the nearer frame
+/// with the table's name: `SetStrict` set `Other`'s flag, so the insert
+/// passed, and `IsStrict` read `Other`'s flag, so `AskOther` gave false.
+#[test]
+fn a_record_called_back_from_another_records_table_code_keeps_its_own_globals() {
+    let call = |proc: &str| {
+        run(
+            &[
+                ("/ws/CallbackMember.al", CALLBACK_MEMBER),
+                ("/ws/CallbackProbe.al", CALLBACK_PROBE),
+            ],
+            "Callback Probe",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(
+        error_message(call("CallBackThroughOther")),
+        "strict via other"
+    );
+    assert_eq!(ok(call("AskOtherReadsBack")), Value::Boolean(true));
+}
