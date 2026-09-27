@@ -90,7 +90,7 @@ contains 1a081fbe..aa01cb97.
 - severity: medium
 - scenario: a publisher `[IntegrationEvent(true, false)] local procedure OnPost()` (IncludeSender = true) and a subscriber `local procedure OnPostSub(sender: Codeunit "R8 Pub")`, the documented way to reach the publisher's instance. A test that calls `Pub.Post()` routes `Interp` with no reasons, and the local run fails with "subscriber R8 Sender Sub.OnPostSub declares parameter 'sender', which event OnPost does not publish". BC passes. Both confirmed with scratch tests. The same applies to a table event subscriber that declares `Sender`, which some code uses on page events.
 - fix: when the publisher's attribute has IncludeSender set, pass the publishing object as `sender` (a codeunit value for a codeunit, the record for a table procedure), or have the router send a test that reaches such a subscriber to live BC until it is modelled.
-- status: open
+- status: fixed aa01cb97 (codeunit publisher) and 95f1905b (table publisher). An event a table procedure publishes with IncludeSender passes the record the procedure runs on as `Sender`, so a write to a `var Sender` lands in the caller's record. Pinned by `table_publisher_passes_its_record_as_sender` and the router test `table_publisher_with_a_sender_subscriber_runs_locally`, which routes the test `InterpRecord`.
 
 ### [R8-JSON-1] `ReadFrom` overwrites the node in place, so a variable reused in a loop rewrites the rows already added to an array
 - where: crates/al-runtime/src/interpreter/json.rs:506-523 (`ReadFrom` parses into a new node, then `arena.set(node, imported)` writes it into the variable's existing node, which a parent object or array may hold)
