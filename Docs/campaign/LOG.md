@@ -656,3 +656,23 @@ Append-only. Newest entry last.
   lead-ins, sentences that restated a code block or table, three second examples), no number, command,
   file name or sourced claim removed. `readTime` recomputed for all nine with the site's
   `getReadingTime` rule. `pnpm validate` passes. `findings/blog-progress.md` has the counts and method.
+
+## 2026-09-27 18:22 BST: security round 6 trust fixes merged, round 6 review complete
+
+- `campaign/fix-r6sec-trust` merged (283b8415): SEC6-1 and SEC6-2, 2 of 2, nine tests that failed
+  first. `discover` marks a file found under a relative probing path, `.netpackages` or `packages` as
+  the project's whatever its canonical path, so `resolve` judges it against the record, and a relative
+  analyzer path through a link out of the project is refused in an untrusted project too. Those folders
+  and each probing path that resolves outside join `linked_package_folders`, so a link added or
+  retargeted after the grant stales the record. A path spelled inside the project is recorded
+  `resolves to <target>` and hashed there, and `enforce_dotnet_path` uses the same rule.
+  `project-trust.md` updated. al-project 273.
+- `campaign/r6-security-b` merged (204d44ee): items 5 to 7 done, three findings. SEC6-6: ten
+  dispatchers (`eventSource`, `snapshot`, `profiling`, `tests.run*`, the snapshot readers,
+  `tests.mutate`) read a caller path while declaring `PathUse::None`, so the registry test never
+  drives them (each contains its path today, with three refusal spellings and two error codes).
+  SEC6-7: the skills say to copy an object name into a single-quoted shell argument, and a name may
+  hold a quote (reproduced with a codeunit named `It'; echo pwned; echo '`). SEC6-8: `deps`, `search`
+  and error text print `app.json` and object names with control characters intact (OSC title, CSI
+  clear). Held: the DAP host's key binding, the summary store, the plugin hooks and fetch script,
+  JSON and LSP output, the trust messages.

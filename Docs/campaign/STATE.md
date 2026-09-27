@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-27 18:00 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-27 18:25 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -19,17 +19,21 @@ seeds its mutant runs left in `property_formatting.proptest-regressions` pass on
 were discarded, branch merged (7b607e40). `campaign/slop-splits-4` had no commits and an empty
 worktree: branch deleted, the split is re-queued. Three merged worktrees removed (34 GB free).
 
-Gates on 7b607e40 in progress.
+Gates on 7b607e40 green (68 suites with tests, 5387 passed, 0 failed), pushed 18:00.
+
+Merged 18:22: `campaign/fix-r6sec-trust` (283b8415, SEC6-1 and SEC6-2: a file found under a relative
+probing path, `.netpackages` or `packages` counts as the project's whatever its canonical path, those
+folders and each probing path that resolves outside join `linked_package_folders`, a path spelled inside
+the project is recorded and hashed where its link resolves, and the `dotnet` check before each spawn uses
+the same rule) and `campaign/r6-security-b` (204d44ee, review complete: SEC6-6 ten dispatchers judge a
+caller path the registry says they do not take, SEC6-7 the skills hand the agent a single-quoted shell
+shape an object name can break, SEC6-8 `al-explorer` text output passes terminal escapes from a clone's
+names). Scratch tests saved as `.campaign/r6b-scratch-tests.patch`. Gates on 204d44ee in progress.
 
 Agents in flight (dispatched 17:50):
 
-- Security round 6 fixes, trust (SEC6-1, SEC6-2), Opus: `.claude/worktrees/agent-fix-r6sec-trust`,
-  `campaign/fix-r6sec-trust`. Ends with `## Fix pass complete`.
 - Security round 6 fixes, runtime (SEC6-3, SEC6-4, SEC6-5), Opus: `.claude/worktrees/agent-fix-r6sec-rt`,
   `campaign/fix-r6sec-rt`. Ends with `## Fix pass complete`.
-- Security round 6 review, coverage items 5 to 7 (daemon methods since round 4, plugin scripts,
-  terminal escapes), Fable: `.claude/worktrees/agent-r10`, `campaign/r6-security-b`. Findings from
-  SEC6-6. Ends with `## Review complete`.
 - Round 12 review over `4c429ac5..7b607e40` (round 10 and 11 fixes, docs re-check 3, splits, plugin
   round 6, mutants), Fable: `.claude/worktrees/agent-r12`, `campaign/r12-review`,
   `findings/r12-session-review.md`. Ends with `## Review complete`.
@@ -73,6 +77,7 @@ Queued:
 - al-dap and al-publish post to different BC dev endpoints (needs a live server to settle).
 - desloppify fix batches (`findings/desloppify.md` section 4), file splits after the owning fix branch merges.
 - Workstream E (tests): coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis. Start when a build slot frees.
+- From the SEC6-1 fix: a file found under a relative probing path with `..` (`../shared`) counts as the project's, so a name set only in Zed user settings that is found there is refused unless the record lists it. A linked outside tree is hashed up to the 50,000 entry cap with no byte limit. The daemon and language server re-decide trust only when `inputs_fingerprint` moves, so a probing path stays in their configuration after the record goes stale (older than the fix, analyzer lookup and the `dotnet` check decide afresh). For security round 7.
 - Blog: done for now (length pass 18:05). Before publishing: timings on a quiet machine, article 9's final re-read when the campaign ends. Merge to `main` is Brad's call.
 - `pack-native --validate` on a new untrusted project prints the "not trusted" notice twice.
 - Plugin: `package-diff` with two versions in `.alpackages`, five skills untested against `.alpackages`, a tagged release that publishes `binary-checksums.txt` so the download hook's success path runs for real.
