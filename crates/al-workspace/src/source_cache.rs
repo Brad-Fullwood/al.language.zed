@@ -27,7 +27,7 @@ use crate::dependency_sources::PackageSourceSummary;
 /// then miss and are rewritten. The snapshot test
 /// `fixture_summaries_match_the_snapshot_of_this_schema_version` fails until
 /// this constant and its snapshot change together.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 /// Base Application summarizes to about 60 MB of JSON. Anything past this is
 /// corrupt or not ours, and is refused before it is read.
 const MAX_ENTRY_BYTES: u64 = 256 * 1024 * 1024;

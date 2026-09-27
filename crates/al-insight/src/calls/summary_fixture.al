@@ -90,6 +90,20 @@ table 50302 "Fixture Entry"
     fields
     {
         field(1; "No."; Code[20]) { }
+        field(2; Name; Text[50])
+        {
+            trigger OnValidate()
+            begin
+                Rec.Modify();
+            end;
+        }
+        field(3; City; Text[50])
+        {
+            trigger OnValidate()
+            begin
+                TestField("No.");
+            end;
+        }
     }
 
     trigger OnInsert()

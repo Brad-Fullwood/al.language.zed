@@ -38,10 +38,10 @@ pub fn populate_call_edges_for_procedure(
     );
 }
 
-/// [`populate_call_edges_for_procedure`] for the procedure declared inside
-/// `object_node`. In a file holding several objects, two of them can declare
-/// the same procedure name (an interface and its implementation); a
-/// whole-tree lookup found the first.
+/// [`populate_call_edges_for_procedure`] for the procedures declared inside
+/// `object_node` under that name. In a file holding several objects, two of
+/// them can declare the same procedure name (an interface and its
+/// implementation); a whole-tree lookup found the first.
 // The same inputs as `populate_call_edges_for_procedure` plus the object node,
 // for the same reason.
 #[allow(clippy::too_many_arguments)]
@@ -55,23 +55,24 @@ pub fn populate_call_edges_in_object(
     insight: &InsightGraph,
     call_graph: &mut CallGraph,
 ) {
-    let Some(proc_node) = find_procedure_in_node(
+    // Every declaration of the name adds its edges to the one node: each
+    // field's `OnValidate`, each overload.
+    for proc_node in find_procedures_in_node(
         object_node,
         source.as_bytes(),
         &procedure_name.to_lowercase(),
-    ) else {
-        return;
-    };
-    let calls = ProcedureCalls::from_node(proc_node, source);
-    resolve_procedure_calls(
-        &calls,
-        object_kind,
-        object_name,
-        procedure_name,
-        symbols,
-        insight,
-        call_graph,
-    );
+    ) {
+        let calls = ProcedureCalls::from_node(proc_node, source);
+        resolve_procedure_calls(
+            &calls,
+            object_kind,
+            object_name,
+            procedure_name,
+            symbols,
+            insight,
+            call_graph,
+        );
+    }
 }
 
 /// What resolving one procedure's outgoing edges reads from its body, kept

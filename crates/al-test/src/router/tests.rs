@@ -1959,6 +1959,74 @@ fn bare_deleteall_in_table_code_reaches_the_tables_event_subscribers() {
     assert_reaches_the_subscriber(&result);
 }
 
+/// Each field's `OnValidate` shares one call-graph node, which took its
+/// edges from one of them. A `Modify()` in the other field's trigger did
+/// not reach the Modify subscriber, which opens a page, and the test
+/// stayed local.
+#[test]
+fn modify_in_any_fields_onvalidate_reaches_the_tables_event_subscribers() {
+    for (first, second, validated) in [("Rec.Modify();", "", "Name"), ("", "Rec.Modify();", "City")]
+    {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/TwoValidates.Table.al"),
+            format!(
+                r#"table 50213 "R8 Two Validates"
+{{
+fields
+{{
+    field(1; "No."; Code[20]) {{ }}
+    field(2; Name; Text[50])
+    {{
+        trigger OnValidate()
+        begin
+            {first}
+        end;
+    }}
+    field(3; City; Text[50])
+    {{
+        trigger OnValidate()
+        begin
+            {second}
+        end;
+    }}
+}}
+keys {{ key(PK; "No.") {{ }} }}
+}}"#
+            ),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/TwoValidatesSub.Codeunit.al"),
+            r#"codeunit 50214 "R8 Two Validates Sub"
+{
+[EventSubscriber(ObjectType::Table, Database::"R8 Two Validates", 'OnAfterModifyEvent', '', false, false)]
+local procedure OnModified(var Rec: Record "R8 Two Validates"; var xRec: Record "R8 Two Validates"; RunTrigger: Boolean)
+begin
+    Page.RunModal(0);
+end;
+}"#
+            .to_string(),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/TwoValidatesTests.Codeunit.al"),
+            format!(
+                r#"codeunit 50215 "R8 Two Validates Tests"
+{{
+Subtype = Test;
+[Test]
+procedure Runs()
+var P: Record "R8 Two Validates";
+begin
+    P.Validate({validated}, 'x');
+end;
+}}"#
+            ),
+        );
+        let result = classify_all(&workspace).unwrap().remove(0);
+        assert_reaches_the_subscriber(&result);
+    }
+}
+
 /// A workspace with table "R8 Renamed", a table whose field relates to it
 /// through `relation`, and a test codeunit whose test runs `test_body`.
 /// "R8 Renamed" has a procedure `RenameTo` that renames the record itself.

@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "summary": {
     "files": [
       {
@@ -19,11 +19,13 @@
               }
             ],
             "calls": {
-              "ship": {
-                "call_sites": [],
-                "record_vars": {},
-                "object_vars": {}
-              }
+              "ship": [
+                {
+                  "call_sites": [],
+                  "record_vars": {},
+                  "object_vars": {}
+                }
+              ]
             },
             "effects": [
               {
@@ -64,31 +66,35 @@
               }
             ],
             "calls": {
-              "onaftership": {
-                "call_sites": [],
-                "record_vars": {},
-                "object_vars": {}
-              },
-              "ship": {
-                "call_sites": [
-                  {
-                    "BareCall": {
-                      "name": "OnAfterShip"
+              "onaftership": [
+                {
+                  "call_sites": [],
+                  "record_vars": {},
+                  "object_vars": {}
+                }
+              ],
+              "ship": [
+                {
+                  "call_sites": [
+                    {
+                      "BareCall": {
+                        "name": "OnAfterShip"
+                      }
+                    },
+                    {
+                      "RecordOp": {
+                        "variable": "Entry",
+                        "op": "Insert",
+                        "run_trigger": true
+                      }
                     }
+                  ],
+                  "record_vars": {
+                    "entry": "Fixture Entry"
                   },
-                  {
-                    "RecordOp": {
-                      "variable": "Entry",
-                      "op": "Insert",
-                      "run_trigger": true
-                    }
-                  }
-                ],
-                "record_vars": {
-                  "entry": "Fixture Entry"
-                },
-                "object_vars": {}
-              }
+                  "object_vars": {}
+                }
+              ]
             },
             "effects": [
               {
@@ -197,166 +203,191 @@
               }
             ],
             "calls": {
-              "dispatch": {
-                "call_sites": [
-                  {
-                    "BareCall": {
-                      "name": "Helper"
+              "dispatch": [
+                {
+                  "call_sites": [
+                    {
+                      "BareCall": {
+                        "name": "Helper"
+                      }
+                    },
+                    {
+                      "BareCall": {
+                        "name": "Helper"
+                      }
+                    },
+                    {
+                      "CodeunitRun": {
+                        "target": "Fixture Truck"
+                      }
+                    },
+                    {
+                      "MemberCall": {
+                        "object": "Truck",
+                        "method": "Ship"
+                      }
+                    },
+                    {
+                      "MemberCall": {
+                        "object": "Shipper",
+                        "method": "Ship"
+                      }
                     }
-                  },
-                  {
-                    "BareCall": {
-                      "name": "Helper"
-                    }
-                  },
-                  {
-                    "CodeunitRun": {
-                      "target": "Fixture Truck"
-                    }
-                  },
-                  {
-                    "MemberCall": {
-                      "object": "Truck",
-                      "method": "Ship"
-                    }
-                  },
-                  {
-                    "MemberCall": {
-                      "object": "Shipper",
-                      "method": "Ship"
-                    }
+                  ],
+                  "record_vars": {},
+                  "object_vars": {
+                    "shipper": "Fixture Shipper",
+                    "truck": "Fixture Truck"
                   }
-                ],
-                "record_vars": {},
-                "object_vars": {
-                  "shipper": "Fixture Shipper",
-                  "truck": "Fixture Truck"
                 }
-              },
-              "handleentryinsert": {
-                "call_sites": [
-                  {
-                    "BareCall": {
-                      "name": "Helper"
+              ],
+              "handleentryinsert": [
+                {
+                  "call_sites": [
+                    {
+                      "BareCall": {
+                        "name": "Helper"
+                      }
                     }
-                  }
-                ],
-                "record_vars": {
-                  "rec": "Fixture Entry"
-                },
-                "object_vars": {}
-              },
-              "handleship": {
-                "call_sites": [
-                  {
-                    "BareCall": {
-                      "name": "Dispatch"
-                    }
-                  }
-                ],
-                "record_vars": {},
-                "object_vars": {}
-              },
-              "helper": {
-                "call_sites": [
-                  {
-                    "RecordOp": {
-                      "variable": "Entry",
-                      "op": "Modify",
-                      "run_trigger": false
-                    }
-                  }
-                ],
-                "record_vars": {
-                  "entry": "Fixture Entry"
-                },
-                "object_vars": {}
-              },
-              "onrun": {
-                "call_sites": [
-                  {
-                    "BareCall": {
-                      "name": "TryPost"
-                    }
-                  }
-                ],
-                "record_vars": {},
-                "object_vars": {}
-              },
-              "tidy": {
-                "call_sites": [
-                  {
-                    "MemberCall": {
-                      "object": "Card",
-                      "method": "RunModal"
-                    }
+                  ],
+                  "record_vars": {
+                    "rec": "Fixture Entry"
                   },
-                  {
-                    "RecordOp": {
-                      "variable": "Target",
-                      "op": "Modify",
-                      "run_trigger": false
-                    }
-                  },
-                  {
-                    "RecordOp": {
-                      "variable": "Entry",
-                      "op": "DeleteAll",
-                      "run_trigger": false
-                    }
-                  },
-                  {
-                    "RecordOp": {
-                      "variable": "Entry",
-                      "op": "ModifyAll",
-                      "run_trigger": true
-                    }
-                  },
-                  {
-                    "RecordOp": {
-                      "variable": "Entry",
-                      "op": "Rename",
-                      "run_trigger": true
-                    }
-                  },
-                  {
-                    "RecordOp": {
-                      "variable": "Entry",
-                      "op": "Validate",
-                      "run_trigger": true
-                    }
-                  }
-                ],
-                "record_vars": {
-                  "entry": "Fixture Entry"
-                },
-                "object_vars": {
-                  "card": "Fixture Card"
+                  "object_vars": {}
                 }
-              },
-              "trypost": {
-                "call_sites": [
-                  {
-                    "RecordOp": {
-                      "variable": "Buffer",
-                      "op": "Insert",
-                      "run_trigger": false
+              ],
+              "handleship": [
+                {
+                  "call_sites": [
+                    {
+                      "BareCall": {
+                        "name": "Dispatch"
+                      }
                     }
-                  },
-                  {
-                    "RecordOp": {
-                      "variable": "Entry",
-                      "op": "Delete",
-                      "run_trigger": false
+                  ],
+                  "record_vars": {},
+                  "object_vars": {}
+                }
+              ],
+              "helper": [
+                {
+                  "call_sites": [
+                    {
+                      "BareCall": {
+                        "name": "Commit"
+                      }
                     }
-                  }
-                ],
-                "record_vars": {
-                  "buffer": "Fixture Entry",
-                  "entry": "Fixture Entry"
+                  ],
+                  "record_vars": {},
+                  "object_vars": {}
                 },
-                "object_vars": {}
-              }
+                {
+                  "call_sites": [
+                    {
+                      "RecordOp": {
+                        "variable": "Entry",
+                        "op": "Modify",
+                        "run_trigger": false
+                      }
+                    }
+                  ],
+                  "record_vars": {
+                    "entry": "Fixture Entry"
+                  },
+                  "object_vars": {}
+                }
+              ],
+              "onrun": [
+                {
+                  "call_sites": [
+                    {
+                      "BareCall": {
+                        "name": "TryPost"
+                      }
+                    }
+                  ],
+                  "record_vars": {},
+                  "object_vars": {}
+                }
+              ],
+              "tidy": [
+                {
+                  "call_sites": [
+                    {
+                      "MemberCall": {
+                        "object": "Card",
+                        "method": "RunModal"
+                      }
+                    },
+                    {
+                      "RecordOp": {
+                        "variable": "Target",
+                        "op": "Modify",
+                        "run_trigger": false
+                      }
+                    },
+                    {
+                      "RecordOp": {
+                        "variable": "Entry",
+                        "op": "DeleteAll",
+                        "run_trigger": false
+                      }
+                    },
+                    {
+                      "RecordOp": {
+                        "variable": "Entry",
+                        "op": "ModifyAll",
+                        "run_trigger": true
+                      }
+                    },
+                    {
+                      "RecordOp": {
+                        "variable": "Entry",
+                        "op": "Rename",
+                        "run_trigger": true
+                      }
+                    },
+                    {
+                      "RecordOp": {
+                        "variable": "Entry",
+                        "op": "Validate",
+                        "run_trigger": true
+                      }
+                    }
+                  ],
+                  "record_vars": {
+                    "entry": "Fixture Entry"
+                  },
+                  "object_vars": {
+                    "card": "Fixture Card"
+                  }
+                }
+              ],
+              "trypost": [
+                {
+                  "call_sites": [
+                    {
+                      "RecordOp": {
+                        "variable": "Buffer",
+                        "op": "Insert",
+                        "run_trigger": false
+                      }
+                    },
+                    {
+                      "RecordOp": {
+                        "variable": "Entry",
+                        "op": "Delete",
+                        "run_trigger": false
+                      }
+                    }
+                  ],
+                  "record_vars": {
+                    "buffer": "Fixture Entry",
+                    "entry": "Fixture Entry"
+                  },
+                  "object_vars": {}
+                }
+              ]
             },
             "effects": [
               {
@@ -551,32 +582,105 @@
             "id": 50302,
             "name": "Fixture Entry",
             "start_byte": 1917,
-            "call_suffixes": 0,
+            "call_suffixes": 2,
             "procedures": [
               {
                 "name": "OnInsert",
                 "attributes": [],
                 "is_local": false
+              },
+              {
+                "name": "OnValidate",
+                "attributes": [],
+                "is_local": false
+              },
+              {
+                "name": "OnValidate",
+                "attributes": [],
+                "is_local": false
               }
             ],
             "calls": {
-              "oninsert": {
-                "call_sites": [],
-                "record_vars": {},
-                "object_vars": {}
-              }
+              "oninsert": [
+                {
+                  "call_sites": [],
+                  "record_vars": {},
+                  "object_vars": {}
+                }
+              ],
+              "onvalidate": [
+                {
+                  "call_sites": [
+                    {
+                      "RecordOp": {
+                        "variable": "Rec",
+                        "op": "Modify",
+                        "run_trigger": false
+                      }
+                    }
+                  ],
+                  "record_vars": {},
+                  "object_vars": {}
+                },
+                {
+                  "call_sites": [
+                    {
+                      "BareCall": {
+                        "name": "TestField"
+                      }
+                    }
+                  ],
+                  "record_vars": {},
+                  "object_vars": {}
+                }
+              ]
             },
             "effects": [
               {
                 "name": "OnInsert",
                 "attributes": [],
                 "declaration_range": {
-                  "start_line": 94,
+                  "start_line": 108,
                   "start_character": 12,
-                  "end_line": 94,
+                  "end_line": 108,
                   "end_character": 20
                 },
                 "writes": [],
+                "commits": []
+              },
+              {
+                "name": "OnValidate",
+                "attributes": [],
+                "declaration_range": {
+                  "start_line": 101,
+                  "start_character": 20,
+                  "end_line": 101,
+                  "end_character": 30
+                },
+                "writes": [],
+                "commits": []
+              },
+              {
+                "name": "OnValidate",
+                "attributes": [],
+                "declaration_range": {
+                  "start_line": 94,
+                  "start_character": 20,
+                  "end_line": 94,
+                  "end_character": 30
+                },
+                "writes": [
+                  {
+                    "range": {
+                      "start_line": 96,
+                      "start_character": 20,
+                      "end_line": 96,
+                      "end_character": 26
+                    },
+                    "byte_start": 2116,
+                    "label": "database write Rec.Modify()"
+                  }
+                ],
                 "commits": []
               }
             ]
@@ -600,17 +704,19 @@
               }
             ],
             "calls": {
-              "run": {
-                "call_sites": [
-                  {
-                    "BareCall": {
-                      "name": "Message"
+              "run": [
+                {
+                  "call_sites": [
+                    {
+                      "BareCall": {
+                        "name": "Message"
+                      }
                     }
-                  }
-                ],
-                "record_vars": {},
-                "object_vars": {}
-              }
+                  ],
+                  "record_vars": {},
+                  "object_vars": {}
+                }
+              ]
             },
             "effects": [
               {
