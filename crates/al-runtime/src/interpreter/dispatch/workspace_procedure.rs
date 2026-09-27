@@ -95,33 +95,19 @@ pub(super) fn dispatch_workspace_procedure(
                 path.display()
             ));
         };
-        let globals = globals_for_call(
-            root,
-            source,
-            &object_name,
-            (instance, subscriber),
-            stack,
-            ctx,
-        );
-
-        // Walk the tree to find a procedure_declaration with the matching name.
+        // Walk the tree for every procedure_declaration with the matching
+        // name, so an overload is chosen by its arguments.
         // Iterative traversal (rule: no recursion).
         let mut stack_nodes = vec![root];
-        let mut found_proc: Option<(tree_sitter::Node<'_>, Vec<ParamDecl>, Option<ReturnDecl>)> =
-            None;
-
-        'outer: while let Some(node) = stack_nodes.pop() {
+        let mut candidates = Vec::new();
+        while let Some(node) = stack_nodes.pop() {
             if node.kind() == "procedure_declaration" {
-                if let Some(name_node) = node.child_by_field_name("name") {
-                    if let Ok(name_text) = name_node.utf8_text(source) {
-                        let clean = name_text.unquote_identifier();
-                        if clean.eq_ignore_ascii_case(procedure) {
-                            let params = collect_params(node, source);
-                            let ret = collect_return(node, source);
-                            found_proc = Some((node, params, ret));
-                            break 'outer;
-                        }
-                    }
+                let named = node
+                    .child_by_field_name("name")
+                    .and_then(|name| name.utf8_text(source).ok())
+                    .is_some_and(|name| name.unquote_identifier().eq_ignore_ascii_case(procedure));
+                if named {
+                    candidates.push(node);
                 }
                 // Don't descend into procedure bodies when just searching by name.
                 continue;
@@ -131,16 +117,28 @@ pub(super) fn dispatch_workspace_procedure(
                 stack_nodes.push(child);
             }
         }
-
-        let Some((proc_node, params, return_decl)) = found_proc else {
+        if candidates.is_empty() {
             continue;
+        }
+        candidates.sort_by_key(|node| node.start_byte());
+        let proc_node = match choose_overload(&candidates, source, procedure, &args) {
+            Ok(node) => node,
+            Err(error) => return error,
         };
         let declaration = Declaration {
             node: proc_node,
             name: procedure,
-            params,
-            return_decl,
+            params: collect_params(proc_node, source),
+            return_decl: collect_return(proc_node, source),
         };
+        let globals = globals_for_call(
+            root,
+            source,
+            &object_name,
+            (instance, subscriber),
+            stack,
+            ctx,
+        );
         let site = |globals_root| DeclarationSite {
             path,
             source,
@@ -173,6 +171,53 @@ pub(super) fn dispatch_workspace_procedure(
         receiver.map(|r| format!("{r}.")).unwrap_or_default(),
         procedure
     ))
+}
+
+/// The declaration among the same-named `candidates`, in source order, that a
+/// call with `args` runs: its parameter count matches and `check_param_type`
+/// accepts every argument. When several do, the one with the most arguments
+/// of exactly the declared type wins, then the first declared, so `Amount(1)`
+/// runs `Amount(A: Integer)` over `Amount(A: Decimal)`. A lone candidate is
+/// returned as it is, and `run_declaration` reports its mismatch.
+pub(super) fn choose_overload<'t>(
+    candidates: &[tree_sitter::Node<'t>],
+    source: &[u8],
+    procedure: &str,
+    args: &[Value],
+) -> Result<tree_sitter::Node<'t>, Eval> {
+    if let [only] = candidates {
+        return Ok(*only);
+    }
+    let mut chosen: Option<(usize, tree_sitter::Node<'t>)> = None;
+    for &candidate in candidates {
+        let params = collect_params(candidate, source);
+        let takes = params.len() == args.len()
+            && params
+                .iter()
+                .zip(args)
+                .all(|(param, arg)| check_param_type(arg, &param.type_name).is_none());
+        if !takes {
+            continue;
+        }
+        let exact = params
+            .iter()
+            .zip(args)
+            .filter(|(param, arg)| {
+                let base = param.type_name.split(['[', ' ']).next().unwrap_or_default();
+                base.eq_ignore_ascii_case(arg.type_name())
+            })
+            .count();
+        if chosen.is_none_or(|(best, _)| exact > best) {
+            chosen = Some((exact, candidate));
+        }
+    }
+    chosen.map(|(_, node)| node).ok_or_else(|| {
+        let types: Vec<&str> = args.iter().map(Value::type_name).collect();
+        eval_error(format!(
+            "no overload of '{procedure}' takes these arguments ({})",
+            types.join(", ")
+        ))
+    })
 }
 
 /// A procedure or trigger declaration ready to run.

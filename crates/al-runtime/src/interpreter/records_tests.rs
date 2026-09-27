@@ -5170,6 +5170,158 @@ fn subscribers_bound_by_object_id_run() {
     );
 }
 
+const OVERLOADED_PROCEDURES: &str = r#"codeunit 50440 "Overloads"
+{
+    procedure Helper(A: Integer): Text
+    begin
+        exit('int');
+    end;
+
+    procedure Helper(A: Text): Text
+    begin
+        exit('text');
+    end;
+
+    procedure Other(): Text
+    begin
+        exit('none');
+    end;
+
+    procedure Other(A: Integer): Text
+    begin
+        exit('one');
+    end;
+
+    procedure Amount(A: Decimal): Text
+    begin
+        exit('decimal');
+    end;
+
+    procedure Amount(A: Integer): Text
+    begin
+        exit('integer');
+    end;
+
+    procedure Calls(): Text
+    begin
+        exit(Helper(1) + '|' + Helper('x') + '|' + Other() + '|' + Other(5) + '|' + Amount(1) + '|' + Amount(1.5));
+    end;
+
+    procedure NoMatch(): Text
+    begin
+        exit(Helper(true));
+    end;
+}
+
+codeunit 50441 "Overloads Reversed"
+{
+    procedure Helper(A: Text): Text
+    begin
+        exit('text');
+    end;
+
+    procedure Helper(A: Integer): Text
+    begin
+        exit('int');
+    end;
+
+    procedure Other(A: Integer): Text
+    begin
+        exit('one');
+    end;
+
+    procedure Other(): Text
+    begin
+        exit('none');
+    end;
+
+    procedure Calls(): Text
+    begin
+        exit(Helper(1) + '|' + Helper('x') + '|' + Other() + '|' + Other(5));
+    end;
+}
+
+table 50442 "Overload Table"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+
+    procedure Describe(A: Integer): Text
+    begin
+        exit('int');
+    end;
+
+    procedure Describe(A: Text): Text
+    begin
+        exit('text');
+    end;
+
+    procedure Kind(A: Text): Text
+    begin
+        exit('text');
+    end;
+
+    procedure Kind(A: Integer): Text
+    begin
+        exit('int');
+    end;
+}
+
+codeunit 50443 "Overload Probe"
+{
+    procedure ThroughVariables(): Text
+    var
+        Cu: Codeunit "Overloads";
+        Reversed: Codeunit "Overloads Reversed";
+    begin
+        exit(Cu.Helper(1) + '|' + Reversed.Helper(1) + '|' + Cu.Other() + '|' + Reversed.Other());
+    end;
+
+    procedure TableProcedures(): Text
+    var
+        R: Record "Overload Table";
+    begin
+        exit(R.Describe(1) + '|' + R.Describe('x') + '|' + R.Kind(1) + '|' + R.Kind('x'));
+    end;
+}
+"#;
+
+/// A call to an overloaded procedure runs the declaration whose parameters
+/// take its arguments, in either order of declaration. The codeunit lookup
+/// always ran the last declaration of the name, and the table lookup the
+/// first, so the other overload failed its type or count check.
+#[test]
+fn overloaded_procedures_run_the_declaration_that_takes_the_arguments() {
+    let files = [("/ws/Overloads.al", OVERLOADED_PROCEDURES)];
+    assert_eq!(
+        ok(run(&files, "Overloads", "Calls", vec![])),
+        Value::Text("int|text|none|one|integer|decimal".into())
+    );
+    assert_eq!(
+        ok(run(&files, "Overloads Reversed", "Calls", vec![])),
+        Value::Text("int|text|none|one".into())
+    );
+    assert_eq!(
+        ok(run(&files, "Overload Probe", "ThroughVariables", vec![])),
+        Value::Text("int|int|none|none".into())
+    );
+    assert_eq!(
+        ok(run(&files, "Overload Probe", "TableProcedures", vec![])),
+        Value::Text("int|text|int|text".into())
+    );
+    let message = error_message(run(&files, "Overloads", "NoMatch", vec![]));
+    assert!(
+        message.contains("no overload of 'Helper' takes these arguments"),
+        "got: {message}"
+    );
+}
+
 const KEPT_MEMBER: &str = r#"table 50420 "Kept Member"
 {
     fields
