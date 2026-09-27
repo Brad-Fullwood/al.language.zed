@@ -1034,8 +1034,10 @@ impl CredentialKind {
 /// A Business Central endpoint a request is about to authenticate against.
 #[derive(Debug, Clone)]
 pub struct BcTarget {
-    /// `false` means Business Central online, whose endpoint is fixed by
-    /// Microsoft and cannot be redirected by a repository.
+    /// `false` means Business Central online. This workspace's clients build
+    /// that URL on Microsoft's host with the tenant and environment encoded,
+    /// and the EditorServices proxy refuses the one launch key Microsoft's
+    /// library would put in front of that host unless it is one DNS label.
     pub on_prem: bool,
     pub server: Option<String>,
     pub port: Option<u16>,
@@ -1135,8 +1137,13 @@ pub const ALLOW_INSECURE_HTTP_ENV: &str = "AL_ALLOW_INSECURE_BC_HTTP";
 /// snapshot capture, a test run against live BC, publish, and symbol download
 /// from a BC server.
 ///
-/// - Business Central online is always allowed. Its endpoint is fixed, so a
-///   repository cannot redirect the token.
+/// - Business Central online is allowed without trust. The URL is built on
+///   Microsoft's host (`api.businesscentral.dynamics.com`) with the tenant and
+///   environment URL-encoded. The EditorServices proxy hands the scenario to
+///   Microsoft's library, which puts `applicationFamily` in front of its host
+///   and treats `Windows` or `UserPassword` authentication as on-premises, so
+///   the proxy refuses the first unless it is one DNS label and judges the
+///   second as on-premises before it calls this.
 /// - An on-premises target is compared on scheme, host and port together.
 /// - `http` is refused for bearer and basic credentials unless the host is
 ///   loopback or the user set `AL_ALLOW_INSECURE_BC_HTTP=1`.
@@ -1151,8 +1158,8 @@ pub fn authorize_cached_credential(
     source: TargetSource,
 ) -> Result<CredentialAuthorization, String> {
     if !target.on_prem {
-        // Microsoft's fixed endpoints. TLS verification is never negotiable
-        // against them.
+        // Microsoft's own host. TLS verification is never negotiable against
+        // it.
         return Ok(CredentialAuthorization {
             may_accept_invalid_certs: false,
         });
@@ -1387,6 +1394,13 @@ fn launch_privileges(project_root: &Path) -> Vec<PrivilegedSetting> {
 }
 
 /// The on-premises servers one parsed launch file names.
+///
+/// An entry is on-premises when its `environmentType` is `OnPrem` or its
+/// `authentication` is `Windows` or `UserPassword`. Microsoft's deployment
+/// library, which the EditorServices proxy hands a scenario to, connects to
+/// the `server` of such an entry whatever its `environmentType` says, and the
+/// proxy judges it the same way. The parser refuses an entry with no
+/// `environmentType`, so that case is an unreadable launch file.
 fn launch_servers(file: &al_bc::launch::DebugConfigFile, source: String) -> Vec<PrivilegedSetting> {
     file.configs
         .iter()
@@ -1394,6 +1408,9 @@ fn launch_servers(file: &al_bc::launch::DebugConfigFile, source: String) -> Vec<
             matches!(
                 config.environment_type,
                 al_bc::launch::EnvironmentType::OnPrem
+            ) || matches!(
+                config.authentication,
+                al_bc::launch::AuthMethod::Windows | al_bc::launch::AuthMethod::UserPassword
             )
         })
         .filter_map(|config| {
@@ -2245,6 +2262,41 @@ mod tests {
         )
         .unwrap_err();
         assert!(refusal.contains("not trusted"), "{refusal}");
+    }
+
+    /// Microsoft's deployment library sends a `Sandbox` or `Production`
+    /// scenario with `Windows` or `UserPassword` authentication to its
+    /// `server`. The record listed on-premises entries only, so a commit that
+    /// added one to a trusted project left the record trusted.
+    #[test]
+    fn a_launch_server_with_windows_or_password_authentication_makes_the_record_stale() {
+        for (kind, authentication) in [("Sandbox", "Windows"), ("production", "userpassword")] {
+            let _config = ScratchConfig::new();
+            let project = project_with_settings("{}");
+            write_zed_debug(project.path(), &format!("[{CLOUD_SCENARIO}]"));
+            grant(project.path()).unwrap();
+            assert!(decide(project.path()).unwrap().is_trusted());
+
+            write_zed_debug(
+                project.path(),
+                &format!(
+                    r#"[{CLOUD_SCENARIO},{{"adapter":"al","label":"Publish","request":"launch",
+                        "environmentType":"{kind}","server":"https://collector.example",
+                        "serverInstance":"BC","authentication":"{authentication}"}}]"#
+                ),
+            );
+
+            let decision = decide(project.path()).unwrap();
+            assert_eq!(decision.state, TrustState::Stale, "{kind} {authentication}");
+            assert!(
+                decision
+                    .privileged
+                    .iter()
+                    .any(|setting| setting.value.contains("collector.example")),
+                "{:?}",
+                decision.privileged
+            );
+        }
     }
 
     /// One entry the parser rejects used to fail the whole file and leave the

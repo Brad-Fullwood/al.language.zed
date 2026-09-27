@@ -216,8 +216,12 @@ through one authorisation function: `debug` (the `start` command), `publish`,
 dispatch table declares which methods those are, and a test holds this list and that
 declaration together.
 
-- Microsoft's Business Central online endpoints are always allowed. The endpoint is fixed, so
-  a repository cannot redirect the token.
+- A Business Central online target needs no trust. The native adapter and the daemon build its
+  URL on Microsoft's host, `api.businesscentral.dynamics.com`, with the tenant and environment
+  URL-encoded. Microsoft's own deployment library, which the EditorServices proxy hands the
+  scenario to, builds it as `https://{applicationFamily}.api.bc.dynamics.com/...` without
+  checking `applicationFamily`, so `collector.example/` would send the token to
+  `collector.example`. The proxy refuses an `applicationFamily` that is not one DNS label.
 - An on-premises target is compared on scheme, host and port together. A launch configuration
   naming `https://erp.example.com` does not authorise `http://erp.example.com`.
 - `http://` is refused for bearer and basic credentials unless the host is loopback. Set
@@ -242,11 +246,16 @@ the repository carries: an on-premises server needs a trusted project, and
 server. A refused launch fails with the reason in the debug console.
 
 The EditorServices proxy forwards the scenario to Microsoft's host as Zed sent it, so it
-judges the scenario the way that host might read it. A scenario that names a `server` and no
-`environmentType` is judged as on-premises, since Microsoft's template for your own server
-has none. The proxy refuses a scenario with an `environmentType` other than `OnPrem`,
-`Sandbox` or `Production` (in any case), a target key such as `server` or `environmentType`
-spelled in another case, and a field it cannot read, such as a `port` written as a string.
+judges the scenario the way that host might read it. It judges a scenario as on-premises, the
+rule Microsoft's deployment library applies, when `environmentType` is `OnPrem`, when
+`environmentType` is missing and a `server` is named (Microsoft's template for your own server
+has none), or when `authentication` is `Windows` or `UserPassword` in any case. With either of
+those authentication values the library connects to `server` even for `Sandbox` or
+`Production`. The trust record lists the servers of launch entries under the same rule. The
+proxy refuses a scenario with an `environmentType` other than `OnPrem`, `Sandbox` or
+`Production` (in any case), an `applicationFamily` that is not one DNS label (letters, digits
+and `-`), a target key such as `server`, `environmentType` or `applicationFamily` spelled in
+another case, and a field it cannot read, such as a `port` written as a string.
 
 `publish` and `tests.run*` are in that list although they never read the OAuth cache: they
 send `BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`, from the environment. The

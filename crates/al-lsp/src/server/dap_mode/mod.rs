@@ -116,8 +116,9 @@ pub fn authorize_debug_scenario(
 }
 
 /// The keys of a debug scenario that decide where the credential goes, as
-/// `BcDebugConfig::from_dap_args` spells them.
-const TARGET_KEYS: [&str; 9] = [
+/// `BcDebugConfig::from_dap_args` spells them, and `applicationFamily`, which
+/// Microsoft's deployment library puts in front of its online host.
+const TARGET_KEYS: [&str; 10] = [
     "server",
     "serverInstance",
     "port",
@@ -127,7 +128,21 @@ const TARGET_KEYS: [&str; 9] = [
     "authentication",
     "validateServerCertificate",
     "acceptInvalidCerts",
+    "applicationFamily",
 ];
+
+/// Whether `value` is one DNS label: 1 to 63 ASCII letters, digits and `-`.
+///
+/// Microsoft's deployment library builds the online address as
+/// `https://{applicationFamily}.api.bc.dynamics.com/...` without checking the
+/// value, so `collector.example/` makes `collector.example` the host that
+/// receives the token. One label keeps the host under Microsoft's domain.
+fn is_dns_label(value: &str) -> bool {
+    (1..=63).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
 
 /// The target the proxy judges a `launch` or `attach` by, or why it refuses
 /// to judge it.
@@ -135,11 +150,20 @@ const TARGET_KEYS: [&str; 9] = [
 /// The proxy forwards the original bytes to EditorServices.Host, so the
 /// judgement has to read them the way the host might. A key the adapter reads
 /// by its exact spelling and the host may bind in any case (`Server`), a
-/// field the adapter could not read, and an unknown `environmentType` are
-/// refused. A scenario that names a server is on-premises unless it names an
-/// online `environmentType`: Microsoft's "Your own server" template has no
-/// `environmentType`, and the adapter's default for a missing one is
-/// `Sandbox`, which is Business Central online and needs no trust.
+/// field the adapter could not read, an unknown `environmentType` and an
+/// `applicationFamily` that is not one DNS label are refused.
+///
+/// A scenario is on-premises, and needs trust for its `server`, when any of
+/// these holds, which is the rule Microsoft's deployment library applies
+/// (`ConnectionOptions.IsOnPremise`):
+/// - `environmentType` is `OnPrem`;
+/// - `environmentType` is missing and a `server` is named, as in Microsoft's
+///   "Your own server" template;
+/// - `authentication` is `Windows` or `UserPassword`, in any case. The library
+///   then builds its on-premises client against `server` whatever
+///   `environmentType` says.
+///
+/// Anything else is Business Central online.
 fn proxy_debug_config(
     arguments: &serde_json::Value,
 ) -> Result<al_dap::dap::bc_debug::BcDebugConfig, String> {
@@ -163,12 +187,25 @@ fn proxy_debug_config(
             al_project::trust::one_line(&config.validation_errors.join("; "))
         ));
     }
+    if let Some(family) = arguments.get("applicationFamily") {
+        if !family.as_str().is_some_and(is_dns_label) {
+            let shown = family
+                .as_str()
+                .map_or_else(|| family.to_string(), str::to_string);
+            return Err(format!(
+                "Refusing to start this debug session: applicationFamily must be one DNS label \
+                 (letters, digits and `-`), got `{}`. The debugger puts it in front of \
+                 Microsoft's host name, so any other text can name a different host.",
+                al_project::trust::one_line(&shown)
+            ));
+        }
+    }
     let environment_type = arguments.get("environmentType").and_then(|v| v.as_str());
-    let online = match environment_type {
-        None => false,
-        Some(kind) if kind.eq_ignore_ascii_case("Sandbox") => true,
-        Some(kind) if kind.eq_ignore_ascii_case("Production") => true,
-        Some(kind) if kind.eq_ignore_ascii_case("OnPrem") => false,
+    let on_prem_type = match environment_type {
+        None => config.server.is_some(),
+        Some(kind) if kind.eq_ignore_ascii_case("Sandbox") => false,
+        Some(kind) if kind.eq_ignore_ascii_case("Production") => false,
+        Some(kind) if kind.eq_ignore_ascii_case("OnPrem") => true,
         Some(kind) => {
             return Err(format!(
                 "Refusing to start this debug session: environmentType must be OnPrem, Sandbox \
@@ -177,7 +214,9 @@ fn proxy_debug_config(
             ));
         }
     };
-    if !online && config.server.is_some() {
+    let on_prem_authentication = config.authentication.eq_ignore_ascii_case("Windows")
+        || config.authentication.eq_ignore_ascii_case("UserPassword");
+    if on_prem_type || on_prem_authentication {
         config.environment_type = "OnPrem".to_string();
     }
     Ok(config)
@@ -1310,5 +1349,78 @@ mod tests {
         ] {
             assert_eq!(proxy_refusal(project.path(), arguments), None);
         }
+    }
+
+    /// Microsoft's deployment library treats a scenario as on-premises when
+    /// its `authentication` is `Windows` or `UserPassword`, whatever its
+    /// `environmentType` says, and connects to its `server`. The proxy judged
+    /// these online and forwarded them without trust.
+    #[test]
+    #[serial_test::serial]
+    fn the_legacy_proxy_judges_windows_or_password_authentication_as_on_premises() {
+        let _config = ScratchConfig::new();
+        let project = project_with_debug_scenario("https://collector.example.test", false);
+
+        for (kind, authentication) in [
+            ("Sandbox", "Windows"),
+            ("Production", "UserPassword"),
+            ("sandbox", "windows"),
+        ] {
+            let refusal = proxy_refusal(
+                project.path(),
+                serde_json::json!({
+                    "environmentType": kind,
+                    "server": "https://collector.example.test",
+                    "serverInstance": "BC",
+                    "authentication": authentication,
+                    "tenant": "default",
+                }),
+            )
+            .unwrap_or_else(|| panic!("forwarded {kind} with {authentication}"));
+            assert!(refusal.contains("not trusted"), "{refusal}");
+        }
+    }
+
+    /// The deployment library builds the online address as
+    /// `https://{applicationFamily}.api.bc.dynamics.com/...`, so a value with
+    /// `/`, `#`, `?` or `@` in it puts another host in front of Microsoft's
+    /// domain and sends the Entra ID token there.
+    #[test]
+    #[serial_test::serial]
+    fn the_legacy_proxy_refuses_an_application_family_that_is_not_one_label() {
+        let _config = ScratchConfig::new();
+        let project = project_with_debug_scenario("https://collector.example.test", false);
+
+        for family in [
+            serde_json::json!("collector.example.test/"),
+            serde_json::json!("collector.example.test#"),
+            serde_json::json!("collector.example.test?"),
+            serde_json::json!("collector.example.test@"),
+            serde_json::json!("collector.example.test"),
+            serde_json::json!(""),
+            serde_json::json!(7),
+        ] {
+            let refusal = proxy_refusal(
+                project.path(),
+                serde_json::json!({"environmentType": "Sandbox", "applicationFamily": family}),
+            )
+            .unwrap_or_else(|| panic!("forwarded applicationFamily {family}"));
+            assert!(refusal.contains("applicationFamily"), "{refusal}");
+        }
+
+        let refusal = proxy_refusal(
+            project.path(),
+            serde_json::json!({"environmentType": "Sandbox", "ApplicationFamily": "x.test/"}),
+        )
+        .expect("a spelling in another case is refused");
+        assert!(refusal.contains("case"), "{refusal}");
+
+        assert_eq!(
+            proxy_refusal(
+                project.path(),
+                serde_json::json!({"environmentType": "Sandbox", "applicationFamily": "Fabrikam"}),
+            ),
+            None
+        );
     }
 }
