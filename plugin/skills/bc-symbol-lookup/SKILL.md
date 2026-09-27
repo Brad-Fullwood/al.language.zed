@@ -79,9 +79,11 @@ about:
 
 `extensionCount: 0` means `by-id`'s count already was the complete count.
 Above zero means it was not, and `fieldCount` (`all_fields`, already merged) is
-the true total. `--limit` and `--fields` do not shrink `composed`'s own
-output, because it returns one merged object, not a list of rows. `jq` is
-what keeps this small, the same way the single-field recipe below does.
+the true total. `--limit` and `--fields` act only on the `extensions` array
+and leave `base`, `all_fields` and `all_methods` whole, so they do not make
+`composed` smaller here. Do not pass `--limit` with this recipe: it trims
+`extensions` and `extensionCount` along with it. `jq` is what keeps this
+small, the same way the single-field recipe below does.
 
 ## One table's own fields, not merged with an extension
 
@@ -158,10 +160,10 @@ with "names enum_values that no row has". Read the declaration instead:
 that could pass for a kind is ambiguous. `--name` settles it, with or without
 a kind in front.
 
-Around 240 KB unfiltered, with or without `--limit` or `--fields`: neither
-flag reduces `composed`'s payload, because it returns one merged object
-(`base`, `extensions`, `all_fields`, `all_methods`), not a list of rows for
-the projection to act on. `jq` is what keeps this small. `composed` waits on
+Around 240 KB unfiltered, with or without `--limit` or `--fields`: both flags
+act only on the `extensions` array and leave `base`, `all_fields` and
+`all_methods` whole, so `composed`'s payload stays close to that size. `jq`
+is what keeps this small. `composed` waits on
 the dependency source index, so read "When a call is slow" below before using
 it.
 
