@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-27 03:06 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-27 03:14 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -25,7 +25,7 @@ pointer and `extension.toml` rev moved (4c1b0ae6). Gates on 4c1b0ae6: 94 suites,
 failed. Merged 03:00: `campaign/fix-r7-review` (fac24900, the last three findings, all 15 fixed).
 Gates on fac24900: 94 suites, 5291 passed, 0 failed. Both pushed.
 
-Agents in flight (dispatched 02:48 to 02:58):
+Agents in flight (dispatched 02:48 to 03:14):
 
 - Runtime fixes (A, F), Opus: worktree `.claude/worktrees/agent-fix-r8b`, branch
   `campaign/fix-r8-runtime`: R8-RT-3 (a table publisher passes its record as `Sender`), GR2-2
@@ -45,6 +45,14 @@ Agents in flight (dispatched 02:48 to 02:58):
 - Docs re-check (H), Sonnet, dispatched 02:58: worktree `.claude/worktrees/agent-docs-r8`, branch
   `campaign/docs-r8`. Reads the user docs against `git diff 2b7bce37..4c1b0ae6 -- crates`, fixes
   claims the round 8 merges made wrong, appends a re-check section to `findings/docs-review.md`.
+- Security round 5 (D), Opus, dispatched 03:12: worktree `.claude/worktrees/agent-sec5`, branch
+  `campaign/r5-security`, scope `git diff 2b7bce37..fac24900` over al-project, al-bc, al-lsp,
+  al-explorer, al-dap, al-semantic and `al-session-context.sh` (the trust record's directory
+  hashes, the analyzer search, the bridge, the legacy proxy's online judgement, the settings gate,
+  the download refusal, `--validate`). Writes `findings/r5-security.md`, ends with `## Review complete`.
+- Plugin runs (G), Sonnet, dispatched 03:14: worktree `.claude/worktrees/agent-plugin-runs`, branch
+  `campaign/plugin-runs`. Headless Haiku sessions for `bc-test-locally`, `bc-upgrade-impact`, the
+  cop fixer agent and a `.alpackages` project, results in `plugin/TESTING.md` round 5.
 
 A second session (interactive, not the watchdog's) works on the local test interpreter and the
 test router and pushes straight to this branch (`LOG.md`, 18:45 entry). The orchestrator fetches
