@@ -65,8 +65,7 @@ method signatures surround the one package name you asked for.
 A table extension in another loaded package adds fields that `by-id` and
 `object` do not show, so answering from `by-id` alone can understate the true
 count. Check with `composed` and `jq` first, every time the question is "how
-many fields" or "what fields", not only once an extension is already known
-about:
+many fields" or "what fields":
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --compact composed table --name 'Customer' \
@@ -83,7 +82,7 @@ the true total. `--limit` and `--fields` act only on the `extensions` array
 and leave `base`, `all_fields` and `all_methods` whole, so they do not make
 `composed` smaller here. Do not pass `--limit` with this recipe: it trims
 `extensions` and `extensionCount` along with it. `jq` is what keeps this
-small, the same way the single-field recipe below does.
+small, the same way the recipe for one field below does.
 
 ## One table's own fields, not merged with an extension
 

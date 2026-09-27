@@ -867,8 +867,8 @@ mod validation_trust_tests {
         }
     }
 
-    /// The refusal names the folder the user can trust, not the copy that is
-    /// deleted when the command returns.
+    /// The refusal names the folder the user can trust. The copy is deleted
+    /// when the command returns.
     #[test]
     #[serial_test::serial]
     fn an_untrusted_project_s_refusal_names_the_real_folder() {

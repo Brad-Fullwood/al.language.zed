@@ -3096,8 +3096,7 @@ mod tests {
         );
     }
 
-    /// The record covers what the named file loads from beside it, not only
-    /// the file itself.
+    /// The record covers the named file and what it loads from beside it.
     fn assert_a_replaced_sibling_makes_the_record_stale(
         settings: &str,
         named: &str,

@@ -60,11 +60,11 @@ Rules:
   not rolled back on failure, so AL-NL004 stays until the write moves outside
   the try scope, the `[TryFunction]` attribute comes off, or the write is
   removed too. Re-run `lint` on the file after the edit and check for both
-  codes by name, not just the one you were aiming at.
+  codes by name.
 
 Report: the count before and after, the files you edited, the fixes applied
 mechanically versus by hand, and any diagnostic you left with the reason. Take
 the "left with the reason" list from the diagnostics your last `lint` /
-`native-check` / `arch-lint` re-run actually printed, not from what you
-remember attempting. If that re-run's count does not match the count in your
-report, find the missing diagnostic before you write the report.
+`native-check` / `arch-lint` re-run actually printed. If that re-run's count
+does not match the count in your report, find the missing diagnostic before
+you write the report.

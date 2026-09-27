@@ -42,7 +42,7 @@ impl<T> Shared<T> {
 
     /// The contents, locked until the guard drops.
     pub fn lock(&self) -> MutexGuard<'_, T> {
-        // A panic while locked leaves the contents as they were; use them.
+        // A panic while locked leaves the contents as they were. Use them.
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -175,7 +175,7 @@ pub enum Value {
     /// AL `List of [T]`. A reference type: copies of the value, and a
     /// parameter passed without `var`, share one list.
     List(Shared<Vec<Value>>),
-    /// AL `Dictionary of [K, V]` — keyed by serialised K. A reference type
+    /// AL `Dictionary of [K, V]`, keyed by the serialised K. A reference type
     /// like `List`.
     Dict(Shared<DictEntries>),
     /// AL `Blob` / `InStream` / `OutStream` — raw bytes.

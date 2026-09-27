@@ -151,8 +151,8 @@ answer took and how much of the result reached the context.
 **Round 5: the two skills and the agent `ROADMAP.md` had marked as never run,
 plus the first run against a real `.alpackages`.** Four new questions, each
 with its right answer established directly through `al-explorer` first. The
-`.alpackages` project is not the bundled fixture: `al-explorer new` scaffolded
-one in a temp directory and `download-symbols --source nuget` pulled Base
+`.alpackages` project came from `al-explorer new`, which scaffolded one in a
+temp directory, and `download-symbols --source nuget` pulled Base
 Application 28.0.46665.48632 plus System Application, System, Application and
 Business Foundation from the public feed, the same method `LOG.md`'s
 2026-09-24 08:00 entry used. The table shows the final, correct run for each
@@ -172,12 +172,13 @@ call, the session grepped the `.al` source, tried a hallucinated `al build`
 and `al symbolsearch`, and answered with dependency names it invented from
 object references in the code. Second try, after widening the skill's own
 frontmatter description to lead with "what does this extension depend on" and
-to name the implicit-dependency gotcha: still no Skill call, the session read
-`app.json`, saw an empty array, and answered "no dependencies, nothing
-missing". The description was not what routed this question: the
-`SessionStart` hook (`al-session-context.sh`) prints a routing table with one
-line per skill before anything else, and its line for this skill read only
-"What a dependency upgrade breaks", narrower than the question asked. Widened
+to say that an empty dependencies array does not mean no dependencies: still
+no Skill call, the session read `app.json`, saw an empty array, and answered
+"no dependencies, nothing missing". The `SessionStart` hook
+(`al-session-context.sh`) routed this question: it prints a routing table
+with one line per skill before anything else, and its line for this skill
+read only "What a dependency upgrade breaks", narrower than the question
+asked. Widened
 that line to add "What an extension depends on, whether a dependency is
 missing". Third try: loaded the skill, ran `deps-graph` (through a typo'd bare
 `al_explorer`, which failed, then the MCP tool directly once the Bash call
@@ -188,8 +189,8 @@ Customer (table 18) is in Base Application, 165 fields on the base table, and
 a "Serv. Customer" table extension, also in Base Application, adds 7 more:
 172 total, read from `composed`'s `all_fields`. First try loaded the skill,
 read `by-id`'s `fields`, and reported 165 with no check for an extension: the
-same undercount `b82c2b01` already fixed for the Item table, found on the
-predecessor agent's `.alpackages` run before it died. Checking `composed
+same undercount `b82c2b01` already fixed for the Item table, found on an
+earlier run against `.alpackages`. Checking `composed
 --limit 20 --fields name,package,fields` by hand, the skill's own worked
 example, showed neither flag changes its size at all: about 240 KB with or
 without them, because `composed` returns one merged object, not a list of
@@ -297,9 +298,9 @@ agent carries a `name` and a `description`.
   project with two versions of the same app in `.alpackages`.
 - `bc-base-app-source`, `bc-event-map`, `bc-impact-check`, `bc-workspace-health`
   and `bc-object-id-allocator` against a project with `.alpackages`. Round 5
-  ran only `bc-symbol-lookup`'s field-count question there. The package-side
-  byte counts in the "Fixture" section above are still the pre-daemon-changes
-  reconstruction, not a measured agent run.
+  ran only `bc-symbol-lookup`'s question about the field count there. The
+  byte counts for packages in the "Fixture" section above are still the
+  numbers from before the daemon changes, not a measured agent run.
 - The `.alpackages` project Round 5 used is scaffolded fresh in a temp
   directory each time (`al-explorer new` plus `download-symbols --source
   nuget`), not checked into this repository, because a downloaded Base
