@@ -163,3 +163,85 @@ Left as written, and why:
 
 `grep -niE 'advania|customers/' Docs README.md ROADMAP.md plugin` finds only the line in
 `Docs/campaign/README.md` that states this check. No doc names a customer.
+
+## Re-check 2026-09-27 after the round 8 merges
+
+Checked `git diff 2b7bce37..4c1b0ae6 -- crates` (72 files) and the `docs(campaign)` commit messages
+against every doc listed below, for the local test interpreter, the test router, the call graph and
+summary store, the native debug adapter, and the grammar's fix for an attribute on a member placed
+after a global var section. Two of the interpreter fixes (`e48f3ab6`, `77fbf34b`, the rename key and
+relation-cascade behavior) already updated `Docs/features/native-test-runtime.md` in the same
+commit, so those claims were already correct and are not repeated here.
+
+### Docs read, with a claim corrected
+
+- `Docs/features/native-test-runtime.md:50-53`. Old claim: the Dispatch paragraph said nothing about
+  what a codeunit's globals mean across calls. What is true now: a codeunit variable keeps its own
+  globals between calls made on it, a `SingleInstance` codeunit has one instance for the test's
+  whole lifecycle, an event subscriber's codeunit runs on a fresh instance, and a label is not
+  state. Added a sentence covering this.
+- `Docs/features/native-test-runtime.md:78-83`. Old claim: "assigning shares the object, and a token
+  from `Get` changes its parent... take `SelectToken` paths (`$.a.b[0]`)", with no mention of
+  `ReadFrom`'s effect on aliasing, no filter/wildcard/recursive-descent support, no
+  `DefaultIfNotFound`, and no statement-position failure behavior. What is true now: `ReadFrom` gives
+  the variable a new node and leaves the old one where it was (so an earlier alias keeps the old
+  value), `SelectToken` follows `[?(...)]` filters, `..` and `*` and refuses slices, unions, regular
+  expressions and grouped filters (a literal path with one of those routes the test to live BC), the
+  `JsonObject` typed getters honour `DefaultIfNotFound`, and a failed `Get`, `ReadFrom`,
+  `SelectToken`, `Add`, `Replace`, `Insert`, `Set` or `RemoveAt` raises in statement position and
+  returns false where its result is read.
+- `Docs/features/native-test-runtime.md:112-115`. Old claim: "single-pass DeleteAll, and ModifyAll
+  (the value is coerced to the field's type, and primary-key fields and `RunTrigger` are refused)".
+  What is true now: `RunTrigger` is not refused. `DeleteAll` and `ModifyAll` run each row through the
+  same events as `Delete` or `Modify`, and the row's trigger when `RunTrigger` is true, whenever the
+  table has a subscriber to that event or a trigger `RunTrigger` would run, and otherwise write every
+  matching row in one pass as before. Only assigning a primary-key field is still refused.
+- `Docs/features/native-test-runtime.md:133-137`. Old claim: "Insert, Modify, Delete and Rename raise
+  the table's OnBefore/OnAfter events... whatever `RunTrigger` says", with `DeleteAll` and
+  `ModifyAll` absent from the list. What is true now: `DeleteAll` and `ModifyAll` raise the same
+  Delete or Modify events for every row they touch. Added a clause naming them.
+- `Docs/features/native-test-runtime.md:148-151`. Old claim: the Routing bullet described the
+  transitive call/trigger/interface/event graph with no mention of `Rename`, `DeleteAll`,
+  `ModifyAll`, table-code record calls, or codeunit state. What is true now: those record operations
+  and a bare `Rec`/`xRec`/method call in table code reach their table's event subscribers the same
+  way a named call does, and a reachable `SingleInstance` codeunit with variable globals still routes
+  to live BC unless it is the test's own codeunit, because its state outlives one test on BC while
+  the local run starts each test afresh.
+- `Docs/features/debugging-dap.md:113-115`. Old claim: "AL file paths resolve to (ObjectType,
+  ObjectId) via the workspace index", which described resolving one object per file. What is true
+  now: each breakpoint resolves to the object around its own line (the last one declared at or above
+  it), so a file that declares more than one object sets every breakpoint on the right one, and a
+  `setBreakpoints` call clears a file's previously tracked breakpoints even when none of its
+  requested lines resolve to an object.
+
+### Docs read, nothing to change
+
+- `Docs/testing-guide.md`: process and verification commands, not affected by these interpreter,
+  router, insight, or DAP behavior changes.
+- `Docs/current-limitations.md`: its Native Test Runtime and Debugging sections stay at a summary
+  level that the round 8 fixes do not contradict.
+- `Docs/gaps-and-future-work.md`: a dated evidence ledger (`a4e7d5fe`), out of scope for a behavior
+  re-check.
+- `Docs/microsoft-comparison.md`: a capability table general enough that round 8 leaves every claim
+  in it standing.
+- `Docs/features/daemon-protocol.md`: the daemon's own `debug` `breakpoint` command already resolved
+  its object per line before this round. The fixed bug was in the native `--dap` adapter
+  (`crates/al-dap`), covered separately in `debugging-dap.md`.
+- `Docs/features/language-server.md`: describes LSP query behavior, outside the crates this round
+  changed.
+- `Docs/reference/daemon-methods.md`: its `debug` entry already describes per-call breakpoint
+  behavior generically and names no per-file resolution rule to correct.
+- `Docs/reference/cli-commands.md`: the `debug breakpoint <file> <line>` row already reads as
+  per-line and needed no change.
+- `README.md`: its testing and debugging rows are summary-level and were not contradicted.
+- `plugin/skills/bc-test-locally/SKILL.md`: covers running `test-classify`/`test-run-all` and reading
+  their output. It stays at the CLI/JSON level.
+- `plugin/skills/bc-impact-check/SKILL.md`: covers the `impact` call graph query. Its `ModifyAll`
+  mention is one example of a field's `write` type on that command's output shape, unaffected by the
+  transaction-lint per-object fix, which is not this skill's subject.
+- No `crates/al-test/README.md` or other crate-level README exists in the repository.
+
+### Claims not settled from the code
+
+None. Every changed area named in the task had a matching commit and code path to confirm the claim
+against.
