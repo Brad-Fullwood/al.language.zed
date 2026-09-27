@@ -181,7 +181,7 @@ fi
 archive_path="$work_dir/$asset_name"
 archive_url="$base_url/$asset_name"
 if ! fetch "$archive_url" "$archive_path"; then
-	report "could not download $asset_name from release $AL_PIN_RELEASE_TAG ($archive_url); nothing was installed"
+	report "could not download $asset_name from release $AL_PIN_RELEASE_TAG ($archive_url). Nothing was installed"
 	exit 0
 fi
 
@@ -193,7 +193,7 @@ fi
 stage_dir="$work_dir/stage"
 mkdir -p "$stage_dir"
 if ! tar -xzf "$archive_path" -C "$stage_dir"; then
-	report "could not extract $asset_name from release $AL_PIN_RELEASE_TAG; nothing was installed"
+	report "could not extract $asset_name from release $AL_PIN_RELEASE_TAG. Nothing was installed"
 	exit 0
 fi
 
@@ -203,14 +203,14 @@ fi
 # hashing starts, the same way a missing digest does further down.
 bad_members="$(cd "$stage_dir" && find . ! -type f ! -type d)"
 if [ -n "$bad_members" ]; then
-	report "$asset_name from release $AL_PIN_RELEASE_TAG contains a member that is not a regular file or a directory; nothing was installed"
+	report "$asset_name from release $AL_PIN_RELEASE_TAG contains a member that is not a regular file or a directory. Nothing was installed"
 	exit 0
 fi
 
 file_list="$work_dir/extracted-files.txt"
 (cd "$stage_dir" && find . -type f | sed 's|^\./||') | LC_ALL=C sort >"$file_list"
 if [ ! -s "$file_list" ]; then
-	report "$asset_name from release $AL_PIN_RELEASE_TAG extracted no files; nothing was installed"
+	report "$asset_name from release $AL_PIN_RELEASE_TAG extracted no files. Nothing was installed"
 	exit 0
 fi
 
@@ -237,19 +237,19 @@ while IFS= read -r rel; do
 done <"$file_list"
 
 if ! have_pair "$stage_dir"; then
-	report "$asset_name from release $AL_PIN_RELEASE_TAG has verified digests but is missing al-explorer or al-lsp at its root; nothing was installed"
+	report "$asset_name from release $AL_PIN_RELEASE_TAG has verified digests but is missing al-explorer or al-lsp at its root. Nothing was installed"
 	exit 0
 fi
 
 # have_pair uses -x, which is true for a directory and for a symlink to an
 # executable, neither of which is a hashed, verified file. The member scan
-# above already refuses a symlink anywhere in the archive; check the two
+# above already refuses a symlink anywhere in the archive. Check the two
 # binaries specifically, since a directory named al-lsp or al-explorer passes
 # that scan (a directory is a valid member type) but must not be installed
 # as if it were the verified file.
 for name in al-explorer al-lsp; do
 	if [ ! -f "$stage_dir/$name" ] || [ -L "$stage_dir/$name" ]; then
-		report "$asset_name from release $AL_PIN_RELEASE_TAG has $name as something other than a regular file at its root; nothing was installed"
+		report "$asset_name from release $AL_PIN_RELEASE_TAG has $name as something other than a regular file at its root. Nothing was installed"
 		exit 0
 	fi
 done
@@ -267,7 +267,7 @@ install_step() {
 	local doing="$1"
 	shift
 	if ! "$@"; then
-		report "could not $doing; nothing was installed"
+		report "could not $doing. Nothing was installed"
 		exit 0
 	fi
 }

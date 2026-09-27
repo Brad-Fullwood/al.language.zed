@@ -18,10 +18,10 @@
 # al-explorer resolves its own al-lsp the same way to start the daemon
 # (crates/al-protocol/src/client/mod.rs, find_al_lsp_binary): beside
 # al-explorer, then PATH, refusing a PATH al-lsp of a different version. A
-# case whose fixture is missing fails; if no al-explorer is found, or a
-# preflight call through al-explorer reports an error, every case is reported
-# as skipped rather than failed, since that is a missing prerequisite, not a
-# wrong answer.
+# case whose fixture is missing fails. If no al-explorer is found, or a
+# preflight call through al-explorer reports an error, every case is skipped
+# instead of failed. A missing prerequisite is skipped. A wrong answer is
+# failed.
 
 set -uo pipefail
 

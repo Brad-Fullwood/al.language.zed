@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 #
-# Regression tests for the plugin findings in round 9 of the improvement
-# campaign (Docs/campaign/findings/r9-session-review.md):
+# Regression tests for al-fetch-release.sh and plugin/evals/run.sh:
 #
-#   R9-PLUGIN-1: al-fetch-release.sh installed a symlink or a directory
-#                named al-lsp or al-explorer as if it were the verified file.
-#   R9-PLUGIN-2: al-fetch-release.sh reported "installed" when a step of the
-#                install (mkdir/mv/rm) failed, and nothing was installed.
-#   R9-PLUGIN-3: plugin/evals/run.sh turned a missing or unrelated al-lsp
-#                into twelve reports of a wrong answer, with no reason shown.
+#   A symlink or a directory named al-lsp or al-explorer in the release
+#   archive is refused before install.
+#   A failed install step (mkdir, mv or rm) is named in the refusal. The
+#   report does not claim anything was installed.
+#   A missing or mismatched al-lsp skips an eval case by name, with the
+#   reason al-explorer gave.
 #
 # Serves small archives over a local python3 -m http.server: curl in
 # al-fetch-release.sh restricts --proto to https/http, so a file:// URL
@@ -53,8 +52,8 @@ sha256_of() {
 # This machine has a real al-explorer/al-lsp installed for development, which
 # would otherwise short-circuit both scripts under test ("already on PATH;
 # nothing to download", or a real daemon answering every eval check). Strip
-# any PATH entry that holds either binary; curl/tar/sha256sum/python3/jq live
-# elsewhere and are unaffected.
+# any PATH entry that holds either binary. curl, tar, sha256sum, python3 and
+# jq live elsewhere and are unaffected.
 path_without_binaries() {
 	local dir filtered="" dirs
 	IFS=':' read -ra dirs <<<"$PATH"
@@ -114,7 +113,7 @@ run_fetch() {
 		bash "$fetch_script"
 }
 
-# ── R9-PLUGIN-1a: a symlinked al-lsp is refused ─────────────────────
+# ── a symlinked al-lsp is refused ───────────────────────────────────
 scenario_symlink_member() {
 	local stage="$work/stage-symlink" data="$work/data-symlink" out rc
 	rm -rf "$stage" "$data"
@@ -135,7 +134,7 @@ scenario_symlink_member() {
 	pass "a symlinked al-lsp is refused, not installed"
 }
 
-# ── R9-PLUGIN-1b: a directory named al-lsp is refused ───────────────
+# ── a directory named al-lsp is refused ─────────────────────────────
 scenario_directory_member() {
 	local stage="$work/stage-dir" data="$work/data-dir" out rc
 	rm -rf "$stage" "$data"
@@ -158,7 +157,7 @@ scenario_directory_member() {
 	pass "a directory named al-lsp is refused, not installed"
 }
 
-# ── R9-PLUGIN-2: a failed install step is named, not reported installed ──
+# ── a failed install step is named and nothing is reported installed ─
 scenario_failed_install_step() {
 	local stage="$work/stage-good" blocker="$work/blocker-file" data out rc
 	rm -rf "$stage"
@@ -222,7 +221,7 @@ SH
 	chmod +x "$1"
 }
 
-# ── R9-PLUGIN-3: a missing al-lsp skips the eval case by name ───────────
+# ── a missing al-lsp skips the eval case by name ────────────────────
 scenario_missing_al_lsp_eval() {
 	local fake_bin="$work/fake-bin" case_file="$work/scratch-case.json" out rc
 	rm -rf "$fake_bin"
