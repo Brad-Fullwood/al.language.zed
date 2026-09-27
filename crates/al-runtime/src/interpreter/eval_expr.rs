@@ -10,6 +10,7 @@ use tree_sitter::Node;
 
 use super::error_info;
 use crate::interpreter::chain;
+use crate::interpreter::dispatch::table_code::{self, TableCode};
 use crate::interpreter::dispatch::DispatchCtx;
 use crate::interpreter::indexing;
 use crate::interpreter::records;
@@ -560,6 +561,21 @@ fn eval_postfix(
         match stack.lookup(&recv) {
             Some(Value::Record(_)) => {
                 if let Some((table, handle)) = records::record_binding(&recv, stack, ctx) {
+                    // A record method or table procedure may drop its
+                    // parentheses too (`R.Insert;`, `if R.FindFirst then`).
+                    // A field of the same name wins.
+                    let method = records::supports_record_method(&field)
+                        || table_code::declares(ctx, &table.name, TableCode::Procedure(&field));
+                    if method && !records::declares_field(&table, &field, ctx) {
+                        return crate::interpreter::eval_stmt::eval_call_parts(
+                            Some(&recv),
+                            &field,
+                            None,
+                            source,
+                            stack,
+                            ctx,
+                        );
+                    }
                     return records::field_get(&table, handle, &field, ctx);
                 }
             }

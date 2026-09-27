@@ -749,7 +749,12 @@ fn eval_expression_stmt(
                 ctx.stmt_position = true;
                 eval_call(effective, source, stack, ctx)
             } else {
-                eval_expr(node, source, stack, ctx)
+                // A method written without parentheses (`R.Insert;`) is in
+                // statement position as well.
+                ctx.stmt_position = true;
+                let result = eval_expr(node, source, stack, ctx);
+                ctx.stmt_position = false;
+                result
             }
         }
         _ => eval_expr(node, source, stack, ctx),

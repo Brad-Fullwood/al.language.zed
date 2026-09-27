@@ -5051,6 +5051,102 @@ fn variables_named_after_keywords_read_and_write() {
     assert_eq!(ok(call("BuiltinsStillWork")), Value::Integer(2));
 }
 
+const DROPPED_PARENTHESES: &str = r#"table 50448 "Dropped Parens"
+{
+    fields
+    {
+        field(1; Code; Code[20]) { }
+        field(2; Note; Text[50]) { }
+    }
+    keys
+    {
+        key(PK; Code) { }
+    }
+
+    procedure Stamp()
+    begin
+        Note := 'stamped';
+    end;
+}
+
+codeunit 50449 "Dropped Parens Probe"
+{
+    procedure InsertStatement(): Integer
+    var
+        R: Record "Dropped Parens";
+    begin
+        R.Code := 'A';
+        R.Insert;
+        R.Reset;
+        exit(R.Count());
+    end;
+
+    procedure FindFirstCondition(): Text
+    var
+        R: Record "Dropped Parens";
+    begin
+        R.Code := 'A';
+        R.Insert();
+        R.Code := '';
+        if R.FindFirst then
+            exit('found ' + R.Code);
+        exit('none');
+    end;
+
+    procedure CountInExit(): Integer
+    var
+        R: Record "Dropped Parens";
+    begin
+        R.Code := 'Q';
+        R.Insert();
+        R.Code := 'R';
+        R.Insert();
+        exit(R.Count);
+    end;
+
+    procedure TableProcedure(): Text
+    var
+        R: Record "Dropped Parens";
+    begin
+        R.Stamp;
+        exit(R.Note);
+    end;
+
+    procedure DuplicateInsertStatementRaises(): Text
+    var
+        R: Record "Dropped Parens";
+    begin
+        R.Code := 'A';
+        R.Insert;
+        asserterror R.Insert;
+        exit('raised');
+    end;
+}
+"#;
+
+/// A record method or table procedure written without parentheses runs, as
+/// AL compiles it (CodeCop AA0008 warns about the form). It was read as a
+/// field and failed with "field 'Insert' is not declared".
+#[test]
+fn record_methods_without_parentheses_run() {
+    let call = |proc: &str| {
+        ok(run(
+            &[("/ws/DroppedParens.al", DROPPED_PARENTHESES)],
+            "Dropped Parens Probe",
+            proc,
+            vec![],
+        ))
+    };
+    assert_eq!(call("InsertStatement"), Value::Integer(1));
+    assert_eq!(call("FindFirstCondition"), Value::Text("found A".into()));
+    assert_eq!(call("CountInExit"), Value::Integer(2));
+    assert_eq!(call("TableProcedure"), Value::Text("stamped".into()));
+    assert_eq!(
+        call("DuplicateInsertStatementRaises"),
+        Value::Text("raised".into())
+    );
+}
+
 const SIGNED_CASE_LABELS: &str = r#"codeunit 50286 "Signed Labels"
 {
     procedure ByInteger(X: Integer): Integer
