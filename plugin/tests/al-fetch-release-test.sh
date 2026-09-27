@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 #
-# Regression tests for al-fetch-release.sh
-# (Docs/campaign/findings/r9-session-review.md):
+# Regression tests for the plugin findings in round 9 of the improvement
+# campaign (Docs/campaign/findings/r9-session-review.md):
 #
-#   R9-PLUGIN-1: installed a symlink or a directory named al-lsp or
-#                al-explorer as if it were the verified file.
-#   R9-PLUGIN-2: reported "installed" when a step of the install
-#                (mkdir/mv/rm) failed, and nothing was installed.
+#   R9-PLUGIN-1: al-fetch-release.sh installed a symlink or a directory
+#                named al-lsp or al-explorer as if it were the verified file.
+#   R9-PLUGIN-2: al-fetch-release.sh reported "installed" when a step of the
+#                install (mkdir/mv/rm) failed, and nothing was installed.
+#   R9-PLUGIN-3: plugin/evals/run.sh turned a missing or unrelated al-lsp
+#                into twelve reports of a wrong answer, with no reason shown.
 #
 # Serves small archives over a local python3 -m http.server: curl in
 # al-fetch-release.sh restricts --proto to https/http, so a file:// URL
@@ -18,6 +20,7 @@ set -eu
 
 root="$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)"
 fetch_script="$root/plugin/scripts/al-fetch-release.sh"
+eval_runner="$root/plugin/evals/run.sh"
 
 fail() {
 	printf 'al-fetch-release-test: FAIL: %s\n' "$1" >&2
@@ -48,9 +51,10 @@ sha256_of() {
 }
 
 # This machine has a real al-explorer/al-lsp installed for development, which
-# would otherwise short-circuit the script under test ("already on PATH;
-# nothing to download"). Strip any PATH entry that holds either binary;
-# curl/tar/sha256sum/python3 live elsewhere and are unaffected.
+# would otherwise short-circuit both scripts under test ("already on PATH;
+# nothing to download", or a real daemon answering every eval check). Strip
+# any PATH entry that holds either binary; curl/tar/sha256sum/python3/jq live
+# elsewhere and are unaffected.
 path_without_binaries() {
 	local dir filtered="" dirs
 	IFS=':' read -ra dirs <<<"$PATH"
@@ -184,8 +188,44 @@ scenario_failed_install_step() {
 	pass "a failed install step is named and nothing is reported installed"
 }
 
+# ── R9-PLUGIN-3: a missing al-lsp skips the eval case by name ───────────
+scenario_missing_al_lsp_eval() {
+	local fake_bin="$work/fake-bin" case_file="$work/scratch-case.json" out rc
+	rm -rf "$fake_bin"
+	mkdir -p "$fake_bin"
+	printf '#!/bin/sh\nexit 1\n' >"$fake_bin/al-explorer"
+	chmod +x "$fake_bin/al-explorer"
+
+	cat >"$case_file" <<'JSON'
+{
+  "id": "scratch-missing-al-lsp",
+  "question": "scratch case for the missing al-lsp regression test",
+  "skill": "al-bc:bc-object-id-allocator",
+  "fixture": "crates/al-test-harness/data/test_al_project",
+  "overlay": null,
+  "checks": [
+    {
+      "args": ["--compact", "free-ids", "--kind", "table"],
+      "jq": ".nextFree",
+      "expect_exact": "50101"
+    }
+  ]
+}
+JSON
+
+	out="$(PATH="$test_path" AL_EXPLORER_BIN="$fake_bin/al-explorer" \
+		bash "$eval_runner" "$case_file" 2>&1)" && rc=0 || rc=$?
+	printf '%s\n' "$out" | grep -qE '^SKIP  scratch-missing-al-lsp -- no al-lsp binary' ||
+		fail "missing al-lsp: expected an upfront SKIP naming al-lsp (exit $rc). Output: $out"
+	if printf '%s\n' "$out" | grep -q '^FAIL'; then
+		fail "missing al-lsp: a case reported FAIL instead of SKIP. Output: $out"
+	fi
+	pass "a missing al-lsp skips the eval case instead of reporting a wrong answer"
+}
+
 scenario_symlink_member
 scenario_directory_member
 scenario_failed_install_step
+scenario_missing_al_lsp_eval
 
 printf 'al-fetch-release-test: all scenarios passed\n'

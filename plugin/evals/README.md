@@ -76,10 +76,17 @@ make plugin-evals                      # the same, via the Makefile
 ```
 
 `run.sh` resolves `al-explorer` in this order: `$AL_EXPLORER_BIN`, `PATH`,
-then `target/release/al-explorer` under the repository root. If none is
-found, every case prints as skipped rather than failed: a missing binary is a
-missing prerequisite, not a wrong answer. Build one first with `make rust` or
-`cargo build --release -p al-explorer`.
+then `target/release/al-explorer` under the repository root. It resolves
+`al-lsp` the way a resolved `al-explorer` resolves it to start the daemon
+(`crates/al-protocol/src/client/mod.rs`): `$AL_LSP_BIN`, then beside
+`al-explorer`, then `PATH`. If either binary is missing, every case prints as
+skipped rather than failed: a missing binary is a missing prerequisite, not a
+wrong answer. Build both first:
+
+```bash
+cargo build --release -p al-explorer
+cargo build --release -p al-lsp --bin al-lsp --features semantic
+```
 
 Each case runs against a fresh temporary copy of its fixture, so a case never
 sees another case's daemon or cache state, and `run.sh` shuts down the daemon
