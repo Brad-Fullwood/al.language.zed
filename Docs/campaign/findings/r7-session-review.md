@@ -114,7 +114,7 @@ then trying to reach the same outcome by another route. The result per finding i
 - severity: low
 - scenario: the skill tells an agent to ask for one key at a time. On a daemon whose call graph is not built, `al-explorer --json --fields fields by-id table 50100` for a workspace table gets a row without `fields`, so the projection answers INVALID_PARAMS: `'fields' names fields that no row has; the rows have: id, kind, name, partial, partial_reason, ...`. The agent reads a usage error about `--fields` and not the `partial_reason` that names `--wait-for-members`. The same scratch project reproduced this error word for word. With two keys, one present (`--fields name,fields`), the call succeeds, `fields` is listed in `absentFields`, and `partial` is projected away, so the answer looks like a table with no fields. Before 97d7d98d the same call waited and returned the fields. The skill mentions `--wait-for-members` two paragraphs later, but not on this command.
 - fix: keep `partial` and `partial_reason` in every projected row that has them, the way the envelope keeps `total` and `truncated`, and do not refuse a projection when the rows are marked partial. Put `--wait-for-members` on the skill's `--fields fields by-id` example for workspace objects.
-- status: open
+- status: fixed 6bc4622f. Projected rows keep `partial` and `partial_reason`, and a partial row's missing name goes in `absentFields` without a refusal. Test `a_partial_row_keeps_its_marker_through_a_projection` (al-lsp), and the skill example passes `--wait-for-members`.
 
 ## Round 4 fixes
 
