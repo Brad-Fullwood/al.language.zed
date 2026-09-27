@@ -36,10 +36,15 @@ use crate::interpreter::dispatch::DispatchMode;
 use crate::interpreter::eval_expr::eval_expr;
 use crate::interpreter::eval_stmt::arg_expr_nodes;
 use crate::interpreter::scope::{Eval, ScopeStack};
-use crate::interpreter::value::{RecordValue, Value};
+use crate::interpreter::value::{
+    check_collection_len, check_text_size, Collection, RecordValue, Value,
+};
 use crate::mock::calcformula_parser::{self, CalcFormula, FormulaType, WhereValue};
 use crate::mock::filter;
 use crate::mock::record::{FieldNo, FlowAgg, FlowFilter, MockRecord, RecordView};
+
+mod relations;
+pub use relations::{RelationIndex, RenameCascade};
 
 /// A live record-table backing store: the `MockRecord` data plus the
 /// field-name→number map recovered from the workspace table definition.
@@ -281,12 +286,14 @@ fn load_table_meta(
     table_name: &str,
 ) -> Result<TableMeta, String> {
     let want = table_name.unquote_identifier();
-    let path = source.find_by_object_name(&want).ok_or_else(|| {
-        format!(
-            "record table '{want}' not found in workspace (native record ops require a workspace \
-             table definition; base-app tables are not modelled)"
-        )
-    })?;
+    let path = source
+        .find_object_of_kind(&want, &["table"])
+        .ok_or_else(|| {
+            format!(
+                "record table '{want}' not found in workspace (native record ops require a \
+                 workspace table definition; base-app tables are not modelled)"
+            )
+        })?;
     let (text, tree) = source.get_cached_parse(&path).ok_or_else(|| {
         format!(
             "record table '{want}' at {} has no cached syntax tree",
@@ -419,7 +426,7 @@ fn parse_table_meta(
 }
 
 /// Find the `object_declaration` for a `table` whose name matches `want`.
-fn find_table_object<'a>(root: Node<'a>, source: &[u8], want: &str) -> Option<Node<'a>> {
+pub(crate) fn find_table_object<'a>(root: Node<'a>, source: &[u8], want: &str) -> Option<Node<'a>> {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         if node.kind() == "object_declaration" {
@@ -451,14 +458,14 @@ fn find_table_object<'a>(root: Node<'a>, source: &[u8], want: &str) -> Option<No
 /// The name lives on the `name:` field as
 /// `(name_or_keyword (name (identifier | quoted_identifier)))`. Reading the
 /// field text and stripping any surrounding quotes recovers the identifier.
-fn object_name_of(obj: Node<'_>, source: &[u8]) -> Option<String> {
+pub(crate) fn object_name_of(obj: Node<'_>, source: &[u8]) -> Option<String> {
     obj.child_by_field_name("name")
         .and_then(|n| n.utf8_text(source).ok())
         .map(|t| t.unquote_identifier().into_owned())
 }
 
 /// Get the `body` object_body of the `object_section` whose keyword equals `kw`.
-fn section_body<'a>(body: Node<'a>, kw: &str, source: &[u8]) -> Option<Node<'a>> {
+pub(crate) fn section_body<'a>(body: Node<'a>, kw: &str, source: &[u8]) -> Option<Node<'a>> {
     let mut cursor = body.walk();
     for child in body.named_children(&mut cursor) {
         if child.kind() != "object_section" {
@@ -472,7 +479,7 @@ fn section_body<'a>(body: Node<'a>, kw: &str, source: &[u8]) -> Option<Node<'a>>
 }
 
 /// All `object_section` children of `body` whose keyword equals `kw`.
-fn sections_with_keyword<'a>(body: Node<'a>, kw: &str, source: &[u8]) -> Vec<Node<'a>> {
+pub(crate) fn sections_with_keyword<'a>(body: Node<'a>, kw: &str, source: &[u8]) -> Vec<Node<'a>> {
     let mut out = Vec::new();
     let mut cursor = body.walk();
     for child in body.named_children(&mut cursor) {
@@ -522,8 +529,7 @@ fn section_keyword(section: Node<'_>, source: &[u8]) -> Option<String> {
 /// (field_no, name, declared_type_text, flow_calc_formula).
 /// The last element is `Some(formula)` only when the field is a FlowField.
 /// Malformed FlowField metadata is an error.
-#[allow(clippy::type_complexity)]
-fn parse_field_def(
+pub(crate) fn parse_field_def(
     section: Node<'_>,
     source: &[u8],
 ) -> Result<(FieldNo, String, Option<String>, Option<CalcFormula>), String> {
@@ -696,7 +702,7 @@ fn enum_member_with_ordinal_zero(
     workspace: &dyn al_types::ProcedureSource,
     type_name: &str,
 ) -> Option<String> {
-    let path = workspace.find_by_object_name(type_name)?;
+    let path = workspace.find_object_of_kind(type_name, &["enum"])?;
     let (text, tree) = workspace.get_cached_parse(&path)?;
     let bytes = text.as_bytes();
     let mut stack = vec![tree.root_node()];
@@ -789,6 +795,10 @@ pub fn supports_record_method(method: &str) -> bool {
             | "calcsums"
             | "modifyall"
             | "ascending"
+            | "rename"
+            | "testfield"
+            | "validate"
+            | "istemporary"
     )
 }
 
@@ -829,6 +839,17 @@ pub(crate) fn dispatch_record_method(
     // view's filters select, into the buffer.
     if lower == "calcsums" {
         return dispatch_calcsums(table, handle, &nodes, source, ctx);
+    }
+    if lower == "istemporary" {
+        return Eval::Normal(Value::Boolean(table.temp_owner.is_some()));
+    }
+    // Validate(Field[, Value]): the first argument names a field.
+    if lower == "validate" {
+        return dispatch_validate(table, handle, &nodes, source, stack, ctx);
+    }
+    // TestField(Field[, Value]): the first argument names a field.
+    if lower == "testfield" {
+        return dispatch_testfield(table, handle, &nodes, source, stack, ctx);
     }
     // ModifyAll(Field, Value[, RunTrigger]): the first argument names a field.
     if lower == "modifyall" {
@@ -880,43 +901,563 @@ pub(crate) fn dispatch_record_method(
         }
     }
 
+    if lower == "rename" {
+        return dispatch_rename(table, handle, values, stmt_position, stack, ctx);
+    }
+
+    let write = match lower.as_str() {
+        "insert" => Some(RecordWrite::Insert),
+        "modify" => Some(RecordWrite::Modify),
+        "delete" => Some(RecordWrite::Delete),
+        _ => None,
+    };
+    // Insert(true), Modify(true) and Delete(true) run the table's trigger as
+    // table code. The operation itself then runs without triggers.
+    let run_trigger = write.is_some() && matches!(values.first(), Some(Value::Boolean(true)));
+    if run_trigger {
+        values[0] = Value::Boolean(false);
+    }
+    if lower == "deleteall" {
+        let run_trigger = match optional_boolean("DeleteAll", &values) {
+            Ok(run_trigger) => run_trigger,
+            Err(error) => return eval_error(error),
+        };
+        return write_all(
+            table,
+            handle,
+            (RecordWrite::Delete, run_trigger),
+            None,
+            stack,
+            ctx,
+        );
+    }
+
+    let operate = |ctx: &mut DispatchCtx| {
+        let key = match ensure_store(ctx, table) {
+            Ok(k) => k,
+            Err(e) => return eval_error(e),
+        };
+
+        // Resolve the field-name argument for field-reference methods.
+        let field_no = if field_methods {
+            let fname = nodes
+                .first()
+                .map(|n| node_text(*n, source))
+                .unwrap_or_default();
+            if fname.is_empty() {
+                return eval_error(format!("{method}: missing field name argument"));
+            }
+            let store = ctx.records.get_mut(&key).expect("store just ensured");
+            match store.resolve_field(&fname) {
+                Ok(field_no) => Some(field_no),
+                Err(error) => return eval_error(format!("{method}: {error}")),
+            }
+        } else {
+            None
+        };
+
+        let store = ctx.records.get_mut(&key).expect("store just ensured");
+        let mut view = store.take_view(handle);
+        let result = run_record_method(
+            store,
+            &mut view,
+            &lower,
+            method,
+            field_no,
+            values,
+            stmt_position,
+        );
+        let store = ctx.records.get_mut(&key).expect("store just ensured");
+        store.put_view(handle, view);
+        result
+    };
+    match write {
+        Some(write) => {
+            write_with_table_code(table, handle, (write, run_trigger), stack, ctx, operate)
+        }
+        // Reset also clears the AL variables the table declares.
+        None if lower == "reset" => {
+            let result = operate(ctx);
+            if !result.is_error() {
+                crate::interpreter::dispatch::table_code::reset_record_globals(
+                    &table.name,
+                    handle,
+                    stack,
+                    ctx,
+                );
+            }
+            result
+        }
+        None => operate(ctx),
+    }
+}
+
+/// A record write that raises table events and can run a table trigger.
+#[derive(Debug, Clone, Copy)]
+enum RecordWrite {
+    Insert,
+    Modify,
+    Delete,
+}
+
+impl RecordWrite {
+    /// The operation in the event names: `Insert` of `OnBeforeInsertEvent`.
+    fn event(self) -> &'static str {
+        match self {
+            RecordWrite::Insert => "Insert",
+            RecordWrite::Modify => "Modify",
+            RecordWrite::Delete => "Delete",
+        }
+    }
+
+    fn trigger(self) -> &'static str {
+        match self {
+            RecordWrite::Insert => "OnInsert",
+            RecordWrite::Modify => "OnModify",
+            RecordWrite::Delete => "OnDelete",
+        }
+    }
+
+    /// `xRec` is the row as the table holds it for a Modify or Delete, and
+    /// the buffer itself for an Insert.
+    fn x_rec_is_stored(self) -> bool {
+        !matches!(self, RecordWrite::Insert)
+    }
+
+    /// Whether the table has a subscriber to OnBefore…Event or OnAfter…Event.
+    fn observed(self, table: &TableRef, ctx: &mut DispatchCtx) -> bool {
+        ["OnBefore", "OnAfter"].iter().any(|when| {
+            crate::interpreter::dispatch::events::has_subscribers(
+                "table",
+                &table.name,
+                &format!("{when}{}Event", self.event()),
+                "",
+                ctx,
+            )
+        })
+    }
+}
+
+/// Run `operate`, the `write` of the record on view `handle`, as Business
+/// Central does: OnBefore…Event, the table's trigger when `run_trigger` is
+/// set and the table declares one, the write, then OnAfter…Event when the
+/// write succeeded. Subscribers get the events whatever RunTrigger says.
+fn write_with_table_code(
+    table: &TableRef,
+    handle: u64,
+    (write, run_trigger): (RecordWrite, bool),
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+    operate: impl FnOnce(&mut DispatchCtx) -> Eval,
+) -> Eval {
+    use crate::interpreter::dispatch::table_code::{declares, run_table_code, TableCode};
+
+    let stored = write.x_rec_is_stored();
+    // Made only when a subscriber or trigger will see it: copying a
+    // temporary record copies its rows. Taken before the write even when
+    // only the OnAfter event has subscribers: afterwards the stored row
+    // already holds the new values.
+    let mut x_rec: Option<Value> = None;
+    if write.observed(table, ctx) {
+        x_rec = Some(x_rec_of(table, handle, stored, ctx));
+    }
+    if let Err(error) = raise_table_event(
+        table,
+        handle,
+        (&mut x_rec, stored),
+        &format!("OnBefore{}Event", write.event()),
+        run_trigger,
+        stack,
+        ctx,
+    ) {
+        return error;
+    }
+    let trigger = TableCode::Trigger(write.trigger());
+    if run_trigger && declares(ctx, &table.name, trigger) {
+        let x_rec = x_rec
+            .get_or_insert_with(|| x_rec_of(table, handle, stored, ctx))
+            .clone();
+        if let Some(result) = run_table_code(
+            record_value_on(table, handle),
+            x_rec,
+            trigger,
+            Vec::new(),
+            stack,
+            ctx,
+        ) {
+            if matches!(result, Eval::Error(_)) {
+                return result;
+            }
+        }
+    }
+    let result = operate(ctx);
+    let succeeded = matches!(result, Eval::Normal(ref value) if *value != Value::Boolean(false));
+    if succeeded {
+        if let Err(error) = raise_table_event(
+            table,
+            handle,
+            (&mut x_rec, stored),
+            &format!("OnAfter{}Event", write.event()),
+            run_trigger,
+            stack,
+            ctx,
+        ) {
+            return error;
+        }
+    }
+    result
+}
+
+/// `DeleteAll([RunTrigger])`, or `ModifyAll(Field, Value[, RunTrigger])`
+/// with `assign` holding the field and its value.
+///
+/// Business Central writes the rows one at a time when the table has
+/// subscribers to the Delete or Modify events, or trigger code
+/// ("AL database methods and performance on SQL Server", ModifyAll and
+/// DeleteAll), and each row then goes through the events and, with
+/// RunTrigger, the trigger, as Delete and Modify do. The rows are written
+/// here one at a time on the caller's view when a subscriber or a trigger
+/// that RunTrigger runs would see them, and in one pass otherwise. The
+/// caller's buffer and filters are as they were afterwards.
+fn write_all(
+    table: &TableRef,
+    handle: u64,
+    (write, run_trigger): (RecordWrite, bool),
+    assign: Option<(FieldNo, Value)>,
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    use crate::interpreter::dispatch::table_code::{declares, without_record_globals, TableCode};
+
+    let method = match write {
+        RecordWrite::Modify => "ModifyAll",
+        _ => "DeleteAll",
+    };
+    let row_by_row = write.observed(table, ctx)
+        || (run_trigger && declares(ctx, &table.name, TableCode::Trigger(write.trigger())));
     let key = match ensure_store(ctx, table) {
-        Ok(k) => k,
-        Err(e) => return eval_error(e),
+        Ok(key) => key,
+        Err(error) => return eval_error(error),
+    };
+    let store = ctx.records.get_mut(&key).expect("store just ensured");
+    let mut view = store.take_view(handle);
+    if !row_by_row {
+        let result = match assign {
+            Some((field, value)) => store
+                .record
+                .modify_all_in(&view, field, value, false)
+                .map(drop),
+            None => store.record.delete_all_in(&mut view, false).map(drop),
+        };
+        store.put_view(handle, view);
+        return match result {
+            Ok(()) => Eval::Normal(Value::Empty),
+            Err(error) => eval_error(format!("{method}: {error}")),
+        };
+    }
+    if let Some((field, _)) = &assign {
+        if store.record.primary_key_fields().contains(field) {
+            store.put_view(handle, view);
+            return eval_error(format!(
+                "{method}: {}",
+                crate::mock::record::RecordError::PrimaryKeyModifyAll(*field)
+            ));
+        }
+    }
+    let rows = store.record.matching_keys_in(&view);
+    let saved = view.clone();
+    store.put_view(handle, view);
+    let restore = |ctx: &mut DispatchCtx| {
+        let mut saved = saved.clone();
+        if matches!(write, RecordWrite::Delete) {
+            saved.clear_cursor();
+        }
+        if let Some(store) = ctx.records.get_mut(&key) {
+            store.put_view(handle, saved);
+        }
+    };
+    let each_row = |ctx: &mut DispatchCtx| {
+        for row in rows {
+            let store = ctx.records.get_mut(&key).expect("store just ensured");
+            let mut view = store.take_view(handle);
+            // Code that ran for an earlier row can have removed this one.
+            let loaded = store.record.get_in(&mut view, row).is_ok();
+            if loaded {
+                if let Some((field, value)) = &assign {
+                    store.record.field_set_in(&mut view, *field, value.clone());
+                }
+            }
+            store.put_view(handle, view);
+            if !loaded {
+                continue;
+            }
+            let result =
+                write_with_table_code(table, handle, (write, run_trigger), stack, ctx, |ctx| {
+                    let store = ctx.records.get_mut(&key).expect("store just ensured");
+                    let mut view = store.take_view(handle);
+                    let result = match write {
+                        RecordWrite::Modify => store.record.modify_in(&mut view, false),
+                        _ => store.record.delete_in(&mut view, false),
+                    };
+                    store.put_view(handle, view);
+                    match result {
+                        Ok(()) => Eval::Normal(Value::Boolean(true)),
+                        Err(error) => eval_error(format!("{method}: {error}")),
+                    }
+                });
+            if result.is_error() {
+                return result;
+            }
+        }
+        Eval::Normal(Value::Empty)
+    };
+    // The rows' table code runs on a copy of the record whose globals start
+    // at their defaults: "When you use DeleteAll(true), a copy of the AL
+    // variable with its initial values is created" (Insert, Modify,
+    // ModifyAll, Delete, DeleteAll, and Truncate methods on Learn).
+    let result = without_record_globals(handle, ctx, each_row);
+    restore(ctx);
+    result
+}
+
+/// `Rec.Rename(key values…)`, the new primary key with all its parts.
+///
+/// The new key goes into the buffer first, so OnBeforeRenameEvent, OnRename
+/// and OnAfterRenameEvent get it as `Rec` and the row as stored as `xRec`.
+/// The row then moves to the new key with the buffer written to it, so what
+/// OnRename sets on `Rec` is saved, and every field that relates to the old
+/// key gets the new one (see [`RelationIndex`]). A failure leaves the buffer
+/// as it was.
+fn dispatch_rename(
+    table: &TableRef,
+    handle: u64,
+    values: Vec<Value>,
+    stmt_position: bool,
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    use crate::interpreter::dispatch::{events, table_code};
+
+    let key = match ensure_store(ctx, table) {
+        Ok(key) => key,
+        Err(error) => return eval_error(error),
+    };
+    let store = ctx.records.get_mut(&key).expect("store just ensured");
+    if values.len() != store.record.primary_key_len() {
+        return eval_error(format!(
+            "Rename: requires all {} primary-key values (got {})",
+            store.record.primary_key_len(),
+            values.len()
+        ));
+    }
+    let pk_fields: Vec<FieldNo> = store.record.primary_key_fields().to_vec();
+    let mut new_key = Vec::with_capacity(values.len());
+    for (field, value) in pk_fields.iter().copied().zip(values) {
+        match store.coerce_to_field(field, value) {
+            Ok(coerced) => new_key.push((field, coerced)),
+            Err(error) => return eval_error(format!("Rename: {error}")),
+        }
+    }
+    let view = store.take_view(handle);
+    let old_key: Vec<(FieldNo, Value)> = pk_fields
+        .iter()
+        .map(|&field| {
+            let value = store
+                .record
+                .field_get_in(&view, field)
+                .or_else(|| store.field_defaults.get(&field))
+                .cloned()
+                .unwrap_or(Value::Empty);
+            (field, value)
+        })
+        .collect();
+    store.put_view(handle, view);
+    // A temporary record has no related rows in the database.
+    let cascades = match table.temp_owner {
+        Some(_) => Vec::new(),
+        None => match relation_index(ctx).rename_cascades(&*Arc::clone(&ctx.source), &table.name) {
+            Ok(cascades) => cascades,
+            Err(reason) => return eval_error(format!("Rename: {reason}")),
+        },
+    };
+    let failed = |error: crate::mock::record::RecordError| {
+        if stmt_position {
+            eval_error(format!("Rename: {error}"))
+        } else {
+            Eval::Normal(Value::Boolean(false))
+        }
     };
 
-    // Resolve the field-name argument for field-reference methods.
-    let field_no = if field_methods {
-        let fname = nodes
-            .first()
-            .map(|n| node_text(*n, source))
-            .unwrap_or_default();
-        if fname.is_empty() {
-            return eval_error(format!("{method}: missing field name argument"));
-        }
-        let store = ctx.records.get_mut(&key).expect("store just ensured");
-        match store.resolve_field(&fname) {
-            Ok(field_no) => Some(field_no),
-            Err(error) => return eval_error(format!("{method}: {error}")),
-        }
-    } else {
-        None
-    };
+    let trigger = table_code::TableCode::Trigger("OnRename");
+    let has_trigger = table_code::declares(ctx, &table.name, trigger);
+    let observed = has_trigger
+        || ["OnBeforeRenameEvent", "OnAfterRenameEvent"]
+            .iter()
+            .any(|event| events::has_subscribers("table", &table.name, event, "", ctx));
+    // The row as stored, read while the buffer still holds the old key.
+    let mut x_rec = observed.then(|| x_rec_of(table, handle, true, ctx));
 
     let store = ctx.records.get_mut(&key).expect("store just ensured");
     let mut view = store.take_view(handle);
-    let result = run_record_method(
-        store,
-        &mut view,
-        &lower,
-        method,
-        field_no,
-        values,
-        stmt_position,
-    );
-    let store = ctx.records.get_mut(&key).expect("store just ensured");
+    let started = store.record.start_rename_in(&mut view, new_key.clone());
     store.put_view(handle, view);
-    result
+    let pending = match started {
+        Ok(pending) => pending,
+        Err(error) => return failed(error),
+    };
+
+    let mut code_result = raise_table_event(
+        table,
+        handle,
+        (&mut x_rec, true),
+        "OnBeforeRenameEvent",
+        true,
+        stack,
+        ctx,
+    );
+    // `observed` covers the trigger, so `x_rec` holds the stored row here.
+    if let (Ok(()), true, Some(x_rec)) = (&code_result, has_trigger, x_rec.clone()) {
+        if let Some(result @ Eval::Error(_)) = table_code::run_table_code(
+            record_value_on(table, handle),
+            x_rec,
+            trigger,
+            Vec::new(),
+            stack,
+            ctx,
+        ) {
+            code_result = Err(result);
+        }
+    }
+
+    let key = match ensure_store(ctx, table) {
+        Ok(key) => key,
+        Err(error) => return eval_error(error),
+    };
+    let store = ctx.records.get_mut(&key).expect("store just ensured");
+    let mut view = store.take_view(handle);
+    let finished = match code_result {
+        Ok(()) => store.record.finish_rename_in(&mut view, pending),
+        Err(error) => {
+            store.record.cancel_rename_in(&mut view, pending);
+            store.put_view(handle, view);
+            return error;
+        }
+    };
+    store.put_view(handle, view);
+    if let Err(error) = finished {
+        return failed(error);
+    }
+    if let Err(error) = cascade_rename(&key, &cascades, &old_key, &new_key, ctx) {
+        return eval_error(format!("Rename: {error}"));
+    }
+    if let Err(error) = raise_table_event(
+        table,
+        handle,
+        (&mut x_rec, true),
+        "OnAfterRenameEvent",
+        true,
+        stack,
+        ctx,
+    ) {
+        return error;
+    }
+    Eval::Normal(Value::Boolean(true))
+}
+
+/// The workspace's table relations, built on first use.
+fn relation_index(ctx: &mut DispatchCtx) -> Arc<RelationIndex> {
+    match &ctx.relations {
+        Some(index) => Arc::clone(index),
+        None => {
+            let index = Arc::new(RelationIndex::build(&*ctx.source));
+            ctx.relations = Some(Arc::clone(&index));
+            index
+        }
+    }
+}
+
+/// Give every field in `cascades` the new value of the renamed key where it
+/// holds the old one. `renamed` is the store key of the renamed table. A
+/// related table no code has touched holds no rows and is skipped.
+fn cascade_rename(
+    renamed: &str,
+    cascades: &[RenameCascade],
+    old_key: &[(FieldNo, Value)],
+    new_key: &[(FieldNo, Value)],
+    ctx: &mut DispatchCtx,
+) -> Result<(), String> {
+    for cascade in cascades {
+        let key_field = ctx
+            .records
+            .get(renamed)
+            .expect("the renamed table has a store")
+            .resolve_field(&cascade.key_field)?;
+        let value_of = |key: &[(FieldNo, Value)]| {
+            key.iter()
+                .find(|(field, _)| *field == key_field)
+                .map(|(_, value)| value.clone())
+        };
+        let (Some(old), Some(new)) = (value_of(old_key), value_of(new_key)) else {
+            continue;
+        };
+        if old == new {
+            continue;
+        }
+        let related = TableRef::persistent(cascade.table.clone()).key();
+        let Some(store) = ctx.records.get_mut(&related) else {
+            continue;
+        };
+        let field = store.resolve_field(&cascade.field)?;
+        let old = store.coerce_to_field(field, old)?;
+        let new = store.coerce_to_field(field, new)?;
+        store
+            .record
+            .replace_field_value(field, &old, new)
+            .map_err(|error| {
+                format!(
+                    "updating field {} of table {}: {error}",
+                    cascade.field, cascade.table
+                )
+            })?;
+    }
+    Ok(())
+}
+
+/// Raise table event `event` (`OnAfterInsertEvent`, ...) on the record on
+/// view `handle`: subscribers get it as `Rec` (sharing the view, so their
+/// changes are the caller's), with `xRec` and `RunTrigger`.
+fn raise_table_event(
+    table: &TableRef,
+    handle: u64,
+    (x_rec, stored): (&mut Option<Value>, bool),
+    event: &str,
+    run_trigger: bool,
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Result<(), Eval> {
+    if !crate::interpreter::dispatch::events::has_subscribers("table", &table.name, event, "", ctx)
+    {
+        return Ok(());
+    }
+    let x_rec = x_rec
+        .get_or_insert_with(|| x_rec_of(table, handle, stored, ctx))
+        .clone();
+    let mut values = vec![
+        record_value_on(table, handle),
+        x_rec,
+        Value::Boolean(run_trigger),
+    ];
+    crate::interpreter::dispatch::events::raise(
+        "table",
+        &table.name,
+        event,
+        "",
+        &["Rec", "xRec", "RunTrigger"],
+        &mut values,
+        None,
+        stack,
+        ctx,
+    )
 }
 
 /// The record-method body proper, operating on a taken-out view so early
@@ -1146,18 +1687,6 @@ fn run_record_method(
             }
             Eval::Normal(Value::Boolean(store.record.is_empty_in(view)))
         }
-        "deleteall" => {
-            let run_trigger = match optional_boolean("DeleteAll", &values) {
-                Ok(run_trigger) => run_trigger,
-                Err(error) => return eval_error(error),
-            };
-            // One pass over the table (collect matching keys, remove them)
-            // instead of the O(n² log n) find-first-then-delete loop.
-            match store.record.delete_all_in(view, run_trigger) {
-                Ok(_) => Eval::Normal(Value::Empty),
-                Err(error) => eval_error(format!("DeleteAll: {error}")),
-            }
-        }
         other => eval_error(format!("unsupported record method: {other}")),
     }
 }
@@ -1207,6 +1736,295 @@ pub(crate) fn field_get(
     Eval::Normal(read_buffer_field(store, handle, f))
 }
 
+/// Whether workspace table `table` declares a field named `field`.
+pub(crate) fn declares_field(table: &TableRef, field: &str, ctx: &mut DispatchCtx) -> bool {
+    ensure_store(ctx, table).is_ok_and(|key| {
+        ctx.records
+            .get(&key)
+            .is_some_and(|store| store.resolve_field(field).is_ok())
+    })
+}
+
+/// The record on `table`'s view `handle`, as table code's implicit `Rec`.
+fn record_value_on(table: &TableRef, handle: u64) -> Value {
+    Value::Record(RecordValue {
+        table_name: table.name.clone(),
+        table_id: 0,
+        handle: Some(handle),
+        temporary: table.temp_owner.is_some(),
+    })
+}
+
+/// `xRec` for table code on view `handle`: a copy of the record on its own
+/// view, holding the buffer as it is now or, with `stored`, the row as the
+/// table holds it.
+fn x_rec_of(table: &TableRef, handle: u64, stored: bool, ctx: &mut DispatchCtx) -> Value {
+    let Value::Record(mut copy) = record_value_on(table, handle) else {
+        unreachable!("record_value_on builds a record");
+    };
+    fork_record_for_by_value(ctx, &mut copy);
+    if stored {
+        if let Some(copy_handle) = copy.handle {
+            let copy_table = TableRef {
+                name: copy.table_name.clone(),
+                temp_owner: copy.temporary.then_some(copy_handle),
+            };
+            if let Ok(key) = ensure_store(ctx, &copy_table) {
+                let store = ctx.records.get_mut(&key).expect("store just ensured");
+                let mut view = store.take_view(copy_handle);
+                store.record.reload_stored_in(&mut view);
+                store.put_view(copy_handle, view);
+            }
+        }
+    }
+    Value::Record(copy)
+}
+
+/// `Rec.Validate(Field[, Value])` — assign the field (when a value is given),
+/// check its TableRelation, then run its OnValidate trigger with the record
+/// as it was before as `xRec`.
+fn dispatch_validate(
+    table: &TableRef,
+    handle: u64,
+    nodes: &[Node<'_>],
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    let (field_node, value_node) = match nodes {
+        [field] => (*field, None),
+        [field, value] => (*field, Some(*value)),
+        _ => return eval_error("Validate expects (Field[, Value])"),
+    };
+    let field_name = node_text(field_node, source)
+        .unquote_identifier()
+        .into_owned();
+    let value = match value_node.map(|node| eval_expr(node, source, stack, ctx)) {
+        None => None,
+        Some(Eval::Normal(value)) => Some(value),
+        Some(other) => return other,
+    };
+    let key = match ensure_store(ctx, table) {
+        Ok(k) => k,
+        Err(e) => return eval_error(e),
+    };
+    let field_no = match ctx.records[&key].resolve_field(&field_name) {
+        Ok(field_no) => field_no,
+        Err(error) => return eval_error(format!("Validate: {error}")),
+    };
+    let x_rec = x_rec_of(table, handle, false, ctx);
+    let store = ctx.records.get_mut(&key).expect("store just ensured");
+    if let Some(value) = value {
+        let coerced = match store.coerce_to_field(field_no, value) {
+            Ok(value) => value,
+            Err(error) => return eval_error(format!("Validate: {error}")),
+        };
+        let mut view = store.take_view(handle);
+        store.record.field_set_in(&mut view, field_no, coerced);
+        store.put_view(handle, view);
+    }
+    let store = ctx.records.get(&key).expect("store just ensured");
+    let current = read_buffer_field(store, handle, field_no);
+    let blank = store
+        .field_defaults
+        .get(&field_no)
+        .is_some_and(|default| *default == current);
+    if !blank {
+        if let Err(error) = check_table_relation(&table.name, &field_name, &current, ctx) {
+            return eval_error(error);
+        }
+    }
+    let validate_event = |event: &str, stack: &mut ScopeStack, ctx: &mut DispatchCtx| {
+        let mut values = vec![
+            record_value_on(table, handle),
+            x_rec.clone(),
+            Value::Integer(0),
+        ];
+        crate::interpreter::dispatch::events::raise(
+            "table",
+            &table.name,
+            event,
+            &field_name,
+            &["Rec", "xRec", "CurrFieldNo"],
+            &mut values,
+            None,
+            stack,
+            ctx,
+        )
+    };
+    if let Err(error) = validate_event("OnBeforeValidateEvent", stack, ctx) {
+        return error;
+    }
+    if let Some(error @ Eval::Error(_)) = crate::interpreter::dispatch::table_code::run_table_code(
+        record_value_on(table, handle),
+        x_rec.clone(),
+        crate::interpreter::dispatch::table_code::TableCode::FieldTrigger {
+            field: &field_name,
+            trigger: "OnValidate",
+        },
+        Vec::new(),
+        stack,
+        ctx,
+    ) {
+        return error;
+    }
+    match validate_event("OnAfterValidateEvent", stack, ctx) {
+        Ok(()) => Eval::Normal(Value::Empty),
+        Err(error) => error,
+    }
+}
+
+/// How `Validate` checks field `field_name` of table `table_name` against
+/// its `TableRelation`: `Ok(None)` without one, `Ok(Some((table, field)))`
+/// naming the related table and, when the relation names one, its field
+/// (otherwise its single primary-key field). `Err` says why the check needs
+/// live BC: a conditional or filtered relation, a related table outside the
+/// workspace, or a composite key with no field named. The test router asks
+/// the same question, so the two cannot disagree.
+pub fn validate_relation(
+    source: &dyn al_types::ProcedureSource,
+    table_name: &str,
+    field_name: &str,
+) -> Result<Option<(String, Option<String>)>, String> {
+    let relation = source
+        .find_object_of_kind(table_name, &["table"])
+        .and_then(|path| {
+            let (text, tree) = source.get_cached_parse(&path)?;
+            crate::interpreter::dispatch::table_code::table_relation_in(
+                tree.root_node(),
+                text.as_bytes(),
+                table_name,
+                field_name,
+            )
+        });
+    let Some(relation) = relation else {
+        return Ok(None);
+    };
+    let Some((target, target_field)) =
+        crate::interpreter::dispatch::table_code::relation_target(&relation)
+    else {
+        return Err(format!(
+            "the TableRelation of {field_name} ('{relation}') needs live Business Central to check"
+        ));
+    };
+    let meta = load_table_meta(source, &target).map_err(|_| {
+        format!(
+            "{field_name} relates to table '{target}', which is not in the workspace; \
+             checking it needs live Business Central"
+        )
+    })?;
+    match &target_field {
+        Some(name) if !meta.field_by_name.contains_key(&name.to_ascii_lowercase()) => Err(format!(
+            "{field_name} relates to field '{name}', which table '{target}' does not declare"
+        )),
+        None if meta.pk_fields.len() != 1 => Err(format!(
+            "{field_name} relates to table '{target}' by a composite key; \
+             checking it needs live Business Central"
+        )),
+        _ => Ok(Some((target, target_field))),
+    }
+}
+
+/// BC's Validate refuses a value its field's `TableRelation` does not
+/// contain. Checks the value exists in the related workspace table, or
+/// says why that needs live BC (see [`validate_relation`]).
+fn check_table_relation(
+    table_name: &str,
+    field_name: &str,
+    value: &Value,
+    ctx: &mut DispatchCtx,
+) -> Result<(), String> {
+    let source = Arc::clone(&ctx.source);
+    let Some((target, target_field)) = validate_relation(&*source, table_name, field_name)
+        .map_err(|reason| format!("Validate: {reason}"))?
+    else {
+        return Ok(());
+    };
+    let key = ensure_store(ctx, &TableRef::persistent(target.clone()))?;
+    let store = ctx.records.get(&key).expect("store just ensured");
+    let related_field = match &target_field {
+        Some(name) => store.resolve_field(name)?,
+        None => store.record.primary_key_fields()[0],
+    };
+    let related_value = store.coerce_to_field(related_field, value.clone())?;
+    let mut view = store.record.new_view();
+    store.record.set_range_in(
+        &mut view,
+        related_field,
+        related_value.clone(),
+        related_value,
+    );
+    if store.record.count_in(&view) == 0 {
+        return Err(format!(
+            "The field {field_name} of table {table_name} contains a value ({}) that cannot be found in the related table ({target}).",
+            crate::interpreter::dispatch::render_value(value)
+        ));
+    }
+    Ok(())
+}
+
+/// `Rec.TestField(Field[, Value])` — raise unless `Field` has a value (is
+/// not its type's zero) or, with `Value`, equals it.
+fn dispatch_testfield(
+    table: &TableRef,
+    handle: u64,
+    nodes: &[Node<'_>],
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    let (field_node, expected_node) = match nodes {
+        [field] => (*field, None),
+        [field, expected] => (*field, Some(*expected)),
+        _ => return eval_error("TestField expects (Field[, Value])"),
+    };
+    let expected = match expected_node.map(|node| eval_expr(node, source, stack, ctx)) {
+        None => None,
+        Some(Eval::Normal(value)) => Some(value),
+        Some(other) => return other,
+    };
+    let key = match ensure_store(ctx, table) {
+        Ok(k) => k,
+        Err(e) => return eval_error(e),
+    };
+    let store = ctx.records.get_mut(&key).expect("store just ensured");
+    let field_name = node_text(field_node, source)
+        .unquote_identifier()
+        .into_owned();
+    let field_no = match store.resolve_field(&field_name) {
+        Ok(field_no) => field_no,
+        Err(error) => return eval_error(format!("TestField: {error}")),
+    };
+    let default = store
+        .field_defaults
+        .get(&field_no)
+        .cloned()
+        .unwrap_or(Value::Empty);
+    let view = store.take_view(handle);
+    let current = store
+        .record
+        .field_get_in(&view, field_no)
+        .cloned()
+        .unwrap_or_else(|| default.clone());
+    store.put_view(handle, view);
+    let table_name = store.record.table_name.clone();
+    match expected {
+        None if current == default || matches!(current, Value::Empty | Value::Null) => eval_error(
+            format!("{field_name} must have a value in {table_name}. It cannot be zero or empty."),
+        ),
+        None => Eval::Normal(Value::Empty),
+        Some(expected) => match store.coerce_to_field(field_no, expected) {
+            Ok(expected) if expected == current => Eval::Normal(Value::Empty),
+            Ok(expected) => eval_error(format!(
+                "{field_name} must be equal to '{}' in {table_name}. Current value is '{}'.",
+                crate::interpreter::dispatch::render_value(&expected),
+                crate::interpreter::dispatch::render_value(&current)
+            )),
+            Err(error) => eval_error(format!("TestField: {error}")),
+        },
+    }
+}
+
 /// `Rec.ModifyAll(Field, Value[, RunTrigger])` — set `Field` on every row the
 /// view's filters select.
 fn dispatch_modifyall(
@@ -1246,15 +2064,14 @@ fn dispatch_modifyall(
         Ok(value) => value,
         Err(error) => return eval_error(format!("ModifyAll: {error}")),
     };
-    let view = store.take_view(handle);
-    let result = store
-        .record
-        .modify_all_in(&view, field_no, value, run_trigger);
-    store.put_view(handle, view);
-    match result {
-        Ok(_) => Eval::Normal(Value::Empty),
-        Err(error) => eval_error(format!("ModifyAll: {error}")),
-    }
+    write_all(
+        table,
+        handle,
+        (RecordWrite::Modify, run_trigger),
+        Some((field_no, value)),
+        stack,
+        ctx,
+    )
 }
 
 fn dispatch_calcsums(
@@ -1473,7 +2290,19 @@ pub(crate) fn try_field_assign(
     ctx: &mut DispatchCtx,
 ) -> Option<Eval> {
     let (recv, field_name) = record_field_access(lhs_node, source)?;
-    let (table, handle) = record_binding(&recv, stack, ctx)?;
+    set_record_field(&recv, &field_name, rhs_val, stack, ctx)
+}
+
+/// Write `value` to field `field_name` of the record variable `recv`,
+/// coerced to the field's type. `None` when `recv` is not a record variable.
+fn set_record_field(
+    recv: &str,
+    field_name: &str,
+    rhs_val: &Value,
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Option<Eval> {
+    let (table, handle) = record_binding(recv, stack, ctx)?;
     if !records_enabled(ctx) {
         return Some(records_disabled_error());
     }
@@ -1482,7 +2311,7 @@ pub(crate) fn try_field_assign(
         Err(e) => return Some(eval_error(e)),
     };
     let store = ctx.records.get_mut(&key).expect("store just ensured");
-    let f = match store.resolve_field(&field_name) {
+    let f = match store.resolve_field(field_name) {
         Ok(field_no) => field_no,
         Err(error) => return Some(eval_error(error)),
     };
@@ -1494,6 +2323,45 @@ pub(crate) fn try_field_assign(
     store.record.field_set_in(&mut view, f, coerced);
     store.put_view(handle, view);
     Some(Eval::Normal(Value::Empty))
+}
+
+/// The name table code binds its record to.
+pub(crate) const IMPLICIT_RECORD: &str = "Rec";
+
+/// In table code, the field of the implicit record that a bare `name`
+/// denotes. `None` outside table code or when `name` is not a field.
+fn implicit_field(name: &str, stack: &mut ScopeStack, ctx: &mut DispatchCtx) -> Option<String> {
+    if !stack.top().is_some_and(|frame| frame.implicit_record) {
+        return None;
+    }
+    let field = name.unquote_identifier().into_owned();
+    let (table, _) = record_binding(IMPLICIT_RECORD, stack, ctx)?;
+    let key = ensure_store(ctx, &table).ok()?;
+    ctx.records.get(&key)?.resolve_field(&field).ok()?;
+    Some(field)
+}
+
+/// Read a bare field name in table code (`"Search Name"` for
+/// `Rec."Search Name"`).
+pub(crate) fn implicit_field_get(
+    name: &str,
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Option<Eval> {
+    let field = implicit_field(name, stack, ctx)?;
+    let (table, handle) = record_binding(IMPLICIT_RECORD, stack, ctx)?;
+    Some(field_get(&table, handle, &field, ctx))
+}
+
+/// Assign a bare field name in table code.
+pub(crate) fn implicit_field_set(
+    name: &str,
+    value: &Value,
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Option<Eval> {
+    let field = implicit_field(name, stack, ctx)?;
+    set_record_field(IMPLICIT_RECORD, &field, value, stack, ctx)
 }
 
 /// If `node` is a `postfix_expression` of the shape `primary . member` with a
@@ -1551,25 +2419,102 @@ fn descend_to_postfix(node: Node<'_>) -> Option<Node<'_>> {
 pub fn supports_list_method(method: &str) -> bool {
     matches!(
         method.to_ascii_lowercase().as_str(),
-        "add" | "get" | "count" | "contains" | "indexof" | "insert" | "remove" | "removeat" | "set"
+        "add"
+            | "addrange"
+            | "get"
+            | "getrange"
+            | "count"
+            | "contains"
+            | "indexof"
+            | "lastindexof"
+            | "insert"
+            | "remove"
+            | "removeat"
+            | "removerange"
+            | "reverse"
+            | "set"
     )
 }
 
-/// Execute a `List of [T]` method call on the list bound to `recv`.
+/// Execute a `List of [T]` method call on the list bound to `recv`. The
+/// element or old value of the `var` forms of `Get` and `Set` goes to
+/// `ctx.var_writebacks`. `statement` says the call is a statement, where an
+/// index out of range raises instead of returning false.
 pub(crate) fn dispatch_list_method(
     recv: &str,
     method: &str,
     args: Vec<Value>,
+    statement: bool,
     stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
 ) -> Eval {
+    ctx.var_writebacks.clear();
     let lower = method.to_ascii_lowercase();
     let Some(slot) = stack.lookup_mut(recv) else {
         return eval_error(format!("list variable '{recv}' is not bound"));
     };
-    let Value::List(items) = slot else {
+    let Value::List(list) = slot else {
         return eval_error(format!("'{recv}' is not a List"));
     };
+    let list = list.clone();
+    // `AddRange(Other)` for a `List of [T]` adds Other's elements. Read them
+    // before the list is locked: `L.AddRange(L)` doubles L.
+    let args = match (lower.as_str(), args.as_slice()) {
+        ("addrange", [Value::List(other)]) if adds_elements(&list, other) => other.snapshot(),
+        _ => args,
+    };
+    // Comparing with the list itself would lock it twice.
+    if args
+        .iter()
+        .any(|arg| matches!(arg, Value::List(other) if other.same(&list)))
+    {
+        return eval_error(format!(
+            "List.{method} with the list itself as an argument is not supported by the local runtime"
+        ));
+    }
+    if let ("contains" | "indexof" | "lastindexof" | "remove", [needle]) =
+        (lower.as_str(), args.as_slice())
+    {
+        return search_list(&list, &lower, needle);
+    }
+    let mut items = list.lock();
+    let added = match lower.as_str() {
+        "addrange" => args.len(),
+        "add" | "insert" => 1,
+        _ => 0,
+    };
+    if let Err(error) =
+        check_collection_len(&format!("List.{method}"), items.len().saturating_add(added))
+    {
+        return eval_error(error);
+    }
     match lower.as_str() {
+        "addrange" if !args.is_empty() => {
+            items.extend(args);
+            Eval::Normal(Value::Empty)
+        }
+        "addrange" => eval_error("List.AddRange expects at least one value or a List"),
+        "getrange" => match list_range("List.GetRange", &args, items.len()) {
+            Ok(range) => Eval::Normal(Value::List(Collection::new(
+                items[range].to_vec(),
+                list.member_type(),
+            ))),
+            Err(error) => eval_error(error),
+        },
+        "removerange" => match list_range("List.RemoveRange", &args, items.len()) {
+            Ok(range) => {
+                items.drain(range);
+                Eval::Normal(Value::Boolean(true))
+            }
+            Err(_) if !statement => Eval::Normal(Value::Boolean(false)),
+            Err(error) => eval_error(error),
+        },
+        "reverse" if args.is_empty() => {
+            items.reverse();
+            Eval::Normal(Value::Empty)
+        }
+        "reverse" => eval_error("List.Reverse expects no arguments"),
+        "lastindexof" => eval_error("List.LastIndexOf expects exactly one value"),
         "add" if args.len() == 1 => {
             items.push(args[0].clone());
             Eval::Normal(Value::Boolean(true))
@@ -1580,29 +2525,20 @@ pub(crate) fn dispatch_list_method(
             Err(_) => eval_error("List.Count exceeds the supported Integer range"),
         },
         "count" => eval_error("List.Count expects no arguments"),
+        "get" if args.len() == 2 => match list_index("List.Get", &args[..1], items.len()) {
+            Ok(index) => {
+                ctx.var_writebacks.push((1, items[index].clone()));
+                Eval::Normal(Value::Boolean(true))
+            }
+            Err(_) if !statement => Eval::Normal(Value::Boolean(false)),
+            Err(error) => eval_error(error),
+        },
         "get" => match list_index("List.Get", &args, items.len()) {
             Ok(index) => Eval::Normal(items[index].clone()),
             Err(error) => eval_error(error),
         },
-        "contains" => match args.as_slice() {
-            [needle] => Eval::Normal(Value::Boolean(items.iter().any(|item| item == needle))),
-            _ => eval_error("List.Contains expects exactly one value"),
-        },
-        "indexof" => match args.as_slice() {
-            [needle] => {
-                let position = items.iter().position(|item| item == needle);
-                match position {
-                    Some(position) => match i64::try_from(position + 1) {
-                        Ok(position) => Eval::Normal(Value::Integer(position)),
-                        Err(_) => {
-                            eval_error("List.IndexOf result exceeds the supported Integer range")
-                        }
-                    },
-                    None => Eval::Normal(Value::Integer(0)),
-                }
-            }
-            _ => eval_error("List.IndexOf expects exactly one value"),
-        },
+        "contains" => eval_error("List.Contains expects exactly one value"),
+        "indexof" => eval_error("List.IndexOf expects exactly one value"),
         "removeat" => match list_index("List.RemoveAt", &args, items.len()) {
             Ok(index) => {
                 items.remove(index);
@@ -1610,17 +2546,7 @@ pub(crate) fn dispatch_list_method(
             }
             Err(error) => eval_error(error),
         },
-        "remove" => match args.as_slice() {
-            [needle] => {
-                if let Some(pos) = items.iter().position(|item| item == needle) {
-                    items.remove(pos);
-                    Eval::Normal(Value::Boolean(true))
-                } else {
-                    Eval::Normal(Value::Boolean(false))
-                }
-            }
-            _ => eval_error("List.Remove expects exactly one value"),
-        },
+        "remove" => eval_error("List.Remove expects exactly one value"),
         "set" if args.len() == 2 => match list_index("List.Set", &args[..1], items.len()) {
             Ok(index) => {
                 items[index] = args[1].clone();
@@ -1628,7 +2554,18 @@ pub(crate) fn dispatch_list_method(
             }
             Err(error) => eval_error(error),
         },
-        "set" => eval_error("List.Set expects exactly an Integer index and one value"),
+        "set" if args.len() == 3 => match list_index("List.Set", &args[..1], items.len()) {
+            Ok(index) => {
+                let old = std::mem::replace(&mut items[index], args[1].clone());
+                ctx.var_writebacks.push((2, old));
+                Eval::Normal(Value::Boolean(true))
+            }
+            Err(_) if !statement => Eval::Normal(Value::Boolean(false)),
+            Err(error) => eval_error(error),
+        },
+        "set" => eval_error(
+            "List.Set expects an Integer index, a value and an optional var for the old value",
+        ),
         // `Insert(index, value)`: 1-based, up to one past the end.
         "insert" => match args.as_slice() {
             [Value::Integer(index), value] => {
@@ -1651,6 +2588,104 @@ pub(crate) fn dispatch_list_method(
         },
         other => eval_error(format!("unsupported List method: {other}")),
     }
+}
+
+/// `Contains`, `IndexOf`, `LastIndexOf` and `Remove`: find `needle` among
+/// the elements of `list`.
+///
+/// Comparing two lists or dictionaries locks each to read it, and through a
+/// cycle (`A.Add(B); B.Add(A)`) that includes `list`. A `std::sync::Mutex`
+/// locked twice on one thread waits for good, so when `needle` holds a list
+/// or dictionary the elements are compared as a copy, with `list` unlocked.
+fn search_list(list: &Collection<Vec<Value>>, method: &str, needle: &Value) -> Eval {
+    let find = |items: &[Value]| {
+        if method == "lastindexof" {
+            items.iter().rposition(|item| item == needle)
+        } else {
+            items.iter().position(|item| item == needle)
+        }
+    };
+    let position = if holds_collection(needle) {
+        find(&list.snapshot())
+    } else {
+        find(&list.lock())
+    };
+    match (method, position) {
+        ("contains", position) => Eval::Normal(Value::Boolean(position.is_some())),
+        ("remove", Some(position)) => {
+            list.lock().remove(position);
+            Eval::Normal(Value::Boolean(true))
+        }
+        ("remove", None) => Eval::Normal(Value::Boolean(false)),
+        (_, None) => Eval::Normal(Value::Integer(0)),
+        (_, Some(position)) => match i64::try_from(position + 1) {
+            Ok(position) => Eval::Normal(Value::Integer(position)),
+            Err(_) => eval_error("List.IndexOf result exceeds the supported Integer range"),
+        },
+    }
+}
+
+/// Whether comparing `value` with another value can lock a List or
+/// Dictionary: whether it is one or holds one.
+fn holds_collection(value: &Value) -> bool {
+    match value {
+        Value::List(_) | Value::Dict(_) => true,
+        Value::Variant(inner) => holds_collection(inner),
+        Value::Array(items) => items.iter().any(holds_collection),
+        Value::Range { start, end } => holds_collection(start) || holds_collection(end),
+        _ => false,
+    }
+}
+
+/// Whether `list.AddRange(other)` is the `AddRange(List of [T])` overload,
+/// which adds the elements of `other`, or `AddRange(T)` for a list whose
+/// elements are lists, which adds `other` as one element. A list with no
+/// declared element type takes the first, and an argument with none is judged
+/// by its elements.
+fn adds_elements(list: &Collection<Vec<Value>>, other: &Collection<Vec<Value>>) -> bool {
+    let is_list_type = |type_text: &str| {
+        type_text
+            .trim_start()
+            .to_ascii_lowercase()
+            .starts_with("list of")
+    };
+    let normalised = |type_text: &str| {
+        type_text
+            .split_whitespace()
+            .collect::<String>()
+            .to_ascii_lowercase()
+    };
+    match (list.member_type(), other.member_type()) {
+        (Some(element), _) if !is_list_type(element) => true,
+        (Some(element), Some(other_element)) => normalised(element) == normalised(other_element),
+        (Some(_), None) => other
+            .lock()
+            .iter()
+            .any(|item| matches!(item, Value::List(_))),
+        (None, _) => true,
+    }
+}
+
+/// The 0-based range `(index, count)` names in a list of `len` elements, for
+/// `GetRange` and `RemoveRange`. `GetRange`'s form with a `var` result runs
+/// live only.
+fn list_range(method: &str, args: &[Value], len: usize) -> Result<std::ops::Range<usize>, String> {
+    let (index, count) = match args {
+        [Value::Integer(index), Value::Integer(count)] => (*index, *count),
+        _ => return Err(format!("{method} expects an Integer index and count")),
+    };
+    let start = index
+        .checked_sub(1)
+        .and_then(|start| usize::try_from(start).ok());
+    let range = start
+        .zip(usize::try_from(count).ok())
+        .and_then(|(start, count)| {
+            let end = start.checked_add(count)?;
+            (end <= len).then_some(start..end)
+        });
+    range.ok_or_else(|| {
+        format!("{method}: index {index} and count {count} are out of range for {len} elements")
+    })
 }
 
 fn list_index(method: &str, args: &[Value], len: usize) -> Result<usize, String> {
@@ -1751,6 +2786,9 @@ pub(crate) fn dispatch_text_method(
         "replace" => match args.as_slice() {
             [old, new] => match (text_arg(old), text_arg(new)) {
                 (Some(old), Some(new)) if !old.is_empty() => {
+                    if let Err(error) = check_replace_size("Text.Replace", &s, &old, &new) {
+                        return eval_error(error);
+                    }
                     Eval::Normal(Value::Text(s.replace(&old, &new)))
                 }
                 (Some(_), Some(_)) => eval_error("Text.Replace: the old value cannot be empty"),
@@ -1773,10 +2811,17 @@ pub(crate) fn dispatch_text_method(
                 }
             }
             if separators.is_empty() {
-                return Eval::Normal(Value::List(vec![Value::Text(s)]));
+                return Eval::Normal(Value::list(vec![Value::Text(s)]));
             }
             let mut parts = vec![s];
             for sep in &separators {
+                let count = parts
+                    .iter()
+                    .map(|part| part.matches(sep.as_str()).count() + 1)
+                    .sum();
+                if let Err(error) = check_collection_len("Text.Split", count) {
+                    return eval_error(error);
+                }
                 parts = parts
                     .into_iter()
                     .flat_map(|part| {
@@ -1786,7 +2831,7 @@ pub(crate) fn dispatch_text_method(
                     })
                     .collect();
             }
-            Eval::Normal(Value::List(parts.into_iter().map(Value::Text).collect()))
+            Eval::Normal(Value::list(parts.into_iter().map(Value::Text).collect()))
         }
         "trim" | "trimstart" | "trimend" => {
             if !args.is_empty() {
@@ -1863,6 +2908,12 @@ pub(crate) fn dispatch_text_method(
             let missing = usize::try_from(count)
                 .unwrap_or(0)
                 .saturating_sub(s.chars().count());
+            let size = missing
+                .saturating_mul(pad.len_utf8())
+                .saturating_add(s.len());
+            if let Err(error) = check_text_size(&format!("Text.{method}"), size) {
+                return eval_error(error);
+            }
             let padding: String = std::iter::repeat_n(pad, missing).collect();
             Eval::Normal(Value::Text(if lower == "padleft" {
                 padding + &s
@@ -1905,6 +2956,165 @@ pub(crate) fn dispatch_text_method(
     }
 }
 
+/// Refuse a replacement of `old` by `new` in `text` whose result is longer
+/// than [`crate::interpreter::value::MAX_TEXT_BYTES`]. Replacing `x` with
+/// `xx` doubles a text.
+fn check_replace_size(operation: &str, text: &str, old: &str, new: &str) -> Result<(), String> {
+    if new.len() <= old.len() {
+        return Ok(());
+    }
+    let most = (text.len() / old.len()).saturating_mul(new.len() - old.len());
+    if check_text_size(operation, text.len().saturating_add(most)).is_ok() {
+        return Ok(());
+    }
+    let growth = text
+        .matches(old)
+        .count()
+        .saturating_mul(new.len() - old.len());
+    check_text_size(operation, text.len().saturating_add(growth))
+}
+
+/// True if `method` is a `TextBuilder` method implemented by the local
+/// runtime.
+pub fn supports_textbuilder_method(method: &str) -> bool {
+    matches!(
+        method.to_ascii_lowercase().as_str(),
+        "append" | "appendline" | "length" | "totext" | "clear" | "insert" | "remove" | "replace"
+    )
+}
+
+/// Execute a `TextBuilder` method on the builder bound to `recv`, changing
+/// it in place.
+pub(crate) fn dispatch_textbuilder_method(
+    recv: &str,
+    method: &str,
+    args: Vec<Value>,
+    stack: &mut ScopeStack,
+) -> Eval {
+    let Some(Value::TextBuilder(builder)) = stack.lookup(recv) else {
+        return eval_error(format!("'{recv}' is not a TextBuilder"));
+    };
+    let builder = builder.clone();
+    // A builder argument is read before the receiver is locked, since it may
+    // be the receiver.
+    let args: Vec<Value> = args
+        .into_iter()
+        .map(|arg| match arg {
+            Value::TextBuilder(other) => Value::Text(other.snapshot()),
+            other => other,
+        })
+        .collect();
+    let mut guard = builder.lock();
+    let text: &mut String = &mut guard;
+    let as_text = |value: &Value| match value {
+        Value::Text(t) | Value::Code(t) => t.clone(),
+        Value::Char(c) => c.to_string(),
+        other => crate::interpreter::dispatch::render_value(other),
+    };
+    // Positions are 1-based character indexes, as in BC.
+    let byte_at = |text: &str, index: i64| -> Option<usize> {
+        let zero = usize::try_from(index.checked_sub(1)?).ok()?;
+        if zero == text.chars().count() {
+            return Some(text.len());
+        }
+        text.char_indices().nth(zero).map(|(at, _)| at)
+    };
+    let lower = method.to_ascii_lowercase();
+    let grow_by = |text: &str, added: usize| {
+        check_text_size(
+            &format!("TextBuilder.{method}"),
+            text.len().saturating_add(added),
+        )
+    };
+    match (lower.as_str(), args.as_slice()) {
+        ("append", [value]) => {
+            let value = as_text(value);
+            if let Err(error) = grow_by(text, value.len()) {
+                return eval_error(error);
+            }
+            text.push_str(&value);
+            Eval::Normal(Value::Boolean(true))
+        }
+        ("appendline", []) => {
+            if let Err(error) = grow_by(text, 2) {
+                return eval_error(error);
+            }
+            text.push_str("\r\n");
+            Eval::Normal(Value::Boolean(true))
+        }
+        ("appendline", [value]) => {
+            let value = as_text(value);
+            if let Err(error) = grow_by(text, value.len() + 2) {
+                return eval_error(error);
+            }
+            text.push_str(&value);
+            text.push_str("\r\n");
+            Eval::Normal(Value::Boolean(true))
+        }
+        ("length", []) => Eval::Normal(Value::Integer(text.chars().count() as i64)),
+        ("totext", []) => Eval::Normal(Value::Text(text.clone())),
+        ("totext", [Value::Integer(start), Value::Integer(count)]) => {
+            let chars: Vec<char> = text.chars().collect();
+            let from = usize::try_from(start - 1)
+                .ok()
+                .filter(|from| *from <= chars.len());
+            let to = from
+                .zip(usize::try_from(*count).ok())
+                .map(|(from, count)| from + count)
+                .filter(|to| *to <= chars.len());
+            match from.zip(to) {
+                Some((from, to)) => Eval::Normal(Value::Text(chars[from..to].iter().collect())),
+                None => eval_error(format!(
+                    "TextBuilder.ToText: {count} characters from {start} are outside the {}-character text",
+                    chars.len()
+                )),
+            }
+        }
+        ("clear", []) => {
+            text.clear();
+            Eval::Normal(Value::Empty)
+        }
+        ("insert", [Value::Integer(index), value]) => match byte_at(text, *index) {
+            Some(at) => {
+                let value = as_text(value);
+                if let Err(error) = grow_by(text, value.len()) {
+                    return eval_error(error);
+                }
+                text.insert_str(at, &value);
+                Eval::Normal(Value::Boolean(true))
+            }
+            None => eval_error(format!("TextBuilder.Insert: index {index} is out of range")),
+        },
+        ("remove", [Value::Integer(index), Value::Integer(count)]) => {
+            let start = byte_at(text, *index);
+            let end = start.and_then(|_| byte_at(text, index + count));
+            match start.zip(end).filter(|_| *count >= 0) {
+                Some((start, end)) => {
+                    text.replace_range(start..end, "");
+                    Eval::Normal(Value::Boolean(true))
+                }
+                None => eval_error(format!(
+                    "TextBuilder.Remove: {count} characters from {index} are out of range"
+                )),
+            }
+        }
+        ("replace", [old, new]) => {
+            let (old, new) = (as_text(old), as_text(new));
+            if old.is_empty() {
+                return eval_error("TextBuilder.Replace: the old value cannot be empty");
+            }
+            if let Err(error) = check_replace_size("TextBuilder.Replace", text, &old, &new) {
+                return eval_error(error);
+            }
+            *text = text.replace(&old, &new);
+            Eval::Normal(Value::Boolean(true))
+        }
+        _ => eval_error(format!(
+            "TextBuilder.{method} with these arguments is not supported by the local runtime"
+        )),
+    }
+}
+
 /// True if `method` is a `Dictionary of [K, V]` method implemented by the
 /// local runtime.
 pub fn supports_dict_method(method: &str) -> bool {
@@ -1921,10 +3131,39 @@ pub(crate) fn dict_lookup(
     key: &Value,
     stack: &ScopeStack,
 ) -> Result<Option<Value>, String> {
-    let Some(Value::Dict(entries)) = stack.lookup(recv) else {
+    let Some(Value::Dict(dict)) = stack.lookup(recv) else {
         return Err(format!("'{recv}' is not a Dictionary"));
     };
-    Ok(entries.get(&dict_key(key)?).cloned())
+    let key = declared_key(key, dict.member_type())?;
+    Ok(dict
+        .lock()
+        .get(&dict_key(&key)?)
+        .map(|(_, value)| value.clone()))
+}
+
+/// `key` converted to the dictionary's declared key type, as BC converts an
+/// argument to a typed parameter: a Code key is trimmed and upper-cased, one
+/// character of Text becomes a Char, a Char becomes Text or Code, and an
+/// Integer becomes a Decimal.
+fn declared_key(key: &Value, key_type: Option<&str>) -> Result<Value, String> {
+    let Some(key_type) = key_type else {
+        return Ok(key.clone());
+    };
+    let base = key_type.split('[').next().unwrap_or_default().trim();
+    let Some(slot) = Value::default_for(base) else {
+        return Ok(key.clone());
+    };
+    let capacity = crate::interpreter::dispatch::declared_text_length(key_type);
+    match (&slot, key) {
+        (Value::Char(_), Value::Text(text) | Value::Code(text)) => {
+            crate::interpreter::value::check_string_capacity(text, Some(1))?;
+            Ok(Value::Char(text.chars().next().unwrap_or('\0')))
+        }
+        (Value::Text(_) | Value::Code(_), Value::Char(c)) => {
+            Value::coerce_into_slot(&slot, Value::Text(c.to_string()), capacity)
+        }
+        _ => Value::coerce_into_slot(&slot, key.clone(), capacity),
+    }
 }
 
 /// Serialise a dictionary key value into the `Dict` map's string key space.
@@ -1940,6 +3179,10 @@ fn dict_key(value: &Value) -> Result<String, String> {
         Value::Time(t) => format!("T{t}"),
         Value::DateTime(dt) => format!("DT{dt}"),
         Value::Guid(g) => g.to_uppercase(),
+        Value::Char(c) => format!("C{c}"),
+        Value::Option {
+            type_name, ordinal, ..
+        } => format!("O{}:{ordinal}", type_name.to_ascii_lowercase()),
         other => {
             return Err(format!(
                 "Dictionary keys of type {} are not supported by the local runtime",
@@ -1950,29 +3193,62 @@ fn dict_key(value: &Value) -> Result<String, String> {
 }
 
 /// Execute a `Dictionary of [K, V]` method call on the dictionary bound to
-/// `recv`.
+/// `recv`. The old value of `Set(key, value, var old)` goes to
+/// `ctx.var_writebacks`.
 pub(crate) fn dispatch_dict_method(
     recv: &str,
     method: &str,
     args: Vec<Value>,
     stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
 ) -> Eval {
+    ctx.var_writebacks.clear();
     let lower = method.to_ascii_lowercase();
     let Some(slot) = stack.lookup_mut(recv) else {
         return eval_error(format!("dictionary variable '{recv}' is not bound"));
     };
-    let Value::Dict(entries) = slot else {
+    let Value::Dict(dict) = slot else {
         return eval_error(format!("'{recv}' is not a Dictionary"));
     };
+    let dict = dict.clone();
+    let mut args = args;
+    if matches!(
+        lower.as_str(),
+        "add" | "set" | "get" | "containskey" | "remove"
+    ) {
+        if let Some(key) = args.first_mut() {
+            match declared_key(key, dict.member_type()) {
+                Ok(converted) => *key = converted,
+                Err(error) => return eval_error(error),
+            }
+        }
+    }
+    let mut entries = dict.lock();
+    if matches!(lower.as_str(), "add" | "set") {
+        if let Err(error) = check_collection_len(
+            &format!("Dictionary.{method}"),
+            entries.len().saturating_add(1),
+        ) {
+            // Set on a key that is there replaces a value.
+            let replaces = lower == "set"
+                && args
+                    .first()
+                    .and_then(|key| dict_key(key).ok())
+                    .is_some_and(|key| entries.contains_key(&key));
+            if !replaces {
+                return eval_error(error);
+            }
+        }
+    }
     match lower.as_str() {
         "add" => match args.as_slice() {
             [key, value] => match dict_key(key) {
                 Ok(key_text) => match entries.entry(key_text) {
-                    std::collections::btree_map::Entry::Occupied(_) => {
+                    indexmap::map::Entry::Occupied(_) => {
                         eval_error("Dictionary.Add: the key already exists")
                     }
-                    std::collections::btree_map::Entry::Vacant(slot) => {
-                        slot.insert(value.clone());
+                    indexmap::map::Entry::Vacant(slot) => {
+                        slot.insert((key.clone(), value.clone()));
                         Eval::Normal(Value::Empty)
                     }
                 },
@@ -1983,17 +3259,31 @@ pub(crate) fn dispatch_dict_method(
         "set" => match args.as_slice() {
             [key, value] => match dict_key(key) {
                 Ok(key_text) => {
-                    entries.insert(key_text, value.clone());
+                    entries.insert(key_text, (key.clone(), value.clone()));
                     Eval::Normal(Value::Empty)
                 }
                 Err(error) => eval_error(error),
             },
-            _ => eval_error("Dictionary.Set expects exactly a key and a value"),
+            // True and the old value when the key was there, false when the
+            // value was added.
+            [key, value, _] => match dict_key(key) {
+                Ok(key_text) => match entries.insert(key_text, (key.clone(), value.clone())) {
+                    Some((_, old)) => {
+                        ctx.var_writebacks.push((2, old));
+                        Eval::Normal(Value::Boolean(true))
+                    }
+                    None => Eval::Normal(Value::Boolean(false)),
+                },
+                Err(error) => eval_error(error),
+            },
+            _ => eval_error(
+                "Dictionary.Set expects a key, a value and an optional var for the old value",
+            ),
         },
         "get" => match args.as_slice() {
             [key] => match dict_key(key) {
                 Ok(key_text) => match entries.get(&key_text) {
-                    Some(value) => Eval::Normal(value.clone()),
+                    Some((_, value)) => Eval::Normal(value.clone()),
                     None => eval_error("Dictionary.Get: the key does not exist"),
                 },
                 Err(error) => eval_error(error),
@@ -2012,7 +3302,9 @@ pub(crate) fn dispatch_dict_method(
         },
         "remove" => match args.as_slice() {
             [key] => match dict_key(key) {
-                Ok(key_text) => Eval::Normal(Value::Boolean(entries.remove(&key_text).is_some())),
+                Ok(key_text) => {
+                    Eval::Normal(Value::Boolean(entries.shift_remove(&key_text).is_some()))
+                }
                 Err(error) => eval_error(error),
             },
             _ => eval_error("Dictionary.Remove expects exactly one key"),
@@ -2030,15 +3322,17 @@ pub(crate) fn dispatch_dict_method(
             if !args.is_empty() {
                 return eval_error("Dictionary.Keys expects no arguments");
             }
-            Eval::Normal(Value::List(
-                entries.keys().cloned().map(Value::Text).collect(),
+            Eval::Normal(Value::list(
+                entries.values().map(|(key, _)| key.clone()).collect(),
             ))
         }
         "values" => {
             if !args.is_empty() {
                 return eval_error("Dictionary.Values expects no arguments");
             }
-            Eval::Normal(Value::List(entries.values().cloned().collect()))
+            Eval::Normal(Value::list(
+                entries.values().map(|(_, value)| value.clone()).collect(),
+            ))
         }
         other => eval_error(format!("unsupported Dictionary method: {other}")),
     }
@@ -2069,15 +3363,26 @@ pub(crate) fn default_for_structured(type_text: &str) -> Option<Value> {
         if rest.is_empty() || rest.starts_with(char::is_whitespace) {
             let object_name = subtype_after_keyword(trimmed, "codeunit");
             if !object_name.is_empty() {
-                return Some(Value::Codeunit { object_name });
+                return Some(Value::Codeunit {
+                    object_name,
+                    instance: None,
+                });
             }
         }
     }
     if lower.starts_with("list of") {
-        return Some(Value::List(Vec::new()));
+        let arguments = type_arguments(&trimmed["list of".len()..]);
+        return Some(Value::List(Collection::new(
+            Vec::new(),
+            arguments.first().copied(),
+        )));
     }
     if lower.starts_with("dictionary of") {
-        return Some(Value::Dict(std::collections::BTreeMap::new()));
+        let arguments = type_arguments(&trimmed["dictionary of".len()..]);
+        return Some(Value::Dict(Collection::new(
+            Default::default(),
+            arguments.first().copied(),
+        )));
     }
     if lower == "variant" {
         return Some(Value::Variant(Box::new(Value::Null)));
@@ -2095,10 +3400,43 @@ fn default_for_array(type_text: &str) -> Option<Value> {
     let rest = rest.strip_prefix('[')?;
     let close = rest.find(']')?;
     let length: usize = rest[..close].trim().parse().ok()?;
+    // Business Central does not compile an array this long, so it is left
+    // unbound, as an array of several dimensions is.
+    check_collection_len("array", length).ok()?;
     let element = strip_keyword(rest[close + 1..].trim_start(), "of")?.trim();
     let base = element.split('[').next()?.trim();
-    let default = Value::default_for(base)?;
-    Some(Value::Array(vec![default; length]))
+    // Each element on its own: clones of one JSON default share its node.
+    let elements = (0..length).map(|_| Value::default_for(base));
+    Some(Value::Array(elements.collect::<Option<_>>()?))
+}
+
+/// The types between the brackets of `List of [T]` or `Dictionary of [K, V]`,
+/// given the text after `of`, split at the commas outside nested brackets and
+/// quotes.
+fn type_arguments(after_of: &str) -> Vec<&str> {
+    let inner = after_of
+        .trim()
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'));
+    let Some(inner) = inner else {
+        return Vec::new();
+    };
+    let mut arguments = Vec::new();
+    let (mut depth, mut quoted, mut start) = (0usize, false, 0);
+    for (at, c) in inner.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            '[' if !quoted => depth += 1,
+            ']' if !quoted => depth = depth.saturating_sub(1),
+            ',' if !quoted && depth == 0 => {
+                arguments.push(inner[start..at].trim());
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    arguments.push(inner[start..].trim());
+    arguments
 }
 
 /// `text` after a leading `keyword`, compared without case.

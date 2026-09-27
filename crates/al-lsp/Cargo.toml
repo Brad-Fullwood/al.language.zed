@@ -72,6 +72,9 @@ semantic = ["al-semantic/semantic"]
 
 [dev-dependencies]
 serial_test = "3"
+# The `Service` trait that `LspService` implements, so a unit test can answer
+# `initialize` and the in-process client then sends notifications.
+tower-service = "0.3"
 wiremock = "0.6"
 tokio = { workspace = true, features = ["full"] }
 proptest = "1"

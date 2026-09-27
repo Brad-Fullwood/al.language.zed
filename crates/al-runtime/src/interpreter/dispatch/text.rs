@@ -2,7 +2,7 @@
 
 use crate::interpreter::eval_error;
 use crate::interpreter::scope::Eval;
-use crate::interpreter::value::Value;
+use crate::interpreter::value::{check_text_size, Value};
 
 pub(super) fn builtin_strlen(args: &[Value]) -> Eval {
     match args {
@@ -228,14 +228,19 @@ pub(super) fn builtin_padstr(args: &[Value]) -> Eval {
             ))
         }
     };
-    let length = length as usize;
-    let mut chars: Vec<char> = s.chars().collect();
-    if chars.len() > length {
-        chars.truncate(length);
-    } else {
-        chars.resize(length, fill);
+    let length = usize::try_from(length).unwrap_or(usize::MAX);
+    let missing = length.saturating_sub(s.chars().count());
+    let size = missing
+        .saturating_mul(fill.len_utf8())
+        .saturating_add(s.len());
+    if let Err(message) = check_text_size("PadStr", size) {
+        return eval_error(message);
     }
-    Eval::Normal(Value::Text(chars.into_iter().collect()))
+    if missing == 0 {
+        return Eval::Normal(Value::Text(s.chars().take(length).collect()));
+    }
+    let padding = std::iter::repeat_n(fill, missing);
+    Eval::Normal(Value::Text(s.chars().chain(padding).collect()))
 }
 
 /// `SelectStr(index, commaString)` — the 1-based `index`-th comma-separated
@@ -340,14 +345,16 @@ pub(super) fn builtin_evaluate(args: &[Value]) -> Result<(bool, Option<Value>), 
         _ => return Err("Evaluate expects (var Variable, Text)".to_string()),
     };
     let text = raw.trim();
+    // Numbers as Format shows them group thousands: `1,234.5`.
+    let number = text.replace(',', "");
     let parsed = match target {
-        Value::Integer(_) => text.parse::<i64>().ok().map(Value::Integer),
-        Value::BigInteger(_) => text
+        Value::Integer(_) => number.parse::<i64>().ok().map(Value::Integer),
+        Value::BigInteger(_) => number
             .trim_end_matches(['l', 'L'])
             .parse::<i64>()
             .ok()
             .map(Value::BigInteger),
-        Value::Decimal(_) => text
+        Value::Decimal(_) => number
             .parse::<rust_decimal::Decimal>()
             .ok()
             .map(Value::Decimal),

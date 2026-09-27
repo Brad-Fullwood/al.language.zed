@@ -16,7 +16,7 @@ impl<F, Fut, R, P, C, CompileFut, A> NativeDapState<F, R, P, C, A>
 where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send,
-    R: Fn(&str) -> Option<ResolvedObject> + Send + Sync + 'static,
+    R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
     P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
     CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send,
@@ -48,20 +48,8 @@ where
         let session_arc = self.session.lock().await.clone();
 
         let result_bps = if let Some(s) = session_arc {
-            // Resolve object type and ID from workspace symbol index.
-            match (self.resolve_object)(&source_path) {
-                Some(obj) => {
-                    self.apply_breakpoints_to_session(
-                        &s,
-                        &source_path,
-                        &parsed,
-                        obj.object_type,
-                        obj.object_id,
-                    )
-                    .await
-                }
-                None => unresolved_object_breakpoints(&source_path, &parsed),
-            }
+            self.apply_breakpoints_to_session(&s, &source_path, &parsed)
+                .await
         } else {
             // DAP clients (Zed included) send `setBreakpoints` during the
             // configuration phase — right after `initialized`, well before
@@ -103,13 +91,15 @@ where
     /// result. Shared by `setBreakpoints` (session already exists) and
     /// `apply_pending_breakpoints` (session just started, applying requests
     /// queued while there was none).
+    ///
+    /// Each breakpoint is set on the object `resolve_object` finds for its
+    /// line: a file can declare a table and then a codeunit, and BC routes a
+    /// breakpoint by object type and ID.
     pub(super) async fn apply_breakpoints_to_session(
         &self,
         session: &BcDebugSession,
         source_path: &str,
         bp_requests: &[BpRequest],
-        object_type: i32,
-        object_id: i32,
     ) -> Vec<serde_json::Value> {
         let mut result_bps = Vec::new();
 
@@ -137,10 +127,20 @@ where
 
         let mut new_ids = Vec::new();
         for (line, condition) in bp_requests {
+            let Some(object) = (self.resolve_object)(source_path, *line) else {
+                result_bps.push(unresolved_object_breakpoint(source_path, *line));
+                continue;
+            };
             let server_line = line.saturating_sub(1);
 
             match session
-                .add_breakpoint(object_type, object_id, server_line, 0, condition)
+                .add_breakpoint(
+                    object.object_type,
+                    object.object_id,
+                    server_line,
+                    0,
+                    condition,
+                )
                 .await
             {
                 Ok(result) => {
@@ -207,19 +207,9 @@ where
         };
 
         for (source_path, bp_requests) in pending {
-            let result_bps = match (self.resolve_object)(&source_path) {
-                Some(obj) => {
-                    self.apply_breakpoints_to_session(
-                        session,
-                        &source_path,
-                        &bp_requests,
-                        obj.object_type,
-                        obj.object_id,
-                    )
-                    .await
-                }
-                None => unresolved_object_breakpoints(&source_path, &bp_requests),
-            };
+            let result_bps = self
+                .apply_breakpoints_to_session(session, &source_path, &bp_requests)
+                .await;
 
             for mut bp in result_bps {
                 bp["source"] = serde_json::json!({ "path": &source_path });
@@ -276,22 +266,13 @@ fn parse_bp_requests(bp_requests: &[serde_json::Value]) -> Vec<BpRequest> {
         .collect()
 }
 
-/// DAP `Breakpoint` results for a source path the workspace index couldn't
-/// resolve to an AL object — shared by the live and queued-and-deferred
-/// `setBreakpoints` paths.
-fn unresolved_object_breakpoints(
-    source_path: &str,
-    bp_requests: &[BpRequest],
-) -> Vec<serde_json::Value> {
-    bp_requests
-        .iter()
-        .map(|(line, _)| {
-            serde_json::json!({
-                "verified": false, "line": line,
-                "message": format!("Could not resolve AL object from workspace index for: {source_path}"),
-            })
-        })
-        .collect()
+/// The DAP `Breakpoint` result for a line the workspace index could not
+/// resolve to an AL object.
+fn unresolved_object_breakpoint(source_path: &str, line: i64) -> serde_json::Value {
+    serde_json::json!({
+        "verified": false, "line": line,
+        "message": format!("Could not resolve AL object from workspace index for: {source_path}"),
+    })
 }
 
 #[cfg(test)]
@@ -307,7 +288,7 @@ mod tests {
     use crate::dap::framing::read_dap_body;
 
     use super::super::test_support::*;
-    use super::super::VariableHandleStore;
+    use super::super::{bc_object_type, VariableHandleStore};
 
     #[test]
     fn extract_breakpoint_id_reads_pascal_and_camel_case() {
@@ -392,6 +373,7 @@ mod tests {
             cancel_rx,
             dap_event_tx,
             project_root: "/proj".to_string(),
+            authorize_target: allow_every_target(),
             acquire_token: no_token,
             resolve_object: resolve_foo_al,
             resolve_path: |_: i32, _: i32| -> Option<PathBuf> { None },
@@ -475,6 +457,79 @@ mod tests {
                 .get("/proj/src/Foo.al")
                 .cloned(),
             Some(vec![501, 502])
+        );
+    }
+
+    /// `/proj/src/Posting.al` declares a table on lines 1 to 3 and a
+    /// codeunit from line 5.
+    fn resolve_posting_al(path: &str, line: i64) -> Option<ResolvedObject> {
+        if path != "/proj/src/Posting.al" {
+            return None;
+        }
+        Some(if line < 5 {
+            ResolvedObject {
+                object_type: bc_object_type::TABLE,
+                object_id: 50200,
+            }
+        } else {
+            ResolvedObject {
+                object_type: bc_object_type::CODEUNIT,
+                object_id: 50100,
+            }
+        })
+    }
+
+    /// Every breakpoint of a file was set on the object the file's path
+    /// resolved to, so a breakpoint in a codeunit declared after a table went
+    /// to the table.
+    #[tokio::test]
+    async fn set_breakpoints_sets_each_line_on_the_object_around_it() {
+        let mut state = test_state();
+        state.resolve_object = resolve_posting_al;
+        let (session, fake) = crate::dap::bc_debug::fake::FakeBc::start("conn-1");
+        fake.reply_ok("AddBreakpoint", serde_json::json!({ "Id": 601 }));
+        fake.reply_ok("AddBreakpoint", serde_json::json!({ "Id": 602 }));
+        *state.session.lock().await = Some(Arc::new(session));
+
+        let (_, frames) = run_request_on(
+            &state,
+            "setBreakpoints",
+            serde_json::json!({
+                "source": {"path": "/proj/src/Posting.al"},
+                "breakpoints": [{"line": 2}, {"line": 8}],
+            }),
+        )
+        .await;
+        let bps = frames[0]["body"]["breakpoints"].as_array().unwrap();
+        assert!(bps.iter().all(|bp| bp["verified"] == true), "{bps:?}");
+
+        let objects: Vec<(i64, i64, i64)> = fake
+            .sent_frames()
+            .iter()
+            .filter(|frame| frame["target"] == "AddBreakpoint")
+            .map(|frame| {
+                (
+                    frame["arguments"][0]["ObjectType"].as_i64().unwrap(),
+                    frame["arguments"][0]["ObjectNumber"].as_i64().unwrap(),
+                    frame["arguments"][1]["line"].as_i64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            objects,
+            [
+                (i64::from(bc_object_type::TABLE), 50200, 1),
+                (i64::from(bc_object_type::CODEUNIT), 50100, 7),
+            ]
+        );
+        assert_eq!(
+            state
+                .breakpoints
+                .lock()
+                .await
+                .get("/proj/src/Posting.al")
+                .cloned(),
+            Some(vec![601, 602])
         );
     }
 

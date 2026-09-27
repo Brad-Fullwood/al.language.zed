@@ -18,7 +18,7 @@ impl<F, Fut, R, P, C, CompileFut, A> NativeDapState<F, R, P, C, A>
 where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send,
-    R: Fn(&str) -> Option<ResolvedObject> + Send + Sync + 'static,
+    R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
     P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
     CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send,
@@ -113,7 +113,7 @@ where
                 Ok((0, String::new(), Vec::new()))
             }
         } else if let Some((group, frame_id)) = decode_scope_reference(vars_ref) {
-            match session.get_variables(frame_id).await {
+            match session.variables(frame_id).await {
                 Ok(root_nodes) if group == SCOPE_LOCALS => Ok((
                     frame_id,
                     String::new(),
@@ -121,7 +121,7 @@ where
                 )),
                 Ok(root_nodes) => match inline_global_nodes(&root_nodes) {
                     Some(nodes) => Ok((frame_id, String::new(), nodes)),
-                    None => session.get_globals(frame_id).await.map(|expanded| {
+                    None => session.globals(frame_id).await.map(|expanded| {
                         let (parent_path, nodes) = expanded_global_nodes(&expanded);
                         (frame_id, parent_path, nodes)
                     }),

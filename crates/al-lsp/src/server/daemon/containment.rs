@@ -610,27 +610,21 @@ mod tests {
 
     /// `XDG_CONFIG_HOME` points at a scratch directory, so a test decides trust
     /// without reading or writing the user's own trust store. The variable is
-    /// process-wide, so these tests run under one mutex.
+    /// process-wide, and every al-lsp test that sets it runs under
+    /// `serial_test::serial`, so a test that uses this one does too.
     struct ScratchConfig {
         _dir: tempfile::TempDir,
         previous: Option<std::ffi::OsString>,
-        _guard: std::sync::MutexGuard<'static, ()>,
     }
-
-    static CONFIG_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     impl ScratchConfig {
         fn new() -> Self {
-            let guard = CONFIG_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
             let dir = tempfile::tempdir().unwrap();
             let previous = std::env::var_os("XDG_CONFIG_HOME");
             std::env::set_var("XDG_CONFIG_HOME", dir.path());
             Self {
                 _dir: dir,
                 previous,
-                _guard: guard,
             }
         }
     }
@@ -663,6 +657,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[serial_test::serial]
     fn a_symlinked_packages_directory_does_not_widen_the_boundary() {
         let _config = ScratchConfig::new();
         let dir = tempfile::tempdir().unwrap();
@@ -678,6 +673,7 @@ mod tests {
     /// name a directory outside the project.
     #[cfg(unix)]
     #[test]
+    #[serial_test::serial]
     fn a_trusted_project_keeps_its_package_directory() {
         let _config = ScratchConfig::new();
         let dir = tempfile::tempdir().unwrap();
@@ -688,5 +684,84 @@ mod tests {
         let resolved = resolve_within_project(&workspace, &outside.join("secret"))
             .expect("a trusted project's package directory stays a containment root");
         assert_eq!(resolved, outside.join("secret"));
+    }
+
+    /// A trusted project whose only privileged value is an on-premises launch
+    /// server.
+    #[cfg(unix)]
+    fn trusted_project_with_a_launch_server(dir: &Path) -> (Workspace, PathBuf) {
+        let root = dir.join("project");
+        std::fs::create_dir_all(root.join(".vscode")).unwrap();
+        std::fs::write(root.join("app.json"), "{}").unwrap();
+        std::fs::write(
+            root.join(".vscode/launch.json"),
+            r#"{"configurations": [{"name":"dev","type":"al","request":"launch",
+                "environmentType":"OnPrem","server":"https://bc.corp.example",
+                "serverInstance":"BC","authentication":"AAD"}]}"#,
+        )
+        .unwrap();
+        al_project::trust::grant(&root).unwrap();
+        let workspace = Workspace::new();
+        super::super::set_test_project_root(&workspace, &root);
+        (workspace, root)
+    }
+
+    /// `.alpackages` needs no setting, so a link a commit added after the
+    /// grant made its target a containment root while the record still
+    /// matched.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn a_packages_link_added_after_trust_stales_the_record() {
+        let _config = ScratchConfig::new();
+        let dir = tempfile::tempdir().unwrap();
+        let (workspace, root) = trusted_project_with_a_launch_server(dir.path());
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret"), b"PRIVATE KEY").unwrap();
+
+        std::os::unix::fs::symlink(&outside, root.join(".alpackages")).unwrap();
+
+        assert_eq!(
+            al_project::trust::decide(&root).unwrap().state,
+            al_project::trust::TrustState::Stale
+        );
+        let error = resolve_within_project(&workspace, &outside.join("secret"))
+            .expect_err("the link's target is not a containment root");
+        assert!(error.contains("outside the project"), "{error}");
+    }
+
+    /// A link present at the grant is listed for review, and retargeting it
+    /// stales the record.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn a_packages_link_is_recorded_with_its_target() {
+        let _config = ScratchConfig::new();
+        let dir = tempfile::tempdir().unwrap();
+        let (workspace, outside) = project_with_symlinked_packages(dir.path());
+        let root = dir.path().join("project");
+        let granted = al_project::trust::grant(&root).unwrap();
+        assert!(
+            granted
+                .privileged
+                .iter()
+                .any(|setting| setting.value.contains(&outside.display().to_string())),
+            "trust --show lists where .alpackages resolves: {:?}",
+            granted.privileged
+        );
+        assert!(resolve_within_project(&workspace, &outside.join("secret")).is_ok());
+
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("secret"), b"OTHER KEY").unwrap();
+        std::fs::remove_file(root.join(".alpackages")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join(".alpackages")).unwrap();
+
+        assert_eq!(
+            al_project::trust::decide(&root).unwrap().state,
+            al_project::trust::TrustState::Stale
+        );
+        assert!(resolve_within_project(&workspace, &elsewhere.join("secret")).is_err());
     }
 }

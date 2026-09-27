@@ -336,7 +336,7 @@ mod dispatch_tests {
 
         let mut checked = 0;
         for dispatcher in DISPATCHERS {
-            if dispatcher.path == PathUse::None {
+            if !matches!(dispatcher.path, PathUse::Read | PathUse::Write) {
                 continue;
             }
             checked += 1;
@@ -380,6 +380,98 @@ mod dispatch_tests {
             checked >= 15,
             "only {checked} dispatchers declare a path parameter"
         );
+    }
+
+    /// Every method that takes a path in a parameter other than `uri`/`file`
+    /// refuses one outside the project, and in particular a `.g.xlf` the
+    /// caller names outside it is neither read nor replaced.
+    #[tokio::test]
+    async fn every_named_path_dispatcher_refuses_a_path_outside_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let (workspace, _) = project_with_doc(&root);
+        let workspace = std::sync::Arc::new(workspace);
+        let outside = dir.path().join("outside.xlf");
+        let original = r#"<xliff version="1.2"><file original="x"></file></xliff>"#;
+        std::fs::write(&outside, original).unwrap();
+        let outside_dir = dir.path().join("elsewhere");
+        let shutdown = Notify::new();
+
+        let mut checked = BTreeSet::new();
+        for dispatcher in DISPATCHERS {
+            if dispatcher.path != PathUse::Named {
+                continue;
+            }
+            let params = serde_json::json!({
+                "xlf": outside.to_str().unwrap(),
+                "generated": outside.to_str().unwrap(),
+                "from": outside.to_str().unwrap(),
+                "to": outside.to_str().unwrap(),
+                "dir": outside_dir.to_str().unwrap(),
+                "name": "Scaffold",
+                "publisher": "Test",
+            });
+            let response = dispatch_request(
+                &workspace,
+                Request::new(1, dispatcher.method, Some(params)),
+                &shutdown,
+            )
+            .await;
+            let error = response.error.unwrap_or_else(|| {
+                panic!(
+                    "{} answered for a path outside the project",
+                    dispatcher.method
+                )
+            });
+            assert!(
+                error.message.contains("outside the project"),
+                "{} must refuse an outside path: {error:?}",
+                dispatcher.method
+            );
+            checked.insert(dispatcher.method);
+        }
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            original,
+            "a refused method rewrote the file"
+        );
+        assert!(
+            !outside_dir.exists(),
+            "a refused method created a directory"
+        );
+        for method in ["xlf.refresh", "xlf.untranslated", "xlf.suggest"] {
+            assert!(checked.contains(method), "{method} declares no path use");
+        }
+    }
+
+    /// `xlf.generate` writes into the project it serves, and a `project`
+    /// naming any other directory is refused rather than written under.
+    #[tokio::test]
+    async fn xlf_generate_refuses_a_project_other_than_the_loaded_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("app.json"), r#"{"name":"Other"}"#).unwrap();
+        let (workspace, _) = project_with_doc(&root);
+        let workspace = std::sync::Arc::new(workspace);
+
+        let response = dispatch_request(
+            &workspace,
+            Request::new(
+                1,
+                "xlf.generate",
+                Some(serde_json::json!({ "project": elsewhere.to_str().unwrap() })),
+            ),
+            &Notify::new(),
+        )
+        .await;
+
+        let error = response.error.expect("another project is refused");
+        assert_eq!(error.code, error_codes::PATH_NOT_AUTHORIZED, "{error:?}");
+        assert!(!elsewhere.join("Translations").exists());
     }
 
     /// The daemon and `al-explorer` agree on which methods take `text` because
@@ -472,6 +564,35 @@ mod dispatch_tests {
         }
     }
 
+    /// `downloadSymbols` renames packages into `.alpackages`, so a clone that
+    /// ships it as a link out of the project would have the daemon write
+    /// there. It is refused before any download, NuGet or server.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn download_symbols_refuses_a_linked_alpackages_in_an_untrusted_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(root.join("app.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(".alpackages")).unwrap();
+        let workspace = al_workspace::Workspace::new();
+        set_test_project_root(&workspace, &root);
+        let workspace = std::sync::Arc::new(workspace);
+
+        let response = dispatch_request(
+            &workspace,
+            Request::new(1, "downloadSymbols", Some(serde_json::json!({}))),
+            &Notify::new(),
+        )
+        .await;
+
+        let error = response.error.expect("the linked folder is refused");
+        assert!(error.message.contains("symbolic link"), "{error:?}");
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    }
+
     /// Which methods reach a Business Central credential is a decision, not a
     /// detail: adding one to the dispatch table has to be deliberate, and the
     /// trust documentation names the same set.
@@ -487,7 +608,12 @@ mod dispatch_tests {
             BTreeSet::from([
                 "debug",
                 "downloadSymbols",
+                "profiling",
                 "publish",
+                "snapshot",
+                "tests.run",
+                "tests.run_auto",
+                "tests.run_batch",
                 "tests.snapshot_capture",
                 "tests.snapshot_replay",
             ]),
@@ -965,6 +1091,70 @@ mod dispatch_tests {
         );
     }
 
+    /// Every request reads `app.json` and the debug configuration files again
+    /// when they changed, so `deps` and `status` answer from the files on disk
+    /// rather than from what the daemon loaded at startup.
+    #[tokio::test]
+    async fn requests_read_project_files_edited_after_the_project_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+        set_test_project_root(&ws, dir.path());
+        let shutdown = Notify::new();
+        let write_manifest = |application: &str| {
+            std::fs::write(
+                dir.path().join("app.json"),
+                serde_json::json!({
+                    "id": "00000000-0000-0000-0000-000000000000",
+                    "name": "On Disk",
+                    "publisher": "Tests",
+                    "version": "1.0.0.0",
+                    "application": application
+                })
+                .to_string(),
+            )
+            .unwrap();
+        };
+        let deps = |id: u64| {
+            let ws = std::sync::Arc::clone(&ws);
+            let shutdown = &shutdown;
+            async move {
+                let result = dispatch_request(&ws, Request::new(id, "deps", None), shutdown)
+                    .await
+                    .result
+                    .expect("deps answers");
+                let base_application = result["all"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|dependency| dependency["name"] == "Base Application")
+                    .map(|dependency| dependency["version"].clone());
+                (result["project"]["name"].clone(), base_application)
+            }
+        };
+
+        write_manifest("25.0.0.0");
+        assert_eq!(
+            deps(1).await,
+            (
+                serde_json::json!("On Disk"),
+                Some(serde_json::json!("25.0.0.0"))
+            )
+        );
+        write_manifest("26.0.0.0");
+        assert_eq!(deps(2).await.1, Some(serde_json::json!("26.0.0.0")));
+
+        std::fs::create_dir_all(dir.path().join(".zed")).unwrap();
+        std::fs::write(dir.path().join(".zed").join("debug.json"), "{ not json").unwrap();
+        let status = dispatch_request(&ws, Request::new(3, "status", None), &shutdown)
+            .await
+            .result
+            .expect("status answers");
+        let error = status["launchConfigError"]
+            .as_str()
+            .expect("the unreadable debug.json is reported");
+        assert!(error.contains("debug.json"), "{error}");
+    }
+
     /// A client whose request is blocked on the dependency source index needs
     /// to be able to see that from a second connection, or a timeout carries
     /// no reason and the natural response is a retry into the next one.
@@ -1003,6 +1193,38 @@ mod dispatch_tests {
                 .and_then(|v| v.as_str()),
             Some("ready")
         );
+    }
+
+    /// A cold `trace` waits on the call graph for about 12 s after the source
+    /// index reports ready. A client that sees only `sourceIndex` stopped
+    /// extending its deadline in the middle of that wait.
+    #[tokio::test]
+    async fn status_reports_call_graph_progress() {
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+        let shutdown = Notify::new();
+        let state = |status: &serde_json::Value| {
+            status
+                .get("callGraph")
+                .and_then(|graph| graph.get("state"))
+                .and_then(|state| state.as_str())
+                .map(str::to_string)
+        };
+        let before = dispatch_request(&ws, Request::new(4, "status", None), &shutdown)
+            .await
+            .result
+            .expect("status must return a result");
+        assert_eq!(state(&before).as_deref(), Some("idle"), "{before}");
+        assert!(
+            before["callGraph"]["elapsedMs"].is_u64(),
+            "callGraph must report elapsedMs: {before}"
+        );
+
+        drop(ws.get_or_build_call_graph().expect("empty graph builds"));
+        let after = dispatch_request(&ws, Request::new(5, "status", None), &shutdown)
+            .await
+            .result
+            .expect("result");
+        assert_eq!(state(&after).as_deref(), Some("ready"), "{after}");
     }
 
     #[tokio::test]

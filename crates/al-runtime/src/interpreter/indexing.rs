@@ -37,7 +37,11 @@ pub(crate) fn indexed_variable<'tree>(
     if primary.kind() != "primary_expression" || suffix.kind() != "index_suffix" {
         return None;
     }
-    let name = primary.named_child(0).filter(|n| n.kind() == "name")?;
+    // `Page[1]` or `Code[2]` on a variable named after a keyword parses the
+    // name as a keyword node.
+    let name = primary
+        .named_child(0)
+        .filter(|n| matches!(n.kind(), "name" | "object_keyword" | "type_keyword"))?;
     let text = name.utf8_text(source).ok()?;
     Some((text.unquote_identifier().to_ascii_lowercase(), suffix))
 }
@@ -78,10 +82,10 @@ fn eval_index(
     }
 }
 
-/// Evaluate `text` as an AL expression in the caller's scope. Coverage is
-/// paused so the throwaway tree's positions are not recorded against the
-/// caller's file.
-fn eval_standalone_expression(
+/// Evaluate `text` as an AL expression in the caller's scope: an index, or
+/// a case label with a leading minus. Coverage is paused so the throwaway
+/// tree's positions are not recorded against the caller's file.
+pub(crate) fn eval_standalone_expression(
     text: &str,
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
@@ -91,7 +95,7 @@ fn eval_standalone_expression(
     let root = parsed.tree.root_node();
     let expression = find_exit_expression(root)
         .filter(|_| !root.has_error())
-        .ok_or_else(|| eval_error(format!("'{text}' is not an index expression")))?;
+        .ok_or_else(|| eval_error(format!("'{text}' is not an expression")))?;
     let coverage = ctx.coverage.take();
     let result = eval_expr(expression, wrapper.as_bytes(), stack, ctx);
     ctx.coverage = coverage;

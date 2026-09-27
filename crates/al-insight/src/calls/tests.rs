@@ -789,7 +789,71 @@ fn record_op_from_method_name() {
         RecordOp::from_method_name("Validate"),
         Some(RecordOp::Validate)
     );
+    assert_eq!(RecordOp::from_method_name("Rename"), Some(RecordOp::Rename));
+    assert_eq!(
+        RecordOp::from_method_name("DeleteAll"),
+        Some(RecordOp::DeleteAll)
+    );
+    assert_eq!(
+        RecordOp::from_method_name("modifyall"),
+        Some(RecordOp::ModifyAll)
+    );
     assert_eq!(RecordOp::from_method_name("Post"), None);
+}
+
+/// DeleteAll and ModifyAll raise the Delete and Modify events, and
+/// ModifyAll's RunTrigger is its third argument.
+#[test]
+fn deleteall_and_modifyall_are_record_ops_with_their_run_trigger() {
+    let source = r#"codeunit 50100 "Test CU"
+{
+procedure DoWork()
+var
+    Cust: Record "Customer";
+begin
+    Cust.DeleteAll(true);
+    Cust.DeleteAll();
+    Cust.ModifyAll(Name, 'x', true);
+    Cust.ModifyAll(Name, 'x');
+end;
+}
+"#;
+    let result = al_syntax::AlParser::parse_quick(source);
+    let record_ops: Vec<_> = extract_call_sites(&result.tree, source, "DoWork")
+        .into_iter()
+        .filter_map(|site| match site {
+            CallSite::RecordOp {
+                op, run_trigger, ..
+            } => Some((op, run_trigger)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(record_ops.len(), 4, "{record_ops:?}");
+    for expected in [
+        (RecordOp::DeleteAll, true),
+        (RecordOp::DeleteAll, false),
+        (RecordOp::ModifyAll, true),
+        (RecordOp::ModifyAll, false),
+    ] {
+        assert!(
+            record_ops.contains(&expected),
+            "{expected:?} in {record_ops:?}"
+        );
+    }
+    assert_eq!(
+        record_op_event_names(RecordOp::DeleteAll),
+        (
+            "OnBeforeDeleteEvent".to_string(),
+            "OnAfterDeleteEvent".to_string()
+        )
+    );
+    assert_eq!(
+        record_op_event_names(RecordOp::ModifyAll),
+        (
+            "OnBeforeModifyEvent".to_string(),
+            "OnAfterModifyEvent".to_string()
+        )
+    );
 }
 
 #[test]
@@ -1086,6 +1150,227 @@ end;
         reaches_handler,
         "DoWork → subscriber indirect edge expected"
     );
+}
+
+/// In table code `Rec`, `xRec` and a bare record method act on the table
+/// itself, and `Rename` raises the rename events, so each reaches the
+/// subscribers of the table's events.
+#[test]
+fn table_code_record_calls_and_rename_reach_table_event_subscribers() {
+    let table = r#"table 50310 "Plain"
+{
+fields { field(1; "No."; Code[20]) { } }
+keys { key(PK; "No.") { } }
+procedure ByRec()
+begin
+    Rec.Modify();
+end;
+
+procedure ByXRec()
+begin
+    xRec.Modify();
+end;
+
+procedure Bare()
+begin
+    Modify();
+end;
+
+procedure Renames()
+begin
+    Rename('B');
+end;
+}
+"#;
+    let subscriber = r#"codeunit 50311 "Plain Sub"
+{
+[EventSubscriber(ObjectType::Table, Database::"Plain", 'OnAfterModifyEvent', '', false, false)]
+local procedure AfterModify(var Rec: Record "Plain"; var xRec: Record "Plain"; RunTrigger: Boolean)
+begin
+end;
+
+[EventSubscriber(ObjectType::Table, Database::"Plain", 'OnAfterRenameEvent', '', false, false)]
+local procedure AfterRename(var Rec: Record "Plain"; var xRec: Record "Plain"; RunTrigger: Boolean)
+begin
+end;
+}
+"#;
+    let caller = r#"codeunit 50312 "Plain Caller"
+{
+procedure RenameIt()
+var
+    P: Record "Plain";
+begin
+    P.Rename('B');
+end;
+}
+"#;
+    let (insight, cg) = build_resolved_call_graph(&[
+        ("/ws/Plain.Table.al", table),
+        ("/ws/PlainSub.Codeunit.al", subscriber),
+        ("/ws/PlainCaller.Codeunit.al", caller),
+    ]);
+    let subscriber_node = |name: &str| {
+        CallGraph::node_id_for(
+            &insight,
+            &NodeKey::Subscriber(ObjectKind::Codeunit, "plain sub".into(), name.into()),
+        )
+        .unwrap_or_else(|| panic!("subscriber node {name}"))
+    };
+    let after_modify = subscriber_node("aftermodify");
+    let after_rename = subscriber_node("afterrename");
+    let reaches = |from: NodeId, to: NodeId| cg.callees_of(from).iter().any(|e| e.to == to);
+    for method in ["ByRec", "ByXRec", "Bare"] {
+        let node = proc_node(&insight, ObjectKind::Table, "Plain", method);
+        assert!(reaches(node, after_modify), "{method} reaches AfterModify");
+        assert!(!reaches(node, after_rename), "{method} does not rename");
+    }
+    let renames = proc_node(&insight, ObjectKind::Table, "Plain", "Renames");
+    assert!(
+        reaches(renames, after_rename),
+        "a bare Rename reaches AfterRename"
+    );
+    let rename_it = proc_node(&insight, ObjectKind::Codeunit, "Plain Caller", "RenameIt");
+    assert!(
+        reaches(rename_it, after_rename),
+        "P.Rename reaches AfterRename"
+    );
+}
+
+/// An EventSubscriber may name its publisher by a bare object ID, with the
+/// kind in the first argument. Both a codeunit event and a table event
+/// bound that way are reached from the code that raises them.
+#[test]
+fn subscribers_bound_by_object_id_are_reached() {
+    let publisher = r#"codeunit 50320 "Id Publisher"
+{
+procedure Raise()
+begin
+    OnRaise();
+end;
+
+[IntegrationEvent(false, false)]
+local procedure OnRaise()
+begin
+end;
+}
+"#;
+    let table = r#"table 50321 "Id Table"
+{
+fields { field(1; "No."; Code[20]) { } }
+keys { key(PK; "No.") { } }
+}
+"#;
+    let subscriber = r#"codeunit 50322 "Id Subscriber"
+{
+[EventSubscriber(ObjectType::Codeunit, 50320, 'OnRaise', '', false, false)]
+local procedure OnRaiseById()
+begin
+end;
+
+[EventSubscriber(ObjectType::Table, 50321, 'OnAfterInsertEvent', '', false, false)]
+local procedure OnInsertById(var Rec: Record "Id Table"; RunTrigger: Boolean)
+begin
+end;
+}
+"#;
+    let caller = r#"codeunit 50323 "Id Caller"
+{
+procedure Inserts()
+var
+    Row: Record "Id Table";
+begin
+    Row.Insert();
+end;
+}
+"#;
+    let (insight, cg) = build_resolved_call_graph(&[
+        ("/ws/IdPublisher.Codeunit.al", publisher),
+        ("/ws/IdTable.Table.al", table),
+        ("/ws/IdSubscriber.Codeunit.al", subscriber),
+        ("/ws/IdCaller.Codeunit.al", caller),
+    ]);
+    let subscriber_node = |name: &str| {
+        CallGraph::node_id_for(
+            &insight,
+            &NodeKey::Subscriber(ObjectKind::Codeunit, "id subscriber".into(), name.into()),
+        )
+        .unwrap_or_else(|| panic!("subscriber node {name}"))
+    };
+    let reaches = |from: NodeId, to: NodeId| cg.callees_of(from).iter().any(|e| e.to == to);
+    let raise = proc_node(&insight, ObjectKind::Codeunit, "Id Publisher", "Raise");
+    assert!(
+        reaches(raise, subscriber_node("onraisebyid")),
+        "Raise reaches the subscriber bound by codeunit ID"
+    );
+    let inserts = proc_node(&insight, ObjectKind::Codeunit, "Id Caller", "Inserts");
+    assert!(
+        reaches(inserts, subscriber_node("oninsertbyid")),
+        "Row.Insert reaches the subscriber bound by table ID"
+    );
+}
+
+/// Every field of a table can declare its own `OnValidate`, and they share
+/// one graph node. Only one of them gave the node its edges, so a
+/// `Rec.Modify()` in the other field's trigger missed the Modify event
+/// subscribers.
+#[test]
+fn every_same_named_trigger_gives_the_node_its_edges() {
+    for (first, second) in [("Rec.Modify();", ""), ("", "Rec.Modify();")] {
+        let table = format!(
+            r#"table 50330 "Two Validates"
+{{
+fields
+{{
+    field(1; "No."; Code[20]) {{ }}
+    field(2; Name; Text[50])
+    {{
+        trigger OnValidate()
+        begin
+            {first}
+        end;
+    }}
+    field(3; City; Text[50])
+    {{
+        trigger OnValidate()
+        begin
+            {second}
+        end;
+    }}
+}}
+keys {{ key(PK; "No.") {{ }} }}
+}}
+"#
+        );
+        let subscriber = r#"codeunit 50331 "Two Validates Sub"
+{
+[EventSubscriber(ObjectType::Table, Database::"Two Validates", 'OnAfterModifyEvent', '', false, false)]
+local procedure AfterModify(var Rec: Record "Two Validates"; var xRec: Record "Two Validates"; RunTrigger: Boolean)
+begin
+end;
+}
+"#;
+        let (insight, cg) = build_resolved_call_graph(&[
+            ("/ws/TwoValidates.Table.al", &table),
+            ("/ws/TwoValidatesSub.Codeunit.al", subscriber),
+        ]);
+        let on_validate = proc_node(&insight, ObjectKind::Table, "Two Validates", "OnValidate");
+        let after_modify = CallGraph::node_id_for(
+            &insight,
+            &NodeKey::Subscriber(
+                ObjectKind::Codeunit,
+                "two validates sub".into(),
+                "aftermodify".into(),
+            ),
+        )
+        .expect("subscriber node");
+        assert!(
+            cg.callees_of(on_validate)
+                .iter()
+                .any(|edge| edge.to == after_modify),
+            "OnValidate reaches AfterModify with Name: {first:?} and City: {second:?}"
+        );
+    }
 }
 
 #[test]

@@ -1,6 +1,6 @@
 ---
 name: bc-upgrade-impact
-description: Use when moving a Business Central extension to a new BC release or dependency version, and whenever asked what a version bump breaks. Finds removed or obsoleted symbols, changed signatures, subscribers pointing at events that no longer exist, and version conflicts between the .app packages in .alpackages. Use it when a compile starts failing after a symbol download, or when .alpackages holds two versions of the same app, instead of diffing .app files by hand.
+description: Use for any question about what a Business Central extension depends on, whether a dependency is missing or conflicting, or what moving to a new BC release or dependency version breaks. app.json's "application" and "platform" properties add implicit dependencies (Base Application, System Application, Business Foundation, Application, System) that the "dependencies" array does not list, and only the dependency graph shows them and whether they resolve. Finds the dependency graph, missing or conflicting packages, removed or obsoleted symbols, changed signatures, and subscribers pointing at events that no longer exist. Use it when a compile starts failing after a symbol download, or when .alpackages holds two versions of the same app, instead of reading app.json and grepping .al files to guess at dependencies, and instead of diffing .app files by hand.
 ---
 
 # What a dependency upgrade breaks
@@ -49,9 +49,9 @@ uses:
              "uses":["Uses Removed"],"possible":[]}]}
 ```
 
-Base Application 25 to 26 is over a thousand changes; this answers which of
+Base Application 25 to 26 is over a thousand changes. This answers which of
 them matter here in about 7 seconds. `uses` are confirmed (the receiver
-resolves to the changed object); `possibleUses` are name matches on a
+resolves to the changed object). `possibleUses` are name matches on a
 variable of another or unknown type, so check them before reporting.
 `--all` returns every change, used or not.
 
@@ -59,7 +59,7 @@ variable of another or unknown type, so check them before reporting.
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json deps-graph \
-  | jq -c '{root: .rootApp.name, edges: [.edges[] | {from, to, minVersion: .minimumVersion}], missing: [.nodes[]? | select(.present == false) | .name]}'
+  | jq -c '{root: .rootApp.name, edges: [.edges[] | {from, to, requiredVersion}], conflicts, missing}'
 ```
 
 7 KB unprojected, so this one is safe to read whole if the projection drops
@@ -76,19 +76,22 @@ release.
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json breaking \
   --baseline-app "output/Publisher_MyApp_1.4.0.0.app" \
-  | jq -c '{evaluated, n: (.changes | length), changes: [.changes[:20][] | {kind, symbol, detail}]}'
+  | jq -c '{n: length, changes: [.[:20][] | {kind, object, member, description, isBreaking}]}'
 ```
 
-Without `--baseline-app` it refuses rather than printing a clean-looking zero:
+With a baseline the result is the array of changes. Without `--baseline-app` it
+refuses rather than printing a clean-looking zero, and the result is an object:
 
 ```json
 {"analysis":"breaking","evaluated":false,
  "reason":"No --baseline-app supplied; breaking-change analysis was not evaluated","changes":[]}
 ```
 
-Check `evaluated` before you report anything. `upgrade --baseline-app <path>`
-has the same contract and returns `issues` instead of `changes`. Neither
-compares two versions of a dependency; that is `package-diff`.
+An object with `"evaluated": false` means nothing was compared, so check the
+shape before you report anything. `upgrade --baseline-app <path>` has the same
+contract: an array of issues with a baseline, an object with `evaluated: false`
+and an empty `issues` without one. Neither
+compares two versions of a dependency. That is `package-diff`.
 
 ## Subscribers pointing at events that no longer exist
 
@@ -97,8 +100,11 @@ never fires.
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json dead-code \
-  | jq -c '[.[] | select(.reason == "orphanedSubscriber")]'
+  | jq -c '[.[] | select(.k == "subscriber") | {n, obj, f, l, reason}]'
 ```
+
+`reason` says why: `publisherRemoved` when the publishing object is gone,
+`eventRemoved` when the object is there and the event is not.
 
 Confirm each one by name:
 
@@ -131,7 +137,7 @@ literals: `Crypto.SetEncryptionData(KeyText, ...)` with a `Text` key is
 reported, the `SecretText` call next to it is not. Any other call is reported
 only when every definition of the name is obsolete, so this errs towards
 silence. Plain `obsolete` without `--used` lists every pending
-obsoletion in every loaded package (over 1,500 on Base Application); use it
+obsoletion in every loaded package (over 1,500 on Base Application). Use it
 with `--limit` only when the question is about the packages themselves.
 
 ## Order of work
@@ -146,7 +152,7 @@ with `--limit` only when the question is about the packages themselves.
 
 ## Do not
 
-- Report `breaking` or `upgrade` output without checking `evaluated`.
+- Report `breaking` or `upgrade` output without checking for `"evaluated": false`.
 - Diff `.app` files by hand or extract them to compare.
 - Assume a compiling subscriber still fires after an upgrade.
 

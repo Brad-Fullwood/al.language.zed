@@ -157,14 +157,15 @@ jobs:
           cp "$BRIDGE_SRC"/AlBridge.dll "$BRIDGE_SRC"/AlBridge.runtimeconfig.json "$STAGE/bridge/"
           cp "$BRIDGE_SRC"/*.dll "$STAGE/bridge/" 2>/dev/null || true
           tar -czf "$OUT.tar.gz" -C "$STAGE" .
-          # Digests of the executables INSIDE the archive, keyed
-          # <archive>/<binary>. The extension checks these after extraction:
-          # download_file unpacks a .tar.gz and does not keep the archive, and
-          # the 0.7 extension API cannot unpack a local file, so the archive
-          # digests in checksums.txt are unreachable on that path. These cover
-          # the bytes that actually get executed. See
-          # AlExtension::verify_extracted_binaries in src/lib.rs.
-          ( cd "$STAGE" && sha256sum al-lsp al-explorer ) \
+          # Digests of every file INSIDE the archive, keyed <archive>/<path>:
+          # the two executables and every file under bridge/, which al-lsp
+          # loads into its own process. The extension checks these after
+          # extraction: download_file unpacks a .tar.gz and does not keep the
+          # archive, and the 0.7 extension API cannot unpack a local file, so
+          # the archive digests in checksums.txt are unreachable on that path.
+          # See AlExtension::verify_extracted_binaries in src/lib.rs.
+          ( cd "$STAGE" && find . -type f | sed 's|^\./||' | LC_ALL=C sort \
+              | while IFS= read -r file; do sha256sum "$file"; done ) \
             | sed "s|  |  $OUT.tar.gz/|" > "$OUT.binaries.sha256"
           cat "$OUT.binaries.sha256"
 
@@ -197,10 +198,12 @@ jobs:
           Copy-Item (Join-Path $bridgeSrc.FullName 'AlBridge.runtimeconfig.json') $bridgeDst
           $archive = "al-${{ matrix.artifact_name }}.zip"
           Compress-Archive -Path "$stage/*" -DestinationPath $archive
-          # Same per-binary digests as the Unix leg; see the comment there.
-          $lines = foreach ($name in 'al-lsp.exe', 'al-explorer.exe') {
-            $hash = (Get-FileHash (Join-Path $stage $name) -Algorithm SHA256).Hash.ToLower()
-            "$hash  $archive/$name"
+          # Same digests as the Unix leg, over every staged file. See the
+          # comment there.
+          $lines = Get-ChildItem -Path $stage -Recurse -File | Sort-Object FullName | ForEach-Object {
+            $relative = [System.IO.Path]::GetRelativePath($stage.FullName, $_.FullName).Replace('\', '/')
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $archive/$relative"
           }
           $lines | Set-Content -Encoding ascii "al-${{ matrix.artifact_name }}.binaries.sha256"
           Get-Content "al-${{ matrix.artifact_name }}.binaries.sha256"

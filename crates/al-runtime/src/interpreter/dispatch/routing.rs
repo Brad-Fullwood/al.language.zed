@@ -1,8 +1,10 @@
 //! The single entry point for a procedure call, and the order it tries.
 //!
-//! Stub catalogs first, then the inline builtins, then workspace procedures.
-//! An explicit receiver skips the builtin step, so a workspace procedure named
-//! like a builtin is still the one that runs.
+//! A call on a receiver tries the stub catalog of that codeunit, then table
+//! and workspace procedures. A bare call tries the inline builtins, then the
+//! procedures of the running object. A stub catalog answers only a call on its
+//! own codeunit, so a bare `Clear(X)` is the builtin, and a workspace
+//! procedure named like a builtin still runs when called on its object.
 
 use crate::interpreter::eval_error;
 use crate::interpreter::scope::{Eval, ScopeStack};
@@ -65,6 +67,9 @@ pub(crate) fn dispatch_call_scoped(
     // Statement position matters only to builtins that fail differently as a
     // statement (Evaluate); take it so it never leaks into a callee's body.
     let statement = std::mem::take(&mut ctx.stmt_position);
+    // The codeunit instance a variable's call is made on; only a workspace
+    // procedure of that codeunit uses it, never a stub or builtin.
+    let instance = ctx.pending_instance.take();
     // An enum variable never assigned carries only its ordinal; name it
     // before any builtin or stub shows it.
     let args = if args
@@ -83,14 +88,6 @@ pub(crate) fn dispatch_call_scoped(
             return stub_fn(&args);
         }
     }
-    if receiver.is_none() {
-        for cat in stubs::CATALOGS {
-            if let Some(f) = (cat.resolve)(procedure) {
-                return f(&args);
-            }
-        }
-    }
-
     // Global builtins must never hijack an explicitly-qualified workspace
     // method with the same name (for example `Helper.Format(...)`).
     if receiver.is_none() {
@@ -101,7 +98,10 @@ pub(crate) fn dispatch_call_scoped(
                     if args.is_empty() {
                         return eval_error("Message requires a message argument");
                     }
-                    let message = formatted_dialog_text(&args);
+                    let message = match formatted_dialog_text(&args) {
+                        Ok(message) => message,
+                        Err(error) => return eval_error(error),
+                    };
                     let result = dispatch_workspace_procedure(
                         Some(&object),
                         &handler,
@@ -121,7 +121,10 @@ pub(crate) fn dispatch_call_scoped(
                     if args.is_empty() {
                         return eval_error("Confirm requires a question argument");
                     }
-                    let question = formatted_dialog_text(&args);
+                    let question = match formatted_dialog_text(&args) {
+                        Ok(question) => question,
+                        Err(error) => return eval_error(error),
+                    };
                     let result = dispatch_workspace_procedure(
                         Some(&object),
                         &handler,
@@ -240,6 +243,15 @@ pub(crate) fn dispatch_call_scoped(
             "maximum" => return builtin_extreme(&args, true),
             "minimum" => return builtin_extreme(&args, false),
             "arraylen" => return builtin_arraylen(&args),
+            "createguid" if args.is_empty() => return crate::stubs::any::guid_value(&args),
+            "isnullguid" => {
+                return match args.as_slice() {
+                    [Value::Guid(guid)] => Eval::Normal(Value::Boolean(
+                        guid.chars().all(|c| matches!(c, '0' | '-' | '{' | '}')),
+                    )),
+                    _ => eval_error("IsNullGuid expects a Guid"),
+                }
+            }
             "evaluate" => {
                 // A failed Evaluate as a statement is a runtime error in BC;
                 // in an expression (`if Evaluate(...)`) it is `false`.
@@ -285,11 +297,92 @@ pub(crate) fn dispatch_call_scoped(
                 ctx.last_error = None;
                 return Eval::Normal(Value::Empty);
             }
+            "clear" => {
+                let [value] = args.as_slice() else {
+                    return eval_error("Clear expects one variable");
+                };
+                return match cleared(value, ctx) {
+                    Ok(value) => {
+                        ctx.var_writebacks.push((0, value));
+                        Eval::Normal(Value::Empty)
+                    }
+                    Err(error) => eval_error(error),
+                };
+            }
             _ => {}
         }
     }
 
+    let args =
+        match super::table_code::dispatch_table_procedure(receiver, procedure, args, stack, ctx) {
+            Ok(result) => return result,
+            Err(args) => args,
+        };
+    ctx.pending_instance = instance;
     dispatch_workspace_procedure(receiver, procedure, args, stack, ctx)
+}
+
+/// The value `Clear` leaves in a variable that holds `value`: its type's
+/// default. A record gets a new view, so its fields, filters and the table's
+/// globals go and the rows stay. A temporary record's rows go with its old
+/// view: Learn does not say whether Clear keeps them. A codeunit variable
+/// drops its instance ("only the reference to the codeunit is deleted"), and a
+/// JSON variable refers to a new empty node.
+fn cleared(value: &Value, ctx: &mut DispatchCtx) -> Result<Value, String> {
+    Ok(match value {
+        Value::Integer(_) => Value::Integer(0),
+        Value::BigInteger(_) => Value::BigInteger(0),
+        Value::Decimal(_) => Value::Decimal(Default::default()),
+        Value::Boolean(_) => Value::Boolean(false),
+        Value::Char(_) => Value::Char('\0'),
+        Value::Text(_) => Value::Text(String::new()),
+        Value::Code(_) => Value::Code(String::new()),
+        Value::TextBuilder(_) => Value::text_builder(String::new()),
+        Value::Date(_) => Value::Date(0),
+        Value::Time(_) => Value::Time(0),
+        Value::DateTime(_) => Value::DateTime(0),
+        Value::Duration(_) => Value::Duration(0),
+        Value::Guid(_) => Value::default_for("guid").unwrap_or(Value::Null),
+        // An enum or option at ordinal 0, named when it is shown.
+        Value::Option { type_name, .. } => Value::Option {
+            type_name: type_name.clone(),
+            member: String::new(),
+            ordinal: 0,
+        },
+        Value::Json(json) => crate::interpreter::json::cleared(json.kind),
+        Value::Record(record) => {
+            if let Some(handle) = record.handle {
+                ctx.record_globals.remove(&handle);
+            }
+            Value::Record(crate::interpreter::value::RecordValue {
+                handle: None,
+                ..record.clone()
+            })
+        }
+        Value::Codeunit { object_name, .. } => Value::Codeunit {
+            object_name: object_name.clone(),
+            instance: None,
+        },
+        Value::Variant(_) => Value::Variant(Box::new(Value::Null)),
+        // List and Dictionary are references: the variable gets new empty
+        // contents, and copies keep the old ones.
+        Value::List(list) => Value::List(list.emptied()),
+        Value::Dict(dict) => Value::Dict(dict.emptied()),
+        Value::Blob(_) => Value::Blob(Vec::new()),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| cleared(item, ctx))
+                .collect::<Result<_, _>>()?,
+        ),
+        Value::Null | Value::Empty => value.clone(),
+        other => {
+            return Err(format!(
+                "Clear: the local runtime does not clear a {} value",
+                other.type_name()
+            ))
+        }
+    })
 }
 
 /// Run a stub member that reads the interpreter context, which a context-free
@@ -351,6 +444,8 @@ pub fn supports_global_builtin(name: &str) -> bool {
             | "maximum"
             | "minimum"
             | "arraylen"
+            | "createguid"
+            | "isnullguid"
             | "evaluate"
             | "dmy2date"
             | "dt2date"
@@ -360,6 +455,7 @@ pub fn supports_global_builtin(name: &str) -> bool {
             | "randomize"
             | "getlasterrortext"
             | "clearlasterror"
+            | "clear"
     )
 }
 
@@ -483,6 +579,8 @@ mod tests {
             "Maximum",
             "Minimum",
             "ArrayLen",
+            "CreateGuid",
+            "IsNullGuid",
             "Evaluate",
             "DMY2Date",
             "DT2Date",
@@ -492,6 +590,7 @@ mod tests {
             "Randomize",
             "GetLastErrorText",
             "ClearLastError",
+            "Clear",
         ];
         for name in names {
             assert!(

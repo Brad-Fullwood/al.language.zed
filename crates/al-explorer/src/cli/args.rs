@@ -96,26 +96,34 @@ pub enum Commands {
     /// Fuzzy symbol search across packages
     #[command(after_help = "\
 Examples:
-  al search Customer
-  al search \"Sales Post\" --limit 5
-  al search Customer --json")]
+  al-explorer search Customer
+  al-explorer search \"Sales Post\" --limit 5
+  al-explorer search Customer --json")]
     Search { query: String },
     /// Look up object by type and name
     #[command(after_help = "\
 Examples:
-  al object table Customer
-  al object codeunit \"Sales-Post\"
-  al object page \"Customer Card\" --json")]
+  al-explorer object table Customer
+  al-explorer object codeunit \"Sales-Post\"
+  al-explorer object page \"Customer Card\" --json")]
     Object {
         #[arg(value_name = "TYPE")]
         kind: String,
         name: String,
+        /// Wait for the call graph when a workspace object's fields and
+        /// methods are not loaded yet, instead of answering without them
+        #[arg(long)]
+        wait_for_members: bool,
     },
     /// Look up object by type and numeric ID
     ById {
         #[arg(value_name = "TYPE")]
         kind: String,
         id: i32,
+        /// Wait for the call graph when a workspace object's fields and
+        /// methods are not loaded yet, instead of answering without them
+        #[arg(long)]
+        wait_for_members: bool,
     },
     /// Show the strongest available source representation for an object
     Source {
@@ -186,9 +194,9 @@ Examples:
     /// Compile the AL project (native by default; alc with al.useOfficialCompiler)
     #[command(after_help = "\
 Examples:
-  al compile
-  al compile --project /path/to/project
-  al compile --json")]
+  al-explorer compile
+  al-explorer compile --project /path/to/project
+  al-explorer compile --json")]
     Compile {
         /// Project directory (default: current dir)
         #[arg(short, long)]
@@ -217,9 +225,9 @@ Examples:
     /// Run native lint rules on AL file(s)
     #[command(after_help = "\
 Examples:
-  al lint src/Customer.al
-  al lint --all
-  al lint src/Sales.al --json")]
+  al-explorer lint src/Customer.al
+  al-explorer lint --all
+  al-explorer lint src/Sales.al --json")]
     Lint {
         /// File or directory to lint (default: current dir with --all).
         /// Accepts multiple path parts joined with spaces (handles $ZED_FILE expansion
@@ -254,8 +262,8 @@ Examples:
     /// Show type info at a position (hover equivalent)
     #[command(after_help = "\
 Examples:
-  al hover src/Customer.al 42 15
-  al hover src/Customer.al 42 15 --json")]
+  al-explorer hover src/Customer.al 42 15
+  al-explorer hover src/Customer.al 42 15 --json")]
     Hover {
         file: String,
         /// Line number (1-based)
@@ -266,8 +274,8 @@ Examples:
     /// Find definition of symbol at a position
     #[command(after_help = "\
 Examples:
-  al definition src/Customer.al 42 15
-  al definition src/Customer.al 42 15 --json")]
+  al-explorer definition src/Customer.al 42 15
+  al-explorer definition src/Customer.al 42 15 --json")]
     Definition {
         file: String,
         /// Line number (1-based)
@@ -307,9 +315,9 @@ Examples:
     /// Rename a symbol across file(s)
     #[command(after_help = "\
 Examples:
-  al rename src/Customer.al 42 15 NewName
-  al rename src/Customer.al 42 15 NewName --dry-run
-  al rename src/Customer.al 42 15 NewName --json")]
+  al-explorer rename src/Customer.al 42 15 NewName
+  al-explorer rename src/Customer.al 42 15 NewName --dry-run
+  al-explorer rename src/Customer.al 42 15 NewName --json")]
     Rename {
         file: String,
         /// Line number (1-based)
@@ -334,11 +342,11 @@ Examples:
         name = "generate-completions",
         after_help = "\
 Examples:
-  al generate-completions bash
-  al generate-completions zsh
-  al generate-completions fish
-  al generate-completions bash >> ~/.bash_completion
-  al generate-completions fish > ~/.config/fish/completions/al.fish"
+  al-explorer generate-completions bash
+  al-explorer generate-completions zsh
+  al-explorer generate-completions fish
+  al-explorer generate-completions bash >> ~/.bash_completion
+  al-explorer generate-completions fish > ~/.config/fish/completions/al-explorer.fish"
     )]
     GenerateCompletions {
         /// Shell to generate completions for (bash, zsh, fish, elvish, powershell)
@@ -731,8 +739,8 @@ Examples:
         name = "native-check",
         after_help = "\
 Examples:
-  al native-check
-  al native-check --json"
+  al-explorer native-check
+  al-explorer native-check --json"
     )]
     NativeCheck,
     /// Report the next free object ID, table field number or enum value
@@ -744,11 +752,11 @@ Examples:
         name = "free-ids",
         after_help = "\
 Examples:
-  al free-ids
-  al free-ids --kind table
-  al free-ids --kind codeunit --count 5
-  al free-ids --object \"Customer Ext\"
-  al free-ids --json --kind page"
+  al-explorer free-ids
+  al-explorer free-ids --kind table
+  al-explorer free-ids --kind codeunit --count 5
+  al-explorer free-ids --object \"Customer Ext\"
+  al-explorer free-ids --json --kind page"
     )]
     FreeIds {
         /// Object kind to allocate an ID for (table, page, codeunit, report,
@@ -827,7 +835,10 @@ Examples:
   al-explorer trust --show
   al-explorer trust
   al-explorer trust --revoke ~/src/SomeApp
-  al-explorer trust --yes --root ~/src/SomeApp   # scripted install, no terminal
+
+A CI job a person set up passes --yes with --root and --digest. The digest is the
+one a person read with --show, so a commit that changes a privileged value fails the
+job instead of being trusted.
 
 See Docs/features/project-trust.md.")]
     Trust {
@@ -839,12 +850,15 @@ See Docs/features/project-trust.md.")]
         /// Remove this project from the trusted list
         #[arg(long)]
         revoke: bool,
-        /// Answer the confirmation. Needs --root naming the same project
-        #[arg(long, requires = "root", conflicts_with_all = ["show", "revoke"])]
+        /// Answer the confirmation, for CI. Needs --root and --digest
+        #[arg(long, requires_all = ["root", "digest"], conflicts_with_all = ["show", "revoke"])]
         yes: bool,
         /// The project --yes applies to, spelled out
         #[arg(long, value_name = "PATH")]
         root: Option<String>,
+        /// The digest --yes records, as `trust --show` printed it
+        #[arg(long, value_name = "SHA256")]
+        digest: Option<String>,
     },
 }
 
@@ -965,5 +979,53 @@ mod clap_wiring_tests {
     #[test]
     fn format_all_alone_is_accepted() {
         assert!(parse(&["format", "--all"]).is_ok());
+    }
+
+    /// A `--help` example is copied into a shell, so it has to start with the
+    /// name the binary is installed under. Most of them said `al`.
+    #[test]
+    fn every_help_example_starts_with_the_binary_name() {
+        use clap::CommandFactory;
+        let root = Cli::command();
+        let binary = root.get_name().to_string();
+        let mut commands = vec![&root];
+        let mut wrong = Vec::new();
+        while let Some(command) = commands.pop() {
+            commands.extend(command.get_subcommands());
+            let Some(help) = command.get_after_help() else {
+                continue;
+            };
+            let help = help.to_string();
+            let examples = help
+                .lines()
+                .skip_while(|line| *line != "Examples:")
+                .skip(1)
+                .take_while(|line| !line.trim().is_empty());
+            for example in examples {
+                if example.split_whitespace().next() != Some(binary.as_str()) {
+                    wrong.push(format!("{}: {example}", command.get_name()));
+                }
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "examples that do not start with {binary}:\n{}",
+            wrong.join("\n")
+        );
+    }
+
+    /// fish loads a completion file named after the command it completes, so
+    /// `al.fish` was never read for `al-explorer`.
+    #[test]
+    fn the_fish_completion_example_writes_the_file_fish_loads() {
+        use clap::CommandFactory;
+        let root = Cli::command();
+        let help = root
+            .find_subcommand("generate-completions")
+            .and_then(|command| command.get_after_help())
+            .expect("generate-completions has examples")
+            .to_string();
+        let expected = format!("~/.config/fish/completions/{}.fish", root.get_name());
+        assert!(help.contains(&expected), "{help}");
     }
 }

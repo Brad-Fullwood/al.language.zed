@@ -43,6 +43,8 @@ impl TestResultStore {
 
     /// Append one record, pruning the oldest record in a full method bucket.
     pub async fn append(&self, record: TestRunRecord) -> Result<(), PersistenceError> {
+        // Held across the file I/O below: appends and rewrites of the one file
+        // must not interleave. `bucket_counts` is only ever taken inside it.
         let _guard = self.write_lock.lock().await;
 
         let key = (record.codeunit_id, record.method_name.clone());
@@ -156,18 +158,32 @@ impl TestResultStore {
 }
 
 fn canonical_path_for(project_root: &std::path::Path) -> Result<PathBuf, PersistenceError> {
-    let hash = short_hash(project_root.to_string_lossy().as_bytes());
-    let base = al_project::project::user_data_dir().ok_or_else(|| {
+    let mut path = project_data_dir(project_root).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "no per-user data directory: set XDG_DATA_HOME or HOME (LOCALAPPDATA on Windows)",
         )
     })?;
-    let mut path = base;
-    path.push("al-lsp");
-    path.push(hash);
     path.push("test-results.json");
     Ok(path)
+}
+
+/// The directory al-lsp keeps a project's state in:
+/// `<user data dir>/al-lsp/<FNV-1a hash of the project root>`.
+///
+/// `None` when the user has no data directory.
+pub fn project_data_dir(project_root: &std::path::Path) -> Option<PathBuf> {
+    al_project::project::user_data_dir().map(|data| project_data_dir_under(&data, project_root))
+}
+
+/// [`project_data_dir`] with `data_dir` as the user data directory.
+pub(crate) fn project_data_dir_under(
+    data_dir: &std::path::Path,
+    project_root: &std::path::Path,
+) -> PathBuf {
+    data_dir
+        .join("al-lsp")
+        .join(short_hash(project_root.to_string_lossy().as_bytes()))
 }
 
 fn short_hash(bytes: &[u8]) -> String {
@@ -532,6 +548,8 @@ mod tests {
         struct RestoreEnv(Option<std::ffi::OsString>);
         impl Drop for RestoreEnv {
             fn drop(&mut self) {
+                // SAFETY: runs while `_lock` still holds ENV_LOCK, the only
+                // guard of XDG_DATA_HOME in this test binary.
                 unsafe {
                     match self.0.take() {
                         Some(value) => std::env::set_var("XDG_DATA_HOME", value),
@@ -541,6 +559,7 @@ mod tests {
             }
         }
         let _restore = RestoreEnv(std::env::var_os("XDG_DATA_HOME"));
+        // SAFETY: ENV_LOCK is held, so no other test touches XDG_DATA_HOME.
         unsafe {
             std::env::set_var("XDG_DATA_HOME", "/tmp/al-lsp-test-xdg");
         }

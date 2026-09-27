@@ -295,6 +295,15 @@ async fn run() {
             altool = %altool.display(),
             "delegating LSP session to the official AL language server"
         );
+        // Zed starts the language server in the worktree, and this process
+        // execs `dotnet` before any configuration arrives, so the dotnet host
+        // is decided against the working directory here.
+        if let Ok(project_root) = std::env::current_dir() {
+            if let Some(advisory) = al_project::trust::enforce_dotnet_path(&project_root) {
+                tracing::warn!("{advisory}");
+                eprintln!("al-lsp: {advisory}");
+            }
+        }
         let mut cmd = al_lsp::toolchain::official_lsp_command(&altool, &forward);
         #[cfg(unix)]
         {
@@ -342,9 +351,13 @@ async fn run() {
         }
         let fi = file_index.clone();
         let fi2 = file_index.clone();
+        let authorize_root = PathBuf::from(&project_root);
 
         if let Err(e) = al_dap::dap::native_dap::run_native_dap(
             &project_root,
+            std::sync::Arc::new(move |config: &al_dap::dap::bc_debug::BcDebugConfig| {
+                al_lsp::server::dap_mode::authorize_debug_scenario(&authorize_root, config)
+            }),
             |tenant| async move {
                 match al_bc::http_auth::access_token_from_env().map_err(|e| e.to_string())? {
                     Some(token) => Ok(token),
@@ -358,28 +371,15 @@ async fn run() {
                     }
                 }
             },
-            move |file_path| {
-                let path = PathBuf::from(file_path);
-                fi.object_info.get(&path).and_then(|info| {
-                    let kind = info.kind.parse::<al_symbols::ObjectKind>().ok()?;
-                    let object_id = kind.normalize_declaration_id(info.id).ok()?;
-                    let object_type = al_dap::dap::native_dap::kind_to_object_type(&info.kind);
-                    (object_type != al_dap::dap::native_dap::bc_object_type::UNKNOWN).then_some(
-                        al_dap::dap::native_dap::ResolvedObject {
-                            object_type,
-                            object_id,
-                        },
-                    )
-                })
+            move |file_path, line| {
+                al_lsp::server::dap_mode::native_dap_object_at_line(
+                    &fi,
+                    std::path::Path::new(file_path),
+                    line,
+                )
             },
             move |object_type, object_id| {
-                fi2.object_info
-                    .iter()
-                    .find(|entry| {
-                        al_dap::dap::native_dap::kind_to_object_type(&entry.kind) == object_type
-                            && entry.id == Some(object_id as i64)
-                    })
-                    .map(|entry| entry.key().clone())
+                al_lsp::server::dap_mode::native_dap_object_path(&fi2, object_type, object_id)
             },
             |project_root: PathBuf| async move {
                 // Native DAP is a separate process, so it cannot borrow the

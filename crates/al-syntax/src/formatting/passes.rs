@@ -371,6 +371,10 @@ pub(super) fn apply_brace_style(text: &str, options: &FormatOptions) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        is_mergeable_brace_target, is_procedure_member_start, is_property_name, is_property_opener,
+        property_eq_pos, wrap_long_property_lines, wrap_property_line,
+    };
     use crate::formatting::{format_al, BlankLinesBetweenProcedures, BraceStyle, FormatOptions};
 
     const SORT_INPUT: &str = "\
@@ -808,5 +812,195 @@ table 50100 Test
         // And the whole thing is still idempotent.
         let pass2 = format_al(&out, &opts);
         assert_eq!(out, pass2, "comment-before-brace case must be idempotent");
+    }
+
+    // property_eq_pos / is_property_name / is_property_opener direct tests
+
+    /// A top-level `=` must be found after skipping past `(...)` and `[...]`
+    /// spans, on both the open and the close of each: every one of the two
+    /// nested spans in this line has to be tracked correctly for the byte
+    /// offset returned to be the one after both close.
+    #[test]
+    fn property_eq_pos_skips_nested_parens_and_brackets() {
+        assert_eq!(property_eq_pos("Foo(x=y)[x=y]=z"), Some(13));
+    }
+
+    /// The byte before position 0 does not exist: `property_eq_pos` must
+    /// short-circuit on `absolute > 0` before indexing `bytes[absolute - 1]`,
+    /// for both the `prev` and the `next` lookahead.
+    #[test]
+    fn property_eq_pos_handles_a_leading_equals_sign() {
+        assert_eq!(property_eq_pos("=x"), Some(0));
+    }
+
+    /// `:=` is an assignment, not a property `=`: the character before it
+    /// disqualifies the match, so scanning must continue (and here finds
+    /// nothing else, so the whole line has no property `=`).
+    #[test]
+    fn property_eq_pos_rejects_a_walrus_assignment() {
+        assert_eq!(property_eq_pos(":=x"), None);
+    }
+
+    /// `==` is a comparison: the first `=` is disqualified by the second `=`
+    /// right after it, and the second `=` is disqualified by the first `=`
+    /// right before it. Neither is a property `=`.
+    #[test]
+    fn property_eq_pos_rejects_a_double_equals() {
+        assert_eq!(property_eq_pos("=="), None);
+    }
+
+    #[test]
+    fn is_property_name_rejects_empty_and_non_identifier_bytes() {
+        assert!(!is_property_name(""));
+        assert!(is_property_name("_"));
+        assert!(!is_property_name("a b"));
+    }
+
+    /// Each rejection in `is_property_opener`'s guard is `||`-chained: an
+    /// input where exactly one of them is true, and the rest false, is the
+    /// only way to tell a given `||` apart from an `&&` at that position.
+    #[test]
+    fn is_property_opener_rejects_each_guarded_shape_on_its_own() {
+        assert!(!is_property_opener("// a property-shaped comment = 1"));
+        assert!(!is_property_opener("*a continuation line = 1"));
+        assert!(!is_property_opener("Foo = 1 {"));
+    }
+
+    // is_procedure_member_start direct tests
+
+    #[test]
+    fn is_procedure_member_start_recognizes_every_member_kind() {
+        assert!(is_procedure_member_start("internal procedure Foo()"));
+        assert!(is_procedure_member_start("protected procedure Foo()"));
+        assert!(is_procedure_member_start("trigger OnRun()"));
+        assert!(!is_procedure_member_start("X := 1;"));
+    }
+
+    // sort_object_properties: depth accounting for a stray brace
+
+    /// A property value that carries an unbalanced `{` (defensive handling
+    /// for malformed/mid-edit source, per the comment at the accumulation
+    /// loop) must add to the running brace depth, not subtract from it. Get
+    /// the sign wrong and the object-level depth desyncs from the real
+    /// brace nesting, and a later `fields { ... }` block's own contents
+    /// spuriously reads as depth 1 again — sweeping its field-level
+    /// properties into the object-level sort.
+    #[test]
+    fn sort_properties_stray_brace_depth_keeps_nested_properties_out_of_the_run() {
+        let input = "\
+codeunit 50100 T
+{
+    Weird = 1,
+    {{ 2;
+    fields
+    {
+        Beta = 5;
+        Alpha = 2;
+    }
+}
+";
+        let opts = FormatOptions {
+            sort_properties: true,
+            ..Default::default()
+        };
+        let out = format_al(input, &opts);
+        assert!(
+            out.find("Beta = 5;").unwrap() < out.find("Alpha = 2;").unwrap(),
+            "field-level properties inside fields{{}} must keep source order:\n{out}"
+        );
+    }
+
+    // wrap_long_property_lines: continuation tracking and the boundary check
+
+    /// A hanging-comma continuation's middle line (no `,` or `;` of its own)
+    /// must not be mistaken for the end of the continuation, and its last
+    /// line (ending `;`, but not itself `,`-continued) must not be mistaken
+    /// for a fresh, independently wrappable property.
+    #[test]
+    fn wrap_long_property_lines_keeps_tracking_through_a_bare_continuation_line() {
+        let input = "Foo = 1,\nmiddle_value\nBar = 1, 2;\n".to_string();
+        let opts = FormatOptions {
+            max_line_length: 5,
+            ..Default::default()
+        };
+        let out = wrap_long_property_lines(input, &opts);
+        assert_eq!(
+            out, "Foo = 1,\nmiddle_value\nBar = 1, 2;\n",
+            "still inside the continuation, so Bar must not be wrapped on its own:\n{out}"
+        );
+    }
+
+    /// A `//`-comment line that happens to end in `,` must not itself start
+    /// a continuation: `is_comment` has to gate the comma check.
+    #[test]
+    fn wrap_long_property_lines_a_trailing_comment_comma_does_not_start_a_continuation() {
+        let input = "// leading comment,\nBar = 1, 2;\n".to_string();
+        let opts = FormatOptions {
+            max_line_length: 5,
+            ..Default::default()
+        };
+        let out = wrap_long_property_lines(input, &opts);
+        assert_eq!(
+            out, "// leading comment,\nBar = 1,\n    2;\n",
+            "Bar is not in a continuation, so it must still wrap on its own:\n{out}"
+        );
+    }
+
+    /// Same as above with the block-comment-continuation spelling of
+    /// `is_comment` (a bare `*`), to reach the third disjunct in its chain.
+    #[test]
+    fn wrap_long_property_lines_a_block_comment_continuation_comma_does_not_start_one() {
+        let input = "* mid-comment,\nBar = 1, 2;\n".to_string();
+        let opts = FormatOptions {
+            max_line_length: 5,
+            ..Default::default()
+        };
+        let out = wrap_long_property_lines(input, &opts);
+        assert_eq!(
+            out, "* mid-comment,\nBar = 1,\n    2;\n",
+            "Bar is not in a continuation, so it must still wrap on its own:\n{out}"
+        );
+    }
+
+    /// A line exactly at `max_line_length` is not wrapped: only a line
+    /// strictly longer than the limit is.
+    #[test]
+    fn wrap_long_property_lines_does_not_wrap_a_line_exactly_at_the_limit() {
+        let input = "A = 1, 2;\n".to_string(); // exactly 9 characters
+        let opts = FormatOptions {
+            max_line_length: 9,
+            ..Default::default()
+        };
+        let out = wrap_long_property_lines(input, &opts);
+        assert_eq!(out, "A = 1, 2;\n");
+    }
+
+    // wrap_property_line direct test
+
+    /// Same paren/bracket depth tracking as `property_eq_pos`, applied to
+    /// top-level commas instead of `=`.
+    #[test]
+    fn wrap_property_line_skips_commas_nested_in_parens_and_brackets() {
+        let unit = "    ";
+        assert_eq!(
+            wrap_property_line("a(x,y)[x,y],z", unit),
+            vec!["a(x,y)[x,y],".to_string(), "    z".to_string()]
+        );
+    }
+
+    // is_mergeable_brace_target: one input per otherwise-unreachable `||`
+
+    #[test]
+    fn is_mergeable_brace_target_rejects_each_guarded_shape_on_its_own() {
+        // First guard: every disjunct not already covered by an existing
+        // brace_style test.
+        assert!(!is_mergeable_brace_target("foo{"));
+        assert!(!is_mergeable_brace_target("// comment"));
+        assert!(!is_mergeable_brace_target("/* comment"));
+        assert!(!is_mergeable_brace_target("* continued"));
+        // Second guard (begin/end shapes).
+        assert!(!is_mergeable_brace_target("if x then begin"));
+        assert!(!is_mergeable_brace_target("End"));
+        assert!(!is_mergeable_brace_target("end foo"));
     }
 }

@@ -1,0 +1,4 @@
+# `Value` is a map key (primary keys, sort keys). Its List and Dictionary
+# variants share their contents through `Shared`, but key values are scalar
+# field values, which never hold one.
+ignore-interior-mutability = ["al_runtime::interpreter::value::Shared"]

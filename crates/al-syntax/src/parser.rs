@@ -8,6 +8,35 @@ pub fn language() -> Language {
     tree_sitter_al::LANGUAGE.into()
 }
 
+/// A fingerprint of the grammar this build parses with: FNV-1a over the
+/// grammar's node types and the sizes of its parse table.
+///
+/// Data derived from parse trees and written to disk records it, so a build
+/// with a different grammar can tell the data was not made by its parser.
+pub fn grammar_fingerprint() -> u64 {
+    static FINGERPRINT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *FINGERPRINT.get_or_init(|| {
+        let language = language();
+        let mut hash: u64 = 0xcbf29ce484222325;
+        let mut feed = |bytes: &[u8]| {
+            for &byte in bytes {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x00000100000001b3);
+            }
+        };
+        feed(tree_sitter_al::NODE_TYPES.as_bytes());
+        for count in [
+            language.abi_version(),
+            language.node_kind_count(),
+            language.parse_state_count(),
+            language.field_count(),
+        ] {
+            feed(&(count as u64).to_le_bytes());
+        }
+        hash
+    })
+}
+
 pub struct AlParser {
     parser: Parser,
 }

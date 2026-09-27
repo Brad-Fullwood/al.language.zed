@@ -210,39 +210,28 @@ async fn no_ghost_diagnostics_after_close_during_debounce() {
     let mut cleared = false;
     let mut ghosts: Vec<String> = Vec::new();
 
-    let clear_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-    while !cleared && tokio::time::Instant::now() < clear_deadline {
-        for (published_uri, diagnostics) in client.drain_diagnostic_publishes() {
-            if published_uri != uri {
-                continue;
-            }
-            sequence.push(describe_publish(&diagnostics));
-            cleared |= diagnostics.is_empty();
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
-    }
-    assert!(
-        cleared,
-        "did_close must clear diagnostics for {uri} with an empty publish; publishes seen: {sequence:?}"
-    );
-
-    // Outlast the server's diagnostics debounce (400 ms) so a task armed by the
-    // didChange has fired by the time the window closes.
-    let watch_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(1500);
-    while tokio::time::Instant::now() < watch_deadline {
+    // One window, long enough to outlast the server's 400 ms debounce, so a
+    // ghost that arrives in the same batch as the clear is still caught.
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
+    while tokio::time::Instant::now() < deadline {
         for (published_uri, diagnostics) in client.drain_diagnostic_publishes() {
             if published_uri != uri {
                 continue;
             }
             let described = describe_publish(&diagnostics);
-            if !diagnostics.is_empty() {
+            if cleared && !diagnostics.is_empty() {
                 ghosts.push(described.clone());
             }
+            cleared |= diagnostics.is_empty();
             sequence.push(described);
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
     }
 
+    assert!(
+        cleared,
+        "did_close must clear diagnostics for {uri} with an empty publish; publishes seen: {sequence:?}"
+    );
     assert!(
         ghosts.is_empty(),
         "ghost diagnostics published for {uri} after did_close cleared it: {}\nfull publish sequence: {:?}",

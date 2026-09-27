@@ -178,15 +178,17 @@ pub(super) fn extract_primary_expression_name(
 ///   OnBefore/OnAfter trigger edges plus their subscriber edges for every plain
 ///   `Insert()`/`Modify()`/`Delete()`, polluting impact, trace and
 ///   affected-test results.
-/// - `Modify(RunTrigger)` / `Delete(RunTrigger)`: same as Insert.
-/// - `Validate(...)`: always fires the field's OnValidate (no RunTrigger
-///   parameter), so this returns `true`.
+/// - `Modify(RunTrigger)` / `Delete(RunTrigger)` / `DeleteAll(RunTrigger)`:
+///   same as Insert.
+/// - `ModifyAll(Field, Value, RunTrigger)`: the third argument, default `false`.
+/// - `Validate(...)` and `Rename(...)`: always run the field's OnValidate or
+///   the table's OnRename (no RunTrigger parameter), so this returns `true`.
 pub(super) fn parse_run_trigger_arg(
     member_call_suffix: tree_sitter::Node,
     source: &[u8],
     op: RecordOp,
 ) -> bool {
-    if op == RecordOp::Validate {
+    if matches!(op, RecordOp::Validate | RecordOp::Rename) {
         return true;
     }
 
@@ -197,12 +199,13 @@ pub(super) fn parse_run_trigger_arg(
 
     // argument_list is `'(' [expression_list] ')'`, and expression_list holds
     // the `expression` nodes separated by `comma` nodes. RunTrigger is the
-    // first expression.
-    let Some(first_argument) = first_argument_node(arg_list) else {
-        // Empty argument list (`Insert()`): RunTrigger defaults to false.
+    // first expression, or the third of ModifyAll.
+    let position = if op == RecordOp::ModifyAll { 2 } else { 0 };
+    let Some(run_trigger_argument) = argument_node(arg_list, position) else {
+        // No such argument (`Insert()`): RunTrigger defaults to false.
         return false;
     };
-    let Ok(text) = first_argument.utf8_text(source) else {
+    let Ok(text) = run_trigger_argument.utf8_text(source) else {
         return false;
     };
     match text.trim().to_lowercase().as_str() {
@@ -227,9 +230,10 @@ pub(super) fn parse_run_trigger_arg(
     }
 }
 
-/// The first argument expression below an `argument_list`, or `None` for `()`.
-pub(super) fn first_argument_node(
+/// The argument expression at `position` (from 0) below an `argument_list`.
+pub(super) fn argument_node(
     arg_list: tree_sitter::Node<'_>,
+    position: usize,
 ) -> Option<tree_sitter::Node<'_>> {
     let mut cursor = arg_list.walk();
     let list = arg_list
@@ -237,10 +241,11 @@ pub(super) fn first_argument_node(
         .find(|child| child.kind() == "expression_list");
     let container = list.unwrap_or(arg_list);
     let mut inner = container.walk();
-    let first = container
+    let found = container
         .children(&mut inner)
-        .find(|child| child.is_named() && child.kind() != "comma");
-    first
+        .filter(|child| child.is_named() && child.kind() != "comma")
+        .nth(position);
+    found
 }
 
 /// True for the BC built-ins that launch a codeunit by reference: `Run` and

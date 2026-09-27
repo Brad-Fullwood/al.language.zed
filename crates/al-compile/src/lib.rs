@@ -225,6 +225,11 @@ pub async fn compile_project_with_analyzers(
         .tempdir_in(project_root)?;
     let out_dir = tmp_guard.path();
 
+    // A `dotnet` inside the project runs with the runtime beside it, which a
+    // running process does not stamp, so trust is decided again here.
+    if let Some(advisory) = al_project::trust::enforce_dotnet_path_before_spawn(project_root) {
+        tracing::warn!("{advisory}");
+    }
     let mut cmd = al_project::toolchain::dotnet_command_async(&toolchain.alc);
     cmd.arg(format!("/project:{}", project_root.display()));
     let out_file_name = manifest_app_filename(project_root)?;
@@ -365,26 +370,22 @@ fn resolve_analyzer_paths(
     project_root: &Path,
     assembly_probing_paths: &[PathBuf],
 ) -> Result<Vec<String>, AlError> {
-    let builtins: [(&[&str], &PathBuf); 4] = [
-        (&["CodeCop"], &toolchain.analyzers.code_cop),
-        (&["AppSourceCop"], &toolchain.analyzers.app_source_cop),
-        (&["UICop"], &toolchain.analyzers.ui_cop),
-        (
-            &["PerTenantCop", "PerTenantExtensionCop"],
-            &toolchain.analyzers.per_tenant_cop,
-        ),
+    let builtins = [
+        &toolchain.analyzers.code_cop,
+        &toolchain.analyzers.app_source_cop,
+        &toolchain.analyzers.ui_cop,
+        &toolchain.analyzers.per_tenant_cop,
     ];
     let mut paths = Vec::<PathBuf>::new();
 
     if let Some(filter) = analyzer_filter {
+        let search =
+            al_project::analyzers::CustomAnalyzerSearch::new(project_root, assembly_probing_paths);
         for requested in filter {
             let requested = requested.trim();
-            let builtin = builtins.iter().find(|(names, _)| {
-                names.iter().any(|name| {
-                    al_project::analyzers::analyzer_name(requested).eq_ignore_ascii_case(name)
-                })
-            });
-            let resolved = if let Some((_, path)) = builtin {
+            let builtin =
+                al_project::analyzers::builtin_analyzer_path(&toolchain.analyzers, requested);
+            let resolved = if let Some(path) = builtin {
                 if !path.is_file() {
                     return Err(analyzer_configuration_error(format!(
                         "requested built-in analyzer '{requested}' is not installed at {}",
@@ -407,12 +408,9 @@ fn resolve_analyzer_paths(
                 }
                 path.clone()
             } else {
-                al_project::analyzers::discover_custom_analyzer(
-                    requested,
-                    project_root,
-                    assembly_probing_paths,
-                )
-                .map_err(|error| analyzer_configuration_error(error.to_string()))?
+                search
+                    .resolve(requested)
+                    .map_err(|error| analyzer_configuration_error(error.to_string()))?
                 .ok_or_else(|| {
                     analyzer_configuration_error(format!(
                         "requested analyzer '{requested}' could not be found in the project, probing paths, NuGet cache, or common editor extension locations"
@@ -424,7 +422,7 @@ fn resolve_analyzer_paths(
             }
         }
     } else {
-        for (_, path) in builtins {
+        for path in builtins {
             if path.is_file() && !paths.contains(path) {
                 paths.push(path.clone());
             }
@@ -851,26 +849,131 @@ mod tests {
         }
     }
 
+    /// A name the user wrote resolves to the project's own `.netpackages` copy
+    /// only once the project is trusted. Before, a clone that shipped a DLL of
+    /// that name had it passed to alc as `/analyzer:` on every build.
+    ///
+    /// Held by the tests that point `XDG_CONFIG_HOME` somewhere else. Every
+    /// other test reads an untrusted store either way.
+    static TRUST_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
-    fn named_custom_analyzer_is_discovered_for_official_compile() {
+    fn named_custom_analyzer_in_the_project_needs_trust() {
+        let _lock = TRUST_STORE_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let config = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", config.path());
+
         let root = tempfile::tempdir().unwrap();
         let dll = root.path().join(
             ".netpackages/businesscentral.lintercop/1.0.0/lib/net8.0/BusinessCentral.LinterCop.dll",
         );
         std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
         std::fs::write(&dll, b"analyzer").unwrap();
-        let toolchain = analyzer_test_toolchain(root.path());
-
-        let resolved = resolve_analyzer_paths(
-            &toolchain,
-            Some(&["BusinessCentral.LinterCop".to_string()]),
-            root.path(),
-            &[],
+        // The project's settings name the analyzer, so the trust record lists
+        // the copy. A copy the record does not list is refused.
+        std::fs::create_dir_all(root.path().join(".vscode")).unwrap();
+        std::fs::write(
+            root.path().join(".vscode/settings.json"),
+            r#"{"al.codeAnalyzers": ["BusinessCentral.LinterCop"]}"#,
         )
         .unwrap();
+        let toolchain = analyzer_test_toolchain(root.path());
+        let requested = ["BusinessCentral.LinterCop".to_string()];
+
+        let untrusted = resolve_analyzer_paths(&toolchain, Some(&requested), root.path(), &[]);
+        let granted = al_project::trust::grant(root.path()).map(|_| ());
+        let trusted = resolve_analyzer_paths(&toolchain, Some(&requested), root.path(), &[]);
+        match previous {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+
+        let error = untrusted.expect_err("an untrusted project's copy must not reach alc");
+        assert!(error.to_string().contains("not trusted"), "{error}");
+        granted.unwrap();
         assert_eq!(
-            resolved,
+            trusted.unwrap(),
             [dll.canonicalize().unwrap().display().to_string()]
+        );
+    }
+
+    /// A `dotnet` shipped in a trusted project is recorded with the runtime
+    /// beside it. A running daemon decides again only when its fingerprint
+    /// moves, which stamps the muxer alone, so a runtime file a `git pull`
+    /// replaced ran on the next build. The build now decides before it spawns.
+    #[cfg(unix)]
+    #[test]
+    fn a_build_does_not_run_a_project_dotnet_whose_runtime_changed() {
+        use std::os::unix::fs::PermissionsExt;
+        let _lock = TRUST_STORE_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let config = tempfile::tempdir().unwrap();
+        let previous_config = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", config.path());
+
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        std::fs::write(
+            root.join("app.json"),
+            r#"{"id":"00000000-0000-0000-0000-000000000001","publisher":"P","name":"A","version":"1.0.0.0"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join(".vscode")).unwrap();
+        std::fs::write(
+            root.join(".vscode/settings.json"),
+            r#"{"al.dotnetPath": "./tools/dotnet/dotnet"}"#,
+        )
+        .unwrap();
+        let fxr = root.join("tools/dotnet/host/fxr/8.0.0/libhostfxr.so");
+        std::fs::create_dir_all(fxr.parent().unwrap()).unwrap();
+        std::fs::write(&fxr, b"reviewed hostfxr").unwrap();
+        // The muxer marks that it ran for this project, and only this one,
+        // since other tests in this crate spawn `dotnet` concurrently.
+        let marker = root.join("ran");
+        let dotnet = root.join("tools/dotnet/dotnet");
+        std::fs::write(
+            &dotnet,
+            format!(
+                "#!/bin/sh\ncase \"$*\" in *'/project:{}'*) touch '{}' ;; esac\n",
+                root.display(),
+                marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&dotnet, std::fs::Permissions::from_mode(0o755)).unwrap();
+        al_project::trust::grant(&root).unwrap();
+        let previous_dotnet = std::env::var_os(al_project::toolchain::DOTNET_PATH_ENV);
+        std::env::set_var(al_project::toolchain::DOTNET_PATH_ENV, &dotnet);
+        let toolchain = analyzer_test_toolchain(&root);
+        // A runtime of its own, so the lock above is not held across an await.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let _ = runtime.block_on(compile_project(&toolchain, &root, None));
+        let ran_while_trusted = marker.exists();
+        std::fs::remove_file(&marker).ok();
+        std::fs::write(&fxr, b"replaced by git pull").unwrap();
+        let _ = runtime.block_on(compile_project(&toolchain, &root, None));
+        let ran_after_the_change = marker.exists();
+
+        match previous_dotnet {
+            Some(value) => std::env::set_var(al_project::toolchain::DOTNET_PATH_ENV, value),
+            None => std::env::remove_var(al_project::toolchain::DOTNET_PATH_ENV),
+        }
+        match previous_config {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        assert!(ran_while_trusted, "the trusted project's dotnet runs");
+        assert!(
+            !ran_after_the_change,
+            "a dotnet whose runtime changed after the grant must not run"
         );
     }
 
@@ -930,6 +1033,41 @@ mod tests {
             resolved,
             [toolchain.analyzers.code_cop.display().to_string()]
         );
+    }
+
+    /// `al-explorer new`'s default `.vscode/settings.json` names its analyzers
+    /// as `${PerTenantExtensionCop}` (`al-project/src/scaffold.rs`,
+    /// `generate_vscode_settings`), and this is exactly the list
+    /// `pack-native --validate` passes through here as `analyzer_filter` when
+    /// no `--analyzers` flag overrides it. Before the fix, none of the four
+    /// token-spelled cops matched the `builtins` table (it compared against
+    /// `analyzer_name`, which stripped `.dll` but not `${...}`), so every one
+    /// fell through to `discover_custom_analyzer` and failed with "could not
+    /// be found" on a project that has none of them installed as files.
+    #[test]
+    fn requested_builtin_token_spelling_resolves_exact_toolchain_dll() {
+        let root = tempfile::tempdir().unwrap();
+        let toolchain = analyzer_test_toolchain(root.path());
+        std::fs::write(&toolchain.analyzers.code_cop, b"analyzer").unwrap();
+        std::fs::write(&toolchain.analyzers.app_source_cop, b"analyzer").unwrap();
+        std::fs::write(&toolchain.analyzers.ui_cop, b"analyzer").unwrap();
+        std::fs::write(&toolchain.analyzers.per_tenant_cop, b"analyzer").unwrap();
+
+        let cases = [
+            ("${CodeCop}", &toolchain.analyzers.code_cop),
+            ("${AppSourceCop}", &toolchain.analyzers.app_source_cop),
+            ("${UICop}", &toolchain.analyzers.ui_cop),
+            (
+                "${PerTenantExtensionCop}",
+                &toolchain.analyzers.per_tenant_cop,
+            ),
+        ];
+        for (token, expected) in cases {
+            let resolved =
+                resolve_analyzer_paths(&toolchain, Some(&[token.to_string()]), root.path(), &[])
+                    .unwrap_or_else(|e| panic!("{token} should resolve, got error: {e}"));
+            assert_eq!(resolved, [expected.display().to_string()], "{token}");
+        }
     }
 
     #[test]
@@ -1228,14 +1366,17 @@ Build failed.";
         let _g = COMPILE_TIMEOUT_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "0");
         }
         assert_eq!(compile_timeout().unwrap(), None);
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "-1");
         }
         assert_eq!(compile_timeout().unwrap(), None);
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
         unsafe {
             std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
         }
@@ -1246,6 +1387,7 @@ Build failed.";
         let _g = COMPILE_TIMEOUT_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "30");
         }
@@ -1253,6 +1395,7 @@ Build failed.";
             compile_timeout().unwrap(),
             Some(std::time::Duration::from_secs(30))
         );
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
         unsafe {
             std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
         }
@@ -1263,10 +1406,12 @@ Build failed.";
         let _g = COMPILE_TIMEOUT_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "not-a-number");
         }
         assert!(compile_timeout().is_err());
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
         unsafe {
             std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
         }

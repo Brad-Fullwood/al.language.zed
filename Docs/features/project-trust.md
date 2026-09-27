@@ -18,7 +18,7 @@ else applies as it always has.
 | Setting | Why it is privileged |
 | --- | --- |
 | `al.codeAnalyzers` entries that are not built-in tokens | A path entry becomes `/analyzer:<path>`; Roslyn loads the assembly and runs its type initialisers |
-| `al.compilationOptions` | Appended verbatim to the `alc` command line, including `/analyzer:` and `/ruleset:` |
+| `al.compilationOptions` | Appended verbatim to the `alc` command line. An entry that names a file alc loads from is refused (see below) |
 | `al.ruleSetPath` outside the project | Reads a file from anywhere as `/ruleset:` |
 | `al.assemblyProbingPaths` | Directories the analyzer search walks and `/assemblyprobingpaths:` names |
 | `al.packageCachePath` outside the project | Chooses where `.app` symbol packages are read from, and reaches `/packagecachepath:` |
@@ -26,6 +26,7 @@ else applies as it always has.
 | `al.nugetFeeds` | Every symbol package, including Base Application, comes from these URLs |
 | `al.useOnlyCustomFeeds` | Removes Microsoft's feeds, leaving only the configured ones |
 | `launch.json` / `debug.json` on-premises `server` | Receives the cached Business Central token and, with `acceptInvalidCerts`, decides whether TLS is verified |
+| A `launch.json` or `debug.json` the parser rejects | Zed can still offer its scenarios to the debug adapter, so its servers are unknown to the record |
 | `al.dotnetPath` | Names the `dotnet` host the toolchain spawns |
 | `lsp.al-lsp.binary.path`, `.arguments`, `.env` | Name a program, its command line and its environment |
 | `lsp.al-lsp.initialization_options` | Reaches the language server as configuration |
@@ -35,9 +36,39 @@ ignores `binary.path` and `binary.arguments` outright (see Limits). They are in 
 a record made while `binary.path` said `/bin/sh` goes stale when the arguments change, and so
 a future extension API that exposes `binary.env` does not widen an existing record silently.
 
+The servers of both `.zed/debug.json` and `.vscode/launch.json` are in the record, because
+Zed offers the scenarios of both. `environmentType` and `authentication` are read without
+regard to case, as the debug adapter reads them. A launch file that still fails to parse is
+recorded by its hash, so an existing record goes stale when the file changes, and
+`al-explorer trust` refuses to record trust until the file is fixed: the servers it names
+cannot be listed for review.
+
 `${CodeCop}`, `${AppSourceCop}`, `${UICop}`, `${PerTenantExtensionCop}` and their bare
 spellings are built-in tokens: the toolchain resolves them to Microsoft's own assemblies, so
-they are not gated.
+they are not gated. Every caller passes the toolchain's file for them, never the name, so a
+file of that name in the project is not loaded.
+
+A repository can also point outside itself without a setting, by committing `.alpackages`
+as a symbolic link. A symbol folder written inside the project that resolves outside it is
+treated like `al.packageCachePath` outside the project: until the project is trusted its
+packages are not read, `downloadSymbols` and the editor's symbol download refuse to write
+into it, the editor shows why the symbols are missing in place of the download prompt, and the
+daemon does not count it as a containment root. `al_project::trust::escapes_untrusted_project` is the one
+check. The record lists each such folder as `linked package folder` with the directory it
+resolves to. That covers `.alpackages` and every `al.packageCachePath` or
+`al.appLocalFolderPaths` entry written inside the project, in the project's settings files or in
+`~/.config/al-lsp/settings.json`. `trust
+--show` shows where the folder leads, and a commit that adds the link or points it somewhere
+else makes the record stale, which takes the target out of the containment roots again. A
+link added after the grant used to leave the record trusted, and the daemon then accepted a
+path anywhere under its target.
+
+The folders the analyzer search walks in a trusted project are listed the same way:
+`.netpackages`, `packages` and each `al.assemblyProbingPaths` entry written inside the project.
+A commit that turns `.netpackages` into a link to a directory another user fills makes the
+record stale, so the search skips the project's folders until the project is trusted again.
+Before, the record did not change, and the search followed the link and loaded that user's
+file.
 
 Everything else in a repository's settings applies without trust: formatting, inlay hints,
 `al.diagnosticsScope`, `al.enableNativeLint` and its per-rule overrides, `al.incrementalBuild`,
@@ -93,22 +124,96 @@ while the process still has a controlling terminal, and a pipe is what a task, a
 was not enough on its own: the command used to write the record with stdin closed and no
 terminal, so anything running as the user granted trust in one call.
 
-A scripted install whose settings you have read passes `--yes` together with
-`--root <project>`. `--yes` alone is refused, and `--root` naming a different path is
-refused, so the caller spells out which project's values it means. Nothing in `plugin/` or
-`scripts/` runs this command, and nothing should.
+A CI job has no terminal, so it answers with flags: `--yes --root <project> --digest
+<sha256>`. The digest is the one `al-explorer trust --show` printed when a person read the
+values, and it goes in the CI configuration. `--yes` without `--root` or `--digest` is
+refused, `--root` naming a different path is refused, and a digest the current values no
+longer match is refused, so a commit that changes a privileged value fails the job rather
+than being trusted by it. `--yes --root` used to record whatever the repository held at that
+moment.
 
-A revoke takes effect on the next request. The daemon fingerprints the trust store, the
-user settings file, both repository settings files and the launch file before each request,
-five `stat` calls, and re-evaluates when any of them moved. It used to decide once at
-startup and keep that configuration until it exited, which is up to `AL_DAEMON_IDLE_SECS`
-after the last request and never while an editor keeps it busy.
+The refusal a call with no terminal receives does not name these flags. That call is by
+construction a script or an agent, and the refusal said how to make the same call succeed.
+The flags are a step a person puts into a CI configuration, not an answer to a refusal. Nothing
+in `plugin/` or `scripts/` runs this command, and nothing should. For the same reason the refusal
+for a digest that no longer matches leaves out the current digest: it says nothing was recorded
+and asks for `al-explorer trust --show` in a terminal, where a person reads the new values.
+
+This is not a boundary against a program that already runs as the user: such a program can
+write `trusted-projects.json` itself. What the design controls is that no surface an agent
+reaches (the daemon, the MCP tools, a refusal, a skill) grants trust or tells it how to.
+
+A revoke takes effect on the next request, in every process that applies these settings.
+The daemon, and the MCP server through it, fingerprint the trust store, the user settings
+file, both repository settings files, both launch files and the `dotnet` host they run
+before each request, up to seven `stat` calls, and re-evaluate when any of them moved. They
+used to decide once at startup and keep that configuration until they exited, which is up to
+`AL_DAEMON_IDLE_SECS` after the last request and never while an editor keeps them busy.
+
+The language server Zed runs takes the same fingerprint before every command (build, Run
+Test, symbol download) and before semantic analysis resolves analyzers, and gates the
+editor's settings again when it moved. Gating only removes values, so a project trusted
+while the language server runs takes effect at the next settings change or restart. The
+debug adapter is a new process for each session and decides at launch.
+
+The fingerprint stamps the `dotnet` muxer and not the runtime beside it, which the record
+hashes. So a `dotnet` the project supplies, inside it or through a link written inside it, is
+decided again before each spawn: every alc build (the daemon's, the language server's, the
+debug adapter's launch compile, publish and `al-explorer build`) and the `--official-lsp`
+start. A `git pull` that replaces `host/fxr/<version>/libhostfxr.so` makes the project stale,
+`AL_DOTNET_PATH` is dropped, and the build runs `dotnet` from `PATH`. Before, the process kept
+the variable until the fingerprint moved, and the next build ran the new library. When a
+settings file stops parsing there is nothing to decide with, so such a `dotnet` is dropped the
+same way, with a message naming the file. A `dotnet` written outside the project costs one
+path check.
 
 The record lives in `~/.config/al-lsp/trusted-projects.json` (or `$XDG_CONFIG_HOME/al-lsp/`),
 outside every repository, mode 0600, written through a temp file and a rename. Each entry
 holds the canonical project root and a SHA-256 of the privileged values. Change one of those
 values in the repository and the digest stops matching, so the settings are ignored again
 until you run `trust` a second time. `al-explorer trust --show` reports that as `stale`.
+
+A privileged value that is a path into the project names a file the repository ships, and
+the file is what runs. For an analyzer path, `al.dotnetPath`, `binary.path` and each
+analyzer name that resolves to a DLL under `.netpackages`, `packages` or a relative probing
+path, the path is first resolved through any symbolic link, since the loader opens the target
+and reads its neighbours beside the target. The recorded value carries the resolved file's
+SHA-256 and, when the path is a link, where it resolves. For a probing directory inside the
+project it carries one hash over every file below it. The record also covers what the file
+loads from beside it: for an analyzer, one hash over every file in its directory and below,
+since .NET resolves an analyzer's references and its native libraries (`.so`, `.dylib`) from
+its own directory, and for `al.dotnetPath`, one hash over every file beside the muxer and
+every file under its `host` and `shared` directories, where it finds `hostfxr` and the
+framework. `trust --show` prints the resolved paths and the hashes. A commit that replaces one
+of those files, adds one where the record saw none, or points a link somewhere else makes the
+record `stale`. An analyzer at the project root puts every file in the project into its
+record, so keep an analyzer in a directory of its own. A path written outside the project is
+the user's machine and is recorded as written.
+
+A path written inside the project that a link carries outside it is resolved and hashed the
+same way. With `"al.assemblyProbingPaths": ["./tools"]` and `tools` a link to a directory
+beside the clone, `trust --show` prints `./tools (resolves to /home/you/src/shared-tools; ...)`
+with the hash of every file there, and a change to those files or a commit that points the
+link somewhere else makes the record `stale`. Before, the record held `./tools` as text, which
+reads as a folder inside the project, and the files at the target could change under it.
+
+`al.compilationOptions` is recorded as text, so it cannot vouch for a file an entry names.
+An entry that names a file or directory alc loads from is refused: `/analyzer:` and its
+short form `/a:`, `/assemblyprobingpaths:`, `/ruleset:` and `/packagecachepath:`, with `/`
+or `-` and in any case, as alc reads them, and an `@` response file, which alc reads as more
+switches. Such an entry is recorded as `compilation option that names a file`, so an existing
+record goes stale, and `al-explorer trust` refuses to record the project and names the
+dedicated key to use instead: `al.codeAnalyzers`, `al.assemblyProbingPaths`, `al.ruleSetPath`
+or `al.packageCachePath`, which record what they name. Switches that name no input, such as
+`/nowarn:` or `/target:`, are recorded as text as before.
+
+A tree the record cannot hash is not recorded. The walk does not follow a symbolic link
+inside the tree, because the loader does and a commit could change the target without
+changing any file the walk reads. It also stops after 50,000 entries. A path whose tree holds
+a link or more entries than that is recorded as `path the record cannot hash`, with the path
+and the reason, so an existing record goes stale, and `al-explorer trust` refuses to record
+the project until the link is replaced by the file it names or the file moves to a directory
+of its own.
 
 ## Settings you wrote yourself
 
@@ -119,6 +224,35 @@ to the language server, so the server cannot see which file a value came from. I
 that by reading the repository's own settings files and removing exactly the values they
 contribute. A privileged value written only in user settings survives; one the repository also
 asks for is gated until the project is trusted.
+
+An analyzer name you write yourself, such as `BusinessCentral.LinterCop`, is looked up in the
+project's own folders (`.netpackages`, `packages`, a relative `al.assemblyProbingPaths`
+entry) only when the project is trusted. Otherwise it resolves from the NuGet cache, an
+absolute probing path or the editor extension folders, and a name found only inside the
+project is refused with a message saying so. A relative analyzer path names a file the
+repository ships and is refused the same way. The name was the user's, but the repository
+chose which file answered to it, and that file is loaded into alc and into the language
+server's semantic bridge.
+
+In a trusted project, a file inside the project that an analyzer entry resolves to, the copy
+found for a name or the file a path names, loads only when the trust record lists that file
+with the hash it has now. The record learns entries from the project's settings files and
+`~/.config/al-lsp/settings.json`, and lists the file each of them resolves to. An entry
+written only in Zed or VS Code user settings, or passed to `al-explorer build` as a flag, is
+not in the record. So a copy of a name that a later commit adds under `.netpackages`, or a
+file it adds at a path such as `./tools/TeamCop.dll`, is refused with a message naming the
+file. Before, the copy was found ahead of the NuGet cache and the file at the path was loaded.
+To use a file in the project, write the entry in the project's settings or in
+`~/.config/al-lsp/settings.json`.
+
+A link in the project does not change this. A copy found under `.netpackages`, `packages` or a
+relative probing path, and the file a path such as `./tools/TeamCop.dll` names, belong to the
+project even when a link carries them outside it. The record hashes such a file where it
+resolves, and the search loads it only when the record lists it. Before, such a file loaded at
+once when its resolved path was outside the project, and a path through such a link loaded even
+in an untrusted project. The rule sits in
+`al_project::analyzers::CustomAnalyzerSearch`, which every build, publish, debug launch and
+semantic analysis goes through.
 
 A credential you supply yourself is the same: `BC_USERNAME`, `BC_PASSWORD` and
 `BC_ACCESS_TOKEN` apply without trust. What still needs trust is the *server* those
@@ -148,44 +282,78 @@ writing a sentence.
 
 ## Credentials
 
-Five daemon methods reach a credential the daemon holds, or send the user's own to a server
-the repository's launch file names, and all five go through one authorisation function:
-`debug` (the `start` command), `publish`, `downloadSymbols` from a BC server,
-`tests.snapshot_capture` and `tests.snapshot_replay`. The daemon's dispatch table declares
-which methods those are, and a test holds this list and that declaration together.
+Ten daemon methods reach a credential the daemon holds, send the user's own to a server the
+repository's launch file names, or send one to a server the request names, and all ten go
+through one authorisation function: `debug` (the `start` command), `publish`,
+`downloadSymbols` from a BC server, `tests.run`, `tests.run_batch`, `tests.run_auto`,
+`tests.snapshot_capture`, `tests.snapshot_replay`, `snapshot` and `profiling`. The daemon's
+dispatch table declares which methods those are, and a test holds this list and that
+declaration together.
 
-- Microsoft's Business Central online endpoints are always allowed. The endpoint is fixed, so
-  a repository cannot redirect the token.
+- A Business Central online target needs no trust. The native adapter and the daemon build its
+  URL on Microsoft's host, `api.businesscentral.dynamics.com`, with the tenant and environment
+  URL-encoded. Microsoft's own deployment library, which the EditorServices proxy hands the
+  scenario to, builds it as `https://{applicationFamily}.api.bc.dynamics.com/...` without
+  checking `applicationFamily`, so `collector.example/` would send the token to
+  `collector.example`. The proxy refuses an `applicationFamily` that is not one DNS label.
 - An on-premises target is compared on scheme, host and port together. A launch configuration
   naming `https://erp.example.com` does not authorise `http://erp.example.com`.
 - `http://` is refused for bearer and basic credentials unless the host is loopback. Set
   `AL_ALLOW_INSECURE_BC_HTTP=1` to allow a cleartext server elsewhere on a network you trust.
   An environment variable is a user-level decision, so it needs no project trust.
+- A server written without a scheme (`bc.corp.example`, `bc.corp.example:7049`) is
+  `https`. The authorisation and every request builder read it through one function,
+  `al_bc::launch::server_with_scheme`, so the scheme that was judged is the scheme the
+  request uses. To reach a cleartext server, write `http://` in the launch configuration,
+  and set `AL_ALLOW_INSECURE_BC_HTTP=1` when the host is not loopback. A bare host used to be
+  sent as `http://` while the check read it as `https`, so the cleartext rule passed a
+  request that then sent Basic credentials in the clear.
 - `acceptInvalidCerts` from the project's own debug configuration is honoured only for the
   same target and only when the project is trusted.
 
-`publish` is in that list although it never reads the OAuth cache: it sends
-`BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`, from the environment. The environment
-is the user's own decision, but which server receives it is the repository's, so the target
-is authorised and the refusal says "Business Central credentials" rather than naming a cached
-token.
+The Zed debug adapter (`al-lsp --dap`) and the EditorServices proxy (`al-lsp --dap-legacy`)
+run the same authorisation on every `launch` and `attach`, before anything is compiled or
+sent. Zed reads the debug scenario from the worktree's `.zed/debug.json` or from the user's
+own debug settings, and the adapter cannot tell which, so the scenario is judged as a file
+the repository carries: an on-premises server needs a trusted project, and
+`acceptInvalidCerts` is honoured only when the project's launch file sets it for the same
+server. A refused launch fails with the reason in the debug console.
+
+The EditorServices proxy forwards the scenario to Microsoft's host as Zed sent it, so it
+judges the scenario the way that host might read it. It judges a scenario as on-premises, the
+rule Microsoft's deployment library applies, when `environmentType` is `OnPrem`, when
+`environmentType` is missing and a `server` is named (Microsoft's template for your own server
+has none), or when `authentication` is `Windows` or `UserPassword` in any case. With either of
+those authentication values the library connects to `server` even for `Sandbox` or
+`Production`. The trust record lists the servers of launch entries under the same rule. The
+proxy refuses a scenario with an `environmentType` other than `OnPrem`, `Sandbox` or
+`Production` (in any case), an `authentication` other than `Windows`, `UserPassword`, `AAD` or
+`MicrosoftEntraID` (in any case, written alone, since the library also reads `2`, ` Windows`
+and `AAD,Windows` as one of them), an `applicationFamily` that is not one DNS label (letters,
+digits and `-`), a target key such as `server`, `environmentType` or `applicationFamily`
+spelled in another case, and a field it cannot read, such as a `port` written as a string.
+
+`publish` and `tests.run*` are in that list although they never read the OAuth cache: they
+send `BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`, from the environment. The
+environment is the user's own decision, but which server receives it is the repository's, so
+the target is authorised and the refusal says "Business Central credentials" rather than
+naming a cached token. The Run Test code lens in the language server runs the same check
+before it starts a live test.
+
+`snapshot` and `profiling` take `serverUrl`, `username` and `password` from the request.
+The credential is the caller's, but the server is a string an agent can choose through
+`al_call`, so an inline `serverUrl` must match a launch configuration of a trusted project,
+compared on scheme, host and the port the client connects to (the URL's own, or 443 or 80 by
+scheme). Their `acceptInvalidCerts` is refused unless that launch configuration sets it for
+the same server. A request with no `serverUrl` gets the daemon's loopback default, which no
+caller chose, and `acceptInvalidCerts` is dropped for it.
 
 ### Where the caller brings its own credential
 
-These methods take the credential and the server from the request, so there is no cached
-credential to protect and no trust decision to make. They are as trusted as the caller that
-calls them:
-
-- `snapshot` and `profiling` take `serverUrl`, `username`, `password` and their own
-  `acceptInvalidCerts`, which is honoured because the caller chose both the server and the
-  setting.
-- `tests.run`, `tests.run_batch` and `tests.run_auto` against live BC authenticate from
-  `BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`, against the launch configuration the
-  request names.
-- `debug start` with an explicit `accessToken` spends that token rather than the cached one.
-  `acceptInvalidCerts` is still refused unless the project's own configuration asks for it
-  and the project is trusted: turning off TLS verification is about the target, not the
-  token.
+`debug start` with an explicit `accessToken` spends that token rather than the cached one,
+so there is no cached credential to protect. `acceptInvalidCerts` is still refused unless the
+project's own configuration asks for it and the project is trusted: turning off TLS
+verification is about the target, not the token.
 
 ## Limits
 

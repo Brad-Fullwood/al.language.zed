@@ -10,8 +10,8 @@
 //!    UpperCase, IndexOf).
 //! 3. **Workspace procedures** — looks up the procedure in the workspace file
 //!    index by receiver/object name, finds the `procedure_declaration` node,
-//!    and executes its body via `eval_stmt`. Recursion depth is capped at 100.
-
+//!    and executes its body via `eval_stmt`. Recursion depth is capped at
+//!    `MAX_RECURSION_DEPTH`.
 //!
 //! The call path lives in [`routing`] and [`workspace_procedure`], the local
 //! and global bindings a call frame needs in [`frames`], and the inline
@@ -20,11 +20,14 @@
 
 pub mod datetime;
 pub mod dialog;
+pub mod events;
 pub mod frames;
 pub mod numeric;
+pub mod picture;
 pub mod random;
 pub mod render;
 pub mod routing;
+pub mod table_code;
 pub mod text;
 pub mod workspace_procedure;
 
@@ -33,16 +36,18 @@ pub(crate) mod test_support;
 
 pub use frames::{bind_object_globals, bind_procedure_locals};
 pub use routing::{dispatch_call, supports_global_builtin};
+pub use workspace_procedure::object_declaration_named;
 
 pub(crate) use datetime::{clock_current_datetime, clock_time, clock_today};
 pub(crate) use frames::declared_text_length;
-pub(crate) use render::{render_value, substitute_placeholders_with};
+pub(crate) use render::{render_value, render_value_xml, substitute_placeholders_with};
 pub(crate) use routing::dispatch_call_scoped;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::interpreter::records::RecordStore;
+use crate::interpreter::scope::CallFrame;
 use crate::interpreter::value::{ErrorInfo, Value};
 
 /// Stack size for the thread an interpreted AL body runs on.
@@ -178,6 +183,44 @@ pub struct DispatchCtx {
     /// instead of reallocating the string.
     #[doc(hidden)]
     pub expr_fragment_cache: HashMap<String, (Arc<str>, tree_sitter::Tree)>,
+    /// The workspace's event subscribers, indexed on first raise.
+    #[doc(hidden)]
+    pub event_subscribers: Option<Arc<events::SubscriberIndex>>,
+    /// The workspace's table relations, indexed on the first rename.
+    #[doc(hidden)]
+    pub relations: Option<Arc<crate::interpreter::records::RelationIndex>>,
+    /// Every JSON node the running code has made; JSON values refer into it.
+    #[doc(hidden)]
+    pub json: crate::interpreter::json::JsonArena,
+    /// Codeunit instances' globals, by instance, while no call of that
+    /// instance is running (a running instance's frame is on the stack).
+    #[doc(hidden)]
+    pub codeunit_instances: HashMap<u64, CallFrame>,
+    /// Instances with a call running, whose globals are on the stack.
+    #[doc(hidden)]
+    pub active_instances: std::collections::HashSet<u64>,
+    /// The instance each `SingleInstance` codeunit uses, by lowercased name.
+    #[doc(hidden)]
+    pub single_instances: HashMap<String, u64>,
+    #[doc(hidden)]
+    pub next_codeunit_instance: u64,
+    /// The instance the call being dispatched is made on, set by a call
+    /// through a codeunit variable and taken by the dispatcher.
+    #[doc(hidden)]
+    pub pending_instance: Option<u64>,
+    /// The call being dispatched runs an event subscriber, which runs on a
+    /// new instance of its codeunit. Set by `events::raise` and taken by the
+    /// dispatcher.
+    #[doc(hidden)]
+    pub pending_subscriber: bool,
+    /// A table's globals as a record variable holds them, by the variable's
+    /// view handle, while no table code runs on that record.
+    #[doc(hidden)]
+    pub record_globals: HashMap<u64, CallFrame>,
+    /// Records with table code running: the stack index of the globals frame
+    /// that code uses, by view handle.
+    #[doc(hidden)]
+    pub active_record_globals: HashMap<u64, usize>,
 }
 
 /// Fixed default seed for the deterministic `Random` builtin.
@@ -203,6 +246,17 @@ impl DispatchCtx {
             work_date: None,
             random_state: DEFAULT_RANDOM_SEED,
             expr_fragment_cache: HashMap::new(),
+            event_subscribers: None,
+            relations: None,
+            json: Default::default(),
+            codeunit_instances: HashMap::new(),
+            active_instances: Default::default(),
+            single_instances: HashMap::new(),
+            next_codeunit_instance: 0,
+            pending_instance: None,
+            pending_subscriber: false,
+            record_globals: HashMap::new(),
+            active_record_globals: HashMap::new(),
         }
     }
 
@@ -374,5 +428,22 @@ mod tests {
         let mut ctx = DispatchCtx::new_pure(ws);
         ctx.deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
         assert!(!ctx.deadline_exceeded());
+    }
+
+    /// The module doc gave the call cap as 100 while the constant was 512.
+    /// A doc that names the constant stays right when the number changes.
+    #[test]
+    fn the_module_doc_names_the_call_cap_by_its_constant() {
+        let doc: Vec<&str> = include_str!("mod.rs")
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .take_while(|line| line.starts_with("//!"))
+            .map(|line| line.trim_start_matches("//!").trim())
+            .collect();
+        let doc = doc.join(" ");
+        assert!(
+            doc.contains("Recursion depth is capped at `MAX_RECURSION_DEPTH`"),
+            "{doc}"
+        );
     }
 }

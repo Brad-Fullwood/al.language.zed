@@ -644,9 +644,7 @@ fn compute_over_granted_rights(
 /// | `Modify`, `ModifyAll`, `Rename` | `M`   |
 /// | `Delete`, `DeleteAll`        | `D`   |
 ///
-/// `Insert`/`Modify`/`Delete` arrive as `CallSite::RecordOp`; the `*All` /
-/// `Rename` variants (not in `al_insight`'s `RecordOp`) arrive as
-/// `CallSite::MemberCall` and are classified here. `Validate` and read ops
+/// Each arrives as a `CallSite::RecordOp`. `Validate` and read ops
 /// (`Get`/`Find*`) are not persistence writes and are ignored.
 ///
 /// A write whose receiver has no resolvable `Record "T"` type — a `RecordRef`,
@@ -677,18 +675,13 @@ fn collect_observed_writes(scan_files: &[(String, tree_sitter::Tree)]) -> Observ
                 let (variable, right) = match &site {
                     CallSite::RecordOp { variable, op, .. } => match op {
                         RecordOp::Insert => (variable, 'I'),
-                        RecordOp::Modify => (variable, 'M'),
-                        RecordOp::Delete => (variable, 'D'),
+                        RecordOp::Modify | RecordOp::ModifyAll => (variable, 'M'),
+                        RecordOp::Delete | RecordOp::DeleteAll => (variable, 'D'),
+                        RecordOp::Rename => (variable, 'M'),
                         // Validate sets a field + runs OnValidate; it is not a
                         // persistence write on its own.
                         RecordOp::Validate => continue,
                     },
-                    CallSite::MemberCall { object, method } => {
-                        match write_right_for_method(method) {
-                            Some(r) => (object, r),
-                            None => continue,
-                        }
-                    }
                     _ => continue,
                 };
 
@@ -711,19 +704,6 @@ fn collect_observed_writes(scan_files: &[(String, tree_sitter::Tree)]) -> Observ
     writes
 }
 
-/// Map a record member-call method name to the RIMD write right it exercises.
-///
-/// Covers the `*All` / `Rename` variants that `al_insight::calls::RecordOp`
-/// does not model (those surface as plain member calls). Plain `Insert`/
-/// `Modify`/`Delete` are handled via `RecordOp` and are not matched here.
-fn write_right_for_method(method: &str) -> Option<char> {
-    match method.to_ascii_lowercase().as_str() {
-        "modifyall" | "rename" => Some('M'),
-        "deleteall" => Some('D'),
-        _ => None,
-    }
-}
-
 /// Read the `Permissions` property of a permission-set object.
 ///
 /// Returns the clauses that parsed plus one [`PermissionParseIssue`] per clause
@@ -731,7 +711,6 @@ fn write_right_for_method(method: &str) -> Option<char> {
 /// `Permissions` properties) is an `AuditError`: those leave the audit unable
 /// to say what the set grants at all, where a single bad clause leaves the rest
 /// of the set readable.
-#[allow(clippy::type_complexity)]
 fn extract_permission_grants(
     source: &WorkspaceSource,
     object: &crate::workspace_sources::WorkspaceObjectDeclaration,

@@ -13,9 +13,123 @@
 //!  * structured: Option, Record, RecordRef, Variant, Array, List, Dict,
 //!    Blob, Stream, ErrorInfo
 
-use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 pub use rust_decimal::Decimal;
+
+/// The entries of an AL `Dictionary`, in insertion order: the normalised
+/// key text maps to the key as given and its value.
+pub type DictEntries = indexmap::IndexMap<String, (Value, Value)>;
+
+/// The contents of an AL reference type (`List`, `Dictionary`,
+/// `TextBuilder`): cloning the handle shares the contents, as assigning the
+/// AL variable does.
+///
+/// Values cross to the test runner's thread, hence `Arc<Mutex>`. Hold one
+/// guard at a time: locking the same contents twice deadlocks.
+#[derive(Debug, Default)]
+pub struct Shared<T>(Arc<Mutex<T>>);
+
+impl<T> Clone for Shared<T> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl<T> Shared<T> {
+    pub fn new(contents: T) -> Self {
+        Self(Arc::new(Mutex::new(contents)))
+    }
+
+    /// The contents, locked until the guard drops.
+    pub fn lock(&self) -> MutexGuard<'_, T> {
+        // A panic while locked leaves the contents as they were; use them.
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Whether both handles name the same contents.
+    pub fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// The address of the contents, the same for every handle to them.
+    fn address(&self) -> usize {
+        Arc::as_ptr(&self.0).cast::<()>() as usize
+    }
+}
+
+impl<T: Clone> Shared<T> {
+    /// A copy of the contents, detached from the handle.
+    pub fn snapshot(&self) -> T {
+        self.lock().clone()
+    }
+}
+
+/// A `List` or `Dictionary` value: its shared contents and the member type
+/// its declaration gives it, written as in source (`Code[20]`). The member
+/// type is the element type of a List and the key type of a Dictionary.
+/// `None` when no declaration made the value.
+#[derive(Debug)]
+pub struct Collection<T> {
+    contents: Shared<T>,
+    member_type: Option<Arc<str>>,
+}
+
+impl<T> Clone for Collection<T> {
+    fn clone(&self) -> Self {
+        Self {
+            contents: self.contents.clone(),
+            member_type: self.member_type.clone(),
+        }
+    }
+}
+
+impl<T> Collection<T> {
+    pub fn new(contents: T, member_type: Option<&str>) -> Self {
+        Self {
+            contents: Shared::new(contents),
+            member_type: member_type.map(Arc::from),
+        }
+    }
+
+    /// The contents, locked until the guard drops.
+    pub fn lock(&self) -> MutexGuard<'_, T> {
+        self.contents.lock()
+    }
+
+    /// Whether both values name the same contents.
+    pub fn same(&self, other: &Self) -> bool {
+        self.contents.same(&other.contents)
+    }
+
+    /// The address of the contents, the same for every copy of the value.
+    fn address(&self) -> usize {
+        self.contents.address()
+    }
+
+    /// The declared element type of a List, or key type of a Dictionary.
+    pub fn member_type(&self) -> Option<&str> {
+        self.member_type.as_deref()
+    }
+
+    /// New empty contents with the same member type, as `Clear` leaves.
+    pub fn emptied(&self) -> Self
+    where
+        T: Default,
+    {
+        Self {
+            contents: Shared::new(T::default()),
+            member_type: self.member_type.clone(),
+        }
+    }
+}
+
+impl<T: Clone> Collection<T> {
+    /// A copy of the contents, detached from the value.
+    pub fn snapshot(&self) -> T {
+        self.contents.snapshot()
+    }
+}
 
 /// AL `Date` carrier: days since 0001-01-01.
 pub type AlDate = i64;
@@ -100,6 +214,12 @@ pub enum Value {
     Text(String),
     /// AL `Code[N]` — uppercase string, length cap not enforced here.
     Code(String),
+    /// AL `TextBuilder`, a string its methods change in place. A reference
+    /// type like `List`.
+    TextBuilder(Shared<String>),
+    /// `JsonObject`, `JsonArray`, `JsonToken` or `JsonValue`: a reference
+    /// into the dispatch context's JSON arena.
+    Json(crate::interpreter::json::JsonRef),
     /// AL `Date` — days since AL epoch (0001-01-01).
     Date(AlDate),
     /// AL `Time` — milliseconds since midnight.
@@ -125,9 +245,12 @@ pub enum Value {
     Variant(Box<Value>),
     /// AL `array[N]` of homogeneous values.
     Array(Vec<Value>),
-    List(Vec<Value>),
-    /// AL `Dictionary of [K, V]` — keyed by serialised K.
-    Dict(BTreeMap<String, Value>),
+    /// AL `List of [T]`. A reference type: copies of the value, and a
+    /// parameter passed without `var`, share one list.
+    List(Collection<Vec<Value>>),
+    /// AL `Dictionary of [K, V]`, keyed by the serialised K after it is
+    /// converted to the declared key type. A reference type like `List`.
+    Dict(Collection<DictEntries>),
     /// AL `Blob` / `InStream` / `OutStream` — raw bytes.
     Blob(Vec<u8>),
     /// AL `ErrorInfo` — structured error captured by `asserterror` / `Error`.
@@ -140,6 +263,9 @@ pub enum Value {
     Codeunit {
         /// The declared subtype object name (e.g. `"Library - Sales"`).
         object_name: String,
+        /// The instance whose globals this variable's calls see, given on
+        /// its first call. Copies of the variable share it.
+        instance: Option<u64>,
     },
     /// AL `BigInteger` — 64-bit signed. Appended to the enum to preserve the
     /// variant-ordering stability contract; it is treated as the same numeric
@@ -187,89 +313,152 @@ impl Eq for Value {}
 
 impl Ord for Value {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        use std::cmp::Ordering;
-        use Value::*;
-        fn variant_index(v: &Value) -> u8 {
-            match v {
-                Null => 0,
-                Empty => 1,
-                // Integer and BigInteger are one numeric class: same index so
-                // they order by value, and `5 = 5L` holds.
-                Integer(_) | BigInteger(_) => 2,
-                Decimal(_) => 3,
-                Boolean(_) => 4,
-                Char(_) => 5,
-                Text(_) => 6,
-                Code(_) => 7,
-                Date(_) => 8,
-                Time(_) => 9,
-                DateTime(_) => 10,
-                Duration(_) => 11,
-                Guid(_) => 12,
-                Option { .. } => 13,
-                Record(_) => 14,
-                RecordRef(_) => 15,
-                Variant(_) => 16,
-                Array(_) => 17,
-                List(_) => 18,
-                Dict(_) => 19,
-                Blob(_) => 20,
-                ErrorInfo(_) => 21,
-                Codeunit { .. } => 22,
-                Range { .. } => 23,
-            }
+        compare(self, other, &mut MetPairs::new())
+    }
+}
+
+/// The pairs of List or Dictionary contents one comparison has started on,
+/// by address. A list can hold a list that holds it (`A.Add(B); B.Add(A)`),
+/// so a pair met again counts as equal, and the walk ends. A pair that
+/// differs ends the whole comparison, so every pair in the set is still being
+/// compared or was equal, and a pair is walked at most once.
+type MetPairs = std::collections::HashSet<(usize, usize)>;
+
+fn compare(left: &Value, right: &Value, met: &mut MetPairs) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    use Value::*;
+    fn variant_index(v: &Value) -> u8 {
+        match v {
+            Null => 0,
+            Empty => 1,
+            // Integer and BigInteger are one numeric class: same index so
+            // they order by value, and `5 = 5L` holds.
+            Integer(_) | BigInteger(_) => 2,
+            Decimal(_) => 3,
+            Boolean(_) => 4,
+            Char(_) => 5,
+            Text(_) => 6,
+            Code(_) => 7,
+            Date(_) => 8,
+            Time(_) => 9,
+            DateTime(_) => 10,
+            Duration(_) => 11,
+            Guid(_) => 12,
+            Option { .. } => 13,
+            Record(_) => 14,
+            RecordRef(_) => 15,
+            Variant(_) => 16,
+            Array(_) => 17,
+            List(_) => 18,
+            Dict(_) => 19,
+            Blob(_) => 20,
+            ErrorInfo(_) => 21,
+            Codeunit { .. } => 22,
+            Range { .. } => 23,
+            TextBuilder(_) => 24,
+            Json(_) => 25,
         }
-        let mine = variant_index(self);
-        let theirs = variant_index(other);
-        if mine != theirs {
-            return mine.cmp(&theirs);
+    }
+    let mine = variant_index(left);
+    let theirs = variant_index(right);
+    if mine != theirs {
+        return mine.cmp(&theirs);
+    }
+    match (left, right) {
+        (Null, Null) | (Empty, Empty) => Ordering::Equal,
+        (Integer(a) | BigInteger(a), Integer(b) | BigInteger(b)) => a.cmp(b),
+        (Decimal(a), Decimal(b)) => a.cmp(b),
+        (Boolean(a), Boolean(b)) => a.cmp(b),
+        (Char(a), Char(b)) => a.cmp(b),
+        (Text(a), Text(b)) | (Code(a), Code(b)) => a.cmp(b),
+        (TextBuilder(a), TextBuilder(b)) if a.same(b) => Ordering::Equal,
+        (TextBuilder(a), TextBuilder(b)) => a.snapshot().cmp(&b.snapshot()),
+        (Date(a), Date(b)) | (Time(a), Time(b)) | (DateTime(a), DateTime(b)) => a.cmp(b),
+        (Duration(a), Duration(b)) => a.cmp(b),
+        (Guid(a), Guid(b)) => a.cmp(b),
+        (Json(a), Json(b)) => a.cmp(b),
+        (
+            Option {
+                type_name: at,
+                member: am,
+                ordinal: ao,
+            },
+            Option {
+                type_name: bt,
+                member: bm,
+                ordinal: bo,
+            },
+        ) => (ao, at, am).cmp(&(bo, bt, bm)),
+        (Record(a), Record(b)) | (RecordRef(a), RecordRef(b)) => {
+            (a.table_id, &a.table_name, a.handle).cmp(&(b.table_id, &b.table_name, b.handle))
         }
-        match (self, other) {
-            (Null, Null) | (Empty, Empty) => Ordering::Equal,
-            (Integer(a) | BigInteger(a), Integer(b) | BigInteger(b)) => a.cmp(b),
-            (Decimal(a), Decimal(b)) => a.cmp(b),
-            (Boolean(a), Boolean(b)) => a.cmp(b),
-            (Char(a), Char(b)) => a.cmp(b),
-            (Text(a), Text(b)) | (Code(a), Code(b)) => a.cmp(b),
-            (Date(a), Date(b)) | (Time(a), Time(b)) | (DateTime(a), DateTime(b)) => a.cmp(b),
-            (Duration(a), Duration(b)) => a.cmp(b),
-            (Guid(a), Guid(b)) => a.cmp(b),
-            (
-                Option {
-                    type_name: at,
-                    member: am,
-                    ordinal: ao,
-                },
-                Option {
-                    type_name: bt,
-                    member: bm,
-                    ordinal: bo,
-                },
-            ) => (ao, at, am).cmp(&(bo, bt, bm)),
-            (Record(a), Record(b)) | (RecordRef(a), RecordRef(b)) => {
-                (a.table_id, &a.table_name, a.handle).cmp(&(b.table_id, &b.table_name, b.handle))
+        (Variant(a), Variant(b)) => compare(a, b, met),
+        (Array(a), Array(b)) => compare_in_order(a.iter(), b.iter(), met),
+        (List(a), List(b)) if a.same(b) => Ordering::Equal,
+        (List(a), List(b)) => {
+            if !met.insert((a.address(), b.address())) {
+                return Ordering::Equal;
             }
-            (Variant(a), Variant(b)) => a.cmp(b),
-            (Array(a), Array(b)) | (List(a), List(b)) => a.cmp(b),
-            (Dict(a), Dict(b)) => a
-                .iter()
-                .collect::<Vec<_>>()
-                .cmp(&b.iter().collect::<Vec<_>>()),
-            (Blob(a), Blob(b)) => a.cmp(b),
-            (ErrorInfo(a), ErrorInfo(b)) => a.message.cmp(&b.message),
-            (Codeunit { object_name: a }, Codeunit { object_name: b }) => a.cmp(b),
-            (
-                Range {
-                    start: a_start,
-                    end: a_end,
-                },
-                Range {
-                    start: b_start,
-                    end: b_end,
-                },
-            ) => (a_start, a_end).cmp(&(b_start, b_end)),
-            // Different variants handled by the index check above.
-            _ => Ordering::Equal,
+            let (a, b) = (a.snapshot(), b.snapshot());
+            compare_in_order(a.iter(), b.iter(), met)
+        }
+        (Dict(a), Dict(b)) if a.same(b) => Ordering::Equal,
+        (Dict(a), Dict(b)) => {
+            if !met.insert((a.address(), b.address())) {
+                return Ordering::Equal;
+            }
+            let (a, b) = (a.snapshot(), b.snapshot());
+            // Entry by entry, the key and then the value.
+            compare_in_order(
+                a.values().flat_map(|(key, value)| [key, value]),
+                b.values().flat_map(|(key, value)| [key, value]),
+                met,
+            )
+        }
+        (Blob(a), Blob(b)) => a.cmp(b),
+        (ErrorInfo(a), ErrorInfo(b)) => a.message.cmp(&b.message),
+        (
+            Codeunit {
+                object_name: a,
+                instance: a_instance,
+            },
+            Codeunit {
+                object_name: b,
+                instance: b_instance,
+            },
+        ) => (a, a_instance).cmp(&(b, b_instance)),
+        (
+            Range {
+                start: a_start,
+                end: a_end,
+            },
+            Range {
+                start: b_start,
+                end: b_end,
+            },
+        ) => compare(a_start, b_start, met).then_with(|| compare(a_end, b_end, met)),
+        // Different variants handled by the index check above.
+        _ => Ordering::Equal,
+    }
+}
+
+/// Compare two sequences of values element by element, and a shorter
+/// sequence that matches so far first.
+fn compare_in_order<'a>(
+    mut left: impl Iterator<Item = &'a Value>,
+    mut right: impl Iterator<Item = &'a Value>,
+    met: &mut MetPairs,
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    loop {
+        match (left.next(), right.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(a), Some(b)) => match compare(a, b, met) {
+                Ordering::Equal => {}
+                different => return different,
+            },
         }
     }
 }
@@ -278,6 +467,49 @@ impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
+}
+
+/// The longest Text, Code or TextBuilder value the local test runtime builds,
+/// in bytes of UTF-8.
+///
+/// Business Central's Text is a .NET string, which holds about a billion
+/// characters. The local runtime runs tests inside the language server's
+/// daemon, and the deadline is checked only between loop iterations, so a
+/// test that doubles a text used to exhaust memory before the deadline
+/// stopped it. 64 MiB is far more text than a test fixture needs, and a
+/// doubling loop reaches it in 26 steps.
+pub const MAX_TEXT_BYTES: usize = 64 * 1024 * 1024;
+
+/// The most elements a List, Dictionary or array holds in the local test
+/// runtime. Business Central refuses an array of more than 1,000,000
+/// elements when it compiles it (AL0146), and does not cap a List or
+/// Dictionary. The runtime uses the array limit for all three: a value takes
+/// 56 bytes before any text it holds, so a full list of numbers takes 53 MiB.
+pub const MAX_COLLECTION_LEN: usize = 1_000_000;
+
+/// Refuse a text of `bytes` bytes that is longer than [`MAX_TEXT_BYTES`].
+/// `operation` names what would build it, for the message.
+pub(crate) fn check_text_size(operation: &str, bytes: usize) -> Result<(), String> {
+    if bytes <= MAX_TEXT_BYTES {
+        return Ok(());
+    }
+    Err(format!(
+        "{operation} would make a text of {bytes} bytes, over the local test runtime's \
+         limit of {} MiB for one text",
+        MAX_TEXT_BYTES / (1024 * 1024)
+    ))
+}
+
+/// Refuse a List, Dictionary or array of `len` elements that is longer than
+/// [`MAX_COLLECTION_LEN`]. `operation` names what would build it.
+pub(crate) fn check_collection_len(operation: &str, len: usize) -> Result<(), String> {
+    if len <= MAX_COLLECTION_LEN {
+        return Ok(());
+    }
+    Err(format!(
+        "{operation} would make {len} elements, over the local test runtime's limit of \
+         {MAX_COLLECTION_LEN} elements for one List, Dictionary or array"
+    ))
 }
 
 /// Reject a string that does not fit a declared `Text[N]`/`Code[N]` capacity.
@@ -351,8 +583,7 @@ impl Value {
     /// longer than it is a runtime error, the way BC traps an assignment whose
     /// converted value overflows the target.
     ///
-    /// Any other combination overwrites as-is. Shared by both assignment paths
-    /// (`eval_assignment` and the expression-form handler in `eval_expr`).
+    /// Any other combination overwrites as-is.
     pub(crate) fn coerce_into_slot(
         slot: &Value,
         incoming: Value,
@@ -400,10 +631,27 @@ impl Value {
             "time" => Some(Value::Time(0)),
             "datetime" => Some(Value::DateTime(0)),
             "duration" => Some(Value::Duration(0)),
-            "guid" => Some(Value::Guid("00000000-0000-0000-0000-000000000000".into())),
+            // Braced, as Format shows a Guid and CreateGuid returns one.
+            "guid" => Some(Value::Guid("{00000000-0000-0000-0000-000000000000}".into())),
             "char" => Some(Value::Char('\0')),
-            _ => None,
+            "textbuilder" => Some(Value::text_builder(String::new())),
+            other => crate::interpreter::json::default_for(other),
         }
+    }
+
+    /// A new `List` holding `items`, with no declared element type.
+    pub fn list(items: Vec<Value>) -> Value {
+        Value::List(Collection::new(items, None))
+    }
+
+    /// A new `TextBuilder` holding `text`.
+    pub fn text_builder(text: String) -> Value {
+        Value::TextBuilder(Shared::new(text))
+    }
+
+    /// A new `Dictionary` holding `entries`, with no declared key type.
+    pub fn dict(entries: DictEntries) -> Value {
+        Value::Dict(Collection::new(entries, None))
     }
 
     /// Short type-name for diagnostic output. Stable identifiers; do not
@@ -419,6 +667,13 @@ impl Value {
             Value::Char(_) => "Char",
             Value::Text(_) => "Text",
             Value::Code(_) => "Code",
+            Value::TextBuilder(_) => "TextBuilder",
+            Value::Json(json) => match json.kind {
+                crate::interpreter::json::JsonKind::Object => "JsonObject",
+                crate::interpreter::json::JsonKind::Array => "JsonArray",
+                crate::interpreter::json::JsonKind::Token => "JsonToken",
+                crate::interpreter::json::JsonKind::Value => "JsonValue",
+            },
             Value::Date(_) => "Date",
             Value::Time(_) => "Time",
             Value::DateTime(_) => "DateTime",
@@ -443,6 +698,7 @@ impl Value {
 mod tests {
     use super::*;
     use rust_decimal_macros::dec;
+    use std::collections::BTreeMap;
 
     #[test]
     fn truthiness_is_strict() {
@@ -553,7 +809,7 @@ mod tests {
         assert!(matches!(Value::default_for("code"), Some(Value::Code(s)) if s.is_empty()));
         match Value::default_for("guid") {
             Some(Value::Guid(g)) => {
-                assert_eq!(g, "00000000-0000-0000-0000-000000000000");
+                assert_eq!(g, "{00000000-0000-0000-0000-000000000000}");
             }
             other => panic!("guid default wrong: {other:?}"),
         }
@@ -605,8 +861,8 @@ mod tests {
             }),
             Value::Variant(Box::new(Value::Null)),
             Value::Array(vec![]),
-            Value::List(vec![]),
-            Value::Dict(BTreeMap::new()),
+            Value::list(vec![]),
+            Value::dict(DictEntries::new()),
             Value::Blob(vec![]),
             Value::ErrorInfo(Box::new(ErrorInfo {
                 message: String::new(),
@@ -687,21 +943,22 @@ mod tests {
             Value::Array(vec![Value::Integer(1)])
                 < Value::Array(vec![Value::Integer(1), Value::Integer(0)])
         );
-        assert!(Value::List(vec![Value::Integer(1)]) < Value::List(vec![Value::Integer(2)]));
+        assert!(Value::list(vec![Value::Integer(1)]) < Value::list(vec![Value::Integer(2)]));
         assert!(Value::Blob(vec![1, 2]) < Value::Blob(vec![1, 3]));
         assert!(Value::Blob(vec![1]) < Value::Blob(vec![1, 0]));
     }
 
     #[test]
     fn dict_ordering_compares_entry_sequences() {
-        let mut a = BTreeMap::new();
-        a.insert("k1".to_string(), Value::Integer(1));
-        let mut b = BTreeMap::new();
-        b.insert("k1".to_string(), Value::Integer(2));
-        assert!(Value::Dict(a.clone()) < Value::Dict(b));
+        let key = |text: &str| Value::Text(text.to_string());
+        let mut a = DictEntries::new();
+        a.insert("k1".to_string(), (key("k1"), Value::Integer(1)));
+        let mut b = DictEntries::new();
+        b.insert("k1".to_string(), (key("k1"), Value::Integer(2)));
+        assert!(Value::dict(a.clone()) < Value::dict(b));
         let mut c = a.clone();
-        c.insert("k2".to_string(), Value::Integer(0));
-        assert!(Value::Dict(a) < Value::Dict(c));
+        c.insert("k2".to_string(), (key("k2"), Value::Integer(0)));
+        assert!(Value::dict(a) < Value::dict(c));
     }
 
     #[test]
@@ -743,8 +1000,8 @@ mod tests {
         assert_eq!(Value::Guid(String::new()).type_name(), "Guid");
         assert_eq!(Value::Variant(Box::new(Value::Null)).type_name(), "Variant");
         assert_eq!(Value::Array(vec![]).type_name(), "Array");
-        assert_eq!(Value::List(vec![]).type_name(), "List");
-        assert_eq!(Value::Dict(BTreeMap::new()).type_name(), "Dict");
+        assert_eq!(Value::list(vec![]).type_name(), "List");
+        assert_eq!(Value::dict(DictEntries::new()).type_name(), "Dict");
         assert_eq!(Value::Blob(vec![]).type_name(), "Blob");
         assert_eq!(
             Value::Record(RecordValue {

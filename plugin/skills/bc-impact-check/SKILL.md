@@ -15,7 +15,7 @@ For a field, the symbol is `<Table>.<Field>`. For a procedure it is
 `<Object>.<Procedure>`, with the object name exactly as `search` printed it.
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json search -- 'Work Order Staging'
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --fields kind,id,name,package,source_availability search -- 'Work Order Staging'
 ```
 
 A name that does not exist is an error naming the closest matches, and a
@@ -39,7 +39,7 @@ so a wrong name costs one call rather than a silent empty list.
 Read three fields on every row:
 
 - `type`. `declares` is the object that defines the member, which is where to
-  make the change, not something the change breaks; if that object also uses
+  make the change, not something the change breaks. If that object also uses
   the member itself, it gets a second row (`call`, `write`, ...). `display` is
   a page or report bound to the table through `SourceTable`. `write` assigns
   the field (`:=`, `Validate`, `ModifyAll`), `filter` filters on it

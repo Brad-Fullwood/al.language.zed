@@ -435,6 +435,19 @@ impl FileIndex {
         Some((pair.0.clone(), pair.1.clone()))
     }
 
+    /// The shared `(text, tree)` entry for `path`, without copying it.
+    ///
+    /// Each re-index of `path` stores a new `Arc`, so `Arc::ptr_eq` on two
+    /// results tells whether the file was re-indexed in between.
+    pub fn cached_parse_entry(
+        &self,
+        path: &Path,
+    ) -> Option<std::sync::Arc<(String, tree_sitter::Tree)>> {
+        self.file_trees
+            .get(path)
+            .map(|entry| std::sync::Arc::clone(entry.value()))
+    }
+
     /// Returns the symbols extracted at index time.
     pub fn get_cached_symbols(
         &self,
@@ -618,6 +631,8 @@ impl FileIndex {
     /// The objects `path` declares, as `(kind, id, name)` in lowercase, and
     /// its procedure names: what a change must alter before cross-file graphs
     /// built from this file are out of date.
+    // A private pair compared whole with `==`; a named alias would be read
+    // only here.
     #[allow(clippy::type_complexity)]
     fn topology_of(&self, path: &Path) -> (Vec<(String, Option<i64>, String)>, Vec<String>) {
         let objects = self
@@ -1246,6 +1261,9 @@ fn stage_files(paths: &[PathBuf]) -> Result<Vec<(PathBuf, String, FileMetadata)>
 impl al_types::ProcedureSource for FileIndex {
     fn find_by_object_name(&self, name: &str) -> Option<std::path::PathBuf> {
         FileIndex::find_by_object_name(self, name)
+    }
+    fn find_object_of_kind(&self, name: &str, kinds: &[&str]) -> Option<std::path::PathBuf> {
+        self.object_path_of_kind(name, kinds)
     }
     fn iter_paths(&self) -> Vec<std::path::PathBuf> {
         self.files.iter().map(|e| e.key().clone()).collect()

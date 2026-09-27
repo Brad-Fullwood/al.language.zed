@@ -22,16 +22,17 @@ Loop:
    "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json arch-lint
    ```
 
-   `lint` waits on the dependency source index and takes about 20 seconds on
-   the first call against a project with Base Application loaded. It can hit the
-   30-second client timeout; retry once before reporting a failure.
+   `lint` waits on the dependency source index, which takes about a minute on
+   the first call against a project with Base Application loaded. The client
+   keeps waiting while that index makes progress, so let the call finish.
+   `al-explorer --json diag | jq -c '.sourceIndex'` shows how far it has got.
 
 2. Apply the mechanical fixes before hand-editing anything. Each one takes
-   `--dry-run`; run that first, read the plan, then run it for real.
+   `--dry-run`. Run that first, read the plan, then run it for real.
 
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer add-application-area --value All --dry-run
-   "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer add-tooltips --from-table --dry-run
+   "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer add-tooltips --from-table 'Customer' --dry-run
    "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer add-data-classification --value CustomerContent --dry-run
    ```
 
@@ -51,6 +52,19 @@ Rules:
 - Do not edit generated files or anything under `.alpackages`.
 - Do not run a full compile to check your work. `lint`, `native-check` and
   `arch-lint` are the loop.
+- A `Commit()` inside a `[TryFunction]` procedure can carry two separate
+  diagnostics on the same lines: AL-NL003 on the `Commit()` line (a commit
+  after a database write, in any procedure) and AL-NL004 on the write's line
+  (a write reachable from a `[TryFunction]`). Removing the `Commit()` clears
+  only AL-NL003. The write itself is still inside a `[TryFunction]` and still
+  not rolled back on failure, so AL-NL004 stays until the write moves outside
+  the try scope, the `[TryFunction]` attribute comes off, or the write is
+  removed too. Re-run `lint` on the file after the edit and check for both
+  codes by name.
 
 Report: the count before and after, the files you edited, the fixes applied
-mechanically versus by hand, and any diagnostic you left with the reason.
+mechanically versus by hand, and any diagnostic you left with the reason. Take
+the "left with the reason" list from the diagnostics your last `lint` /
+`native-check` / `arch-lint` re-run actually printed. If that re-run's count
+does not match the count in your report, find the missing diagnostic before
+you write the report.

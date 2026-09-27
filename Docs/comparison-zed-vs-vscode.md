@@ -7,10 +7,10 @@ and Business Central behavior.
 | Workflow | AL Language for Zed | Microsoft AL extension for VS Code |
 | --- | --- | --- |
 | Parsing and highlighting | Native tree-sitter grammar and structural queries | TextMate highlighting with compiler-backed structure |
-| Navigation | Native workspace and `.app` indexes; generated outline when package source is absent | Compiler-backed project and dependency navigation |
+| Navigation | Native workspace and `.app` indexes, with a generated outline when package source is absent | Compiler-backed project and dependency navigation |
 | Diagnostics | Native syntax/project/transaction checks plus optional CodeAnalysis bridge | Microsoft CodeAnalysis |
 | Completion and hover | Native resolution with optional CodeAnalysis fallback | Microsoft language server |
-| Build | Verified native emitter by default; explicit `alc` compatibility backend | `alc` |
+| Build | Verified native emitter by default, explicit `alc` compatibility backend | `alc` |
 | Tests | Local pure-logic/workspace-record subset plus live BC routing | Live Business Central test runtime |
 | Debugging | Native Zed DAP adapter backed by Business Central services | Microsoft VS Code debug adapter |
 | Project analysis | Impact, call/event graph, dead code, SQL patterns, architecture rules, upgrade and permission audits | Primarily compiler/analyzer workflows |

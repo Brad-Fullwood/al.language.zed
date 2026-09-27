@@ -402,7 +402,7 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
     // does not drop anything), and the function takes `project.write()` once
     // a package has been downloaded, so every successful download waited on
     // its own guard forever and the caller never got a response.
-    let (all_deps, dest, project_configs, configured_packages) = {
+    let (project_root, all_deps, dest, project_configs, configured_packages) = {
         let project = match workspace.project.try_read() {
             Ok(guard) => guard,
             Err(_) => {
@@ -429,12 +429,19 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
             };
         };
         (
+            project.root.clone(),
             project.all_dependencies(),
             project.packages_dir.clone(),
             project.server_configs.clone(),
             project.packages.clone(),
         )
     };
+
+    if let Some(refusal) =
+        crate::server::workspace::refuse_symbol_download_into(&project_root, &dest)
+    {
+        return rpc_error(id, error_codes::INVALID_PARAMS, &refusal);
+    }
 
     if all_deps.is_empty() {
         return Response {

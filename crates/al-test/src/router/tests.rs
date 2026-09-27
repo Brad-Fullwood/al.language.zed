@@ -327,29 +327,60 @@ end;
 #[test]
 fn unsupported_list_method_routes_to_live_bc() {
     let workspace = Workspace::new();
-    workspace.file_index.add_file(
-        std::path::PathBuf::from("/tmp/ListRoutingTests.Codeunit.al"),
-        r#"codeunit 50166 "List Routing Tests"
-{
+    for (id, name, body) in [
+        (50166, "Unsupported", "Values.Sort();"),
+        (50168, "VarRange", "Values.GetRange(1, 0, Copy);"),
+        (
+            50169,
+            "ReturnedRange",
+            "Values.AddRange(1, 2);\n    Copy := Values.GetRange(1, 2);\n    Copy.Reverse();",
+        ),
+    ] {
+        workspace.file_index.add_file(
+            std::path::PathBuf::from(format!("/tmp/{name}.Codeunit.al")),
+            format!(
+                r#"codeunit {id} "{name}"
+{{
 Subtype = Test;
 [Test]
-procedure UsesUnsupportedListMethod()
+procedure {name}()
 var Values: List of [Integer];
+    Copy: List of [Integer];
 begin
-    Values.Reverse();
+    {body}
 end;
-}"#
-        .to_string(),
-    );
-    let result = classify_all(&workspace).unwrap().remove(0);
-    assert_eq!(result.decision, RoutingDecision::LiveBc);
-    assert!(
-        result
-            .reasons
+}}"#
+            ),
+        );
+    }
+    let results = classify_all(&workspace).unwrap();
+    let decision = |name: &str| {
+        results
             .iter()
-            .any(|reason| reason.message.contains("unsupported List.Reverse")),
-        "unexpected reasons: {:?}",
-        result.reasons
+            .find(|result| result.method_name == name)
+            .unwrap_or_else(|| panic!("{name} was not classified"))
+    };
+    for (name, reason) in [
+        ("Unsupported", "unsupported List.Sort"),
+        ("VarRange", "List.GetRange with a var result list"),
+    ] {
+        let result = decision(name);
+        assert_eq!(result.decision, RoutingDecision::LiveBc, "{name}");
+        assert!(
+            result
+                .reasons
+                .iter()
+                .any(|found| found.message.contains(reason)),
+            "{name}: unexpected reasons: {:?}",
+            result.reasons
+        );
+    }
+    let returned = decision("ReturnedRange");
+    assert_ne!(
+        returned.decision,
+        RoutingDecision::LiveBc,
+        "{:?}",
+        returned.reasons
     );
 }
 
@@ -357,15 +388,15 @@ end;
 fn unsupported_structured_type_method_routes_to_live_bc() {
     let workspace = Workspace::new();
     workspace.file_index.add_file(
-        std::path::PathBuf::from("/tmp/JsonRoutingTests.Codeunit.al"),
-        r#"codeunit 50167 "JSON Routing Tests"
+        std::path::PathBuf::from("/tmp/BigTextRoutingTests.Codeunit.al"),
+        r#"codeunit 50167 "BigText Routing Tests"
 {
 Subtype = Test;
 [Test]
-procedure ReadsJson()
-var Payload: JsonObject;
+procedure AddsText()
+var Payload: BigText;
 begin
-    Payload.ReadFrom('{}');
+    Payload.AddText('x');
 end;
 }"#
         .to_string(),
@@ -410,16 +441,45 @@ end;
     );
 }
 
+/// Table code runs locally now, so a table that declares triggers is no
+/// longer refused outright: its triggers and procedures are classified like
+/// any reachable code, and one that needs BC still routes the test there.
 #[test]
-fn table_triggers_are_routed_to_live_bc() {
+fn table_code_is_classified_like_reachable_code() {
     let workspace = Workspace::new();
     workspace.file_index.add_file(
         std::path::PathBuf::from("/tmp/TriggeredEntry.Table.al"),
         r#"table 50155 "Triggered Entry"
 {
+fields
+{
+    field(1; "No."; Code[20]) { }
+    field(2; Name; Text[50])
+    {
+        trigger OnValidate()
+        begin
+            TestField("No.");
+        end;
+    }
+}
+keys { key(PK; "No.") { } }
+trigger OnInsert()
+begin
+    Name := UpperCase(Name);
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/PostingEntry.Table.al"),
+        r#"table 50158 "Posting Entry"
+{
 fields { field(1; "No."; Code[20]) { } }
 keys { key(PK; "No.") { } }
-trigger OnInsert() begin end;
+trigger OnDelete()
+begin
+    Page.RunModal(0);
+end;
 }"#
         .to_string(),
     );
@@ -432,18 +492,50 @@ Subtype = Test;
 procedure Inserts()
 var Entry: Record "Triggered Entry";
 begin
-    Entry.Insert();
+    Entry."No." := 'A';
+    Entry.Validate(Name, 'x');
+    Entry.Insert(true);
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/PostingTests.Codeunit.al"),
+        r#"codeunit 50159 "Posting Tests"
+{
+Subtype = Test;
+[Test]
+procedure Deletes()
+var Entry: Record "Posting Entry";
+begin
+    Entry.Delete(true);
 end;
 }"#
         .to_string(),
     );
     let results = classify_all(&workspace).unwrap();
-    let result = &results[0];
-    assert_eq!(result.decision, RoutingDecision::LiveBc);
-    assert!(result
-        .reasons
+    let local = results
         .iter()
-        .any(|reason| reason.message.contains("triggers")));
+        .find(|result| result.method_name == "Inserts")
+        .expect("insert classification");
+    assert_eq!(
+        local.decision,
+        RoutingDecision::InterpRecord,
+        "locally supported table code stays local: {:?}",
+        local.reasons
+    );
+    let live = results
+        .iter()
+        .find(|result| result.method_name == "Deletes")
+        .expect("delete classification");
+    assert_eq!(live.decision, RoutingDecision::LiveBc);
+    assert!(
+        live.reasons.iter().any(|reason| reason
+            .message
+            .contains("reachable procedure calls Page.RunModal")),
+        "unexpected reasons: {:?}",
+        live.reasons
+    );
 }
 
 #[test]
@@ -828,13 +920,31 @@ end;
     assert_eq!(results.len(), 2);
 }
 
+/// A helper codeunit with globals runs locally now: each codeunit variable
+/// is an instance with its own globals. Only a SingleInstance codeunit,
+/// whose state outlives a test on BC, still needs live BC.
 #[test]
-fn stateful_helper_codeunit_routes_to_live_bc() {
+fn stateful_helpers_run_locally_unless_single_instance() {
     let workspace = Workspace::new();
     workspace.file_index.add_file(
         std::path::PathBuf::from("/tmp/StatefulHelper.Codeunit.al"),
         r#"codeunit 50164 "Stateful Helper"
 {
+var Counter: Integer;
+
+procedure Next(): Integer
+begin
+    Counter := Counter + 1;
+    exit(Counter);
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/SessionHelper.Codeunit.al"),
+        r#"codeunit 50166 "Session Helper"
+{
+SingleInstance = true;
 var Counter: Integer;
 
 procedure Next(): Integer
@@ -860,16 +970,45 @@ end;
 }"#
         .to_string(),
     );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/SessionHelperTests.Codeunit.al"),
+        r#"codeunit 50167 "Session Helper Tests"
+{
+Subtype = Test;
 
-    let result = classify_all(&workspace).unwrap().remove(0);
-    assert_eq!(result.decision, RoutingDecision::LiveBc);
+[Test]
+procedure UsesSessionHelper()
+var Helper: Codeunit "Session Helper";
+begin
+    Helper.Next();
+end;
+}"#
+        .to_string(),
+    );
+
+    let results = classify_all(&workspace).unwrap();
+    let local = results
+        .iter()
+        .find(|result| result.method_name == "UsesStatefulHelper")
+        .expect("stateful classification");
+    assert_eq!(
+        local.decision,
+        RoutingDecision::Interp,
+        "{:?}",
+        local.reasons
+    );
+    let session = results
+        .iter()
+        .find(|result| result.method_name == "UsesSessionHelper")
+        .expect("session classification");
+    assert_eq!(session.decision, RoutingDecision::LiveBc);
     assert!(
-        result
+        session
             .reasons
             .iter()
-            .any(|reason| reason.message.contains("object-level state")),
+            .any(|reason| reason.message.contains("is SingleInstance")),
         "unexpected reasons: {:?}",
-        result.reasons
+        session.reasons
     );
 }
 
@@ -1088,5 +1227,1035 @@ end;
             .contains("enum 'Sales Document Type' without a workspace declaration")),
         "unexpected reasons: {:?}",
         package.reasons
+    );
+}
+
+/// A `TextBuilder` was typed as Text (its type name starts with "text"), so
+/// `Builder.Append(...)` was reported as an unsupported Text.Append.
+#[test]
+fn textbuilder_and_guid_builtins_stay_local() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/BuilderRouting.Codeunit.al"),
+        r#"codeunit 50184 "Builder Routing"
+{
+Subtype = Test;
+
+[Test]
+procedure Builds()
+var
+    Builder: TextBuilder;
+    Id: Guid;
+    ok: Boolean;
+begin
+    Builder.Append('a');
+    Builder.AppendLine('b');
+    ok := Builder.ToText().StartsWith('a');
+    Id := CreateGuid();
+    ok := IsNullGuid(Id);
+end;
+}"#
+        .to_string(),
+    );
+    let result = classify_all(&workspace).unwrap().remove(0);
+    assert_eq!(
+        result.decision,
+        RoutingDecision::Interp,
+        "TextBuilder and Guid builtins run locally: {:?}",
+        result.reasons
+    );
+}
+
+/// The router follows an event publisher to its subscribers; the local
+/// runtime now runs them, so such a test stays local and its subscriber's
+/// body is classified like any reachable code.
+#[test]
+fn published_event_subscribers_are_reached_and_run_locally() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Pub.Codeunit.al"),
+        r#"codeunit 50170 Publisher
+{
+procedure Post(var Total: Integer)
+begin
+    OnBeforePost(Total);
+end;
+
+[IntegrationEvent(false, false)]
+local procedure OnBeforePost(var Total: Integer)
+begin
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Sub.Codeunit.al"),
+        r#"codeunit 50171 Subscriber
+{
+[EventSubscriber(ObjectType::Codeunit, Codeunit::Publisher, 'OnBeforePost', '', false, false)]
+local procedure AddTen(var Total: Integer)
+begin
+    Total += 10;
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/PubTests.Codeunit.al"),
+        r#"codeunit 50172 "Pub Tests"
+{
+Subtype = Test;
+[Test]
+procedure SubscriberAdds()
+var
+    P: Codeunit Publisher;
+    Total: Integer;
+begin
+    P.Post(Total);
+    if Total <> 10 then
+        Error('subscriber did not run');
+end;
+}"#
+        .to_string(),
+    );
+    let result = classify_all(&workspace).unwrap().remove(0);
+    assert_eq!(
+        result.decision,
+        RoutingDecision::Interp,
+        "{:?}",
+        result.reasons
+    );
+}
+
+/// A table procedure's event with IncludeSender passes the record to a
+/// subscriber's `Sender` parameter, which the local runtime does, so the
+/// test stays local.
+#[test]
+fn table_publisher_with_a_sender_subscriber_runs_locally() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/TablePub.Table.al"),
+        r#"table 50280 "Table Pub"
+{
+fields
+{
+    field(1; "No."; Code[20]) { }
+    field(2; Note; Text[50]) { }
+}
+keys { key(PK; "No.") { } }
+
+procedure Stamp()
+begin
+    OnStamp(5);
+end;
+
+[IntegrationEvent(true, false)]
+local procedure OnStamp(Times: Integer)
+begin
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/TablePubSub.Codeunit.al"),
+        r#"codeunit 50281 "Table Pub Sub"
+{
+[EventSubscriber(ObjectType::Table, Database::"Table Pub", 'OnStamp', '', false, false)]
+local procedure OnStampSub(var Sender: Record "Table Pub"; Times: Integer)
+begin
+    Sender.Note := 'stamped';
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/TablePubTests.Codeunit.al"),
+        r#"codeunit 50282 "Table Pub Tests"
+{
+Subtype = Test;
+[Test]
+procedure StampRunsTheSubscriber()
+var
+    Pub: Record "Table Pub";
+begin
+    Pub."No." := 'P1';
+    Pub.Insert();
+    Pub.Stamp();
+    if Pub.Note <> 'stamped' then
+        Error('subscriber did not run');
+end;
+}"#
+        .to_string(),
+    );
+    let result = classify_all(&workspace).unwrap().remove(0);
+    assert_eq!(
+        result.decision,
+        RoutingDecision::InterpRecord,
+        "{:?}",
+        result.reasons
+    );
+}
+
+/// A subscriber that names its publisher by a bare object ID is reached like
+/// one bound by name, so what it does decides the route.
+#[test]
+fn subscribers_bound_by_object_id_are_reached() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/IdPub.Codeunit.al"),
+        r#"codeunit 50290 "Id Pub"
+{
+procedure Post()
+begin
+    OnPost();
+end;
+
+[IntegrationEvent(false, false)]
+local procedure OnPost()
+begin
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/IdSub.Codeunit.al"),
+        r#"codeunit 50291 "Id Sub"
+{
+[EventSubscriber(ObjectType::Codeunit, 50290, 'OnPost', '', false, false)]
+local procedure OnPostById()
+begin
+    Page.RunModal(0);
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/IdTests.Codeunit.al"),
+        r#"codeunit 50292 "Id Tests"
+{
+Subtype = Test;
+[Test]
+procedure Posts()
+var
+    P: Codeunit "Id Pub";
+begin
+    P.Post();
+end;
+}"#
+        .to_string(),
+    );
+    let result = classify_all(&workspace).unwrap().remove(0);
+    assert_reaches_the_subscriber(&result);
+}
+
+/// Validate checks the field's TableRelation, which the local runtime can
+/// do only for a plain relation to a workspace table.
+#[test]
+fn validate_on_a_relation_outside_the_workspace_routes_to_live_bc() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Loyalty.Table.al"),
+        r#"table 50190 "Loyalty Card"
+{
+fields
+{
+    field(1; "No."; Code[20]) { }
+    field(2; "Customer No."; Code[20]) { TableRelation = Customer; }
+    field(3; "Card No."; Code[20]) { TableRelation = "Loyalty Card"."No."; }
+}
+keys { key(PK; "No.") { } }
+
+procedure Renew()
+begin
+    Validate("Card No.", "No.");
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/LoyaltyTests.Codeunit.al"),
+        r#"codeunit 50191 "Loyalty Tests"
+{
+Subtype = Test;
+[Test]
+procedure ValidatesLocalRelation()
+var Card: Record "Loyalty Card";
+begin
+    Card.Validate("Card No.", 'X');
+    Card.Renew();
+end;
+
+[Test]
+procedure ValidatesCustomer()
+var Card: Record "Loyalty Card";
+begin
+    Card.Validate("Customer No.", '10000');
+end;
+}"#
+        .to_string(),
+    );
+    let results = classify_all(&workspace).unwrap();
+    // Both tests share the codeunit, so the Customer relation takes both to
+    // live BC; the reason names the relation that forced it.
+    let customer = results
+        .iter()
+        .find(|result| result.method_name == "ValidatesCustomer")
+        .expect("customer classification");
+    assert_eq!(customer.decision, RoutingDecision::LiveBc);
+    assert!(
+        customer
+            .reasons
+            .iter()
+            .any(|reason| reason.message.contains(
+                "Validate: Customer No. relates to table 'Customer', which is not in the workspace"
+            )),
+        "unexpected reasons: {:?}",
+        customer.reasons
+    );
+    let local = results
+        .iter()
+        .find(|result| result.method_name == "ValidatesLocalRelation")
+        .expect("local classification");
+    assert!(
+        !local
+            .reasons
+            .iter()
+            .any(|reason| reason.message.contains("Card No.")
+                || reason.message.contains("unsupported Record.Renew")),
+        "a workspace relation and a table procedure are local: {:?}",
+        local.reasons
+    );
+    assert!(
+        local
+            .reasons
+            .iter()
+            .any(|reason| reason.message.contains("calls table procedure Card.Renew")),
+        "{:?}",
+        local.reasons
+    );
+}
+
+/// JSON types were outside the router's capability set, so any use of
+/// them sent a test to live BC.
+#[test]
+fn json_types_and_their_chains_stay_local() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/JsonRouting.Codeunit.al"),
+        r#"codeunit 50192 "Json Routing"
+{
+Subtype = Test;
+
+[Test]
+procedure ReadsJson()
+var
+    Doc: JsonObject;
+    Token: JsonToken;
+    Out: Text;
+    ok: Boolean;
+begin
+    Doc.Add('name', 'x');
+    ok := Doc.Get('name', Token);
+    Out := Token.AsValue().AsText();
+    Doc.WriteTo(Out);
+    ok := Doc.SelectToken('$.name', Token);
+end;
+}"#
+        .to_string(),
+    );
+    let result = classify_all(&workspace).unwrap().remove(0);
+    assert_eq!(
+        result.decision,
+        RoutingDecision::Interp,
+        "JSON runs locally: {:?}",
+        result.reasons
+    );
+}
+
+/// A SelectToken path the local runtime does not follow (a slice, a union)
+/// sends the test to live BC. Filters, recursive descent, wildcards and a
+/// path built at run time stay local.
+#[test]
+fn selecttoken_with_a_step_the_runtime_does_not_follow_routes_to_live_bc() {
+    let classify = |statement: &str| {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/JsonPath.Codeunit.al"),
+            format!(
+                r#"codeunit 50196 "Json Path Routing"
+{{
+Subtype = Test;
+
+[Test]
+procedure Selects()
+var
+    Doc: JsonObject;
+    Token: JsonToken;
+    Id: Text;
+begin
+    {statement}
+end;
+}}"#
+            ),
+        );
+        classify_all(&workspace).unwrap().remove(0)
+    };
+    for local in [
+        "Doc.SelectToken('$.items[?(@.id==''A'' && @.qty > 1)].price', Token);",
+        "Doc.SelectToken('$..price', Token);",
+        "Doc.SelectToken('$.items[*].price', Token);",
+        "Doc.SelectToken('$.items[?(@.id==''' + Id + ''')].price', Token);",
+        "Token.AsObject().SelectToken('$..price', Token);",
+    ] {
+        let result = classify(local);
+        assert_eq!(
+            result.decision,
+            RoutingDecision::Interp,
+            "{local}: {:?}",
+            result.reasons
+        );
+    }
+    for live in [
+        "Doc.SelectToken('$.items[0:2]', Token);",
+        "Doc.SelectToken('$.items[''a'',''b'']', Token);",
+        "Token.AsObject().SelectToken('$.items[0:2]', Token);",
+    ] {
+        let result = classify(live);
+        assert_eq!(
+            result.decision,
+            RoutingDecision::LiveBc,
+            "{live}: {:?}",
+            result.reasons
+        );
+        assert!(
+            result.reasons.iter().any(|reason| reason
+                .message
+                .contains("is not supported by the local runtime")),
+            "{live}: {:?}",
+            result.reasons
+        );
+    }
+}
+
+/// A relation to a workspace table with a composite key and no field named
+/// cannot be checked locally; the router used to keep it local, and the
+/// runtime then refused it.
+#[test]
+fn validate_on_a_composite_key_relation_routes_to_live_bc() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/OrderLine.Table.al"),
+        r#"table 50193 "Order Line"
+{
+fields
+{
+    field(1; "Document No."; Code[20]) { }
+    field(2; "Line No."; Integer) { }
+}
+keys { key(PK; "Document No.", "Line No.") { } }
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Shipment.Table.al"),
+        r#"table 50194 Shipment
+{
+fields
+{
+    field(1; "No."; Code[20]) { }
+    field(2; "Order Line"; Code[20]) { TableRelation = "Order Line"; }
+}
+keys { key(PK; "No.") { } }
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/ShipmentTests.Codeunit.al"),
+        r#"codeunit 50195 "Shipment Tests"
+{
+Subtype = Test;
+[Test]
+procedure ValidatesOrderLine()
+var Shipment: Record Shipment;
+begin
+    Shipment.Validate("Order Line", 'SO1');
+end;
+}"#
+        .to_string(),
+    );
+    let result = classify_all(&workspace).unwrap().remove(0);
+    assert_eq!(result.decision, RoutingDecision::LiveBc);
+    assert!(
+        result
+            .reasons
+            .iter()
+            .any(|reason| reason.message.contains("by a composite key")),
+        "{:?}",
+        result.reasons
+    );
+}
+
+/// A label is a constant: a table or helper codeunit whose only globals
+/// are labels has no state and runs locally. A table with a real global
+/// variable runs locally too, since the runtime keeps a table's globals with
+/// the record variable as BC does: only a SingleInstance codeunit with
+/// globals goes to live BC.
+#[test]
+fn label_globals_are_not_object_state() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Labelled.Table.al"),
+        r#"table 50196 "R8 Labelled"
+{
+fields { field(1; "No."; Code[20]) { } }
+keys { key(PK; "No.") { } }
+var
+    NoRequiredErr: Label 'No. is required';
+trigger OnInsert()
+begin
+    if "No." = '' then
+        Error(NoRequiredErr);
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Counted.Table.al"),
+        r#"table 50197 "R8 Counted"
+{
+fields { field(1; "No."; Code[20]) { } }
+keys { key(PK; "No.") { } }
+var
+    Inserted: Integer;
+trigger OnInsert()
+begin
+    Inserted += 1;
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/LabelHelper.Codeunit.al"),
+        r#"codeunit 50198 "R8 Label Helper"
+{
+var
+    HelloLbl: Label 'Hello %1';
+
+procedure Hello(Name: Text): Text
+begin
+    exit(StrSubstNo(HelloLbl, Name));
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/LabelTests.Codeunit.al"),
+        r#"codeunit 50199 "R8 Label Tests"
+{
+Subtype = Test;
+[Test]
+procedure InsertsLabelled()
+var L: Record "R8 Labelled";
+begin
+    L."No." := 'A';
+    L.Insert(true);
+end;
+}"#
+        .to_string(),
+    );
+    // A codeunit keeps all its tests on one backend, so each case gets its
+    // own test codeunit.
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/GreetTests.Codeunit.al"),
+        r#"codeunit 50201 "R8 Greet Tests"
+{
+Subtype = Test;
+[Test]
+procedure GreetsWithLabel()
+var Helper: Codeunit "R8 Label Helper";
+begin
+    if Helper.Hello('x') <> 'Hello x' then
+        Error('wrong greeting');
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/CountedTests.Codeunit.al"),
+        r#"codeunit 50200 "R8 Counted Tests"
+{
+Subtype = Test;
+[Test]
+procedure InsertsCounted()
+var C: Record "R8 Counted";
+begin
+    C."No." := 'A';
+    C.Insert(true);
+end;
+}"#
+        .to_string(),
+    );
+    let results = classify_all(&workspace).unwrap();
+    let find = |name: &str| {
+        results
+            .iter()
+            .find(|result| result.method_name == name)
+            .unwrap_or_else(|| panic!("{name} classification"))
+    };
+    let labelled = find("InsertsLabelled");
+    assert_eq!(
+        labelled.decision,
+        RoutingDecision::InterpRecord,
+        "{:?}",
+        labelled.reasons
+    );
+    let greets = find("GreetsWithLabel");
+    assert_eq!(
+        greets.decision,
+        RoutingDecision::Interp,
+        "{:?}",
+        greets.reasons
+    );
+    let counted = find("InsertsCounted");
+    assert_eq!(
+        counted.decision,
+        RoutingDecision::InterpRecord,
+        "{:?}",
+        counted.reasons
+    );
+}
+
+/// A workspace with table "R8 Plain", a subscriber to `event` on it that
+/// calls `Page.RunModal`, and one test codeunit whose test runs `test_body`.
+/// `field_trigger` is the body of field Name's OnValidate.
+fn classify_with_table_event_subscriber(
+    event: &str,
+    field_trigger: &str,
+    test_body: &str,
+) -> ClassifyResult {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Plain.Table.al"),
+        format!(
+            r#"table 50210 "R8 Plain"
+{{
+fields
+{{
+    field(1; "No."; Code[20]) {{ }}
+    field(2; Name; Text[50])
+    {{
+        trigger OnValidate()
+        begin
+            {field_trigger}
+        end;
+    }}
+}}
+keys {{ key(PK; "No.") {{ }} }}
+}}"#
+        ),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/PlainSub.Codeunit.al"),
+        format!(
+            r#"codeunit 50211 "R8 Plain Sub"
+{{
+[EventSubscriber(ObjectType::Table, Database::"R8 Plain", '{event}', '', false, false)]
+local procedure OnPlainEvent(var Rec: Record "R8 Plain"; var xRec: Record "R8 Plain"; RunTrigger: Boolean)
+begin
+    Page.RunModal(0);
+end;
+}}"#
+        ),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/PlainTests.Codeunit.al"),
+        format!(
+            r#"codeunit 50212 "R8 Plain Tests"
+{{
+Subtype = Test;
+[Test]
+procedure Runs()
+var P: Record "R8 Plain";
+begin
+    {test_body}
+end;
+}}"#
+        ),
+    );
+    classify_all(&workspace).unwrap().remove(0)
+}
+
+fn assert_reaches_the_subscriber(result: &ClassifyResult) {
+    assert_eq!(
+        result.decision,
+        RoutingDecision::LiveBc,
+        "{:?}",
+        result.reasons
+    );
+    assert!(
+        result.reasons.iter().any(|reason| reason
+            .message
+            .contains("reachable procedure calls Page.RunModal")),
+        "{:?}",
+        result.reasons
+    );
+}
+
+/// Rename raises OnBeforeRenameEvent and OnAfterRenameEvent, so the test
+/// reaches their subscribers.
+#[test]
+fn rename_reaches_the_rename_event_subscribers() {
+    let result = classify_with_table_event_subscriber(
+        "OnAfterRenameEvent",
+        "",
+        "P.\"No.\" := 'A'; P.Insert(); P.Rename('B');",
+    );
+    assert_reaches_the_subscriber(&result);
+}
+
+/// `Rec.Modify()` in table code modifies a row of the table itself and
+/// raises its OnAfterModifyEvent.
+#[test]
+fn rec_record_call_in_table_code_reaches_the_tables_event_subscribers() {
+    let result = classify_with_table_event_subscriber(
+        "OnAfterModifyEvent",
+        "Rec.Modify();",
+        "P.Validate(Name, 'x');",
+    );
+    assert_reaches_the_subscriber(&result);
+}
+
+/// `xRec` in table code is a record of the table itself.
+#[test]
+fn xrec_record_call_in_table_code_reaches_the_tables_event_subscribers() {
+    let result = classify_with_table_event_subscriber(
+        "OnAfterModifyEvent",
+        "xRec.Modify();",
+        "P.Validate(Name, 'x');",
+    );
+    assert_reaches_the_subscriber(&result);
+}
+
+/// A bare `Modify()` in table code acts on the implicit `Rec`.
+#[test]
+fn bare_record_method_in_table_code_reaches_the_tables_event_subscribers() {
+    let result = classify_with_table_event_subscriber(
+        "OnAfterModifyEvent",
+        "Modify();",
+        "P.Validate(Name, 'x');",
+    );
+    assert_reaches_the_subscriber(&result);
+}
+
+/// The same subscriber reached from a record call in the test itself.
+#[test]
+fn modify_in_the_test_reaches_the_tables_event_subscribers() {
+    let result = classify_with_table_event_subscriber(
+        "OnAfterModifyEvent",
+        "",
+        "P.\"No.\" := 'A'; P.Insert(); P.Modify();",
+    );
+    assert_reaches_the_subscriber(&result);
+}
+
+/// DeleteAll raises OnBeforeDeleteEvent and OnAfterDeleteEvent for each row.
+#[test]
+fn deleteall_reaches_the_delete_event_subscribers() {
+    let result = classify_with_table_event_subscriber(
+        "OnAfterDeleteEvent",
+        "",
+        "P.\"No.\" := 'A'; P.Insert(); P.DeleteAll();",
+    );
+    assert_reaches_the_subscriber(&result);
+}
+
+/// ModifyAll raises OnBeforeModifyEvent and OnAfterModifyEvent for each row.
+#[test]
+fn modifyall_reaches_the_modify_event_subscribers() {
+    let result = classify_with_table_event_subscriber(
+        "OnBeforeModifyEvent",
+        "",
+        "P.\"No.\" := 'A'; P.Insert(); P.ModifyAll(Name, 'x', false);",
+    );
+    assert_reaches_the_subscriber(&result);
+}
+
+/// A bare `DeleteAll()` in table code acts on the implicit `Rec`.
+#[test]
+fn bare_deleteall_in_table_code_reaches_the_tables_event_subscribers() {
+    let result = classify_with_table_event_subscriber(
+        "OnAfterDeleteEvent",
+        "DeleteAll();",
+        "P.Validate(Name, 'x');",
+    );
+    assert_reaches_the_subscriber(&result);
+}
+
+/// Each field's `OnValidate` shares one call-graph node, which took its
+/// edges from one of them. A `Modify()` in the other field's trigger did
+/// not reach the Modify subscriber, which opens a page, and the test
+/// stayed local.
+#[test]
+fn modify_in_any_fields_onvalidate_reaches_the_tables_event_subscribers() {
+    for (first, second, validated) in [("Rec.Modify();", "", "Name"), ("", "Rec.Modify();", "City")]
+    {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/TwoValidates.Table.al"),
+            format!(
+                r#"table 50213 "R8 Two Validates"
+{{
+fields
+{{
+    field(1; "No."; Code[20]) {{ }}
+    field(2; Name; Text[50])
+    {{
+        trigger OnValidate()
+        begin
+            {first}
+        end;
+    }}
+    field(3; City; Text[50])
+    {{
+        trigger OnValidate()
+        begin
+            {second}
+        end;
+    }}
+}}
+keys {{ key(PK; "No.") {{ }} }}
+}}"#
+            ),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/TwoValidatesSub.Codeunit.al"),
+            r#"codeunit 50214 "R8 Two Validates Sub"
+{
+[EventSubscriber(ObjectType::Table, Database::"R8 Two Validates", 'OnAfterModifyEvent', '', false, false)]
+local procedure OnModified(var Rec: Record "R8 Two Validates"; var xRec: Record "R8 Two Validates"; RunTrigger: Boolean)
+begin
+    Page.RunModal(0);
+end;
+}"#
+            .to_string(),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/TwoValidatesTests.Codeunit.al"),
+            format!(
+                r#"codeunit 50215 "R8 Two Validates Tests"
+{{
+Subtype = Test;
+[Test]
+procedure Runs()
+var P: Record "R8 Two Validates";
+begin
+    P.Validate({validated}, 'x');
+end;
+}}"#
+            ),
+        );
+        let result = classify_all(&workspace).unwrap().remove(0);
+        assert_reaches_the_subscriber(&result);
+    }
+}
+
+/// A workspace with table "R8 Renamed", a table whose field relates to it
+/// through `relation`, and a test codeunit whose test runs `test_body`.
+/// "R8 Renamed" has a procedure `RenameTo` that renames the record itself.
+fn classify_rename_with_relation(relation: &str, test_body: &str) -> ClassifyResult {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Renamed.Table.al"),
+        r#"table 50220 "R8 Renamed"
+{
+fields { field(1; "No."; Code[20]) { } }
+keys { key(PK; "No.") { } }
+procedure RenameTo(NewNo: Code[20])
+begin
+    Rename(NewNo);
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/RenamedUse.Table.al"),
+        format!(
+            r#"table 50221 "R8 Renamed Use"
+{{
+fields
+{{
+    field(1; "Entry No."; Integer) {{ }}
+    field(2; Kind; Option) {{ OptionMembers = Renamed,Other; }}
+    field(3; "Renamed No."; Code[20]) {{ TableRelation = {relation}; }}
+}}
+keys {{ key(PK; "Entry No.") {{ }} }}
+}}"#
+        ),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/RenameTests.Codeunit.al"),
+        format!(
+            r#"codeunit 50222 "R8 Rename Tests"
+{{
+Subtype = Test;
+[Test]
+procedure Renames()
+var R: Record "R8 Renamed";
+begin
+    {test_body}
+end;
+}}"#
+        ),
+    );
+    classify_all(&workspace).unwrap().remove(0)
+}
+
+/// The local rename updates a field whose plain TableRelation names the
+/// renamed table, so the test stays local.
+#[test]
+fn rename_with_a_plain_relation_to_the_table_runs_locally() {
+    let result = classify_rename_with_relation(
+        "\"R8 Renamed\"",
+        "R.\"No.\" := 'A'; R.Insert(); R.Rename('B');",
+    );
+    assert_eq!(
+        result.decision,
+        RoutingDecision::InterpRecord,
+        "{:?}",
+        result.reasons
+    );
+}
+
+/// A conditional relation to the renamed table is one the local rename
+/// does not follow, whether the rename is in the test or in table code.
+#[test]
+fn rename_with_a_conditional_relation_to_the_table_routes_to_live_bc() {
+    let relation = "if (Kind = const(Renamed)) \"R8 Renamed\"";
+    for body in [
+        "R.\"No.\" := 'A'; R.Insert(); R.Rename('B');",
+        "R.\"No.\" := 'A'; R.Insert(); R.RenameTo('B');",
+    ] {
+        let result = classify_rename_with_relation(relation, body);
+        assert_eq!(result.decision, RoutingDecision::LiveBc, "{body}");
+        assert!(
+            result.reasons.iter().any(|reason| reason
+                .message
+                .contains("Rename: field Renamed No. of table R8 Renamed Use has TableRelation")),
+            "{body}: {:?}",
+            result.reasons
+        );
+    }
+}
+
+/// A variable named `Page` or `Report` parses as an object keyword. The
+/// router took `Page := ...` for the platform's Page and `Report.Append`
+/// for a report call, and sent the test to live BC.
+#[test]
+fn variables_named_after_object_keywords_stay_local() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Kw.Codeunit.al"),
+        r#"codeunit 50300 "Kw Tests"
+{
+Subtype = Test;
+[Test]
+procedure Reads()
+var
+    Value: Text;
+    Code: Code[10];
+    Report: TextBuilder;
+    Page: Integer;
+begin
+    Value := 'abc';
+    Code := Value;
+    Report.Append(Value);
+    Page := Report.Length + StrLen(Code);
+    if Value.ToUpper() <> Code then
+        Error('x');
+end;
+
+[Test]
+procedure OpensAPage()
+begin
+    Page.RunModal(0);
+end;
+}"#
+        .to_string(),
+    );
+    let results = classify_all(&workspace).unwrap();
+    let reads = results
+        .iter()
+        .find(|result| result.method_name == "Reads")
+        .expect("Reads classification");
+    assert!(
+        !reads
+            .reasons
+            .iter()
+            .any(|reason| reason.message.contains("Page") || reason.message.contains("Report")),
+        "{:?}",
+        reads.reasons
+    );
+    let opens = results
+        .iter()
+        .find(|result| result.method_name == "OpensAPage")
+        .expect("OpensAPage classification");
+    assert!(
+        opens
+            .reasons
+            .iter()
+            .any(|reason| reason.message.contains("calls Page.RunModal")),
+        "{:?}",
+        opens.reasons
+    );
+}
+
+/// A bare call resolves against the runtime's builtins and the object's own
+/// procedures. A stub catalog answers only a call on its own codeunit, so a
+/// bare name that only a catalog knows has no local implementation. `Clear`
+/// counted as local only because the Library - Variable Storage catalog has a
+/// member of that name.
+#[test]
+fn bare_calls_resolve_against_builtins_and_not_stub_catalogs() {
+    let classify = |statement: &str| {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/BareCalls.Codeunit.al"),
+            format!(
+                r#"codeunit 50202 "Bare Call Tests"
+{{
+Subtype = Test;
+[Test]
+procedure Calls()
+var
+    N: Integer;
+begin
+    N := 5;
+    {statement}
+end;
+}}"#
+            ),
+        );
+        classify_all(&workspace).unwrap().remove(0)
+    };
+    let cleared = classify("Clear(N);");
+    assert_eq!(
+        cleared.decision,
+        RoutingDecision::Interp,
+        "{:?}",
+        cleared.reasons
+    );
+    let stub_only = classify("N := RandInt(5);");
+    assert_eq!(
+        stub_only.decision,
+        RoutingDecision::LiveBc,
+        "{:?}",
+        stub_only.reasons
+    );
+    assert!(
+        stub_only.reasons.iter().any(|reason| reason
+            .message
+            .contains("calls global 'RandInt' that the local interpreter does not implement")),
+        "{:?}",
+        stub_only.reasons
     );
 }

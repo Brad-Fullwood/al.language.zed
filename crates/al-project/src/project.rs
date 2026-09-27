@@ -195,6 +195,19 @@ pub fn configured_symbol_packages(
             .iter()
             .map(|path| resolve_project_path(project_root, path)),
     );
+    // A folder written inside the project that a repository link carries
+    // outside it is read only once the project is trusted.
+    folders.retain(|folder| {
+        let escapes = crate::trust::escapes_untrusted_project(project_root, folder);
+        if escapes {
+            tracing::warn!(
+                path = %folder.display(),
+                "a symbol folder resolves outside the project and the project is not trusted, \
+                 so its packages are not read"
+            );
+        }
+        !escapes
+    });
     let packages = scan_package_folders(&folders)?;
     Ok(SymbolPackageSelection {
         packages_dir,
@@ -342,6 +355,54 @@ pub fn load_app_manifest(project_root: &Path) -> Result<AppManifest, DiscoveryEr
     })
 }
 
+/// Read the debug configuration of the project at `project_root` into the
+/// pair [`AlProject::server_configs`] and [`AlProject::launch_config_error`]
+/// hold: its AL server configurations, or none and the reason the file could
+/// not be read.
+pub fn load_launch_configs(
+    project_root: &Path,
+) -> (Vec<al_bc::launch::BcServerConfig>, Option<String>) {
+    match al_bc::launch::find_launch_config(project_root) {
+        Ok(found) => (found.map(|file| file.configs).unwrap_or_default(), None),
+        Err(error) => {
+            tracing::warn!(%error, "AL project loaded without its debug configuration");
+            (Vec::new(), Some(error.to_string()))
+        }
+    }
+}
+
+/// A hash of the files an [`AlProject`] keeps in memory besides its packages:
+/// `app.json`, `.zed/debug.json` and `.vscode/launch.json` under
+/// `project_root`. A process that keeps one project loaded compares it to
+/// know when to read them again.
+///
+/// Hashed by content, up to the 1 MiB both loaders accept. An edit such as
+/// `25.0.0.0` to `26.0.0.0` keeps the file's length, and inside one tick of the
+/// filesystem clock it keeps the mtime too.
+pub fn project_files_fingerprint(project_root: &Path) -> u64 {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    let mut hasher = Sha256::new();
+    hasher.update(project_root.as_os_str().as_encoded_bytes());
+    let [zed_debug, vscode_launch] = al_bc::launch::launch_file_paths(project_root);
+    for path in [project_root.join("app.json"), zed_debug, vscode_launch] {
+        let mut content = Vec::new();
+        let read = std::fs::File::open(&path)
+            .and_then(|file| file.take(MAX_APP_JSON_BYTES + 1).read_to_end(&mut content));
+        match read {
+            Ok(length) => {
+                hasher.update([1u8]);
+                hasher.update((length as u64).to_le_bytes());
+                hasher.update(&content);
+            }
+            Err(_) => hasher.update([0u8]),
+        }
+    }
+    let digest = hasher.finalize();
+    u64::from_le_bytes(digest[..8].try_into().expect("sha256 is 32 bytes"))
+}
+
 fn try_load_project(dir: &Path) -> Result<Option<AlProject>, DiscoveryError> {
     let app_json_path = dir.join("app.json");
     if !app_json_path.is_file() {
@@ -351,14 +412,17 @@ fn try_load_project(dir: &Path) -> Result<Option<AlProject>, DiscoveryError> {
     let manifest = load_app_manifest(dir)?;
 
     let packages_dir = dir.join(".alpackages");
-    let packages = scan_packages(&packages_dir)?;
-    let (server_configs, launch_config_error) = match al_bc::launch::find_launch_config(dir) {
-        Ok(found) => (found.map(|lf| lf.configs).unwrap_or_default(), None),
-        Err(error) => {
-            tracing::warn!(%error, "AL project loaded without its debug configuration");
-            (Vec::new(), Some(error.to_string()))
-        }
+    let packages = if crate::trust::escapes_untrusted_project(dir, &packages_dir) {
+        tracing::warn!(
+            path = %packages_dir.display(),
+            "the project's .alpackages resolves outside it and the project is not trusted, so its \
+             packages are not read"
+        );
+        Vec::new()
+    } else {
+        scan_packages(&packages_dir)?
     };
+    let (server_configs, launch_config_error) = load_launch_configs(dir);
 
     Ok(Some(AlProject {
         root: dir.to_path_buf(),
@@ -653,6 +717,26 @@ mod tests {
         let project = find_project(&project_dir).unwrap();
         assert_eq!(project.root, project_dir);
         assert_eq!(project.app_json.name, "Test");
+    }
+
+    /// A clone that commits `.alpackages` as a link to a directory outside it
+    /// would have that directory's packages indexed and served to an agent.
+    /// Containment already stopped trusting such a root for path parameters.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_alpackages_is_not_read_for_an_untrusted_project() {
+        let tmp = tempdir();
+        let project_dir = tmp.join("project");
+        let outside = tmp.join("outside");
+        write_valid_manifest(&project_dir, "Test");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("Other_Private_1.0.0.0.app"), b"package").unwrap();
+        std::os::unix::fs::symlink(&outside, project_dir.join(".alpackages")).unwrap();
+
+        let project = find_project(&project_dir).unwrap();
+        assert!(project.packages.is_empty(), "{:?}", project.packages);
+        let selection = configured_symbol_packages(&project_dir, &AlConfig::default()).unwrap();
+        assert!(selection.packages.is_empty(), "{:?}", selection.packages);
     }
 
     fn write_valid_manifest(dir: &Path, name: &str) {
@@ -1050,6 +1134,33 @@ mod tests {
         assert!(
             reported.contains("debug.json"),
             "the message must name the file: {reported}"
+        );
+    }
+
+    #[test]
+    fn project_files_fingerprint_moves_with_the_manifest_and_debug_files() {
+        let root = tempdir();
+        let manifest = root.join("app.json");
+        std::fs::write(&manifest, r#"{"application":"25.0.0.0"}"#).unwrap();
+        let first = project_files_fingerprint(&root);
+        assert_eq!(project_files_fingerprint(&root), first, "nothing changed");
+
+        // Same length, so only the content tells the two apart.
+        std::fs::write(&manifest, r#"{"application":"26.0.0.0"}"#).unwrap();
+        let edited = project_files_fingerprint(&root);
+        assert_ne!(edited, first, "a same-length app.json edit");
+
+        std::fs::create_dir_all(root.join(".vscode")).unwrap();
+        std::fs::write(root.join(".vscode/launch.json"), "{}").unwrap();
+        let launch_added = project_files_fingerprint(&root);
+        assert_ne!(launch_added, edited, "a launch.json written");
+
+        std::fs::create_dir_all(root.join(".zed")).unwrap();
+        std::fs::write(root.join(".zed/debug.json"), "[]").unwrap();
+        assert_ne!(
+            project_files_fingerprint(&root),
+            launch_added,
+            "a debug.json written"
         );
     }
 

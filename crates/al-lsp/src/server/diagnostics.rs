@@ -77,30 +77,43 @@ pub(crate) async fn compute_diagnostics(
     uri: &Url,
     text: &str,
 ) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
-
-    {
-        let config_guard = server.workspace.config.read().await;
-        let project_root = server
-            .workspace
-            .project
-            .read()
-            .await
-            .as_ref()
-            .map(|project| project.root.clone());
-        let syntax_diags = al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
-            &server.workspace,
-            uri,
-            &config_guard,
-            project_root.as_deref(),
-        );
-        drop(config_guard);
-        diagnostics.extend(syntax_diags.iter().map(syntax_diag_to_lsp));
-    }
+    let mut diagnostics: Vec<Diagnostic> = syntax_diagnostics(server, uri)
+        .await
+        .iter()
+        .map(syntax_diag_to_lsp)
+        .collect();
 
     diagnostics.extend(run_semantic_analysis(server, uri, text).await);
 
     diagnostics
+}
+
+/// Phase 1 syntax and lint diagnostics for `uri`.
+///
+/// The project root is read and released before the config guard is taken, so
+/// no guard is held across an await. `did_change_configuration` holds the
+/// project write guard while it waits for the config write guard. A config
+/// read guard held across `project.read()` here waited on that writer while
+/// the writer waited on it, and the generation write guard the writer also
+/// holds then stalled every other request.
+async fn syntax_diagnostics(
+    server: &AlServer,
+    uri: &Url,
+) -> Vec<al_analysis::queries::diagnostics::SyntaxDiagnostic> {
+    let project_root = server
+        .workspace
+        .project
+        .read()
+        .await
+        .as_ref()
+        .map(|project| project.root.clone());
+    let config = server.workspace.config.read().await;
+    al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
+        &server.workspace,
+        uri,
+        &config,
+        project_root.as_deref(),
+    )
 }
 
 /// Compute project-scope diagnostics keyed by file for `workspace/diagnostic`.
@@ -176,13 +189,80 @@ pub(crate) async fn compute_workspace_diagnostics(
     Ok(reports)
 }
 
+/// What the project pass read for one URI while staging its report or its
+/// clear: the file index entry and, when the document is open, its text and
+/// client version.
+///
+/// Every write to either one stores a new `Arc`, and this input holds the
+/// staged `Arc`s, so pointer equality tells whether either was replaced.
+struct StagedInput {
+    /// The file index key of `uri`, `None` when `uri` is not a file URI.
+    path: Option<std::path::PathBuf>,
+    source: Option<Arc<(String, tree_sitter::Tree)>>,
+    document: Option<(Arc<String>, i32)>,
+}
+
+impl StagedInput {
+    fn read(
+        workspace: &al_workspace::Workspace,
+        path: Option<std::path::PathBuf>,
+        uri: &Url,
+    ) -> Self {
+        Self {
+            source: path
+                .as_deref()
+                .and_then(|path| workspace.file_index.cached_parse_entry(path)),
+            document: workspace.documents.get_text_and_client_version(uri),
+            path,
+        }
+    }
+
+    fn client_version(&self) -> Option<i32> {
+        self.document.as_ref().map(|(_, version)| *version)
+    }
+
+    /// Whether the file index entry and the document text and version for
+    /// `uri` are still the ones this input was read from.
+    fn is_current(&self, workspace: &al_workspace::Workspace, uri: &Url) -> bool {
+        let source = self
+            .path
+            .as_deref()
+            .and_then(|path| workspace.file_index.cached_parse_entry(path));
+        let same_source = match (&self.source, &source) {
+            (Some(staged), Some(current)) => Arc::ptr_eq(staged, current),
+            (None, None) => true,
+            _ => false,
+        };
+        let document = workspace.documents.get_text_and_client_version(uri);
+        let same_document = match (&self.document, &document) {
+            (Some((staged, staged_version)), Some((current, current_version))) => {
+                staged_version == current_version && Arc::ptr_eq(staged, current)
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        same_source && same_document
+    }
+}
+
+/// One staging attempt of the project pass.
+struct StagedPass {
+    /// Every URI with diagnostics, with the input they were computed from.
+    reports: Vec<(Url, StagedInput, Vec<Diagnostic>)>,
+    /// The input of every URI the publish step may clear: each one in the
+    /// published set, or the forced clear, that has no report.
+    clears: std::collections::HashMap<Url, StagedInput>,
+}
+
 /// Compute the bridge-free project diagnostic generation used by push
 /// diagnostics. Cached semantic diagnostics are merged only when they belong
 /// to the exact current open-document `Arc` and client version.
 async fn compute_workspace_push_diagnostics(
     workspace: std::sync::Arc<al_workspace::Workspace>,
     semantic_cache: &tokio::sync::Mutex<std::collections::HashMap<Url, CachedSemanticDiagnostics>>,
-) -> Result<Vec<(Url, Option<i32>, Vec<Diagnostic>)>, WorkspaceDiagnosticError> {
+    published_uris: &tokio::sync::Mutex<std::collections::HashSet<Url>>,
+    force_clear_uri: Option<&Url>,
+) -> Result<StagedPass, WorkspaceDiagnosticError> {
     let config = workspace.config.read().await.clone();
     let project_root = workspace
         .project
@@ -205,25 +285,44 @@ async fn compute_workspace_push_diagnostics(
     let semantic_cache = semantic_cache.lock().await;
     let mut reports = Vec::new();
     for (path, diagnostics) in native {
-        let uri = Url::from_file_path(&path)
-            .map_err(|()| WorkspaceDiagnosticError::InvalidFilePath(path))?;
+        let Ok(uri) = Url::from_file_path(&path) else {
+            return Err(WorkspaceDiagnosticError::InvalidFilePath(path));
+        };
         if is_cache_path(&uri) {
             continue;
         }
         let mut diagnostics: Vec<Diagnostic> = diagnostics.iter().map(syntax_diag_to_lsp).collect();
-        let snapshot = workspace.documents.get_text_and_client_version(&uri);
-        let version = snapshot.as_ref().map(|(_, version)| *version);
-        if let (Some((text, version)), Some(cached)) = (snapshot.as_ref(), semantic_cache.get(&uri))
+        let input = StagedInput::read(&workspace, Some(path), &uri);
+        if let (Some((text, version)), Some(cached)) =
+            (input.document.as_ref(), semantic_cache.get(&uri))
         {
             if *version == cached.client_version && Arc::ptr_eq(text, &cached.text) {
                 diagnostics.extend(cached.diagnostics.clone());
             }
         }
         if !diagnostics.is_empty() {
-            reports.push((uri, version, diagnostics));
+            reports.push((uri, input, diagnostics));
         }
     }
-    Ok(reports)
+    drop(semantic_cache);
+
+    let reported: std::collections::HashSet<&Url> = reports.iter().map(|(uri, _, _)| uri).collect();
+    let candidates: Vec<Url> = published_uris
+        .lock()
+        .await
+        .iter()
+        .chain(force_clear_uri)
+        .filter(|uri| !reported.contains(uri))
+        .cloned()
+        .collect();
+    let clears = candidates
+        .into_iter()
+        .map(|uri| {
+            let input = StagedInput::read(&workspace, uri.to_file_path().ok(), &uri);
+            (uri, input)
+        })
+        .collect();
+    Ok(StagedPass { reports, clears })
 }
 
 /// Re-publish the complete workspace diagnostic generation, including empty
@@ -273,8 +372,10 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
     // gaps an unbounded loop recomputed forever and published nothing: with
     // `diagnosticsScope: "project"` the user saw no diagnostics at all while
     // typing. After MAX_STAGING_ATTEMPTS the newest computed result is
-    // published against the versions it was computed from, and the debounced
-    // pass that the last keystroke armed corrects it.
+    // published for every URI whose input is unchanged since staging. A URI
+    // that changed is left to whatever changed it: the document's own
+    // publish, the pass `did_close` runs, or the debounced pass that the last
+    // keystroke or file change on disk armed.
     const MAX_STAGING_ATTEMPTS: u32 = 3;
     for attempt in 1..=MAX_STAGING_ATTEMPTS {
         if session.is_cancelled() {
@@ -283,13 +384,15 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
         let generation = workspace.generation_lock.read().await;
         let revision = workspace.generation_revision();
 
-        let reports = match compute_workspace_push_diagnostics(
+        let staged = match compute_workspace_push_diagnostics(
             std::sync::Arc::clone(&workspace),
             &semantic_cache,
+            &published_uris,
+            force_clear_uri.as_ref(),
         )
         .await
         {
-            Ok(reports) => reports,
+            Ok(staged) => staged,
             Err(error) => {
                 if session.is_cancelled() {
                     return false;
@@ -317,37 +420,63 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
         }
 
         let mut current = std::collections::BTreeMap::new();
-        for (uri, version, diagnostics) in reports {
-            current.insert(uri, (version, diagnostics));
+        for (uri, input, diagnostics) in staged.reports {
+            current.insert(uri, (input, diagnostics));
         }
         let mut published = published_uris.lock().await;
         let mut stale: Vec<Url> = published
             .difference(&current.keys().cloned().collect())
             .cloned()
             .collect();
-        if let Some(uri) = force_clear_uri {
-            if !current.contains_key(&uri) && !stale.contains(&uri) {
-                stale.push(uri);
+        if let Some(uri) = &force_clear_uri {
+            if !current.contains_key(uri) && !stale.contains(uri) {
+                stale.push(uri.clone());
             }
         }
         stale.sort();
 
+        let mut kept = Vec::new();
         for uri in stale {
             if session.is_cancelled() {
                 return false;
             }
+            // A clear is sent only while the URI's input is the one this pass
+            // staged. An edit since staging may already have published the
+            // document's new errors, which the clear would remove. A URI with
+            // no staged input was added to `published` by another publish
+            // after staging. A skipped URI stays in `published`, so a later
+            // pass clears it if it has no diagnostics by then.
+            if !staged
+                .clears
+                .get(&uri)
+                .is_some_and(|input| input.is_current(&workspace, &uri))
+            {
+                tracing::debug!(uri = %uri, "project diagnostics: input changed after staging, clear skipped");
+                kept.push(uri);
+                continue;
+            }
             let version = workspace.documents.get_client_version(&uri);
             client.publish_diagnostics(uri, Vec::new(), version).await;
         }
-        for (uri, (version, diagnostics)) in &current {
+        for (uri, (input, diagnostics)) in &current {
             if session.is_cancelled() {
                 return false;
             }
+            // On the last attempt the revision may have moved since staging.
+            // A URI whose document or file index entry changed in between
+            // gets no report from this pass: `did_close` may already have
+            // sent its clear, and a report staged before the close would land
+            // after it. The URI stays in `published`, so a later pass clears
+            // it if it has no diagnostics by then.
+            if !input.is_current(&workspace, uri) {
+                tracing::debug!(uri = %uri, "project diagnostics: input changed after staging, report skipped");
+                continue;
+            }
             client
-                .publish_diagnostics(uri.clone(), diagnostics.clone(), *version)
+                .publish_diagnostics(uri.clone(), diagnostics.clone(), input.client_version())
                 .await;
         }
-        *published = current.into_keys().collect();
+        *published = current.into_keys().chain(kept).collect();
         drop(published);
         drop(generation);
         return true;
@@ -386,21 +515,7 @@ pub(crate) async fn publish_diagnostics(
     // redundant parse on every did_open or did_change.
     {
         let parse_start = std::time::Instant::now();
-        let config_guard = server.workspace.config.read().await;
-        let project_root = server
-            .workspace
-            .project
-            .read()
-            .await
-            .as_ref()
-            .map(|project| project.root.clone());
-        let syntax_diags = al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
-            &server.workspace,
-            uri,
-            &config_guard,
-            project_root.as_deref(),
-        );
-        drop(config_guard);
+        let syntax_diags = syntax_diagnostics(server, uri).await;
         let parse_elapsed = parse_start.elapsed();
         let error_count = syntax_diags.len();
         tracing::debug!(uri = %uri, error_count, parse_us = parse_elapsed.as_micros() as u64, "publish_diagnostics: diagnostics from query");
@@ -535,6 +650,9 @@ pub(crate) fn snapshot_is_current(
 ///
 /// Shared between `compute_diagnostics` (pull) and `publish_diagnostics` (push Phase 2).
 async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<Diagnostic> {
+    // The analyzers below are loaded into this process, so they come from the
+    // trust decision as it stands now.
+    server.refresh_trust().await;
     let (
         enable_analysis,
         bg_analysis,
@@ -582,11 +700,16 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
         .or_else(|| project.as_ref().map(|project| project.packages_dir.clone()))
         .unwrap_or_else(|| project_root.join(".alpackages"));
 
+    // The bridge starts from this toolchain, so without one there is no pass.
+    let Some(toolchain) = server.workspace.toolchain.read().await.clone() else {
+        return vec![];
+    };
     let analyzers = match tokio::task::spawn_blocking(move || {
         resolve_semantic_analyzer_entries(
             &configured_analyzers,
             &project_root,
             &assembly_probing_paths,
+            &toolchain.analyzers,
         )
     })
     .await
@@ -618,7 +741,14 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
     };
 
     let semantic_start = std::time::Instant::now();
-    match bridge.analyze(req).await {
+    let outcome = bridge.analyze(req).await;
+    // Release the bridge read guard before anything below takes the bridge
+    // lock again. `ensure_error_codes_loaded` goes back through
+    // `get_or_init_bridge`, and tokio's RwLock is fair: a second read from this
+    // task queues behind a restart or shutdown writer, which in turn waits for
+    // this task's first read to end.
+    drop(guard);
+    match outcome {
         Ok(results) => {
             let semantic_elapsed = semantic_start.elapsed();
             tracing::debug!(uri = %uri, count = results.len(), elapsed_us = semantic_elapsed.as_micros() as u64, "semantic analysis complete");
@@ -658,7 +788,6 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
             );
             let should_restart =
                 is_persistent || matches!(&error, crate::semantic::SemanticError::HostInit(_));
-            drop(guard);
             if should_restart {
                 if let Err(restart_error) =
                     al_workspace::restart_bridge_if_current(&server.workspace, bridge_generation)
@@ -685,25 +814,37 @@ fn resolve_semantic_analyzer_entries(
     configured: &[String],
     project_root: &Path,
     assembly_probing_paths: &[PathBuf],
+    toolchain: &al_project::toolchain::AnalyzerPaths,
 ) -> Result<Vec<String>, String> {
+    let search =
+        al_project::analyzers::CustomAnalyzerSearch::new(project_root, assembly_probing_paths);
     configured
         .iter()
         .map(|entry| {
-            if al_project::analyzers::is_builtin_analyzer(entry) {
-                return Ok(entry.clone());
+            // The bridge gets absolute paths only. A built-in name is the
+            // toolchain's file and is never looked up anywhere else.
+            if let Some(path) = al_project::analyzers::builtin_analyzer_path(toolchain, entry) {
+                return path
+                    .canonicalize()
+                    .ok()
+                    .filter(|path| path.is_file())
+                    .map(|path| path.display().to_string())
+                    .ok_or_else(|| {
+                        format!(
+                            "Requested built-in analyzer '{entry}' is not installed at {}",
+                            path.display()
+                        )
+                    });
             }
-            al_project::analyzers::discover_custom_analyzer(
-                entry,
-                project_root,
-                assembly_probing_paths,
-            )
-            .map_err(|error| error.to_string())?
-            .map(|path| path.display().to_string())
-            .ok_or_else(|| {
-                format!(
-                    "Requested analyzer '{entry}' could not be found in the project, probing paths, NuGet cache, or common editor extension locations"
-                )
-            })
+            search
+                .resolve(entry)
+                .map_err(|error| error.to_string())?
+                .map(|path| path.display().to_string())
+                .ok_or_else(|| {
+                    format!(
+                        "Requested analyzer '{entry}' could not be found in the project, probing paths, NuGet cache, or common editor extension locations"
+                    )
+                })
         })
         .collect()
 }
@@ -932,25 +1073,129 @@ pub fn semantic_to_diagnostic(entry: &crate::semantic::DiagnosticEntry) -> Diagn
 mod tests {
     use super::*;
 
+    /// Analyzer paths for a toolchain in `dir`, with CodeCop installed and the
+    /// other cops missing.
+    fn toolchain_analyzers(dir: &Path) -> al_project::toolchain::AnalyzerPaths {
+        let code_cop = dir.join("Microsoft.Dynamics.Nav.CodeCop.dll");
+        std::fs::write(&code_cop, b"toolchain CodeCop").unwrap();
+        al_project::toolchain::AnalyzerPaths {
+            code_cop,
+            app_source_cop: dir.join("Microsoft.Dynamics.Nav.AppSourceCop.dll"),
+            ui_cop: dir.join("Microsoft.Dynamics.Nav.UICop.dll"),
+            per_tenant_cop: dir.join("Microsoft.Dynamics.Nav.PerTenantExtensionCop.dll"),
+            common: dir.join("Microsoft.Dynamics.Nav.Analyzers.Common.dll"),
+            custom: Vec::new(),
+        }
+    }
+
+    /// The bridge loads the assembly at the path it is given into the language
+    /// server. A built-in name has to reach it as the toolchain's own file:
+    /// passed on by name, the bridge found a file called `CodeCop` or
+    /// `CodeCop.dll` in the working directory, which is the project, before it
+    /// looked in the toolchain.
     #[test]
-    fn semantic_analyzer_resolution_preserves_builtins_and_discovers_custom_names() {
+    fn a_builtin_analyzer_name_resolves_to_the_toolchain_and_never_to_a_project_file() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("CodeCop.dll"), b"repository assembly").unwrap();
+        std::fs::write(project.path().join("CodeCop"), b"repository assembly").unwrap();
+        let toolchain = tempfile::tempdir().unwrap();
+        let analyzers = toolchain_analyzers(toolchain.path());
+        let toolchain_root = toolchain.path().canonicalize().unwrap();
+        let project_root = project.path().canonicalize().unwrap();
+
+        for entry in ["CodeCop", "CodeCop.dll", "${CodeCop}", "codecop.DLL"] {
+            let resolved = resolve_semantic_analyzer_entries(
+                &[entry.to_string()],
+                project.path(),
+                &[],
+                &analyzers,
+            )
+            .unwrap_or_else(|error| panic!("{entry:?}: {error}"));
+            let path = PathBuf::from(&resolved[0]);
+            assert!(path.is_absolute(), "{entry:?} resolved to {path:?}");
+            assert!(
+                path.starts_with(&toolchain_root),
+                "{entry:?} resolved to {path:?}, outside the toolchain"
+            );
+            assert!(
+                !path.starts_with(&project_root),
+                "{entry:?} resolved to {path:?}"
+            );
+        }
+    }
+
+    /// A built-in the toolchain does not ship is an error, and the entry is
+    /// not looked up anywhere else.
+    #[test]
+    fn a_builtin_analyzer_missing_from_the_toolchain_is_an_error() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("UICop.dll"), b"repository assembly").unwrap();
+        let toolchain = tempfile::tempdir().unwrap();
+        let error = resolve_semantic_analyzer_entries(
+            &["${UICop}".to_string()],
+            project.path(),
+            &[],
+            &toolchain_analyzers(toolchain.path()),
+        )
+        .unwrap_err();
+        assert!(error.contains("not installed"), "{error}");
+    }
+
+    /// The semantic bridge loads the resolved assemblies into the language
+    /// server itself, so a name the user wrote must not resolve to a DLL an
+    /// untrusted clone ships in `.netpackages` until the project is trusted.
+    #[test]
+    #[serial_test::serial]
+    fn semantic_analyzer_resolution_preserves_builtins_and_needs_trust_for_project_copies() {
+        let config = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", config.path());
+
         let project = tempfile::tempdir().unwrap();
         let dll = project
             .path()
             .join(".netpackages/businesscentral.lintercop/1.0.0/BusinessCentral.LinterCop.dll");
         std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
         std::fs::write(&dll, b"analyzer").unwrap();
-
-        let resolved = resolve_semantic_analyzer_entries(
-            &[
-                "CodeCop".to_string(),
-                "BusinessCentral.LinterCop".to_string(),
-            ],
-            project.path(),
-            &[],
+        // The project's settings name the analyzer, so the trust record lists
+        // the copy. A copy the record does not list is refused.
+        std::fs::create_dir_all(project.path().join(".vscode")).unwrap();
+        std::fs::write(
+            project.path().join(".vscode/settings.json"),
+            r#"{"al.codeAnalyzers": ["BusinessCentral.LinterCop"]}"#,
         )
         .unwrap();
-        assert_eq!(resolved[0], "CodeCop");
+        let requested = [
+            "CodeCop".to_string(),
+            "BusinessCentral.LinterCop".to_string(),
+        ];
+
+        let toolchain = tempfile::tempdir().unwrap();
+        let analyzers = toolchain_analyzers(toolchain.path());
+
+        let untrusted =
+            resolve_semantic_analyzer_entries(&requested, project.path(), &[], &analyzers);
+        let granted = al_project::trust::grant(project.path()).map(|_| ());
+        let trusted =
+            resolve_semantic_analyzer_entries(&requested, project.path(), &[], &analyzers);
+        match previous {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+
+        let error = untrusted.expect_err("the clone's copy must not be loaded");
+        assert!(error.contains("not trusted"), "{error}");
+        granted.unwrap();
+        let resolved = trusted.unwrap();
+        assert_eq!(
+            resolved[0],
+            analyzers
+                .code_cop
+                .canonicalize()
+                .unwrap()
+                .display()
+                .to_string()
+        );
         assert_eq!(
             resolved[1],
             dll.canonicalize().unwrap().display().to_string()
@@ -960,10 +1205,12 @@ mod tests {
     #[test]
     fn missing_requested_semantic_analyzer_is_explicit() {
         let project = tempfile::tempdir().unwrap();
+        let toolchain = tempfile::tempdir().unwrap();
         let error = resolve_semantic_analyzer_entries(
             &["Missing.Custom.Analyzer".to_string()],
             project.path(),
             &[],
+            &toolchain_analyzers(toolchain.path()),
         )
         .unwrap_err();
         assert!(error.contains("could not be found"));

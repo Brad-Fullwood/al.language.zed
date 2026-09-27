@@ -27,6 +27,17 @@ else
 	grep -q '"publisher"' "$app_json" 2>/dev/null || exit 0
 fi
 
+# When al-bin.sh would find neither al-lsp nor al-explorer, fetch a
+# checksum-verified release archive into the plugin's cache directory before
+# anything else runs. Only its stdout (installed, or refused for an
+# actionable reason) reaches this session's context; the common case, where
+# both binaries are already available, stays on its stderr.
+fetch_script="${CLAUDE_PLUGIN_ROOT:-$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)}/scripts/al-fetch-release.sh"
+fetch_note=""
+if [ -x "$fetch_script" ]; then
+	fetch_note="$("$fetch_script" 2>/dev/null || true)"
+fi
+
 context=$(
 	cat <<'EOF'
 This is a Business Central AL project. The al-bc plugin indexes every object in
@@ -42,7 +53,8 @@ Answer these from the plugin, not from find, grep, ripgrep or reading .al files:
 - Who calls or uses a symbol, what a change breaks -> skill al-bc:bc-impact-check
 - The next free object ID or field number -> skill al-bc:bc-object-id-allocator
 - Running AL tests or test coverage -> skill al-bc:bc-test-locally
-- What a dependency upgrade breaks -> skill al-bc:bc-upgrade-impact
+- What an extension depends on, whether a dependency is missing, or what a
+  dependency upgrade breaks -> skill al-bc:bc-upgrade-impact
 - Pre-build and pre-deploy audit, lint and cop warnings -> skill al-bc:bc-workspace-health
 
 Run the plugin's commands from this project directory. Do not cd first: the
@@ -55,6 +67,12 @@ symbol index and the call and event graphs, so they also see .app package code
 that no grep can reach.
 EOF
 )
+
+if [ -n "$fetch_note" ]; then
+	context="$context
+
+$fetch_note"
+fi
 
 if command -v jq >/dev/null 2>&1; then
 	jq -n --arg c "$context" \

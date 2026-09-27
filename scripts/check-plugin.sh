@@ -86,16 +86,35 @@ done
 [ "$agent_count" -gt 0 ] || problem "no agents found under plugin/agents/"
 
 # ── Scripts ──────────────────────────────────────────────────────
-for script in "$plugin"/scripts/*.sh; do
+# plugin/evals/run.sh and plugin/tests/*.sh are dev-facing harnesses rather
+# than something the plugin runtime invokes, but they ship in the same
+# repository and CI holds them to the same bar, so they get the same
+# executable, syntax and shellcheck checks as everything under
+# plugin/scripts/.
+for script in "$plugin"/scripts/*.sh "$plugin"/evals/*.sh "$plugin"/tests/*.sh; do
 	[ -f "$script" ] || continue
 	[ -x "$script" ] || problem "$(basename "$script") is not executable"
 	bash -n "$script" || problem "$(basename "$script") has a syntax error"
 done
 
 if command -v shellcheck >/dev/null 2>&1; then
-	shellcheck "$plugin"/scripts/*.sh || problem "shellcheck reported findings"
+	shellcheck "$plugin"/scripts/*.sh "$plugin"/evals/*.sh "$plugin"/tests/*.sh ||
+		problem "shellcheck reported findings"
 else
 	printf 'plugin-validate: shellcheck not installed, skipping (install it to run this check)\n' >&2
+fi
+
+# ── Regression tests ─────────────────────────────────────────────
+# al-fetch-release.sh's member and install-step checks, and run.sh's al-lsp
+# resolution. Needs python3 to serve the test archives over a local HTTP
+# server.
+plugin_test="$plugin/tests/al-fetch-release-test.sh"
+if [ ! -x "$plugin_test" ]; then
+	problem "missing or non-executable $plugin_test"
+elif command -v python3 >/dev/null 2>&1; then
+	"$plugin_test" || problem "$plugin_test failed"
+else
+	printf 'plugin-validate: python3 not installed, skipping %s\n' "$plugin_test" >&2
 fi
 
 # al-bin.sh walks upward looking for a target/ directory. A relative

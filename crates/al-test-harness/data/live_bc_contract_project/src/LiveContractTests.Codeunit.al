@@ -6,11 +6,11 @@ codeunit 50100 "Live Contract Tests"
     procedure PublishDebugAndSnapshot()
     var
         ObservedValue: Integer;
-        Payload: JsonObject;
+        Client: HttpClient;
     begin
         ObservedValue := 40;
         ObservedValue += 2;
-        Payload.ReadFrom('{}'); // LIVE_BC_BREAKPOINT
+        Client.Clear(); // LIVE_BC_BREAKPOINT
         if ObservedValue <> 42 then
             Error('Expected 42, got %1.', ObservedValue);
     end;

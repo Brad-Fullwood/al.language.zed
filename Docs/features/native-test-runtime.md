@@ -1,14 +1,13 @@
 # Native Test Runtime
 
 **Modules:** `crates/al-runtime/src/` (interpreter), `crates/al-test/src/` (routing/execution),
-`crates/al-snapshot/src/` · **Status:** 🟢 native execution shipped for pure logic and the supported
-workspace-record subset; platform-dependent behavior deliberately falls back to live BC
+`crates/al-snapshot/src/`. **Status:** 🟢 pure logic and the supported workspace-record subset run
+natively. Platform-dependent behavior runs on live BC.
 
-This project includes a native AL interpreter that runs a supported subset of AL test codeunits with
-no .NET runtime and no live Business Central server. It is deliberately not a replacement for BC:
-tests that need platform semantics are routed to the authoritative live runtime.
+A native AL interpreter runs a supported subset of AL test codeunits with no .NET runtime and no
+live Business Central server. Tests that need platform semantics are routed to live BC.
 
-## The big picture
+## Pipeline
 
 ```
 discover [Test] tests ──► router classifies each test ──► backend executes ──► JUnit/Cobertura + history
@@ -20,17 +19,20 @@ discover [Test] tests ──► router classifies each test ──► backend ex
   is defined in the workspace and every operation is in the supported record subset.
 - **LiveBc** runs HTTP/UI/report/session/transaction/package-table and other platform tests against BC.
 - **Snapshot** records explicit breakpoint-sampled state from a live BC test run. Replay resolves
-  and re-runs the recorded indexed test method on live BC; validation and file-to-file diff remain
+  and re-runs the recorded indexed test method on live BC. Validation and file-to-file diff remain
   available without BC.
 
 ## The interpreter (`crates/al-runtime`)
 
-The tree-walking interpreter executes tree-sitter AL trees with expression-depth (256), AST-depth
-(1024), and recursion (100) guards plus cancellation/deadline checks in loops.
+The tree-walking interpreter executes tree-sitter AL trees on a thread with a 64 MiB stack. It caps
+call depth at 512 frames and statement and expression nesting at 2560 levels each, and checks for
+cancellation and the deadline in loops. A test that exceeds the call cap fails with a message saying
+the limit belongs to the local runner and suggesting a live BC run.
 
-**Values (`interpreter/value.rs`):** Integer, BigInteger, Decimal, Boolean, Char, Text, Code;
-Date/Time/DateTime/Duration; Guid, Option, Variant; Record, RecordRef, Codeunit, Array, List, Dict,
-Blob; plus Null/Empty/ErrorInfo. Variant ordering is stable because values can be map keys.
+**Values (`interpreter/value.rs`):** Integer, BigInteger, Decimal, Boolean, Char, Text, Code,
+TextBuilder, Date/Time/DateTime/Duration, Guid, Option, Variant, Record, RecordRef, Codeunit, Array,
+List, Dict, Blob, the four JSON types, and Null/Empty/ErrorInfo. Variant ordering is stable because
+values can be map keys. `Label` declarations bind to their text.
 
 **Statements (`interpreter/eval_stmt.rs`):** blocks, `if`/`else`, `while`, `for` (up/down), `foreach`,
 `repeat until`, `case of`, normal and compound assignment, expression statements, `exit`, `break`,
@@ -40,53 +42,126 @@ Blob; plus Null/Empty/ErrorInfo. Variant ordering is stable because values can b
 (case-insensitive), unary and binary operators with the documented AL precedence and left
 associativity, inclusive ranges and `in [...]` sets, workspace-enum scope access with declared
 ordinals, member calls, and string concatenation. `MaxStrLen` retains `Text[N]` / `Code[N]`
-declaration capacity.
+declaration capacity. Array variables (`array[N] of T`) are bound with N default elements, and
+`A[i]` reads and writes them with bounds checks. `Txt[i]` reads and writes one character of a Text
+or Code. A call chain such as `S.Trim().ToUpper()` or `S.Split(',').Count()` runs every step, each
+on the value the previous step returned.
 
-**Dispatch (`interpreter/dispatch.rs`):** receiver-specific stubs → catalog stubs → built-in globals
+**Dispatch (`interpreter/dispatch/`):** receiver-specific stubs → catalog stubs → built-in globals
 → real workspace procedures found through the file index. Calls work in statement and expression
 position, through explicit object receivers and `Codeunit <Subtype>` variables, with `var` scalar
-parameter write-back. The global builtin catalog covers `Error`/`Message`-class dialogs,
-`StrSubstNo`/`Format` (default and XML format 9, with the length argument), string functions
-(`StrLen`, `CopyStr`, `StrPos`, `DelChr`, `ConvertStr`, `PadStr`, `SelectStr`, `IncStr`,
+parameter write-back. A codeunit variable keeps its own globals between calls made on it, a
+`SingleInstance` codeunit has one instance for the test's whole lifecycle (initialize through
+cleanup), and an event subscriber's codeunit runs on a fresh instance each time it fires. A label is
+a constant, not state, so a table or helper codeunit whose only globals are labels runs the same as
+one with none. The global builtin catalog covers `Error`/`Message`-class dialogs,
+`StrSubstNo`/`Format` (the default rendering, XML format 9, numbered standard formats 1 to 4 and
+picture strings such as `<Precision,2:2><Standard Format,0>` or `<Year4>-<Month,2>-<Day,2>`, with
+the length argument; numbers group thousands as BC's standard format does, so `Format(1234567)` is
+`1,234,567`), `CreateGuid`/`IsNullGuid`, string functions
+(`StrLen`, `CopyStr`, `StrPos`, `DelChr`, `DelStr`, `ConvertStr`, `PadStr`, `SelectStr`, `IncStr`,
 `LowerCase`/`UpperCase`, `IndexOf`, `MaxStrLen`), math (`Abs`, `Round` with the `'='`/`'<'`/`'>'`
-directions, where `'='` takes a midpoint away from zero as BC does, `Power`), date/time (`Today`, `Time`,
-`CurrentDateTime`, `CreateDateTime`, `Date2DMY`, `DMY2Date`, `DT2Date`, `DT2Time`, `WorkDate`
-with the session default of today), deterministic `Random`/`Randomize`, and
-`GetLastErrorText`/`ClearLastError` wired to `asserterror` capture.
-`supports_global_builtin` is the shared safe-list: the test router sends bare global calls
-outside it (for example `Evaluate` and `CalcDate`) to live BC. `Text` instance methods
-(`Contains`, `Split`, `Replace`, `Substring`, trims and casing) and `Dictionary` — both the
-mutating methods (`Add`/`Set`/`Remove`) and the read-only ones
-(`ContainsKey`/`Count`/`Keys`/`Values`) — also execute locally.
+directions, where `'='` takes a midpoint away from zero as BC does, `Power`, `Maximum`,
+`Minimum`), `ArrayLen`, date/time (`Today`, `Time`, `CurrentDateTime`, `CreateDateTime`,
+`Date2DMY`, `Date2DWY` with ISO week and year, `DMY2Date`, `DT2Date`, `DT2Time`, `CalcDate` with
+D/W/M/Q/Y terms, C periods and month-end clamping, `WorkDate` with the session default of today),
+`Evaluate` (writes back to its `var` argument, returns false in an expression and raises as a
+statement), deterministic `Random`/`Randomize`, and `GetLastErrorText`/`ClearLastError` wired to
+`asserterror` capture. `supports_global_builtin` is the shared safe list: the test router sends
+bare global calls outside it to live BC.
+
+Instance methods that run locally:
+
+- `Text`: `Contains`, `StartsWith`, `EndsWith`, `IndexOf`, `LastIndexOf`, `Replace`, `Split`,
+  `Substring`, `Trim`/`TrimStart`/`TrimEnd`, `ToLower`/`ToUpper`, `PadLeft`/`PadRight`, `Remove`.
+- `List`: `Add`, `AddRange`, `Get` (including `Get(index, var value)`), `GetRange`, `Set`
+  (including `Set(index, value, var old)`), `Insert`, `Remove`, `RemoveAt`, `RemoveRange`,
+  `Reverse`, `Count`, `Contains`, `IndexOf`, `LastIndexOf`. The `var` form of `GetRange` runs on
+  live BC.
+- `Dictionary`: `Add`, `Get` (including `Get(key, var value)`), `Set` (including
+  `Set(key, value, var old)`), `Remove`, `ContainsKey`, `Count`, `Keys`, `Values`. A key argument
+  is converted to the declared key type, so `'abc'` is the key `ABC` of a
+  `Dictionary of [Code[20], Integer]`, and `Keys` returns keys of that type. The local runtime
+  keeps the keys in insertion order. BC documents no order.
+- `List`, `Dictionary` and `TextBuilder` are references, as in AL: assigning one, or passing it
+  without `var`, shares it. `GetRange(1, L.Count())` makes a copy of a list.
+- `TextBuilder`: `Append`, `AppendLine` (CRLF), `Length`, `ToText`, `Clear`, `Insert`, `Remove`,
+  `Replace`, changing the builder in place.
+- JSON: `JsonObject`, `JsonArray`, `JsonToken` and `JsonValue` are references, as in AL. `B := A`
+  shares one node, a token from `Get` changes its parent, and `ReadFrom` gives the variable a new
+  node and leaves the old one where it was, so an alias made before the `ReadFrom` still sees the
+  old value. Objects support `Add`, `Get`, `Contains`, `Remove`, `Replace`, `Keys`, `Values` and the
+  typed getters, where `GetText`, `GetInteger` and the rest honour a second `DefaultIfNotFound`
+  argument. Arrays support `Add`, `Get` (0-based), `Count`, `Insert`, `Set`, `RemoveAt`, `IndexOf`.
+  Tokens support `IsObject`/`AsObject` and the like. Values support `AsText`, `AsInteger`,
+  `AsDecimal`, `AsBoolean`, `IsNull`, `SetValue`. All four read and write text (`ReadFrom`, compact
+  `WriteTo`). `SelectToken` follows `$.a.b[0]` paths, `[?(...)]` filters (comparisons, existence,
+  `&&`, `||`, `@` and `$` paths), `..` and `*`, and fails unless exactly one token matches. A slice,
+  a union, a regular expression or a grouped filter is not supported, and a literal path that uses
+  one routes the test to live BC. A failed `Get`, `ReadFrom`, `SelectToken`, `Add`, `Replace`,
+  `Insert`, `Set` or `RemoveAt` raises an error where the call is a statement and returns false
+  where its result is read, as BC's own JSON methods do.
+- Enums: an `Enum "Type"` variable starts at ordinal 0 and formats as that ordinal's member name.
+  `AsInteger`, `Names` and `Ordinals` run on a value, and `FromInteger`, `Names` and `Ordinals` on
+  the type (`Enum::Colour.FromInteger(3)`). The router keeps these calls local for workspace enums
+  and sends calls on enums declared only in a dependency to live BC.
 
 **Native test libraries (`stubs/`):** Library Assert, Library - Variable Storage, Library Random, and
-Any. Randomness is seedable; thread-local state is reset between test methods.
+Any. Library Assert covers `IsTrue`, `IsFalse`, `AreEqual`, `AreNotEqual`, `AreNearlyEqual`, `Fail`
+and `ExpectedError`, which checks the last error text after `asserterror`. `RecordIsEmpty`,
+`RecordIsNotEmpty` and `TableIsEmpty` need a RecordRef over the record store and route to live BC.
+Randomness is seedable. Thread-local state is reset between test methods.
 
 ## Workspace-record runtime
 
-`Value::Record` handles are wired through `interpreter/records.rs` to the BTreeMap-backed
+`Value::Record` handles connect through `interpreter/records.rs` to the BTreeMap-backed
 `mock::MockRecord` store. Record variables for the same table share a physical table inside one
 test, while each variable keeps its own filter set, iteration cursor, and field buffer (BC's
-per-variable view semantics); the complete store is discarded before the next test.
+per-variable view semantics). The complete store is discarded before the next test. A temporary
+record variable (`Record "Sales Line" temporary`) has a store of its own, and passing it by value
+copies the rows it holds.
 
 Supported behavior:
 
-- workspace table metadata supplies field numbers, field types, and primary keys; never-assigned
-  fields read back as their typed zero value (0 / '' / false / 0D) and match zero filters;
+- Workspace table metadata supplies field numbers, field types, and primary keys. Fields never
+  assigned read back as their typed zero value (0 / '' / false / 0D) and match zero filters.
 - Init/Get/Insert/Modify/Delete, field reads/writes, Find/FindSet/FindFirst/FindLast/Next, with
-  BC statement/expression semantics (a statement-position `Get`/`Find*` miss raises; `if Rec.Get`
-  yields false; `if Rec.Insert() then` takes the false branch on a duplicate key);
-- Code primary keys are caseless and Integer/Decimal key values unify;
+  BC statement/expression semantics (a statement-position `Get`/`Find*` miss raises, `if Rec.Get`
+  yields false, and `if Rec.Insert() then` takes the false branch on a duplicate key).
+- Code primary keys are caseless and Integer/Decimal key values unify.
 - SetRange/SetFilter (descending `%N` substitution so `%10` is safe), Count/CountApprox/IsEmpty,
-  Reset/SetCurrentKey, and single-pass DeleteAll;
+  Reset/SetCurrentKey, Ascending (reverse iteration over the current key, restored by Reset),
+  DeleteAll and ModifyAll (the value is coerced to the field's type, and a primary-key field is
+  refused). Each row runs through the same OnBefore/OnAfter events as Delete or Modify, and its
+  trigger when `RunTrigger` is true, whenever the table has a subscriber to that event or a trigger
+  RunTrigger would run. Otherwise both write every matching row in one pass.
 - BC-style comparisons, ranges, union/intersection, wildcards, and BC filter case rules:
   unprefixed Text patterns match case-sensitively, the `@` prefix makes a pattern
-  case-insensitive, and Code cells always compare caselessly;
+  case-insensitive, and Code cells always compare caselessly.
 - CalcFields and automatic reads for Sum/Average/Min/Max/Count/Exist/Lookup FlowFields with
-  CONST/FIELD/FILTER clauses (including Boolean CONST values).
+  CONST/FIELD/FILTER clauses (including Boolean CONST values), and CalcSums, which totals each
+  named field over the rows the current filters select.
+- Rename (the full new primary key, written with the rest of the buffer), TestField (empty, or a
+  given value), IsTemporary. As in BC, a rename updates every field whose plain TableRelation names
+  the renamed table's single-field key. A test that renames a table named by a conditional or
+  filtered relation, or by a relation to part of a composite key, routes to live BC.
+- Table code runs on its record, which is the implicit `Rec`: `Validate` assigns the field, checks
+  a plain TableRelation to a workspace table and runs the field's OnValidate with the record as it
+  was as `xRec`; `Insert(true)`, `Modify(true)` and `Delete(true)` run OnInsert, OnModify and
+  OnDelete first, and `Rename` runs OnRename, which like the rename events gets the new key in
+  `Rec` and the row as stored as `xRec`. `Member.Deposit(7)` runs the table's procedure on
+  `Member`'s buffer. Inside table code a bare field name reads and writes `Rec`, and a bare record
+  method (`TestField(Name)`) acts on it.
+- Events: calling an `[IntegrationEvent]`, `[BusinessEvent]` or `[InternalEvent]` publisher runs
+  every workspace subscriber bound to it (by object name or ID), binding arguments by parameter
+  name with `var` values flowing back. Insert, Modify, Delete and Rename raise the table's
+  OnBefore/OnAfter events and Validate its OnBefore/OnAfterValidateEvent, whatever `RunTrigger`
+  says, and DeleteAll and ModifyAll raise the same Delete or Modify events for every row they
+  touch. Subscribers in an `EventSubscriberInstance = Manual` codeunit are skipped; a test that
+  calls `BindSubscription` routes to live BC.
 
-PureLogic and WithRecords are enforced runtime modes. If routing misses a record access, PureLogic
-fails with a capability error instead of silently granting database behavior.
+PureLogic and WithRecords are runtime modes the interpreter enforces. If routing misses a record
+access, PureLogic fails with a capability error instead of running it against the record store.
 
 ## Orchestration (`crates/al-test`)
 
@@ -94,39 +169,45 @@ fails with a capability error instead of silently granting database behavior.
   `[TestInitialize]`, `[TestCleanup]`, and each test's `[HandlerFunctions(...)]` are retained as
   execution metadata rather than listed as independent tests.
 - **Routing:** syntax-aware classification follows the fully resolved transitive workspace call,
-  trigger, interface, and event graph. Typed collection calls are not mistaken for record calls.
-  Supported workspace records select InterpRecord; dependency bodies without native stubs and all
-  platform-bound behavior select LiveBc with file/line reasons.
-- **Codeunit integrity:** a codeunit runs locally only when every discovered test is local. Mixed
-  Interp/InterpRecord codeunits use WithRecords; any LiveBc method keeps the whole codeunit on BC.
+  trigger, interface, and event graph, including `Rename`, `DeleteAll`, `ModifyAll`, and the record
+  calls table code makes through `Rec`, `xRec` or a bare method, so a reachable event subscriber on
+  any of them is classified like any other reachable code. Typed collection calls are not mistaken
+  for record calls. Supported workspace records select InterpRecord. A reachable `SingleInstance`
+  codeunit with variable globals still selects LiveBc unless it is the test's own codeunit, because
+  its state outlives one test on BC while the local run starts each test afresh. Dependency bodies
+  without native stubs and all other platform-bound behavior select LiveBc with file/line reasons.
+- **Whole codeunits:** a codeunit runs locally only when every discovered test is local. Mixed
+  Interp/InterpRecord codeunits use WithRecords. Any LiveBc method keeps the whole codeunit on BC.
 - **Entry points:** single-codeunit, batch, automatic/MCP, and TUI runs use the same router.
-- **Backends:** InterpMode executes real bodies with per-test deadlines and parallel codeunit support;
+- **Backends:** InterpMode executes the test bodies with per-test deadlines and parallel codeunit support.
   LiveBcMode calls `POST /dev/tests/{codeunit}/run` with basic/bearer/Windows authentication.
-- **Lifecycle/handlers:** initialize, test, and cleanup share one per-test record context; cleanup
+- **Lifecycle/handlers:** initialize, test, and cleanup share one per-test record context. Cleanup
   always runs. MessageHandler, ConfirmHandler, StrMenuHandler, and HyperlinkHandler execute locally
   (including `var Reply`/`var Choice` write-back), while handlers requiring real page, report,
   notification, request-page, or client state route to live BC.
 - **Results:** Pass/Fail/Skip, JUnit XML, Cobertura, and append-only NDJSON history capped at 1000
-  records per codeunit/method.
+  records per codeunit/method. The dynamic Cobertura document reports `lines-covered` but no
+  `line-rate` (it carries `line-coverage="unavailable"`), because the interpreter records the lines
+  that ran and not the lines that could have run. Branch and MC/DC rates have real denominators.
 
 ## Coverage and mutation testing
 
 `queries/test_coverage.rs` provides conservative qualified, transitive call-graph coverage across
 direct calls, receiver-resolved member calls, events/triggers, `Codeunit.Run`, and interface
-dispatch. Same-named objects are tracked independently; an overload target that cannot be selected
-unambiguously is returned in `unresolvedCalls` and is not credited. Interpreter runs can additionally
+dispatch. Same-named objects are tracked independently. An overload target that cannot be selected
+unambiguously is returned in `unresolvedCalls` and is not credited. Interpreter runs can also
 collect dynamic executed-statement and control-flow path coverage with `--coverage`: IF sides,
 individual CASE arms plus ELSE/no-match, loop entry/natural-exit decisions, and condition-level
 MC/DC for compound IF/WHILE/REPEAT decisions. Condition vectors and outcomes come from the original
-evaluation, so coverage never repeats calls or other side effects. Daemon JSON retains the observed
+evaluation, so coverage does not repeat calls or other side effects. Daemon JSON retains the observed
 vectors, and Cobertura includes per-condition MC/DC evidence and totals.
 
 Mutation testing targets executable bodies in test code and transitively covered production files.
 It covers conditional boundaries and whole-condition negation, comparison/logical/arithmetic
 operator swaps, unary `not` removal, Boolean/text literals, and checked integer ±1. Mutants execute
 against the affected tests on both local interpreter tiers and run concurrently with stable result
-ordering when `--parallel` is set. Every survivor carries a reason; mutants with no locally runnable
-affected test remain visible but are explicitly unscored.
+ordering when `--parallel` is set. Every survivor carries a reason. Mutants with no locally runnable
+affected test are listed but not scored.
 
 ## Microsoft comparison
 
@@ -161,28 +242,30 @@ al-explorer test-snapshot replay <snapshot> --bc-version <current-version> [--co
 characters). Whole-codeunit targets are expanded before routing, so summaries and routing metadata
 contain only selected methods and a filter that matches nothing does not contact live BC.
 
-MCP `al_runtests` maps to `tests.run_auto`: pure logic and supported workspace records run locally;
-only the remaining tests require a launch configuration and live BC. Its result includes a
+MCP `al_runtests` maps to `tests.run_auto`: pure logic and supported workspace records run locally.
+Only the remaining tests require a launch configuration and live BC. Its result includes a
 `routing` entry per test method with the classifier decision, the actual codeunit backend,
-`runsLocally`, a concise execution note, and source-backed reasons. If live-BC configuration is
+`runsLocally`, a short execution note, and reasons with their source locations. If live-BC configuration is
 missing, the MCP error still includes the classifications so an agent can separate runnable local
 tests from blocked server tests.
 
-## Honest limitations
+## Limitations
 
-- Record execution requires workspace table definitions. Tables declaring triggers, FlowFilters,
-  Linked formulas, or permission behavior are detected before execution and routed to live BC.
+- Record execution requires workspace table definitions. Tables declaring FlowFilters, Linked
+  formulas, or permission behavior are detected before execution and routed to live BC. A table's
+  triggers and procedures run locally and are classified like any reachable code; `Validate` on a
+  field whose TableRelation is conditional or points outside the workspace routes to live BC.
   Transactions, locking, RecordRef/FieldRef, unsupported record APIs, and dependency-only table
-  schemas likewise remain live-BC behavior; the native runtime does not approximate them.
+  schemas likewise remain live-BC behavior. The native runtime does not approximate them.
 - MessageHandler, ConfirmHandler, StrMenuHandler, and HyperlinkHandler are native. ModalPageHandler,
   PageHandler, ReportHandler, RequestPageHandler, SendNotificationHandler, and other handlers that
   require live platform objects route to BC.
 - Workspace enum ordinals are exact. Dependency-only enum values route to live BC because package
   symbols do not provide executable source through the interpreter's source catalog.
-- `Evaluate` and `CalcDate` are not implemented natively (their full BC parsing rules are large);
-  the router sends tests that call them — like any other unimplemented global — to live BC.
-  `Format` supports the default and XML (9) renderings plus the length argument; custom
-  `<...>` format strings fail explicitly rather than being silently ignored.
+- Global functions outside `supports_global_builtin` route the test to live BC.
+  `Format` renders in the en-US culture the rest of the runtime uses (`MM/DD/YYYY`, `,` thousands).
+  A picture component it does not know, or one that does not fit the value's type, fails with an
+  error instead of being ignored.
 - `MaxStrLen` is exact for bounded `Text[N]` and `Code[N]` variables and parameters. Unbounded text
   and computed expressions have no finite declaration capacity in the native value model.
 - Live capture composes the native debug hub and live test runner, records explicitly configured
@@ -193,11 +276,11 @@ tests from blocked server tests.
   than the debug server's session-local breakpoint IDs. Validation and file-to-file diff remain
   BC-free.
 
-Live BC fallback is a permanent correctness boundary, not a failure of the native runner: the project
-does not guess platform behavior it cannot reproduce safely.
+Routing to live BC is by design: the native runner does not guess platform behavior it cannot
+reproduce exactly.
 
-`make live-bc-contracts` verifies that boundary against an explicitly supplied
-tenant/environment and the repository-owned test fixture (or a complete custom
-project contract). It requires the CLI to report a `liveBc` route, executes the
-exact method through BC, and exercises snapshot capture, validation, replay,
-and diff. Its ignored harness test is never counted as a self-contained pass.
+`make live-bc-contracts` checks that routing against a tenant and environment you supply and the
+repository's test fixture (or a complete custom project contract). It requires the CLI to report a
+`liveBc` route, runs the exact method through BC, and exercises snapshot capture, validation,
+replay, and diff. Its harness test is marked ignored, so a plain `cargo test` run does not count it
+as a pass.

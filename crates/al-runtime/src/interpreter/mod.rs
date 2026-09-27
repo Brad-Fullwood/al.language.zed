@@ -7,6 +7,7 @@ pub mod enums;
 pub mod eval_expr;
 pub mod eval_stmt;
 mod indexing;
+pub mod json;
 pub mod records;
 pub mod scope;
 pub mod value;

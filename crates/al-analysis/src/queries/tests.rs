@@ -285,12 +285,10 @@ fn affected_via_call_graph(
     workspace: &Workspace,
     changed_paths: &[String],
 ) -> Result<Option<Vec<AffectedTest>>, TestQueryError> {
-    // Map every changed file to the (kind, name) of the AL object it declares.
+    // Map every changed file to the (kind, name) of each AL object it declares.
     let mut want = HashSet::new();
     for path in changed_paths {
-        if let Some(identity) = object_identity_for_path(workspace, path)? {
-            want.insert(identity);
-        }
+        want.extend(object_identities_for_path(workspace, path)?);
     }
     if want.is_empty() {
         return Ok(None);
@@ -401,14 +399,15 @@ fn changed_tables(workspace: &Workspace, objects: &HashSet<(ObjectKind, String)>
     tables
 }
 
-/// Resolve the `(ObjectKind, lowercased name)` of the AL object declared in
-/// `path`, using the file index's cached object info. Tries the path as given,
-/// then its canonical form (the daemon and the index may disagree on absolute
-/// vs symlinked paths).
-fn object_identity_for_path(
+/// Resolve the `(ObjectKind, lowercased name)` of every AL object declared in
+/// `path`, using the file index's cached object info: a file declaring a table
+/// and then a codeunit changes both. Tries the path as given, then its
+/// canonical form (the daemon and the index may disagree on absolute vs
+/// symlinked paths).
+fn object_identities_for_path(
     workspace: &Workspace,
     path: &str,
-) -> Result<Option<(ObjectKind, String)>, TestQueryError> {
+) -> Result<Vec<(ObjectKind, String)>, TestQueryError> {
     let from_info = |path: &std::path::Path,
                      info: &al_source::file_index::CachedObjectInfo|
      -> Result<(ObjectKind, String), TestQueryError> {
@@ -423,15 +422,18 @@ fn object_identity_for_path(
     };
 
     let p = std::path::Path::new(path);
-    if let Some(info) = workspace.file_index.object_info.get(p) {
-        return from_info(p, &info).map(Some);
-    }
-    if let Ok(canon) = p.canonicalize() {
-        if let Some(info) = workspace.file_index.object_info.get(&canon) {
-            return from_info(&canon, &info).map(Some);
+    let mut infos = workspace.file_index.object_infos_in(p);
+    let mut indexed_path = p.to_path_buf();
+    if infos.is_empty() {
+        if let Ok(canon) = p.canonicalize() {
+            infos = workspace.file_index.object_infos_in(&canon);
+            indexed_path = canon;
         }
     }
-    Ok(None)
+    infos
+        .iter()
+        .map(|info| from_info(&indexed_path, info))
+        .collect()
 }
 
 /// Legacy fallback: a test is affected iff its own file is in `changed_paths`.
@@ -1113,6 +1115,33 @@ mod affected_call_graph {
                 "TestTransitive".to_string(),
                 "TestUnrelated".to_string()
             ]
+        );
+    }
+
+    /// Helper is the second object of the changed file. Only the file's first
+    /// object was seeded, so the tests calling Helper were not affected.
+    #[test]
+    fn changing_a_file_marks_callers_of_its_second_object() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            PathBuf::from("/ws/helper.al"),
+            format!(
+                "codeunit 50105 Leading\n{{\n    procedure Nothing()\n    begin\n    end;\n}}\n\n{HELPER}"
+            ),
+        );
+        ws.file_index
+            .add_file(PathBuf::from("/ws/unrelated.al"), UNRELATED.to_string());
+        ws.file_index
+            .add_file(PathBuf::from("/ws/midcu.al"), MIDCU.to_string());
+        ws.file_index
+            .add_file(PathBuf::from("/ws/tests.al"), TESTS.to_string());
+
+        let (mode, names) = affected_names(&ws, &["/ws/helper.al"]);
+        assert_eq!(mode, AffectedMode::CallGraph);
+        assert_eq!(
+            names,
+            vec!["TestDirect".to_string(), "TestTransitive".to_string()],
+            "Helper's direct and transitive callers; got {names:?}"
         );
     }
 

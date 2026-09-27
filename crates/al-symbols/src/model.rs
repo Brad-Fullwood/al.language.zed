@@ -540,11 +540,18 @@ pub struct SymbolPackage {
     /// `mem::take(&mut objects)` move into the index — callers reading
     /// `objects.len()` after loading saw 0 for every package (the
     /// `packages` command's OBJECTS column and the daemon's
-    /// "loaded symbol packages symbols=0" log line).
+    /// "loaded symbol packages symbols=0" log line). Synthetic Option
+    /// enums are left out, see [`SymbolPackage::declared_object_count`].
     pub object_count: usize,
 }
 
 impl SymbolPackage {
+    /// Number of objects the package declares: every entry except the
+    /// synthetic Option enums the loader adds for type resolution.
+    pub fn declared_object_count(objects: &[SymbolEntry]) -> usize {
+        objects.iter().filter(|entry| !entry.synthetic).count()
+    }
+
     /// Whether this package satisfies an `app.json` dependency.
     ///
     /// Dependency versions are minimums in AL. Identity is matched by app GUID,
@@ -636,6 +643,8 @@ pub(crate) struct SymbolReferenceJson {
     pub profiles: Vec<ObjectJson>,
     #[serde(alias = "PageCustomizations")]
     pub page_customizations: Vec<ObjectJson>,
+    #[serde(alias = "ProfileExtensions")]
+    pub profile_extensions: Vec<ObjectJson>,
     #[serde(alias = "ControlAddIns")]
     pub control_add_ins: Vec<ObjectJson>,
     #[serde(alias = "Entitlements")]
@@ -957,6 +966,7 @@ impl SymbolReferenceJson {
             ),
             (ObjectKind::Profile, self.profiles),
             (ObjectKind::PageCustomization, self.page_customizations),
+            (ObjectKind::ProfileExtension, self.profile_extensions),
             (ObjectKind::ControlAddIn, self.control_add_ins),
             (ObjectKind::Entitlement, self.entitlements),
         ];
@@ -1647,6 +1657,27 @@ mod tests {
         assert!(entries.iter().any(|e| e.name == "DeeplyNested"
             && e.kind == ObjectKind::Codeunit
             && e.namespace == "Contoso.Sales"));
+    }
+
+    /// `ProfileExtensions` was missing a struct field, so profile extensions
+    /// read from `SymbolReference.json` (a real Base Application package is
+    /// short one object versus its declared count for exactly this reason)
+    /// disappeared during flattening.
+    #[test]
+    fn test_profile_extensions_are_read_from_symbol_reference_json() {
+        let json = r#"{
+            "ProfileExtensions": [
+                { "Id": 50100, "Name": "MyProfileExt", "TargetObject": "Business Manager" }
+            ]
+        }"#;
+        let sr: SymbolReferenceJson = serde_json::from_str(json).unwrap();
+        let entries = sr.into_entries("Pkg");
+        assert_eq!(entries.len(), 1);
+        assert!(entries
+            .iter()
+            .any(|e| e.kind == ObjectKind::ProfileExtension
+                && e.id == 50100
+                && e.name == "MyProfileExt"));
     }
 
     /// Same-named Option fields on different objects stay SEPARATE synthetic

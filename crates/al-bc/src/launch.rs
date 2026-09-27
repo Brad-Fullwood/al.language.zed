@@ -228,6 +228,41 @@ pub fn find_launch_config(
     Ok(None)
 }
 
+/// The two files a project's debug scenarios come from: `.zed/debug.json`
+/// and `.vscode/launch.json`, in that order.
+#[must_use]
+pub fn launch_file_paths(project_root: &Path) -> [PathBuf; 2] {
+    [
+        project_root.join(".zed").join("debug.json"),
+        project_root.join(".vscode").join("launch.json"),
+    ]
+}
+
+/// Every launch file the project carries, each parsed on its own.
+///
+/// [`find_launch_config`] picks one file. Zed offers the scenarios of both, so
+/// a caller that has to account for every server a scenario can name reads
+/// them all here. A file that does not exist is left out, and a file that
+/// fails to parse is an `Err` entry beside the others.
+#[must_use]
+pub fn launch_files(project_root: &Path) -> Vec<Result<DebugConfigFile, LaunchConfigError>> {
+    let [zed, vscode] = launch_file_paths(project_root);
+    let parsers: [(PathBuf, ParseLaunchFile); 2] = [
+        (zed, parse_zed_debug_file),
+        (vscode, parse_vscode_launch_file),
+    ];
+    parsers
+        .into_iter()
+        .filter_map(|(path, parse)| match launch_file_exists(&path) {
+            Ok(false) => None,
+            Ok(true) => Some(parse(&path).map_err(|error| LaunchConfigError::new(&path, error))),
+            Err(error) => Some(Err(error)),
+        })
+        .collect()
+}
+
+type ParseLaunchFile = fn(&Path) -> Result<DebugConfigFile, Box<dyn std::error::Error>>;
+
 fn launch_file_exists(path: &Path) -> Result<bool, LaunchConfigError> {
     match std::fs::metadata(path) {
         Ok(metadata) if metadata.is_file() => Ok(true),
@@ -250,7 +285,7 @@ const MAX_LAUNCH_FILE_BYTES: u64 = 1_048_576;
 /// or untrusted config could use `file:///etc/passwd` or `gopher://...` and
 /// that URL would be handed unchanged to the BC HTTP client. Restrict to
 /// http(s):// (the only two schemes the BC dev API uses) or bare hostnames
-/// (e.g. `localhost`, where the BC client default-prepends http://).
+/// (e.g. `localhost`, which [`server_with_scheme`] reads as https).
 pub fn is_safe_http_server(server: &str) -> bool {
     let s = server.trim();
     if s.is_empty() {
@@ -273,10 +308,14 @@ pub fn is_safe_http_server(server: &str) -> bool {
 
 /// `server` with a scheme, or `None` when it is not an acceptable BC server.
 ///
-/// Both URL builders need this: `build_base_url` prepends `http://` to a bare
-/// host, and `dev_packages_url` used not to, so a `launch.json` with
-/// `"server": "bc.example.com"` published fine and then failed symbol download
-/// with `url::Url` reading `bc.example.com` as the scheme.
+/// A bare host is `https`. Every request builder and the credential
+/// authorisation in `al_project::trust` read the server through this one
+/// function, so the scheme the authorisation judges is the scheme the request
+/// uses. It used to prepend `http://`, while the authorisation read the same
+/// bare host as `https`, so a trusted `"server": "bc.corp.example"` passed the
+/// cleartext rule and then sent Basic credentials over plain HTTP. A server that
+/// really is cleartext is written with `http://`, and one that is not loopback
+/// also needs `AL_ALLOW_INSECURE_BC_HTTP=1`.
 pub fn server_with_scheme(server: &str) -> Option<String> {
     let server = server.trim();
     if !is_safe_http_server(server) {
@@ -286,18 +325,12 @@ pub fn server_with_scheme(server: &str) -> Option<String> {
         );
         return None;
     }
-    if server.starts_with("http://") || server.starts_with("https://") {
+    // `is_safe_http_server` has already required the scheme, in any case, to
+    // be http or https.
+    if server.contains("://") {
         return Some(server.to_string());
     }
-    // Not silent: defaulting to http:// here means Basic (UserPassword/Windows)
-    // credentials go out Base64-in-cleartext. Say so, so an operator who wanted
-    // TLS notices a plain hostname was misread as http.
-    warn!(
-        server = %server,
-        "BC server URL has no scheme — defaulting to http:// (cleartext); Basic/Windows \
-         credentials will be sent unencrypted. Use an explicit https:// URL to avoid this."
-    );
-    Some(format!("http://{server}"))
+    Some(format!("https://{server}"))
 }
 
 fn read_launch_file_capped(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
@@ -429,25 +462,34 @@ fn convert_vscode_config(
     })
 }
 
+/// Read without regard to case, as the debug adapter reads it
+/// (`BcDebugConfig::base_url`, `al_project::trust::BcTarget::from_debug`). A
+/// spelling the adapter accepted and this parser refused made the whole file
+/// unreadable here, so the trust record listed none of its servers.
 fn parse_environment_type(s: &str) -> Result<EnvironmentType, String> {
-    match s {
-        "OnPrem" => Ok(EnvironmentType::OnPrem),
-        "Sandbox" => Ok(EnvironmentType::Sandbox),
-        "Production" => Ok(EnvironmentType::Production),
-        other => Err(format!(
-            "unknown environmentType {other:?}; expected OnPrem, Sandbox, or Production"
+    match s.to_ascii_lowercase().as_str() {
+        "onprem" => Ok(EnvironmentType::OnPrem),
+        "sandbox" => Ok(EnvironmentType::Sandbox),
+        "production" => Ok(EnvironmentType::Production),
+        _ => Err(format!(
+            "unknown environmentType {s:?}; expected OnPrem, Sandbox, or Production"
         )),
     }
 }
 
 fn parse_auth_method(s: Option<&str>, env_type: &EnvironmentType) -> Result<AuthMethod, String> {
-    match s {
-        Some("UserPassword") => Ok(AuthMethod::UserPassword),
-        Some("Windows") => Ok(AuthMethod::Windows),
-        Some("AAD") | Some("MicrosoftEntraID") => Ok(AuthMethod::AAD),
-        None if *env_type == EnvironmentType::OnPrem => Ok(AuthMethod::Windows),
-        None => Ok(AuthMethod::AAD),
-        Some(other) => Err(format!(
+    let Some(other) = s else {
+        return Ok(if *env_type == EnvironmentType::OnPrem {
+            AuthMethod::Windows
+        } else {
+            AuthMethod::AAD
+        });
+    };
+    match other.to_ascii_lowercase().as_str() {
+        "userpassword" => Ok(AuthMethod::UserPassword),
+        "windows" => Ok(AuthMethod::Windows),
+        "aad" | "microsoftentraid" => Ok(AuthMethod::AAD),
+        _ => Err(format!(
             "unknown authentication {other:?}; expected UserPassword, Windows, AAD, or MicrosoftEntraID"
         )),
     }
@@ -687,6 +729,58 @@ mod tests {
         assert!(error.message.contains("unknown authentication"));
     }
 
+    /// The debug adapter reads `environmentType` without regard to case, so
+    /// this parser does too. A file it rejected was read by the adapter
+    /// anyway, and the trust record then listed none of its servers.
+    #[test]
+    fn environment_type_and_authentication_are_read_in_any_case() {
+        let dir = make_tempdir("any-case");
+        std::fs::create_dir_all(dir.join(".zed")).unwrap();
+        std::fs::write(
+            dir.join(".zed/debug.json"),
+            r#"[{"adapter":"al","label":"A","environmentType":"onprem",
+                 "server":"https://bc.example","authentication":"userpassword"},
+                {"adapter":"al","label":"B","environmentType":"SANDBOX",
+                 "authentication":"microsoftentraid"}]"#,
+        )
+        .unwrap();
+
+        let file = find_launch_config(&dir).unwrap().unwrap();
+        assert_eq!(file.configs[0].environment_type, EnvironmentType::OnPrem);
+        assert_eq!(file.configs[0].authentication, AuthMethod::UserPassword);
+        assert_eq!(file.configs[1].environment_type, EnvironmentType::Sandbox);
+        assert_eq!(file.configs[1].authentication, AuthMethod::AAD);
+    }
+
+    #[test]
+    fn launch_files_reads_each_file_on_its_own() {
+        let dir = make_tempdir("both-files");
+        assert!(launch_files(&dir).is_empty());
+
+        std::fs::create_dir_all(dir.join(".zed")).unwrap();
+        std::fs::create_dir_all(dir.join(".vscode")).unwrap();
+        std::fs::write(
+            dir.join(".zed/debug.json"),
+            r#"[{"adapter":"al","label":"Cloud","environmentType":"Sandbox"}]"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(".vscode/launch.json"),
+            r#"{"configurations":[{"name":"Lab","type":"al","environmentType":"OnPrem",
+                "server":"https://lab.example"},{"type":"al","environmentType":"Bogus"}]}"#,
+        )
+        .unwrap();
+
+        let files = launch_files(&dir);
+        assert_eq!(files.len(), 2);
+        let zed = files[0].as_ref().unwrap();
+        assert!(zed.path.ends_with(".zed/debug.json"));
+        assert_eq!(zed.configs[0].name, "Cloud");
+        let vscode = files[1].as_ref().unwrap_err();
+        assert!(vscode.path.ends_with(".vscode/launch.json"));
+        assert!(vscode.message.contains("Bogus"), "{}", vscode.message);
+    }
+
     #[test]
     fn missing_launch_files_are_distinct_from_invalid_files() {
         let dir = make_tempdir("missing");
@@ -812,7 +906,7 @@ mod tests {
 
     #[test]
     fn dev_packages_url_adds_a_scheme_to_a_bare_host() {
-        // `build_base_url` prepended `http://` and this did not, so publishing
+        // `build_base_url` prepended a scheme and this did not, so publishing
         // worked and symbol download from the same config failed with
         // `url::Url` reading `bc.example.com` as the scheme.
         let mut cfg = onprem_config();
@@ -820,10 +914,35 @@ mod tests {
         cfg.port = Some(7049);
         let url = cfg.dev_packages_url(&make_dep()).unwrap();
         assert!(
-            url.starts_with("http://bc.example.com:7049/BC/dev/packages?"),
+            url.starts_with("https://bc.example.com:7049/BC/dev/packages?"),
             "unexpected URL: {url}"
         );
-        assert_eq!(url::Url::parse(&url).unwrap().scheme(), "http");
+        assert_eq!(url::Url::parse(&url).unwrap().scheme(), "https");
+    }
+
+    /// The credential authorisation reads a bare host as `https`, so the
+    /// request has to go there as `https` too. Sending it as `http` put Basic
+    /// credentials on the wire for a server the cleartext rule had passed.
+    #[test]
+    fn a_bare_host_is_sent_as_https() {
+        assert_eq!(
+            server_with_scheme("bc.corp.example").as_deref(),
+            Some("https://bc.corp.example")
+        );
+        assert_eq!(
+            server_with_scheme("bc.corp.example:7049").as_deref(),
+            Some("https://bc.corp.example:7049")
+        );
+        assert_eq!(
+            server_with_scheme("http://bc.corp.example").as_deref(),
+            Some("http://bc.corp.example"),
+            "an explicit http:// is the user's choice and stays"
+        );
+        assert_eq!(
+            server_with_scheme("HTTP://bc.corp.example").as_deref(),
+            Some("HTTP://bc.corp.example"),
+            "an upper-case scheme is a scheme, not part of a bare host"
+        );
     }
 
     #[test]

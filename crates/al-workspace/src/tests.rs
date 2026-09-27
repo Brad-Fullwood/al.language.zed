@@ -114,11 +114,20 @@ mod workspace_lifecycle_tests {
         );
         assert_eq!(stats.dependency_source_files, 0);
 
-        let index = Arc::new(FileIndex::new());
-        index.add_file(
-            PathBuf::from("/__al_dependency_sources__/pkg/Obj.al"),
-            r#"codeunit 50100 "Dep" { procedure Gamma() begin end; }"#.to_string(),
-        );
+        let source = r#"codeunit 50100 "Dep" { procedure Gamma() begin end; }"#;
+        let parsed = al_syntax::AlParser::parse_quick(source);
+        let package = PackageSourceSummary {
+            files: vec![al_insight::calls::SourceFileSummary::from_tree(
+                "src/Obj.al",
+                &parsed.tree,
+                source,
+            )],
+            skipped_files: 0,
+        };
+        let index = Arc::new(DependencySources::new(vec![(
+            PathBuf::from("/pkg/Dep.app"),
+            Arc::new(package),
+        )]));
         *workspace.dependency_source_index.write().unwrap() = Some(DependencySourceCache {
             fingerprint: Vec::new(),
             index,
@@ -236,6 +245,94 @@ mod workspace_lifecycle_tests {
             "an identity change with the same procedure set is still a topology change"
         );
         assert!(workspace.generation_revision() > revision_before);
+    }
+
+    /// The renamed codeunit is the file's second object. Only the first
+    /// object's identity was compared, so the rename kept the stale composed
+    /// entries and the insight graph.
+    #[test]
+    fn identity_change_of_a_second_object_invalidates_its_composition_and_graph() {
+        let workspace = make_workspace();
+        workspace.symbols.add_entries(&[
+            al_symbols::SymbolEntry {
+                kind: al_symbols::ObjectKind::Codeunit,
+                id: 50_100,
+                name: "Old Name".to_string(),
+                package: "Test".to_string(),
+                ..Default::default()
+            },
+            al_symbols::SymbolEntry {
+                kind: al_symbols::ObjectKind::Codeunit,
+                id: 50_101,
+                name: "New Name".to_string(),
+                package: "Test".to_string(),
+                ..Default::default()
+            },
+        ]);
+        let uri = Url::from_file_path("/tmp/second_object_identity_change/Posting.al").unwrap();
+        let old = "table 50200 \"Posting Buffer\" { }\ncodeunit 50100 \"Old Name\" { procedure Run() begin end; }";
+        let new = "table 50200 \"Posting Buffer\" { }\ncodeunit 50101 \"New Name\" { procedure Run() begin end; }";
+        workspace
+            .documents
+            .open(uri.clone(), old.to_string())
+            .unwrap();
+        on_document_change(&workspace, &uri, old);
+
+        let _ = workspace
+            .symbols
+            .get_composed_cached(al_symbols::ObjectKind::Codeunit, "Old Name");
+        let _ = workspace
+            .symbols
+            .get_composed_cached(al_symbols::ObjectKind::Codeunit, "New Name");
+        assert!(!workspace.symbols.is_composed_cache_empty());
+        let graph_before = workspace.get_or_build_insight_graph().unwrap();
+
+        workspace
+            .documents
+            .replace_or_open(uri.clone(), new.to_string())
+            .unwrap();
+        on_document_change(&workspace, &uri, new);
+
+        assert!(
+            workspace.symbols.is_composed_cache_empty(),
+            "both identities of the second object must be invalidated"
+        );
+        let graph_after = workspace.get_or_build_insight_graph().unwrap();
+        assert!(
+            !Arc::ptr_eq(&graph_before, &graph_after),
+            "renaming a file's second object is a topology change"
+        );
+    }
+
+    /// Closing a file drops the composed view of every object it declares,
+    /// not only its first.
+    #[test]
+    fn on_document_close_invalidates_the_composition_of_a_second_object() {
+        let workspace = make_workspace();
+        workspace.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Codeunit,
+            id: 50_100,
+            name: "Posting Mgt".to_string(),
+            package: "Test".to_string(),
+            ..Default::default()
+        }]);
+        let uri = Url::from_file_path("/tmp/second_object_close/Posting.al").unwrap();
+        let text = "table 50200 \"Posting Buffer\" { }\ncodeunit 50100 \"Posting Mgt\" { }";
+        workspace
+            .documents
+            .open(uri.clone(), text.to_string())
+            .unwrap();
+        on_document_change(&workspace, &uri, text);
+        let _ = workspace
+            .symbols
+            .get_composed_cached(al_symbols::ObjectKind::Codeunit, "Posting Mgt");
+        assert!(!workspace.symbols.is_composed_cache_empty());
+
+        on_document_close(&workspace, &uri);
+        assert!(
+            workspace.symbols.is_composed_cache_empty(),
+            "the second object's composed view must be dropped"
+        );
     }
 
     #[test]
@@ -1083,5 +1180,176 @@ mod workspace_lifecycle_tests {
         assert!(matches!(error, CoreInitError::Project(_)), "{error}");
         assert!(workspace.file_index.is_empty());
         assert!(workspace.project.read().await.is_none());
+    }
+
+    fn write_manifest(dir: &std::path::Path, application: &str) {
+        std::fs::write(
+            dir.join("app.json"),
+            serde_json::json!({
+                "id": "00000000-0000-0000-0000-000000000000",
+                "name": "RefreshTest",
+                "publisher": "Tester",
+                "version": "1.0.0.0",
+                "application": application
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    async fn base_application(workspace: &Workspace) -> Option<String> {
+        workspace
+            .project
+            .read()
+            .await
+            .as_ref()
+            .expect("a project is loaded")
+            .all_dependencies()
+            .into_iter()
+            .find(|dependency| dependency.name == "Base Application")
+            .map(|dependency| dependency.version)
+    }
+
+    /// A workspace holding the project in a fresh directory whose `app.json`
+    /// asks for application 25, after its first refresh.
+    async fn refreshed_project(tag: &str) -> (Workspace, std::path::PathBuf) {
+        let workspace = make_workspace();
+        let dir = unique_tempdir(tag);
+        write_manifest(&dir, "25.0.0.0");
+        *workspace.project.write().await =
+            Some(al_project::project::find_project(&dir).expect("project loads"));
+        refresh_project_files(&workspace).await;
+        (workspace, dir)
+    }
+
+    /// The daemon read `app.json` once at startup, so `download-symbols` after
+    /// an edit to `application` asked for the old minimum versions.
+    #[tokio::test]
+    async fn an_edited_manifest_is_read_into_the_project() {
+        let (workspace, dir) = refreshed_project("manifestedit").await;
+        assert_eq!(
+            base_application(&workspace).await.as_deref(),
+            Some("25.0.0.0")
+        );
+
+        write_manifest(&dir, "26.0.0.0");
+        refresh_project_files(&workspace).await;
+
+        assert_eq!(
+            base_application(&workspace).await.as_deref(),
+            Some("26.0.0.0")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_manifest_that_stops_parsing_leaves_the_one_read_before() {
+        let (workspace, dir) = refreshed_project("manifestbroken").await;
+
+        std::fs::write(dir.join("app.json"), "{ not json").unwrap();
+        refresh_project_files(&workspace).await;
+        assert_eq!(
+            base_application(&workspace).await.as_deref(),
+            Some("25.0.0.0")
+        );
+
+        write_manifest(&dir, "27.0.0.0");
+        refresh_project_files(&workspace).await;
+        assert_eq!(
+            base_application(&workspace).await.as_deref(),
+            Some("27.0.0.0")
+        );
+    }
+
+    #[tokio::test]
+    async fn unchanged_project_files_are_not_read_again() {
+        let (workspace, _dir) = refreshed_project("manifestsame").await;
+        workspace
+            .project
+            .write()
+            .await
+            .as_mut()
+            .expect("a project is loaded")
+            .app_json
+            .name = "In memory".to_string();
+
+        refresh_project_files(&workspace).await;
+
+        let project = workspace.project.read().await;
+        assert_eq!(project.as_ref().unwrap().app_json.name, "In memory");
+    }
+
+    #[tokio::test]
+    async fn a_launch_file_written_after_loading_is_read_into_the_project() {
+        let (workspace, dir) = refreshed_project("launchedit").await;
+        let launch = dir.join(".vscode").join("launch.json");
+        std::fs::create_dir_all(launch.parent().unwrap()).unwrap();
+
+        std::fs::write(
+            &launch,
+            serde_json::json!({
+                "version": "0.2.0",
+                "configurations": [{
+                    "type": "al",
+                    "name": "Local",
+                    "environmentType": "OnPrem",
+                    "server": "http://localhost",
+                    "serverInstance": "BC"
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        refresh_project_files(&workspace).await;
+        {
+            let project = workspace.project.read().await;
+            let project = project.as_ref().unwrap();
+            assert_eq!(project.server_configs.len(), 1);
+            assert_eq!(project.launch_config_error, None);
+        }
+
+        std::fs::write(&launch, "{ not json").unwrap();
+        refresh_project_files(&workspace).await;
+        let project = workspace.project.read().await;
+        let project = project.as_ref().unwrap();
+        assert!(project.server_configs.is_empty());
+        let error = project
+            .launch_config_error
+            .as_deref()
+            .expect("the parse failure is recorded");
+        assert!(error.contains("launch.json"), "{error}");
+    }
+}
+
+mod call_graph_progress_tests {
+    use super::*;
+
+    #[test]
+    fn the_call_graph_state_moves_from_idle_to_ready_with_a_build() {
+        let workspace = Workspace::new();
+        assert_eq!(
+            workspace.call_graph_progress().state,
+            DependencySourceState::Idle
+        );
+        drop(
+            workspace
+                .get_or_build_call_graph()
+                .expect("empty graph builds"),
+        );
+        assert_eq!(
+            workspace.call_graph_progress().state,
+            DependencySourceState::Ready
+        );
+    }
+
+    #[test]
+    fn a_build_reports_building_while_it_runs_and_failed_when_it_stops_early() {
+        let progress = CallGraphProgress::default();
+        let mark = progress.begin();
+        assert_eq!(progress.snapshot().state, DependencySourceState::Building);
+        drop(mark);
+        assert_eq!(progress.snapshot().state, DependencySourceState::Failed);
+
+        progress.begin().succeeded();
+        assert_eq!(progress.snapshot().state, DependencySourceState::Ready);
     }
 }

@@ -616,13 +616,127 @@ end;
     #[test]
     fn test_blank_line_drains_single_stmt() {
         let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\nif x > 0 then\n\nMessage('after blank');\nend;\n}";
-        let result = fmt(input);
-        // After blank line, single-stmt stack should be drained
-        // so Message should be at the same level as the if
-        assert!(
-            result.contains("        Message('after blank');")
-                || result.contains("    Message('after blank');")
-        );
+        let expected = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    begin\n        if x > 0 then\n\n        Message('after blank');\n    end;\n}\n";
+        // After blank line, single-stmt stack must be drained, so Message
+        // lands at the if's own level, not one level deeper.
+        assert_eq!(fmt(input), expected);
+    }
+
+    /// An `end` closing a block that carried a nested single-statement slot
+    /// (`if A then if B then begin ... end`), with no `;` and no following
+    /// `else`: the outer slot must drain before the next line, not linger.
+    #[test]
+    fn end_without_semicolon_defers_its_slot_until_the_next_line_is_not_else() {
+        let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\nif A then\nif B then begin\nMessage('a');\nend\nMessage('after');\nend;\n}";
+        let expected = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    begin\n        if A then\n            if B then begin\n                Message('a');\n            end\n        Message('after');\n    end;\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    /// A line ending in " begin" that is not the bare keyword "begin" and is
+    /// not itself a single-statement opener written on the same line (like
+    /// `if B then begin`) must still drain an outer pending single-statement
+    /// slot, the same way a bare `begin` does. `MyLabel: begin` stands in
+    /// for any such line; the formatter's indentation state machine does not
+    /// care whether the label is valid AL, only that the text ends in
+    /// " begin".
+    #[test]
+    fn a_begin_ending_line_that_is_not_bare_begin_drains_a_pending_single_statement() {
+        let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\nif x > 0 then\nMyLabel: begin\nMessage('a');\nend;\nend;\n}";
+        let expected = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    begin\n        if x > 0 then\n        MyLabel: begin\n            Message('a');\n        end;\n    end;\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn var_section_ends_at_a_local_procedure() {
+        let input =
+            "codeunit 50100 Test\n{\nvar\nx: Integer;\nlocal procedure Foo()\nbegin\nend;\n}";
+        let expected = "codeunit 50100 Test\n{\n    var\n        x: Integer;\n    local procedure Foo()\n    begin\n    end;\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn var_section_ends_at_an_internal_procedure() {
+        let input =
+            "codeunit 50100 Test\n{\nvar\nx: Integer;\ninternal procedure Foo()\nbegin\nend;\n}";
+        let expected = "codeunit 50100 Test\n{\n    var\n        x: Integer;\n    internal procedure Foo()\n    begin\n    end;\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn var_section_ends_at_a_protected_procedure() {
+        let input =
+            "codeunit 50100 Test\n{\nvar\nx: Integer;\nprotected procedure Foo()\nbegin\nend;\n}";
+        let expected = "codeunit 50100 Test\n{\n    var\n        x: Integer;\n    protected procedure Foo()\n    begin\n    end;\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn var_section_ends_at_a_trigger() {
+        let input = "codeunit 50100 Test\n{\nvar\nx: Integer;\ntrigger OnRun()\nbegin\nend;\n}";
+        let expected = "codeunit 50100 Test\n{\n    var\n        x: Integer;\n    trigger OnRun()\n    begin\n    end;\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    /// An object-level `var` section with no procedure body, closed directly
+    /// by the object's own closing brace instead of by a `begin`.
+    #[test]
+    fn object_level_var_section_closed_directly_by_the_closing_brace() {
+        let input = "codeunit 50100 Test\n{\nvar\nx: Integer;\n}";
+        let expected = "codeunit 50100 Test\n{\n    var\n        x: Integer;\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    /// A colon-terminated line outside any `case` is not a case label: it
+    /// must not gain the label's extra indent. Pins the `case_depth > 0`
+    /// guard against a line that merely looks like a label.
+    #[test]
+    fn a_trailing_colon_line_outside_any_case_is_not_a_label() {
+        let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\nMyGlobalLabel:\nMessage('a');\nend;\n}";
+        let expected = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    begin\n        MyGlobalLabel:\n        Message('a');\n    end;\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    /// A `case` block whose only label body ends in `end` with no `;` (no
+    /// nested `begin` was ever opened, so `case_depth` decrements once and
+    /// only once). Confirmed by the label-like line right after the case:
+    /// it must not be mistaken for a label of a still-open case.
+    #[test]
+    fn a_case_label_body_ending_in_a_bare_end_closes_the_case_exactly_once() {
+        let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\ncase X of\n1:\nbegin\nMessage('a');\nend\nend;\nAfterLabel:\nMessage('after');\nend;\n}";
+        let expected = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    begin\n        case X of\n            1:\n                begin\n                    Message('a');\n                end\n        end;\n        AfterLabel:\n        Message('after');\n    end;\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    /// The same empty `case`, this time closed by `end;` fused with a
+    /// second statement on the same physical line. `starts_with("end;")`
+    /// must fire even when the line does not *equal* `"end;"`.
+    #[test]
+    fn an_empty_case_closed_by_end_semicolon_fused_with_more_code_decrements_case_depth() {
+        let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\ncase X of\nend; Y := 1;\nZ:\nMessage('after');\nend;\n}";
+        let expected = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    begin\n        case X of\n        end; Y := 1;\n        Z:\n        Message('after');\n    end;\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    /// An incomplete `if` condition with no `then` must not be treated as a
+    /// single-statement opener: it must not gain the extra indent level a
+    /// real `if ... then` gives its statement.
+    #[test]
+    fn an_if_with_no_then_is_not_a_single_statement_opener() {
+        let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\nif x > 0\nMessage('a');\nend;\n}";
+        let expected = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    begin\n        if x > 0\n        Message('a');\n    end;\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    /// The immediate-vs-deferred choice when a fused-begin block's carried
+    /// slot closes: a `;`-terminated close (`end;`) must subtract its saved
+    /// indent right away, not defer it as a pending-else slot. Observed
+    /// through the outer `if`'s matching `else`, which must align with the
+    /// outer `if`, not with the inner block.
+    #[test]
+    fn a_semicolon_terminated_close_applies_its_carried_slot_immediately() {
+        let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\nif A then\nif B then begin\nX;\nend;\nelse\nY;\nend;\n}";
+        let expected = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    begin\n        if A then\n            if B then begin\n                X;\n            end;\n        else\n            Y;\n    end;\n}\n";
+        assert_eq!(fmt(input), expected);
     }
 
     #[test]

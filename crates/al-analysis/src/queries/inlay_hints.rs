@@ -369,8 +369,8 @@ fn extract_receiver_before(suffix_node: tree_sitter::Node<'_>, source: &[u8]) ->
     }
 }
 
-// Kept compatible with the lsp-types version used by tower-lsp.
-#[allow(deprecated)]
+// The document, the call and the resolver state are separate inputs of one
+// lookup, and the production caller already holds each one as a local.
 #[allow(clippy::too_many_arguments)]
 fn lookup_parameter_names(
     workspace: &Workspace,

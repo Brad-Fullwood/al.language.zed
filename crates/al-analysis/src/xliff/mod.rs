@@ -145,13 +145,43 @@ pub fn build_xliff(
 
     let xlf_content = generate_xliff(&app_name, "en-US", "en-US", &units);
 
-    let translations_dir = project_root.join("Translations");
-    std::fs::create_dir_all(&translations_dir)?;
-
+    let translations_dir = translations_dir_inside(project_root)?;
     let xlf_path = translations_dir.join(format!("{}.g.xlf", app_name));
-    std::fs::write(&xlf_path, xlf_content)?;
+    // A fresh temporary file renamed over the target replaces a symlink
+    // planted at `xlf_path` rather than writing through it. `std::fs::write`
+    // followed the link, dangling or not, to wherever the repository aimed it.
+    let mut temp = tempfile::Builder::new()
+        .prefix(".al-xlf-")
+        .suffix(".tmp")
+        .tempfile_in(&translations_dir)?;
+    std::io::Write::write_all(&mut temp, xlf_content.as_bytes())?;
+    temp.persist(&xlf_path).map_err(|error| error.error)?;
 
     Ok(Some((xlf_path, units.len())))
+}
+
+/// `<project_root>/Translations`, created when missing, refused when it
+/// resolves outside the project.
+///
+/// A clone can ship `Translations` as a symlink to any directory, and the
+/// generated file carries caption and label text from the repository's source.
+fn translations_dir_inside(project_root: &Path) -> std::io::Result<PathBuf> {
+    let translations_dir = project_root.join("Translations");
+    if std::fs::symlink_metadata(&translations_dir).is_err() {
+        std::fs::create_dir(&translations_dir)?;
+    }
+    let root = project_root.canonicalize()?;
+    let resolved = translations_dir.canonicalize()?;
+    if !resolved.starts_with(&root) || !resolved.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "{} resolves outside the project, so the translation file is not written there",
+                translations_dir.display()
+            ),
+        ));
+    }
+    Ok(resolved)
 }
 
 pub(super) fn read_app_name(project_root: &Path) -> std::io::Result<String> {

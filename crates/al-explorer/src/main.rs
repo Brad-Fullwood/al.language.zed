@@ -8,10 +8,10 @@ fn run_application() -> std::process::ExitCode {
     // as `al-explorer ... | head` into a panic when `head` closes the pipe.
     // CLI tools conventionally restore the default disposition so a closed
     // downstream reader terminates the producer quietly.
+    // SAFETY: this runs once, on the initial main thread, before the
+    // application creates worker threads or installs signal handlers.
     #[cfg(unix)]
     unsafe {
-        // SAFETY: this runs once, on the initial main thread, before the
-        // application creates worker threads or installs signal handlers.
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
 

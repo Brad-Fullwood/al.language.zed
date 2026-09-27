@@ -342,13 +342,11 @@ fn build_base_url(config: &BcServerConfig) -> String {
             let server = config.server.as_deref().unwrap_or("localhost");
             let instance = config.server_instance.as_deref().unwrap_or("BC");
             let server_trimmed = server.trim_end_matches('/');
-            let server_with_scheme = if server_trimmed.to_lowercase().starts_with("http://")
-                || server_trimmed.to_lowercase().starts_with("https://")
-            {
-                server_trimmed.to_string()
-            } else {
-                format!("http://{}", server_trimmed)
-            };
+            // The same scheme rule the credential authorisation judges, so a
+            // bare host is sent as the `https` URL that was authorised. A
+            // server that is not http(s) gets a host that cannot resolve.
+            let server_with_scheme = al_bc::launch::server_with_scheme(server_trimmed)
+                .unwrap_or_else(|| "https://rejected-unsafe-server.invalid".to_string());
             if let Some(port) = config.port {
                 format!("{}:{}/{}", server_with_scheme, port, instance)
             } else {
@@ -565,9 +563,11 @@ mod url_tests {
     use super::*;
     use al_bc::launch::{AuthMethod, BcServerConfig, EnvironmentType};
 
-    /// A bare hostname receives an `http://` scheme so reqwest accepts the URL.
+    /// A bare hostname receives the `https://` scheme the credential
+    /// authorisation judged it by. It used to get `http://`, which sent Basic
+    /// credentials in cleartext to a server the https rule had passed.
     #[test]
-    fn on_prem_url_without_scheme_adds_http() {
+    fn on_prem_url_without_scheme_adds_https() {
         let config = BcServerConfig {
             name: "plain-host".to_string(),
             environment_type: EnvironmentType::OnPrem,
@@ -581,11 +581,7 @@ mod url_tests {
             debug_args: serde_json::json!({}),
         };
         let url = build_base_url(&config);
-        assert!(
-            url.starts_with("http://") || url.starts_with("https://"),
-            "build_base_url must include a scheme; got: {url}"
-        );
-        assert!(url.contains("7049"), "URL should contain port: {url}");
+        assert_eq!(url, "https://myserver.company.com:7049/BC");
         assert!(url.contains("/BC"), "URL should contain instance: {url}");
     }
 

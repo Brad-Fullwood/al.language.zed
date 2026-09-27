@@ -132,7 +132,6 @@ impl InterpMode {
     }
 }
 
-#[allow(async_fn_in_trait)]
 impl TestSession for InterpMode {
     async fn run(
         &self,
@@ -321,7 +320,7 @@ fn worker_join_error(error: tokio::task::JoinError) -> TestRunnerError {
 // options back together only to take them apart again.
 #[allow(clippy::too_many_arguments)]
 fn run_codeunit_interp(
-    workspace: &Workspace,
+    workspace: &Arc<Workspace>,
     codeunits: &[TestCodeunit],
     codeunit_id: i32,
     codeunit_name: &str,
@@ -374,35 +373,44 @@ fn run_codeunit_interp(
         al_runtime::stubs::reset_thread_local_state();
 
         let start = Instant::now();
-        // spawn_blocking hands out tokio's 2 MiB worker stacks, which is what
-        // held the interpreter's call depth to 48 frames. Give the AL body a
-        // thread whose stack the depth caps are actually sized against.
-        let (result, test_coverage) = std::thread::scope(|scope| {
-            std::thread::Builder::new()
-                .stack_size(al_runtime::interpreter::dispatch::INTERP_STACK_BYTES)
-                .spawn_scoped(scope, || {
-                    run_procedure_interp(
-                        workspace,
-                        cu,
-                        codeunit_name,
-                        proc_name,
-                        timeout_dur,
-                        dispatch_mode,
-                        collect_coverage,
-                    )
-                })
-                .map_err(|error| {
-                    TestRunnerError::WorkerFailed(format!(
-                        "could not start the interpreter thread: {error}"
-                    ))
-                })?
-                .join()
-                .map_err(|_| {
-                    TestRunnerError::WorkerFailed(format!(
-                        "the interpreter thread panicked running '{codeunit_name}.{proc_name}'"
-                    ))
-                })
-        })?;
+        let body = {
+            let workspace = Arc::clone(workspace);
+            let cu = cu.cloned();
+            let codeunit_name = codeunit_name.to_string();
+            let proc_name = proc_name.clone();
+            move || {
+                run_procedure_interp(
+                    &workspace,
+                    cu.as_ref(),
+                    &codeunit_name,
+                    &proc_name,
+                    timeout_dur,
+                    dispatch_mode,
+                    collect_coverage,
+                )
+            }
+        };
+        let (result, test_coverage) = match run_watched(timeout_dur + DEADLINE_GRACE, body)? {
+            Watched::Finished(outcome) => outcome,
+            Watched::Panicked => {
+                return Err(TestRunnerError::WorkerFailed(format!(
+                    "the interpreter thread panicked running '{codeunit_name}.{proc_name}'"
+                )))
+            }
+            Watched::Overran => (
+                Eval::Error(al_runtime::interpreter::value::ErrorInfo {
+                    message: format!(
+                        "the test was still running {} ms after its {} ms deadline, so the \
+                         runner stopped waiting for it",
+                        DEADLINE_GRACE.as_millis(),
+                        timeout_dur.as_millis()
+                    ),
+                    error_type: None,
+                    source: None,
+                }),
+                None,
+            ),
+        };
         let duration_ms = start.elapsed().as_millis() as u64;
 
         // Merge this test's dynamic coverage into the run-wide aggregate (gap
@@ -453,6 +461,58 @@ fn run_codeunit_interp(
     Ok(events)
 }
 
+/// How long past its deadline a test may run before the runner stops waiting
+/// for it. The interpreter checks the deadline at each loop iteration, so a
+/// test past it stops at the next one. This is time for one long step without
+/// a loop, such as an operation on a large text, to end.
+const DEADLINE_GRACE: Duration = Duration::from_secs(5);
+
+/// How the thread that ran one test's AL body ended.
+enum Watched<T> {
+    Finished(T),
+    Panicked,
+    /// Still running when [`run_watched`] stopped waiting.
+    Overran,
+}
+
+/// Run `body` on a thread with the interpreter's stack and wait up to `limit`
+/// for it to end.
+///
+/// tokio's blocking threads have 2 MiB stacks, which held the interpreter's
+/// call depth to 48 frames, so the AL body gets a thread whose stack the
+/// depth caps are sized against. A thread still running after `limit` is left
+/// running and is never joined: Rust has no way to stop a thread, and a test
+/// stuck inside one step must not hold up the run. It keeps its stack until
+/// it ends or the process exits.
+fn run_watched<T: Send + 'static>(
+    limit: Duration,
+    body: impl FnOnce() -> T + Send + 'static,
+) -> Result<Watched<T>, TestRunnerError> {
+    let (done, finished) = std::sync::mpsc::channel();
+    let thread = std::thread::Builder::new()
+        .stack_size(al_runtime::interpreter::dispatch::INTERP_STACK_BYTES)
+        .spawn(move || {
+            let _ = done.send(body());
+        })
+        .map_err(|error| {
+            TestRunnerError::WorkerFailed(format!(
+                "could not start the interpreter thread: {error}"
+            ))
+        })?;
+    match finished.recv_timeout(limit) {
+        Ok(outcome) => {
+            let _ = thread.join();
+            Ok(Watched::Finished(outcome))
+        }
+        // The body panicked, which dropped the sender without a value.
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            let _ = thread.join();
+            Ok(Watched::Panicked)
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(Watched::Overran),
+    }
+}
+
 /// Run one test procedure. Returns its `Eval` result plus, when
 /// `collect_coverage` is set, the dynamic statement/branch coverage it produced
 /// The coverage `Option` is `None` when collection is disabled, keeping the
@@ -493,7 +553,14 @@ fn run_procedure_interp(
     };
 
     let source = text.as_bytes();
-    let root = tree.root_node();
+    // The codeunit's own declaration: the file may declare other objects
+    // (a table first), whose globals and procedures are not the codeunit's.
+    let root = al_runtime::interpreter::dispatch::object_declaration_named(
+        tree.root_node(),
+        source,
+        codeunit_name,
+    )
+    .unwrap_or_else(|| tree.root_node());
     let test_handlers = match configured_handlers(cu, root, source, proc_name, codeunit_name) {
         Ok(handlers) => handlers,
         Err(message) => {
@@ -967,6 +1034,79 @@ mod tests {
         );
     }
 
+    /// A setup table and its card page share a name. With the page indexed
+    /// first, the runtime found the page and failed every record operation
+    /// on the table.
+    #[tokio::test]
+    async fn table_that_shares_its_name_with_a_page_indexed_first_runs_locally() {
+        let page_source = r#"page 50132 "My Setup"
+{
+    SourceTable = "My Setup";
+}
+"#;
+        let table_source = r#"table 50132 "My Setup"
+{
+    fields
+    {
+        field(1; "Primary Key"; Code[10]) { }
+        field(2; Stamp; Text[30]) { }
+    }
+    keys
+    {
+        key(PK; "Primary Key") { }
+    }
+
+    trigger OnInsert()
+    begin
+        Stamp := 'inserted';
+    end;
+}
+"#;
+        let test_source = r#"codeunit 50133 "Setup Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure InsertRunsTrigger()
+    var
+        Setup: Record "My Setup";
+    begin
+        Setup.Init();
+        Setup.Insert(true);
+        Setup.FindFirst();
+        if Setup.Stamp <> 'inserted' then
+            Error('stamp was %1', Setup.Stamp);
+    end;
+}
+"#;
+        let workspace = Workspace::new();
+        for (path, source) in [
+            ("/tmp/MySetup.Page.al", page_source),
+            ("/tmp/MySetup.Table.al", table_source),
+            ("/tmp/SetupTests.Codeunit.al", test_source),
+        ] {
+            workspace
+                .file_index
+                .add_file(std::path::PathBuf::from(path), source.to_string());
+        }
+        let events = collect_events(
+            &InterpMode::with_records(Arc::new(workspace)),
+            vec![TestId {
+                codeunit_id: 50133,
+                codeunit_name: "Setup Tests".to_string(),
+                method_name: Some("InsertRunsTrigger".to_string()),
+            }],
+            RunOptions::default(),
+        )
+        .await;
+        assert!(
+            events.iter().any(|event| {
+                matches!(event, TestEvent::CaseResult { result, .. } if result.status == TestStatus::Pass)
+            }),
+            "the table's record operations must run: {events:?}"
+        );
+    }
+
     #[tokio::test]
     async fn uninitialized_local_uses_default_value() {
         let source = r#"codeunit 50120 "Uninit Tests"
@@ -1325,6 +1465,90 @@ mod tests {
             }
             other => panic!("expected SessionComplete last, got {other:?}"),
         }
+    }
+
+    /// A body stuck in one step, here parked for good, is reported once the
+    /// limit passes, and its thread is left behind.
+    #[test]
+    fn run_watched_stops_waiting_for_a_stuck_body() {
+        let start = Instant::now();
+        let watched = run_watched(Duration::from_millis(100), || loop {
+            std::thread::park();
+        })
+        .expect("start the thread");
+        assert!(matches!(watched, Watched::Overran));
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn run_watched_returns_what_the_body_returns_or_that_it_panicked() {
+        let watched = run_watched(Duration::from_secs(60), || 7).expect("start the thread");
+        assert!(matches!(watched, Watched::Finished(7)));
+        let watched = run_watched(Duration::from_secs(60), || -> u8 { panic!("body panics") })
+            .expect("start the thread");
+        assert!(matches!(watched, Watched::Panicked));
+    }
+
+    /// `B.Contains(N)` with `A.Add(B); B.Add(A); N.Add(E)` locked `B` twice
+    /// on the interpreter thread, and the run waited on that thread for good
+    /// (SEC6-4). The runtime now compares a copy of `B`'s elements, and the
+    /// runner would stop waiting at the deadline plus [`DEADLINE_GRACE`].
+    #[tokio::test]
+    async fn a_test_searching_a_list_in_a_cycle_ends_within_its_deadline() {
+        let source = r#"codeunit 50392 "Cycle Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure ContainsInACycle()
+    var
+        A: List of [Integer];
+        B: List of [Integer];
+        N: List of [Integer];
+        E: List of [Integer];
+    begin
+        A.Add(B);
+        B.Add(A);
+        N.Add(E);
+        if B.Contains(N) then
+            Error('B does not hold N');
+    end;
+}
+"#;
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/CycleTests.al"),
+            source.to_string(),
+        );
+        let session = InterpMode::new(Arc::new(workspace));
+        let tests = vec![TestId {
+            codeunit_id: 50392,
+            codeunit_name: "Cycle Tests".to_string(),
+            method_name: Some("ContainsInACycle".to_string()),
+        }];
+        let opts = RunOptions {
+            timeout_ms: Some(200),
+            ..RunOptions::default()
+        };
+        let start = Instant::now();
+        let events = collect_events(&session, tests, opts).await;
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "{:?}",
+            start.elapsed()
+        );
+        let result = events
+            .iter()
+            .find_map(|event| match event {
+                TestEvent::CaseResult { result, .. } => Some(result),
+                _ => None,
+            })
+            .expect("a case result");
+        assert_eq!(result.status, TestStatus::Pass, "{:?}", result.error);
     }
 
     #[tokio::test]

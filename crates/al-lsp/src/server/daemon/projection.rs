@@ -81,6 +81,14 @@ pub(crate) fn list_target(method: &str) -> Option<ListTarget> {
         .map(|(_, target)| *target)
 }
 
+/// Keys a projected row keeps whether or not `fields` names them.
+///
+/// `object` and `byId` mark a workspace object answered without its members
+/// with these, and `partial_reason` says how to get the members. A projection
+/// that dropped them turned that answer into a row that looked complete, or,
+/// when no row had the requested key, into a usage error about `fields`.
+const KEPT_KEYS: &[&str] = &["partial", "partial_reason"];
+
 /// What the caller asked to be given back.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Projection {
@@ -161,15 +169,18 @@ impl Projection {
     /// nothing in it. A name only some results carry is not refused: rows
     /// leave optional keys out when they are empty (an impact row without a
     /// `proc`, every workspace row without a `package`), so such a name is
-    /// returned in `absentFields` instead.
+    /// returned in `absentFields` instead. A row marked `partial` is missing
+    /// keys it would otherwise have, so a name it lacks is not refused either.
     fn check_fields(&self, rows: &[serde_json::Value]) -> Result<Vec<String>, String> {
         if self.fields.is_empty() || rows.is_empty() {
             return Ok(Vec::new());
         }
         let mut present = std::collections::BTreeSet::new();
+        let mut partial = false;
         for row in rows {
             if let serde_json::Value::Object(object) = row {
                 present.extend(object.keys().map(String::as_str));
+                partial |= object.get("partial") == Some(&serde_json::Value::Bool(true));
             }
         }
         if present.is_empty() {
@@ -181,7 +192,7 @@ impl Projection {
             .filter(|name| !present.contains(name.as_str()))
             .cloned()
             .collect();
-        if absent.len() < self.fields.len() {
+        if absent.len() < self.fields.len() || partial {
             return Ok(absent);
         }
         Err(format!(
@@ -191,8 +202,9 @@ impl Projection {
         ))
     }
 
-    /// Keep only the requested keys of one row. A row that is not an object,
-    /// or a request with no `fields`, passes through whole.
+    /// Keep only the requested keys of one row, and the [`KEPT_KEYS`] it
+    /// has. A row that is not an object, or a request with no `fields`,
+    /// passes through whole.
     fn project_row(&self, row: serde_json::Value) -> serde_json::Value {
         if self.fields.is_empty() {
             return row;
@@ -204,6 +216,11 @@ impl Projection {
         for name in &self.fields {
             if let Some(value) = object.remove(name.as_str()) {
                 kept.insert(name.clone(), value);
+            }
+        }
+        for name in KEPT_KEYS {
+            if let Some(value) = object.remove(*name) {
+                kept.insert((*name).to_string(), value);
             }
         }
         serde_json::Value::Object(kept)
@@ -448,6 +465,64 @@ mod tests {
         .expect("rows come back");
         assert_eq!(projected["items"], serde_json::json!([{ "n": "A" }]));
         assert_eq!(projected["absentFields"], serde_json::json!(["package"]));
+    }
+
+    /// A workspace object answered before the call graph is built has no
+    /// `fields`. `fields: ["fields"]` refused that answer with a usage error,
+    /// and `fields: ["name", "fields"]` projected `partial` away, so the row
+    /// read as a table with no fields. Either way `partial_reason`, which
+    /// says to wait for the members, was lost.
+    #[test]
+    fn a_partial_row_keeps_its_marker_through_a_projection() {
+        let partial = || {
+            serde_json::json!([{
+                "kind": "Table",
+                "id": 50100,
+                "name": "Loyalty Tier",
+                "partial": true,
+                "partial_reason": "ask again with waitForMembers: true",
+            }])
+        };
+        let response = |result| Response {
+            id: 1,
+            result: Some(result),
+            error: None,
+            ..Default::default()
+        };
+
+        let projected = apply(
+            "byId",
+            &serde_json::json!({ "fields": ["fields"] }),
+            response(partial()),
+        );
+        let projected = projected
+            .result
+            .unwrap_or_else(|| panic!("a partial row is refused: {:?}", projected.error));
+        assert_eq!(
+            projected["items"],
+            serde_json::json!([{
+                "partial": true,
+                "partial_reason": "ask again with waitForMembers: true",
+            }])
+        );
+        assert_eq!(projected["absentFields"], serde_json::json!(["fields"]));
+
+        let projected = apply(
+            "byId",
+            &serde_json::json!({ "fields": ["name", "fields"] }),
+            response(partial()),
+        )
+        .result
+        .expect("rows come back");
+        assert_eq!(
+            projected["items"],
+            serde_json::json!([{
+                "name": "Loyalty Tier",
+                "partial": true,
+                "partial_reason": "ask again with waitForMembers: true",
+            }])
+        );
+        assert_eq!(projected["absentFields"], serde_json::json!(["fields"]));
     }
 
     #[test]

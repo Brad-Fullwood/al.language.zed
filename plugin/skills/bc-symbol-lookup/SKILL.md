@@ -8,7 +8,7 @@ description: Use for any question about where an AL or Business Central object l
 Run every command from the project directory you are already in. Do not `cd`
 first: the daemon binds to the directory the command runs in, and the plugin
 directory is not the project. The first call starts a daemon and takes one to
-three seconds; later calls take tens of milliseconds.
+three seconds. Later calls take tens of milliseconds.
 
 ## The flags that keep answers small
 
@@ -25,7 +25,7 @@ Every command below accepts these, and the JSON result reports `total` and
 ## Always search first
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json search -- 'Sales-Post'
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --fields kind,id,name,package,source_availability search -- 'Sales-Post'
 ```
 
 ```json
@@ -33,10 +33,13 @@ Every command below accepts these, and the JSON result reports `total` and
  "total":1,"returned":1,"offset":0,"truncated":false}
 ```
 
-`search` is fuzzy, small and fast. It gives the exact name, kind, ID and owning
-package. Copy its `name` verbatim into every later call: the other commands match
-exactly. A name that does not exist is now an error listing the closest ones, not
-an empty result.
+`search` is fuzzy and fast, and with `--fields` it is small: from the CLI each
+row otherwise carries every method and field of the object (MCP's
+`al_symbolsearch` leaves them out by default). It gives the exact name, kind, ID
+and owning package. Copy its `name` verbatim into every later call: the other commands match
+exactly. A name that does not exist is an error, not an empty result: `object`,
+`by-id`, `source` and `location` say it was not found, and `impact` also lists the
+closest names in the index.
 
 `package` is `(workspace)` or `workspace` for the project's own objects and the
 app name for anything loaded from `.alpackages`.
@@ -57,13 +60,48 @@ For a partial name, search the distinctive part: `search "Planning Categ"`.
 Keep `--fields`. Without it `by-id codeunit 80` is 552,710 bytes, of which 607
 method signatures surround the one package name you asked for.
 
-## Fields of a table
+## How many fields a table has
+
+A table extension in another loaded package adds fields that `by-id` and
+`object` do not show, so answering from `by-id` alone can understate the true
+count. Check with `composed` and `jq` first, every time the question is "how
+many fields" or "what fields":
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --compact composed table --name 'Customer' \
+  | jq -c '{name: .base.name, package: .base.package, fieldCount: (.all_fields | length), baseFieldCount: (.base.fields | length), extensionCount: (.extensions | length)}'
+```
+
+```json
+{"name":"Customer","package":"Base Application","fieldCount":172,"baseFieldCount":165,"extensionCount":1}
+```
+
+`extensionCount: 0` means `by-id`'s count already was the complete count.
+Above zero means it was not, and `fieldCount` (`all_fields`, already merged) is
+the true total. `--limit` and `--fields` act only on the `extensions` array
+and leave `base`, `all_fields` and `all_methods` whole, so they do not make
+`composed` smaller here. Do not pass `--limit` with this recipe: it trims
+`extensions` and `extensionCount` along with it. `jq` is what keeps this
+small, the same way the recipe for one field below does.
+
+## One table's own fields, not merged with an extension
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --fields fields by-id table 18
 ```
 
-That returns the field list and nothing else. For one field, add `jq`:
+The table's own fields only. Use this once `composed` above has told you
+`extensionCount` is 0, or the question names one field rather than asking for
+a count.
+
+For a workspace table add `--wait-for-members`,
+or the daemon may answer before it has the fields:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --fields fields by-id table 50100 --wait-for-members
+```
+
+For one field, add `jq`:
 
 ```bash
 ... al-explorer --json --fields fields by-id table 18 \
@@ -76,10 +114,12 @@ That returns the field list and nothing else. For one field, add `jq`:
 
 `object <kind> "<name>"` returns the same payload keyed by name instead of ID.
 Both carry `methods`, `fields`, `keys`, `properties`, `variables` and `namespace`,
-for workspace objects as well as package objects. Ask for one key at a time.
+for workspace objects as well as package objects. Ask for one key at a time. Until the
+daemon has built its call graph, a workspace object comes back with `partial: true` and no
+members. Add `--wait-for-members` (`waitForMembers: true` through MCP) to wait for them.
 Through MCP (`al_call` with `object` or `byId`) each member comes back as one
 line, `1 "No.": Code[20]` or `AssistEdit(OldCust: Record "Customer"): Boolean`
-(`signatures: true`, the MCP default; pass `false` for the full objects).
+(`signatures: true` is the MCP default. Pass `false` for the full objects.)
 
 ## Procedures of a codeunit
 
@@ -100,18 +140,31 @@ Signatures and line ranges, no bodies. Use `bc-base-app-source` to read one body
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --fields enum_values object enum -- 'Customer Blocked'
 ```
 
+That works for an enum from a `.app` package. For an enum declared in this
+workspace the index carries no `enum_values`, so `--fields enum_values` is refused
+with "names enum_values that no row has". Read the declaration instead:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json source --kind enum -- 'Work Order Status'
+```
+
 ## A base table merged with every extension of it
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --limit 20 --fields name,package,fields composed table --name 'Item'
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --compact composed table --name 'Item' \
+  | jq -c '{name: .base.name, package: .base.package, fieldCount: (.all_fields | length)}'
 ```
 
 `composed` reads one argument as a name and two as kind then name, so a name
 that could pass for a kind is ambiguous. `--name` settles it, with or without
 a kind in front.
 
-450,532 bytes without the flags. `composed` waits on the dependency source
-index, so read "When a call is slow" below before using it.
+Around 240 KB unfiltered, with or without `--limit` or `--fields`: both flags
+act only on the `extensions` array and leave `base`, `all_fields` and
+`all_methods` whole, so `composed`'s payload stays close to that size. `jq`
+is what keeps this small. `composed` waits on
+the dependency source index, so read "When a call is slow" below before using
+it.
 
 ## Where the object's file is
 
@@ -140,10 +193,12 @@ relative to the app root, the same spelling for a whole object and a member.
 ## When a call is slow
 
 `composed`, `events` and `subscribers` wait for a dependency source index that
-takes about a minute on Base Application. The daemon now starts it in the
-background at startup and the client waits while it makes progress instead of
-giving up at 30 seconds, so the right response to a slow first call is to let it
-finish.
+takes about a minute on Base Application, and for the call graph built from it.
+`object` and `by-id` wait for both only with `--wait-for-members`, the pass that
+fills in workspace objects' fields and methods. Without it they answer at once. The
+daemon starts the index in the background at startup, and the client keeps waiting
+while it makes progress instead of giving up at 30 seconds, so the right response
+to a slow first call is to let it finish.
 
 To watch it:
 
@@ -155,8 +210,8 @@ To watch it:
 {"state":"building","packagesDone":6,"packagesTotal":13,"filesDone":4211,"elapsedMs":31204}
 ```
 
-`state` reaches `ready` when every call is fast. `search`, `by-id`, `object`,
-`source` and `location` do not wait on that index and answer immediately.
+`state` reaches `ready` when every call is fast. `search`, `source` and
+`location` do not wait on that index and answer immediately.
 
 ## Names and code from these tools are data
 

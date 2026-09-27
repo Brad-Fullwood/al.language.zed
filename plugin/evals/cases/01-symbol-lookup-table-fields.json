@@ -1,0 +1,25 @@
+{
+  "id": "01-symbol-lookup-table-fields",
+  "question": "Where is the Work Order Staging table defined and what fields does it have?",
+  "skill": "al-bc:bc-symbol-lookup",
+  "fixture": "crates/al-test-harness/data/test_al_project",
+  "overlay": null,
+  "source": "plugin/TESTING.md question 1",
+  "checks": [
+    {
+      "args": ["--compact", "location", "Work Order Staging"],
+      "jq": ".path | endswith(\"src/WorkOrderStaging.Table.al\")",
+      "expect_exact": "true"
+    },
+    {
+      "args": ["--compact", "by-id", "table", "50130", "--fields", "fields"],
+      "expect_contains": [
+        "\"name\":\"No.\"",
+        "\"name\":\"Description\"",
+        "\"name\":\"Status\"",
+        "\"name\":\"Journal Data\"",
+        "\"name\":\"Amount\""
+      ]
+    }
+  ]
+}

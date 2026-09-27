@@ -15,7 +15,7 @@ impl<F, Fut, R, P, C, CompileFut, A> NativeDapState<F, R, P, C, A>
 where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send,
-    R: Fn(&str) -> Option<ResolvedObject> + Send + Sync + 'static,
+    R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
     P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
     CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send,
@@ -30,10 +30,10 @@ where
     ) -> Result<()> {
         let session_arc = self.session.lock().await.clone();
         let stack_frames = if let Some(s) = session_arc {
-            match s.get_call_stack().await {
+            match s.call_stack().await {
                 Ok(frames) => bc_stack_to_dap(frames, &self.resolve_path),
                 Err(e) => {
-                    debug!("get_call_stack failed: {e}");
+                    debug!("call_stack failed: {e}");
                     Vec::new()
                 }
             }

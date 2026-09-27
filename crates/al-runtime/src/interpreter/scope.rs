@@ -26,6 +26,11 @@ pub struct CallFrame {
     /// Source location of the call site (file + line) for stack traces.
     /// `None` for the synthetic top frame.
     pub call_site: Option<(String, u32)>,
+    /// Table code: bare names that are not variables are fields of `Rec`,
+    /// and bare record methods (`Modify()`, `TestField(...)`) act on it.
+    pub implicit_record: bool,
+    /// For a codeunit's globals frame, the instance the globals belong to.
+    pub instance: Option<u64>,
 }
 
 impl CallFrame {
@@ -36,6 +41,8 @@ impl CallFrame {
             locals: HashMap::new(),
             declared_text_lengths: HashMap::new(),
             call_site: None,
+            implicit_record: false,
+            instance: None,
         }
     }
 
@@ -129,10 +136,25 @@ impl ScopeStack {
         self.frames.last_mut()
     }
 
+    /// The frame at `index`, as [`Self::push`] returned it.
+    pub fn frame_mut(&mut self, index: usize) -> Option<&mut CallFrame> {
+        self.frames.get_mut(index)
+    }
+
     pub fn has_object_globals(&self, object: &str) -> bool {
         self.frames
             .iter()
             .any(|frame| frame.is_object_globals() && frame.object.eq_ignore_ascii_case(object))
+    }
+
+    /// The instance of `object` whose globals the running code reads: that
+    /// of the innermost globals frame of `object`.
+    pub fn object_instance(&self, object: &str) -> Option<u64> {
+        self.frames
+            .iter()
+            .rev()
+            .find(|frame| frame.is_object_globals() && frame.object.eq_ignore_ascii_case(object))
+            .and_then(|frame| frame.instance)
     }
 
     pub fn lookup(&self, name: &str) -> Option<&Value> {

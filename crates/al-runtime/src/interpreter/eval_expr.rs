@@ -10,6 +10,7 @@ use tree_sitter::Node;
 
 use super::error_info;
 use crate::interpreter::chain;
+use crate::interpreter::dispatch::table_code::{self, TableCode};
 use crate::interpreter::dispatch::DispatchCtx;
 use crate::interpreter::indexing;
 use crate::interpreter::records;
@@ -79,27 +80,23 @@ fn eval_expr_inner(
     ctx: &mut DispatchCtx,
 ) -> Eval {
     match node.kind() {
-        // Literal forms — the AL grammar uses `integer`, `decimal`, `string`
-        // as the actual node kinds (not `integer_literal` etc.).
-        "integer_literal" | "integer" => match utf8_text(node, source) {
+        // Literals: the grammar's kinds are `integer`, `decimal` and `string`.
+        "integer" => match utf8_text(node, source) {
             Some(t) => match int_literal_value(t) {
                 Some(v) => Eval::Normal(v),
                 None => Eval::Error(error_info(format!("malformed integer literal: {t}"))),
             },
             None => Eval::Error(error_info("invalid integer literal text")),
         },
-        "decimal_literal" | "decimal" => {
-            match utf8_text(node, source).and_then(|t| t.parse::<Decimal>().ok()) {
-                Some(n) => Eval::Normal(Value::Decimal(n)),
-                None => Eval::Error(error_info("malformed decimal literal")),
-            }
-        }
-        "boolean_literal" => eval_literal(node, source),
+        "decimal" => match utf8_text(node, source).and_then(|t| t.parse::<Decimal>().ok()) {
+            Some(n) => Eval::Normal(Value::Decimal(n)),
+            None => Eval::Error(error_info("malformed decimal literal")),
+        },
         // Date / Time / DateTime literals — `20240701D`, `063030T`. The
         // lexer tokenises these; evaluation maps them onto the day/ms carriers.
         "date_literal" => eval_date_literal(node, source),
         "time_literal" => eval_time_literal(node, source),
-        "string_literal" | "string" | "verbatim_string" => {
+        "string" | "verbatim_string" => {
             let text = utf8_text(node, source).unwrap_or("");
             Eval::Normal(Value::Text(unescape_al_string(text)))
         }
@@ -131,14 +128,17 @@ fn eval_expr_inner(
         // member as an ordinary expression so calls, enum scopes, variables,
         // and ranges use exactly the same semantics as expressions elsewhere.
         "bracketed_block" => eval_set_literal(node, source, stack, ctx),
-        "identifier" | "variable_reference" | "name" => match utf8_text(node, source) {
+        "identifier" | "name" => match utf8_text(node, source) {
             Some(name) => {
-                // Boolean keywords may appear as identifiers in some grammar versions.
+                // `true` and `false` parse as names.
                 match name.to_ascii_lowercase().as_str() {
                     "true" => return Eval::Normal(Value::Boolean(true)),
                     "false" => return Eval::Normal(Value::Boolean(false)),
                     _ => {}
                 }
+                // Declarations bind `"My Limit"` as `My Limit`.
+                let name = name.unquote_identifier();
+                let name = name.as_ref();
                 match stack.lookup(name) {
                     Some(v) => Eval::Normal(v.clone()),
                     // Niladic clock builtins may appear without parentheses
@@ -146,13 +146,45 @@ fn eval_expr_inner(
                     // not shadowed by a bound variable of the same name.
                     None => match niladic_clock_builtin(name, ctx) {
                         Some(v) => Eval::Normal(v),
-                        None => Eval::Error(error_info(format!("unbound identifier: {name}"))),
+                        None => {
+                            records::implicit_field_get(name, stack, ctx).unwrap_or_else(|| {
+                                Eval::Error(error_info(format!("unbound identifier: {name}")))
+                            })
+                        }
                     },
                 }
             }
             None => Eval::Error(error_info("invalid identifier text")),
         },
+        // A variable, parameter or field named `Value`, `Code`, `Page` or
+        // another object or type word parses as a keyword node. It reads as
+        // a name when something binds it: `Page.RunModal` and `Database::X`
+        // receivers are handled before they reach here.
+        "object_keyword" | "type_keyword" => {
+            let name = utf8_text(node, source).unwrap_or_default();
+            match stack.lookup(name) {
+                Some(value) => Eval::Normal(value.clone()),
+                None => niladic_clock_builtin(name, ctx)
+                    .map(Eval::Normal)
+                    .or_else(|| records::implicit_field_get(name, stack, ctx))
+                    .unwrap_or_else(|| {
+                        Eval::Error(error_info(format!(
+                            "unsupported expression kind: {}",
+                            node.kind()
+                        )))
+                    }),
+            }
+        }
         "unary_expression" => eval_unary(node, source, stack, ctx),
+        // `-1:` or `-2.5:` in a case: the grammar makes a label with a leading
+        // minus one token, so its text is evaluated as an expression.
+        "signed_case_label" => {
+            let text = utf8_text(node, source).unwrap_or_default().trim();
+            match indexing::eval_standalone_expression(text, stack, ctx) {
+                Ok(value) => Eval::Normal(value),
+                Err(error) => error,
+            }
+        }
         // Anything else: signal a clear error rather than silently
         // returning a default — failing loud is better than failing wrong.
         other => Eval::Error(error_info(format!("unsupported expression kind: {other}"))),
@@ -194,28 +226,6 @@ fn int_literal_value(text: &str) -> Option<Value> {
 
 fn named_child(node: Node<'_>, index: usize) -> Option<Node<'_>> {
     node.named_child(index)
-}
-
-fn eval_literal(node: Node<'_>, source: &[u8]) -> Eval {
-    let Some(text) = utf8_text(node, source) else {
-        return Eval::Error(error_info("invalid literal text"));
-    };
-    match node.kind() {
-        "integer_literal" => match int_literal_value(text) {
-            Some(v) => Eval::Normal(v),
-            None => Eval::Error(error_info(format!("malformed integer literal: {text}"))),
-        },
-        "decimal_literal" => match text.parse::<Decimal>() {
-            Ok(n) => Eval::Normal(Value::Decimal(n)),
-            Err(_) => Eval::Error(error_info(format!("malformed decimal literal: {text}"))),
-        },
-        "boolean_literal" => match text.eq_ignore_ascii_case("true") {
-            true => Eval::Normal(Value::Boolean(true)),
-            false => Eval::Normal(Value::Boolean(false)),
-        },
-        "string_literal" => Eval::Normal(Value::Text(unescape_al_string(text))),
-        other => Eval::Error(error_info(format!("unknown literal kind: {other}"))),
-    }
 }
 
 fn eval_unary(
@@ -294,7 +304,7 @@ fn eval_set_literal(
             other => return other,
         }
     }
-    Eval::Normal(Value::List(values))
+    Eval::Normal(Value::list(values))
 }
 
 /// Split on commas at the set literal's top level while respecting AL strings,
@@ -522,10 +532,40 @@ fn eval_postfix(
     // Record field read: `Rec."Field"` (a `member_suffix`, not a call) where the
     // receiver resolves to a bound `Value::Record`.
     if let Some((recv, field)) = records::record_field_access(node, source) {
-        if matches!(stack.lookup(&recv), Some(Value::Record(_))) {
-            if let Some((table, handle)) = records::record_binding(&recv, stack, ctx) {
-                return records::field_get(&table, handle, &field, ctx);
+        match stack.lookup(&recv) {
+            Some(Value::Record(_)) => {
+                if let Some((table, handle)) = records::record_binding(&recv, stack, ctx) {
+                    // A record method or table procedure may drop its
+                    // parentheses too (`R.Insert;`, `if R.FindFirst then`).
+                    // A field of the same name wins.
+                    let method = records::supports_record_method(&field)
+                        || table_code::declares(ctx, &table.name, TableCode::Procedure(&field));
+                    if method && !records::declares_field(&table, &field, ctx) {
+                        return crate::interpreter::eval_stmt::eval_call_parts(
+                            Some(&recv),
+                            &field,
+                            None,
+                            source,
+                            stack,
+                            ctx,
+                        );
+                    }
+                    return records::field_get(&table, handle, &field, ctx);
+                }
             }
+            // A method with no arguments may drop its parentheses:
+            // `S.Length`, `Names.Count`.
+            Some(_) if node.named_child_count() == 2 => {
+                return crate::interpreter::eval_stmt::eval_call_parts(
+                    Some(&recv),
+                    &field,
+                    None,
+                    source,
+                    stack,
+                    ctx,
+                );
+            }
+            _ => {}
         }
     }
 
@@ -843,6 +883,31 @@ fn eval_expression_node(
             return Eval::Error(error_info(
                 "expression: cannot resolve LHS name for assignment",
             ));
+        }
+
+        // In table code a bare field name that is not a variable is a field
+        // of the implicit record.
+        if stack.lookup(&lhs_name).is_none() {
+            let field_value = match kind {
+                AssignKind::Plain => Some(rhs_val.clone()),
+                AssignKind::Compound(base_op) => {
+                    match records::implicit_field_get(&lhs_name, stack, ctx) {
+                        Some(Eval::Normal(current)) => {
+                            match apply_binary(base_op, current, rhs_val.clone()) {
+                                Eval::Normal(value) => Some(value),
+                                other => return other,
+                            }
+                        }
+                        Some(other) => return other,
+                        None => None,
+                    }
+                }
+            };
+            if let Some(value) = field_value {
+                if let Some(result) = records::implicit_field_set(&lhs_name, &value, stack, ctx) {
+                    return result;
+                }
+            }
         }
 
         // Compound assignment (`x += rhs`) is `x := x <op> rhs`: load the
@@ -1165,7 +1230,7 @@ fn extract_identifier_name(node: Node<'_>, source: &[u8]) -> Option<String> {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         match child.kind() {
-            "identifier" | "name" | "variable_reference" => {
+            "identifier" | "name" => {
                 return child
                     .utf8_text(source)
                     .ok()
@@ -1507,6 +1572,14 @@ pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
         }
     }
 
+    if let ("+", Value::Text(a) | Value::Code(a), Value::Text(b) | Value::Code(b)) =
+        (&op[..], &left, &right)
+    {
+        let size = a.len().saturating_add(b.len());
+        if let Err(message) = value::check_text_size("Text concatenation", size) {
+            return Eval::Error(error_info(message));
+        }
+    }
     match (&op[..], left, right) {
         ("+", Value::Text(a), Value::Text(b)) => Eval::Normal(Value::Text(format!("{a}{b}"))),
         ("+", Value::Text(a), Value::Code(b)) => Eval::Normal(Value::Text(format!("{a}{b}"))),
@@ -1527,7 +1600,10 @@ pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
             start: Box::new(start),
             end: Box::new(end),
         }),
-        ("in", value, Value::List(members)) | ("in", value, Value::Array(members)) => {
+        ("in", value, Value::List(members)) => {
+            apply_binary("in", value, Value::Array(members.snapshot()))
+        }
+        ("in", value, Value::Array(members)) => {
             for member in members {
                 let matched = match member {
                     Value::Range { start, end } => match value_in_range(&value, &start, &end) {
@@ -2415,7 +2491,7 @@ mod tests {
             ok(apply_binary(
                 "in",
                 Value::Integer(10),
-                Value::List(vec![range.clone()])
+                Value::list(vec![range.clone()])
             )),
             Value::Boolean(true)
         );
@@ -2423,7 +2499,7 @@ mod tests {
             ok(apply_binary(
                 "in",
                 Value::Integer(20),
-                Value::List(vec![range.clone()])
+                Value::list(vec![range.clone()])
             )),
             Value::Boolean(true)
         );
@@ -2431,7 +2507,7 @@ mod tests {
             ok(apply_binary(
                 "in",
                 Value::Integer(21),
-                Value::List(vec![range])
+                Value::list(vec![range])
             )),
             Value::Boolean(false)
         );
@@ -2443,7 +2519,7 @@ mod tests {
             ok(apply_binary(
                 "in",
                 Value::Integer(2),
-                Value::List(vec![
+                Value::list(vec![
                     Value::Integer(1),
                     Value::Decimal(dec!(2.0)),
                     Value::Integer(3),

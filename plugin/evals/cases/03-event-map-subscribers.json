@@ -1,0 +1,16 @@
+{
+  "id": "03-event-map-subscribers",
+  "question": "Who subscribes to the OnAfterProcess event?",
+  "skill": "al-bc:bc-event-map",
+  "fixture": "crates/al-test-harness/data/test_al_project",
+  "overlay": "event-subscriber-overlay",
+  "source": "plugin/TESTING.md question 3",
+  "checks": [
+    {
+      "args": ["--compact", "subscribers", "OnAfterProcess"],
+      "jq": ".[0].objectName",
+      "expect_exact": "Work Order Subscribers",
+      "expect_contains": ["\"resolved\":true", "\"targetObjectName\":\"Test Event Publisher\""]
+    }
+  ]
+}

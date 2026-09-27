@@ -120,6 +120,8 @@ impl From<tower_lsp::lsp_types::SymbolKind> for AlSymbolKind {
     }
 }
 
+// `DocumentSymbol::deprecated` is itself deprecated, but the struct literal
+// has to name it.
 #[allow(deprecated)]
 impl From<AlDocumentSymbol> for tower_lsp::lsp_types::DocumentSymbol {
     fn from(s: AlDocumentSymbol) -> Self {

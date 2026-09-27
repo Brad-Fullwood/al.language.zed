@@ -799,24 +799,33 @@ fn binary_checksum_asset_is_produced_by_the_release_workflow() {
         "release.yml must upload binary-checksums.txt as a release asset; \
          building it without uploading leaves the check unreachable"
     );
-    for leg in ["sha256sum al-lsp al-explorer", "Get-FileHash"] {
+    // Every staged file, not the two executables alone: al-lsp loads
+    // `bridge/AlBridge.dll` and its neighbours into its own process.
+    for leg in [
+        "find . -type f",
+        "Get-ChildItem -Path $stage -Recurse -File",
+    ] {
         assert!(
             workflow.contains(leg),
-            "release.yml must hash the staged binaries on every platform \
+            "release.yml must hash every staged file on every platform \
              (missing: {leg:?})"
         );
     }
 
-    // The keys the extension looks up are `<asset>/<binary>`. Both packaging
+    // The keys the extension looks up are `<asset>/<path>`. Both packaging
     // legs must write that shape, or every lookup misses and the download is
     // rejected as uncovered.
     assert!(
         workflow.contains(r#"sed "s|  |  $OUT.tar.gz/|""#),
-        "the Unix packaging step must key digests by <archive>/<binary>"
+        "the Unix packaging step must key digests by <archive>/<path>"
     );
     assert!(
-        workflow.contains(r#""$hash  $archive/$name""#),
-        "the Windows packaging step must key digests by <archive>/<binary>"
+        workflow.contains(r#""$hash  $archive/$relative""#),
+        "the Windows packaging step must key digests by <archive>/<path>"
+    );
+    assert!(
+        lib.contains("check_bridge_files("),
+        "src/lib.rs must check the extracted bridge against the same list"
     );
 
     // The attestation's subjects come from checksums.txt, and the extension

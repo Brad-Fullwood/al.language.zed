@@ -75,6 +75,35 @@ pub(super) fn find_procedure_node<'a>(
     find_procedure_in_node(root, source, &proc_name_lower)
 }
 
+/// Every procedure or trigger declared under `root` with the lowercase name
+/// `proc_name_lower`, in document order. Each field of a table declares its
+/// own `OnValidate` and a codeunit may overload a name, and the graph gives
+/// all of them one node.
+pub(super) fn find_procedures_in_node<'a>(
+    root: tree_sitter::Node<'a>,
+    source: &[u8],
+    proc_name_lower: &str,
+) -> Vec<tree_sitter::Node<'a>> {
+    let mut found = Vec::new();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
+            let named = node
+                .child_by_field_name("name")
+                .and_then(|name| name.utf8_text(source).ok())
+                .is_some_and(|name| name.unquote_identifier().to_lowercase() == proc_name_lower);
+            if named {
+                found.push(node);
+            }
+            continue;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
+    }
+    found.sort_by_key(|node| node.start_byte());
+    found
+}
+
 pub(super) fn find_procedure_in_node<'a>(
     root: tree_sitter::Node<'a>,
     source: &[u8],

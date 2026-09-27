@@ -4,7 +4,7 @@
 //! in `al-source`, which depends on this crate — so al-runtime's own unit
 //! tests cannot use it without a dependency cycle. This lightweight mock
 //! parses AL source on demand via `al-syntax` (a dev-dependency) and serves
-//! the four `ProcedureSource` lookups the dispatcher needs. It is aliased to
+//! the `ProcedureSource` lookups the dispatcher needs. It is aliased to
 //! the name `Workspace` in the test modules so the original fixtures
 //! (`Workspace::new()`, `ws.file_index.add_file(..)`) compile unchanged.
 
@@ -14,21 +14,44 @@ use std::sync::Mutex;
 
 use al_types::ProcedureSource;
 
+/// One object a file declares: its kind (`table`, `page`, ...) and name.
+struct DeclaredObject {
+    kind: String,
+    name: String,
+}
+
 #[derive(Default)]
 pub struct MockFileIndex {
-    /// (path, source text, object name)
-    entries: Mutex<Vec<(PathBuf, String, String)>>,
+    /// (path, source text, every object the file declares)
+    entries: Mutex<Vec<(PathBuf, String, Vec<DeclaredObject>)>>,
 }
 
 impl MockFileIndex {
     /// Mirrors `FileIndex::add_file(&self, PathBuf, String)`: stores the source
-    /// and scrapes the object name from the object-header line.
+    /// and every object it declares, as the file index does.
     pub fn add_file(&self, path: PathBuf, content: String) {
-        let object_name = scrape_object_name(&content);
+        let mut objects = declared_objects(&content);
+        if objects.is_empty() {
+            objects.push(DeclaredObject {
+                kind: String::new(),
+                name: scrape_object_name(&content),
+            });
+        }
+        self.entries.lock().unwrap().push((path, content, objects));
+    }
+
+    /// The first file declaring an object named `name` that `accept` takes.
+    fn find(&self, name: &str, accept: impl Fn(&DeclaredObject) -> bool) -> Option<PathBuf> {
         self.entries
             .lock()
             .unwrap()
-            .push((path, content, object_name));
+            .iter()
+            .find(|(_, _, objects)| {
+                objects
+                    .iter()
+                    .any(|obj| obj.name.eq_ignore_ascii_case(name) && accept(obj))
+            })
+            .map(|(p, _, _)| p.clone())
     }
 }
 
@@ -46,13 +69,13 @@ impl MockSource {
 
 impl ProcedureSource for MockSource {
     fn find_by_object_name(&self, name: &str) -> Option<PathBuf> {
-        self.file_index
-            .entries
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|(_, _, obj)| obj.eq_ignore_ascii_case(name))
-            .map(|(p, _, _)| p.clone())
+        self.file_index.find(name, |_| true)
+    }
+
+    fn find_object_of_kind(&self, name: &str, kinds: &[&str]) -> Option<PathBuf> {
+        self.file_index.find(name, |obj| {
+            kinds.iter().any(|kind| obj.kind.eq_ignore_ascii_case(kind))
+        })
     }
 
     fn iter_paths(&self) -> Vec<PathBuf> {
@@ -79,8 +102,33 @@ impl ProcedureSource for MockSource {
             .unwrap()
             .iter()
             .find(|(path, _, _)| path == p)
-            .map(|(_, _, obj)| obj.clone())
+            .and_then(|(_, _, objects)| objects.first().map(|obj| obj.name.clone()))
     }
+}
+
+/// Every object declaration in `src`, in order.
+fn declared_objects(src: &str) -> Vec<DeclaredObject> {
+    let parsed = al_syntax::parser::AlParser::parse_quick(src);
+    let root = parsed.tree.root_node();
+    let mut cursor = root.walk();
+    let objects = root
+        .named_children(&mut cursor)
+        .filter(|node| node.kind() == "object_declaration")
+        .filter_map(|node| {
+            let name = node
+                .child_by_field_name("name")?
+                .utf8_text(src.as_bytes())
+                .ok()?;
+            let kind = node.child_by_field_name("kind").map(|kind| kind.kind());
+            Some(DeclaredObject {
+                kind: kind
+                    .map(|kind| kind.strip_prefix("kw_").unwrap_or(kind).to_string())
+                    .unwrap_or_default(),
+                name: name.unquote_identifier().into_owned(),
+            })
+        })
+        .collect();
+    objects
 }
 
 /// Extract the object name from an AL object header (e.g. `codeunit 50999 "Helper"`).

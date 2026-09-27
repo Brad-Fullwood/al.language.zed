@@ -18,11 +18,10 @@
 //! | `case_statement`              | CASE expr OF … END                  |
 //! | `begin_end_block`             | BEGIN … END                         |
 //! | `statement_list`              | sequence of statements              |
-//! | `assignment_statement`        | x := expr                           |
 //! | `exit_statement`              | EXIT [( expr )]                     |
 //! | `expression_statement`        | expr;  (side-effects only)          |
 //! | `asserterror_statement`       | ASSERTERROR stmt                    |
-//! | anything else                 | treated as an expression node       |
+//! | anything else                 | an expression, `x := expr` included |
 //!
 //! ## Error propagation
 //!
@@ -33,10 +32,11 @@
 use al_syntax::IdentifierText;
 use tree_sitter::Node;
 
-use super::error_info;
+use super::{error_info, eval_error};
 use crate::interpreter::chain;
 use crate::interpreter::dispatch::{dispatch_call_scoped, DispatchCtx, MAX_AST_DEPTH};
 use crate::interpreter::eval_expr::eval_expr;
+use crate::interpreter::indexing;
 use crate::interpreter::records;
 use crate::interpreter::scope::{Eval, ScopeStack};
 use crate::interpreter::value::{ErrorInfo, Value};
@@ -96,7 +96,6 @@ fn eval_stmt_inner(
         "foreach_statement" => eval_foreach(node, source, stack, ctx),
         "repeat_statement" => eval_repeat(node, source, stack, ctx),
         "case_statement" => eval_case(node, source, stack, ctx),
-        "assignment_statement" => eval_assignment(node, source, stack, ctx),
         "exit_statement" => eval_exit(node, source, stack, ctx),
         // Handle the grammar's dedicated `break` and `continue` nodes.
         "break_statement" => Eval::Break,
@@ -385,7 +384,7 @@ fn eval_foreach(
     ctx: &mut DispatchCtx,
 ) -> Eval {
     let var_node = node
-        .child_by_field_name("variable")
+        .child_by_field_name("iterator")
         .or_else(|| named_stmt_child(node, 0));
     let list_node = node
         .child_by_field_name("collection")
@@ -411,7 +410,9 @@ fn eval_foreach(
     };
 
     let items = match list_val {
-        Value::List(v) | Value::Array(v) => v,
+        // A snapshot: the body may change the list it walks.
+        Value::List(v) => v.snapshot(),
+        Value::Array(v) => v,
         other => {
             return Eval::Error(error_info(format!(
                 "foreach: expected List or Array, got {}",
@@ -499,7 +500,7 @@ fn eval_repeat(
 
 fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut DispatchCtx) -> Eval {
     let selector_node = match node
-        .child_by_field_name("subject")
+        .child_by_field_name("value")
         .or_else(|| named_stmt_child(node, 0))
     {
         Some(n) => n,
@@ -521,7 +522,7 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
     let arms: Vec<Node> = children
         .iter()
         .copied()
-        .filter(|child| matches!(child.kind(), "case_arm" | "case_branch"))
+        .filter(|child| child.kind() == "case_branch")
         .collect();
     for (index, arm) in arms.iter().enumerate() {
         ctx.cov_ensure_path(
@@ -604,63 +605,6 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
     }
 }
 
-fn eval_assignment(
-    node: Node<'_>,
-    source: &[u8],
-    stack: &mut ScopeStack,
-    ctx: &mut DispatchCtx,
-) -> Eval {
-    let lhs_node = match node
-        .child_by_field_name("target")
-        .or_else(|| named_stmt_child(node, 0))
-    {
-        Some(n) => n,
-        None => return Eval::Error(error_info("assignment: missing LHS")),
-    };
-    let rhs_node = match node
-        .child_by_field_name("value")
-        .or_else(|| named_stmt_child(node, 1))
-    {
-        Some(n) => n,
-        None => return Eval::Error(error_info("assignment: missing RHS")),
-    };
-
-    let rhs_val = match eval_expr(rhs_node, source, stack, ctx) {
-        Eval::Normal(v) => v,
-        other => return other,
-    };
-
-    // Record field assignment (`Rec."Field" := value`) — handled before the
-    // plain-identifier path so the receiver record isn't overwritten wholesale.
-    if let Some(result) = records::try_field_assign(lhs_node, source, &rhs_val, stack, ctx) {
-        return result;
-    }
-
-    let lhs_name = match lhs_node.utf8_text(source) {
-        Ok(t) => t.unquote_identifier().to_ascii_lowercase(),
-        Err(_) => return Eval::Error(error_info("assignment: invalid LHS identifier")),
-    };
-
-    let capacity = stack.declared_text_length(&lhs_name);
-    if let Some(slot) = stack.lookup_mut(&lhs_name) {
-        // Preserve the slot's declared type (Code caselessness / integer width)
-        // rather than adopting the RHS's — see `coerce_into_slot`.
-        match Value::coerce_into_slot(slot, rhs_val, capacity) {
-            Ok(value) => *slot = value,
-            Err(message) => return Eval::Error(error_info(&message)),
-        }
-    } else {
-        // AL has no implicit declaration: assigning to an unknown name is a
-        // compile error in BC, so a typo'd LHS must fail loudly instead of
-        // silently creating a fresh variable.
-        return Eval::Error(error_info(format!(
-            "assignment to unbound identifier '{lhs_name}' — variables must be declared"
-        )));
-    }
-
-    Eval::Normal(Value::Empty)
-}
-
 fn eval_exit(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut DispatchCtx) -> Eval {
     if let Some(expr) = named_stmt_child(node, 0) {
         // The AL grammar represents `exit(value)` as:
@@ -727,13 +671,6 @@ fn eval_expression_stmt(
 ) -> Eval {
     let effective = resolve_to_call_node(node);
     match effective.kind() {
-        "member_access_expression" | "method_call_expression" | "call_expression" => {
-            // Mark statement position: a `Rec.Get(...)`/`Rec.FindFirst()` miss
-            // must raise here (BC) instead of silently yielding false. The
-            // record dispatcher consumes and resets the marker.
-            ctx.stmt_position = true;
-            eval_call(effective, source, stack, ctx)
-        }
         // The AL grammar expresses bare calls as `postfix_expression`:
         //   primary_expression + call_suffix   → ForwardCall(args)
         //   primary_expression + member_call_suffix → Recv.Call(args)
@@ -741,10 +678,18 @@ fn eval_expression_stmt(
         // We detect calls by checking for a call_suffix / member_call_suffix child.
         "postfix_expression" => {
             if is_call_postfix(effective) {
+                // Mark statement position: a `Rec.Get(...)`/`Rec.FindFirst()` miss
+                // must raise here (BC) instead of silently yielding false. The
+                // record dispatcher consumes and resets the marker.
                 ctx.stmt_position = true;
                 eval_call(effective, source, stack, ctx)
             } else {
-                eval_expr(node, source, stack, ctx)
+                // A method written without parentheses (`R.Insert;`) is in
+                // statement position as well.
+                ctx.stmt_position = true;
+                let result = eval_expr(node, source, stack, ctx);
+                ctx.stmt_position = false;
+                result
             }
         }
         _ => eval_expr(node, source, stack, ctx),
@@ -822,7 +767,13 @@ pub(crate) fn eval_call_parts(
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Eval {
-    let receiver = receiver.map(str::to_string);
+    // In table code a bare record method (`Modify()`, `TestField(Name)`)
+    // acts on the implicit record.
+    let receiver = receiver.map(str::to_string).or_else(|| {
+        (stack.top().is_some_and(|frame| frame.implicit_record)
+            && records::supports_record_method(proc_name))
+        .then(|| records::IMPLICIT_RECORD.to_string())
+    });
     let proc_name = proc_name.to_string();
     // Argument evaluation clears the statement marker; builtins whose failure
     // differs by position (a statement `Evaluate(...)` raises) need it back.
@@ -868,7 +819,10 @@ pub(crate) fn eval_call_parts(
                     Err(ArgsShort::Error(e)) => return Eval::Error(e),
                     Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
                 };
-                return records::dispatch_list_method(recv, &proc_name, args, stack);
+                let result =
+                    records::dispatch_list_method(recv, &proc_name, args, statement, stack, ctx);
+                let written = apply_var_writebacks(args_node, source, stack, ctx);
+                return first_error(result, written);
             }
             Some(Value::Text(_) | Value::Code(_)) if records::supports_text_method(&proc_name) => {
                 let recv = recv.to_string();
@@ -893,14 +847,40 @@ pub(crate) fn eval_call_parts(
                         Ok(Some(value)) => {
                             ctx.var_writebacks.clear();
                             ctx.var_writebacks.push((1, value));
-                            apply_var_writebacks(args_node, source, stack, ctx);
-                            Eval::Normal(Value::Boolean(true))
+                            apply_var_writebacks(args_node, source, stack, ctx)
+                                .unwrap_or(Eval::Normal(Value::Boolean(true)))
                         }
                         Ok(None) => Eval::Normal(Value::Boolean(false)),
                         Err(error) => crate::interpreter::eval_error(error),
                     };
                 }
-                return records::dispatch_dict_method(&recv, &proc_name, args, stack);
+                let result = records::dispatch_dict_method(&recv, &proc_name, args, stack, ctx);
+                let written = apply_var_writebacks(args_node, source, stack, ctx);
+                return first_error(result, written);
+            }
+            Some(Value::Json(json))
+                if crate::interpreter::json::supports_json_method(json.kind, &proc_name) =>
+            {
+                let recv = recv.to_string();
+                let args = match eval_args_opt(args_node, source, stack, ctx) {
+                    Ok(v) => v,
+                    Err(ArgsShort::Error(e)) => return Eval::Error(e),
+                    Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
+                };
+                let result = crate::interpreter::json::dispatch_json_method(
+                    &recv, &proc_name, args, statement, stack, ctx,
+                );
+                let written = apply_var_writebacks(args_node, source, stack, ctx);
+                return first_error(result, written);
+            }
+            Some(Value::TextBuilder(_)) if records::supports_textbuilder_method(&proc_name) => {
+                let recv = recv.to_string();
+                let args = match eval_args_opt(args_node, source, stack, ctx) {
+                    Ok(v) => v,
+                    Err(ArgsShort::Error(e)) => return Eval::Error(e),
+                    Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
+                };
+                return records::dispatch_textbuilder_method(&recv, &proc_name, args, stack);
             }
             Some(Value::Option { .. })
                 if crate::interpreter::enums::supports_enum_method(&proc_name) =>
@@ -915,16 +895,33 @@ pub(crate) fn eval_call_parts(
                     &value, &proc_name, &args, ctx,
                 );
             }
-            Some(Value::Codeunit { object_name }) => {
+            Some(Value::Codeunit {
+                object_name,
+                instance,
+            }) => {
                 let object_name = object_name.clone();
+                // The variable's instance, given on its first call so its
+                // globals persist between calls and copies share them.
+                let instance = match instance {
+                    Some(instance) => *instance,
+                    None => {
+                        ctx.next_codeunit_instance += 1;
+                        let fresh = ctx.next_codeunit_instance;
+                        if let Some(Value::Codeunit { instance, .. }) = stack.lookup_mut(recv) {
+                            *instance = Some(fresh);
+                        }
+                        fresh
+                    }
+                };
                 let args = match eval_args_opt(args_node, source, stack, ctx) {
                     Ok(v) => v,
                     Err(ArgsShort::Error(e)) => return Eval::Error(e),
                     Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
                 };
+                ctx.pending_instance = Some(instance);
                 let result = dispatch_call_scoped(Some(&object_name), &proc_name, args, stack, ctx);
-                apply_var_writebacks(args_node, source, stack, ctx);
-                return result;
+                let written = apply_var_writebacks(args_node, source, stack, ctx);
+                return first_error(result, written);
             }
             _ => {}
         }
@@ -938,42 +935,81 @@ pub(crate) fn eval_call_parts(
 
     ctx.stmt_position = statement;
     let result = dispatch_call_scoped(receiver.as_deref(), &proc_name, args, stack, ctx);
-    apply_var_writebacks(args_node, source, stack, ctx);
-    result
+    let written = apply_var_writebacks(args_node, source, stack, ctx);
+    first_error(result, written)
+}
+
+/// A call's result, or the error writing its `var` arguments back raised
+/// when the call itself succeeded.
+fn first_error(result: Eval, written: Option<Eval>) -> Eval {
+    match written {
+        Some(error) if !result.is_error() => error,
+        _ => result,
+    }
 }
 
 /// After a workspace procedure returns, propagate the final values of its
 /// `var` (by-reference) parameters back into the caller's argument variables.
 /// `dispatch_workspace_procedure` populates `ctx.var_writebacks` with
-/// `(arg_index, final_value)`; here we map each index to its argument
-/// expression and, when that argument is a plain variable reference (a valid
-/// lvalue), overwrite the caller's binding. Arguments that are not simple
-/// variables (literals, computed expressions, field access) are skipped —
-/// they have no single slot to write back to, matching AL, which only permits
-/// lvalues in `var` argument positions.
+/// `(arg_index, final_value)`, and each value is written to its argument
+/// expression by [`write_var_argument`]. `Some` carries the error of a write
+/// that failed.
+#[must_use]
 fn apply_var_writebacks(
     args_node: Option<Node<'_>>,
     source: &[u8],
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
-) {
+) -> Option<Eval> {
     if ctx.var_writebacks.is_empty() {
-        return;
+        return None;
     }
     let writebacks = std::mem::take(&mut ctx.var_writebacks);
-    let Some(an) = args_node else {
-        return;
-    };
+    let an = args_node?;
     let arg_nodes = arg_expr_nodes(an);
     for (idx, val) in writebacks {
-        if let Some(node) = arg_nodes.get(idx) {
-            if let Some(name) = simple_lvalue_name(*node, source) {
-                if let Some(slot) = stack.lookup_mut(&name) {
-                    *slot = val;
-                }
-            }
+        let Some(node) = arg_nodes.get(idx) else {
+            continue;
+        };
+        if let error @ Eval::Error(_) = write_var_argument(*node, source, val, stack, ctx) {
+            return Some(error);
         }
     }
+    None
+}
+
+/// Write `value` to the argument `node` of a `var` parameter: a variable, an
+/// array element or a character of a Text (`A[i]`, as `A[i] := value` writes
+/// it), a record field (`Rec.Name`), or a bare field name in table code. AL
+/// accepts only these in a `var` position (alc AL0130), and any other
+/// argument is an error that names it.
+fn write_var_argument(
+    node: Node<'_>,
+    source: &[u8],
+    value: Value,
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    if let Some((name, suffix)) = indexing::indexed_variable(node, source) {
+        let replace = |_current: Value, value: Value| Eval::Normal(value);
+        return indexing::write_element(&name, suffix, source, value, &replace, stack, ctx);
+    }
+    let written = match simple_lvalue_name(node, source) {
+        Some(name) => match stack.lookup_mut(&name) {
+            Some(slot) => {
+                *slot = value;
+                return Eval::Normal(Value::Empty);
+            }
+            None => records::implicit_field_set(&name, &value, stack, ctx),
+        },
+        None => records::try_field_assign(node, source, &value, stack, ctx),
+    };
+    written.unwrap_or_else(|| {
+        eval_error(format!(
+            "the local runtime cannot write the var argument '{}' back",
+            node.utf8_text(source).unwrap_or_default().trim()
+        ))
+    })
 }
 
 /// Return the lowercased variable name if `node` is a plain variable reference
@@ -983,6 +1019,13 @@ fn apply_var_writebacks(
 /// cannot corrupt a caller variable by matching the wrong slot.
 fn simple_lvalue_name(node: Node<'_>, source: &[u8]) -> Option<String> {
     let text = node.utf8_text(source).ok()?.trim();
+    // A quoted name may hold spaces and punctuation (`"Line Count"`).
+    if let Some(quoted) = text
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+    {
+        return (!quoted.is_empty() && !quoted.contains('"')).then(|| quoted.to_ascii_lowercase());
+    }
     let inner = text.unquote_identifier();
     if inner.is_empty() {
         return None;
@@ -1113,24 +1156,12 @@ fn extract_call_parts<'a>(
 
     let args_node = parts
         .iter()
-        .find(|(named, c)| {
-            *named
-                && matches!(
-                    c.kind(),
-                    "argument_list" | "call_arguments" | "procedure_call_arguments"
-                )
-        })
+        .find(|(named, c)| *named && c.kind() == "argument_list")
         .map(|(_, c)| *c);
 
     let name_parts: Vec<String> = parts
         .iter()
-        .filter(|(named, c)| {
-            *named
-                && !matches!(
-                    c.kind(),
-                    "argument_list" | "call_arguments" | "procedure_call_arguments"
-                )
-        })
+        .filter(|(named, c)| *named && c.kind() != "argument_list")
         .filter_map(|(_, c)| c.utf8_text(source).ok())
         .map(|t| t.unquote_identifier().into_owned())
         .collect();
@@ -1150,10 +1181,7 @@ pub(crate) fn find_argument_list(node: Node<'_>) -> Option<Node<'_>> {
     let mut cursor = node.walk();
     let mut found = None;
     for child in node.named_children(&mut cursor) {
-        if matches!(
-            child.kind(),
-            "argument_list" | "call_arguments" | "procedure_call_arguments"
-        ) {
+        if child.kind() == "argument_list" {
             found = Some(child);
             break;
         }

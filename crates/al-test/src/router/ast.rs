@@ -3,6 +3,7 @@
 
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn classify_procedure_ast(
     workspace: &Workspace,
     catalog: &ProcedureCatalog,
@@ -11,6 +12,7 @@ pub(super) fn classify_procedure_ast(
     reasons: &mut Vec<RoutingReason>,
     reachable: bool,
     handler_support: LocalHandlerSupport,
+    tables: &mut Vec<String>,
 ) {
     let Some((text, tree)) = workspace.file_index.get_cached_parse(&location.file) else {
         *decision = RoutingDecision::LiveBc;
@@ -44,7 +46,33 @@ pub(super) fn classify_procedure_ast(
         );
         return;
     };
-    let resolver = al_syntax::TypeResolver::new(&tree, &text);
+    classify_declaration(
+        workspace,
+        catalog,
+        location,
+        (&tree, &text, procedure),
+        (decision, reasons),
+        reachable,
+        handler_support,
+        tables,
+    );
+}
+
+/// Classify one procedure or trigger body. Workspace tables with code that
+/// the body uses are added to `tables`, for their code to be classified too.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn classify_declaration(
+    workspace: &Workspace,
+    catalog: &ProcedureCatalog,
+    location: &ProcedureLocation,
+    (tree, text, procedure): (&tree_sitter::Tree, &str, tree_sitter::Node<'_>),
+    (decision, reasons): (&mut RoutingDecision, &mut Vec<RoutingReason>),
+    reachable: bool,
+    handler_support: LocalHandlerSupport,
+    tables: &mut Vec<String>,
+) {
+    let bytes = text.as_bytes();
+    let resolver = al_syntax::TypeResolver::new(tree, text);
     let mut stack = vec![procedure];
     while let Some(node) = stack.pop() {
         if node != procedure
@@ -62,9 +90,9 @@ pub(super) fn classify_procedure_ast(
                     type_node,
                     bytes,
                     &location.file,
-                    decision,
-                    reasons,
+                    (decision, reasons),
                     reachable,
+                    tables,
                 );
             }
         } else if node.kind() == "postfix_expression" {
@@ -82,7 +110,7 @@ pub(super) fn classify_procedure_ast(
                     object: &location.object,
                 },
             );
-        } else if node.kind() == "attribute" || node.kind() == "attribute_list" {
+        } else if node.kind() == "attribute" {
             let attr = node.utf8_text(bytes).unwrap_or("");
             let attr_lower = attr.to_ascii_lowercase();
             if attr_lower.contains("testpermissions") {
@@ -127,9 +155,9 @@ pub(super) fn classify_type_reference(
     type_node: tree_sitter::Node<'_>,
     source: &[u8],
     file: &std::path::Path,
-    decision: &mut RoutingDecision,
-    reasons: &mut Vec<RoutingReason>,
+    (decision, reasons): (&mut RoutingDecision, &mut Vec<RoutingReason>),
     reachable: bool,
+    tables: &mut Vec<String>,
 ) {
     let raw = type_node.utf8_text(source).unwrap_or("").trim();
     let (kind, subtype) = split_type_reference(raw);
@@ -166,7 +194,10 @@ pub(super) fn classify_type_reference(
         };
         let local_path = workspace.file_index.object_path_of_kind(&table, &["table"]);
         let (floor, message) = if let Some(path) = local_path {
-            if let Some(capability) = table_platform_capability(workspace, &path) {
+            if table_has_code(workspace, &path, &table) {
+                tables.push(table.clone());
+            }
+            if let Some(capability) = table_platform_capability(workspace, &path, &table) {
                 (
                     RoutingDecision::LiveBc,
                     format!("record table '{table}' {capability}"),
@@ -220,18 +251,147 @@ pub(super) fn classify_type_reference(
     }
 }
 
+/// The JSON type a lowercased type keyword names.
+pub(super) fn json_kind(type_name: &str) -> Option<al_runtime::interpreter::json::JsonKind> {
+    use al_runtime::interpreter::json::JsonKind;
+    match type_name {
+        "jsonobject" => Some(JsonKind::Object),
+        "jsonarray" => Some(JsonKind::Array),
+        "jsontoken" => Some(JsonKind::Token),
+        "jsonvalue" => Some(JsonKind::Value),
+        _ => None,
+    }
+}
+
+/// Why `Validate(Field, ...)` on table `table` must run on live BC: the
+/// field's TableRelation cannot be checked locally (the runtime's own
+/// [`al_runtime::interpreter::records::validate_relation`] decides).
+fn validate_blocker(
+    workspace: &Workspace,
+    table: &str,
+    call: tree_sitter::Node<'_>,
+    source: &[u8],
+) -> Option<String> {
+    let arguments = call.child_by_field_name("call")?.utf8_text(source).ok()?;
+    let inner = arguments.trim().strip_prefix('(')?.strip_suffix(')')?;
+    let field = first_argument(inner).unquote_identifier().into_owned();
+    al_runtime::interpreter::records::validate_relation(&*workspace.file_index, table, &field)
+        .err()
+        .map(|reason| format!("Validate: {reason}"))
+}
+
+/// Why a JSON `SelectToken` call must run on live BC: its path is a text
+/// literal with a step the local runtime does not follow. A path built at
+/// run time is left to the runtime, which refuses such a step by name.
+pub(super) fn selecttoken_blocker(call: tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
+    let arguments = call.child_by_field_name("call")?.utf8_text(source).ok()?;
+    let inner = arguments.trim().strip_prefix('(')?.strip_suffix(')')?;
+    let path = text_literal(first_argument(inner))?;
+    al_runtime::interpreter::json::unsupported_path_step(&path)
+        .map(|reason| format!("SelectToken: {reason}"))
+}
+
+/// The value of `text` when it is one AL text literal (`'a''b'` is `a'b`).
+fn text_literal(text: &str) -> Option<String> {
+    let mut chars = text.strip_prefix('\'')?.chars().peekable();
+    let mut value = String::new();
+    while let Some(c) = chars.next() {
+        if c != '\'' {
+            value.push(c);
+        } else if chars.peek() == Some(&'\'') {
+            chars.next();
+            value.push('\'');
+        } else {
+            return chars.next().is_none().then_some(value);
+        }
+    }
+    None
+}
+
+/// Why `Rename` on table `table` must run on live BC: a field relates to it
+/// in a way the local rename does not follow (the runtime's own
+/// [`al_runtime::interpreter::records::RelationIndex`] decides).
+fn rename_blocker(
+    workspace: &Workspace,
+    catalog: &ProcedureCatalog,
+    table: &str,
+) -> Option<String> {
+    workspace
+        .file_index
+        .object_path_of_kind(table, &["table"])?;
+    catalog
+        .relations
+        .rename_cascades(&*workspace.file_index, table)
+        .err()
+        .map(|reason| format!("Rename: {reason}"))
+}
+
+/// How many arguments a member call passes, from its argument list.
+fn argument_count(call: tree_sitter::Node<'_>) -> Option<usize> {
+    let arguments = call.child_by_field_name("call")?;
+    let mut cursor = arguments.walk();
+    let count = arguments
+        .named_children(&mut cursor)
+        .find(|child| child.kind() == "expression_list")
+        .map_or(0, |list| {
+            let mut cursor = list.walk();
+            list.named_children(&mut cursor)
+                .filter(|child| child.kind() == "expression")
+                .count()
+        });
+    Some(count)
+}
+
+/// The first comma-separated argument, outside quotes.
+fn first_argument(arguments: &str) -> &str {
+    let mut quote: Option<char> = None;
+    for (at, c) in arguments.char_indices() {
+        match (quote, c) {
+            (Some(open), _) if c == open => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, ',') => return arguments[..at].trim(),
+            _ => {}
+        }
+    }
+    arguments.trim()
+}
+
+/// Whether table `table` declares triggers or procedures, which then run
+/// locally and must be classified like any reachable code.
+fn table_has_code(workspace: &Workspace, path: &std::path::Path, table: &str) -> bool {
+    let Some((_, tree)) = workspace.file_index.get_cached_parse(path) else {
+        return false;
+    };
+    let scope = object_scope(workspace, path, &tree, table);
+    !table_code_declarations(scope).is_empty()
+}
+
+/// Every trigger (table and field) and procedure a table object declares.
+pub(super) fn table_code_declarations(object: tree_sitter::Node<'_>) -> Vec<tree_sitter::Node<'_>> {
+    let mut found = Vec::new();
+    let mut stack = vec![object];
+    while let Some(node) = stack.pop() {
+        if matches!(node.kind(), "trigger_declaration" | "procedure_declaration") {
+            found.push(node);
+            continue;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+    found
+}
+
 pub(super) fn table_platform_capability(
     workspace: &Workspace,
     path: &std::path::Path,
+    table: &str,
 ) -> Option<&'static str> {
     let (text, tree) = workspace.file_index.get_cached_parse(path)?;
     let bytes = text.as_bytes();
-    let mut stack = vec![tree.root_node()];
+    let mut stack = vec![object_scope(workspace, path, &tree, table)];
     while let Some(node) = stack.pop() {
-        if node.kind() == "trigger_declaration" {
-            return Some("declares triggers that require BC execution");
-        }
-        if matches!(node.kind(), "property" | "property_assignment") {
+        if node.kind() == "property_assignment" {
             let property = node.utf8_text(bytes).unwrap_or("").to_ascii_lowercase();
             if property.contains("fieldclass") && property.contains("flowfilter") {
                 return Some("declares FlowFilter fields that require BC execution");
@@ -283,6 +443,13 @@ pub(super) fn classify_call(
         return;
     };
     let receiver = primary.utf8_text(source).unwrap_or("").unquote_identifier();
+    // A variable or parameter named `Page`, `Report` or `Codeunit` is not
+    // the platform object of that name.
+    let declared = || {
+        resolver
+            .resolve_type(&receiver, syntax_position(primary, source))
+            .is_some()
+    };
 
     // AL permits parameterless built-ins as statements without parentheses
     // (`Commit;`). In that shape the postfix expression has no call suffix.
@@ -290,6 +457,7 @@ pub(super) fn classify_call(
         && PLATFORM_GLOBALS
             .iter()
             .any(|global| receiver.eq_ignore_ascii_case(global))
+        && !declared()
     {
         promote(
             decision,
@@ -379,18 +547,52 @@ pub(super) fn classify_call(
         }
         // A bare global call is interpreter-safe only when the interpreter
         // actually implements it: a builtin from the shared catalog
-        // (`supports_global_builtin` is the single source of truth), a
-        // procedure of the same object (followed through the call graph), or
-        // a receiver-less native stub. Everything else has no local
-        // implementation and must route to LiveBc.
+        // (`supports_global_builtin` is the single source of truth) or a
+        // procedure of the same object (followed through the call graph).
+        // The runtime asks a stub catalog only about a call on its own
+        // codeunit. Everything else has no local implementation and must
+        // route to LiveBc.
+        // In table code a bare record method acts on the implicit Rec.
+        if al_runtime::interpreter::records::supports_record_method(&receiver)
+            && workspace
+                .file_index
+                .object_path_of_kind(object, &["table"])
+                .is_some()
+        {
+            let blocker = if receiver.eq_ignore_ascii_case("validate") {
+                validate_blocker(workspace, object, suffix, source)
+            } else if receiver.eq_ignore_ascii_case("rename") {
+                rename_blocker(workspace, catalog, object)
+            } else {
+                None
+            };
+            if let Some(blocker) = blocker {
+                promote(
+                    decision,
+                    reasons,
+                    RoutingDecision::LiveBc,
+                    &blocker,
+                    file,
+                    primary,
+                    reachable,
+                );
+                return;
+            }
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::InterpRecord,
+                &format!("calls supported Record.{receiver}"),
+                file,
+                primary,
+                reachable,
+            );
+            return;
+        }
         let is_builtin = al_runtime::interpreter::dispatch::supports_global_builtin(&receiver);
-        let is_same_object_procedure = is_builtin
-            || catalog.contains_key(&(object.to_ascii_lowercase(), receiver.to_ascii_lowercase()));
-        let is_stub = is_same_object_procedure
-            || al_runtime::stubs::CATALOGS
-                .iter()
-                .any(|catalog| (catalog.resolve)(&receiver).is_some());
-        if !is_builtin && !is_same_object_procedure && !is_stub {
+        let is_same_object_procedure =
+            catalog.contains_key(&(object.to_ascii_lowercase(), receiver.to_ascii_lowercase()));
+        if !is_builtin && !is_same_object_procedure {
             promote(
                 decision,
                 reasons,
@@ -449,7 +651,8 @@ pub(super) fn classify_call(
     if matches!(
         receiver.to_ascii_lowercase().as_str(),
         "codeunit" | "page" | "report" | "xmlport"
-    ) {
+    ) && !declared()
+    {
         promote(
             decision,
             reasons,
@@ -478,8 +681,45 @@ pub(super) fn classify_call(
     };
     let type_name = decl.type_name.to_ascii_lowercase();
     if type_name == "record" {
-        let local = al_runtime::interpreter::records::supports_record_method(&method);
-        let (floor, message) = if local {
+        let table = decl.type_subtype.as_deref().unwrap_or("");
+        let blocker = if method.eq_ignore_ascii_case("validate") {
+            validate_blocker(workspace, table, suffix, source)
+        } else if method.eq_ignore_ascii_case("rename") {
+            rename_blocker(workspace, catalog, table)
+        } else {
+            None
+        };
+        if let Some(blocker) = blocker {
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::LiveBc,
+                &blocker,
+                file,
+                member_node,
+                reachable,
+            );
+            return;
+        }
+    }
+    if type_name == "record" {
+        // A procedure the table declares runs locally as table code, which
+        // is classified with the table.
+        let table_procedure = decl.type_subtype.as_deref().is_some_and(|table| {
+            catalog.contains_key(&(table.to_ascii_lowercase(), method.to_ascii_lowercase()))
+                && workspace
+                    .file_index
+                    .object_path_of_kind(table, &["table"])
+                    .is_some()
+        });
+        let local =
+            table_procedure || al_runtime::interpreter::records::supports_record_method(&method);
+        let (floor, message) = if table_procedure {
+            (
+                RoutingDecision::InterpRecord,
+                format!("calls table procedure {receiver}.{method}"),
+            )
+        } else if local {
             (
                 RoutingDecision::InterpRecord,
                 format!("calls supported Record.{method}"),
@@ -500,12 +740,21 @@ pub(super) fn classify_call(
             reachable,
         );
     } else if type_name == "list" {
-        if !al_runtime::interpreter::records::supports_list_method(&method) {
+        let blocker = if !al_runtime::interpreter::records::supports_list_method(&method) {
+            Some(format!(
+                "calls unsupported List.{method} (requires BC semantics)"
+            ))
+        } else if method.eq_ignore_ascii_case("getrange") && argument_count(suffix) == Some(3) {
+            Some("calls List.GetRange with a var result list (requires BC semantics)".to_string())
+        } else {
+            None
+        };
+        if let Some(blocker) = blocker {
             promote(
                 decision,
                 reasons,
                 RoutingDecision::LiveBc,
-                &format!("calls unsupported List.{method} (requires BC semantics)"),
+                &blocker,
                 file,
                 member_node,
                 reachable,
@@ -544,6 +793,45 @@ pub(super) fn classify_call(
                         subtype
                     }
                 ),
+                file,
+                member_node,
+                reachable,
+            );
+        }
+    } else if let Some(kind) = json_kind(&type_name) {
+        if !al_runtime::interpreter::json::supports_json_method(kind, &method) {
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::LiveBc,
+                &format!(
+                    "calls unsupported {}.{method} (requires BC semantics)",
+                    decl.type_name
+                ),
+                file,
+                member_node,
+                reachable,
+            );
+        } else if method.eq_ignore_ascii_case("selecttoken") {
+            if let Some(blocker) = selecttoken_blocker(suffix, source) {
+                promote(
+                    decision,
+                    reasons,
+                    RoutingDecision::LiveBc,
+                    &blocker,
+                    file,
+                    member_node,
+                    reachable,
+                );
+            }
+        }
+    } else if type_name == "textbuilder" {
+        if !al_runtime::interpreter::records::supports_textbuilder_method(&method) {
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::LiveBc,
+                &format!("calls unsupported TextBuilder.{method} (requires BC semantics)"),
                 file,
                 member_node,
                 reachable,
