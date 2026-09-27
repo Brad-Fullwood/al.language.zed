@@ -558,3 +558,18 @@ Append-only. Newest entry last.
   each with a test that failed first. `Value::List` and `Value::Dict` wrap a `Collection<T>` that
   keeps the declared element or key type, `Value::TextBuilder` holds a `Shared<String>`. al-runtime
   643 lib tests on the branch. Gates on the merge in progress.
+
+## 2026-09-27 13:22 BST: round 10 batch B merged, round 10 fixed 11 of 11
+
+- Gates on 19a7cae9 (batch A, text, docs): 92 suites, 5336 passed, 0 failed.
+- `campaign/fix-r10-b` merged (85426311, no conflicts): 6 of 6 fixed, each with a test that failed
+  first. An overloaded procedure runs the declaration whose parameters accept the arguments (most
+  exact type matches win, then declaration order), a codeunit publisher's `sender` is the running
+  instance (a `CallFrame` now carries its instance id), a quoted variable name reads, a record
+  method or table procedure written without parentheses runs when the table has no field of that
+  name, `Page[1]` indexes a keyword-named variable, and the interpreter and router no longer match
+  fourteen node kinds and three field names the grammar does not produce (a guard test in
+  `al-test/tests/node_kind_literals.rs` found four more than GR3-3 listed). Left open in the
+  status lines: the router does not classify a record method without parentheses, so an
+  unsupported one routes locally. Round 10 is 11 of 11 fixed.
+- Gates on 85426311 in progress.

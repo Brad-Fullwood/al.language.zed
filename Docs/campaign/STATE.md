@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-27 13:12 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-27 13:22 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -27,14 +27,15 @@ Merged 13:08: `campaign/fix-r10-text` (9a364d46, R10-PLUGIN-1 and R10-TEXT-1), `
 declared name and array element gets its own List, Dictionary or JSON value, TextBuilder is a
 reference, Dictionary keys convert to the declared key type, the `var` forms of `List.Get`,
 `List.Set` and `Dictionary.Set` run locally, `RemoveRange` returns false when used, `AddRange`
-picks its overload by the declared element type). Gates run on 19a7cae9.
+picks its overload by the declared element type). Gates on 19a7cae9 green (92 suites, 5336 passed, 0 failed). Merged 13:21: `campaign/fix-r10-b`
+(85426311, no conflicts: R10-RT-2, R10-EV-1, R10-RT-1, R10-KW-1, GR3-2, GR3-3: overloads chosen by
+the call's arguments, a codeunit publisher's sender is the running instance, quoted names read,
+record methods without parentheses run, keyword-named variables index, fourteen dead node kinds
+and three dead field names removed with a guard test in `al-test/tests/node_kind_literals.rs`).
+Gates run on 85426311.
 
 Agents in flight (dispatched 12:58 unless noted):
 
-- Round 10 fixes B (A, F), Opus: `.claude/worktrees/agent-fix-r9`, branch `campaign/fix-r10-b` from
-  4c429ac5. R10-RT-2, R10-EV-1, R10-RT-1, R10-KW-1, GR3-2, GR3-3 (`workspace_procedure.rs`,
-  `table_code.rs`, `eval_expr.rs`, `eval_stmt.rs`, `indexing.rs`, a node-kind guard for the
-  interpreter). Ends with `## Fixes complete`.
 - `cargo mutants` (E), Sonnet, continuation: `.claude/worktrees/agent-a34708a3121ce8ac2`,
   `campaign/test-mutants` at b13da4ce. Commits the `indent.rs` tests, then the formatting module.
   Ends with `## Mutation pass complete`.
@@ -49,8 +50,7 @@ Agents in flight (dispatched 12:58 unless noted):
   lines) and `al-lsp/src/server/daemon/lsp_dispatch.rs` (1,155 lines) move to their own files, and
   the stale "six `stat` calls" comment is corrected. Ends with `## Splits complete`.
 
-Merge order when they finish: B (resolve against A's `frames.rs` and `eval_stmt.rs` changes), then
-mutants, then the splits. Gates on each merge, `cargo test -p al-test-harness
+Merge order when they finish: mutants, then the splits, then round 11's findings to a fix agent. Gates on each merge, `cargo test -p al-test-harness
 --no-fail-fast` after the runtime merges. Then round 11 over `9e3f26a1..HEAD -- crates plugin`.
 
 A second session (interactive, not the watchdog's) has pushed straight to this branch before
@@ -91,6 +91,11 @@ Queued:
   without the trust record check (unverified, for security round 6). `crates/al-project/src/trust.rs`
   near line 701 says "six `stat` calls" where the fingerprint makes up to seven (the split agent
   fixes the comment).
+- From the round 10 fix agents: the router reads only call suffixes, so a record method the runtime
+  does not support written without parentheses (`R.LockTable;`) routes locally and fails as a
+  missing field (R10-KW-1 status). `'x' + Letter` with a Char variable fails with "binary operator
+  `+` not supported on (Text, Char)". `Dictionary.Set(k, v, var Old)` for a missing key leaves
+  `Old` unchanged, which Learn does not settle.
 - Round 10 review's unverified notes: `TARGET_KEYS` compared with `eq_ignore_ascii_case` (a `ſerver` key) for the proxy's next adversarial review, and whether BC's `foreach` over a List raises when the list changes.
 
 A review file without a `## Review complete` line means the agent died. Re-dispatch it to
