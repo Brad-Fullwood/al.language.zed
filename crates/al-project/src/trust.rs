@@ -48,6 +48,7 @@ pub const ADVISORY_KEYS: &[&str] = &[
     "al.packageCachePath",
     "al.ruleSetPath",
     "al.useOnlyCustomFeeds",
+    LINKED_PACKAGE_FOLDER_KEY,
     PATH_OPTION_KEY,
     UNHASHABLE_PATH_KEY,
     UNREADABLE_LAUNCH_KEY,
@@ -78,6 +79,10 @@ const UNREADABLE_LAUNCH_KEY: &str = "unreadable launch file";
 /// are recorded under this key, so an existing record goes stale, and
 /// [`TrustDecision::grant_refusal`] refuses a new record until the tree changes.
 const UNHASHABLE_PATH_KEY: &str = "path the record cannot hash";
+
+/// The key of a symbol package folder written inside the project that
+/// resolves outside it, recorded with the directory it resolves to.
+const LINKED_PACKAGE_FOLDER_KEY: &str = "linked package folder";
 
 /// The key of an `al.compilationOptions` entry that names a file or directory
 /// alc loads from: an analyzer, a probing directory, a ruleset, a package
@@ -479,7 +484,51 @@ fn read_repository(project_root: &Path) -> Result<(AlConfig, RepositoryAsk), Con
     ask.settings.extend(launch_privileges(project_root));
     ask.settings
         .extend(project_analyzer_copies(&config, project_root));
+    ask.settings
+        .extend(linked_package_folders(&config, project_root));
     Ok((config, ask))
+}
+
+/// Each symbol package folder written inside the project that resolves
+/// outside it, with the directory it resolves to.
+///
+/// A trusted project's package folders are containment roots in the daemon
+/// and where symbol downloads write. `.alpackages` needs no setting, and a
+/// clone can commit it as a link to any directory, so a link a later commit
+/// added made its target a root while the record still matched. The folders
+/// come from the merged configuration, so a user's `./symbols` that a
+/// repository link carries out is recorded too, and `.alpackages` is always
+/// checked, since the language server may use it when the daemon's
+/// configuration names another cache. Recording where each resolves makes a
+/// link that is added or retargeted stale the record, and `trust --show`
+/// lists it.
+fn linked_package_folders(config: &AlConfig, project_root: &Path) -> Vec<PrivilegedSetting> {
+    let mut folders = vec![PathBuf::from(".alpackages")];
+    folders.extend(config.package_cache_path.clone());
+    folders.extend(config.app_local_folder_paths.iter().cloned());
+    let mut seen = Vec::new();
+    let mut settings = Vec::new();
+    for folder in folders {
+        let absolute = if folder.is_absolute() {
+            folder.clone()
+        } else {
+            project_root.join(&folder)
+        };
+        if !leaves_the_project(project_root, &absolute) || seen.contains(&absolute) {
+            continue;
+        }
+        seen.push(absolute.clone());
+        let resolved = fold_dots(&absolute)
+            .map(|folded| resolve_deepest_existing(&folded))
+            .unwrap_or_else(|| absolute.clone());
+        let written = folder.display().to_string();
+        settings.push(PrivilegedSetting::new(
+            LINKED_PACKAGE_FOLDER_KEY,
+            &format!("{written} (resolves to {})", resolved.display()),
+            written,
+        ));
+    }
+    settings
 }
 
 /// The DLL inside the project each configured analyzer name resolves to when
@@ -810,6 +859,10 @@ fn shown_within(path: &Path, root: &Path) -> String {
 /// `stays_inside_project`. This is the same decision for the default folder
 /// and for every other folder path inside the project. A path written outside
 /// the project is the user's own and is not this function's business.
+///
+/// The trust record lists each package folder of this shape with the
+/// directory it resolves to, so a link added or retargeted after the grant
+/// makes the project stale and this refuses it again.
 #[must_use]
 pub fn escapes_untrusted_project(project_root: &Path, path: &Path) -> bool {
     let absolute = if path.is_absolute() {
@@ -817,14 +870,19 @@ pub fn escapes_untrusted_project(project_root: &Path, path: &Path) -> bool {
     } else {
         project_root.join(path)
     };
+    if !leaves_the_project(project_root, &absolute) {
+        return false;
+    }
+    !decide(project_root).is_ok_and(|decision| decision.is_trusted())
+}
+
+/// Whether `absolute`, spelled inside the project, resolves outside it.
+fn leaves_the_project(project_root: &Path, absolute: &Path) -> bool {
     let spelled_inside = absolute.starts_with(project_root)
         || project_root
             .canonicalize()
             .is_ok_and(|root| absolute.starts_with(root));
-    if !spelled_inside || stays_inside_project(&absolute, project_root) {
-        return false;
-    }
-    !decide(project_root).is_ok_and(|decision| decision.is_trusted())
+    spelled_inside && !stays_inside_project(absolute, project_root)
 }
 
 /// `path` with its deepest existing ancestor canonicalised and the rest

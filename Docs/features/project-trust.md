@@ -54,7 +54,13 @@ treated like `al.packageCachePath` outside the project: until the project is tru
 packages are not read, `downloadSymbols` and the editor's symbol download refuse to write
 into it, the editor shows why the symbols are missing in place of the download prompt, and the
 daemon does not count it as a containment root. `al_project::trust::escapes_untrusted_project` is the one
-check.
+check. The record lists each such folder as `linked package folder` with the directory it
+resolves to. That covers `.alpackages` and every `al.packageCachePath` or
+`al.appLocalFolderPaths` entry written inside the project, from any settings file. `trust
+--show` shows where the folder leads, and a commit that adds the link or points it somewhere
+else makes the record stale, which takes the target out of the containment roots again. A
+link added after the grant used to leave the record trusted, and the daemon then accepted a
+path anywhere under its target.
 
 Everything else in a repository's settings applies without trust: formatting, inlay hints,
 `al.diagnosticsScope`, `al.enableNativeLint` and its per-rule overrides, `al.incrementalBuild`,
