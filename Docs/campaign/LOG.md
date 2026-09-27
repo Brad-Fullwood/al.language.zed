@@ -360,3 +360,26 @@ Append-only. Newest entry last.
 - Gates on the merge: fmt, release, both clippy runs and rustdoc clean, 94 suites, 5227 passed,
   1 failed, 10 ignored. The failure is the snapshot profiling mock test again (3 of 4 workspace
   runs tonight, green alone every time), so a Sonnet agent now isolates its shared state. Pushed.
+
+## 2026-09-27 02:41 BST: headless session, six dead agents recovered, grammar cc31863 merged
+
+- The 21:44 session's agents were all dead at 02:41, the machine idle, origin level with local.
+  Recovered: the grammar corpus agent had finished (12 commits on the grammar's campaign branch,
+  `findings/grammar-corpus-r2.md` with every coverage item ticked, GR2-1 fixed in the scanner,
+  GR2-2 to GR2-5 open for the interpreter). The round 8 fix agent had fixed RT-4, EV-1 and JSON-1
+  to JSON-4 and left the RT-3 table publisher test uncommitted (`.campaign/r8-rt3-test-wip.patch`).
+  The round 7 fix agent had fixed 12 of 15 with the BLOG-3 fix and the DOC-2 tests uncommitted in
+  its worktree. The mutants agent had committed `lint.rs` (152 mutants, 140 caught, 3 equivalent)
+  and `mock/record.rs`. The flake agent had written nothing. The merged plugin worktree removed.
+- Merged `campaign/fix-r8-review` (12b1778a): tables, enums and codeunits found by kind, `DeleteAll`
+  and `ModifyAll` raise the table events per row and reach subscribers in the router, `ReadFrom`
+  gives a JSON variable a new node, JSON failures follow statement position, `SelectToken` follows
+  filters, `..` and `*` and refuses slices and unions (the router sends those live), typed getters
+  honour `DefaultIfNotFound`, `SCHEMA_VERSION` 4. Merged `campaign/test-mutants` (58781aa7).
+- Grammar gates on cc31863 (`.campaign/run-grammar-gates.sh`): 98 of 98 corpus tests, 46,389 of
+  46,389 corpus files parse, crate and generator tests, `cargo package --list`, the wasm build and
+  the generator drift check all pass. Pushed to the grammar's `campaign/2026-09-21`. Submodule
+  pointer and `extension.toml` rev moved (4c1b0ae6). Superproject gates on 4c1b0ae6 started 02:48.
+- Five agents dispatched at 02:48 (`STATE.md`): round 7 fixes (the last three), runtime fixes
+  (RT-3, GR2-2, GR2-3, GR2-5, the OnValidate call graph item), the snapshot flake (second attempt),
+  mutants on the last three files, the round 9 review with ten audit triage spot-checks.
