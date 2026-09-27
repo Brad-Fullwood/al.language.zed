@@ -2865,11 +2865,23 @@ pub(crate) fn dispatch_textbuilder_method(
     args: Vec<Value>,
     stack: &mut ScopeStack,
 ) -> Eval {
-    let Some(Value::TextBuilder(text)) = stack.lookup_mut(recv) else {
+    let Some(Value::TextBuilder(builder)) = stack.lookup(recv) else {
         return eval_error(format!("'{recv}' is not a TextBuilder"));
     };
+    let builder = builder.clone();
+    // A builder argument is read before the receiver is locked, since it may
+    // be the receiver.
+    let args: Vec<Value> = args
+        .into_iter()
+        .map(|arg| match arg {
+            Value::TextBuilder(other) => Value::Text(other.snapshot()),
+            other => other,
+        })
+        .collect();
+    let mut guard = builder.lock();
+    let text: &mut String = &mut guard;
     let as_text = |value: &Value| match value {
-        Value::Text(t) | Value::Code(t) | Value::TextBuilder(t) => t.clone(),
+        Value::Text(t) | Value::Code(t) => t.clone(),
         Value::Char(c) => c.to_string(),
         other => crate::interpreter::dispatch::render_value(other),
     };

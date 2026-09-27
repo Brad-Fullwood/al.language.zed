@@ -78,8 +78,8 @@ Instance methods that run locally:
   `RemoveRange`, `Reverse`, `Count`, `Contains`, `IndexOf`, `LastIndexOf`.
 - `Dictionary`: `Add`, `Get` (including `Get(key, var value)`), `Set`, `Remove`, `ContainsKey`,
   `Count`, `Keys`, `Values`. `Keys` keeps the keys' type and insertion order.
-- `List` and `Dictionary` are references, as in AL: assigning one, or passing it without `var`,
-  shares it. `GetRange(1, L.Count())` makes a copy.
+- `List`, `Dictionary` and `TextBuilder` are references, as in AL: assigning one, or passing it
+  without `var`, shares it. `GetRange(1, L.Count())` makes a copy of a list.
 - `TextBuilder`: `Append`, `AppendLine` (CRLF), `Length`, `ToText`, `Clear`, `Insert`, `Remove`,
   `Replace`, changing the builder in place.
 - JSON: `JsonObject`, `JsonArray`, `JsonToken` and `JsonValue` are references, as in AL. `B := A`

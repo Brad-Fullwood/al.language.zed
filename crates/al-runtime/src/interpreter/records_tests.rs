@@ -1525,6 +1525,60 @@ fn each_declared_name_and_array_element_gets_its_own_list_dictionary_or_json_val
     assert_eq!(probe("ArrayOfJson"), Value::Text("{}".into()));
 }
 
+const SHARED_TEXTBUILDERS: &str = r#"codeunit 50306 "Shared TextBuilders"
+{
+    procedure TextBuilderAssigned(): Text
+    var
+        A: TextBuilder;
+        B: TextBuilder;
+    begin
+        A.Append('x');
+        B := A;
+        B.Append('y');
+        exit(A.ToText());
+    end;
+
+    procedure TextBuilderByValue(): Text
+    var
+        A: TextBuilder;
+    begin
+        A.Append('x');
+        AppendY(A);
+        exit(A.ToText());
+    end;
+
+    local procedure AppendY(B: TextBuilder)
+    begin
+        B.Append('y');
+    end;
+
+    procedure TextBuilderMultiName(): Text
+    var
+        A, B: TextBuilder;
+    begin
+        A.Append('x');
+        exit(B.ToText());
+    end;
+}
+"#;
+
+/// A TextBuilder is a reference type: assigning it, or passing it without
+/// `var`, shares one builder. Each declared name still gets its own.
+#[test]
+fn textbuilders_are_shared_by_assignment_and_by_value_parameters() {
+    let probe = |proc: &str| {
+        ok(run(
+            &[("/ws/SharedTextBuilders.al", SHARED_TEXTBUILDERS)],
+            "Shared TextBuilders",
+            proc,
+            vec![],
+        ))
+    };
+    assert_eq!(probe("TextBuilderAssigned"), Value::Text("xy".into()));
+    assert_eq!(probe("TextBuilderByValue"), Value::Text("xy".into()));
+    assert_eq!(probe("TextBuilderMultiName"), Value::Text(String::new()));
+}
+
 #[test]
 fn compound_assignment_to_record_field_accumulates() {
     // Regression: `Rec.Amount += 5` must store Amount + 5, not the raw RHS.

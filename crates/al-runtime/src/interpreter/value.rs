@@ -21,8 +21,9 @@ pub use rust_decimal::Decimal;
 /// key text maps to the key as given and its value.
 pub type DictEntries = indexmap::IndexMap<String, (Value, Value)>;
 
-/// The contents of an AL reference type (`List`, `Dictionary`): cloning the
-/// handle shares the contents, as assigning the AL variable does.
+/// The contents of an AL reference type (`List`, `Dictionary`,
+/// `TextBuilder`): cloning the handle shares the contents, as assigning the
+/// AL variable does.
 ///
 /// Values cross to the test runner's thread, hence `Arc<Mutex>`. Hold one
 /// guard at a time: locking the same contents twice deadlocks.
@@ -142,8 +143,9 @@ pub enum Value {
     Text(String),
     /// AL `Code[N]` — uppercase string, length cap not enforced here.
     Code(String),
-    /// AL `TextBuilder` — a string its methods change in place.
-    TextBuilder(String),
+    /// AL `TextBuilder`, a string its methods change in place. A reference
+    /// type like `List`.
+    TextBuilder(Shared<String>),
     /// `JsonObject`, `JsonArray`, `JsonToken` or `JsonValue`: a reference
     /// into the dispatch context's JSON arena.
     Json(crate::interpreter::json::JsonRef),
@@ -285,7 +287,9 @@ impl Ord for Value {
             (Decimal(a), Decimal(b)) => a.cmp(b),
             (Boolean(a), Boolean(b)) => a.cmp(b),
             (Char(a), Char(b)) => a.cmp(b),
-            (Text(a), Text(b)) | (Code(a), Code(b)) | (TextBuilder(a), TextBuilder(b)) => a.cmp(b),
+            (Text(a), Text(b)) | (Code(a), Code(b)) => a.cmp(b),
+            (TextBuilder(a), TextBuilder(b)) if a.same(b) => Ordering::Equal,
+            (TextBuilder(a), TextBuilder(b)) => a.snapshot().cmp(&b.snapshot()),
             (Date(a), Date(b)) | (Time(a), Time(b)) | (DateTime(a), DateTime(b)) => a.cmp(b),
             (Duration(a), Duration(b)) => a.cmp(b),
             (Guid(a), Guid(b)) => a.cmp(b),
@@ -473,7 +477,7 @@ impl Value {
             // Braced, as Format shows a Guid and CreateGuid returns one.
             "guid" => Some(Value::Guid("{00000000-0000-0000-0000-000000000000}".into())),
             "char" => Some(Value::Char('\0')),
-            "textbuilder" => Some(Value::TextBuilder(String::new())),
+            "textbuilder" => Some(Value::text_builder(String::new())),
             other => crate::interpreter::json::default_for(other),
         }
     }
@@ -481,6 +485,11 @@ impl Value {
     /// A new `List` holding `items`.
     pub fn list(items: Vec<Value>) -> Value {
         Value::List(Shared::new(items))
+    }
+
+    /// A new `TextBuilder` holding `text`.
+    pub fn text_builder(text: String) -> Value {
+        Value::TextBuilder(Shared::new(text))
     }
 
     /// A new `Dictionary` holding `entries`.

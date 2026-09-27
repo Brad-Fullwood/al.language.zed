@@ -331,7 +331,7 @@ fn cleared(value: &Value, ctx: &mut DispatchCtx) -> Result<Value, String> {
         Value::Char(_) => Value::Char('\0'),
         Value::Text(_) => Value::Text(String::new()),
         Value::Code(_) => Value::Code(String::new()),
-        Value::TextBuilder(_) => Value::TextBuilder(String::new()),
+        Value::TextBuilder(_) => Value::text_builder(String::new()),
         Value::Date(_) => Value::Date(0),
         Value::Time(_) => Value::Time(0),
         Value::DateTime(_) => Value::DateTime(0),
