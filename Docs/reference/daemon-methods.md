@@ -105,7 +105,10 @@ Object-with-array methods, with the field projected: `impact` (`impacted`), `tab
 
 `fields` is refused when no row has any of the names. A name that only some results carry is not
 refused, because rows leave optional keys out when they are empty (a workspace `impact` row has no
-`package`). The result names it in `absentFields` instead.
+`package`). The result names it in `absentFields` instead. A row marked `partial` keeps `partial`
+and `partial_reason` whatever `fields` names, and a name it lacks goes in `absentFields` rather
+than being refused. So `fields: ["fields"]` on a workspace table answered before the call graph
+is built says why its fields are missing.
 
 `object` and `byId` also take `signatures: true`, which renders each field, procedure and global
 variable as one line (`1 "No.": Code[20]`, `AssistEdit(OldCust: Record "Customer"): Boolean`)

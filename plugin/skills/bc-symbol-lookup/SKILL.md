@@ -66,7 +66,14 @@ method signatures surround the one package name you asked for.
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --fields fields by-id table 18
 ```
 
-That returns the field list and nothing else. For one field, add `jq`:
+That returns the field list and nothing else. For a workspace table add `--wait-for-members`,
+or the daemon may answer before it has the fields:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --fields fields by-id table 50100 --wait-for-members
+```
+
+For one field, add `jq`:
 
 ```bash
 ... al-explorer --json --fields fields by-id table 18 \
