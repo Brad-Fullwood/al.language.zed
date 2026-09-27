@@ -53,7 +53,8 @@ Answer these from the plugin, not from find, grep, ripgrep or reading .al files:
 - Who calls or uses a symbol, what a change breaks -> skill al-bc:bc-impact-check
 - The next free object ID or field number -> skill al-bc:bc-object-id-allocator
 - Running AL tests or test coverage -> skill al-bc:bc-test-locally
-- What a dependency upgrade breaks -> skill al-bc:bc-upgrade-impact
+- What an extension depends on, whether a dependency is missing, or what a
+  dependency upgrade breaks -> skill al-bc:bc-upgrade-impact
 - Pre-build and pre-deploy audit, lint and cop warnings -> skill al-bc:bc-workspace-health
 
 Run the plugin's commands from this project directory. Do not cd first: the

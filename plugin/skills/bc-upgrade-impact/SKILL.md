@@ -1,6 +1,6 @@
 ---
 name: bc-upgrade-impact
-description: Use when moving a Business Central extension to a new BC release or dependency version, and whenever asked what a version bump breaks. Finds removed or obsoleted symbols, changed signatures, subscribers pointing at events that no longer exist, and version conflicts between the .app packages in .alpackages. Use it when a compile starts failing after a symbol download, or when .alpackages holds two versions of the same app, instead of diffing .app files by hand.
+description: Use for any question about what a Business Central extension depends on, whether a dependency is missing or conflicting, or what moving to a new BC release or dependency version breaks. An empty "dependencies" array in app.json is not the answer: every extension also depends implicitly on Base Application, System Application, System and Application, and only the dependency graph shows those and whether they resolve. Finds the dependency graph, missing or conflicting packages, removed or obsoleted symbols, changed signatures, and subscribers pointing at events that no longer exist. Use it when a compile starts failing after a symbol download, or when .alpackages holds two versions of the same app, instead of reading app.json and grepping .al files to guess at dependencies, and instead of diffing .app files by hand.
 ---
 
 # What a dependency upgrade breaks
