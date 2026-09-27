@@ -55,10 +55,9 @@ jobs:
       - name: Test cross-platform shell helper contracts
         run: bash scripts/test-use-api.sh
 
-      # Manifests, skill/agent frontmatter, and the al-fetch-release.sh /
-      # run.sh regression tests (R9-PLUGIN-1, R9-PLUGIN-2, R9-PLUGIN-3). Not
-      # platform-specific, so this runs once rather than on every OS in the
-      # matrix.
+      # Manifests, skill and agent frontmatter, and the shell tests for
+      # al-fetch-release.sh and the eval runner. Nothing in it depends on the
+      # platform, so it runs on one OS.
       - name: Validate the Claude Code plugin
         if: matrix.os == 'ubuntu-latest'
         run: make plugin-validate

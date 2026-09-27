@@ -105,9 +105,9 @@ else
 fi
 
 # ── Regression tests ─────────────────────────────────────────────
-# R9-PLUGIN-1, R9-PLUGIN-2, R9-PLUGIN-3: al-fetch-release.sh's member and
-# install-step checks, and run.sh's al-lsp resolution. Needs python3 to serve
-# the test archives over a local HTTP server.
+# al-fetch-release.sh's member and install-step checks, and run.sh's al-lsp
+# resolution. Needs python3 to serve the test archives over a local HTTP
+# server.
 plugin_test="$plugin/tests/al-fetch-release-test.sh"
 if [ ! -x "$plugin_test" ]; then
 	problem "missing or non-executable $plugin_test"
