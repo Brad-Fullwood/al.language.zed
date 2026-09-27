@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-27 08:36 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-27 08:16 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -21,9 +21,6 @@ Agents in flight (dispatched 07:55, all onto the existing worktrees and branches
 
 - Round 9 runtime fixes (A), Opus: `.claude/worktrees/agent-fix-r9`, `campaign/fix-r9-review`.
   R9-RT-1, R9-CU-2, R9-CU-1, R9-CACHE-1. Ends with `## Fixes complete`.
-- Round 9 plugin fixes (G, D), Sonnet: `.claude/worktrees/agent-fix-r9-plugin`,
-  `campaign/fix-r9-plugin`. R9-PLUGIN-1 to R9-PLUGIN-3 with a shell test in `make plugin-validate`.
-  Ends with `## Fixes complete`.
 - `cargo mutants` (E), Sonnet, continuation: `.claude/worktrees/agent-a34708a3121ce8ac2`,
   `campaign/test-mutants`. Commits the `composition.rs` tests, then `cobertura.rs` and the
   formatting module. Ends with `## Mutation pass complete`.
@@ -36,16 +33,23 @@ commits (af3a36cd, 404f2fb4, 8cf97b56, b2577ceb: List and Dictionary as referenc
 subscriber test's var section moved, a `pack-native` refusal test, `clippy.toml`) are merged
 in (fast-forward) and go through the next gate run.
 
-- Security round 5 fixes (D), Opus, dispatched 08:35: `.claude/worktrees/agent-sec5`, branch
+- Security round 5 fixes (D), Opus, dispatched 08:12: `.claude/worktrees/agent-sec5`, branch
   `campaign/fix-r5-security` from c41346e9. SEC5-1 to SEC5-9. Ends with `## Fixes complete`.
 
-Merged 08:30: `campaign/r5-security` (c41346e9, `findings/r5-security.md` complete: 9 findings, 7
+Merged 08:10: `campaign/r5-security` (c41346e9, `findings/r5-security.md` complete: 9 findings, 7
 medium, 2 low, all nine coverage items ticked) and `campaign/plugin-runs` (round 5 of
 `plugin/TESTING.md`: four Haiku runs all right, three skill and routing defects fixed, `make
 plugin-validate` OK). GR2-4 merged into the grammar's `campaign/2026-09-21` (52f98e5 on cc31863),
 grammar gates running in the background (`.campaign/grammar-gate-status.txt`); then push the
 grammar, move the pointer and `extension.toml` rev, superproject gates, and the interpreter test
 for `-5..-2`.
+
+- Round 10 review (A), Opus, dispatched 08:16: `.claude/worktrees/agent-r10`, branch
+  `campaign/r10-review`, scope `a0e85e0b..9e3f26a1 -- crates plugin`. Writes
+  `findings/r10-session-review.md`, ends with `## Review complete`.
+
+Merged 08:16: `campaign/fix-r9-plugin` (7cd0a904, R9-PLUGIN-1 to 3 fixed, shell test in `make
+plugin-validate`, which CI now runs).
 
 Next in this session: merge each branch as it completes, gates on the merge, push. After the
 round 9 fixes merge: the docs re-check (H) for table globals, `Clear` and subscriber instances,

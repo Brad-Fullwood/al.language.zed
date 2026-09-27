@@ -446,7 +446,7 @@ Append-only. Newest entry last.
   `snapshot_start_server_error_maps_to_internal_error`, al-lsp) and the wrong value (-32602 for
   -32603 at load), which the first two attempts lacked.
 
-## 2026-09-27 08:15 BST: the snapshot flake was already fixed, four interactive commits merged
+## 2026-09-27 08:05 BST: the snapshot flake was already fixed, four interactive commits merged
 
 - The flake agent reproduced `snapshot_start_server_error_maps_to_internal_error` 11 times in 40
   runs of `cargo test -p al-lsp --lib daemon -- --test-threads=12`: the containment tests set
@@ -463,7 +463,7 @@ Append-only. Newest entry last.
   refusal test that compares the folder as the user named it, and a `clippy.toml`. Fast-forwarded
   onto them. They go through the next gate run and the round 10 review.
 
-## 2026-09-27 08:36 BST: security round 5 complete, plugin round 5 merged, GR2-4 in the grammar
+## 2026-09-27 08:12 BST: security round 5 complete, plugin round 5 merged, GR2-4 in the grammar
 
 - Security round 5 complete (`findings/r5-security.md`, merged c41346e9): 9 findings, 7 medium, 2
   low, all nine coverage items ticked. New this session: the legacy proxy forwards an online
@@ -490,3 +490,20 @@ Append-only. Newest entry last.
   wasm, drift. Merged into the grammar's `campaign/2026-09-21`, orchestrator gates running.
 - The interactive session's four commits carry `Co-Authored-By: Claude` and `Claude-Session:`
   trailers, which `~/.claude/CLAUDE.md` forbids. They are pushed, so left as they are.
+
+## 2026-09-27 08:16 BST: round 9 plugin fixes merged, round 10 dispatched
+
+- Merged `campaign/fix-r9-plugin` (7cd0a904): the release script refuses an archive whose members
+  are not regular files or directories and a binary that is a link or a directory, chains the
+  install steps and names the one that failed, and the eval runner resolves `al-lsp` beside
+  `al-explorer` then on `PATH`, skips with the reason when none is found, and keeps a failing
+  check's stderr. New `plugin/tests/al-fetch-release-test.sh` (a local `python3 -m http.server`
+  serves the archives) runs from `make plugin-validate`, which CI now runs on ubuntu, and the
+  ShellCheck glob covers `plugin/tests/*.sh`. Finding IDs taken out of the validator and CI
+  comments (e60e8db7).
+- Round 10 review dispatched (`campaign/r10-review`, worktree `agent-r10`): scope
+  `a0e85e0b..9e3f26a1 -- crates plugin` (49 files), which covers the round 8 last batch, the round
+  7 fixes, the grammar pointer move, the interactive session's List and Dictionary reference
+  semantics, and the plugin round 5 fixes. Nine coverage items, ends with `## Review complete`.
+- Earlier entries this morning carried clock times about twenty minutes ahead of the machine's
+  clock (the orchestrator estimated them). Corrected to the times in the git log.
